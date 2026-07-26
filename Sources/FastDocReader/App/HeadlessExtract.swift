@@ -15,7 +15,7 @@ enum HeadlessExtract {
         guard args.count == 1, let path = args.first, !path.hasPrefix("-") else {
             err("usage: FastDocReader --extract <file>\n" +
                 "  Prints the document as Markdown to stdout.\n" +
-                "  Supported: .docx .docm .dotx .dotm .odt (converted) · .md .txt (verbatim).")
+                "  Supported: .docx .docm .dotx .dotm .odt .hwp .hwpx (converted) · .md .txt (verbatim).")
             return 2
         }
         let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
@@ -23,7 +23,7 @@ enum HeadlessExtract {
 
         guard DocumentTypes.opensInApp(ext) else {
             err("unsupported file type \".\(ext)\": Fast Document Reader reads .docx/.docm/.dotx/.dotm, " +
-                ".odt, and plain text/Markdown. Legacy binary .doc and .rtf are not supported.")
+                ".odt, .hwp/.hwpx, and plain text/Markdown. Legacy binary .doc and .rtf are not supported.")
             return 1
         }
 
@@ -40,8 +40,13 @@ enum HeadlessExtract {
 
         case .office:
             do {
-                let archive = try ZipArchive(data: data)
-                let result = try DocumentTypes.readOffice(archive, extension: ext)
+                // HWP/HWPX take raw `Data` (not a `ZipArchive` — a `.hwp` is CFB binary), so branch to
+                // `HwpReader.read` before `ZipArchive(data:)`, then feed the SAME serializer the zip
+                // office path uses (invariant 40 — one block vocabulary → Markdown). Only the reader
+                // differs; the serializer is shared.
+                let result = try DocumentTypes.isHwp(ext)
+                    ? HwpReader.read(data)
+                    : DocumentTypes.readOffice(try ZipArchive(data: data), extension: ext)
                 let body = OfficeMarkdownSerializer.serialize(result.blocks)
                 out(header(for: url.lastPathComponent, body: body) + body)
                 return 0

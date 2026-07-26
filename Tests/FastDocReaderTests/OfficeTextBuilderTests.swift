@@ -902,6 +902,44 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(sizedCell?.reservedSize, size)
     }
 
+    /// The reserved size of the (only) image attachment inside the first cell of `out`.
+    private func cellImageReservedSize(in out: NSAttributedString) throws -> CGSize {
+        let cell0 = try XCTUnwrap(tableCells(in: out).first)
+        var found: NSTextAttachment?
+        out.enumerateAttribute(.attachment, in: cell0.range) { value, _, _ in
+            if let att = value as? NSTextAttachment { found = att }
+        }
+        let attachment = try XCTUnwrap(found, "an image block inside a cell must produce an attachment")
+        let sizedCell = try XCTUnwrap(attachment.attachmentCell as? SizedAttachmentCell)
+        return sizedCell.reservedSize
+    }
+
+    /// The bug this sprint fixes: a cell image authored WIDER than its resolved column overflowed the
+    /// cell (cell images used to pass `columnWidth: .greatestFiniteMagnitude`, so nothing clamped
+    /// them). Now a cell `.image` clamps to the cell's own content width the SAME way a top-level
+    /// image clamps to the reading column — aspect-ratio preserved. A single-column table at a 400pt
+    /// reading column has one full-width column; its content width is 400 − 2·7 padding − 2·1 border
+    /// = 384pt, so an 800×400 (2:1) image shrinks to 384×192.
+    func testCellImageWiderThanItsColumnIsClampedAspectPreserved() throws {
+        let cell = Cell(blocks: [.image(id: "wide-cell-img", size: CGSize(width: 800, height: 400))])
+        let out = OfficeTextBuilder.build([.table(rows: [[cell]], headerRows: 0)],
+                                          theme: theme, columnWidth: 400)
+        let reserved = try cellImageReservedSize(in: out)
+        XCTAssertEqual(reserved.width, 384, accuracy: 0.5, "clamped to the cell's content width")
+        XCTAssertEqual(reserved.height, 192, accuracy: 0.5, "aspect ratio (2:1) must be preserved")
+        XCTAssertLessThanOrEqual(reserved.width, 384 + 0.5, "must never exceed the cell content width")
+    }
+
+    /// A cell image SMALLER than its column is untouched — `fittedOfficeSize` only shrinks oversized
+    /// images, so a normal (already-fitting) cell image (every existing docx/odt case) is unchanged.
+    func testCellImageSmallerThanItsColumnIsUnchanged() throws {
+        let size = CGSize(width: 100, height: 50)
+        let cell = Cell(blocks: [.image(id: "small-cell-img", size: size)])
+        let out = OfficeTextBuilder.build([.table(rows: [[cell]], headerRows: 0)],
+                                          theme: theme, columnWidth: 400)
+        XCTAssertEqual(try cellImageReservedSize(in: out), size, "a fitting cell image must not be resized")
+    }
+
     /// The nested-table decision (flatten, never build a real grid) must hold even when a `.table`
     /// block reaches a cell directly, not only when a reader has already flattened one into spans
     /// before `Cell` existed. There must be exactly ONE `GridTextTable` (the outer table); the nested
@@ -1741,6 +1779,53 @@ final class OfficeTextBuilderTests: XCTestCase {
         let style = paragraphStyle(in: out)
         XCTAssertEqual(style.minimumLineHeight, 20)
         XCTAssertEqual(style.maximumLineHeight, 0)
+    }
+
+    // MARK: Body line-height is a FLOOR, not a fixed cap (HWP large-body-paragraph title bug)
+
+    /// Lay `s` out through a real TextKit stack and return the height of its FIRST line fragment —
+    /// the effective line height the reader draws, which the raw paragraph-style attributes alone
+    /// cannot prove (a `maximumLineHeight` cap only bites once a glyph is taller than it).
+    private func firstLineHeight(_ s: NSAttributedString, width: CGFloat = 2000) -> CGFloat {
+        let storage = NSTextStorage(attributedString: s)
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        var effective = NSRange()
+        return manager.lineFragmentUsedRect(forGlyphAt: 0, effectiveRange: &effective).height
+    }
+
+    /// The default body paragraph style (no explicit line rule) must pin its `base × lineHeightRatio`
+    /// line height as a FLOOR (`minimumLineHeight`) and CLEAR the maximum — so a paragraph whose own
+    /// font is taller than the floor grows the line instead of clipping. Before this fix the body
+    /// token set `maximumLineHeight == floor`, which clamped a 40pt/46pt line back to ~23pt and made
+    /// large BODY paragraphs (an HWP title is one — not a `.heading`) render as overlapping rows.
+    func testBodyParagraphLineHeightIsAFloorNotAFixedCap() {
+        let out = buildUnscaled([.paragraph(spans: [span("Body")])])
+        let style = paragraphStyle(in: out)
+        XCTAssertEqual(style.minimumLineHeight, (theme.baseFontSize * theme.lineHeightRatio).rounded(),
+                       "floor unchanged — normal body keeps today's exact rhythm")
+        XCTAssertEqual(style.maximumLineHeight, 0, "no cap, so a font taller than the floor grows the line")
+    }
+
+    /// Behavioural proof through TextKit: a NORMAL (base-size) body line still lays out at exactly
+    /// the floor (byte-identical rendering to before — the natural height of 16pt text is below the
+    /// floor, so the floor still governs), while a LARGE-font (40pt) body line lays out tall enough
+    /// to hold the glyph instead of being clamped to the floor and overlapping its neighbours.
+    func testLargeFontBodyDoesNotClipWhileNormalBodyIsUnchanged() {
+        let floor = (theme.baseFontSize * theme.lineHeightRatio).rounded()   // round(16 * 1.45) == 23
+
+        let normal = buildUnscaled([.paragraph(spans: [span("Normal body line")])])
+        XCTAssertEqual(firstLineHeight(normal), floor, accuracy: 0.5,
+                       "a base-size line still lays out at the floor — normal body rendering unchanged")
+
+        // 40pt at documentDefaultFontSize == baseFontSize (fontSizeScale == 1), so the run is a real 40pt glyph.
+        let large = buildUnscaled([.paragraph(spans: [span("Big", fontSize: 40)])])
+        XCTAssertGreaterThanOrEqual(firstLineHeight(large), 40,
+                                    "a 40pt body line grows to fit the glyph rather than clipping to the ~23pt floor")
     }
 
     /// The full indent formula (spec area 5's `NSParagraphStyle` mapping): `headIndent = indentStart`,

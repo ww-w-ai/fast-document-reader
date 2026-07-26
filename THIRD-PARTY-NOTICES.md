@@ -26,6 +26,26 @@ Pulled in transitively by swift-markdown. Multi-licensed, with several named hol
 
 ## Vendored files (copied into this repository)
 
+### rhwp — MIT (the HWP/HWPX parser)
+- Copyright (c) 2025-2026 Edward Kim
+- https://github.com/edwardkim/rhwp
+- rhwp (Rust) parses `.hwp`/`.hwpx`. We ship a FORK of it — our changes: an FFI drift fix, an added
+  structured-export FFI (`document_json`), and a handle-based C ABI (`rhwp_open`/`rhwp_document_json`/
+  `rhwp_image_base64`/`rhwp_close`); see `docs/BUILD-RHWP.md`. It is compiled to a static-library
+  xcframework and vendored as `Vendor/RhwpNative.xcframework` (arm64), statically linked into the app;
+  `Sources/FastDocReader/Render/Office/HwpReader.swift` calls it (a bridge, not ported code).
+- Full MIT text: [`licenses/rhwp-MIT-LICENSE.txt`](licenses/rhwp-MIT-LICENSE.txt).
+- **Transitive Rust crates**: the compiled staticlib links ~131 transitive crates, **all under
+  permissive licenses (MIT / Apache-2.0 / BSD-2 / BSD-3 / Zlib / Unicode-3.0 / BSL-1.0 / CC0) — zero
+  copyleft** (audited against the `aarch64-apple-darwin` default-feature closure; `native-skia` is
+  off). rhwp's own crate notices ship alongside at
+  [`licenses/rhwp-THIRD_PARTY_LICENSES.md`](licenses/rhwp-THIRD_PARTY_LICENSES.md). Because the app
+  statically links and DEAD-STRIPS the library (the shipped binary is ~3.3 MB, not 56 MB — most crates
+  incl. the svg2pdf/resvg/tiny-skia PDF path are stripped as uncalled), a precise per-crate notice for
+  exactly the surviving symbols is generated with `cargo-about` before store submission (tracked in
+  the sprint's deferred decisions). BSD/Zlib crates that do survive require their copyright lines
+  preserved — that is what the generated notice will carry.
+
 ### mermaid v10.9.6 — MIT
 - Copyright: Knut Sveidqvist and mermaid contributors
 - https://github.com/mermaid-js/mermaid
@@ -73,8 +93,9 @@ Smaller snippets carrying their own notices inside the same bundle:
 
 ## Notes on scope
 
-- `Sources/` and `Scripts/` contain no copied or ported third-party code (audited by grepping for
-  copyright/provenance markers — no hits).
+- `Sources/` and `Scripts/` contain no copied or ported third-party SOURCE (audited by grepping for
+  copyright/provenance markers — no hits). The one third-party binary is rhwp's parser, vendored as
+  `Vendor/RhwpNative.xcframework` and noted above; `HwpReader.swift` only CALLS its C ABI.
 - The app icon (`Resources/AppIcon.icns`, `Resources/AppIcon-1024.png`) is original work.
 - The only third-party fonts bundled are KaTeX's, above (OFL-1.1). Everything else the reader draws
   uses the fonts already on the Mac.

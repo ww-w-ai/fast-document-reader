@@ -64,12 +64,45 @@ final class RenderThemeParityTests: XCTestCase {
     func testMarkdownBodyParagraphRhythm() throws {
         let s = markdownRender()
         let ps = try paragraphStyle(s, containing: "A body paragraph")
-        XCTAssertEqual(ps.minimumLineHeight, 23, accuracy: 0.001)   // round(16 * 1.45)
-        XCTAssertEqual(ps.maximumLineHeight, 23, accuracy: 0.001)
+        XCTAssertEqual(ps.minimumLineHeight, 23, accuracy: 0.001)   // round(16 * 1.45) — the FLOOR
+        // The line height is a FLOOR, not a fixed cap: the maximum is cleared so a font taller than
+        // the floor grows the line rather than overlapping (see `testMarkdownBodyLineHeightIsAFloor`).
+        // Normal 16pt body still renders at the floor (its natural height is below 23), unchanged.
+        XCTAssertEqual(ps.maximumLineHeight, 0, accuracy: 0.001)
         XCTAssertEqual(ps.paragraphSpacing, 14.4, accuracy: 0.001)  // 16 * 0.9
         let f = try font(s, containing: "A body paragraph")
         XCTAssertEqual(f.pointSize, 16, accuracy: 0.001)
         XCTAssertFalse(f.fontDescriptor.symbolicTraits.contains(.bold))
+    }
+
+    /// Lay a fragment out through a real TextKit stack and return its first line-fragment height —
+    /// the effective line height the reader draws (a cleared `maximumLineHeight` only changes the
+    /// drawn height once a glyph is taller than the floor).
+    private func firstLineHeight(_ s: NSAttributedString, width: CGFloat = 2000) -> CGFloat {
+        let storage = NSTextStorage(attributedString: s)
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: NSSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        manager.ensureLayout(for: container)
+        var effective = NSRange()
+        return manager.lineFragmentUsedRect(forGlyphAt: 0, effectiveRange: &effective).height
+    }
+
+    /// The markdown body line height is a FLOOR (`minimumLineHeight`), the maximum cleared, so a
+    /// font taller than the floor grows the line (same bug/fix as office — a large-font markdown/docx
+    /// body paragraph must not overlap). This proves the "normal text unchanged" half behaviourally:
+    /// a base-size body line still lays out at exactly the 23pt floor, because 16pt text's natural
+    /// height is below it, so clearing the cap changes nothing for normal prose.
+    func testMarkdownBodyLineHeightIsAFloorNormalTextUnchanged() throws {
+        let s = markdownRender()
+        let ps = try paragraphStyle(s, containing: "A body paragraph")
+        XCTAssertEqual(ps.maximumLineHeight, 0, accuracy: 0.001, "no cap — a taller font grows the line")
+        // Re-render just this body line and measure it through real layout.
+        let bodyOnly = MarkdownRenderer.render("A body paragraph with plain prose.", theme: theme)
+        XCTAssertEqual(firstLineHeight(bodyOnly), 23, accuracy: 0.5,
+                       "a base-size body line still lays out at the floor — unchanged")
     }
 
     func testMarkdownQuoteIndentAndRhythm() throws {

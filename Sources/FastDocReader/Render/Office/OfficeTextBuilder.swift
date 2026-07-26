@@ -129,7 +129,7 @@ enum OfficeTextBuilder {
 
             case let .table(rows, headerRows, columnWidths, tableFormat):
                 appendTable(rows, headerRows: headerRows, columnWidths: columnWidths, tableFormat: tableFormat,
-                            into: result, theme: theme, fontSizeScale: fontSizeScale)
+                            into: result, theme: theme, fontSizeScale: fontSizeScale, columnWidth: columnWidth)
 
             case let .image(id, size):
                 appendImage(id: id, size: size, columnWidth: columnWidth, into: result)
@@ -420,8 +420,16 @@ enum OfficeTextBuilder {
                                             columnWidth: CGFloat = .greatestFiniteMagnitude) -> NSParagraphStyle {
         let p = NSMutableParagraphStyle()
         let lh = (theme.baseFontSize * theme.lineHeightRatio).rounded()
+        // The `base × lineHeightRatio` line height is a comfortable FLOOR, not a fixed cap. Pinning
+        // `maximumLineHeight` to it clips any paragraph whose own font is TALLER than the floor —
+        // and a large BODY paragraph is exactly that (an HWP title is a 32pt body paragraph, not a
+        // `.heading`, so it hits this style and its glyphs overlapped at ~23pt). Cleared to 0 (no
+        // cap), TextKit uses the natural line height once it EXCEEDS the floor, so a tall line grows.
+        // Normal body (font ≤ base) is byte-identical: 16pt text's natural height is below the floor,
+        // so the `minimumLineHeight` floor still governs. Explicit `.multiple`/`.exact`/`.atLeast`
+        // line rules from the document (applyParagraphFormat, below) override this per their own contract.
         p.minimumLineHeight = lh
-        p.maximumLineHeight = lh
+        p.maximumLineHeight = 0
         p.paragraphSpacing = theme.baseFontSize * theme.paragraphSpacingRatio
         if rtl { p.baseWritingDirection = .rightToLeft }
         if let alignment { p.alignment = alignment }
@@ -732,17 +740,38 @@ enum OfficeTextBuilder {
     private static func appendTable(_ rows: [[Cell]], headerRows: Int, columnWidths: [CGFloat] = [],
                                     tableFormat: TableFormat = TableFormat(),
                                     into result: NSMutableAttributedString,
-                                    theme: RenderTheme, fontSizeScale: CGFloat = 1) {
+                                    theme: RenderTheme, fontSizeScale: CGFloat = 1,
+                                    columnWidth: CGFloat = .greatestFiniteMagnitude) {
         guard rows.contains(where: { !$0.isEmpty }) else {
             result.append(NSAttributedString(string: "\n"))
             return
         }
         let headerFont = fontAdding(.bold, to: theme.bodyFont)
+        // Each cell's absolute content width at the reading column, resolved by `TableBlockBuilder`'s
+        // own placement + edge geometry (single source of truth for column math) so a cell IMAGE can
+        // be clamped to its column at BUILD time — mirroring the top-level `.image` path, which
+        // already clamps to `columnWidth`. Padding/border are resolved here EXACTLY as
+        // `TableBlockBuilder.build`'s per-placement loop does (cell-direct > table-default >
+        // style > floor/1), then handed to the helper so the width math stays in one place.
+        let spanGrid: [[TableBlockBuilder.AnchorSpan]] = rows.map { anchors in
+            anchors.map { cell in
+                let padding = max(cell.padding ?? TableBlockBuilder.defaultCellPadding,
+                                  TableBlockBuilder.defaultCellPadding)
+                let borderWidth = cell.borderWidth ?? tableFormat.defaultBorderWidth
+                    ?? cell.styleBorderWidth ?? 1
+                return TableBlockBuilder.AnchorSpan(rowSpan: cell.rowSpan, colSpan: cell.colSpan,
+                                                    padding: padding, borderWidth: borderWidth)
+            }
+        }
+        let cellContentWidths = TableBlockBuilder.anchorContentWidths(spans: spanGrid,
+                                                                      columnWidths: columnWidths,
+                                                                      width: columnWidth)
         let cellRows: [[TableBlockBuilder.CellContent]] = rows.enumerated().map { r, anchors in
             let isHeader = r < headerRows
-            return anchors.map { cell in
+            return anchors.enumerated().map { i, cell in
                 let content = cellContent(cell.blocks, baseFont: isHeader ? headerFont : theme.bodyFont,
-                                          theme: theme, fontSizeScale: fontSizeScale)
+                                          theme: theme, fontSizeScale: fontSizeScale,
+                                          imageColumnWidth: cellContentWidths[r][i])
                 return TableBlockBuilder.CellContent(content: content, rowSpan: cell.rowSpan, columnSpan: cell.colSpan,
                                                       backgroundColor: cell.backgroundColor,
                                                       borderColor: cell.borderColor, borderWidth: cell.borderWidth,
@@ -776,8 +805,14 @@ enum OfficeTextBuilder {
     /// project's standing "nested tables flatten to text" decision, applied identically by both
     /// readers at parse time; this is the renderer's own backstop in case a `.table` block ever
     /// reaches a cell some other way).
+    /// `imageColumnWidth` is the cell's resolved content width (from `appendTable`'s
+    /// `TableBlockBuilder.anchorContentWidths`); a cell `.image`/`.unsupportedGraphic` wider than it
+    /// is shrunk aspect-preserving via `fittedOfficeSize`, exactly as a top-level image clamps to the
+    /// reading column. `.greatestFiniteMagnitude` (the default) = "no column known" = no clamp, so
+    /// callers/tests that never pass it behave as before. Clamped at BUILD time only (invariant 1).
     private static func cellContent(_ blocks: [OfficeBlock], baseFont: NSFont, theme: RenderTheme,
-                                    fontSizeScale: CGFloat = 1) -> NSAttributedString {
+                                    fontSizeScale: CGFloat = 1,
+                                    imageColumnWidth: CGFloat = .greatestFiniteMagnitude) -> NSAttributedString {
         let result = NSMutableAttributedString()
         for (index, block) in blocks.enumerated() {
             switch block {
@@ -818,12 +853,12 @@ enum OfficeTextBuilder {
             case let .table(nestedRows, _, _, _):
                 result.append(flattenTableToText(nestedRows, baseFont: baseFont, theme: theme))
             case let .image(id, size):
-                appendImage(id: id, size: size, columnWidth: .greatestFiniteMagnitude, into: result)
+                appendImage(id: id, size: size, columnWidth: imageColumnWidth, into: result)
                 if result.length > 0, result.string.hasSuffix("\n") {
                     result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
                 }
             case let .unsupportedGraphic(label, size):
-                appendUnsupportedGraphic(label: label, size: size, columnWidth: .greatestFiniteMagnitude, into: result)
+                appendUnsupportedGraphic(label: label, size: size, columnWidth: imageColumnWidth, into: result)
                 if result.length > 0, result.string.hasSuffix("\n") {
                     result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
                 }

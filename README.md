@@ -44,6 +44,13 @@ multiplies on top of what the author set, the same way Word's own zoom does. The
 plainly that these formats are read-only, with a one-click hand-off to whatever app you'd rather edit
 them in.
 
+It reads **Korea's HWP (`.hwp`, `.hwpx`) files** the same way — read-only and native, given the same
+first-class treatment as Word and ODT. HWP is the dominant document format in Korean offices, schools
+and government, and almost nothing on the Mac opens it without Hancom's own suite. Parsing runs
+through **rhwp**, a Rust HWP engine compiled straight into the app, and its output flows into the very
+same rendering path as Word — so tables, images, styles, links, footnotes and equations arrive as the
+author set them, and `--extract` turns a `.hwp` into clean Markdown for an AI exactly like a `.docx`.
+
 | | Fast Document Reader |
 |---|---|
 | Engine | 100% native AppKit + TextKit — **no web runtime for text** |
@@ -53,7 +60,8 @@ them in.
 | Editing long docs | Only the edited block is re-rendered — **9 ms on 64k characters, 29 ms on 1.2 MB** |
 | Plain text | `.txt` · `.csv` · `.log` shown **verbatim**, one block per line — nothing reinterpreted as Markdown |
 | Word / OpenDocument | `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt` — **read-only**, formatting, tables, equations, charts and RTL text shown as authored |
-| Extract for an AI | `--extract` turns a `.docx`/`.odt` into **clean Markdown on stdout** — headless, so an AI reads it without spending tokens parsing the zip |
+| HWP (Korean) | `.hwp`/`.hwpx` — **read-only**, Korea's dominant document format, rendered natively through the same office engine as Word/ODT |
+| Extract for an AI | `--extract` turns a `.docx`/`.odt`/`.hwp` into **clean Markdown on stdout** — headless, so an AI reads it without spending tokens parsing the file |
 | Encodings | CP949 · UTF-16 · Latin-1 detected, not assumed — **saved back in the same encoding**, CRLF kept |
 | Diagrams | **mermaid bundled** — renders offline, cached as vector PDF, never re-rendered |
 | Math | **KaTeX bundled** — `$$…$$` and ```` ```math ```` render offline, vector, cached the same way |
@@ -77,8 +85,8 @@ pipe tables, standalone formulas as `$$…$$`, images and charts as honest place
 conservative on purpose — anything a Markdown table can't hold safely (merged cells, block content in
 a cell) is dumped as literal text inside a `<raw>…</raw>` marker rather than a fabricated grid that
 would read as correct, and a one-line note at the top explains the marker. It reads the Word family
-(`.docx` `.docm` `.dotx` `.dotm`) and `.odt` (converted), plus `.md`/`.txt` verbatim, and exits
-non-zero on anything it can't read so a script can trust the output.
+(`.docx` `.docm` `.dotx` `.dotm`), `.odt` and Korean HWP (`.hwp`/`.hwpx`), plus `.md`/`.txt`
+verbatim, and exits non-zero on anything it can't read so a script can trust the output.
 
 ## Diagrams render offline, once
 

@@ -490,4 +490,23 @@ struct OfficeComment: Equatable {
 struct OfficeReadResult: Equatable {
     var blocks: [OfficeBlock]
     var comments: [OfficeComment] = []
+    /// Pre-decoded embedded image bytes, keyed by the EXACT `.image(id:)` string the blocks carry
+    /// (e.g. `"hwpimg:3"`). Empty for the zip-backed readers (`DocxReader`/`OdtReader`), which resolve
+    /// an image's pixels lazily from the archive at reconcile time. HWP has NO archive (it is CFB
+    /// binary) and the rhwp image FFI needs the LIVE parse handle, which is gone by reconcile — so
+    /// `HwpReader.read` pre-decodes every embedded image here at read time and `MarkdownDocument`
+    /// checks this map before the archive. Defaults to `[:]` so every existing construction site
+    /// (both zip readers, all tests) keeps compiling and means exactly what it always meant: nothing
+    /// pre-decoded, resolve from the archive.
+    var images: [String: Data] = [:]
+    /// The document's own default BODY run size in points — the other half of `OfficeTextBuilder`'s
+    /// font-size model (`documentDefaultFontSize`), used to scale every absolute size to the reader's
+    /// base. For HWP this is the Normal("바탕글") style's char-shape base size, decoded from the rhwp
+    /// envelope's `defaultFontSizePt` (or `11` when rhwp emitted null — the document declared none).
+    /// ONLY `HwpReader` populates this: the zip readers (`DocxReader`/`OdtReader`) surface the same
+    /// value through `DocumentTypes.officeDefaultBodyFontSize(archive:)` instead and leave this at
+    /// its `11` default, because HWP has no `ZipArchive` to run that shared path against and rhwp
+    /// already carries the value in the parse it just did — no second FFI call (invariant 29's HWP
+    /// branch owns this the same way docx/odt own theirs through the reader lookup).
+    var defaultBodyFontSize: CGFloat = 11
 }

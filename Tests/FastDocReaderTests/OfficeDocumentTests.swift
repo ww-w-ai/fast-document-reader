@@ -535,7 +535,7 @@ final class OfficeDocumentTests: XCTestCase {
         try doc.read(from: data, ofType: "org.openxmlformats.wordprocessingml.document")
         XCTAssertEqual(doc.officeDefaultBodyFontSize, 10)
 
-        guard case .office(_, _, _, let reloadedDefault) =
+        guard case .office(_, _, _, _, let reloadedDefault) =
             MarkdownDocument.reloadOutcome(url: url, kind: .office, extension: "docx")
         else { return XCTFail("expected a successful office reload") }
         XCTAssertEqual(reloadedDefault, doc.officeDefaultBodyFontSize,
@@ -717,13 +717,35 @@ final class OfficeDocumentTests: XCTestCase {
         let docTypes = try XCTUnwrap(plist["CFBundleDocumentTypes"] as? [[String: Any]])
         let plistContentTypes = Set(docTypes.flatMap { ($0["LSItemContentTypes"] as? [String]) ?? [] })
 
-        for ext in DocumentTypes.officeExtensions {
-            guard let uti = UTType(filenameExtension: ext) else {
-                XCTFail("no system UTType for office extension \"\(ext)\"")
-                continue
+        // The bundle's OWN imported UTType declarations, as extension → identifier. HWP has no
+        // universal system UTI (a `.hwp`'s resolved type depends on which Hancom software is installed
+        // — see below), so the app DECLARES `com.hancom.hwp`/`.hwpx` here and lists them in
+        // `LSItemContentTypes`. This map lets the check below verify coverage by extension even when
+        // the system's resolved UTI isn't one the plist lists.
+        let importedByExtension: [String: Set<String>] = {
+            var out: [String: Set<String>] = [:]
+            for decl in (plist["UTImportedTypeDeclarations"] as? [[String: Any]]) ?? [] {
+                guard let id = decl["UTTypeIdentifier"] as? String,
+                      let tags = decl["UTTypeTagSpecification"] as? [String: Any],
+                      let exts = tags["public.filename-extension"] as? [String] else { continue }
+                for e in exts { out[e.lowercased(), default: []].insert(id) }
             }
-            XCTAssertTrue(plistContentTypes.contains(uti.identifier),
-                          "Info.plist has no CFBundleDocumentTypes entry for \".\(ext)\" (\(uti.identifier))")
+            return out
+        }()
+
+        for ext in DocumentTypes.officeExtensions {
+            // Primary check: the extension's system-resolved UTI is declared in the plist. Stable for
+            // docx/odt (org.openxmlformats.*/org.oasis-open.* exist on every Mac). HWP is machine-
+            // dependent: with Hancom software the extension resolves to `com.haansoft.*`; on a clean
+            // machine it resolves to a dynamic UTI. So HWP is ALSO accepted when covered by the
+            // bundle's own imported declaration whose identifier is listed — proving the app claims the
+            // extension either way (invariant 29: the plist mirrors the openable extension list).
+            let systemUti = UTType(filenameExtension: ext)?.identifier
+            let systemCovered = systemUti.map(plistContentTypes.contains) ?? false
+            let importedCovered = (importedByExtension[ext.lowercased()] ?? []).contains(where: plistContentTypes.contains)
+            XCTAssertTrue(systemCovered || importedCovered,
+                          "Info.plist has no CFBundleDocumentTypes entry covering \".\(ext)\" " +
+                          "(system UTI \(systemUti ?? "none"), imported \(importedByExtension[ext.lowercased()] ?? []))")
         }
     }
 
@@ -1019,6 +1041,93 @@ final class OfficeDocumentTests: XCTestCase {
             case .table, .image, .unsupportedGraphic, .formula:
                 continue
             }
+        }
+    }
+
+    // MARK: - HWP/HWPX wire-up (S5)
+    //
+    // These go through `MarkdownDocument.read(from:)` and the `--extract` dispatch — NOT `HwpReader`
+    // in isolation (`HwpReaderTests`/`HwpMappingTests` do that). Invariant 29's lesson: `.odt` once
+    // shipped parsed-and-tested yet unreachable because the app never routed bytes to it. HWP is the
+    // riskier case still — it must branch BEFORE `ZipArchive(data:)` (a `.hwp` is CFB binary, not a
+    // zip), so a test that only exercises the parser cannot prove the branch is taken. A repo has no
+    // HWP fixture (no in-memory builder like `buildZip` — the format is CFB/rhwp's own), so these are
+    // gated on real sample files: `FMD_HWP_SAMPLE`/`FMD_HWPX_SAMPLE`, defaulting to the rhwp fork's
+    // sample corpus. They SKIP (not fail) when neither is present, so CI without the corpus stays
+    // green while a local run with it proves the dispatch end to end.
+
+    private static let rhwpSamples =
+        NSString(string: "~/Documents/DEV/refs/rhwp/samples").expandingTildeInPath
+
+    private func hwpSamplePath(env: String, fallback: String) throws -> String {
+        if let p = ProcessInfo.processInfo.environment[env], FileManager.default.fileExists(atPath: p) { return p }
+        let fb = (Self.rhwpSamples as NSString).appendingPathComponent(fallback)
+        guard FileManager.default.fileExists(atPath: fb) else {
+            throw XCTSkip("Set \(env) to a \(fallback.hasSuffix("x") ? ".hwpx" : ".hwp") path (or place the rhwp sample corpus at \(Self.rhwpSamples))")
+        }
+        return fb
+    }
+
+    /// `.hwp` (CFB binary) opened through `MarkdownDocument.read(from:)`: proves the read path branches
+    /// to `HwpReader.read` BEFORE `ZipArchive(data:)` (which would throw on non-zip bytes) and that the
+    /// document ends up `.office` kind with real `officeBlocks`, not a raw-text fallback. `officeArchive`
+    /// must be nil (HWP has no archive) — the exact seam S4's reconcile map-first branch depends on.
+    func testHwpBinaryOpensThroughMarkdownDocumentReadPath() throws {
+        let path = try hwpSamplePath(env: "FMD_HWP_SAMPLE", fallback: "para-001.hwp")
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: path)
+        try doc.read(from: data, ofType: "com.hancom.hwp")
+        XCTAssertEqual(doc.kind, .office, "a .hwp must resolve to the office kind")
+        XCTAssertFalse(doc.officeBlocks.isEmpty,
+                       "read(from:) must populate officeBlocks via HwpReader — an empty result means the branch fell through")
+        XCTAssertNil(doc.officeArchive, "HWP has no ZipArchive; officeArchive must stay nil (reconcile relies on this)")
+    }
+
+    /// `.hwpx` (a zip, but rhwp still reads it from raw `Data`) through the same read path — HWP does
+    /// NOT go through `ZipArchive`/`DocumentTypes.readOffice` even for the zip-shaped variant.
+    func testHwpxOpensThroughMarkdownDocumentReadPath() throws {
+        let path = try hwpSamplePath(env: "FMD_HWPX_SAMPLE", fallback: "hwpx_sample2.hwpx")
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: path)
+        try doc.read(from: data, ofType: "com.hancom.hwpx")
+        XCTAssertEqual(doc.kind, .office)
+        XCTAssertFalse(doc.officeBlocks.isEmpty,
+                       "read(from:) must populate officeBlocks for .hwpx via HwpReader")
+        XCTAssertNil(doc.officeArchive)
+    }
+
+    /// `--extract` for HWP: the headless serializer path (`HeadlessExtract.run` → the office `.office`
+    /// branch → `HwpReader.read` → `OfficeMarkdownSerializer`) emits non-empty Markdown to stdout,
+    /// mirroring `testHeadlessExtractSerializesThroughTheRealOfficeDispatch` for the zip readers. Runs
+    /// the SAME library dispatch `HeadlessExtract` calls, so it proves the `--extract` HWP branch is
+    /// wired (invariant 40 — one serializer for every office block vocabulary).
+    func testHeadlessExtractSerializesHwpThroughTheRealDispatch() throws {
+        let cases: [(env: String, fallback: String)] = [
+            ("FMD_HWP_SAMPLE", "para-001.hwp"),
+            ("FMD_HWPX_SAMPLE", "hwpx_sample2.hwpx"),
+        ]
+        for c in cases {
+            let path = try hwpSamplePath(env: c.env, fallback: c.fallback)
+            let ext = (path as NSString).pathExtension.lowercased()
+            XCTAssertTrue(DocumentTypes.isHwp(ext), "\(c.fallback): must be recognized as an HWP extension")
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            let result = try HwpReader.read(data)
+            let markdown = OfficeMarkdownSerializer.serialize(result.blocks)
+            XCTAssertFalse(markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           "\(c.fallback): --extract must emit non-empty Markdown")
+        }
+    }
+
+    /// The extension list is the OTHER half of the single HWP dispatch (invariant 29): `hwp`/`hwpx`
+    /// must resolve to `.office` and be recognized by `isHwp`, and Info.plist's `CFBundleDocumentTypes`
+    /// must mirror this list by hand (the seam no compiler checks).
+    func testHwpExtensionsResolveToOfficeKindAndAreRecognizedAsHwp() {
+        for ext in ["hwp", "hwpx", "HWP", "Hwpx"] {
+            XCTAssertEqual(DocumentTypes.kind(forExtension: ext), .office, "\(ext) must be office kind")
+            XCTAssertTrue(DocumentTypes.isHwp(ext), "\(ext) must be recognized as HWP")
+            XCTAssertTrue(DocumentTypes.opensInApp(ext), "\(ext) must be openable")
         }
     }
 }

@@ -244,6 +244,75 @@ enum TableBlockBuilder {
         return result
     }
 
+    /// One anchor's span + already-resolved padding/border, the only inputs `anchorContentWidths`
+    /// needs to reproduce `build`'s column geometry. The caller (`OfficeTextBuilder.appendTable`)
+    /// resolves padding/border against the table defaults exactly as `build`'s per-placement loop
+    /// does, then hands the resolved values here — so the width math stays in this ONE place rather
+    /// than being re-derived beside `build`.
+    struct AnchorSpan {
+        var rowSpan: Int
+        var colSpan: Int
+        var padding: CGFloat
+        var borderWidth: CGFloat
+    }
+
+    /// The absolute content width available to each ANCHOR cell's blocks at `width`, mirroring
+    /// `build`'s own placement walk + integer-edge geometry (same column count, same proportion
+    /// normalisation, same `edges(forWidth:)`, same `content = cellWidth − 2·padding − 2·border`).
+    /// Returned in the SAME `[row][index]` shape as `spans`. This exists so `OfficeTextBuilder` can
+    /// clamp a cell IMAGE to its resolved column at BUILD time — the top-level `.image` path already
+    /// clamps to the reading column; a cell image had no column to clamp to until now. Deliberately a
+    /// BUILD-time value only: it must NOT feed `resizeTables` (invariant 1 — resizing an attachment in
+    /// the reflow path risks scroll jitter and breaks office media's "sized once" policy; a reflow that
+    /// only re-solves columns leaves the image at its build-time size, exactly like top-level images).
+    static func anchorContentWidths(spans: [[AnchorSpan]], columnWidths: [CGFloat],
+                                    width: CGFloat) -> [[CGFloat]] {
+        // Placement walk — identical to `build`'s: assign each anchor its (col, colSpan), skipping
+        // columns a taller earlier row already spans into, and derive the grid's column count.
+        struct Placed { let r: Int; let i: Int; let col: Int; let colSpan: Int }
+        var placed: [Placed] = []
+        var coveredByLaterRow: [Int: Set<Int>] = [:]
+        var ncol = 0
+        for (r, anchors) in spans.enumerated() {
+            let covered = coveredByLaterRow[r] ?? []
+            var col = 0
+            for (i, a) in anchors.enumerated() {
+                let rowSpan = min(max(1, a.rowSpan), Self.maxSpan)
+                let colSpan = min(max(1, a.colSpan), Self.maxSpan)
+                while covered.contains(col) { col += 1 }
+                placed.append(Placed(r: r, i: i, col: col, colSpan: colSpan))
+                if rowSpan > 1 {
+                    for laterRow in (r + 1)..<(r + rowSpan) {
+                        coveredByLaterRow[laterRow, default: []].formUnion(col..<(col + colSpan))
+                    }
+                }
+                col += colSpan
+                ncol = max(ncol, col)
+            }
+        }
+        var out: [[CGFloat]] = spans.map { Array(repeating: .greatestFiniteMagnitude, count: $0.count) }
+        guard ncol > 0, width.isFinite, width > 0 else { return out }
+
+        // Proportions — from the source grid when it matches the derived column count, else an even
+        // split (exactly `build`'s fallback), so a table with no known grid still clamps to its even
+        // column rather than to nothing.
+        var proportions = Array(repeating: 1 / CGFloat(ncol), count: ncol)
+        if columnWidths.count == ncol {
+            let sum = columnWidths.reduce(0, +)
+            if sum > 0 { proportions = columnWidths.map { $0 / sum } }
+        }
+        var edges: [CGFloat] = [0]
+        var cum: CGFloat = 0
+        for p in proportions { cum += p; edges.append((width * cum).rounded()) }
+
+        for p in placed {
+            let a = spans[p.r][p.i]
+            let cellWidth = edges[min(p.col + p.colSpan, ncol)] - edges[p.col]
+            out[p.r][p.i] = max(1, cellWidth - 2 * a.padding - 2 * a.borderWidth)
+        }
+        return out
+    }
+
     /// Re-solve every `GridTextTable`'s cells to ABSOLUTE integer widths for the current reading-column
     /// `width`. Tables are built at a placeholder width (`initialColumnWidth`); this is the counterpart
     /// of the old custom engine's `relayout`, but far smaller — it just rewrites each cell block's

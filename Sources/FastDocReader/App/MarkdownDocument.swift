@@ -30,6 +30,13 @@ final class MarkdownDocument: NSDocument {
     /// trip is not). `nil` for every other kind.
     private(set) var officeArchive: ZipArchive?
 
+    /// Embedded office image bytes PRE-DECODED at read time, keyed by the `.image` block's id (see
+    /// `OfficeReadResult.images`). The zip-backed readers (`DocxReader`/`OdtReader`) leave this `[:]`
+    /// and resolve pixels lazily from `officeArchive`; HWP has no archive and its image FFI needs the
+    /// live parse handle (gone by reconcile time), so `HwpReader.read` fills this and `reconcileMedia`
+    /// checks it BEFORE the archive. `[:]` for every non-HWP document — byte-identical behaviour.
+    private(set) var officeImageBytes: [String: Data] = [:]
+
     // C3: bumped on every full render; async mermaid swaps from a previous render carry
     // a stale generation and abort before mutating, so only the latest render wins.
     private var renderGeneration = 0
@@ -96,11 +103,31 @@ final class MarkdownDocument: NSDocument {
             self.text = file.text
             return
         }
-        let archive = try ZipArchive(data: data)
         let ext = fileURL?.pathExtension ?? untitledExtension ?? ""
+        // HWP/HWPX are NOT a `ZipArchive`: an `.hwp` is CFB binary (a `.hwpx` is a zip, but rhwp reads
+        // both from raw `Data` itself), so they must branch BEFORE `ZipArchive(data:)` — which would
+        // throw on `.hwp` — and hand the bytes straight to `HwpReader.read`. No archive exists, so
+        // `officeArchive` stays nil; `HwpReader.read` pre-decodes every embedded image into
+        // `result.images` (S4 reconcile checks that map before the nil archive). HWP's own default
+        // body size (Normal/"바탕글" style char-shape base size) rides the SAME rhwp parse —
+        // `result.defaultBodyFontSize` is decoded off the export envelope's `defaultFontSizePt`,
+        // docx/odt's `officeDefaultBodyFontSize` analog with no second FFI call — so every HWP scales
+        // to its own declared size, falling back to `11` (the theme default the builder tolerates for
+        // an unspecified size, invariant 37) only when rhwp emitted null. This branch +
+        // `DocumentTypes.hwpExtensions` ARE the HWP dispatch (invariant 29); the zip path below is
+        // unchanged for docx/odt.
+        if DocumentTypes.isHwp(ext) {
+            let result = try HwpReader.read(data)
+            setOfficeContent(
+                blocks: result.blocks, comments: result.comments, archive: nil,
+                images: result.images, defaultBodyFontSize: result.defaultBodyFontSize)
+            return
+        }
+        let archive = try ZipArchive(data: data)
         let result = try DocumentTypes.readOffice(archive, extension: ext)
         setOfficeContent(
             blocks: result.blocks, comments: result.comments, archive: archive,
+            images: result.images,
             defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext))
     }
 
@@ -110,11 +137,13 @@ final class MarkdownDocument: NSDocument {
     /// synthetic blocks/archives it builds itself, independent of whatever `DocxReader` parses (that
     /// parser's own correctness is `DocxReaderTests`' job, not this file's).
     func setOfficeContent(
-        blocks: [OfficeBlock], comments: [OfficeComment] = [], archive: ZipArchive, defaultBodyFontSize: CGFloat = 11
+        blocks: [OfficeBlock], comments: [OfficeComment] = [], archive: ZipArchive?,
+        images: [String: Data] = [:], defaultBodyFontSize: CGFloat = 11
     ) {
         self.officeBlocks = blocks
         self.officeComments = comments
         self.officeArchive = archive
+        self.officeImageBytes = images
         self.officeDefaultBodyFontSize = defaultBodyFontSize
         self.text = ""
         self.file = TextFile(text: "", encoding: .utf8, hasBOM: false)
@@ -143,7 +172,7 @@ final class MarkdownDocument: NSDocument {
     /// failing meant the function silently did nothing, which looks identical to a successful no-op
     /// reload and hides a real problem (deleted file, permissions, a corrupted archive) from the user.
     enum ReloadOutcome {
-        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive, defaultBodyFontSize: CGFloat)
+        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat)
         case text(TextFile)
         case failure(String)
     }
@@ -164,12 +193,21 @@ final class MarkdownDocument: NSDocument {
             return .text(TextEncodingDetector.decode(data))
         }
         do {
+            // HWP branches to `HwpReader.read(Data)` before `ZipArchive` for the same reason as
+            // `read(from:)` — a `.hwp` is not a zip. Nil archive, images pre-decoded, 11pt default,
+            // so a ⌘R reload of an HWP renders identically to its first open (invariant 29).
+            if DocumentTypes.isHwp(ext) {
+                let result = try HwpReader.read(data)
+                return .office(
+                    blocks: result.blocks, comments: result.comments, archive: nil,
+                    images: result.images, defaultBodyFontSize: 11)
+            }
             let archive = try ZipArchive(data: data)
             let result = try DocumentTypes.readOffice(archive, extension: ext)
             let defaultBodyFontSize = DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext)
             return .office(
                 blocks: result.blocks, comments: result.comments, archive: archive,
-                defaultBodyFontSize: defaultBodyFontSize)
+                images: result.images, defaultBodyFontSize: defaultBodyFontSize)
         } catch {
             return .failure(error.localizedDescription)
         }
@@ -193,13 +231,13 @@ final class MarkdownDocument: NSDocument {
         if let url = fileURL {
             let ext = url.pathExtension.isEmpty ? (untitledExtension ?? "") : url.pathExtension
             switch Self.reloadOutcome(url: url, kind: kind, extension: ext) {
-            case .office(let blocks, let comments, let archive, let defaultBodyFontSize):
+            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize):
                 // Re-parse the archive, same as the initial read — never through the text-decode
                 // path (invariant: an office document's bytes are never handed to
                 // `TextEncodingDetector`). `defaultBodyFontSize` is carried through too, so a
                 // reload renders identically to the first open of the same file (see invariant 29's
                 // "reload must behave the same as first open" lesson).
-                setOfficeContent(blocks: blocks, comments: comments, archive: archive, defaultBodyFontSize: defaultBodyFontSize)
+                setOfficeContent(blocks: blocks, comments: comments, archive: archive, images: images, defaultBodyFontSize: defaultBodyFontSize)
             case .text(let reread):
                 // The undo stack holds source OFFSETS into the text we're replacing. Re-reading the
                 // file can move every one of them (the file may have changed behind us), so an undo
@@ -832,6 +870,16 @@ final class MarkdownDocument: NSDocument {
             } else { load(nil, r) }
         }
         for (id, r) in officeLoad {
+            // Pre-decoded bytes win over the archive: HWP has no archive and hands its embedded image
+            // pixels in `officeImageBytes` at read time (the rhwp handle is gone by now). Branch on MAP
+            // PRESENCE, not an `hwpimg:` string, so any future pre-decode reader generalizes. The bytes
+            // are already in memory, so no NSCache round trip — decode straight to pixels (paint-only
+            // via `loadOfficePixels`, invariant 1/2/11 preserved; a nil image degrades to the broken
+            // icon there, same as the archive path).
+            if let data = officeImageBytes[id] {
+                loadOfficePixels(NSImage(data: data), r)
+                continue
+            }
             // Keyed by document path + archive entry id, NOT id alone: every `.docx` names its media
             // "word/media/image1.png", "image2.png", … — the SAME id means a DIFFERENT picture in a
             // different file, so an id-only key would serve one document's image inside another.

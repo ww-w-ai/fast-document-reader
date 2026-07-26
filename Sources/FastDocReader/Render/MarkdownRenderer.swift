@@ -82,12 +82,20 @@ enum MarkdownRenderer {
 /// multiple. AppKit's lineHeightMultiple multiplies each font's natural leading — which is
 /// larger for Korean than Latin — so it reads loose and uneven; a fixed line height gives
 /// tight, consistent leading that scales cleanly with the font size.
+///
+/// `uncapped` treats `lineHeight` as a FLOOR rather than a fixed cap: `minimumLineHeight` is set,
+/// `maximumLineHeight` is cleared (0). A body paragraph passes `true` so a font TALLER than the
+/// floor (a large-font body line — the same clipping the office builder fixes) grows the line
+/// instead of overlapping; normal-size body is byte-identical because 16pt text's natural height is
+/// below the floor, so the floor still governs. Headings/code pass the default `false` and keep
+/// their own exact fixed line height (min == max), which is already sized to their font.
 private func mdPara(lineHeight: CGFloat, spacingAfter: CGFloat, spacingBefore: CGFloat = 0,
-                    headIndent: CGFloat = 0, firstLineIndent: CGFloat = 0) -> NSParagraphStyle {
+                    headIndent: CGFloat = 0, firstLineIndent: CGFloat = 0,
+                    uncapped: Bool = false) -> NSParagraphStyle {
     let p = NSMutableParagraphStyle()
     let lh = lineHeight.rounded()
     p.minimumLineHeight = lh
-    p.maximumLineHeight = lh
+    p.maximumLineHeight = uncapped ? 0 : lh
     p.paragraphSpacing = spacingAfter
     p.paragraphSpacingBefore = spacingBefore
     p.headIndent = headIndent
@@ -120,7 +128,8 @@ private struct AttributedBuilder: MarkupWalker {
         // All spacing is derived from the base font size with ABSOLUTE line heights, so it
         // scales with ⌘+/− and reads consistently. Within-paragraph leading is tight (1.45×);
         // the gap BETWEEN paragraphs is clearly larger — "near things close, far things far."
-        bodyPS  = mdPara(lineHeight: b * theme.lineHeightRatio, spacingAfter: b * theme.paragraphSpacingRatio)
+        bodyPS  = mdPara(lineHeight: b * theme.lineHeightRatio, spacingAfter: b * theme.paragraphSpacingRatio,
+                         uncapped: true)   // floor, not cap — a large-font body line grows instead of overlapping
         quotePS = mdPara(lineHeight: b * theme.lineHeightRatio, spacingAfter: b * theme.paragraphSpacingRatio,
                          headIndent: b * style.quoteIndentRatio, firstLineIndent: b * style.quoteIndentRatio)
         let ip = NSMutableParagraphStyle()

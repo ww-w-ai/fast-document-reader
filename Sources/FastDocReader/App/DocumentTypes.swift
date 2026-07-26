@@ -31,7 +31,20 @@ enum DocumentTypes {
     /// `.docm`/`.dotx`/`.dotm` (Word macro-enabled document/template, and template) share the exact
     /// same `word/document.xml` shape as `.docx` — this app only ever reads XML out of the zip, so
     /// macros are never executed, just never even looked at. They route to `DocxReader` below.
-    static let officeExtensions = ["docx", "docm", "dotx", "dotm", "odt"]
+    static let officeExtensions = ["docx", "docm", "dotx", "dotm", "odt"] + hwpExtensions
+
+    /// Hangul Word Processor, read-only via `HwpReader.read(Data)` (rhwp FFI). Kept SEPARATE from the
+    /// zip-backed `officeReaderType` switch because HWP does NOT take a `ZipArchive`: an `.hwpx` is a
+    /// zip but an `.hwp` is CFB binary, and rhwp parses BOTH from raw `Data` itself — so HWP must
+    /// branch BEFORE `ZipArchive(data:)` (see `MarkdownDocument.read(from:)` and `HeadlessExtract`).
+    /// These are folded into `officeExtensions` above so `kind`, `opensInApp` and the open panel all
+    /// treat them as office documents (`.office` kind → Viewer/read-only, invariant 22); the branch in
+    /// `read(from:)` plus THIS list are the single dispatch for HWP (invariant 29 — no second switch).
+    static let hwpExtensions = ["hwp", "hwpx"]
+
+    /// True for `.hwp`/`.hwpx` — the one predicate every read path checks to route to `HwpReader.read`
+    /// (raw `Data`) instead of the zip pipeline. Kept here so the string list lives in ONE place.
+    static func isHwp(_ ext: String) -> Bool { hwpExtensions.contains(ext.lowercased()) }
 
     static func opensInApp(_ ext: String) -> Bool {
         let e = ext.lowercased()
@@ -59,6 +72,10 @@ enum DocumentTypes {
         switch ext.lowercased() {
         case "docx", "docm", "dotx", "dotm": return DocxReader.self
         case "odt": return OdtReader.self
+        // hwp/hwpx are DELIBERATELY absent: HWP takes raw `Data`, not a `ZipArchive`, so it can't
+        // conform to `OfficeDocumentReader` and never reaches `readOffice`/`officeDefaultBodyFontSize`
+        // — it branches to `HwpReader.read` before `ZipArchive(data:)` (see `isHwp`). Returning nil
+        // here means readOffice throws if HWP ever wrongly reached it, a safety net, not the path.
         default: return nil
         }
     }
