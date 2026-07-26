@@ -240,6 +240,14 @@ enum TableBlockBuilder {
             // without `w:tblBorders`/`w:tcBorders` — which must reach the theme default in the final
             // arm, byte-identical to before any of this existed (invariant 37).
             let declared = (cellEdges.map { !$0.isEmpty } ?? false) || (tableEdges.map { !$0.isEmpty } ?? false)
+            // Whether the TABLE drew a box is a different question, and it is the one the faint
+            // stand-in below depends on. A cell that merely turned ONE of its own edges off — what
+            // Word writes when someone selects a cell and removes a single rule — says nothing about
+            // the other three, and those must keep resolving through `borderWidth`/`borderColor`
+            // above so the cell still matches its neighbours. Keying the stand-in off `declared`
+            // instead made that one cell render thin and faded on the edges nobody touched, which is
+            // the ragged-table fault this whole per-edge path exists to remove.
+            let tableDrewABox = tableEdges?.drawsAnyEdge ?? false
             // Step 1 — INHERIT: a cell's own declaration wins; otherwise it takes the table's OUTER
             // edge where it sits on that side of the grid and the table's INTERIOR edge where it
             // doesn't. Still a declaration at this point, not yet a rule to draw.
@@ -248,18 +256,25 @@ enum TableBlockBuilder {
                 own ?? (isOuter ? outer : inside)
             }
             // Step 2 — RESOLVE a declaration to what is actually drawn. `.suppressed` draws nothing,
-            // deliberately and finally. An UNSPECIFIED edge draws nothing too, except on the
-            // perimeter of a table that declared something else, where the faint outline stands in:
-            // an author who ruled the top and bottom of a table did not ask for a box open at both
-            // sides, and rendering that literally reads as a fault. Interior seams are left alone —
-            // filling those in would invent a grid nobody asked for. Faint is expressed in the
-            // colour's ALPHA at an INTEGER width (invariant 42), never as a fractional hairline.
+            // deliberately and finally. An UNSPECIFIED edge depends on whether the TABLE drew a box:
+            //
+            //  • It did, and this edge is on the PERIMETER — the faint outline stands in. An author
+            //    who ruled the top and bottom of a table did not ask for a box open at both sides,
+            //    and rendering that literally reads as a fault. Faint lives in the colour's ALPHA at
+            //    an INTEGER width (invariant 42), never as a fractional hairline.
+            //  • It did, and this edge is INTERIOR — nothing. The table described its own grid;
+            //    filling in seams it left out would invent one nobody asked for.
+            //  • It did not — the edge falls back to the resolved cell-direct > table-direct >
+            //    table-STYLE > theme value, i.e. exactly what this cell would have drawn before any
+            //    per-edge data existed. This is the case where only a CELL spoke, and its silence on
+            //    an edge must not cost that edge the cascade the rest of the table is using.
             func side(_ decl: BorderDecl?, isOuter: Bool) -> BorderSide? {
                 switch decl {
                 case .drawn(let stated): return stated
                 case .suppressed: return nil
                 case nil:
-                    guard isOuter, declared else { return nil }
+                    guard tableDrewABox else { return BorderSide(width: borderWidth, color: borderColor) }
+                    guard isOuter else { return nil }
                     return BorderSide(width: RenderTheme.tableBorderWidth, color: Palette.tableBorderFaint)
                 }
             }

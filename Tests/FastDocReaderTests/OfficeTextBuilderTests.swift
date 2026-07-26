@@ -1725,17 +1725,71 @@ final class OfficeTextBuilderTests: XCTestCase {
 
     /// A CELL's own declaration is enough on its own — the faint outline follows from "this table
     /// said something about borders", not specifically from a table-level `w:tblBorders`.
-    func testACellsOwnDeclarationAloneEarnsTheFaintOutlineOnItsOtherOuterEdges() throws {
+    func testACellsOwnDeclarationAloneDoesNotFadeItsOtherEdges() throws {
         var cell = Cell(spans: [span("A")])
         cell.edgeBorders = edges([(\.top, .drawn(BorderSide(width: 3, color: nil)))])
         let out = build([.table(rows: [[cell]], headerRows: 0)])
         let placed = try XCTUnwrap(tableCells(in: out).first)
         let w = borderWidths(placed)
-        XCTAssertEqual(w.top, 3)
+        XCTAssertEqual(w.top, 3, "the edge the cell stated")
+        // The TABLE drew no box, so there is none to close: the three edges this cell never mentioned
+        // keep the ordinary resolved border, exactly as they would with no per-edge data at all.
         XCTAssertEqual(w.left, RenderTheme.tableBorderWidth)
         XCTAssertEqual(w.right, RenderTheme.tableBorderWidth)
         XCTAssertEqual(w.bottom, RenderTheme.tableBorderWidth)
-        XCTAssertEqual(placed.block.borderColor(for: .maxY), Palette.tableBorderFaint)
+        XCTAssertNotEqual(placed.block.borderColor(for: .maxY), Palette.tableBorderFaint,
+                          "a cell's own declaration must not fade the edges it said nothing about")
+    }
+
+    /// A cell with no side on the perimeter at all — the centre of a 3x3 — is the only placement that
+    /// reaches the uniform arm with every edge resolving to nothing. A table that ruled its outer box
+    /// and left the seams out gets no interior rules, and this is the path that decides it.
+    func testTheCentreCellOfADeclaredTableDrawsNoRuleAtAll() throws {
+        var format = TableFormat()
+        format.edgeBorders = edges([(\.top, .drawn(BorderSide(width: 2, color: nil))),
+                                    (\.bottom, .drawn(BorderSide(width: 2, color: nil))),
+                                    (\.left, .drawn(BorderSide(width: 2, color: nil))),
+                                    (\.right, .drawn(BorderSide(width: 2, color: nil)))])
+        let rows: [[Cell]] = (0..<3).map { r in (0..<3).map { c in Cell(spans: [span("\(r)\(c)")]) } }
+        let out = build([.table(rows: rows, headerRows: 0, format: format)])
+        let cells = tableCells(in: out)
+        XCTAssertEqual(cells.count, 9)
+        let w = borderWidths(cells[4])   // row 1, column 1 — touches no side of the grid
+        XCTAssertEqual([w.top, w.left, w.bottom, w.right], [0, 0, 0, 0],
+                       "the table described its own box; interior seams it left out stay out")
+    }
+
+    /// THE REGRESSION THIS FILE EXISTS TO PREVENT, in the shape Word actually produces it. Selecting
+    /// one cell and removing one rule writes a `w:tcBorders` holding a single `w:val="nil"` — the cell
+    /// has now "declared something" while saying nothing about its other three edges, and the table
+    /// itself declared nothing at all. That cell must still look like its neighbours everywhere the
+    /// author did not touch; an earlier version faded it to the outline colour and dropped two of its
+    /// edges to zero, which is the ragged-table fault this per-edge path was written to remove.
+    func testOneCellTurningOffOneEdgeStillMatchesItsNeighboursEverywhereElse() throws {
+        var quiet = Cell(spans: [span("plain")])
+        quiet.edgeBorders = nil
+        var touched = Cell(spans: [span("edited")])
+        touched.edgeBorders = edges([(\.bottom, .suppressed)])
+        let rows: [[Cell]] = [[touched, quiet], [quiet, quiet]]
+        let out = build([.table(rows: rows, headerRows: 0)])   // no TableFormat: the table says nothing
+        let cells = tableCells(in: out)
+        XCTAssertEqual(cells.count, 4)
+        let edited = try XCTUnwrap(cells.first)
+        let editedWidths = borderWidths(edited)
+        XCTAssertEqual(editedWidths.bottom, 0, "the one edge the author removed")
+        for (edge, width) in [("top", editedWidths.top), ("left", editedWidths.left), ("right", editedWidths.right)] {
+            XCTAssertEqual(width, RenderTheme.tableBorderWidth, "\(edge) must match the untouched cells")
+        }
+        for side in [NSRectEdge.minY, .minX, .maxX] {
+            XCTAssertNotEqual(edited.block.borderColor(for: side), Palette.tableBorderFaint,
+                              "an untouched edge must not be faded")
+        }
+        for neighbour in cells.dropFirst() {
+            let w = borderWidths(neighbour)
+            XCTAssertEqual([w.top, w.left, w.bottom, w.right],
+                           Array(repeating: RenderTheme.tableBorderWidth, count: 4),
+                           "cells that declared nothing are untouched by a sibling's declaration")
+        }
     }
 
     /// An edge the document explicitly turned OFF draws nothing — width 0 — and must NEVER be given

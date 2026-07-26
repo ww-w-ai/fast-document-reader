@@ -275,6 +275,16 @@ struct EdgeBorders: Equatable {
     var isEmpty: Bool {
         top == nil && left == nil && bottom == nil && right == nil && insideH == nil && insideV == nil
     }
+
+    /// True when at least one edge is a real rule. This is what separates "the document drew a box
+    /// here and left some edges out of the description" from "the document only ever turned edges
+    /// OFF" — only the first is missing anything worth standing in for. Suppression-only and silence
+    /// both answer `false`, deliberately: neither started a box.
+    var drawsAnyEdge: Bool {
+        [top, left, bottom, right, insideH, insideV].contains {
+            if case .drawn = $0 { return true } else { return false }
+        }
+    }
 }
 
 extension OfficeBlock {
