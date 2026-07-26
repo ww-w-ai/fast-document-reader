@@ -850,6 +850,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private var layoutToken = 0
 
+    /// How many run-loop turns the LAST `precomputeLayout` walk used. Wall clock on this machine
+    /// swings up to 3× under load (`OfficeRenderLatencyTests`' header records a 2825 ms outlier that
+    /// never reproduced), so how finely the walk is sliced is judged by this counter — which is
+    /// deterministic — rather than by a stopwatch.
+    private(set) var layoutStepCount = 0
+
     /// Lay out the ENTIRE document up front (media are placeholders, so this is cheap — no images
     /// are rasterized) so the scroll bar reflects the full length immediately: the reader sees how
     /// much content there is without scrolling. Done in small chunks across run-loop turns to keep
@@ -857,18 +863,39 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     func precomputeLayout() {
         layoutToken += 1
         let token = layoutToken
+        layoutStepCount = 0
         guard let lm = textView.layoutManager, let storage = textView.textStorage else { return }
         let total = storage.length
-        // MEASURED, don't re-derive: slicing this by TIME (2k characters per pass until a 10 ms
-        // budget runs out) instead of by a flat character count sounds obviously better for office
-        // documents — the 62-table HWP is only ~19k characters, so one 20k chunk is the whole
-        // document — but it is NOT. Tried on that HWP: the worst main-thread freeze did not improve
-        // (216 ms → 194–238 ms) because the freeze is the REBUILD (build + display), not this pass,
-        // while the extra run-loop turns roughly doubled the time to a fully laid-out document
-        // (665 ms → 1126–1342 ms). Reverted deliberately; see `OfficeRenderLatencyTests`.
+        // MEASURED TWICE, don't re-derive. A flat CHARACTER count looks like the wrong bound here:
+        // characters are a cost proxy that misreads office documents (the same proxy failure
+        // `runBusy` documents at the top of this file), so a 38-table report of 20k characters is
+        // laid out ENTIRELY in one uninterruptible turn while a 1.2 MB markdown file gets sixty.
+        // Both obvious repairs were built and measured on real documents, and both were reverted:
+        //
+        //  1. Slice by TIME (2k characters per pass until a 10 ms budget runs out). On a 62-table
+        //     HWP the worst main-thread freeze did not improve (216 ms → 194–238 ms) and the time to
+        //     a fully laid-out document roughly doubled (665 ms → 1126–1342 ms).
+        //  2. Bound each step by STRUCTURE as well as length — stop after N table-cell paragraphs or
+        //     attachments, whichever came first — plus laying the VIEWPORT out before walking from 0
+        //     so the visible page is interactive immediately. On a 38-table / 27-image docx (20 576
+        //     characters, 610 cell paragraphs), against a baseline of 2 turns / 105–121 ms measured
+        //     six times: viewport-first alone 2 turns / 121–148 ms; +structural cap 256 → 3 turns /
+        //     155–170 ms; +structural cap 64 → 10 turns / 186–192 ms. Monotone in turn count, every
+        //     variant worse, and the worst freeze never improved in any of them.
+        //
+        // Both failed for the SAME reason, which is the thing worth keeping: the freeze is not this
+        // pass. It is the REBUILD (`OfficeTextBuilder.build` + `display`), so slicing layout finer
+        // cannot shorten it — it only adds per-turn cost. And time-to-INTERACTIVE, the one thing
+        // (2) was meant to buy that (1) had not tested, turns out to be already paid: measured at
+        // the instant `precomputeLayout` returns, 451 of the 452 visible characters were ALREADY
+        // laid out, before this function ran at all. The reader can see and select the visible page
+        // from the start; what this walk buys is the complete SCROLL BAR, not the visible page.
+        // `OfficeRenderLatencyTests` is the instrument (its Stage 3b prints both counters) and also
+        // pins the character bound, so a third attempt has to measure rather than argue.
         let chunk = 20_000
         func step(_ loc: Int) {
             guard token == self.layoutToken, loc < total, self.textView.textStorage?.length == total else { return }
+            self.layoutStepCount += 1
             let end = min(loc + chunk, total)
             lm.ensureLayout(forCharacterRange: NSRange(location: loc, length: end - loc))
             if end < total { DispatchQueue.main.async { step(end) } }

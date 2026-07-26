@@ -209,10 +209,20 @@ final class OfficeRenderLatencyTests: XCTestCase {
 
         // Stage 3b — the TAIL after the string is installed: laying the whole document out is the
         // one that scales with table count, and it is worth knowing separately from the rebuild.
+        //
+        // Stage 3c is folded in here because it has to be read at the same instant: how much of the
+        // document is laid out the moment `precomputeLayout` RETURNS. That is time-to-interactive —
+        // the reader can see and select the part that is laid out — and unlike the settle time it is
+        // a deterministic count, not a wall clock. `layoutStepCount` (how many run-loop turns the
+        // walk took) is the other deterministic half: it says how finely the rest was sliced.
         do {
             let lm0 = wc.textView.layoutManager
+            // Nothing may ASK for a glyph before the measurement: under contiguous layout every
+            // glyph query lays the document out up to that glyph, so probing "what does the viewport
+            // need" first would lay the viewport out and then report that laying it out was free.
             let t0 = Date()
             wc.precomputeLayout()
+            let laidOnReturn = lm0?.firstUnlaidCharacterIndex() ?? 0
             var laid = 0.0
             for _ in 0..<1500 {
                 spin(0.005)
@@ -220,6 +230,11 @@ final class OfficeRenderLatencyTests: XCTestCase {
                 if total > 0, (lm0?.firstUnlaidCharacterIndex() ?? 0) >= total { laid = ms(t0); break }
             }
             print(String(format: "  full-document layout alone           %7.1f ms", laid))
+            // Now that everything is laid out, asking what the viewport spans costs nothing.
+            let visible = wc.visibleCharRange(margin: 0)
+            print("  laid out WHEN precomputeLayout returned: \(laidOnReturn) of \(storage.length) chars"
+                  + "  (viewport needs \(NSMaxRange(visible)))"
+                  + "  · layout run-loop turns: \(wc.layoutStepCount)")
         }
 
         // Stage 4+ — a press measured to the point the document is FULLY laid out again, which is
@@ -261,6 +276,117 @@ final class OfficeRenderLatencyTests: XCTestCase {
         let burst = timePresses(3, "3-press burst")
         print(String(format: "  VERDICT: 1 press %.0f ms (worst freeze %.0f ms) · 3-press burst %.0f ms (%.1f× one press)",
                      warm.0, warm.1, burst.0, warm.0 > 0 ? burst.0 / warm.0 : 0))
+    }
+}
+
+/// `precomputeLayout`'s two load-bearing properties, pinned so neither can be lost silently.
+///
+/// These do NOT need a real document: they need a document whose STRUCTURE is expensive while its
+/// length is not, which is the whole shape of the problem — an office report is a few tens of
+/// thousands of characters and hundreds of table cells. GFM tables go through the same
+/// `TableBlockBuilder` as office tables (invariant 39), so a markdown file of small tables produces
+/// the same `NSTextTableBlock`s at a fraction of the setup.
+final class PrecomputeLayoutTests: XCTestCase {
+    private func spin(_ seconds: TimeInterval) {
+        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    /// `tables` small GFM tables, deliberately short: heavy in cells, light in characters.
+    private func tableDenseMarkdown(tables: Int) -> String {
+        (0..<tables).map { i in
+            """
+            ## Section \(i)
+
+            | A | B | C |
+            | - | - | - |
+            | 1 | 2 | 3 |
+            | 4 | 5 | 6 |
+            | 7 | 8 | 9 |
+            """
+        }.joined(separator: "\n\n")
+    }
+
+    private func open(_ markdown: String) throws -> (MarkdownDocument, DocumentWindowController) {
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-precompute-\(UUID().uuidString).md")
+        try doc.read(from: Data(markdown.utf8), ofType: "net.daringfireball.markdown")
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 900, height: 700), display: false)
+        spin(0.5)
+        return (doc, wc)
+    }
+
+    /// Waits until the document is laid out, bounded so a walk that never terminates fails the test
+    /// instead of hanging the suite. Deliberately only a WAIT, not evidence: see the note below on
+    /// why "is it laid out" says nothing about whether `precomputeLayout` is what laid it out.
+    private func settle(_ wc: DocumentWindowController) -> Bool {
+        guard let lm = wc.textView.layoutManager else { return false }
+        for _ in 0..<400 {
+            spin(0.005)
+            let total = wc.textView.textStorage?.length ?? 0
+            if total > 0, lm.firstUnlaidCharacterIndex() >= total { return true }
+        }
+        return false
+    }
+
+    // NOT TESTED HERE, and the reason is worth keeping: "after this settles the whole document is
+    // laid out" (invariant 2's contract) cannot be asserted in this harness, because it is true
+    // whether or not `precomputeLayout` does anything. Written and then withdrawn after the mutation
+    // step — shortening every step by 100 characters left it passing, and so did deleting the call
+    // entirely: with the window spinning the run loop, AppKit's own lazy layout finishes whatever
+    // the walk left, and `firstUnlaidCharacterIndex` reports the same answer either way. A green
+    // assertion whose subject is unreachable proves nothing (invariant 30), so it is gone rather
+    // than kept as reassurance. What IS reachable is the walk's own step count, below.
+
+    /// A step is bounded by CHARACTERS, and deliberately not also by structure. This document is
+    /// exactly the case that makes that look wrong — hundreds of table cells inside a few thousand
+    /// characters, so the entire thing is laid out in ONE run-loop turn — and the comment on
+    /// `precomputeLayout` records the two measured attempts to fix it, both of which made a real
+    /// 38-table docx worse (2 turns / 105–121 ms → 3 turns / 155–170 ms → 10 turns / 186–192 ms)
+    /// while never shortening the worst freeze, because the freeze is the rebuild and not this pass.
+    ///
+    /// So this assertion is not a claim that one turn is ideal. It is a tripwire: a third attempt to
+    /// slice by structure changes this count, and has to come with new measurements.
+    func testAStepIsBoundedByCharactersNotByStructure() throws {
+        // The document must outlive the controller: `NSWindowController.document` is an unowned
+        // back-reference, so letting it go here would leave the controller pointing at freed memory.
+        let (doc, wc) = try open(tableDenseMarkdown(tables: 60))
+        defer { withExtendedLifetime(doc) {} }
+        let storage = try XCTUnwrap(wc.textView.textStorage)
+        // The premise: structurally heavy (one NSTextTable per section) and short (well under one
+        // 20k chunk). If either stops being true the test is measuring something else.
+        var cellParagraphs = 0
+        var distinctTables = Set<ObjectIdentifier>()
+        storage.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: storage.length)) { v, _, _ in
+            guard let ps = v as? NSParagraphStyle, let b = ps.textBlocks.first as? NSTextTableBlock else { return }
+            cellParagraphs += 1
+            distinctTables.insert(ObjectIdentifier(b.table))
+        }
+        XCTAssertEqual(distinctTables.count, 60)
+        XCTAssertGreaterThan(cellParagraphs, 500)
+        XCTAssertLessThan(storage.length, 20_000)
+
+        wc.precomputeLayout()
+        XCTAssertTrue(settle(wc))
+        let expected = max(1, Int(ceil(Double(storage.length) / 20_000.0)))
+        XCTAssertEqual(wc.layoutStepCount, expected,
+                       "\(cellParagraphs) cell paragraphs in \(storage.length) characters were laid out in "
+                       + "\(wc.layoutStepCount) run-loop turns; the bound is characters, not structure")
+    }
+
+    /// A render that lands mid-walk must cancel it: `layoutToken` is what stops a stale walk from
+    /// laying out ranges of a document that no longer exists. Two walks started back to back leave
+    /// only the second one running, so the step count is the second walk's alone.
+    func testANewWalkCancelsTheOneInFlight() throws {
+        let (doc, wc) = try open(tableDenseMarkdown(tables: 60))
+        defer { withExtendedLifetime(doc) {} }
+        wc.precomputeLayout()
+        wc.precomputeLayout()
+        XCTAssertTrue(settle(wc))
+        let storage = try XCTUnwrap(wc.textView.textStorage)
+        let expected = max(1, Int(ceil(Double(storage.length) / 20_000.0)))
+        XCTAssertEqual(wc.layoutStepCount, expected)
     }
 }
 
