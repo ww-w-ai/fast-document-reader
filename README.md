@@ -1,6 +1,8 @@
 # Fast Document Reader
 
-> **.md .docx reader, built for the AI era**
+> **.md .docx .hwp .odt reader, built for the AI era**
+
+[**Free on the Mac App Store**](https://apps.apple.com/app/id6791603562) · Apple silicon · macOS 13+
 
 **AI writes it. You're the one reading it.** Plans, specs, summaries, transcripts — it all lands as
 Markdown now, and reading it has quietly become most of the job. Your reader shouldn't be the slow
@@ -44,12 +46,31 @@ multiplies on top of what the author set, the same way Word's own zoom does. The
 plainly that these formats are read-only, with a one-click hand-off to whatever app you'd rather edit
 them in.
 
+A picture is sized against the **document's own page width**, not against your reading font — so ⌘+
+and ⌘− change the text alone, and a figure keeps its share of the column as you resize the window,
+the same treatment tables already had. A picture inside a table is measured against **that table's**
+width instead and stays in its cell. Figures sit left, centred or right where the document says so
+(`w:jc`, ODT's `fo:text-align`, HWP's own object alignment) — before this they all rendered left.
+Table borders are read **edge by edge, in three states**: drawn, explicitly turned off, or never
+mentioned at all. A table that drew a box but left some of its perimeter undescribed gets a faint
+1 pt stand-in on those edges; an edge the author switched off draws nothing; and a table that
+declared nothing at all is byte-identical to before — still the reader's own default rule, which is
+every Markdown, HWP and ODT table.
+
 It reads **Korea's HWP (`.hwp`, `.hwpx`) files** the same way — read-only and native, given the same
 first-class treatment as Word and ODT. HWP is the dominant document format in Korean offices, schools
 and government, and almost nothing on the Mac opens it without Hancom's own suite. Parsing runs
 through **rhwp**, a Rust HWP engine compiled straight into the app, and its output flows into the very
 same rendering path as Word — so tables, images, styles, links, footnotes and equations arrive as the
 author set them, and `--extract` turns a `.hwp` into clean Markdown for an AI exactly like a `.docx`.
+
+Korean documents also get a **table of contents**. HWP's outline flag only marks paragraphs that use
+its outline *numbering*, and of 14 real files measured here, 13 produced no headings at all that way
+— Korean authors name their styles (제목, 개요) instead. Headings are now read from the paragraph's
+style name as well, which took that corpus from 1 file with an outline to 5, so **T** works on a
+Korean report the way it already did on Markdown. Line spacing an author set as a percentage is
+honoured too (160% reads as neutral, anything else is applied — one measured file had 772 paragraphs
+whose spacing was being thrown away).
 
 | | Fast Document Reader |
 |---|---|
@@ -60,15 +81,17 @@ author set them, and `--extract` turns a `.hwp` into clean Markdown for an AI ex
 | Editing long docs | Only the edited block is re-rendered — **9 ms on 64k characters, 29 ms on 1.2 MB** |
 | Plain text | `.txt` · `.csv` · `.log` shown **verbatim**, one block per line — nothing reinterpreted as Markdown |
 | Word / OpenDocument | `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt` — **read-only**, formatting, tables, equations, charts and RTL text shown as authored |
-| HWP (Korean) | `.hwp`/`.hwpx` — **read-only**, Korea's dominant document format, rendered natively through the same office engine as Word/ODT |
+| HWP (Korean) | `.hwp`/`.hwpx` — **read-only**, Korea's dominant document format, rendered natively through the same office engine as Word/ODT, headings and all |
 | Extract for an AI | `--extract` turns a `.docx`/`.odt`/`.hwp` into **clean Markdown on stdout** — headless, so an AI reads it without spending tokens parsing the file |
 | Encodings | CP949 · UTF-16 · Latin-1 detected, not assumed — **saved back in the same encoding**, CRLF kept |
 | Diagrams | **mermaid bundled** — renders offline, cached as vector PDF, never re-rendered |
 | Math | **KaTeX bundled** — `$$…$$` and ```` ```math ```` render offline, vector, cached the same way |
 | Images | Off-screen pixels freed, exact height kept — **no reflow, no scrollbar jitter** |
+| Office graphics | Sized by the **document's own page width**, not your font size — ⌘+/⌘− move text alone, and a figure tracks the window. Left/centre/right honoured as authored |
+| Table borders | Read **per edge, three-state** — drawn, switched off, or never mentioned. A half-described box gets a faint stand-in; a table that declared nothing is unchanged |
+| Navigation | **T** opens a table of contents built from the document's own headings — click to jump. Hidden outright when a document has none |
 | Code | **34 languages** highlighted natively — one-pass scanner, no JS, per-block **Copy** and **Wrap** |
-| Editing | Reader first — **E** edit · **I** add below · **U/J** move · **D** delete, saved on ⌘S |
-| Navigation | **T** opens a table of contents built from the document's own headings — click to jump |
+| Editing | Reader first — **E** edit · **I** add below · **U/J** move · **D** delete, held in memory until ⌘S |
 
 ## Hand a Word file to an AI, as clean Markdown
 
@@ -133,6 +156,22 @@ The highlighter is a single left-to-right scanner, not a stack of regexes painti
 URL's `//` inside a string from turning the rest of the line into a comment — the bug you've seen in
 every editor that gets it wrong. Tables, task lists and strikethrough come from CommonMark + GFM.
 
+## Speed, and one optimisation that didn't work
+
+Rendering used to walk the whole text storage three times; it walks it once. The table-column pass
+used to invalidate layout per cell and now does a single union, which took a 62-table HWP file from
+**72.8 ms to 1.1 ms** and a docx from **5.0 ms to 0.7 ms** — and tables are now built at the real
+reading width instead of being drawn at a placeholder width and immediately re-solved. Zooming a
+heavy HWP document went from **769 ms to about 300 ms**.
+
+The one that failed is worth stating too, because it sounds obviously right: laying out only the
+visible page first and deferring the rest. Measured on a 38-table docx, three runs per variant,
+baseline settled at **105–121 ms**; viewport-first was **121–148 ms**; a 256-unit structural cap
+**155–170 ms**; a 64-unit cap **186–192 ms**. Every variant was slower to a fully laid-out document
+and none of them moved the worst freeze, because the visible page is already interactive before that
+pass runs — there was nothing left to defer. It was reverted, and the numbers live in the code
+comment and two tests so nobody has to re-derive them.
+
 ## Try it on real documents
 
 The [`demo/`](demo/) folder has four documents, each one a case that makes readers stumble:
@@ -144,8 +183,14 @@ file, which should open the instant you double-click it.
 
 **Apple Silicon (arm64) only.** Requires macOS 13+.
 
-Download the notarized zip, unzip it, drag `FastDocReader.app` to `/Applications`, double-click.
-No Gatekeeper prompt and no `xattr` step — the app is signed with a Developer ID and stapled.
+**[Mac App Store](https://apps.apple.com/app/id6791603562)** — free, one click, updates itself. That
+build is sandboxed, which is the store's price: it can read the file you opened but not the images
+sitting beside it until you grant that folder once (see [Two builds, one
+difference](#two-builds-one-difference)).
+
+Or download the notarized zip, unzip it, drag `FastDocReader.app` to `/Applications`, double-click.
+No Gatekeeper prompt and no `xattr` step — the app is signed with a Developer ID and stapled, and it
+is **not** sandboxed, so sibling images just load.
 
 To open files here by default: **Fast Document Reader → Set as Default App…**, which lists the kinds it
 can claim with a checkbox each — Markdown ticked, text formats yours to choose. Per file, the Finder
@@ -219,8 +264,8 @@ leave the screen, and then by the least it can.
 
 **Fix a typo without leaving:** right-click a block → **Edit** (or press **E**) opens just that
 block's Markdown source; select across several blocks first and they open **merged as one**. **⌘↵**
-writes it back to the file, **esc** discards. That is the only action that ever writes to your
-document.
+applies it to the open document, **esc** discards. Nothing reaches disk until you press **⌘S** — the
+edit lives in the document until then, undoes cleanly, and ⌘R warns before discarding it.
 
 ## License
 
