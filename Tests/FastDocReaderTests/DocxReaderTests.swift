@@ -2670,9 +2670,9 @@ final class DocxReaderTests: XCTestCase {
         return nil
     }
 
-    /// A `w:tblBorders` that names only SOME edges leaves the rest UNSPECIFIED (`nil`) — the state
-    /// the renderer turns into its faint perimeter outline. "The document said nothing about the
-    /// left edge" must not arrive looking like "the document turned the left edge off".
+    /// A `w:tblBorders` that names only SOME edges leaves the rest UNSPECIFIED (`nil`). "The
+    /// document said nothing about the left edge" must not arrive looking like "the document turned
+    /// the left edge off" — the renderer treats the two differently once a cell has its own say.
     func testTableEdgesNamedOnlyPartlyLeaveTheRestUnspecified() throws {
         let blocks = try read(document: """
         <w:tbl><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="8" w:color="336699"/>

@@ -239,9 +239,11 @@ struct BorderSide: Equatable {
 /// - `.suppressed` — the document explicitly turned this edge OFF (`w:val="none"`/`"nil"`). Nothing
 ///   is drawn there and nothing is inherited or substituted in its place.
 /// - `nil` (the edge's `BorderDecl?` in `EdgeBorders` below) — the document never mentioned it. A
-///   cell's unmentioned edge inherits the table's, and an unmentioned edge on the PERIMETER of a
-///   table that declared something else gets the theme's faint outline rather than a hole — see
-///   `TableBlockBuilder`'s per-placement resolution for both.
+///   cell's unmentioned edge inherits the table's; if the TABLE drew a box and still never named
+///   this edge, nothing is drawn, and if the table drew no box at all the edge falls back to the
+///   ordinary cell > table > style > theme cascade — see `TableBlockBuilder`'s per-placement
+///   resolution. The distinction from `.suppressed` is what keeps one cell's lone "off" from
+///   stripping its own other three edges of that cascade.
 ///
 /// One enum rather than a side plus a parallel "was this declared" mask: two sources of truth for
 /// the same fact can disagree, and a disagreement here surfaces as a stray or missing rule on screen.

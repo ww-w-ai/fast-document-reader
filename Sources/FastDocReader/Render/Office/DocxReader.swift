@@ -2198,8 +2198,7 @@ enum DocxReader: OfficeDocumentReader {
     ///
     /// THREE outcomes per edge, which is why this returns `BorderDecl` and not `BorderSide` (see
     /// `BorderDecl`'s own doc):
-    /// - no child element for that edge → `nil`, the document never mentioned it (it inherits, and
-    ///   on a table perimeter it may pick up the renderer's faint outline);
+    /// - no child element for that edge → `nil`, the document never mentioned it (it inherits);
     /// - `w:val="none"`/`"nil"` → `.suppressed`, explicitly off — nothing drawn, nothing inherited;
     /// - a drawn `w:val` with a `w:sz` → `.drawn`. `w:sz` is EIGHTHS of a point (§17.4.66).
     ///

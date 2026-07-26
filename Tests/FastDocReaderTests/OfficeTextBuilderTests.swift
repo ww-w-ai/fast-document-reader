@@ -1701,11 +1701,12 @@ final class OfficeTextBuilderTests: XCTestCase {
         return out
     }
 
-    /// A table that declared SOME border information keeps its perimeter closed: an OUTER edge the
-    /// document never mentioned draws the theme's FAINT outline — integer width, low-alpha colour —
-    /// instead of nothing. An author who ruled the top and bottom of a table did not ask for a box
-    /// open at both sides, and rendering that literally reads as a fault, not as their intent.
-    func testUnmentionedOuterEdgesOfADeclaredTableGetTheFaintOutline() throws {
+    /// A table that described its own box gets exactly that box — an edge it never mentioned draws
+    /// NOTHING, including on the perimeter. Standing a faint rule in for the missing sides was built
+    /// and rejected: across one 114-table report, 95 tables turn their outer rules off explicitly and
+    /// only 19 merely omit them, so the stand-in landed on 19 and skipped 95, and a reader saw some
+    /// tables boxed and others open with nothing on the page to explain the difference.
+    func testUnmentionedOuterEdgesOfADeclaredTableDrawNothing() throws {
         var format = TableFormat()
         format.edgeBorders = edges([(\.top, .drawn(BorderSide(width: 2, color: .systemRed))),
                                     (\.bottom, .drawn(BorderSide(width: 2, color: .systemRed)))])
@@ -1714,16 +1715,12 @@ final class OfficeTextBuilderTests: XCTestCase {
         let w = borderWidths(cell)
         XCTAssertEqual(w.top, 2, "the declared edges are untouched")
         XCTAssertEqual(w.bottom, 2)
-        XCTAssertEqual(w.left, RenderTheme.tableBorderWidth, "unmentioned perimeter edge → faint outline")
-        XCTAssertEqual(w.right, RenderTheme.tableBorderWidth)
-        XCTAssertEqual(w.left, w.left.rounded(),
-                       "faint is the COLOUR's alpha, never a fractional width — invariant 42")
-        XCTAssertEqual(cell.block.borderColor(for: .minX), Palette.tableBorderFaint)
-        XCTAssertEqual(cell.block.borderColor(for: .maxX), Palette.tableBorderFaint)
+        XCTAssertEqual(w.left, 0, "the table described its box and left this side out — so it is out")
+        XCTAssertEqual(w.right, 0)
         XCTAssertEqual(cell.block.borderColor(for: .minY), .systemRed)
     }
 
-    /// A CELL's own declaration is enough on its own — the faint outline follows from "this table
+    /// A CELL's own declaration is enough on its own — the outer stand-in follows from "this table
     /// said something about borders", not specifically from a table-level `w:tblBorders`.
     func testACellsOwnDeclarationAloneDoesNotFadeItsOtherEdges() throws {
         var cell = Cell(spans: [span("A")])
@@ -1737,8 +1734,6 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(w.left, RenderTheme.tableBorderWidth)
         XCTAssertEqual(w.right, RenderTheme.tableBorderWidth)
         XCTAssertEqual(w.bottom, RenderTheme.tableBorderWidth)
-        XCTAssertNotEqual(placed.block.borderColor(for: .maxY), Palette.tableBorderFaint,
-                          "a cell's own declaration must not fade the edges it said nothing about")
     }
 
     /// A cell with no side on the perimeter at all — the centre of a 3x3 — is the only placement that
@@ -1781,8 +1776,6 @@ final class OfficeTextBuilderTests: XCTestCase {
             XCTAssertEqual(width, RenderTheme.tableBorderWidth, "\(edge) must match the untouched cells")
         }
         for side in [NSRectEdge.minY, .minX, .maxX] {
-            XCTAssertNotEqual(edited.block.borderColor(for: side), Palette.tableBorderFaint,
-                              "an untouched edge must not be faded")
         }
         for neighbour in cells.dropFirst() {
             let w = borderWidths(neighbour)
@@ -1792,10 +1785,11 @@ final class OfficeTextBuilderTests: XCTestCase {
         }
     }
 
-    /// An edge the document explicitly turned OFF draws nothing — width 0 — and must NEVER be given
-    /// the faint outline. Suppressed and unmentioned are different statements: the same table shows
-    /// both here, the suppressed left at 0 and the unmentioned bottom/right faint.
-    func testAnExplicitlySuppressedEdgeDrawsNothingAndNeverGetsTheFaintOutline() throws {
+    /// An edge the document explicitly turned OFF draws nothing. The distinction from "never
+    /// mentioned" still matters to the reader even though both now draw nothing here: it is what
+    /// stops a lone `w:val="nil"` on one cell from stripping that cell's other three edges of the
+    /// cascade its neighbours are using (see the one-cell regression test below).
+    func testAnExplicitlySuppressedEdgeDrawsNothing() throws {
         var format = TableFormat()
         format.edgeBorders = edges([(\.top, .drawn(BorderSide(width: 2, color: .systemRed))),
                                     (\.left, .suppressed)])
@@ -1803,10 +1797,9 @@ final class OfficeTextBuilderTests: XCTestCase {
         let cell = try XCTUnwrap(tableCells(in: out).first)
         let w = borderWidths(cell)
         XCTAssertEqual(w.left, 0, "explicitly off stays off")
-        XCTAssertNotEqual(cell.block.borderColor(for: .minX), Palette.tableBorderFaint)
         XCTAssertEqual(w.top, 2)
-        XCTAssertEqual(w.bottom, RenderTheme.tableBorderWidth, "unmentioned, so faint — unlike the left")
-        XCTAssertEqual(w.right, RenderTheme.tableBorderWidth)
+        XCTAssertEqual(w.bottom, 0, "this table drew a box; a side it never named stays unnamed")
+        XCTAssertEqual(w.right, 0)
     }
 
     /// A table that turned EVERY border off draws no rule at all. It must not fall through to the
@@ -1826,7 +1819,7 @@ final class OfficeTextBuilderTests: XCTestCase {
         }
     }
 
-    /// The faint outline is a PERIMETER rule only. In a table that rules just its outer box, the
+    /// The outer stand-in is a PERIMETER rule only. In a table that rules just its outer box, the
     /// INTERIOR seams the document never mentioned stay undrawn — filling those in would invent a
     /// grid the author didn't ask for.
     func testUnmentionedInteriorEdgesStayUndrawnEvenInADeclaredTable() throws {
@@ -1846,7 +1839,7 @@ final class OfficeTextBuilderTests: XCTestCase {
 
     /// INVARIANT 37 PIN — a table that declares NO border information at all (every markdown/HWP/ODT
     /// table, and any docx without `w:tblBorders`/`w:tcBorders`) renders exactly as it always has:
-    /// `Palette.tableBorder` at the theme width on all four edges of every cell. The faint outline
+    /// `Palette.tableBorder` at the theme width on all four edges of every cell. The outer stand-in
     /// must never reach a document that said nothing.
     func testATableThatDeclaresNoBorderInformationKeepsExactlyTheThemeDefaultOnAllFourEdges() {
         let rows: [[Cell]] = [[Cell(spans: [span("A")]), Cell(spans: [span("B")])],

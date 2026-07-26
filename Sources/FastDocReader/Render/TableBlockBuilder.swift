@@ -234,19 +234,18 @@ enum TableBlockBuilder {
             let onBottom = placement.row + placement.rowSpan >= rowCount
             let onRight = placement.col + placement.colSpan >= ncol
             // Did this table say ANYTHING about borders (a cell's own edges, or the table's)? That
-            // one question separates the two silences: an edge nobody mentioned INSIDE an otherwise
-            // bordered table (it gets the faint perimeter outline below, so the box still closes)
-            // from a table that declared nothing at all — every markdown/HWP/ODT table and any docx
-            // without `w:tblBorders`/`w:tcBorders` — which must reach the theme default in the final
-            // arm, byte-identical to before any of this existed (invariant 37).
+            // one question separates the two silences: an edge nobody mentioned inside an otherwise
+            // bordered table, from a table that declared nothing at all — every markdown/HWP/ODT
+            // table and any docx without `w:tblBorders`/`w:tcBorders` — which must reach the theme
+            // default in the final arm, byte-identical to before any of this existed (invariant 37).
             let declared = (cellEdges.map { !$0.isEmpty } ?? false) || (tableEdges.map { !$0.isEmpty } ?? false)
-            // Whether the TABLE drew a box is a different question, and it is the one the faint
-            // stand-in below depends on. A cell that merely turned ONE of its own edges off — what
-            // Word writes when someone selects a cell and removes a single rule — says nothing about
-            // the other three, and those must keep resolving through `borderWidth`/`borderColor`
-            // above so the cell still matches its neighbours. Keying the stand-in off `declared`
-            // instead made that one cell render thin and faded on the edges nobody touched, which is
-            // the ragged-table fault this whole per-edge path exists to remove.
+            // Whether the TABLE drew a box is a different question. A cell that merely turned ONE of
+            // its own edges off — what Word writes when someone selects a cell and removes a single
+            // rule — says nothing about the other three, and those must keep resolving through
+            // `borderWidth`/`borderColor` above so the cell still matches its neighbours. Treating
+            // any declaration as "this table describes its own geometry" made that one cell render
+            // thin and open on the edges nobody touched, which is the ragged-table fault this whole
+            // per-edge path exists to remove.
             let tableDrewABox = tableEdges?.drawsAnyEdge ?? false
             // Step 1 — INHERIT: a cell's own declaration wins; otherwise it takes the table's OUTER
             // edge where it sits on that side of the grid and the table's INTERIOR edge where it
@@ -258,34 +257,32 @@ enum TableBlockBuilder {
             // Step 2 — RESOLVE a declaration to what is actually drawn. `.suppressed` draws nothing,
             // deliberately and finally. An UNSPECIFIED edge depends on whether the TABLE drew a box:
             //
-            //  • It did, and this edge is on the PERIMETER — the faint outline stands in. An author
-            //    who ruled the top and bottom of a table did not ask for a box open at both sides,
-            //    and rendering that literally reads as a fault. Faint lives in the colour's ALPHA at
-            //    an INTEGER width (invariant 42), never as a fractional hairline.
-            //  • It did, and this edge is INTERIOR — nothing. The table described its own grid;
-            //    filling in seams it left out would invent one nobody asked for.
+            //  • It did — nothing. The table described its own geometry and left this edge out, so
+            //    leaving it out is what the document asked for. Standing a faint rule in its place
+            //    was built and rejected: measured across one 114-table report, 95 tables turn their
+            //    outer rules OFF explicitly and 19 merely never mention them, so the stand-in landed
+            //    on 19 tables and not the other 95 — the reader sees some tables boxed and some open
+            //    with no way to tell why, which reads worse than honestly showing what is there.
             //  • It did not — the edge falls back to the resolved cell-direct > table-direct >
             //    table-STYLE > theme value, i.e. exactly what this cell would have drawn before any
             //    per-edge data existed. This is the case where only a CELL spoke, and its silence on
             //    an edge must not cost that edge the cascade the rest of the table is using.
-            func side(_ decl: BorderDecl?, isOuter: Bool) -> BorderSide? {
+            func side(_ decl: BorderDecl?) -> BorderSide? {
                 switch decl {
                 case .drawn(let stated): return stated
                 case .suppressed: return nil
                 case nil:
-                    guard tableDrewABox else { return BorderSide(width: borderWidth, color: borderColor) }
-                    guard isOuter else { return nil }
-                    return BorderSide(width: RenderTheme.tableBorderWidth, color: Palette.tableBorderFaint)
+                    return tableDrewABox ? nil : BorderSide(width: borderWidth, color: borderColor)
                 }
             }
             let t = side(declaration(cellEdges?.top, outer: tableEdges?.top,
-                                     inside: tableEdges?.insideH, isOuter: onTop), isOuter: onTop)
+                                     inside: tableEdges?.insideH, isOuter: onTop))
             let b = side(declaration(cellEdges?.bottom, outer: tableEdges?.bottom,
-                                     inside: tableEdges?.insideH, isOuter: onBottom), isOuter: onBottom)
+                                     inside: tableEdges?.insideH, isOuter: onBottom))
             let l = side(declaration(cellEdges?.left, outer: tableEdges?.left,
-                                     inside: tableEdges?.insideV, isOuter: onLeft), isOuter: onLeft)
+                                     inside: tableEdges?.insideV, isOuter: onLeft))
             let r = side(declaration(cellEdges?.right, outer: tableEdges?.right,
-                                     inside: tableEdges?.insideV, isOuter: onRight), isOuter: onRight)
+                                     inside: tableEdges?.insideV, isOuter: onRight))
             // Four edges that agree need only the UNIFORM setters — two calls instead of twelve. Most
             // cells in most documents are uniform, and a table-heavy report has thousands of them: the
             // per-edge path measured ~25 ms of extra ObjC traffic on a 2,489-cell document, paid on
@@ -324,7 +321,15 @@ enum TableBlockBuilder {
             // drift). The LEFT and RIGHT edges are subtracted individually — with per-edge borders
             // they legitimately differ, and subtracting one of them twice moves the column boundary.
             let cellWidth = edges[min(placement.col + placement.colSpan, ncol)] - edges[placement.col]
-            block.setContentWidth(max(1, cellWidth - 2 * padding - leftWidth - rightWidth),
+            // Interior borders are SHARED — `collapsesBorders` is on, so AppKit charges the rule
+            // between two cells ONCE. Subtracting the full width from BOTH neighbours spent it twice,
+            // and every extra column cost another border: measured against a 600pt reading column, a
+            // 2-column table finished 1.5pt short and a 9-column one 8.5pt. Two tables of different
+            // shapes in one report therefore ended at visibly different x, which reads as a ragged
+            // document. An OUTER edge belongs to its cell alone and is still subtracted in full.
+            let lShare = onLeft ? leftWidth : leftWidth / 2
+            let rShare = onRight ? rightWidth : rightWidth / 2
+            block.setContentWidth(max(1, cellWidth - 2 * padding - lShare - rShare),
                                   type: .absoluteValueType)
             if let background { block.backgroundColor = background }
             switch placement.cell?.verticalAlignment ?? .top {
@@ -455,7 +460,13 @@ enum TableBlockBuilder {
             let padR = block.width(for: .padding, edge: .maxX)
             let borderL = block.width(for: .border, edge: .minX)
             let borderR = block.width(for: .border, edge: .maxX)
-            let target = max(1, edges[c1] - edges[c0] - padL - padR - borderL - borderR)
+            // HALVE an INTERIOR border, exactly as `build` does — `collapsesBorders` charges a shared
+            // rule once, and this formula must stay identical to the one in `build` or every cell
+            // reads as "changed" on every reflow (see the note above: real work plus a visible
+            // re-snap). An edge on the table's perimeter is that cell's alone and counts in full.
+            let lShare = c0 == 0 ? borderL : borderL / 2
+            let rShare = c1 >= ncol ? borderR : borderR / 2
+            let target = max(1, edges[c1] - edges[c0] - padL - padR - lShare - rShare)
             // Only cells whose width actually MOVES are touched. This pass runs on every reflow AND
             // in `display(_:)`'s tail, where the column usually hasn't changed at all — recording
             // every cell unconditionally meant invalidating the whole document to set widths to the

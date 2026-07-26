@@ -39,17 +39,6 @@ enum Palette {
                                                  dark:  NSColor(rgb: 0x6CB0F5, alpha: 0.10))
     static let tableBorder     = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.16),
                                                  dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.16))
-    // The perimeter rule for an edge a BORDERED document never mentioned (see `TableBlockBuilder`'s
-    // per-edge resolution). Same hue as `tableBorder`, a hair under its alpha. This was tried at 0.07
-    // first, on the reasoning that a rule we invented should stay well below the ones the document
-    // asked for — and on a real report it was invisible, which makes the whole stand-in pointless: the
-    // box it exists to close still read as open. It sits just under `tableBorder` instead, so it reads
-    // as an ordinary rule against the document's own heavier ones (the measured case rules its table
-    // at 1.5pt) without ever looking heavier than the reader's own default. "Faint" lives here, in the
-    // alpha, and never in the width: the width stays an integer point (`RenderTheme.tableBorderWidth`)
-    // because column geometry is solved on integer edges.
-    static let tableBorderFaint = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.15),
-                                                  dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.15))
     static let tableHeaderBg   = NSColor(rgb: 0x878378, alpha: 0.10)   // warm neutral, both modes
     // P6b: comment highlight — a faint amber wash behind a commented span (only drawn while the
     // comments panel is open, see `drawCommentMarks`), and the number badge it's paired with. Amber
@@ -124,8 +113,7 @@ extension RenderTheme {
 // never re-inlined as a literal at a call site (invariant 36).
 extension RenderTheme {
     /// The reader's own table rule width, in ABSOLUTE points: what a cell edge draws at when neither
-    /// the document, its table style, nor the table's own default states a width, and what the faint
-    /// perimeter outline (`Palette.tableBorderFaint`) uses too. Deliberately an INTEGER — a cell's
+    /// the document, its table style, nor the table's own default states a width. Deliberately an INTEGER — a cell's
     /// content width subtracts its left and right rules from an integer column edge, so a fractional
     /// rule puts the boundary back on a fractional pixel, which is the drift invariant 42 records.
     static let tableBorderWidth: CGFloat = 1

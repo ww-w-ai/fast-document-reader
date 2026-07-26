@@ -458,3 +458,38 @@ extension OfficeRenderLatencyTests {
         }
     }
 }
+
+/// A table must occupy the SAME width whatever its column count. It did not: cells subtracted their
+/// full left and right border from their content while `collapsesBorders` makes AppKit charge a
+/// shared interior border ONCE, so every extra column cost another border-width and a 9-column table
+/// finished 8.5pt short of a 2-column one at the same reading width. Two tables in one report then
+/// ended at visibly different x — the "tables look ragged" complaint, underneath the border colours.
+/// Measured before the fix: 2 cols -1.5, 3 cols -2.5, 5 cols -4.5, 9 cols -8.5 against a 600pt target.
+final class TableWidthIndependenceTests: XCTestCase {
+    private func laidOutWidth(columns ncol: Int, target: CGFloat) -> CGFloat {
+        let theme = RenderTheme.current(size: 16)
+        let row = (0..<ncol).map { TableBlockBuilder.CellContent(content: NSAttributedString(string: "c\($0)")) }
+        let attr = TableBlockBuilder.build(rows: [row, row], headerRows: 0, theme: theme,
+                                           columnWidths: Array(repeating: target / CGFloat(ncol), count: ncol),
+                                           width: target)
+        let storage = NSTextStorage(attributedString: attr)
+        let lm = NSLayoutManager()
+        let tc = NSTextContainer(size: NSSize(width: target, height: .greatestFiniteMagnitude))
+        tc.lineFragmentPadding = 0
+        storage.addLayoutManager(lm); lm.addTextContainer(tc)
+        lm.ensureLayout(for: tc)
+        return lm.usedRect(for: tc).width
+    }
+
+    func testATableIsTheSameWidthWhateverItsColumnCount() {
+        let target: CGFloat = 600
+        let widths = [2, 3, 5, 9].map { laidOutWidth(columns: $0, target: target) }
+        let spread = (widths.max() ?? 0) - (widths.min() ?? 0)
+        XCTAssertLessThanOrEqual(spread, 0.01,
+            "column count must not change the table's width — got \(widths)")
+        for w in widths {
+            XCTAssertEqual(w, target, accuracy: 1.0,
+                "a table should fill its reading column, not fall short of it — got \(w)")
+        }
+    }
+}
