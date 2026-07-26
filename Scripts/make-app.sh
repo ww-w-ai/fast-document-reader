@@ -20,7 +20,7 @@ cp "$BIN" "$APP/Contents/MacOS/FastDocReader"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 
 # Stamp the exact build into the bundle so the About panel can tell an installed build apart from any
-# rebuild — the marketing version (1.0) and build number (5) are identical across every build, which is
+# rebuild — the marketing version and build number are identical across every build of a release, which is
 # why "is this the build I just made?" was unanswerable. `FMDBuildInfo` = git short hash + a -dirty flag
 # for uncommitted changes + the build date; `AppDelegate.showAboutPanel` shows it in the version line.
 # Runs for BOTH tracks (dev and distribution) — CFBundleVersion stays numeric for the App Store; this is

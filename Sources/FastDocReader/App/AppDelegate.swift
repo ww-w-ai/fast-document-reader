@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenu = NSMenu()
         appItem.submenu = appMenu
         // Custom About action so the panel can show the exact BUILD (git commit + date) this bundle was
-        // made from — the marketing version alone (1.0) can't tell a dev rebuild from the release.
+        // made from — the marketing version alone can't tell a dev rebuild from the release.
         let about = appMenu.addItem(withTitle: "About \(appName)", action: #selector(showAboutPanel(_:)), keyEquivalent: "")
         about.target = self
         appMenu.addItem(.separator())
@@ -206,7 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ]
 
     /// The standard About panel, but with the build's git provenance in the version line. Marketing
-    /// version (`CFBundleShortVersionString` = 1.0) and build number (`CFBundleVersion` = 5) are the
+    /// version (`CFBundleShortVersionString`) and build number (`CFBundleVersion`) are the
     /// same across a release and every local rebuild, so they can't answer "is the installed app the
     /// build I just made?". `FMDBuildInfo` — stamped by `make-app.sh` with the git short hash, a
     /// `-dirty` flag for uncommitted changes, and the build date — can. Absent (e.g. a raw `swift run`),
@@ -214,7 +214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showAboutPanel(_ sender: Any?) {
         var options: [NSApplication.AboutPanelOptionKey: Any] = [:]
         if let build = Bundle.main.object(forInfoDictionaryKey: "FMDBuildInfo") as? String, !build.isEmpty {
-            // Put the build stamp on its OWN line below "Version 1.0", not in the version line's
+            // Put the build stamp on its OWN line below the version, not in the version line's
             // parentheses: `.version = ""` drops the auto "(build number)", and the git hash · date
             // rides in `.credits`, which the panel lays out as a separate line under the version.
             options[.version] = ""
