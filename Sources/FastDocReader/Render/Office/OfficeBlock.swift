@@ -139,6 +139,10 @@ struct Cell: Equatable {
     /// four fields no parser fills in this sprint.
     var borderColor: NSColor? = nil
     var borderWidth: CGFloat? = nil
+    /// The cell's own FOUR edges when the document declared them individually (docx `w:tcBorders`).
+    /// Takes precedence over `borderColor`/`borderWidth`, which stay as the uniform model every other
+    /// format and markdown still use. `nil` = this cell said nothing per-edge → unchanged behaviour.
+    var edgeBorders: EdgeBorders? = nil
     /// The cell's own declared column width in POINTS (docx `w:tcPr/w:tcW`, converted from twips;
     /// odt column widths) — `nil` leaves `TableBlockBuilder`'s existing auto layout (equal-ish,
     /// content-driven column sizing via the table's own `percentageValueType`) untouched, exactly
@@ -219,10 +223,79 @@ enum CellVAlign: Equatable {
 /// existing theme default (`Palette.tableBorder`/1pt/header shading), exactly as before this
 /// struct existed. A table with no `w:tblPr` at all (every markdown table; any docx table that
 /// declares neither) constructs the all-`nil` default, which renders BYTE-IDENTICAL to before.
+/// One edge of a border, exactly as the document declared it: a width in points and an optional
+/// colour (`nil` = the theme decides, OOXML's `w:color="auto"`). An edge the document explicitly
+/// turns off (`w:val="none"`/`"nil"`) is represented by the ABSENCE of a side, which is a different
+/// statement from "said nothing" — the latter inherits, the former draws nothing.
+struct BorderSide: Equatable {
+    var width: CGFloat
+    var color: NSColor?
+}
+
+/// A cell's four edges — and, when this describes a TABLE, the two interior directions Word states
+/// separately (`w:insideH`/`w:insideV`), which apply to the edges between cells rather than around
+/// the table.
+///
+/// Why per-edge at all: real reports declare edges INDIVIDUALLY — a measured example gives one row
+/// "top = solid 1pt blue, bottom = dotted 0.5pt" and the next "top and bottom both dotted 0.5pt".
+/// Collapsing that to one width per cell (what this vocabulary did before) made each row's whole box
+/// take a different weight and colour, which is exactly the ragged look a reader notices. It also
+/// perturbed the content width, since that subtracts the border twice.
+struct EdgeBorders: Equatable {
+    var top: BorderSide?
+    var left: BorderSide?
+    var bottom: BorderSide?
+    var right: BorderSide?
+    /// Table-level only: the horizontal/vertical edges BETWEEN cells.
+    var insideH: BorderSide?
+    var insideV: BorderSide?
+
+    var isEmpty: Bool {
+        top == nil && left == nil && bottom == nil && right == nil && insideH == nil && insideV == nil
+    }
+}
+
+extension OfficeBlock {
+    /// Returns this block with the CONTAINING paragraph's alignment applied, if it is a graphic and
+    /// doesn't already carry one of its own. Shared by every reader so "a figure inherits its
+    /// paragraph's alignment" is stated once instead of re-derived per format — a graphic's own
+    /// explicit alignment (should a format ever supply one) always wins, and a non-graphic block is
+    /// returned untouched.
+    func aligningGraphic(to alignment: NSTextAlignment?) -> OfficeBlock {
+        guard let alignment else { return self }
+        switch self {
+        case let .image(id, size, own):
+            return .image(id: id, size: size, alignment: own ?? alignment)
+        case let .unsupportedGraphic(label, size, own):
+            return .unsupportedGraphic(label: label, size: size, alignment: own ?? alignment)
+        default:
+            return self
+        }
+    }
+}
+
 struct TableFormat: Equatable {
     var defaultBorderColor: NSColor? = nil
     var defaultBorderWidth: CGFloat? = nil
     var defaultShading: NSColor? = nil
+    /// The table's own total width in POINTS as the SOURCE document laid it out (docx `w:tblGrid`
+    /// twips summed, HWP's HWPUNIT column widths summed, ODF `style:column-width` summed) — `nil`
+    /// when the format states only proportions (ODF `style:rel-column-width`) or nothing at all.
+    ///
+    /// Used for ONE thing: a picture inside a cell is sized against THIS width, not the page width.
+    /// The reader stretches every table to fill the reading column (invariant 39), so a table that
+    /// was half the page wide in the source becomes twice as wide relative to its content here — a
+    /// picture scaled against the page would then sit small in a cell that grew around it. Scaling
+    /// against the table's own width keeps the picture's share of its cell exactly as authored, at
+    /// any window size. Each reader converts to points itself, so this field has ONE unit whatever
+    /// the format stored (a mixed-unit field is how a "source width" quietly becomes twips here and
+    /// points there).
+    var sourceWidth: CGFloat? = nil
+    /// The table's own declared edges, INCLUDING the interior ones (`w:tblBorders`' `w:insideH`/
+    /// `w:insideV`). A cell inherits the outer edge when it sits on that side of the table and the
+    /// interior edge when it does not — the position test lives in `TableBlockBuilder`, which is the
+    /// only place that knows where a cell sits in the grid.
+    var edgeBorders: EdgeBorders? = nil
 }
 
 /// A paragraph's line-spacing mode — docx `w:pPr/w:spacing/@w:lineRule` (`auto`/`exact`/`atLeast`)
@@ -429,7 +502,13 @@ enum OfficeBlock: Equatable {
     /// href, a markdown source path, …) — this sprint only reserves the LAYOUT area, exactly like
     /// a not-yet-loaded markdown image (invariant 1: reserved size must never depend on whether
     /// pixels are loaded).
-    case image(id: String, size: CGSize)
+    /// `alignment` is the CONTAINING paragraph's own horizontal alignment (docx `w:jc`, ODF
+    /// `fo:text-align`, resolved through the same style cascade the paragraph itself uses). A picture
+    /// in a report is centred far more often than not, and it used to render hard against the left
+    /// margin no matter what the document said, because this case carried no alignment at all and the
+    /// builder gave the attachment no paragraph style. `nil` = the document said nothing → the
+    /// reader's default (leading), byte-identical to before this existed.
+    case image(id: String, size: CGSize, alignment: NSTextAlignment? = nil)
     /// A chart or SmartArt diagram: DrawingML content this reader has no vector renderer for and
     /// for which no already-rendered `mc:Fallback` picture could be recovered either (see
     /// `DocxReader.graphicPlaceholderBlock`). Deliberately its OWN case rather than reusing
@@ -443,7 +522,7 @@ enum OfficeBlock: Equatable {
     /// (`wp:extent`, EMU-converted exactly like `.image`'s size), reserved up front and never
     /// revised — there is no later pixel arrival to protect invariant 1 against here, since unlike
     /// `.image` this case's rendering is synthesized once, fully, at build time.
-    case unsupportedGraphic(label: String, size: CGSize)
+    case unsupportedGraphic(label: String, size: CGSize, alignment: NSTextAlignment? = nil)
     /// A Word/OOXML equation (`m:oMathPara` — a display equation on its own line), translated to
     /// the LaTeX the app's existing formula engine already renders (`OmmlTranslator`). Rides the
     /// SAME web-block pipeline a markdown `$$…$$` does — `OfficeTextBuilder` reserves a placeholder
@@ -509,4 +588,20 @@ struct OfficeReadResult: Equatable {
     /// already carries the value in the parse it just did — no second FFI call (invariant 29's HWP
     /// branch owns this the same way docx/odt own theirs through the reader lookup).
     var defaultBodyFontSize: CGFloat = 11
+    /// The document's own page BODY width in points — the printable column between the left and right
+    /// page margins (paper width − left margin − right margin), honouring page orientation. It is the
+    /// DENOMINATOR of the graphic scale and nothing else: `MarkdownDocument.render(into:)` divides the
+    /// reading column by it and hands the ratio to `OfficeTextBuilder.build(graphicScale:)`, so a
+    /// picture — authored as a fraction of THIS body width — keeps that same fraction of the column at
+    /// any window size, while remaining immune to the reading-size setting. It does NOT change the
+    /// column, which always fills the window (pinning the column to the page width and centring it was
+    /// tried and rejected — a narrow column marooned in a wide window), and it does NOT touch table
+    /// geometry (columns stay `TableBlockBuilder`'s proportions re-solved per reflow, invariant 39).
+    /// `nil` = the reader could not determine it (no section/page-layout, or an out-of-range value) →
+    /// graphic scale 1, i.e. authored point sizes verbatim, so a document that declares nothing is
+    /// byte-identical to before this field existed. Each reader
+    /// sources it from its own format: HWP from rhwp's `PageDef` (landscape swaps width/height), docx
+    /// from the body `w:sectPr`'s `w:pgSz`/`w:pgMar` (twips), odt from `styles.xml`'s
+    /// `style:page-layout-properties` (`fo:page-width`/`fo:margin-*`).
+    var pageContentWidth: CGFloat? = nil
 }

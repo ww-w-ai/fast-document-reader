@@ -73,10 +73,10 @@ enum OfficeMarkdownSerializer {
         case let .table(rows, headerRows, _, _):
             return (renderTable(rows, headerRows: headerRows), false)
 
-        case let .image(id, _):
+        case let .image(id, _, _):
             return ("![image](\(id))", false)
 
-        case let .unsupportedGraphic(label, _):
+        case let .unsupportedGraphic(label, _, _):
             // The reader shows an honest placeholder for a chart/SmartArt with no picture fallback;
             // extraction mirrors that rather than inventing text that was never there.
             return ("*[\(label)]*", false)
@@ -205,8 +205,8 @@ enum OfficeMarkdownSerializer {
         case let .listItem(_, _, spans, _, _, _, _, _): return spans.map(\.text).joined()
         case let .table(rows, _, _, _):
             return rows.map { $0.map { plainCell($0) }.joined(separator: " | ") }.joined(separator: "\n")
-        case let .image(id, _): return "[image \(id)]"
-        case let .unsupportedGraphic(label, _): return "[\(label)]"
+        case let .image(id, _, _): return "[image \(id)]"
+        case let .unsupportedGraphic(label, _, _): return "[\(label)]"
         case let .formula(latex): return latex
         }
     }

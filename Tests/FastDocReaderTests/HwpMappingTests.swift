@@ -18,6 +18,25 @@ final class HwpMappingTests: XCTestCase {
         try HwpReader.mapJSON(envelope(blocksJSON)).blocks
     }
 
+    // MARK: page content width (paper − margins, pt) — rhwp emits it already in pt
+
+    func testPageContentWidthDecodedFromEnvelope() throws {
+        // rhwp exports the first section's body width (PageAreas.body_area ÷100) as pt.
+        let r = try HwpReader.mapJSON("{\"v\":1,\"pageContentWidth\":476.25,\"blocks\":[]}")
+        XCTAssertEqual(r.pageContentWidth, 476.25)
+    }
+
+    func testPageContentWidthAbsentIsNil() throws {
+        // A document/envelope that declares none → nil → reader keeps the window-filling column.
+        XCTAssertNil(try HwpReader.mapJSON(envelope("")).pageContentWidth)
+    }
+
+    func testPageContentWidthNonPositiveIsNil() throws {
+        // Guard: rhwp should never emit ≤0 (it returns None), but if it did, the mapper drops it.
+        XCTAssertNil(try HwpReader.mapJSON("{\"v\":1,\"pageContentWidth\":0,\"blocks\":[]}").pageContentWidth)
+        XCTAssertNil(try HwpReader.mapJSON("{\"v\":1,\"pageContentWidth\":-5,\"blocks\":[]}").pageContentWidth)
+    }
+
     // MARK: paragraph + mixed-style spans
 
     func testBodyParagraphWithMixedStyleSpans() throws {
@@ -200,9 +219,12 @@ final class HwpMappingTests: XCTestCase {
             }
             return format.lineHeight
         }
-        // percent (any value) → nil: HWP line-spacing % is the format's neutral default, normalized
-        // to the app's house rhythm so HWP reads consistently with markdown/docx (invariant 37).
-        XCTAssertNil(try lh("percent", 200))
+        // percent: only the format's OWN default (160%) is neutral — that one normalizes to the
+        // app's house rhythm so HWP body reads consistently with markdown/docx (invariant 37). Any
+        // other percentage is an author's choice and is honoured as a floor; the earlier policy
+        // discarded all of them, which silently overrode 772 paragraphs in one measured document.
+        XCTAssertNil(try lh("percent", 160))
+        XCTAssertEqual(try lh("percent", 200), .atLeast(22))   // 200% of the 11pt default
         // fixed/at-least are author-chosen ABSOLUTE heights, stored 2× in HWP5 → ÷200.
         XCTAssertEqual(try lh("at_least", 1500), .atLeast(7.5))
         XCTAssertEqual(try lh("fixed", 1600), .exact(8))
@@ -279,7 +301,7 @@ final class HwpMappingTests: XCTestCase {
         let json = """
         {"t":"image","binDataId":7,"w":9600,"h":4800,"mime":"image/png"}
         """
-        guard case let .image(id, size) = try mapBlocks(json)[0] else {
+        guard case let .image(id, size, _) = try mapBlocks(json)[0] else {
             return XCTFail("expected .image, got \(try mapBlocks(json)[0])")
         }
         XCTAssertEqual(id, "hwpimg:7")
@@ -290,7 +312,7 @@ final class HwpMappingTests: XCTestCase {
         let json = """
         {"t":"unsupported","label":"Chart","w":5000,"h":3000}
         """
-        guard case let .unsupportedGraphic(label, size) = try mapBlocks(json)[0] else {
+        guard case let .unsupportedGraphic(label, size, _) = try mapBlocks(json)[0] else {
             return XCTFail("expected .unsupportedGraphic")
         }
         XCTAssertEqual(label, "Chart")
@@ -309,7 +331,7 @@ final class HwpMappingTests: XCTestCase {
     /// block yields an empty `images` map — the bytes are pre-decoded only by `HwpReader.read`.
     func testMapJSONReservesImageButDecodesNoBytes() throws {
         let result = try HwpReader.mapJSON(envelope(#"{"t":"image","binDataId":7,"w":12000,"h":9000}"#))
-        guard case .image(let id, _) = result.blocks[0] else { return XCTFail("expected .image") }
+        guard case .image(let id, _, _) = result.blocks[0] else { return XCTFail("expected .image") }
         XCTAssertEqual(id, "hwpimg:7")
         XCTAssertTrue(result.images.isEmpty, "mapJSON must not decode image bytes — that is read()'s job")
     }
@@ -374,7 +396,7 @@ final class HwpMappingTests: XCTestCase {
         {"t":"equation","latex":"   ","script":null,"w":5000,"h":3000}
         """
         let blocks = try mapBlocks(json)
-        guard case let .unsupportedGraphic(label, size) = blocks[0] else {
+        guard case let .unsupportedGraphic(label, size, _) = blocks[0] else {
             return XCTFail("expected .unsupportedGraphic, got \(blocks[0])")
         }
         XCTAssertEqual(label, "equation")
@@ -388,7 +410,7 @@ final class HwpMappingTests: XCTestCase {
             return XCTFail("expected .formula")
         }
         XCTAssertEqual(latex, "x^2")
-        guard case let .unsupportedGraphic(_, size) = try mapBlocks(#"{"t":"equation","latex":""}"#)[0] else {
+        guard case let .unsupportedGraphic(_, size, _) = try mapBlocks(#"{"t":"equation","latex":""}"#)[0] else {
             return XCTFail("expected .unsupportedGraphic")
         }
         XCTAssertEqual(size, .zero)                       // no w/h → zero-reserved placeholder
@@ -439,5 +461,146 @@ final class HwpMappingTests: XCTestCase {
         }
         XCTAssertTrue(containsFormula(result.blocks),
                       "expected at least one .formula block (top-level or in a table cell) from \(path)")
+    }
+}
+
+// MARK: - Style-derived headings, picture alignment, relative picture width (S10)
+
+extension HwpMappingTests {
+    private func envelope2(_ blocksJSON: String, pageWidth: Double? = nil) -> String {
+        let pw = pageWidth.map { ",\"pageContentWidth\":\($0)" } ?? ""
+        return "{\"v\":1\(pw),\"blocks\":[\(blocksJSON)]}"
+    }
+
+    /// HWP marks only OUTLINE-numbered paragraphs with its heading flag, and measuring 14 real files
+    /// found 13 with none — Korean reports title their sections with a named style instead. Matching
+    /// the built-in styles is the same fix invariant 33 records for Word, in the form HWP offers it:
+    /// the ENGLISH name is the locale-stable identity, the Korean name its display form.
+    func testBuiltInOutlineStyleBecomesAHeading() {
+        XCTAssertEqual(HwpReader.headingLevel(styleName: "Outline 2", localName: "개요 2"), 2)
+        XCTAssertEqual(HwpReader.headingLevel(styleName: nil, localName: "개요 3"), 3)
+        XCTAssertEqual(HwpReader.headingLevel(styleName: "Title", localName: "제목"), 1)
+        XCTAssertNil(HwpReader.headingLevel(styleName: "Normal", localName: "바탕글"),
+                     "body text must never become a heading")
+        XCTAssertNil(HwpReader.headingLevel(styleName: "Body", localName: "본문"))
+    }
+
+    /// Custom names, taken from the corpus: "각 장 제목"/"각 절 제목" are real headings and their
+    /// depth is in the word used. "표의 제목" is a TABLE CAPTION — it appeared 112 times in one
+    /// document, so accepting it would bury the outline under captions; "목차,발간사 제목" styles the
+    /// contents ENTRIES themselves. Both are excluded BY MEASUREMENT, not by taste.
+    func testCustomKoreanTitleStylesAreAcceptedButCaptionsAndContentsAreNot() {
+        XCTAssertEqual(HwpReader.headingLevel(styleName: nil, localName: "각 장 제목"), 1)
+        XCTAssertEqual(HwpReader.headingLevel(styleName: nil, localName: "각 절 제목"), 2)
+        XCTAssertNil(HwpReader.headingLevel(styleName: nil, localName: "표의 제목"))
+        XCTAssertNil(HwpReader.headingLevel(styleName: nil, localName: "그림 제목"))
+        XCTAssertNil(HwpReader.headingLevel(styleName: nil, localName: "목차,발간사 제목"))
+        XCTAssertNil(HwpReader.headingLevel(styleName: nil, localName: "본문(ㅇ)"))
+    }
+
+    /// A style-INFERRED heading must also look like one. A real document applies a "…제목" style to
+    /// running prose, which turned 80-character sentences into headings; an EXPLICIT outline
+    /// paragraph is trusted at any length, because there the document itself said so.
+    func testInferredHeadingIsRejectedWhenItsTextIsProse() throws {
+        let long = String(repeating: "가", count: HwpReader.headingTextLimit + 1)
+        let inferred = try HwpReader.mapJSON(envelope2("""
+        {"t":"para","styleLocalName":"각 장 제목","spans":[{"text":"\(long)"}]}
+        """)).blocks
+        guard case .paragraph = inferred[0] else {
+            return XCTFail("a prose-length paragraph must stay a paragraph, got \(inferred[0])")
+        }
+        let short = try HwpReader.mapJSON(envelope2("""
+        {"t":"para","styleLocalName":"각 장 제목","spans":[{"text":"서 론"}]}
+        """)).blocks
+        guard case .heading(let level, _, _, _, _, _) = short[0] else {
+            return XCTFail("a short titled paragraph must become a heading, got \(short[0])")
+        }
+        XCTAssertEqual(level, 1)
+        // Explicit outline wins regardless of length.
+        let explicit = try HwpReader.mapJSON(envelope2("""
+        {"t":"para","heading":2,"spans":[{"text":"\(long)"}]}
+        """)).blocks
+        guard case .heading = explicit[0] else {
+            return XCTFail("an explicitly outlined paragraph must stay a heading at any length")
+        }
+    }
+
+    /// HWP stores a picture's own horizontal alignment. `inside`/`outside` are mirror-margin values
+    /// with no meaning in one continuous column, so they resolve to nil (the reader's default)
+    /// instead of being flattened to left, which would assert something the document never said.
+    func testPictureAlignmentIsCarriedAndMirrorMarginsAreLeftUnstated() throws {
+        let blocks = try HwpReader.mapJSON(envelope2("""
+        {"t":"image","binDataId":3,"w":10000,"h":5000,"align":"center"},
+        {"t":"image","binDataId":4,"w":10000,"h":5000,"align":"outside"}
+        """)).blocks
+        guard case .image(_, _, let centred) = blocks[0], case .image(_, _, let mirrored) = blocks[1] else {
+            return XCTFail("expected two image blocks, got \(blocks)")
+        }
+        XCTAssertEqual(centred, .center)
+        XCTAssertNil(mirrored)
+    }
+
+    /// A width HWP stored RELATIVE to the page is a share in ten-thousandths, not HWPUNIT — reading
+    /// it as absolute yields a picture hundreds of points wide. Resolved against the page body width
+    /// the same parse already carries; the absolute case (by far the common one) is untouched.
+    func testRelativePictureWidthResolvesAgainstThePageAndAbsoluteIsUnchanged() throws {
+        let blocks = try HwpReader.mapJSON(envelope2("""
+        {"t":"image","binDataId":1,"w":5000,"h":2500,"widthCriterion":"page"},
+        {"t":"image","binDataId":2,"w":24000,"h":12000,"widthCriterion":"absolute"}
+        """, pageWidth: 400)).blocks
+        guard case .image(_, let relative, _) = blocks[0], case .image(_, let absolute, _) = blocks[1] else {
+            return XCTFail("expected two image blocks, got \(blocks)")
+        }
+        XCTAssertEqual(relative.width, 200, accuracy: 0.01, "5000/10000 of a 400pt page = 200pt")
+        XCTAssertEqual(relative.height, 100, accuracy: 0.51, "the authored aspect is kept")
+        XCTAssertEqual(absolute.width, 240, accuracy: 0.01, "24000 HWPUNIT ÷ 100 = 240pt, unchanged")
+    }
+
+    /// With no page width known, a relative width cannot be resolved — the reader must not invent
+    /// one, so it falls back to the declared conversion exactly as before this existed.
+    func testRelativePictureWidthWithoutAPageWidthFallsBackToTheDeclaredSize() throws {
+        let blocks = try HwpReader.mapJSON(envelope2("""
+        {"t":"image","binDataId":1,"w":5000,"h":2500,"widthCriterion":"page"}
+        """)).blocks
+        guard case .image(_, let size, _) = blocks[0] else { return XCTFail("expected an image") }
+        XCTAssertEqual(size.width, 50, accuracy: 0.01)
+    }
+}
+
+extension HwpMappingTests {
+    /// HWP's own default spacing (160%) means "nothing stated" → the reader's house rhythm, so HWP
+    /// body reads like markdown/docx body. Every OTHER percentage is the author's choice and is
+    /// honoured — measured: one real document carries 772 paragraphs at 110–180% that were being
+    /// thrown away. Applied as a FLOOR so a tall CJK glyph is never clipped.
+    func testPercentLineHeightHonoursAuthorChoicesButNotTheFormatDefault() throws {
+        func lineHeight(_ percent: Int) throws -> LineHeight? {
+            let json = """
+            {"v":1,"defaultFontSizePt":10,"blocks":[{"t":"para","spans":[{"text":"x"}],
+            "lineHeight":{"type":"percent","value":\(percent)}}]}
+            """
+            guard case let .paragraph(_, _, _, _, format) = try HwpReader.mapJSON(json).blocks[0] else {
+                XCTFail("expected a paragraph"); return nil
+            }
+            return format.lineHeight
+        }
+        XCTAssertNil(try lineHeight(160), "the format's own default must stay neutral")
+        guard case .atLeast(let doubled)? = try lineHeight(200) else {
+            return XCTFail("200% must be honoured as a floor")
+        }
+        XCTAssertEqual(doubled, 20, accuracy: 0.01, "200% of a 10pt body = 20pt")
+        guard case .atLeast(let tight)? = try lineHeight(110) else {
+            return XCTFail("110% must be honoured")
+        }
+        XCTAssertEqual(tight, 11, accuracy: 0.01)
+        XCTAssertNotNil(try lineHeight(158), "158% is a choice, not a rounding of the default")
+    }
+
+    /// The same field is written as a percentage by some HWP versions and as percent×100 by others.
+    /// Both are accepted; a value in neither band is refused rather than rendered as a 160× line.
+    func testPercentLineHeightAcceptsBothEncodingsAndRefusesNonsense() {
+        XCTAssertEqual(HwpReader.percentLineHeight(160), 160)
+        XCTAssertEqual(HwpReader.percentLineHeight(16_000), 160)
+        XCTAssertNil(HwpReader.percentLineHeight(3))
+        XCTAssertNil(HwpReader.percentLineHeight(2_000_000))
     }
 }

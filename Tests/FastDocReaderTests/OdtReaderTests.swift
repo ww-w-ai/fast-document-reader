@@ -89,6 +89,33 @@ final class OdtReaderTests: XCTestCase {
         return try OdtReader.read(archive).blocks
     }
 
+    /// Full result (not just blocks) so page-width parsing off `style:page-layout-properties` is assertable.
+    private func readResult(body: String, automaticStyles: String = "", styles: String? = nil) throws -> OfficeReadResult {
+        try OdtReader.read(try ZipArchive(data: buildOdt(content: doc(body: body, automaticStyles: automaticStyles), styles: styles)))
+    }
+
+    // MARK: page content width (style:page-layout-properties → fo:page-width − fo:margin-*, →pt)
+
+    func testPageContentWidthFromContentPageLayout() throws {
+        // 21cm page − 2cm each margin = 17cm body = 17·72/2.54 ≈ 481.9pt.
+        let r = try readResult(body: "<text:p>x</text:p>", automaticStyles:
+            "<style:page-layout style:name=\"pm1\"><style:page-layout-properties fo:page-width=\"21cm\" fo:margin-left=\"2cm\" fo:margin-right=\"2cm\"/></style:page-layout>")
+        XCTAssertEqual(r.pageContentWidth ?? -1, 17.0 * 72 / 2.54, accuracy: 0.01)
+    }
+
+    func testPageContentWidthNilWhenNoPageLayout() throws {
+        XCTAssertNil(try readResult(body: "<text:p>x</text:p>").pageContentWidth)
+    }
+
+    func testPageContentWidthFromStylesXmlPageLayout() throws {
+        // ODF overwhelmingly keeps the page layout in styles.xml — the reader searches both styleRoots.
+        let styles = "<office:document-styles><office:automatic-styles>"
+            + "<style:page-layout style:name=\"pm1\"><style:page-layout-properties fo:page-width=\"20cm\" fo:margin-left=\"1cm\" fo:margin-right=\"1cm\"/></style:page-layout>"
+            + "</office:automatic-styles></office:document-styles>"
+        let r = try readResult(body: "<text:p>x</text:p>", styles: styles)
+        XCTAssertEqual(r.pageContentWidth ?? -1, 18.0 * 72 / 2.54, accuracy: 0.01)
+    }
+
     /// Matches `OdtReader.parseODFColor`'s own construction (`deviceRed:`, not `srgbRed:`) so a
     /// comparison against a reader-resolved colour isn't tripped up by a colour-space mismatch that
     /// has nothing to do with whether the RGB VALUES themselves are right.
@@ -96,6 +123,38 @@ final class OdtReaderTests: XCTestCase {
         let value = UInt32(hex, radix: 16)!
         return NSColor(deviceRed: CGFloat((value >> 16) & 0xFF) / 255, green: CGFloat((value >> 8) & 0xFF) / 255,
                         blue: CGFloat(value & 0xFF) / 255, alpha: 1)
+    }
+
+    /// A picture inherits the alignment of the paragraph it sits in (`fo:text-align`), resolved
+    /// through the same style lookup the paragraph's own text uses — an image-only paragraph in
+    /// LibreOffice is how a centred figure is written, and the frame itself says nothing about it.
+    func testImageInheritsItsParagraphsAlignment() throws {
+        let blocks = try read(
+            body: """
+            <text:p text:style-name="Centred"><draw:frame svg:width="1in" svg:height="1in">
+            <draw:image xlink:href="Pictures/p.png"/></draw:frame></text:p>
+            """,
+            automaticStyles: """
+            <style:style style:name="Centred" style:family="paragraph">
+              <style:paragraph-properties fo:text-align="center"/>
+            </style:style>
+            """)
+        guard case let .image(_, _, alignment) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected an image block, got \(blocks)")
+        }
+        XCTAssertEqual(alignment, .center)
+    }
+
+    /// A paragraph that states nothing leaves the picture unaligned — byte-identical to before.
+    func testImageInAnUnalignedParagraphCarriesNoAlignment() throws {
+        let blocks = try read(body: """
+        <text:p><draw:frame svg:width="1in" svg:height="1in">
+        <draw:image xlink:href="Pictures/p.png"/></draw:frame></text:p>
+        """)
+        guard case let .image(_, _, alignment) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected an image block, got \(blocks)")
+        }
+        XCTAssertNil(alignment)
     }
 
     private func readWithMedia(body: String, media: [(name: String, bytes: [UInt8])]) throws -> [OfficeBlock] {
@@ -292,7 +351,7 @@ final class OdtReaderTests: XCTestCase {
                 <draw:image xlink:href="Pictures/img\(index).png"/></draw:frame></text:p>
                 """,
                 media: [(name: "Pictures/img\(index).png", bytes: [0x01])])
-            guard case .image(_, let size) = blocks.first else { return XCTFail("expected an image block") }
+            guard case .image(_, let size, _) = blocks.first else { return XCTFail("expected an image block") }
             XCTAssertEqual(size.width, testCase.expectedPt, accuracy: 0.02, "width '\(testCase.width)'")
         }
     }
@@ -321,7 +380,7 @@ final class OdtReaderTests: XCTestCase {
         let blocks = try read(body: """
         <text:p><draw:frame><draw:image xlink:href="Pictures/missing.png"/></draw:frame></text:p>
         """)
-        guard case .image(_, let size) = blocks.first else { return XCTFail("expected an image block") }
+        guard case .image(_, let size, _) = blocks.first else { return XCTFail("expected an image block") }
         XCTAssertGreaterThan(size.width, 0)
         XCTAssertGreaterThan(size.height, 0)
     }

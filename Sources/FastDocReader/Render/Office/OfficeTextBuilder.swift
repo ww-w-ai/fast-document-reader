@@ -13,6 +13,31 @@ struct FillMarginTabInfo: Equatable {
     var otherTabs: [TabStop]
 }
 
+/// What an office graphic was AUTHORED as, carried as `MDAttr.officeGraphic`'s value so it rides in
+/// the text storage from build time through every later reflow — the same trick `FillMarginTabInfo`
+/// uses for a fill-to-margin tab, and for the same reason: the size a graphic should occupy is a
+/// FUNCTION of the current reading column (`OfficeTextBuilder.graphicSize`), not a number to freeze
+/// at whatever width the window happened to have when the document was built.
+///
+/// Without this, widening the window re-wrapped the text and re-solved every table to the new width
+/// while the pictures stayed exactly as large as they were built — the document visibly came apart.
+/// `placeholderLabel` is non-nil only for the chart/SmartArt frame, whose pixels are DRAWN at a
+/// size (invariant 31) and so must be redrawn rather than merely re-bounded.
+struct OfficeGraphicInfo: Equatable {
+    var authored: CGSize
+    var placeholderLabel: String?
+    /// The DENOMINATOR this graphic's scale is measured against, in points: the source page's body
+    /// width for a graphic in the text flow, or the source TABLE's own width for one inside a cell
+    /// (see `TableFormat.sourceWidth` for why those differ). `nil` = unknown → no scaling, the
+    /// authored size verbatim. Carried per graphic rather than looked up at reflow time so the
+    /// reflow cannot pick a different basis than the build did.
+    var basisWidth: CGFloat?
+    /// The width this graphic is clamped to when it would otherwise overflow — its cell's content
+    /// width inside a table, the reading column outside one. Recomputed at reflow (a cell's width
+    /// changes with the window), so only the KIND of clamp is implied here, not a frozen number.
+    var isInsideCell: Bool = false
+}
+
 /// Turns a format-neutral `[OfficeBlock]` into styled `NSAttributedString`, the same way
 /// `MarkdownRenderer` turns a parsed markdown tree into one and `PlainTextRenderer` turns raw text
 /// into one. Every TOP-LEVEL block is exactly one navigation stop: it gets its own `MDAttr.blockId`
@@ -43,6 +68,23 @@ enum OfficeTextBuilder {
     /// 11pt paragraph, AT ANY reading size) — and the reading-size setting still governs how big
     /// the document looks overall, which is the entire point of that setting and must never be
     /// silently overridden by what the document happened to be authored at.
+    /// `pageContentWidth` is the SOURCE document's own page body width in points, and it drives the
+    /// SEPARATE scale for absolute-extent GRAPHICS — images and the chart/SmartArt placeholder —
+    /// which is deliberately NOT `fontSizeScale`. A picture's authored size is a fraction of the PAGE
+    /// it was drawn on, so the reader reproduces that fraction: the graphic scale is
+    /// `readingColumn ÷ pageContentWidth`, which makes a graphic occupy the same share of the reading
+    /// column that it occupied of the source page. A picture INSIDE A TABLE CELL divides by the
+    /// table's own `TableFormat.sourceWidth` instead, because tables are stretched to fill the column
+    /// (invariant 39) and a page-scaled picture would sit small inside a cell that grew around it.
+    /// `nil` = the reader could not determine a page width → scale 1, authored sizes verbatim. Two
+    /// consequences, both deliberate: a graphic grows and shrinks with the WINDOW at the document's
+    /// own proportion, and it is UNTOUCHED by the reading-size setting — ⌘+/⌘− resizes text, never the
+    /// pictures. Scaling graphics by `fontSizeScale` instead was tried and rejected twice: at 1.0 it
+    /// left photographs tiny beside 1.6×-enlarged text (the document's own font↔image proportion
+    /// broken), and riding the font scale made ⌘+ inflate photographs. Column-fitting still applies
+    /// on top (`fittedOfficeSize`), so a scaled graphic can never overflow its column — or its cell —
+    /// and because a page-proportional scale maps the page onto the column, a full-page-width image
+    /// lands just inside it rather than being clamped.
     /// `comments` (P6b) is `officeComments` from `MarkdownDocument` — used ONLY to resolve each
     /// `Span.commentIds` entry to that comment's DISPLAY number (`OfficeComment.number`), via
     /// `commentNumbers` below, so `MDAttr.commentMark` carries the number a reader recognizes
@@ -54,6 +96,8 @@ enum OfficeTextBuilder {
     static func build(_ blocks: [OfficeBlock], theme: RenderTheme,
                       columnWidth: CGFloat = .greatestFiniteMagnitude,
                       documentDefaultFontSize: CGFloat = 11,
+                      pageContentWidth: CGFloat? = nil,
+                      tableWidth: CGFloat? = nil,
                       comments: [OfficeComment] = []) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var blockSeq = 0
@@ -61,6 +105,13 @@ enum OfficeTextBuilder {
         // (not per-block) because the restart rule below needs to see across blocks.
         var orderedCounters: [Int: Int] = [:]
         let fontSizeScale = documentDefaultFontSize > 0 ? theme.baseFontSize / documentDefaultFontSize : 1
+        // A graphic in the text flow is measured against the source PAGE; one inside a table is
+        // measured against that TABLE (see `pageContentWidth`'s doc above and `appendTable`).
+        let pageBasis: CGFloat? = (pageContentWidth ?? 0) > 0 ? pageContentWidth : nil
+        func scale(basis: CGFloat?) -> CGFloat {
+            guard let basis, basis > 0, columnWidth.isFinite, columnWidth > 0 else { return 1 }
+            return columnWidth / basis
+        }
         // id → display number, built once per build() call (comments list is small; a dictionary
         // avoids an O(n) scan per span).
         var commentNumbers: [String: Int] = [:]
@@ -129,13 +180,20 @@ enum OfficeTextBuilder {
 
             case let .table(rows, headerRows, columnWidths, tableFormat):
                 appendTable(rows, headerRows: headerRows, columnWidths: columnWidths, tableFormat: tableFormat,
-                            into: result, theme: theme, fontSizeScale: fontSizeScale, columnWidth: columnWidth)
+                            into: result, theme: theme, fontSizeScale: fontSizeScale, columnWidth: columnWidth,
+                            // A cell picture is measured against the table's own source width when the
+                            // format stated one, else it falls back to the page — never left unscaled.
+                            graphicBasis: tableFormat.sourceWidth ?? pageBasis,
+                            tableWidth: tableWidth)
 
-            case let .image(id, size):
-                appendImage(id: id, size: size, columnWidth: columnWidth, into: result)
+            case let .image(id, size, alignment):
+                appendImage(id: id, size: size, columnWidth: columnWidth, basis: pageBasis,
+                            scale: scale(basis: pageBasis), alignment: alignment, insideCell: false, into: result)
 
-            case let .unsupportedGraphic(label, size):
-                appendUnsupportedGraphic(label: label, size: size, columnWidth: columnWidth, into: result)
+            case let .unsupportedGraphic(label, size, alignment):
+                appendUnsupportedGraphic(label: label, size: size, columnWidth: columnWidth, basis: pageBasis,
+                                         scale: scale(basis: pageBasis), alignment: alignment, insideCell: false,
+                                         into: result)
 
             case let .formula(latex):
                 appendFormula(latex: latex, into: result)
@@ -741,7 +799,9 @@ enum OfficeTextBuilder {
                                     tableFormat: TableFormat = TableFormat(),
                                     into result: NSMutableAttributedString,
                                     theme: RenderTheme, fontSizeScale: CGFloat = 1,
-                                    columnWidth: CGFloat = .greatestFiniteMagnitude) {
+                                    columnWidth: CGFloat = .greatestFiniteMagnitude,
+                                    graphicBasis: CGFloat? = nil,
+                                    tableWidth: CGFloat? = nil) {
         guard rows.contains(where: { !$0.isEmpty }) else {
             result.append(NSAttributedString(string: "\n"))
             return
@@ -763,29 +823,37 @@ enum OfficeTextBuilder {
                                                     padding: padding, borderWidth: borderWidth)
             }
         }
+        // The width the table is really laid out at (the reading column minus the text container's
+        // own padding), so cell content widths and the built grid agree with the final layout from
+        // the FIRST paint — see `TableBlockBuilder.build`'s `width`.
+        let solvedWidth = tableWidth ?? columnWidth
         let cellContentWidths = TableBlockBuilder.anchorContentWidths(spans: spanGrid,
                                                                       columnWidths: columnWidths,
-                                                                      width: columnWidth)
+                                                                      width: solvedWidth)
         let cellRows: [[TableBlockBuilder.CellContent]] = rows.enumerated().map { r, anchors in
             let isHeader = r < headerRows
             return anchors.enumerated().map { i, cell in
                 let content = cellContent(cell.blocks, baseFont: isHeader ? headerFont : theme.bodyFont,
                                           theme: theme, fontSizeScale: fontSizeScale,
-                                          imageColumnWidth: cellContentWidths[r][i])
+                                          imageColumnWidth: cellContentWidths[r][i],
+                                          graphicBasis: graphicBasis, tableWidth: solvedWidth)
                 return TableBlockBuilder.CellContent(content: content, rowSpan: cell.rowSpan, columnSpan: cell.colSpan,
                                                       backgroundColor: cell.backgroundColor,
                                                       borderColor: cell.borderColor, borderWidth: cell.borderWidth,
                                                       width: cell.width, verticalAlignment: cell.verticalAlignment,
                                                       padding: cell.padding, styleShading: cell.styleShading,
                                                       styleBorderColor: cell.styleBorderColor,
-                                                      styleBorderWidth: cell.styleBorderWidth)
+                                                      styleBorderWidth: cell.styleBorderWidth,
+                                                      edgeBorders: cell.edgeBorders)
             }
         }
         result.append(TableBlockBuilder.build(rows: cellRows, headerRows: headerRows, theme: theme,
                                               columnWidths: columnWidths,
                                               tableBorderColor: tableFormat.defaultBorderColor,
                                               tableBorderWidth: tableFormat.defaultBorderWidth,
-                                              tableShading: tableFormat.defaultShading))
+                                              tableShading: tableFormat.defaultShading,
+                                              tableEdges: tableFormat.edgeBorders,
+                                              width: solvedWidth))
         result.append(NSAttributedString(string: "\n"))
     }
 
@@ -812,7 +880,16 @@ enum OfficeTextBuilder {
     /// callers/tests that never pass it behave as before. Clamped at BUILD time only (invariant 1).
     private static func cellContent(_ blocks: [OfficeBlock], baseFont: NSFont, theme: RenderTheme,
                                     fontSizeScale: CGFloat = 1,
-                                    imageColumnWidth: CGFloat = .greatestFiniteMagnitude) -> NSAttributedString {
+                                    imageColumnWidth: CGFloat = .greatestFiniteMagnitude,
+                                    graphicBasis: CGFloat? = nil,
+                                    tableWidth: CGFloat = .greatestFiniteMagnitude) -> NSAttributedString {
+        // A cell picture's scale is the TABLE's on-screen width over the table's source width — not
+        // the cell's over the cell's. They are the same ratio (every column keeps its proportion when
+        // the table is stretched), and using the table's avoids needing each cell's source width.
+        let cellGraphicScale: CGFloat = {
+            guard let graphicBasis, graphicBasis > 0, tableWidth.isFinite, tableWidth > 0 else { return 1 }
+            return tableWidth / graphicBasis
+        }()
         let result = NSMutableAttributedString()
         for (index, block) in blocks.enumerated() {
             switch block {
@@ -852,13 +929,15 @@ enum OfficeTextBuilder {
                 }
             case let .table(nestedRows, _, _, _):
                 result.append(flattenTableToText(nestedRows, baseFont: baseFont, theme: theme))
-            case let .image(id, size):
-                appendImage(id: id, size: size, columnWidth: imageColumnWidth, into: result)
+            case let .image(id, size, alignment):
+                appendImage(id: id, size: size, columnWidth: imageColumnWidth, basis: graphicBasis,
+                            scale: cellGraphicScale, alignment: alignment, insideCell: true, into: result)
                 if result.length > 0, result.string.hasSuffix("\n") {
                     result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
                 }
-            case let .unsupportedGraphic(label, size):
-                appendUnsupportedGraphic(label: label, size: size, columnWidth: imageColumnWidth, into: result)
+            case let .unsupportedGraphic(label, size, alignment):
+                appendUnsupportedGraphic(label: label, size: size, columnWidth: imageColumnWidth, basis: graphicBasis,
+                                         scale: cellGraphicScale, alignment: alignment, insideCell: true, into: result)
                 if result.length > 0, result.string.hasSuffix("\n") {
                     result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
                 }
@@ -933,20 +1012,79 @@ enum OfficeTextBuilder {
         return CGSize(width: columnWidth.rounded(), height: (declared.height * scale).rounded())
     }
 
+    /// THE size an office graphic occupies, in one place: authored size × page-proportional scale,
+    /// then column-fitted. Called at build time here, and again by
+    /// `DocumentWindowController.resizeOfficeGraphics` on every reflow — one function so a picture
+    /// cannot drift from what a rebuild at the same width would have produced. (Two copies of this
+    /// arithmetic is precisely how a resized document ends up disagreeing with a reopened one.)
+    static func graphicSize(authored: CGSize, graphicScale: CGFloat, columnWidth: CGFloat) -> CGSize {
+        let scaled = CGSize(width: authored.width * graphicScale, height: authored.height * graphicScale)
+        return fittedOfficeSize(scaled, columnWidth: columnWidth)
+    }
+
+    /// The chart/SmartArt frame's pixels. Extracted so a reflow can REDRAW it at the new size —
+    /// invariant 31 means this case is sized by `.bounds` with an image that is never nil, so
+    /// stretching the old bitmap would blur its label instead of re-laying it out.
+    static func placeholderImage(label: String, size: CGSize) -> NSImage {
+        NSImage(size: size, flipped: false) { rect in
+            Palette.codeCardBg.setFill()
+            rect.fill()
+            Palette.codeCardBorder.setStroke()
+            NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
+            let text = "[\(label)]" as NSString
+            let fontSize = max(9, min(14, rect.height * 0.18))
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: fontSize),
+                .foregroundColor: Palette.secondary,
+            ]
+            let textSize = text.size(withAttributes: attrs)
+            text.draw(at: NSPoint(x: (rect.width - textSize.width) / 2,
+                                  y: (rect.height - textSize.height) / 2), withAttributes: attrs)
+            return true
+        }
+    }
+
     /// Reserves the (column-fitted) declared size via `SizedAttachmentCell`, image left `nil` —
     /// pixels arrive lazily via `MarkdownDocument.reconcileMedia`. This is invariant 1 of this
     /// codebase: the reserved layout size must NEVER depend on whether an image is loaded, or the
     /// scroll bar swings when it loads/purges.
-    private static func appendImage(id: String, size: CGSize, columnWidth: CGFloat,
+    private static func appendImage(id: String, size: CGSize, columnWidth: CGFloat, basis: CGFloat?,
+                                    scale: CGFloat, alignment: NSTextAlignment?, insideCell: Bool,
                                     into result: NSMutableAttributedString) {
-        let fitted = fittedOfficeSize(size, columnWidth: columnWidth)
+        // `scale` (= the on-screen width of what this picture was measured against ÷ that thing's
+        // SOURCE width — page for a picture in the flow, table for one in a cell), NOT `fontSizeScale`:
+        // the authored size is a fraction of that container, and reproducing the fraction is what keeps
+        // the document's own font↔image proportion at any window size — while leaving ⌘+/⌘− (a TEXT
+        // setting) unable to inflate a photograph. Scale first, THEN fit, so a scaled image still never
+        // exceeds its column or its cell.
+        let fitted = graphicSize(authored: size, graphicScale: scale, columnWidth: columnWidth)
         let att = NSTextAttachment()
         att.bounds = NSRect(origin: .zero, size: fitted)
         att.attachmentCell = SizedAttachmentCell(reservedSize: fitted)
         let ph = NSMutableAttributedString(attachment: att)
-        ph.addAttribute(MDAttr.image, value: id, range: NSRange(location: 0, length: ph.length))
+        let whole = NSRange(location: 0, length: ph.length)
+        ph.addAttribute(MDAttr.image, value: id, range: whole)
+        // The AUTHORED size and its basis ride along so a reflow can re-derive this picture's size at
+        // the new width (see `MDAttr.officeGraphic`) — a rebuild is not required to resize a window.
+        ph.addAttribute(MDAttr.officeGraphic,
+                        value: OfficeGraphicInfo(authored: size, placeholderLabel: nil,
+                                                 basisWidth: basis, isInsideCell: insideCell),
+                        range: whole)
+        applyGraphicAlignment(alignment, to: ph)
         result.append(ph)
         result.append(NSAttributedString(string: "\n"))
+    }
+
+    /// The containing paragraph's alignment, applied to the one-character attachment paragraph. A
+    /// centred picture is the norm in a report and used to render hard left, because this case
+    /// carried no paragraph style at all. `nil` (the document said nothing) adds NO paragraph style,
+    /// so a document that never aligns anything is byte-identical to before this existed.
+    private static func applyGraphicAlignment(_ alignment: NSTextAlignment?, to ph: NSMutableAttributedString) {
+        guard let alignment else { return }
+        let p = NSMutableParagraphStyle()
+        p.alignment = alignment
+        ph.addAttribute(.paragraphStyle, value: p.copy() as! NSParagraphStyle,
+                        range: NSRange(location: 0, length: ph.length))
     }
 
     /// A chart/SmartArt this reader could not resolve to any picture at all — reserves the SAME
@@ -962,29 +1100,24 @@ enum OfficeTextBuilder {
     /// state for this case at all, so nothing here can ever revise `.bounds` after the fact.
     /// `label` renders verbatim — the caller (`DocxReader`) already turned it into a word a reader
     /// understands ("Chart", "Diagram"), never an XML element name.
-    private static func appendUnsupportedGraphic(label: String, size: CGSize, columnWidth: CGFloat,
+    private static func appendUnsupportedGraphic(label: String, size: CGSize, columnWidth: CGFloat, basis: CGFloat?,
+                                                  scale: CGFloat, alignment: NSTextAlignment?, insideCell: Bool,
                                                   into result: NSMutableAttributedString) {
-        let fitted = fittedOfficeSize(size, columnWidth: columnWidth)
-        let frame = NSImage(size: fitted, flipped: false) { rect in
-            Palette.codeCardBg.setFill()
-            rect.fill()
-            Palette.codeCardBorder.setStroke()
-            NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
-            let text = "[\(label)]" as NSString
-            let fontSize = max(9, min(14, rect.height * 0.18))
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: fontSize),
-                .foregroundColor: Palette.secondary,
-            ]
-            let textSize = text.size(withAttributes: attrs)
-            let origin = NSPoint(x: (rect.width - textSize.width) / 2, y: (rect.height - textSize.height) / 2)
-            text.draw(at: origin, withAttributes: attrs)
-            return true
-        }
+        // Same proportional scaling as `appendImage` — a chart/SmartArt placeholder stands in for the
+        // space the real graphic would occupy, so it must hold that same share of its container.
+        let fitted = graphicSize(authored: size, graphicScale: scale, columnWidth: columnWidth)
         let att = NSTextAttachment()
         att.bounds = NSRect(origin: .zero, size: fitted)
-        att.image = frame
-        result.append(NSAttributedString(attachment: att))
+        att.image = placeholderImage(label: label, size: fitted)
+        let ph = NSMutableAttributedString(attachment: att)
+        // The authored size + label ride along so a reflow can re-derive this frame at the new
+        // width (see `MDAttr.officeGraphic`) instead of leaving it frozen at the build width.
+        ph.addAttribute(MDAttr.officeGraphic,
+                        value: OfficeGraphicInfo(authored: size, placeholderLabel: label,
+                                                 basisWidth: basis, isInsideCell: insideCell),
+                        range: NSRange(location: 0, length: ph.length))
+        applyGraphicAlignment(alignment, to: ph)
+        result.append(ph)
         result.append(NSAttributedString(string: "\n"))
     }
 

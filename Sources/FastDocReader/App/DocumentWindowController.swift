@@ -207,14 +207,18 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Run work that blocks the main thread, with the spinner over it if it takes long enough to
     /// notice. Every path that re-lays out the whole document goes through here — resize, sidebar,
     /// font size — so none of them can look like a freeze.
-    func runBusy(_ work: @escaping () -> Void) {
+    /// `heavy` forces the spinner on regardless of length. The character-count heuristic below is a
+    /// proxy for cost that badly misreads OFFICE documents: the 62-table HWP whose re-render was
+    /// measured at 0.8 s holds only ~19k characters, so the slowest thing the app does showed no
+    /// feedback at all. A caller that knows the work is structurally heavy says so.
+    func runBusy(heavy heavyHint: Bool = false, _ work: @escaping () -> Void) {
         // Show it FIRST and force it to draw. A delayed show can never fire: the work blocks the
         // main thread, so the timer only gets its turn after the work is already done and the
         // spinner has been cancelled — which is exactly why no spinner ever appeared.
         //
         // Only for documents big enough for the relayout to be visible; below that the work is a
         // few milliseconds and a spinner would be a flash of noise.
-        let heavy = (textView.textStorage?.length ?? 0) > 120_000
+        let heavy = heavyHint || (textView.textStorage?.length ?? 0) > 120_000
         if heavy {
             setBusy(true)
             spinner.display()                     // paint it now, before the main thread is busy
@@ -281,15 +285,45 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Set while the sidebar animates: width changes are ignored until it settles (see the toggle).
     private var suspendReflow = false
 
-    private func updateTextInset() {
+    /// Not private: `MarkdownDocument.render(into:)` calls this right before it reads the reading
+    /// column, which it uses BOTH as `OfficeTextBuilder.build`'s `columnWidth` and as the numerator of
+    /// that build's `graphicScale` — so an office document's graphics are sized against the SAME column
+    /// they will finally be displayed at. The controller's own convenience `init` runs
+    /// `updateTextInset()` before `addWindowController` wires `document`, so re-running it once
+    /// `document` is wired settles the column before those sizes freeze (invariant 1/11).
+    /// The GEOMETRY half of `updateTextInset` — inset, container width, text-view frame — returning
+    /// the resulting reading column, and deliberately WITHOUT the two passes that walk the entire
+    /// text storage.
+    ///
+    /// Callers that are about to REPLACE the storage (`MarkdownDocument.render(into:)`, and
+    /// `display(_:)` right before `setAttributedString`) need the column settled first, because a
+    /// rebuild freezes office graphic sizes against it (invariant 1/11). But at that instant the
+    /// storage still holds the OUTGOING document, so re-solving its tab stops and table columns is
+    /// work thrown away microseconds later. Measured on a 62-table HWP: 91 ms per full pass, and the
+    /// old code paid it THREE times per ⌘+ press (render, display's opening call, display's async
+    /// tail) when only the last one — the one that runs against the NEW string — does anything.
+    @discardableResult
+    func settleReadingColumn() -> CGFloat? {
         let clipWidth = scrollView.contentSize.width
-        guard clipWidth > 1, !suspendReflow else { return }
-        let column = max(200, clipWidth - 2 * minSideInset)   // fill the window minus margins
+        guard clipWidth > 1, !suspendReflow else { return nil }
+        let column = max(200, clipWidth - 2 * minSideInset)
         textView.textContainerInset = NSSize(width: minSideInset, height: verticalInset)
         textView.textContainer?.containerSize = NSSize(width: column, height: CGFloat.greatestFiniteMagnitude)
         var f = textView.frame; f.size.width = clipWidth; textView.frame = f
+        return column
+    }
+
+    func updateTextInset() {
+        // The reading column ALWAYS fills the window (minus side margins) — for every kind, office
+        // included. Pinning an office document's column to its page width was tried and rejected: it
+        // left a narrow column marooned in a wide window. Instead `render(into:)` divides this column
+        // by the document's own page width to get its GRAPHIC scale, so pictures hold
+        // the share of the column they held of the page and grow with the window, while text keeps
+        // following the reader's own ⌘+/⌘− size. markdown/plain text unchanged.
+        guard let column = settleReadingColumn() else { return }
         reanchorFillMarginTabs(toColumn: column)
         resizeTableColumns(toColumn: column)
+        resizeOfficeGraphics(toColumn: column)
     }
 
     /// Office-only (markdown/plain never carry `MDAttr.fillMarginTab`): re-anchors a paragraph's
@@ -345,6 +379,73 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         TableBlockBuilder.resizeTables(in: storage, toWidth: max(1, column - 2 * pad))
     }
 
+    /// The picture counterpart of `resizeTableColumns`, on the same cadence and for the same reason:
+    /// an office graphic holds the share of the reading column that it held of the SOURCE page
+    /// (`OfficeTextBuilder.build`'s `graphicScale`), so when the column changes its size must change
+    /// with it. Without this, widening the window re-wrapped the text and re-solved every table while
+    /// the pictures stayed exactly as large as the width they were built at — the page came apart.
+    ///
+    /// Sizes are re-derived through `OfficeTextBuilder.graphicSize`, the same function the build uses,
+    /// from the AUTHORED size carried in `MDAttr.officeGraphic` — never from the current on-screen
+    /// size, which would compound rounding error across a hundred resizes.
+    ///
+    /// This does NOT weaken invariant 1. That invariant forbids a reserved size that depends on
+    /// whether PIXELS are loaded (which makes the scroll bar swing during scrolling); this size is a
+    /// pure function of authored size and column, identical whether the image has loaded or not, and
+    /// it changes only during a reflow that is re-laying the whole document out anyway. `.image` is
+    /// left untouched for real pictures, so a loaded photo is not dropped by a resize; the
+    /// chart/SmartArt frame is redrawn because it IS its own pixels (invariant 31).
+    private func resizeOfficeGraphics(toColumn column: CGFloat) {
+        guard let storage = textView.textStorage, storage.length > 0,
+              let doc = document as? MarkdownDocument, doc.kind == .office, column > 0 else { return }
+        // Collect first — mutating attributes while enumerating them is undefined.
+        var work: [(NSRange, NSTextAttachment, OfficeGraphicInfo, CGSize)] = []
+        let whole = NSRange(location: 0, length: storage.length)
+        storage.enumerateAttribute(MDAttr.officeGraphic, in: whole, options: []) { value, range, _ in
+            guard let info = value as? OfficeGraphicInfo,
+                  let att = storage.attribute(.attachment, at: range.location,
+                                              effectiveRange: nil) as? NSTextAttachment else { return }
+            // Each graphic carries the width it was measured against (the source page, or the source
+            // TABLE for one in a cell), so the reflow divides by exactly what the build divided by —
+            // no second decision about the basis, and no lookup that could pick a different one.
+            guard let basis = info.basisWidth, basis > 0 else { return }
+            // The numerator is the on-screen width of that same container: the reading column, and for
+            // a cell graphic the table — which fills the reading column, so it is the column again.
+            let scale = column / basis
+            // A graphic inside a TABLE CELL is clamped to its cell, never to the ambient reading
+            // column — that is what the build does (`appendTable` → `cellContent(imageColumnWidth:)`),
+            // and clamping to the full column here would let a cell picture recompute far past its
+            // cell and blow the table's fixed column geometry apart (invariant 39). The cell's
+            // CURRENT content width is read back from the very block `resizeTableColumns` set one
+            // call earlier, so this adds no second copy of the cell-width math.
+            let clampWidth: CGFloat = {
+                guard let ps = storage.attribute(.paragraphStyle, at: range.location,
+                                                 effectiveRange: nil) as? NSParagraphStyle,
+                      let block = ps.textBlocks.first as? NSTextTableBlock else { return column }
+                let cellWidth = block.contentWidth
+                return cellWidth > 1 ? cellWidth : column
+            }()
+            let target = OfficeTextBuilder.graphicSize(authored: info.authored, graphicScale: scale,
+                                                       columnWidth: clampWidth)
+            let current = att.bounds.size
+            guard abs(target.width - current.width) > 0.5 || abs(target.height - current.height) > 0.5 else { return }
+            work.append((range, att, info, target))
+        }
+        guard !work.isEmpty else { return }
+        storage.beginEditing()
+        for (range, att, info, target) in work {
+            att.bounds = NSRect(origin: .zero, size: target)
+            (att.attachmentCell as? SizedAttachmentCell)?.reservedSize = target
+            if let label = info.placeholderLabel {
+                att.image = OfficeTextBuilder.placeholderImage(label: label, size: target)
+            }
+            // Invariant 3: a changed attachment is not redrawn (or re-laid-out) by invalidation
+            // alone — the storage has to be told its attributes changed.
+            storage.edited(.editedAttributes, range: range, changeInLength: 0)
+        }
+        storage.endEditing()
+    }
+
     // MARK: - Table of contents (⌥⌘T)
 
     private var isOutlineVisible = false
@@ -380,11 +481,26 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // happened to be open, collapse it too.
         let hasHeadings = !outline.entries.isEmpty
         sidebarButtonHost?.isHidden = !hasHeadings
-        if !hasHeadings, isOutlineVisible, !sidebarItem.isCollapsed {
-            sidebarItem.isCollapsed = true
-            isOutlineVisible = false
+        // No headings ⇒ no panel, decided by the SPLIT VIEW's actual state rather than by
+        // `isOutlineVisible`. That flag only records what the user toggled in THIS window, while the
+        // panel can also be open because AppKit restored a sidebar it saved from another window — and
+        // gating on the flag then left an empty 180pt panel beside a document with no outline at all
+        // (a government form whose section titles live inside table cells, so there is genuinely
+        // nothing to list). Re-asserted one run-loop turn later because that restoration can land
+        // AFTER this render; both passes are no-ops once it is collapsed.
+        if !hasHeadings {
+            collapseOutlineIfOpen()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.outline.entries.isEmpty else { return }
+                self.collapseOutlineIfOpen()
+            }
         }
         if isOutlineVisible { outline.markCurrent(charIndex: textView.selectedRange().location) }
+    }
+
+    private func collapseOutlineIfOpen() {
+        if !sidebarItem.isCollapsed { sidebarItem.isCollapsed = true }
+        isOutlineVisible = false
     }
 
     /// Clicking a heading in the sidebar moves the READING CURSOR there, not just the scroll
@@ -696,7 +812,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func display(_ attributed: NSAttributedString) {
-        updateTextInset()
+        // Geometry only: the storage is replaced on the very next line, so the full pass here would
+        // re-solve the outgoing document's tabs and tables for nothing (see `settleReadingColumn`).
+        // The async `updateTextInset()` below runs the real one, against the string just installed.
+        settleReadingColumn()
         textView.textStorage?.setAttributedString(attributed)
         textView.recomputeHeadingOffsets()
         reloadOutline()
@@ -740,6 +859,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let token = layoutToken
         guard let lm = textView.layoutManager, let storage = textView.textStorage else { return }
         let total = storage.length
+        // MEASURED, don't re-derive: slicing this by TIME (2k characters per pass until a 10 ms
+        // budget runs out) instead of by a flat character count sounds obviously better for office
+        // documents — the 62-table HWP is only ~19k characters, so one 20k chunk is the whole
+        // document — but it is NOT. Tried on that HWP: the worst main-thread freeze did not improve
+        // (216 ms → 194–238 ms) because the freeze is the REBUILD (build + display), not this pass,
+        // while the extra run-loop turns roughly doubled the time to a fully laid-out document
+        // (665 ms → 1126–1342 ms). Reverted deliberately; see `OfficeRenderLatencyTests`.
         let chunk = 20_000
         func step(_ loc: Int) {
             guard token == self.layoutToken, loc < total, self.textView.textStorage?.length == total else { return }

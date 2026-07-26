@@ -73,6 +73,10 @@ enum TableBlockBuilder {
         var styleShading: NSColor? = nil
         var styleBorderColor: NSColor? = nil
         var styleBorderWidth: CGFloat? = nil
+        /// Mirrors `Cell.edgeBorders` — the cell's four edges when the document declared them
+        /// individually. `nil` (markdown, and any format that states one uniform border) keeps the
+        /// single-width path above, byte-identical to before this existed.
+        var edgeBorders: EdgeBorders? = nil
     }
 
     /// - Parameters:
@@ -99,9 +103,12 @@ enum TableBlockBuilder {
     ///     existed.
     static func build(rows: [[CellContent]], headerRows: Int, theme: RenderTheme,
                        columnWidths: [CGFloat] = [], tableBorderColor: NSColor? = nil,
-                       tableBorderWidth: CGFloat? = nil, tableShading: NSColor? = nil) -> NSAttributedString {
+                       tableBorderWidth: CGFloat? = nil, tableShading: NSColor? = nil,
+                       tableEdges: EdgeBorders? = nil,
+                       width: CGFloat = Self.initialColumnWidth) -> NSAttributedString {
         let result = NSMutableAttributedString()
         guard !rows.isEmpty else { return result }
+        let rowCount = rows.count
 
         // Walk anchors in document order, placing each into the next column not already covered
         // by an EARLIER row's vertical span. `coveredByLaterRow[r]` collects the columns a span
@@ -188,7 +195,12 @@ enum TableBlockBuilder {
         table.columnProportions = proportions
         table.collapsesBorders = true
         table.hidesEmptyCells = false
-        let edges = table.edges(forWidth: Self.initialColumnWidth)
+        // Solve the grid at the width the table will ACTUALLY be displayed at when the caller knows
+        // it. Building at the placeholder and letting `resizeTables` correct it a moment later is
+        // what made a table visibly shrink and then snap wider on every render — two paints of the
+        // same table, the first one wrong. The placeholder stays as the default for callers with no
+        // real width yet (markdown's renderer, and any build before a window exists).
+        let edges = table.edges(forWidth: width)
 
         for placement in placements {
             let header = placement.row < headerRows
@@ -208,13 +220,63 @@ enum TableBlockBuilder {
             let block = NSTextTableBlock(table: table,
                                          startingRow: placement.row, rowSpan: placement.rowSpan,
                                          startingColumn: placement.col, columnSpan: placement.colSpan)
-            block.setBorderColor(borderColor)
-            block.setWidth(borderWidth, type: .absoluteValueType, for: .border)
+            // PER-EDGE borders when the document declared them that way (docx `w:tcBorders`/
+            // `w:tblBorders`), the uniform width/colour otherwise. Real reports state each edge
+            // separately — a row whose top is a solid blue rule and whose bottom is a dotted hairline
+            // — and collapsing that to one width per cell gave every row a different-looking box,
+            // which reads as a ragged table. A cell inherits the table's OUTER edge where it sits on
+            // that side of the grid and the table's INTERIOR edge where it does not, which is Word's
+            // own model and the reason this resolution lives here: only this loop knows where a cell
+            // sits. An edge the document turned off draws nothing (width 0), which is a different
+            // statement from an edge it never mentioned (inherits).
+            let cellEdges = placement.cell?.edgeBorders
+            let onTop = placement.row == 0, onLeft = placement.col == 0
+            let onBottom = placement.row + placement.rowSpan >= rowCount
+            let onRight = placement.col + placement.colSpan >= ncol
+            func side(_ own: BorderSide?, outer: BorderSide?, inside: BorderSide?, isOuter: Bool) -> BorderSide? {
+                own ?? (isOuter ? outer : inside)
+            }
+            let t = side(cellEdges?.top, outer: tableEdges?.top, inside: tableEdges?.insideH, isOuter: onTop)
+            let b = side(cellEdges?.bottom, outer: tableEdges?.bottom, inside: tableEdges?.insideH, isOuter: onBottom)
+            let l = side(cellEdges?.left, outer: tableEdges?.left, inside: tableEdges?.insideV, isOuter: onLeft)
+            let r = side(cellEdges?.right, outer: tableEdges?.right, inside: tableEdges?.insideV, isOuter: onRight)
+            // Four edges that agree need only the UNIFORM setters — two calls instead of twelve. Most
+            // cells in most documents are uniform, and a table-heavy report has thousands of them: the
+            // per-edge path measured ~25 ms of extra ObjC traffic on a 2,489-cell document, paid on
+            // every font change. Only a cell whose edges genuinely differ pays for the difference.
+            let uniform = t == b && b == l && l == r
+            let perEdge = !uniform
+                && ((cellEdges.map { !$0.isEmpty } ?? false) || (tableEdges.map { !$0.isEmpty } ?? false))
+            var leftWidth = borderWidth, rightWidth = borderWidth
+            if uniform, let only = t {
+                // Every edge the same, but STATED — honour the stated width/colour, uniformly.
+                block.setBorderColor(only.color ?? borderColor)
+                block.setWidth(only.width, type: .absoluteValueType, for: .border)
+                leftWidth = only.width
+                rightWidth = only.width
+            } else if perEdge {
+                // One colour call for the common case, then only the edges that actually differ —
+                // a table-heavy report runs this thousands of times per font change, and most edges
+                // either state no colour (auto) or the same one.
+                block.setBorderColor(borderColor)
+                for (edge, spec) in [(NSRectEdge.minY, t), (.maxY, b), (.minX, l), (.maxX, r)] {
+                    block.setWidth(spec?.width ?? 0, type: .absoluteValueType, for: .border, edge: edge)
+                    if let c = spec?.color, c != borderColor { block.setBorderColor(c, for: edge) }
+                }
+                leftWidth = l?.width ?? 0
+                rightWidth = r?.width ?? 0
+            } else {
+                block.setBorderColor(borderColor)
+                block.setWidth(borderWidth, type: .absoluteValueType, for: .border)
+            }
             block.setWidth(padding, type: .absoluteValueType, for: .padding)
             // ABSOLUTE integer content width: the cell's integer span width minus its own padding and
-            // borders, so every row's column boundary lands on the same integer x (no percentage drift).
+            // borders, so every row's column boundary lands on the same integer x (no percentage
+            // drift). The LEFT and RIGHT edges are subtracted individually — with per-edge borders
+            // they legitimately differ, and subtracting one of them twice moves the column boundary.
             let cellWidth = edges[min(placement.col + placement.colSpan, ncol)] - edges[placement.col]
-            block.setContentWidth(max(1, cellWidth - 2 * padding - 2 * borderWidth), type: .absoluteValueType)
+            block.setContentWidth(max(1, cellWidth - 2 * padding - leftWidth - rightWidth),
+                                  type: .absoluteValueType)
             if let background { block.backgroundColor = background }
             switch placement.cell?.verticalAlignment ?? .top {
             case .top: block.verticalAlignment = .topAlignment
@@ -335,14 +397,35 @@ enum TableBlockBuilder {
             let c0 = min(block.startingColumn, ncol)
             let c1 = min(block.startingColumn + block.columnSpan, ncol)
             guard c1 > c0, c1 < edges.count else { return }
-            let pad = block.width(for: .padding, edge: .minX)   // read back this cell's own padding
-            let border = block.width(for: .border, edge: .minX)
-            block.setContentWidth(max(1, edges[c1] - edges[c0] - 2 * pad - 2 * border), type: .absoluteValueType)
+            // Read BOTH horizontal edges back, never one of them twice. With per-edge borders the
+            // left and right widths legitimately differ (a table with no outer rule but an inner one
+            // has left 0 and right 1), and doubling the left produced a target that never matched
+            // what `build` had already set — so every cell "changed" on every reflow: real work, and
+            // a visible re-snap of the whole table right after it was drawn.
+            let padL = block.width(for: .padding, edge: .minX)
+            let padR = block.width(for: .padding, edge: .maxX)
+            let borderL = block.width(for: .border, edge: .minX)
+            let borderR = block.width(for: .border, edge: .maxX)
+            let target = max(1, edges[c1] - edges[c0] - padL - padR - borderL - borderR)
+            // Only cells whose width actually MOVES are touched. This pass runs on every reflow AND
+            // in `display(_:)`'s tail, where the column usually hasn't changed at all — recording
+            // every cell unconditionally meant invalidating the whole document to set widths to the
+            // values they already had.
+            guard abs(block.contentWidth - target) > 0.5 else { return }
+            block.setContentWidth(target, type: .absoluteValueType)
             touched.append(range)
         }
-        // Widths changed on the shared block objects; nudge layout to pick them up.
-        if !touched.isEmpty, let lm = storage.layoutManagers.first {
-            for r in touched { lm.invalidateLayout(forCharacterRange: r, actualCharacterRange: nil) }
+        // Widths changed on the shared block objects; nudge layout to pick them up — ONCE, over the
+        // span they cover, not once per cell. Measured on a 62-table Korean form (1,702 cell
+        // paragraphs): per-cell invalidation cost 73 ms against 5 ms for a 610-cell Word report — a
+        // 14× gap on 2.8× the cells, because each `invalidateLayout` call re-walks what follows it.
+        // One call over the union is the same instruction to the layout manager, paid once.
+        if let lower = touched.first?.location, let last = touched.last,
+           let lm = storage.layoutManagers.first {
+            let upper = min(storage.length, last.location + last.length)
+            guard upper > lower else { return }
+            lm.invalidateLayout(forCharacterRange: NSRange(location: lower, length: upper - lower),
+                                actualCharacterRange: nil)
         }
     }
 }

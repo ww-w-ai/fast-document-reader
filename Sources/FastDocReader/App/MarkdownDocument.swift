@@ -23,6 +23,16 @@ final class MarkdownDocument: NSDocument {
     /// fallback both readers themselves return) when the document declares no default of its own.
     private(set) var officeDefaultBodyFontSize: CGFloat = 11
 
+    /// The SOURCE document's own page BODY width in points (paper − margins), or nil when the reader
+    /// could not determine it — see `OfficeReadResult.pageContentWidth`. Set alongside `officeBlocks`
+    /// on every read/reload. `render(into:)` divides the reading column by it to get the GRAPHIC scale
+    /// it hands `OfficeTextBuilder.build` (`graphicScale`), so an image occupies the same share of the
+    /// column that it occupied of the source page. It does NOT change the column itself — the column
+    /// always fills the window (pinning it to the page width was tried and rejected, see
+    /// `DocumentWindowController.updateTextInset`). nil for every non-office kind, and nil here means
+    /// graphics keep their authored point size exactly as before this existed.
+    private(set) var officePageContentWidth: CGFloat?
+
     /// The archive `officeBlocks` was parsed from, kept so an `.image` block's id (an archive entry
     /// path, e.g. `"word/media/image1.png"`) can be pulled on demand when it scrolls into view — the
     /// same lazy-pixels discipline `reconcileMedia` already gives markdown images, not a second
@@ -39,7 +49,10 @@ final class MarkdownDocument: NSDocument {
 
     // C3: bumped on every full render; async mermaid swaps from a previous render carry
     // a stale generation and abort before mutating, so only the latest render wins.
-    private var renderGeneration = 0
+    /// Bumped by every render. `private(set)` (not `private`) so a latency probe can tell "the
+    /// rebuild has actually happened" apart from "nothing has started yet" — without it, timing a
+    /// debounced re-render measures the debounce and stops before the work begins.
+    private(set) var renderGeneration = 0
 
     // While the up-front measure pass is rendering uncached diagrams, their exact size isn't known
     // yet — reconcileMedia must NOT load them (that would resize under the reader). Cleared once the
@@ -120,7 +133,8 @@ final class MarkdownDocument: NSDocument {
             let result = try HwpReader.read(data)
             setOfficeContent(
                 blocks: result.blocks, comments: result.comments, archive: nil,
-                images: result.images, defaultBodyFontSize: result.defaultBodyFontSize)
+                images: result.images, defaultBodyFontSize: result.defaultBodyFontSize,
+                pageContentWidth: result.pageContentWidth)
             return
         }
         let archive = try ZipArchive(data: data)
@@ -128,7 +142,8 @@ final class MarkdownDocument: NSDocument {
         setOfficeContent(
             blocks: result.blocks, comments: result.comments, archive: archive,
             images: result.images,
-            defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext))
+            defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext),
+            pageContentWidth: result.pageContentWidth)
     }
 
     /// The office-document seam `read(from:)` and `reloadDocument` both go through: the parser's
@@ -138,13 +153,15 @@ final class MarkdownDocument: NSDocument {
     /// parser's own correctness is `DocxReaderTests`' job, not this file's).
     func setOfficeContent(
         blocks: [OfficeBlock], comments: [OfficeComment] = [], archive: ZipArchive?,
-        images: [String: Data] = [:], defaultBodyFontSize: CGFloat = 11
+        images: [String: Data] = [:], defaultBodyFontSize: CGFloat = 11,
+        pageContentWidth: CGFloat? = nil
     ) {
         self.officeBlocks = blocks
         self.officeComments = comments
         self.officeArchive = archive
         self.officeImageBytes = images
         self.officeDefaultBodyFontSize = defaultBodyFontSize
+        self.officePageContentWidth = pageContentWidth
         self.text = ""
         self.file = TextFile(text: "", encoding: .utf8, hasBOM: false)
     }
@@ -172,7 +189,7 @@ final class MarkdownDocument: NSDocument {
     /// failing meant the function silently did nothing, which looks identical to a successful no-op
     /// reload and hides a real problem (deleted file, permissions, a corrupted archive) from the user.
     enum ReloadOutcome {
-        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat)
+        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?)
         case text(TextFile)
         case failure(String)
     }
@@ -194,20 +211,24 @@ final class MarkdownDocument: NSDocument {
         }
         do {
             // HWP branches to `HwpReader.read(Data)` before `ZipArchive` for the same reason as
-            // `read(from:)` — a `.hwp` is not a zip. Nil archive, images pre-decoded, 11pt default,
-            // so a ⌘R reload of an HWP renders identically to its first open (invariant 29).
+            // `read(from:)` — a `.hwp` is not a zip. Nil archive, images pre-decoded, and the SAME
+            // `result.defaultBodyFontSize`/`pageContentWidth` the first open uses (NOT a hardcoded
+            // 11 — that made a ⌘R reload of an HWP whose declared body size ≠ 11 render differently
+            // from its first open, the exact regression invariant 29 forbids).
             if DocumentTypes.isHwp(ext) {
                 let result = try HwpReader.read(data)
                 return .office(
                     blocks: result.blocks, comments: result.comments, archive: nil,
-                    images: result.images, defaultBodyFontSize: 11)
+                    images: result.images, defaultBodyFontSize: result.defaultBodyFontSize,
+                    pageContentWidth: result.pageContentWidth)
             }
             let archive = try ZipArchive(data: data)
             let result = try DocumentTypes.readOffice(archive, extension: ext)
             let defaultBodyFontSize = DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext)
             return .office(
                 blocks: result.blocks, comments: result.comments, archive: archive,
-                images: result.images, defaultBodyFontSize: defaultBodyFontSize)
+                images: result.images, defaultBodyFontSize: defaultBodyFontSize,
+                pageContentWidth: result.pageContentWidth)
         } catch {
             return .failure(error.localizedDescription)
         }
@@ -231,13 +252,13 @@ final class MarkdownDocument: NSDocument {
         if let url = fileURL {
             let ext = url.pathExtension.isEmpty ? (untitledExtension ?? "") : url.pathExtension
             switch Self.reloadOutcome(url: url, kind: kind, extension: ext) {
-            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize):
+            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth):
                 // Re-parse the archive, same as the initial read — never through the text-decode
                 // path (invariant: an office document's bytes are never handed to
                 // `TextEncodingDetector`). `defaultBodyFontSize` is carried through too, so a
                 // reload renders identically to the first open of the same file (see invariant 29's
                 // "reload must behave the same as first open" lesson).
-                setOfficeContent(blocks: blocks, comments: comments, archive: archive, images: images, defaultBodyFontSize: defaultBodyFontSize)
+                setOfficeContent(blocks: blocks, comments: comments, archive: archive, images: images, defaultBodyFontSize: defaultBodyFontSize, pageContentWidth: pageContentWidth)
             case .text(let reread):
                 // The undo stack holds source OFFSETS into the text we're replacing. Re-reading the
                 // file can move every one of them (the file may have changed behind us), so an undo
@@ -467,17 +488,81 @@ final class MarkdownDocument: NSDocument {
     @objc func decreaseReaderFontSize(_ sender: Any?) { FontSizeStore.decrease(); reRenderPreservingCaret() }
     @objc func resetReaderFontSize(_ sender: Any?) { FontSizeStore.reset(); reRenderPreservingCaret() }
 
+    /// A queued font-size rebuild, kept so a burst of presses collapses into one (see below).
+    private var pendingFontRerender: DispatchWorkItem?
+
+    /// ⌘+/⌘− rebuilds and re-lays out the WHOLE document — measured end to end at 0.36 s on a
+    /// 38-table Word report and 0.8 s on a 62-table HWP. Pressing the key three times quickly used
+    /// to cost three of those, one after another, and the reader sat through all three even though
+    /// only the LAST size is ever seen. So the rebuild is debounced: each press cancels the queued
+    /// one and re-queues, and because `FontSizeStore` was already updated synchronously, the single
+    /// rebuild that survives renders the FINAL size. 120 ms is short enough to feel immediate and far
+    /// shorter than one rebuild, so a burst now costs one rebuild instead of N.
     private func reRenderPreservingCaret() {
+        pendingFontRerender?.cancel()
+        // LEADING edge: the first press after a pause renders immediately, so the key always does
+        // something visible the moment it is pressed. Only presses that arrive while a rebuild is
+        // still fresh are collapsed into ONE trailing render at the final size.
+        //
+        // A plain trailing debounce (what this was) is what made ⌘+ feel BROKEN rather than fast:
+        // holding the key re-queued the work on every repeat, so the document sat unchanged until
+        // the key was released — the total work went down but the reader saw nothing happen.
+        // "In flight" matters as much as "how long ago": several presses can land in ONE run-loop
+        // turn (a held key, or a script), and without this each would start its own full rebuild.
+        if !fontRerenderInFlight, Date().timeIntervalSince(lastFontRerenderEnded) > Self.fontRerenderIdleGap {
+            fontRerenderInFlight = true
+            performFontSizeRerender()
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingFontRerender = nil
+            self.fontRerenderInFlight = true
+            self.performFontSizeRerender()
+        }
+        pendingFontRerender = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    /// How long after a font re-render finishes the next press is still treated as part of the same
+    /// burst. Below this, presses collapse; above it, the next press renders at once.
+    private static let fontRerenderIdleGap: TimeInterval = 0.25
+    private var lastFontRerenderEnded = Date.distantPast
+    private var fontRerenderInFlight = false
+
+    /// Whether an office re-render is heavy enough to deserve the spinner. Cost here is driven by
+    /// TABLES and graphics, not by character count — the 62-table HWP measured at 0.8 s per font
+    /// change holds only ~19k characters, well under `runBusy`'s 120k-character heuristic, so the
+    /// slowest operation in the app was the one showing no feedback. Early-exits after the eighth.
+    private var officeRerenderIsHeavy: Bool {
+        guard kind == .office else { return false }
+        var structural = 0
+        for block in officeBlocks {
+            switch block {
+            case .table, .image, .unsupportedGraphic: structural += 1
+            default: break
+            }
+            if structural >= 8 { return true }
+        }
+        return false
+    }
+
+    private func performFontSizeRerender() {
         guard let wc = windowControllers.first as? DocumentWindowController else { return }
         let anchor = wc.readingAnchor()            // cursor if visible, else the middle of the page
         let savedCaret = wc.textView.readingCaret
         // A font-size change re-renders and re-lays out EVERYTHING, media included — the slowest
         // thing the app does on a long document, so it gets the spinner like the other reflows.
-        wc.runBusy { [weak self, weak wc] in
+        wc.runBusy(heavy: officeRerenderIsHeavy) { [weak self, weak wc] in
             guard let self, let wc else { return }
             self.render(into: wc)                   // resets caret to 0 and re-lays out at the new size
             wc.textView.readingCaret = savedCaret   // restore reading position (clamped internally)
             wc.restore(anchor)                      // and put the page back where the eye was
+            // Stamped when the work FINISHES, not when it was requested: what decides whether the
+            // next press is "part of this burst" is whether a rebuild just ran, not how long ago the
+            // reader last touched the key.
+            self.lastFontRerenderEnded = Date()
+            self.fontRerenderInFlight = false
         }
     }
 
@@ -529,6 +614,16 @@ final class MarkdownDocument: NSDocument {
     private func render(into wc: DocumentWindowController) {
         // FontSizeStore is the SINGLE owner of font size — never read UserDefaults directly.
         let theme = RenderTheme.current(size: FontSizeStore.size)
+        // Refresh the reading column NOW that `wc.document` is wired (`makeWindowControllers` runs
+        // `addWindowController` BEFORE this `render`): the controller's own `init` already ran
+        // `updateTextInset` once, but that was before `document` was set, so an office document's
+        // `officePageContentWidth` was unreachable and the pass baked the wide window-filling
+        // fallback. Re-run it here so the office `columnWidth` read below is the FINAL pinned+centred
+        // page column, not the stale pre-document width — office image sizes are frozen at build time
+        // and never re-derived (invariant 1/11), so they MUST be built against the real column.
+        // Geometry ONLY (`settleReadingColumn`, not the full `updateTextInset`): the storage still
+        // holds the outgoing document that the string built below is about to replace.
+        wc.settleReadingColumn()
         let attr: NSAttributedString
         switch kind {
         case .plainText: attr = PlainTextRenderer.render(text, theme: theme)
@@ -536,13 +631,37 @@ final class MarkdownDocument: NSDocument {
         // Rebuilt from blocks every render, not cached: a font-size change (⌘+/⌘−) or ⌘R must
         // reflow office text exactly like markdown does — a finished string would freeze the
         // document at whatever size it was first opened at.
-        // The reader's real column width, so an office image is column-fitted at build time (see
-        // `OfficeTextBuilder.appendImage`) — the same width `presizeKnownMedia` reads for markdown,
-        // already real by this point (set in `DocumentWindowController.init`/`display`).
-        case .office: attr = OfficeTextBuilder.build(officeBlocks, theme: theme,
-                                                      columnWidth: wc.textView.textContainer?.size.width ?? 800,
-                                                      documentDefaultFontSize: officeDefaultBodyFontSize,
-                                                      comments: officeComments)
+        // TWO independent scales, and keeping them independent is the whole point:
+        //   • TEXT (and the absolute spacing/indent/tab stops that belong with it) rides the reader's
+        //     own size — `theme` above, i.e. `FontSizeStore.size ÷ officeDefaultBodyFontSize` inside
+        //     the builder (invariant 37). So ⌘+/⌘− works on an office document exactly as it does on
+        //     markdown, which is the entire point of that setting.
+        //   • GRAPHICS (images, chart/SmartArt placeholders) ride `graphicScale` = the reading column
+        //     ÷ the SOURCE page's body width. A picture was authored as a fraction of its page, so
+        //     reproducing that fraction of the column keeps the document's own font↔image proportion
+        //     and makes pictures grow/shrink with the WINDOW — never with the font setting.
+        // Both were briefly fused (the page fitted to the column by faking the base font size); that
+        // made ⌘+/⌘− dead on office documents and tied photograph size to a text preference.
+        // The column read here is real — `wc.settleReadingColumn()` above ran with `document` wired —
+        // and it MUST be, because graphic sizes freeze at build time and are never re-derived
+        // (invariant 1/11). A document whose reader could not determine a page width gets scale 1,
+        // i.e. authored sizes verbatim, the pre-existing behaviour. Identical for docx/odt/HWP: one
+        // `OfficeBlock` vocabulary, one builder, no per-format branch.
+        case .office:
+            let colW = wc.textView.textContainer?.size.width ?? 800
+            // The width tables are ACTUALLY laid out at: the reading column minus the text
+            // container's own padding on each side, which is exactly what
+            // `DocumentWindowController.resizeTableColumns` re-solves them to. Handing it to the
+            // builder makes the first paint the final one — otherwise every table is built at a
+            // placeholder width and visibly resized a moment later (the "table shrinks then grows"
+            // flicker), and the resize pass then has real work to do on every single render.
+            let pad = wc.textView.textContainer?.lineFragmentPadding ?? 5
+            attr = OfficeTextBuilder.build(officeBlocks, theme: theme,
+                                           columnWidth: colW,
+                                           documentDefaultFontSize: officeDefaultBodyFontSize,
+                                           pageContentWidth: officePageContentWidth,
+                                           tableWidth: max(1, colW - 2 * pad),
+                                           comments: officeComments)
         }
         wc.display(attr)
         wc.window?.title = displayName ?? "fast-md-reader"

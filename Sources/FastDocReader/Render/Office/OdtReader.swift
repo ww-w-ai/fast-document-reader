@@ -93,7 +93,29 @@ enum OdtReader: OfficeDocumentReader {
         let noteBlocks = buildNoteBlocks(notes.entries, styles: styles, archive: archive)
         return OfficeReadResult(
             blocks: bodyBlocks + noteBlocks,
-            comments: notes.comments.sorted { $0.number < $1.number })
+            comments: notes.comments.sorted { $0.number < $1.number },
+            pageContentWidth: pageContentWidth(styleRoots: styleRoots))
+    }
+
+    /// The document's page BODY width in points — a `style:page-layout-properties`' `fo:page-width`
+    /// minus `fo:margin-left`/`-right`. ODF keeps page geometry in `style:page-layout` (usually in
+    /// `styles.xml`'s `office:automatic-styles`), referenced by a `style:master-page`; the first
+    /// `style:page-layout-properties` carrying a `fo:page-width` is used (documents overwhelmingly
+    /// declare one page layout — same "first section only" scope as the HWP/docx readers). Lengths go
+    /// through the shared `parseLength` (cm/mm/in/pt→pt). `fo:page-width` in ODF is ALREADY the
+    /// orientation-applied paper width, so landscape needs no swap. Returns nil when no page layout /
+    /// no `fo:page-width` / width ≤0 → the reader keeps its window-filling column.
+    private static func pageContentWidth(styleRoots: [XMLNode]) -> CGFloat? {
+        for root in styleRoots {
+            guard let props = root.firstDescendant("style:page-layout-properties"),
+                  let widthRaw = props.attributes["fo:page-width"], let width = parseLength(widthRaw)
+            else { continue }
+            let left = props.attributes["fo:margin-left"].flatMap(parseLength) ?? 0
+            let right = props.attributes["fo:margin-right"].flatMap(parseLength) ?? 0
+            let content = width - left - right
+            if content > 0 { return content }
+        }
+        return nil
     }
 
     /// The document's own default BODY paragraph size, in points — ODF states this in
@@ -997,7 +1019,13 @@ enum OdtReader: OfficeDocumentReader {
         _ node: XMLNode, make: ([Span]) -> OfficeBlock, styles: ParsedStyles, archive: ZipArchive, notes: NoteCollector
     ) -> [OfficeBlock] {
         let spans = collectSpans(in: node, style: TextStyle(), textStyles: styles.textStyles, notes: notes)
-        let images = collectImages(in: node, archive: archive)
+        // A figure inherits its paragraph's alignment (see `OfficeBlock.image`'s `alignment`), read
+        // back through the SAME `resolvedStyle` lookup the caller used to build `make` — so the
+        // picture and the text around it can never disagree about how this paragraph is aligned.
+        // Resolved here rather than threaded through all ten call sites, which would be ten chances
+        // for one of them to pass something slightly different.
+        let paragraphAlignment = resolvedStyle(node.attributes["text:style-name"], styles: styles).alignment
+        let images = collectImages(in: node, archive: archive).map { $0.aligningGraphic(to: paragraphAlignment) }
         let textBoxes = collectTextBoxBlocks(in: node, textStyles: styles.textStyles, notes: notes)
         var blocks: [OfficeBlock] = []
         if !(spans.isEmpty && !(images.isEmpty && textBoxes.isEmpty)) { blocks.append(make(spans)) }

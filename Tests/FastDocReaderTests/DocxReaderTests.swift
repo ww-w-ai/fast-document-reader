@@ -125,6 +125,39 @@ final class DocxReaderTests: XCTestCase {
         return try DocxReader.read(archive).blocks
     }
 
+    /// Full result (not just blocks) so page-width parsing off the body `w:sectPr` is assertable.
+    private func readResult(_ document: String) throws -> OfficeReadResult {
+        try DocxReader.read(try ZipArchive(data: buildDocx(document: doc(document))))
+    }
+
+    // MARK: page content width (body w:sectPr → pgSz − pgMar, twips÷20 = pt)
+
+    func testPageContentWidthFromBodySectPr() throws {
+        // A4: pgSz w:w=11906 twips (595.3pt); pgMar left/right=1701 twips (85pt) → body 425.2pt.
+        let r = try readResult(
+            "<w:p><w:r><w:t>x</w:t></w:r></w:p>"
+            + "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/>"
+            + "<w:pgMar w:left=\"1701\" w:right=\"1701\" w:top=\"1440\" w:bottom=\"1440\"/></w:sectPr>")
+        XCTAssertEqual(r.pageContentWidth ?? -1, (11906.0 - 1701 - 1701) / 20, accuracy: 0.01)
+    }
+
+    func testPageContentWidthNilWhenNoSectPr() throws {
+        // No page setup declared → nil → reader keeps window-filling column (byte-identical).
+        XCTAssertNil(try readResult("<w:p><w:r><w:t>x</w:t></w:r></w:p>").pageContentWidth)
+    }
+
+    func testPageContentWidthUsesFullPageWhenNoMargins() throws {
+        // pgSz without pgMar → margins default 0 → body = full page width (US Letter 12240 twips).
+        let r = try readResult("<w:sectPr><w:pgSz w:w=\"12240\"/></w:sectPr>")
+        XCTAssertEqual(r.pageContentWidth ?? -1, 12240.0 / 20, accuracy: 0.01)  // 612pt
+    }
+
+    func testPageContentWidthNilWhenMarginsExceedPage() throws {
+        // Degenerate: margins ≥ page → computed ≤0 → nil, never a negative column.
+        XCTAssertNil(try readResult(
+            "<w:sectPr><w:pgSz w:w=\"2000\"/><w:pgMar w:left=\"1200\" w:right=\"1200\"/></w:sectPr>").pageContentWidth)
+    }
+
     private func read(document: String, rels: String?, media: [(name: String, bytes: [UInt8])] = []) throws -> [OfficeBlock] {
         let zip = buildDocx(document: doc(document), rels: rels, media: media)
         let archive = try ZipArchive(data: zip)
@@ -1484,6 +1517,47 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertEqual(blocks, [.image(id: "word/media/image1.png", size: CGSize(width: 504, height: 72))])
     }
 
+    /// A picture inherits the alignment of the paragraph it sits in (`w:jc`). Word puts a centred
+    /// figure in a centred paragraph — the drawing itself says nothing about alignment — so a reader
+    /// that only looks at the drawing renders every figure hard left, which is what this one did.
+    func testImageInheritsItsParagraphsAlignment() throws {
+        let blocks = try read(
+            document: "<w:p><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:r>\(drawing(cx: 914_400, cy: 914_400, embed: "rId8"))</w:r></w:p>",
+            rels: rels([(id: "rId8", target: "media/image1.png", external: false)]))
+        guard case let .image(_, _, alignment) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected an image block, got \(blocks)")
+        }
+        XCTAssertEqual(alignment, .center)
+    }
+
+    /// …and a paragraph that states no alignment leaves the picture unaligned, so a document that
+    /// never centres anything renders exactly as it did before this existed.
+    func testImageInAnUnalignedParagraphCarriesNoAlignment() throws {
+        let blocks = try read(
+            document: "<w:p><w:r>\(drawing(cx: 914_400, cy: 914_400, embed: "rId8"))</w:r></w:p>",
+            rels: rels([(id: "rId8", target: "media/image1.png", external: false)]))
+        guard case let .image(_, _, alignment) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected an image block, got \(blocks)")
+        }
+        XCTAssertNil(alignment)
+    }
+
+    /// `w:tblGrid` is the table's own width, and a picture in a cell is scaled against it rather than
+    /// the page (`TableFormat.sourceWidth`) — the reader stretches tables to the reading column, so a
+    /// page-scaled picture would shrink relative to the cell that grew around it.
+    func testTableCarriesItsOwnSourceWidthFromTheGrid() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="3000"/></w:tblGrid>
+        <w:tr><w:tc><w:p><w:r><w:t>a</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>b</w:t></w:r></w:p></w:tc></w:tr>
+        </w:tbl>
+        """)
+        guard case let .table(_, _, _, format) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected a table, got \(blocks)")
+        }
+        XCTAssertEqual(try XCTUnwrap(format.sourceWidth), 250, accuracy: 0.01,
+                       "5000 twips ⇒ 250pt, the table's own width as Word laid it out")
+    }
+
     func testAlternateContentEmitsOnlyTheChoiceImageNeverTheFallback() throws {
         let blocks = try read(
             document: """
@@ -1852,7 +1926,7 @@ final class DocxReaderTests: XCTestCase {
         let blocks = try read(
             document: "<w:p><w:r><w:pict><v:shape><v:imagedata r:id=\"rId10\"/></v:shape></w:pict></w:r></w:p>",
             rels: rels([(id: "rId10", target: "media/image1.png", external: false)]))
-        guard case .image(_, let size) = blocks.first else { return XCTFail("expected an image block") }
+        guard case .image(_, let size, _) = blocks.first else { return XCTFail("expected an image block") }
         XCTAssertGreaterThan(size.width, 0)
         XCTAssertGreaterThan(size.height, 0)
     }

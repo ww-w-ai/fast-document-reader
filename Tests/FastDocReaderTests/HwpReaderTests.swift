@@ -40,6 +40,27 @@ final class HwpReaderTests: XCTestCase {
         print("FMD_HWP_SAMPLE defaultBodyFontSize = \(result.defaultBodyFontSize)")
     }
 
+    // End-to-end page-content-width, gated on a sample path. Proves the WHOLE chain: real bytes →
+    // rhwp FFI → PageAreas.body_area ÷100 → envelope `pageContentWidth` → `result.pageContentWidth`.
+    // A real A4 document surfaces a positive width near the A4 body (~476pt at 30mm margins); the
+    // exact value is document-dependent, so assert only positivity and (optionally) an expected value
+    // via FMD_HWP_EXPECT_WIDTH_PT. Prints the value so a real document's page width is observable.
+    func testRealSampleSurfacesPageContentWidth() throws {
+        guard let path = ProcessInfo.processInfo.environment["FMD_HWP_SAMPLE"] else {
+            throw XCTSkip("Set FMD_HWP_SAMPLE to a .hwp/.hwpx path to run this")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let result = try HwpReader.read(data)
+        print("FMD_HWP_SAMPLE pageContentWidth = \(String(describing: result.pageContentWidth))")
+        if let expect = ProcessInfo.processInfo.environment["FMD_HWP_EXPECT_WIDTH_PT"].flatMap(Double.init) {
+            let w = try XCTUnwrap(result.pageContentWidth, "expected a page width for this sample")
+            XCTAssertEqual(w, CGFloat(expect), accuracy: 0.5)
+        } else if let w = result.pageContentWidth {
+            XCTAssertGreaterThan(w, 0, "a page width, when present, must be positive")
+            XCTAssertLessThan(w, 2000, "a sane page body width is well under 2000pt")
+        }
+    }
+
     // Read-time image pre-decode, gated on a sample that ACTUALLY HAS an embedded image.
     // Point FMD_HWP_IMAGE_SAMPLE at a .hwp/.hwpx with a picture. Asserts `read` collects the
     // bytes (they can't be resolved later — no archive, and the rhwp handle is closed by return),

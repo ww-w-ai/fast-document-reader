@@ -71,7 +71,27 @@ enum DocxReader: OfficeDocumentReader {
             styleInfo: styleInfo, numbering: numbering, relationships: relationships, notes: notes, comments: comments,
             listState: listState)
         let officeComments = parseComments(from: archive, numberById: commentNumberById)
-        return OfficeReadResult(blocks: bodyBlocks + noteBlocks, comments: officeComments)
+        return OfficeReadResult(blocks: bodyBlocks + noteBlocks, comments: officeComments,
+                                pageContentWidth: pageContentWidth(body: body))
+    }
+
+    /// The document's page BODY width in points — the body-level `w:sectPr`'s `w:pgSz@w:w` minus its
+    /// `w:pgMar@w:left`/`@w:right`, all in twips (÷20 = pt). The body's OWN trailing `w:sectPr` is the
+    /// last section's page setup (invariant: `read`'s `:1789` note — the body's trailing `w:sectPr` is
+    /// section properties, not a block). `orient="landscape"` needs no swap: Word stores the pgSz
+    /// `w:w`/`w:h` already rotated for landscape. Returns nil when there is no `w:sectPr`/`w:pgSz` or
+    /// the computed width is ≤0 → the reader keeps its window-filling column (byte-identical to a
+    /// document that declares no page size). Twips÷20 matches every other length in this reader
+    /// (`gridCol`, indents).
+    private static func pageContentWidth(body: XMLNode) -> CGFloat? {
+        guard let sectPr = body.children.last(where: { $0.name == "w:sectPr" }),
+              let pgSz = sectPr.child("w:pgSz"),
+              let wStr = pgSz.attributes["w:w"], let w = Double(wStr) else { return nil }
+        let mar = sectPr.child("w:pgMar")
+        let left = Double(mar?.attributes["w:left"] ?? "") ?? 0
+        let right = Double(mar?.attributes["w:right"] ?? "") ?? 0
+        let content = (w - left - right) / 20  // twips → pt
+        return content > 0 ? CGFloat(content) : nil
     }
 
     /// The source document's own default BODY run size, in points — `word/styles.xml`'s
@@ -1849,9 +1869,14 @@ enum DocxReader: OfficeDocumentReader {
             return resolvedTabStops(pStyleId: pStyleIdForAlignment, styleInfo: styleInfo) ?? []
         }()
         let spans = collectSpans(in: p, styleInfo: styleInfo, relationships: relationships, notes: notes, comments: comments)
+        // The graphics this paragraph produced inherit ITS alignment (a centred figure is the norm in
+        // a report and used to render hard left — see `OfficeBlock.image`'s `alignment`). Stamped
+        // here rather than inside `collectDrawingBlocks`, which recurses through runs, alternate
+        // content and fallbacks and has no business knowing a paragraph-level property.
         let drawingBlocks = collectDrawingBlocks(
             in: p, styleInfo: styleInfo, numbering: numbering, relationships: relationships,
             notes: notes, comments: comments, listState: listState)
+            .map { $0.aligningGraphic(to: alignment) }
         // A display equation (`m:oMathPara`) is collected separately from `spans`, not folded into
         // them — `collectSpans` deliberately SKIPS `m:oMathPara` (see its own switch) so its content
         // is never also flattened into plain text there; a bare inline `m:oMath` takes the opposite
@@ -2014,10 +2039,15 @@ enum DocxReader: OfficeDocumentReader {
                     // Own `w:tcMar` wins; a cell that says nothing inherits the table's own default
                     // (already resolved above) rather than falling straight to `nil`.
                     let resolvedMargin = cellMargin(tcPr?.child("w:tcMar")) ?? tableDefaultMargin
-                    rowCells.append(Cell(
+                    var cell = Cell(
                         blocks: blocks, rowSpan: 1, colSpan: colSpan,
                         backgroundColor: cellShading(tcPr), borderColor: borderColor, borderWidth: borderWidth,
-                        width: cellWidth(tcPr), verticalAlignment: cellVAlign(tcPr), padding: resolvedMargin))
+                        width: cellWidth(tcPr), verticalAlignment: cellVAlign(tcPr), padding: resolvedMargin)
+                    // The same node read per EDGE — this is what the renderer actually uses when the
+                    // document states its edges individually (the uniform pair above stays as the
+                    // fallback for everything that doesn't).
+                    cell.edgeBorders = resolveEdgeBorders(tcPr?.child("w:tcBorders"))
+                    rowCells.append(cell)
                     rowPositions.append(gridCol)
                     if vMerge != nil {
                         // `val="restart"` — the top of a genuine new vertical-merge chain; later
@@ -2057,8 +2087,11 @@ enum DocxReader: OfficeDocumentReader {
             headerRows += 1
         }
         let (tableBorderColor, tableBorderWidth) = tableBorder(tblPr)
-        let format = TableFormat(defaultBorderColor: tableBorderColor, defaultBorderWidth: tableBorderWidth,
+        var format = TableFormat(defaultBorderColor: tableBorderColor, defaultBorderWidth: tableBorderWidth,
                                  defaultShading: cellShading(tblPr))
+        // `w:tblBorders` per edge, INCLUDING `w:insideH`/`w:insideV` — the interior rules a cell
+        // inherits when it is not on that side of the grid (the position test is the renderer's).
+        format.edgeBorders = resolveEdgeBorders(tblPr?.child("w:tblBorders"))
         // P5 — table-STYLE shading/border cascade (`w:tblStyle` + `w:tblStylePr` + `w:tblLook`).
         // A table with no named style (every markdown-sourced table, and most plain docx tables)
         // skips this entirely, leaving every cell's `styleShading`/`styleBorderColor`/
@@ -2083,6 +2116,12 @@ enum DocxReader: OfficeDocumentReader {
                 }
             }
         }
+        // The table's own width as Word laid it out (`w:tblGrid` is already points here — twips ÷ 20).
+        // A picture in a cell is scaled against THIS, not the page: the reader stretches every table
+        // to fill the reading column, so a page-scaled picture would sit small in a cell that grew
+        // around it (`TableFormat.sourceWidth`). Empty grid → nil → the page basis, as before.
+        let gridTotal = gridWidths.reduce(0, +)
+        if gridTotal > 0 { format.sourceWidth = gridTotal }
         return .table(rows: rows, headerRows: headerRows, columnWidths: gridWidths, format: format)
     }
 
@@ -2153,6 +2192,26 @@ enum DocxReader: OfficeDocumentReader {
     /// a point (ECMA-376 §17.4.66) — divided by 8, not 2 (that's `w:sz`'s OTHER unit, half-points,
     /// used for run/paragraph mark sizes — the two `w:sz` attributes are unrelated despite sharing
     /// a name). `w:color="auto"` resolves to `nil` (theme decides).
+    /// The SAME `w:tcBorders`/`w:tblBorders` node read per EDGE, which is how Word actually states
+    /// it — a row whose top is a solid blue rule and whose bottom is a dotted hairline is ordinary,
+    /// and `resolveBorder` below (kept for the uniform fallback) can only report one of them. An edge
+    /// explicitly turned off (`w:val="none"`/`"nil"`) yields no side at all, so the builder draws
+    /// nothing there rather than inheriting. `w:sz` is EIGHTHS of a point (§17.4.66).
+    /// `w:insideH`/`w:insideV` are meaningful only on `w:tblBorders`; a cell never declares them.
+    private static func resolveEdgeBorders(_ borders: XMLNode?) -> EdgeBorders? {
+        guard let borders else { return nil }
+        func side(_ name: String) -> BorderSide? {
+            guard let e = borders.child(name), let val = e.attributes["w:val"], val != "nil", val != "none",
+                  let sz = e.attributes["w:sz"].flatMap(Double.init) else { return nil }
+            let color = e.attributes["w:color"].flatMap { $0.lowercased() == "auto" ? nil : colorFromHex($0) }
+            // A declared-but-zero width still means "drawn" in Word; a hairline is the honest render.
+            return BorderSide(width: max(CGFloat(sz / 8), 0.25), color: color)
+        }
+        let out = EdgeBorders(top: side("w:top"), left: side("w:left"), bottom: side("w:bottom"),
+                              right: side("w:right"), insideH: side("w:insideH"), insideV: side("w:insideV"))
+        return out.isEmpty ? nil : out
+    }
+
     private static func resolveBorder(_ borders: XMLNode?) -> (color: NSColor?, width: CGFloat?) {
         guard let borders else { return (nil, nil) }
         for edge in ["w:top", "w:left", "w:bottom", "w:right"] {

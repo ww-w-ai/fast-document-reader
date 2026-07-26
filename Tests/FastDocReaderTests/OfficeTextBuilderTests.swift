@@ -798,6 +798,117 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(attachment.bounds.size, cell.reservedSize)
     }
 
+    // MARK: Graphic scale (page-proportional, font-independent)
+
+    private func reservedImageSize(_ out: NSAttributedString) throws -> CGSize {
+        var found: NSTextAttachment?
+        out.enumerateAttribute(.attachment, in: NSRange(location: 0, length: out.length)) { value, _, _ in
+            if let att = value as? NSTextAttachment { found = att }
+        }
+        let cell = try XCTUnwrap(try XCTUnwrap(found).attachmentCell as? SizedAttachmentCell)
+        return cell.reservedSize
+    }
+
+    /// The contract the whole two-scale split exists for: a graphic's size follows `graphicScale`
+    /// (reading column ÷ the source page's body width) and is INDEPENDENT of the reading font size.
+    /// Doubling the user's reading size must not move a photograph by one point — ⌘+/⌘− is a TEXT
+    /// setting. (Before the split, graphics rode `fontSizeScale`, so ⌘+ inflated pictures.)
+    func testGraphicSizeFollowsGraphicScaleAndIgnoresFontSize() throws {
+        let declared = CGSize(width: 200, height: 100)
+        // Column 800 over a 400pt page = scale 2, at two very different reading sizes.
+        let small = OfficeTextBuilder.build([.image(id: "a", size: declared)],
+                                            theme: RenderTheme.current(size: 12), columnWidth: 800,
+                                            documentDefaultFontSize: 10, pageContentWidth: 400)
+        let large = OfficeTextBuilder.build([.image(id: "a", size: declared)],
+                                            theme: RenderTheme.current(size: 36), columnWidth: 800,
+                                            documentDefaultFontSize: 10, pageContentWidth: 400)
+        XCTAssertEqual(try reservedImageSize(small), CGSize(width: 400, height: 200),
+                       "a column twice the page width must double the authored size")
+        XCTAssertEqual(try reservedImageSize(large), try reservedImageSize(small),
+                       "a 3× reading-size change must leave the graphic byte-identical")
+    }
+
+    /// The other half: with the SAME font, a wider column (i.e. a bigger `graphicScale`) must grow
+    /// the graphic proportionally — this is what makes a picture track the WINDOW.
+    func testGraphicGrowsProportionallyWithGraphicScale() throws {
+        let declared = CGSize(width: 150, height: 75)
+        // The real axis: the same document at three window widths (page 400pt → scale 1, 1.5, 3).
+        let sizes = try [400.0, 600.0, 1200.0].map { column -> CGSize in
+            try reservedImageSize(OfficeTextBuilder.build([.image(id: "a", size: declared)],
+                                                          theme: theme, columnWidth: CGFloat(column),
+                                                          pageContentWidth: 400))
+        }
+        XCTAssertEqual(sizes[0], declared, "column == page width ⇒ the authored size")
+        XCTAssertEqual(sizes[1], CGSize(width: 225, height: 112.5))
+        XCTAssertEqual(sizes[2], CGSize(width: 450, height: 225))
+    }
+
+    /// Column-fitting still wins on top of the scale: a graphic scaled past the reading column is
+    /// shrunk back aspect-preserving, never allowed to overflow (invariant 1's sizing still applies).
+    func testGraphicScaledPastColumnIsStillClampedToColumn() throws {
+        let out = OfficeTextBuilder.build([.image(id: "a", size: CGSize(width: 400, height: 200))],
+                                          theme: theme, columnWidth: 600, pageContentWidth: 150)
+        let size = try reservedImageSize(out)
+        XCTAssertEqual(size.width, 600, accuracy: 0.5)
+        XCTAssertEqual(size.height, 300, accuracy: 0.5, "aspect ratio preserved while clamping")
+    }
+
+    /// A chart/SmartArt placeholder stands in for a real graphic's area, so it scales identically —
+    /// and it reads its size from `.bounds` (invariant 31), not from a `SizedAttachmentCell`.
+    func testUnsupportedGraphicFollowsGraphicScaleToo() throws {
+        let out = OfficeTextBuilder.build([.unsupportedGraphic(label: "Chart", size: CGSize(width: 200, height: 100))],
+                                          theme: theme, columnWidth: 4000, pageContentWidth: 1600)
+        let bounds = out.attribute(.attachment, at: 0, effectiveRange: nil)
+            .flatMap { ($0 as? NSTextAttachment)?.bounds.size }
+        XCTAssertEqual(bounds?.width ?? 0, 500, accuracy: 0.5)
+        XCTAssertEqual(bounds?.height ?? 0, 250, accuracy: 0.5)
+    }
+
+    /// An image inside a TABLE CELL takes the same scale (the cell path is a separate call chain —
+    /// `appendTable` → `cellContent` — and threading it only through the top-level path would leave
+    /// every cell picture unscaled, which is most of them in a real report).
+    func testCellImageFollowsGraphicScale() throws {
+        let cell = Cell(blocks: [.image(id: "in-cell", size: CGSize(width: 100, height: 50))])
+        // A CELL picture is measured against the TABLE's own source width (400pt), not the page:
+        // the table is stretched to the 1200pt column, so the picture grows by that same 3×.
+        let out = OfficeTextBuilder.build([.table(rows: [[cell]], headerRows: 0, columnWidths: [1],
+                                                  format: TableFormat(sourceWidth: 400))],
+                                          theme: theme, columnWidth: 1200, pageContentWidth: 9999)
+        let size = try reservedImageSize(out)
+        XCTAssertEqual(size.width, 300, accuracy: 0.5)
+        XCTAssertEqual(size.height, 150, accuracy: 0.5)
+    }
+
+    // MARK: Graphic alignment
+
+    private func paragraphAlignment(_ out: NSAttributedString, at index: Int = 0) -> NSTextAlignment? {
+        (out.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle)?.alignment
+    }
+
+    /// A figure is centred far more often than not in a real report, and it used to render hard
+    /// against the left margin whatever the document said, because the image case carried no
+    /// alignment and its attachment got no paragraph style at all.
+    func testImageCarriesItsParagraphsAlignment() {
+        for alignment in [NSTextAlignment.center, .right, .left] {
+            let out = build([.image(id: "a", size: CGSize(width: 50, height: 50), alignment: alignment)])
+            XCTAssertEqual(paragraphAlignment(out), alignment, "\(alignment) must reach the attachment paragraph")
+        }
+    }
+
+    /// The chart/SmartArt placeholder stands in for a real figure, so it aligns identically.
+    func testUnsupportedGraphicCarriesItsParagraphsAlignment() {
+        let out = build([.unsupportedGraphic(label: "Chart", size: CGSize(width: 50, height: 50), alignment: .center)])
+        XCTAssertEqual(paragraphAlignment(out), .center)
+    }
+
+    /// A document that states no alignment must be untouched — no paragraph style is attached at all,
+    /// so this stays byte-identical to before alignment existed (invariant 37's unspecified case).
+    func testGraphicWithNoStatedAlignmentGetsNoParagraphStyle() {
+        let out = build([.image(id: "a", size: CGSize(width: 50, height: 50))])
+        XCTAssertNil(out.attribute(.paragraphStyle, at: 0, effectiveRange: nil),
+                     "an unaligned image must carry no paragraph style of its own")
+    }
+
     /// A declared size that already fits the column must pass through unchanged — scaling must
     /// never enlarge an image past its authored size.
     func testImageNarrowerThanColumnIsReservedAtItsDeclaredSize() {

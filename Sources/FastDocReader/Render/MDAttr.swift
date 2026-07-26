@@ -97,4 +97,12 @@ enum MDAttr {
     /// is left/center-aligned (an ordinary tab) never gets this attribute, and neither does any
     /// markdown/plain-text block (they have no tab-stop vocabulary at all).
     static let fillMarginTab = NSAttributedString.Key("mdFillMarginTab")
+
+    /// An office graphic's AUTHORED size (an `OfficeGraphicInfo`), attached to the attachment
+    /// character by `OfficeTextBuilder`. `DocumentWindowController.resizeOfficeGraphics` re-derives
+    /// the picture's on-screen size from it on every reflow — the graphic keeps the share of the
+    /// reading column it held of the source page, at ANY window width, instead of staying frozen at
+    /// the width the document happened to be built at. Office only; markdown images size themselves
+    /// from their own pixels (`fittedSize`) and never carry this.
+    static let officeGraphic = NSAttributedString.Key("mdOfficeGraphic")
 }
