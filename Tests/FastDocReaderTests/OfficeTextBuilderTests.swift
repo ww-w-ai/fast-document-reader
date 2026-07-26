@@ -1686,6 +1686,165 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(cell.borderWidth, 1)
     }
 
+    // MARK: Per-edge borders — declared / suppressed / never mentioned
+
+    /// One placed cell's four border widths, top/bottom/left/right, so a per-edge assertion reads as
+    /// one line instead of four near-identical `width(for:edge:)` calls.
+    private func borderWidths(_ cell: PlacedCell) -> (top: CGFloat, bottom: CGFloat, left: CGFloat, right: CGFloat) {
+        (cell.block.width(for: .border, edge: .minY), cell.block.width(for: .border, edge: .maxY),
+         cell.block.width(for: .border, edge: .minX), cell.block.width(for: .border, edge: .maxX))
+    }
+
+    private func edges(_ decls: [(WritableKeyPath<EdgeBorders, BorderDecl?>, BorderDecl)]) -> EdgeBorders {
+        var out = EdgeBorders()
+        for (keyPath, decl) in decls { out[keyPath: keyPath] = decl }
+        return out
+    }
+
+    /// A table that declared SOME border information keeps its perimeter closed: an OUTER edge the
+    /// document never mentioned draws the theme's FAINT outline — integer width, low-alpha colour —
+    /// instead of nothing. An author who ruled the top and bottom of a table did not ask for a box
+    /// open at both sides, and rendering that literally reads as a fault, not as their intent.
+    func testUnmentionedOuterEdgesOfADeclaredTableGetTheFaintOutline() throws {
+        var format = TableFormat()
+        format.edgeBorders = edges([(\.top, .drawn(BorderSide(width: 2, color: .systemRed))),
+                                    (\.bottom, .drawn(BorderSide(width: 2, color: .systemRed)))])
+        let out = build([.table(rows: [[Cell(spans: [span("A")])]], headerRows: 0, format: format)])
+        let cell = try XCTUnwrap(tableCells(in: out).first)
+        let w = borderWidths(cell)
+        XCTAssertEqual(w.top, 2, "the declared edges are untouched")
+        XCTAssertEqual(w.bottom, 2)
+        XCTAssertEqual(w.left, RenderTheme.tableBorderWidth, "unmentioned perimeter edge → faint outline")
+        XCTAssertEqual(w.right, RenderTheme.tableBorderWidth)
+        XCTAssertEqual(w.left, w.left.rounded(),
+                       "faint is the COLOUR's alpha, never a fractional width — invariant 42")
+        XCTAssertEqual(cell.block.borderColor(for: .minX), Palette.tableBorderFaint)
+        XCTAssertEqual(cell.block.borderColor(for: .maxX), Palette.tableBorderFaint)
+        XCTAssertEqual(cell.block.borderColor(for: .minY), .systemRed)
+    }
+
+    /// A CELL's own declaration is enough on its own — the faint outline follows from "this table
+    /// said something about borders", not specifically from a table-level `w:tblBorders`.
+    func testACellsOwnDeclarationAloneEarnsTheFaintOutlineOnItsOtherOuterEdges() throws {
+        var cell = Cell(spans: [span("A")])
+        cell.edgeBorders = edges([(\.top, .drawn(BorderSide(width: 3, color: nil)))])
+        let out = build([.table(rows: [[cell]], headerRows: 0)])
+        let placed = try XCTUnwrap(tableCells(in: out).first)
+        let w = borderWidths(placed)
+        XCTAssertEqual(w.top, 3)
+        XCTAssertEqual(w.left, RenderTheme.tableBorderWidth)
+        XCTAssertEqual(w.right, RenderTheme.tableBorderWidth)
+        XCTAssertEqual(w.bottom, RenderTheme.tableBorderWidth)
+        XCTAssertEqual(placed.block.borderColor(for: .maxY), Palette.tableBorderFaint)
+    }
+
+    /// An edge the document explicitly turned OFF draws nothing — width 0 — and must NEVER be given
+    /// the faint outline. Suppressed and unmentioned are different statements: the same table shows
+    /// both here, the suppressed left at 0 and the unmentioned bottom/right faint.
+    func testAnExplicitlySuppressedEdgeDrawsNothingAndNeverGetsTheFaintOutline() throws {
+        var format = TableFormat()
+        format.edgeBorders = edges([(\.top, .drawn(BorderSide(width: 2, color: .systemRed))),
+                                    (\.left, .suppressed)])
+        let out = build([.table(rows: [[Cell(spans: [span("A")])]], headerRows: 0, format: format)])
+        let cell = try XCTUnwrap(tableCells(in: out).first)
+        let w = borderWidths(cell)
+        XCTAssertEqual(w.left, 0, "explicitly off stays off")
+        XCTAssertNotEqual(cell.block.borderColor(for: .minX), Palette.tableBorderFaint)
+        XCTAssertEqual(w.top, 2)
+        XCTAssertEqual(w.bottom, RenderTheme.tableBorderWidth, "unmentioned, so faint — unlike the left")
+        XCTAssertEqual(w.right, RenderTheme.tableBorderWidth)
+    }
+
+    /// A table that turned EVERY border off draws no rule at all. It must not fall through to the
+    /// theme default — that would restore exactly the border the document removed. This is the arm
+    /// the all-`.suppressed` declaration (which the reader now preserves) exists to reach.
+    func testATableThatTurnedEveryBorderOffDrawsNoRuleAtAll() throws {
+        var format = TableFormat()
+        format.edgeBorders = edges([(\.top, .suppressed), (\.left, .suppressed), (\.bottom, .suppressed),
+                                    (\.right, .suppressed), (\.insideH, .suppressed), (\.insideV, .suppressed)])
+        let rows: [[Cell]] = [[Cell(spans: [span("A")]), Cell(spans: [span("B")])],
+                              [Cell(spans: [span("C")]), Cell(spans: [span("D")])]]
+        let out = build([.table(rows: rows, headerRows: 0, format: format)])
+        for cell in tableCells(in: out) {
+            let w = borderWidths(cell)
+            XCTAssertEqual([w.top, w.bottom, w.left, w.right], [0, 0, 0, 0],
+                           "cell (\(cell.row),\(cell.col)) must draw nothing")
+        }
+    }
+
+    /// The faint outline is a PERIMETER rule only. In a table that rules just its outer box, the
+    /// INTERIOR seams the document never mentioned stay undrawn — filling those in would invent a
+    /// grid the author didn't ask for.
+    func testUnmentionedInteriorEdgesStayUndrawnEvenInADeclaredTable() throws {
+        let rule = BorderDecl.drawn(BorderSide(width: 2, color: .systemRed))
+        var format = TableFormat()
+        format.edgeBorders = edges([(\.top, rule), (\.left, rule), (\.bottom, rule), (\.right, rule)])
+        let rows: [[Cell]] = [[Cell(spans: [span("A")]), Cell(spans: [span("B")])],
+                              [Cell(spans: [span("C")]), Cell(spans: [span("D")])]]
+        let out = build([.table(rows: rows, headerRows: 0, format: format)])
+        let topLeft = try XCTUnwrap(tableCells(in: out).first { $0.row == 0 && $0.col == 0 })
+        let w = borderWidths(topLeft)
+        XCTAssertEqual(w.top, 2, "on the table's own top edge")
+        XCTAssertEqual(w.left, 2, "on the table's own left edge")
+        XCTAssertEqual(w.bottom, 0, "interior seam the document never mentioned — not faint, not drawn")
+        XCTAssertEqual(w.right, 0)
+    }
+
+    /// INVARIANT 37 PIN — a table that declares NO border information at all (every markdown/HWP/ODT
+    /// table, and any docx without `w:tblBorders`/`w:tcBorders`) renders exactly as it always has:
+    /// `Palette.tableBorder` at the theme width on all four edges of every cell. The faint outline
+    /// must never reach a document that said nothing.
+    func testATableThatDeclaresNoBorderInformationKeepsExactlyTheThemeDefaultOnAllFourEdges() {
+        let rows: [[Cell]] = [[Cell(spans: [span("A")]), Cell(spans: [span("B")])],
+                              [Cell(spans: [span("C")]), Cell(spans: [span("D")])]]
+        let out = build([.table(rows: rows, headerRows: 0)])
+        let cells = tableCells(in: out)
+        XCTAssertEqual(cells.count, 4)
+        XCTAssertEqual(RenderTheme.tableBorderWidth, 1, "the hoisted token still holds the shipped value")
+        for cell in cells {
+            for edge in [NSRectEdge.minX, .maxX, .minY, .maxY] {
+                XCTAssertEqual(cell.block.width(for: .border, edge: edge), RenderTheme.tableBorderWidth,
+                               "cell (\(cell.row),\(cell.col)) edge \(edge)")
+                XCTAssertEqual(cell.block.borderColor(for: edge), Palette.tableBorder,
+                               "cell (\(cell.row),\(cell.col)) edge \(edge)")
+            }
+        }
+    }
+
+    /// Every placed block's `contentWidth`, in reading order — the value `resizeTables` recomputes.
+    private func contentWidths(in storage: NSTextStorage) -> [CGFloat] {
+        var seen: [ObjectIdentifier: Bool] = [:]
+        var out: [CGFloat] = []
+        storage.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            guard let ps = value as? NSParagraphStyle, let block = ps.textBlocks.first as? NSTextTableBlock,
+                  seen.updateValue(true, forKey: ObjectIdentifier(block)) == nil else { return }
+            out.append(block.contentWidth)
+        }
+        return out
+    }
+
+    /// `build` and `resizeTables` must derive a cell's content width from the SAME numbers. The faint
+    /// outline moves an outer edge from 0 to 1 and a suppressed one to 0 — asymmetric left/right, the
+    /// exact shape that breaks if either path subtracts one edge twice. If they disagree, every cell
+    /// reads as "changed" on every reflow: real work, plus a visible re-snap of the table right after
+    /// it was drawn (the bug `resizeTables`' own doc comment records). Re-solving at the width the
+    /// table was BUILT at must therefore move nothing.
+    func testResolvingColumnsAtTheBuildWidthMovesNoCellWhenPerEdgeBordersAreInPlay() {
+        let tableEdges = edges([(\.top, .drawn(BorderSide(width: 2, color: .systemRed))),
+                                (\.left, .suppressed)])
+        func cell(_ text: String) -> TableBlockBuilder.CellContent {
+            TableBlockBuilder.CellContent(content: NSAttributedString(string: text + "\n"))
+        }
+        let out = TableBlockBuilder.build(rows: [[cell("A"), cell("B")], [cell("C"), cell("D")]],
+                                          headerRows: 0, theme: theme, tableEdges: tableEdges, width: 480)
+        let storage = NSTextStorage(attributedString: out)
+        let built = contentWidths(in: storage)
+        XCTAssertEqual(built.count, 4)
+        TableBlockBuilder.resizeTables(in: storage, toWidth: 480)
+        XCTAssertEqual(contentWidths(in: storage), built,
+                       "re-solving at the build width must be a no-op — the two formulas agree")
+    }
+
     /// Merged cells (R1's `colSpan`) must still work once a cell can ALSO carry shading — the two
     /// features must not interfere with each other.
     func testMergedCellWithShadingStillAppliesBothItsSpanAndItsShading() {

@@ -208,7 +208,7 @@ enum TableBlockBuilder {
             let borderColor = placement.cell?.borderColor ?? tableBorderColor
                 ?? placement.cell?.styleBorderColor ?? Palette.tableBorder
             let borderWidth = placement.cell?.borderWidth ?? tableBorderWidth
-                ?? placement.cell?.styleBorderWidth ?? 1
+                ?? placement.cell?.styleBorderWidth ?? RenderTheme.tableBorderWidth
             let background: NSColor?
             if let bg = placement.cell?.backgroundColor { background = bg }
             else if let tableShading { background = tableShading }
@@ -233,27 +233,61 @@ enum TableBlockBuilder {
             let onTop = placement.row == 0, onLeft = placement.col == 0
             let onBottom = placement.row + placement.rowSpan >= rowCount
             let onRight = placement.col + placement.colSpan >= ncol
-            func side(_ own: BorderSide?, outer: BorderSide?, inside: BorderSide?, isOuter: Bool) -> BorderSide? {
+            // Did this table say ANYTHING about borders (a cell's own edges, or the table's)? That
+            // one question separates the two silences: an edge nobody mentioned INSIDE an otherwise
+            // bordered table (it gets the faint perimeter outline below, so the box still closes)
+            // from a table that declared nothing at all — every markdown/HWP/ODT table and any docx
+            // without `w:tblBorders`/`w:tcBorders` — which must reach the theme default in the final
+            // arm, byte-identical to before any of this existed (invariant 37).
+            let declared = (cellEdges.map { !$0.isEmpty } ?? false) || (tableEdges.map { !$0.isEmpty } ?? false)
+            // Step 1 — INHERIT: a cell's own declaration wins; otherwise it takes the table's OUTER
+            // edge where it sits on that side of the grid and the table's INTERIOR edge where it
+            // doesn't. Still a declaration at this point, not yet a rule to draw.
+            func declaration(_ own: BorderDecl?, outer: BorderDecl?, inside: BorderDecl?,
+                             isOuter: Bool) -> BorderDecl? {
                 own ?? (isOuter ? outer : inside)
             }
-            let t = side(cellEdges?.top, outer: tableEdges?.top, inside: tableEdges?.insideH, isOuter: onTop)
-            let b = side(cellEdges?.bottom, outer: tableEdges?.bottom, inside: tableEdges?.insideH, isOuter: onBottom)
-            let l = side(cellEdges?.left, outer: tableEdges?.left, inside: tableEdges?.insideV, isOuter: onLeft)
-            let r = side(cellEdges?.right, outer: tableEdges?.right, inside: tableEdges?.insideV, isOuter: onRight)
+            // Step 2 — RESOLVE a declaration to what is actually drawn. `.suppressed` draws nothing,
+            // deliberately and finally. An UNSPECIFIED edge draws nothing too, except on the
+            // perimeter of a table that declared something else, where the faint outline stands in:
+            // an author who ruled the top and bottom of a table did not ask for a box open at both
+            // sides, and rendering that literally reads as a fault. Interior seams are left alone —
+            // filling those in would invent a grid nobody asked for. Faint is expressed in the
+            // colour's ALPHA at an INTEGER width (invariant 42), never as a fractional hairline.
+            func side(_ decl: BorderDecl?, isOuter: Bool) -> BorderSide? {
+                switch decl {
+                case .drawn(let stated): return stated
+                case .suppressed: return nil
+                case nil:
+                    guard isOuter, declared else { return nil }
+                    return BorderSide(width: RenderTheme.tableBorderWidth, color: Palette.tableBorderFaint)
+                }
+            }
+            let t = side(declaration(cellEdges?.top, outer: tableEdges?.top,
+                                     inside: tableEdges?.insideH, isOuter: onTop), isOuter: onTop)
+            let b = side(declaration(cellEdges?.bottom, outer: tableEdges?.bottom,
+                                     inside: tableEdges?.insideH, isOuter: onBottom), isOuter: onBottom)
+            let l = side(declaration(cellEdges?.left, outer: tableEdges?.left,
+                                     inside: tableEdges?.insideV, isOuter: onLeft), isOuter: onLeft)
+            let r = side(declaration(cellEdges?.right, outer: tableEdges?.right,
+                                     inside: tableEdges?.insideV, isOuter: onRight), isOuter: onRight)
             // Four edges that agree need only the UNIFORM setters — two calls instead of twelve. Most
             // cells in most documents are uniform, and a table-heavy report has thousands of them: the
             // per-edge path measured ~25 ms of extra ObjC traffic on a 2,489-cell document, paid on
             // every font change. Only a cell whose edges genuinely differ pays for the difference.
             let uniform = t == b && b == l && l == r
-            let perEdge = !uniform
-                && ((cellEdges.map { !$0.isEmpty } ?? false) || (tableEdges.map { !$0.isEmpty } ?? false))
+            let perEdge = !uniform && declared
             var leftWidth = borderWidth, rightWidth = borderWidth
-            if uniform, let only = t {
-                // Every edge the same, but STATED — honour the stated width/colour, uniformly.
-                block.setBorderColor(only.color ?? borderColor)
-                block.setWidth(only.width, type: .absoluteValueType, for: .border)
-                leftWidth = only.width
-                rightWidth = only.width
+            if uniform, declared {
+                // Every edge the same AND declared — honour it uniformly. `t == nil` here is not
+                // "nothing was said", it is every edge resolving to nothing to draw (a table that
+                // turned all of them off), so it sets width 0 rather than falling through to the
+                // theme default the document just removed. `declared` is the whole guard: a table
+                // that said nothing never enters this arm.
+                block.setBorderColor(t?.color ?? borderColor)
+                block.setWidth(t?.width ?? 0, type: .absoluteValueType, for: .border)
+                leftWidth = t?.width ?? 0
+                rightWidth = t?.width ?? 0
             } else if perEdge {
                 // One colour call for the common case, then only the edges that actually differ —
                 // a table-heavy report runs this thousands of times per font change, and most edges

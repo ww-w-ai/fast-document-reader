@@ -2194,18 +2194,34 @@ enum DocxReader: OfficeDocumentReader {
     /// a name). `w:color="auto"` resolves to `nil` (theme decides).
     /// The SAME `w:tcBorders`/`w:tblBorders` node read per EDGE, which is how Word actually states
     /// it — a row whose top is a solid blue rule and whose bottom is a dotted hairline is ordinary,
-    /// and `resolveBorder` below (kept for the uniform fallback) can only report one of them. An edge
-    /// explicitly turned off (`w:val="none"`/`"nil"`) yields no side at all, so the builder draws
-    /// nothing there rather than inheriting. `w:sz` is EIGHTHS of a point (§17.4.66).
+    /// and `resolveBorder` below (kept for the uniform fallback) can only report one of them.
+    ///
+    /// THREE outcomes per edge, which is why this returns `BorderDecl` and not `BorderSide` (see
+    /// `BorderDecl`'s own doc):
+    /// - no child element for that edge → `nil`, the document never mentioned it (it inherits, and
+    ///   on a table perimeter it may pick up the renderer's faint outline);
+    /// - `w:val="none"`/`"nil"` → `.suppressed`, explicitly off — nothing drawn, nothing inherited;
+    /// - a drawn `w:val` with a `w:sz` → `.drawn`. `w:sz` is EIGHTHS of a point (§17.4.66).
+    ///
+    /// An all-`.suppressed` result is deliberately NOT erased by the `isEmpty` check below: "every
+    /// edge off" must reach the renderer as a declaration, or it renders like silence (= the theme's
+    /// own default border, the exact rule the document asked to remove).
     /// `w:insideH`/`w:insideV` are meaningful only on `w:tblBorders`; a cell never declares them.
     private static func resolveEdgeBorders(_ borders: XMLNode?) -> EdgeBorders? {
         guard let borders else { return nil }
-        func side(_ name: String) -> BorderSide? {
-            guard let e = borders.child(name), let val = e.attributes["w:val"], val != "nil", val != "none",
-                  let sz = e.attributes["w:sz"].flatMap(Double.init) else { return nil }
+        func side(_ name: String) -> BorderDecl? {
+            guard let e = borders.child(name) else { return nil }
+            guard let val = e.attributes["w:val"] else { return nil }
+            if val == "nil" || val == "none" { return .suppressed }
+            // A drawn `w:val` carrying NO `w:sz` stays UNSPECIFIED — a deliberate choice, not an
+            // oversight: the width is the whole of what this renderer draws with, the element does
+            // not state one, and inventing a default here would put a rule of our own choosing on an
+            // edge the document only half-described. Letting it inherit is what shipped before this
+            // three-state split, and it is kept unchanged.
+            guard let sz = e.attributes["w:sz"].flatMap(Double.init) else { return nil }
             let color = e.attributes["w:color"].flatMap { $0.lowercased() == "auto" ? nil : colorFromHex($0) }
             // A declared-but-zero width still means "drawn" in Word; a hairline is the honest render.
-            return BorderSide(width: max(CGFloat(sz / 8), 0.25), color: color)
+            return .drawn(BorderSide(width: max(CGFloat(sz / 8), 0.25), color: color))
         }
         let out = EdgeBorders(top: side("w:top"), left: side("w:left"), bottom: side("w:bottom"),
                               right: side("w:right"), insideH: side("w:insideH"), insideV: side("w:insideV"))

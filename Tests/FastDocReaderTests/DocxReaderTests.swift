@@ -2661,6 +2661,110 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertEqual(format, TableFormat())
     }
 
+    // MARK: Per-edge borders — the THREE states (declared / suppressed / never mentioned)
+
+    /// The `BorderSide` a `.drawn` declaration carries; `nil` for `.suppressed` and for an edge the
+    /// document never mentioned — so a test can read a width/colour without repeating the `case let`.
+    private func drawn(_ decl: BorderDecl?) -> BorderSide? {
+        if case .drawn(let side) = decl { return side }
+        return nil
+    }
+
+    /// A `w:tblBorders` that names only SOME edges leaves the rest UNSPECIFIED (`nil`) — the state
+    /// the renderer turns into its faint perimeter outline. "The document said nothing about the
+    /// left edge" must not arrive looking like "the document turned the left edge off".
+    func testTableEdgesNamedOnlyPartlyLeaveTheRestUnspecified() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tblPr><w:tblBorders><w:top w:val="single" w:sz="8" w:color="336699"/>
+        <w:bottom w:val="single" w:sz="8" w:color="336699"/></w:tblBorders></w:tblPr>
+        <w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(_, _, _, let format) = blocks.first else { return XCTFail("expected a table") }
+        let edges = try XCTUnwrap(format.edgeBorders)
+        XCTAssertEqual(drawn(edges.top)?.width, 1)
+        XCTAssertEqual(drawn(edges.top)?.color, rgb("336699"))
+        XCTAssertEqual(drawn(edges.bottom)?.width, 1)
+        XCTAssertNil(edges.left, "an edge the document never mentioned stays unspecified")
+        XCTAssertNil(edges.right)
+        XCTAssertNil(edges.insideH)
+        XCTAssertNil(edges.insideV)
+    }
+
+    /// `w:val="none"` (and its twin `"nil"`) is an explicit OFF — `.suppressed`, a declaration in its
+    /// own right, never the same `nil` an unmentioned edge gets. Everything downstream depends on
+    /// telling those two apart: one draws nothing, the other may be filled in.
+    func testEdgeValNoneAndNilAreSuppressedNotUnspecified() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tblPr><w:tblBorders><w:top w:val="none"/><w:bottom w:val="nil"/>
+        <w:left w:val="single" w:sz="16" w:color="112233"/></w:tblBorders></w:tblPr>
+        <w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(_, _, _, let format) = blocks.first else { return XCTFail("expected a table") }
+        let edges = try XCTUnwrap(format.edgeBorders)
+        XCTAssertEqual(edges.top, .suppressed)
+        XCTAssertEqual(edges.bottom, .suppressed)
+        XCTAssertEqual(drawn(edges.left)?.width, 2)
+        XCTAssertNil(edges.right, "still unspecified — different from the two suppressed edges")
+    }
+
+    /// A cell's own `w:tcBorders` reads per edge exactly as the table's does.
+    func testCellEdgesAreReadPerEdgeToo() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tr><w:tc><w:tcPr><w:tcBorders><w:left w:val="single" w:sz="24" w:color="112233"/>
+        <w:right w:val="none"/></w:tcBorders></w:tcPr><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(let rows, _, _, _) = blocks.first else { return XCTFail("expected a table") }
+        let edges = try XCTUnwrap(rows[0][0].edgeBorders)
+        XCTAssertEqual(drawn(edges.left)?.width, 3)
+        XCTAssertEqual(drawn(edges.left)?.color, rgb("112233"))
+        XCTAssertEqual(edges.right, .suppressed)
+        XCTAssertNil(edges.top)
+    }
+
+    /// A table that turns EVERY border off must survive as an all-`.suppressed` declaration. Erasing
+    /// it (which is what an `isEmpty` that counted suppressed edges as nothing would do) hands the
+    /// renderer the same input as a document that never mentioned borders — and that renders with
+    /// the theme's own default rule, i.e. exactly the border the author removed.
+    func testATableThatTurnsEveryBorderOffSurvivesAsADeclaration() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tblPr><w:tblBorders><w:top w:val="none"/><w:left w:val="none"/><w:bottom w:val="none"/>
+        <w:right w:val="none"/><w:insideH w:val="none"/><w:insideV w:val="none"/></w:tblBorders></w:tblPr>
+        <w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(_, _, _, let format) = blocks.first else { return XCTFail("expected a table") }
+        let edges = try XCTUnwrap(format.edgeBorders, "an all-off declaration must not be erased as silence")
+        XCTAssertFalse(edges.isEmpty, "every edge off is a declaration, not an absence of one")
+        for edge in [edges.top, edges.left, edges.bottom, edges.right, edges.insideH, edges.insideV] {
+            XCTAssertEqual(edge, .suppressed)
+        }
+    }
+
+    /// A drawn `w:val` with NO `w:sz` stays UNSPECIFIED — a deliberate choice (the element states no
+    /// width and this renderer draws with widths), not an oversight. Pinned so a later reader can see
+    /// the behaviour was chosen rather than assume the missing case was forgotten.
+    func testADrawnEdgeWithNoSizeStaysUnspecifiedDeliberately() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tblPr><w:tblBorders><w:top w:val="single" w:color="336699"/>
+        <w:bottom w:val="single" w:sz="8"/></w:tblBorders></w:tblPr>
+        <w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(_, _, _, let format) = blocks.first else { return XCTFail("expected a table") }
+        let edges = try XCTUnwrap(format.edgeBorders)
+        XCTAssertNil(edges.top, "no w:sz → unspecified, never a fabricated width")
+        XCTAssertEqual(drawn(edges.bottom)?.width, 1)
+    }
+
+    /// A table that mentions borders NOWHERE carries no edge declaration at all — this is the input
+    /// that keeps the renderer on its own theme default (invariant 37's unspecified case).
+    func testATableWithNoBorderElementsAtAllHasNoEdgeDeclaration() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(let rows, _, _, let format) = blocks.first else { return XCTFail("expected a table") }
+        XCTAssertNil(format.edgeBorders)
+        XCTAssertNil(rows[0][0].edgeBorders)
+    }
+
     // MARK: P3b — cell vertical alignment (w:tcPr/w:vAlign)
 
     func testCellVAlignCenterIsReadAsCellVAlignCenter() throws {

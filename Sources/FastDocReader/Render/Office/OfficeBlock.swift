@@ -223,13 +223,31 @@ enum CellVAlign: Equatable {
 /// existing theme default (`Palette.tableBorder`/1pt/header shading), exactly as before this
 /// struct existed. A table with no `w:tblPr` at all (every markdown table; any docx table that
 /// declares neither) constructs the all-`nil` default, which renders BYTE-IDENTICAL to before.
-/// One edge of a border, exactly as the document declared it: a width in points and an optional
-/// colour (`nil` = the theme decides, OOXML's `w:color="auto"`). An edge the document explicitly
-/// turns off (`w:val="none"`/`"nil"`) is represented by the ABSENCE of a side, which is a different
-/// statement from "said nothing" — the latter inherits, the former draws nothing.
+/// One DRAWN edge of a border, exactly as the document declared it: a width in points and an
+/// optional colour (`nil` = the theme decides, OOXML's `w:color="auto"`). This type describes ONLY
+/// an edge that is drawn — "the document turned this edge off" and "the document never mentioned
+/// this edge" are two further states, and they are carried by `BorderDecl`/`EdgeBorders` below, not
+/// by this struct's presence or absence.
 struct BorderSide: Equatable {
     var width: CGFloat
     var color: NSColor?
+}
+
+/// What a document said about ONE edge — the three states the renderer has to tell apart:
+///
+/// - `.drawn(side)` — a real border, at that width/colour.
+/// - `.suppressed` — the document explicitly turned this edge OFF (`w:val="none"`/`"nil"`). Nothing
+///   is drawn there and nothing is inherited or substituted in its place.
+/// - `nil` (the edge's `BorderDecl?` in `EdgeBorders` below) — the document never mentioned it. A
+///   cell's unmentioned edge inherits the table's, and an unmentioned edge on the PERIMETER of a
+///   table that declared something else gets the theme's faint outline rather than a hole — see
+///   `TableBlockBuilder`'s per-placement resolution for both.
+///
+/// One enum rather than a side plus a parallel "was this declared" mask: two sources of truth for
+/// the same fact can disagree, and a disagreement here surfaces as a stray or missing rule on screen.
+enum BorderDecl: Equatable {
+    case drawn(BorderSide)
+    case suppressed
 }
 
 /// A cell's four edges — and, when this describes a TABLE, the two interior directions Word states
@@ -242,14 +260,18 @@ struct BorderSide: Equatable {
 /// take a different weight and colour, which is exactly the ragged look a reader notices. It also
 /// perturbed the content width, since that subtracts the border twice.
 struct EdgeBorders: Equatable {
-    var top: BorderSide?
-    var left: BorderSide?
-    var bottom: BorderSide?
-    var right: BorderSide?
+    var top: BorderDecl?
+    var left: BorderDecl?
+    var bottom: BorderDecl?
+    var right: BorderDecl?
     /// Table-level only: the horizontal/vertical edges BETWEEN cells.
-    var insideH: BorderSide?
-    var insideV: BorderSide?
+    var insideH: BorderDecl?
+    var insideV: BorderDecl?
 
+    /// True only when the document said NOTHING about any of the six edges. A set of edges that are
+    /// all `.suppressed` is NOT empty — "every border is off" is a declaration, and a reader that
+    /// erased it here would hand the renderer the same input as silence, which is what makes the
+    /// renderer fall back to its own default rule (exactly the border the document turned off).
     var isEmpty: Bool {
         top == nil && left == nil && bottom == nil && right == nil && insideH == nil && insideV == nil
     }

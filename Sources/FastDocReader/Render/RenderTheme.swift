@@ -39,6 +39,14 @@ enum Palette {
                                                  dark:  NSColor(rgb: 0x6CB0F5, alpha: 0.10))
     static let tableBorder     = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.16),
                                                  dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.16))
+    // The perimeter rule for an edge a BORDERED document never mentioned (see `TableBlockBuilder`'s
+    // per-edge resolution). Same hue as `tableBorder` at well under half its alpha: present enough
+    // to close the box — a table missing two of its four sides reads as a rendering fault — and
+    // faint enough that it never competes with the rules the document actually asked for. "Faint"
+    // lives here, in the alpha, and never in the width: the width stays an integer point
+    // (`RenderTheme.tableBorderWidth`) because column geometry is solved on integer edges.
+    static let tableBorderFaint = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.07),
+                                                  dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.07))
     static let tableHeaderBg   = NSColor(rgb: 0x878378, alpha: 0.10)   // warm neutral, both modes
     // P6b: comment highlight — a faint amber wash behind a commented span (only drawn while the
     // comments panel is open, see `drawCommentMarks`), and the number badge it's paired with. Amber
@@ -104,6 +112,20 @@ extension RenderTheme {
     /// as a bit more airy than a raw terminal). Also reused, applied to `baseFontSize`, for a
     /// table cell's line height — the same "slightly open" rhythm, just off a different base.
     var codeLineHeightRatio: CGFloat { 1.4 }
+}
+
+// MARK: - Rule widths (shared BASE, ABSOLUTE points)
+//
+// Unlike the rhythm ratios above these are not multiples of a font size — a hairline is a hairline
+// at any reading size — but they follow the same rule: one definition, read by every renderer,
+// never re-inlined as a literal at a call site (invariant 36).
+extension RenderTheme {
+    /// The reader's own table rule width, in ABSOLUTE points: what a cell edge draws at when neither
+    /// the document, its table style, nor the table's own default states a width, and what the faint
+    /// perimeter outline (`Palette.tableBorderFaint`) uses too. Deliberately an INTEGER — a cell's
+    /// content width subtracts its left and right rules from an integer column edge, so a fractional
+    /// rule puts the boundary back on a fractional pixel, which is the drift invariant 42 records.
+    static let tableBorderWidth: CGFloat = 1
 }
 
 /// Markdown-only rhythm: values no other format needs, kept off the shared base per the
