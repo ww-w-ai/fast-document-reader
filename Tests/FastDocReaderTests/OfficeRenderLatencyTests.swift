@@ -413,7 +413,15 @@ extension OfficeRenderLatencyTests {
                     return nil
                 }.joined()
                 guard needle.isEmpty || text.contains(needle) else { continue }
-                print("  TABLE widths=\(widths.map { Int($0) }) sourceWidth=\(format.sourceWidth.map { Int($0) } ?? -1)")
+                // One decimal, and the SUM alongside the source total. `Int()` truncates, and nine
+                // truncated columns read as 4pt short of a grid that is exactly the page width —
+                // which cost a real debugging session chasing a table-geometry bug that did not
+                // exist. These are the SOURCE grid columns; the laid-out edges are cumulative and
+                // rounded (`GridTextTable.edges(forWidth:)`), so they never drift.
+                let sum = widths.reduce(0, +)
+                let cols = widths.map { String(format: "%.1f", $0) }.joined(separator: ", ")
+                print(String(format: "  TABLE source grid=[%@] sum=%.1f sourceWidth=%.1f",
+                             cols, sum, format.sourceWidth ?? -1))
                 for (r, row) in rows.enumerated() {
                     let spec = row.map { "(c\($0.colSpan)r\($0.rowSpan)\($0.width.map { ",w\(Int($0))" } ?? ""))" }
                     print("    row\(r): \(row.count) cells \(spec.joined(separator: " "))")

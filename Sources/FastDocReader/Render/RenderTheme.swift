@@ -40,13 +40,16 @@ enum Palette {
     static let tableBorder     = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.16),
                                                  dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.16))
     // The perimeter rule for an edge a BORDERED document never mentioned (see `TableBlockBuilder`'s
-    // per-edge resolution). Same hue as `tableBorder` at well under half its alpha: present enough
-    // to close the box — a table missing two of its four sides reads as a rendering fault — and
-    // faint enough that it never competes with the rules the document actually asked for. "Faint"
-    // lives here, in the alpha, and never in the width: the width stays an integer point
-    // (`RenderTheme.tableBorderWidth`) because column geometry is solved on integer edges.
-    static let tableBorderFaint = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.07),
-                                                  dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.07))
+    // per-edge resolution). Same hue as `tableBorder`, a hair under its alpha. This was tried at 0.07
+    // first, on the reasoning that a rule we invented should stay well below the ones the document
+    // asked for — and on a real report it was invisible, which makes the whole stand-in pointless: the
+    // box it exists to close still read as open. It sits just under `tableBorder` instead, so it reads
+    // as an ordinary rule against the document's own heavier ones (the measured case rules its table
+    // at 1.5pt) without ever looking heavier than the reader's own default. "Faint" lives here, in the
+    // alpha, and never in the width: the width stays an integer point (`RenderTheme.tableBorderWidth`)
+    // because column geometry is solved on integer edges.
+    static let tableBorderFaint = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.15),
+                                                  dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.15))
     static let tableHeaderBg   = NSColor(rgb: 0x878378, alpha: 0.10)   // warm neutral, both modes
     // P6b: comment highlight — a faint amber wash behind a commented span (only drawn while the
     // comments panel is open, see `drawCommentMarks`), and the number badge it's paired with. Amber
