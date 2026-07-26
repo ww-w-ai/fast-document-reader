@@ -8,11 +8,20 @@ import AppKit
 /// rounded integer edges, put every row's column boundary at the SAME integer x by construction.
 final class GridTextTable: NSTextTable {
     var columnProportions: [CGFloat] = []   // one per column, sums to 1
-    /// Integer cumulative x-edges (ncol+1) at `width` — the shared grid every cell reads.
+    /// Integer cumulative x-edges (ncol+1) inside `width` — the shared grid every cell reads.
+    ///
+    /// One point of `width` is held back. With `collapsesBorders` on, AppKit charges roughly half a
+    /// rule at the table's own outer edges that a cell cannot account for through its content width
+    /// (proved by measurement: changing the outer share from a full rule to half moved the laid-out
+    /// total by exactly nothing, while the interior share moved it point for point). Solving the grid
+    /// inside `width` rather than across it leaves that slack unclaimed, so the table lands just
+    /// UNDER the reading column instead of half a point over it — and half a point over is not
+    /// harmless: the container clips it, and the right-hand rule of the last column disappears.
     func edges(forWidth width: CGFloat) -> [CGFloat] {
+        let usable = max(1, width - 1)
         var out: [CGFloat] = [0]
         var cum: CGFloat = 0
-        for p in columnProportions { cum += p; out.append((width * cum).rounded()) }
+        for p in columnProportions { cum += p; out.append((usable * cum).rounded()) }
         return out
     }
 }

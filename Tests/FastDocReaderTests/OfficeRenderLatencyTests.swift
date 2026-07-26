@@ -493,3 +493,37 @@ final class TableWidthIndependenceTests: XCTestCase {
         }
     }
 }
+
+extension TableWidthIndependenceTests {
+    /// MERGED rows were never measured. A header that spans three columns crosses interior boundaries
+    /// that are not drawn, so its border accounting differs from the unmerged row below it.
+    func testMeasureMergedVsUnmergedRowWidth() {
+        let target: CGFloat = 600
+        let ncol = 13
+        func cell(_ s: String, span: Int = 1) -> TableBlockBuilder.CellContent {
+            TableBlockBuilder.CellContent(content: NSAttributedString(string: s), columnSpan: span)
+        }
+        let widths = Array(repeating: target / CGFloat(ncol), count: ncol)
+        let theme = RenderTheme.current(size: 16)
+
+        // row A: 13 plain cells.   row B: 1 + four 3-column spans (the real shape in the report).
+        let plain = (0..<ncol).map { cell("c\($0)") }
+        let merged = [cell("지역")] + (0..<4).map { cell("y\($0)", span: 3) }
+
+        for (name, rows) in [("plain only", [plain, plain]),
+                             ("merged only", [merged, merged]),
+                             ("merged + plain", [merged, plain])] {
+            let attr = TableBlockBuilder.build(rows: rows, headerRows: 0, theme: theme,
+                                               columnWidths: widths, width: target)
+            let storage = NSTextStorage(attributedString: attr)
+            let lm = NSLayoutManager()
+            let tc = NSTextContainer(size: NSSize(width: target, height: .greatestFiniteMagnitude))
+            tc.lineFragmentPadding = 0
+            storage.addLayoutManager(lm); lm.addTextContainer(tc)
+            lm.ensureLayout(for: tc)
+            print(String(format: "  %-16@ used=%.2f  target=%.1f  차이 %+.2f",
+                         name as NSString, lm.usedRect(for: tc).width, target,
+                         lm.usedRect(for: tc).width - target))
+        }
+    }
+}
