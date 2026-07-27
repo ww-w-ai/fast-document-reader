@@ -86,7 +86,11 @@ enum DocumentTypes {
                 NSLocalizedDescriptionKey: "\".\(ext)\" is registered as an office format but has no reader.",
             ])
         }
-        return try reader.read(archive)
+        // `.resolvingFontSubstitution()` is applied HERE, once, for both docx/docm/dotx/dotm AND
+        // odt — the single funnel invariant 29 already makes both readers share, so neither
+        // `DocxReader` nor `OdtReader` has to call it (or forget to). See
+        // `FontSubstitutionResolver`'s file doc for why this belongs at read time.
+        return try reader.read(archive).resolvingFontSubstitution()
     }
 
     /// The other half of `OfficeTextBuilder.build`'s font-size model (see its `documentDefaultFontSize`

@@ -94,6 +94,37 @@ struct Span: Equatable {
     /// color" reasoning) — letting an authored family override it would make some code spans
     /// inconsistent with others for no reason a reader would understand.
     var fontName: String? = nil
+    /// The SUBSTITUTE font's `NSFontDescriptor`, resolved ONCE at read time by
+    /// `FontSubstitutionResolver` and never touched again. `nil` is the overwhelmingly common case
+    /// and means "this span's declared font (code/`fontName`-override/theme default) already covers
+    /// every character" — `OfficeTextBuilder` then constructs that font completely UNCHANGED, which
+    /// is the byte-identical path invariant 37 depends on. Non-`nil` carries the descriptor of the
+    /// font `CTFontCreateForString` itself would substitute — the SAME font AppKit's own attribute
+    /// fixing already draws today somewhere in this span — so the CHOICE of font is never one of this
+    /// app's own picking; only WHEN that choice is made changes, from every ⌘+ press to once, at read
+    /// time (see `docs/font-substitution-cost-design.md`). Set at SPAN-run granularity, not per
+    /// character — see `FontSubstitutionResolver.resolveOne`'s doc for why per-character precision
+    /// was built, measured, and rejected (it reproduces the exact fragmentation this field exists to
+    /// eliminate): a declared-covered character sitting inside an otherwise-substituted stretch (a
+    /// space between two Korean words) rides along with that substitute rather than reverting.
+    ///
+    /// A DESCRIPTOR, deliberately NOT a PostScript name string (this field's first shape, changed
+    /// after measuring why it silently did nothing): the theme's body/heading fonts are `.systemFont`,
+    /// Apple's PRIVATE system-UI face (`NSFont.fontName == ".AppleSystemUIFont"`), and CoreText's
+    /// cascade for it substitutes OTHER private, dot-prefixed faces (`".AppleSDGothicNeoI-Regular"`,
+    /// measured) — `NSFont(name:size:)` cannot construct those (CoreText logs a warning and returns
+    /// `nil`), so a name-based field left this swap silently inert while the installed-run count
+    /// stayed exactly where it started. `NSFont(descriptor:size:)` — the SAME reconstruction idiom
+    /// `OfficeTextBuilder`'s own size-scaling and `fontAdding` already use elsewhere in this file for
+    /// these very private system faces — rebuilds it correctly (verified: a descriptor captured from
+    /// `CTFontCreateForString`'s result reconstructs at any size and still covers the text it was
+    /// resolved for). A `fontName`-override span's substitute is a normal public font and reconstructs
+    /// either way; the descriptor form costs nothing there and fixes the private-face case everywhere.
+    ///
+    /// A span whose declared font covers SOME but not all of its characters is split by the resolver
+    /// into multiple `Span`s at read time (one per maximal same-substitute run), each carrying its
+    /// own value here — this field is never "some characters use it, others don't" within one span.
+    var resolvedFontDescriptor: NSFontDescriptor? = nil
 }
 
 /// An underline's drawn style — docx `w:rPr/w:u/@w:val` (§17.18.99 `ST_Underline`), collapsed from

@@ -1323,4 +1323,44 @@ final class OfficeDocumentTests: XCTestCase {
             XCTAssertTrue(DocumentTypes.opensInApp(ext), "\(ext) must be openable")
         }
     }
+
+    // MARK: Font substitution — surrogate pairs must survive the real read funnel
+
+    /// Every character declared fonts (all installed here) leave uncovered forces
+    /// `FontSubstitutionResolver` to split — and a non-BMP character (emoji, CJK Extension B, an HWP
+    /// Plane-15 SPUA symbol) is a SURROGATE PAIR in UTF-16, not one code unit. Through the REAL
+    /// dispatch (`DocumentTypes.readOffice`, invariant 29 — not `FontSubstitutionResolver` called
+    /// directly) a bug that evaluates/cuts on raw UTF-16 code-unit boundaries turns each pair into
+    /// two lone surrogates, and a lone surrogate cannot survive being held in a Swift `String` — it
+    /// becomes U+FFFD the moment `Span.text` is read. This fixture mixes an emoji (U+1F600) and a
+    /// CJK Extension B character (U+20000, real in Korean/Chinese name registers) with plain ASCII
+    /// on both sides, so a mid-pair cut would show up as replacement characters splitting the prefix
+    /// from the suffix.
+    func testNonBMPCharactersSurviveTheRealOfficeReadFunnelIntact() throws {
+        let document = """
+        <?xml version="1.0" encoding="UTF-8"?><w:document><w:body>
+          <w:p><w:r><w:t>Q3 revenue beat target 😀 and the name is 𠀀 in the register.</w:t></w:r></w:p>
+        </w:body></w:document>
+        """
+        let data = buildZip([("word/document.xml", Data(document.utf8))])
+        let (doc, _) = try openOffice(data)
+
+        var joined = ""
+        for block in doc.officeBlocks {
+            if case let .paragraph(spans, _, _, _, _) = block {
+                joined += spans.map(\.text).joined()
+            }
+        }
+        XCTAssertFalse(joined.contains("\u{FFFD}"),
+                       "a surrogate pair must never be cut in half into a replacement character: \(joined.debugDescription)")
+        XCTAssertEqual(joined, "Q3 revenue beat target 😀 and the name is 𠀀 in the register.",
+                       "round-tripping through the real read funnel must reproduce the source exactly")
+
+        // invariant 40: --extract reads through this SAME dispatch — the corruption a reviewer found
+        // was specifically visible there ("Q3 revenue beat target ??").
+        let extracted = OfficeMarkdownSerializer.serialize(doc.officeBlocks)
+        XCTAssertFalse(extracted.contains("\u{FFFD}"), "--extract must not corrupt non-BMP characters: \(extracted)")
+        XCTAssertTrue(extracted.contains("😀"), extracted)
+        XCTAssertTrue(extracted.contains("𠀀"), extracted)
+    }
 }

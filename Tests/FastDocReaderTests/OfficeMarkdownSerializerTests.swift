@@ -138,4 +138,46 @@ final class OfficeMarkdownSerializerTests: XCTestCase {
                     .paragraph(spans: [Span(text: "two")])])
         XCTAssertEqual(s, "one\n\ntwo")   // the empty paragraph adds no stray blank block
     }
+
+    // MARK: - Blocker 4: font-substitution splits must not leak into Markdown delimiters
+
+    /// `FontSubstitutionResolver` splits one logical run into several `Span`s purely so
+    /// `OfficeTextBuilder` can assign each piece its own on-screen substitute FONT — a rendering
+    /// concern this serializer has no notion of. Two adjacent spans that differ ONLY in
+    /// `resolvedFontDescriptor` (exactly the shape that split leaves behind) must render as ONE
+    /// `**…**`, never two glued back to back (`**18****년**`).
+    func testAdjacentSpansThatDifferOnlyInResolvedFontDescriptorCoalesceBeforeEmittingDelimiters() {
+        var first = Span(text: "18", bold: true)
+        first.resolvedFontDescriptor = NSFont.boldSystemFont(ofSize: 12).fontDescriptor
+        var second = Span(text: "년", bold: true)
+        second.resolvedFontDescriptor = NSFont.systemFont(ofSize: 12, weight: .semibold).fontDescriptor
+        let s = md([.paragraph(spans: [first, second])])
+        XCTAssertEqual(s, "**18년**", s)
+        XCTAssertFalse(s.contains("****"), s)
+    }
+
+    /// The coalescing must not over-merge: two adjacent spans with GENUINELY different formatting
+    /// (not merely a different `resolvedFontDescriptor`) must stay separate.
+    func testAdjacentSpansWithDifferentFormattingDoNotCoalesce() {
+        let s = md([.paragraph(spans: [Span(text: "a", bold: true), Span(text: "b", bold: false)])])
+        XCTAssertEqual(s, "**a**b", s)
+    }
+
+    /// End-to-end through the real resolver (not a hand-built split): a bold run mixing digits and a
+    /// trailing Korean character — the report's own repro (`'18년`) — genuinely splits under font
+    /// substitution (digits are covered by the declared bold Latin font, `년` is not), and the
+    /// serializer must still emit it as one Markdown span.
+    func testBoldRunSplitByRealFontSubstitutionSerializesAsOneMarkdownSpan() {
+        let block = OfficeBlock.paragraph(spans: [Span(text: "\u{2018}18년", bold: true)])   // '18년
+        let resolved = block.resolvingFontSubstitution()
+        guard case let .paragraph(resolvedSpans, _, _, _, _) = resolved else {
+            return XCTFail("must stay a paragraph")
+        }
+        XCTAssertGreaterThan(resolvedSpans.count, 1,
+                             "sanity: this probe text must genuinely be split by real font substitution, " +
+                             "or this test would pass vacuously regardless of the coalescing fix")
+        let extracted = OfficeMarkdownSerializer.serialize([resolved])
+        XCTAssertEqual(extracted, "**\u{2018}18년**", extracted)
+        XCTAssertFalse(extracted.contains("****"), extracted)
+    }
 }

@@ -156,7 +156,42 @@ enum OfficeMarkdownSerializer {
     // MARK: - Inline spans
 
     private static func inline(_ spans: [Span], inCell: Bool) -> String {
-        spans.map { span($0, inCell: inCell) }.joined()
+        coalesced(spans).map { span($0, inCell: inCell) }.joined()
+    }
+
+    /// Undoes `FontSubstitutionResolver`'s read-time span splitting before any Markdown delimiter is
+    /// emitted. That resolver cuts one logical run into several `Span`s purely so `OfficeTextBuilder`
+    /// can assign each piece its own on-screen substitute FONT (invariant 37/§`docs/font-substitution
+    /// -cost-design.md`) — a rendering concern this serializer has no notion of and must not leak
+    /// through: `span(_:inCell:)` wraps EVERY `Span` in its own delimiters, so two adjacent pieces of
+    /// one bold run that the resolver split (e.g. one Korean substitute for `‘18`, another for `년`)
+    /// would otherwise close and reopen `**…**` between them, corrupting the Markdown an AI receives
+    /// (`**'18****년**`) and the code/link fencing the same way. Two adjacent spans are merged back
+    /// into one when they are equal in EVERY field this serializer or a future one could read except
+    /// `text` and `resolvedFontDescriptor` — which is exactly the shape the resolver's split leaves
+    /// behind, since it only ever divides one source `Span` into contiguous pieces with everything
+    /// but those two fields copied verbatim.
+    private static func coalesced(_ spans: [Span]) -> [Span] {
+        guard spans.count > 1 else { return spans }
+        var out: [Span] = []
+        out.reserveCapacity(spans.count)
+        for s in spans {
+            if let last = out.last, sameMarkdownIdentity(last, s) {
+                out[out.count - 1].text += s.text
+            } else {
+                out.append(s)
+            }
+        }
+        return out
+    }
+
+    /// `a` and `b` came from ONE span before font-substitution resolution split it iff clearing the
+    /// two fields that split is allowed to change (`text`, `resolvedFontDescriptor`) makes them
+    /// equal.
+    private static func sameMarkdownIdentity(_ a: Span, _ b: Span) -> Bool {
+        var x = a; x.text = ""; x.resolvedFontDescriptor = nil
+        var y = b; y.text = ""; y.resolvedFontDescriptor = nil
+        return x == y
     }
 
     private static func span(_ s: Span, inCell: Bool) -> String {

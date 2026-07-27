@@ -256,6 +256,16 @@ final class RenderThemeParityTests: XCTestCase {
     }
 
     private func openOffice(_ data: Data, ext: String, uti: String) throws -> (MarkdownDocument, DocumentWindowController) {
+        // These two tests go through the REAL read path (`MarkdownDocument.read` →
+        // `makeWindowControllers`), which renders at the LIVE `FontSizeStore.size` — a
+        // `UserDefaults`-backed global this file's class doc already says "a parity harness must
+        // not depend on". Pinning it here (matching the class's own fixed `theme`, size 16) is what
+        // actually MAKES that true, rather than merely asserting it in a comment: any OTHER test in
+        // the same process (or a value a PRIOR `swift test` invocation left on disk under this
+        // process's bundle id) would otherwise silently change every hardcoded expected number below.
+        let originalFontSize = FontSizeStore.size
+        addTeardownBlock { FontSizeStore.size = originalFontSize }
+        FontSizeStore.size = 16
         let doc = MarkdownDocument()
         doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-parity-office-\(UUID().uuidString).\(ext)")
         try doc.read(from: data, ofType: uti)
@@ -317,6 +327,25 @@ final class RenderThemeParityTests: XCTestCase {
         let bodyPS = try paragraphStyle(storage, containing: "Odt body text")
         XCTAssertEqual(bodyPS.minimumLineHeight, 23, accuracy: 0.001)   // round(16 * 1.45)
         XCTAssertEqual(bodyPS.paragraphSpacing, 14.4, accuracy: 0.001)  // 16 * 0.9
+    }
+
+    /// CONCERN 2 — direct, in-process proof of `openOffice`'s self-isolation contract. A prior test
+    /// in the SAME `swift test` process (`OfficeRenderLatencyTests`' `FMD_START_FONT` probe, or a
+    /// value a PRIOR invocation of `swift test` left on disk under this app's own `UserDefaults`
+    /// domain — confirmed via `defaults find baseFontSize`, `ai.ww-w.fast-md-reader`, not
+    /// `com.apple.dt.xctest.tool` under plain `swift test`) can leave `FontSizeStore.size` at
+    /// whatever it last was. This class's whole premise (fixed `theme`, size 16) is that its
+    /// hardcoded rhythm numbers hold regardless — this test poisons `FontSizeStore.size` to a
+    /// deliberately absurd value FIRST and asserts the office read-path geometry is UNCHANGED.
+    func testOfficeReadPathRhythmIsImmuneToWhateverFontSizeStoreWasLeftAt() throws {
+        let originalFontSize = FontSizeStore.size
+        addTeardownBlock { FontSizeStore.size = originalFontSize }
+        FontSizeStore.size = 26   // simulates exactly the poisoned value the reviewer measured
+        let (_, wc) = try openOffice(fixtureDocx(), ext: "docx", uti: "org.openxmlformats.wordprocessingml.document")
+        let storage = try XCTUnwrap(wc.textStorageRef)
+        let titlePS = try paragraphStyle(storage, containing: "Docx Title")
+        XCTAssertEqual(titlePS.minimumLineHeight, 38, accuracy: 0.001,
+                       "office read-path rhythm must not depend on whatever FontSizeStore.size a prior test left")
     }
 
     // MARK: - Plain text (direct renderer entry point)

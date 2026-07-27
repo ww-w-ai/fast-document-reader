@@ -85,7 +85,12 @@ enum HwpReader {
 
         var result = try mapJSON(json)                          // KEEP mapJSON pure (String -> result)
         result.images = collectImages(handle: handle, blocks: result.blocks)
-        return result
+        // `.resolvingFontSubstitution()` is applied HERE, at HWP's own single dispatch point
+        // (invariant 44 — HWP bypasses `DocumentTypes.readOffice` entirely, so it needs its own
+        // call rather than `readOffice`'s), NOT inside `mapJSON`: `mapJSON` stays a pure JSON->
+        // result mapper so every hand-built-envelope test that calls it directly is unaffected by
+        // this pass. See `FontSubstitutionResolver`'s file doc for why read time is the right home.
+        return result.resolvingFontSubstitution()
     }
 
     /// Walk the mapped blocks (recursively, INCLUDING table cells) for every `.image(id:)` whose id

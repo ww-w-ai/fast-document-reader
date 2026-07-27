@@ -295,6 +295,31 @@ enum OfficeTextBuilder {
                 // Family override — never applied to a `code` span (see `Span.fontName`'s doc).
                 font = named
             }
+            // `resolvedFontDescriptor` (see its own doc) is `nil` for the overwhelming majority of
+            // spans — the font just assigned above already covers every character, so this is a
+            // no-op and the span renders byte-identically to before this field existed (invariant
+            // 37). Where it is set, `NSFont(descriptor:size:)` — the SAME reconstruction idiom the
+            // authored-size step just below and `fontAdding` already use for the theme's own private
+            // system-UI faces — rebuilds the EXACT font `FontSubstitutionResolver` found at READ
+            // time, so this performs ZERO coverage tests and ZERO CoreText calls on every ⌘+ press:
+            // the decision was already made once, when the document was opened, and it cannot go
+            // stale because its inputs (this document's own text and fonts) cannot change.
+            //
+            // `FontSubstitutionResolver.declaredFont` already unions the span's OWN bold/italic (and
+            // the block's base weight — semibold for a heading) into the probe it hands CoreText, so
+            // a resolved descriptor already IS the correctly-weighted/traited substitute — it must
+            // not be re-traited here. Re-adding traits via `withSymbolicTraits` onto an already-
+            // resolved PRIVATE system-UI substitute descriptor is not reliable: measured, re-adding
+            // `.bold` on an already-`-SemiBold` Korean substitute produced a DIFFERENT face
+            // (`.AppleKoreanFont-Bold`, not `-SemiBold`), and re-adding `[.bold, .italic]` on a
+            // `-Regular` one silently no-opped. `hasResolvedSubstitute` gates the trait step below so
+            // the untouched (`resolvedFontDescriptor == nil`) path — still the overwhelming majority
+            // of spans — keeps applying bold/italic exactly as it always has.
+            let hasResolvedSubstitute = span.resolvedFontDescriptor != nil
+            if let resolvedDescriptor = span.resolvedFontDescriptor,
+               let substituted = NSFont(descriptor: resolvedDescriptor, size: font.pointSize) {
+                font = substituted
+            }
             // An authored size REPLACES the block's base size before bold/italic/super-sub touch
             // it, so those still layer on top of the right starting point (traits preserve family,
             // not size; scaling preserves family, not traits — order doesn't matter between the
@@ -303,10 +328,12 @@ enum OfficeTextBuilder {
                 let scaled = max(1, (authoredSize * fontSizeScale).rounded())
                 font = NSFont(descriptor: font.fontDescriptor, size: scaled) ?? font
             }
-            var traits: NSFontDescriptor.SymbolicTraits = []
-            if span.bold { traits.insert(.bold) }
-            if span.italic { traits.insert(.italic) }
-            if !traits.isEmpty { font = fontAdding(traits, to: font) }
+            if !hasResolvedSubstitute {
+                var traits: NSFontDescriptor.SymbolicTraits = []
+                if span.bold { traits.insert(.bold) }
+                if span.italic { traits.insert(.italic) }
+                if !traits.isEmpty { font = fontAdding(traits, to: font) }
+            }
             // Super/subscript shrink the font AND shift the baseline — `.superscript` alone isn't
             // interpreted by TextKit's own drawing, so it wouldn't actually render raised/lowered
             // here; a smaller font at an offset baseline is what makes it look right on screen.
