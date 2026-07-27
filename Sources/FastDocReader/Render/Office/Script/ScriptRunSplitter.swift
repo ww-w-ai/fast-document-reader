@@ -1,0 +1,124 @@
+/// Cuts one run of text into the fewest pieces that each want a different typeface, so a reader can
+/// draw every character in the family the DOCUMENT chose for that character's writing system.
+///
+/// Every office format declares several font slots per run — Word 4 (`w:ascii`/`w:hAnsi`/`w:eastAsia`/
+/// `w:cs`), ODF 3, HWP 7 — and picks between them per character. This reader used to collapse each
+/// run to the single family the document named for LATIN text, so a Korean paragraph's Hangul was
+/// drawn in the face chosen for its English words, or the reverse; whichever way round it landed, one
+/// of the two was wrong. This splitter is the shared half of the fix. The per-format halves — which
+/// slots exist, how they cascade, and which slot a given character selects — stay in each reader,
+/// because the three formats genuinely disagree and merging them would silently mis-render one.
+///
+/// ## Pieces break where the resolved FAMILY changes, never where the slot changes
+///
+/// This is the load-bearing choice, and it is what makes invariant 37 — "a document that declared
+/// nothing renders byte-identically" — hold structurally rather than by argument:
+///
+/// - A document that points several slots at the same face, which is the common case, yields exactly
+///   ONE piece: the original run, unchanged, no coverage test needed to believe it.
+/// - A document that declares no family at all yields one piece whose family is `nil`. Unchanged.
+/// - Fragmentation is therefore paid only where the document genuinely asked for two typefaces.
+///
+/// Breaking on the slot INDEX instead would split `제1항`, `2026년` and `(3)` at every alternation
+/// even when both slots name the same family — a digit is not neutral to Word, its own block table
+/// sends ASCII to the Latin slot — and run count is ~93% of the build stage. Per-character
+/// alternation has already been measured on this codebase at build 625 ms → 5.8 s and display
+/// 1.5 s → 34 s. Do not re-derive that.
+///
+/// ## Absorption belongs to the classifier, not to this type
+///
+/// `classify` returning `nil` means "this scalar joins the run in progress and can never start a new
+/// one". It is the classifier's call rather than a rule baked in here because the three formats
+/// disagree about what is neutral: Word's block table slots ASCII digits and punctuation to a real
+/// slot, while ODF names 22 unmapped gap ranges whose treatment it leaves to the consumer. What they
+/// cannot disagree about is the floor — `ScriptClass.isAbsorbing` — since a mark that extends a
+/// grapheme cluster must never begin a piece, or a boundary lands inside a cluster.
+///
+/// ## Scalars, not characters
+///
+/// Iterating `String.unicodeScalars` was measured at 2.78 ms per 250k against 7.61 ms for `Character`
+/// iteration, with byte-identical output on a 250k corpus and on 13 hand-built trap cases (combining
+/// marks, a Cyrillic titlo on a Latin base, VS16, a regional-indicator pair, a ZWJ family, an astral
+/// pair, a skin-tone modifier, a danda, Arabic mixed with Latin, a kana voiced mark, a Thai vowel
+/// above, Hebrew points). Grapheme segmentation buys nothing that absorption does not already give,
+/// because every scalar that can extend a cluster is Common, Inherited or Grapheme_Extend and none of
+/// those may start a piece. Piece boundaries are `String.Index` values taken straight from that walk,
+/// so a boundary cannot land inside a surrogate pair by construction — this pass deliberately does
+/// NOT inherit `FontSubstitutionResolver.resolveOne`'s hand-written lead/trail-surrogate guard, which
+/// exists only because that function walks a raw `[UniChar]` buffer.
+enum ScriptRunSplitter {
+    /// One stretch of the input that wants one typeface.
+    ///
+    /// `text` is a `Substring`, so slicing costs nothing and the pieces of an unsplit run share the
+    /// original storage; a caller building a new `Span` from one says `String(piece.text)` at that
+    /// point. `family` is the name the document resolved for this stretch, or `nil` for "the document
+    /// said nothing here" — which is not a failure but the ordinary case, and means the same thing it
+    /// has always meant: draw it in the theme's own body font.
+    struct Piece: Equatable {
+        let text: Substring
+        let family: String?
+    }
+
+    /// Splits `text` into pieces that each resolve to one family.
+    ///
+    /// - Parameters:
+    ///   - text: the run's text. An empty string yields no pieces.
+    ///   - classify: which font slot this scalar selects, or `nil` to absorb it into the run in
+    ///     progress. Called once per scalar.
+    ///   - family: the family name that slot resolves to in THIS document, or `nil` if the document
+    ///     named none. Must be a pure function of its slot — the result is memoised for as long as
+    ///     consecutive scalars keep choosing the same slot, which on real text is nearly always, and
+    ///     which is what keeps a per-scalar dictionary lookup out of the loop. `Slot: Equatable` buys
+    ///     exactly that memo and nothing else.
+    ///
+    /// - Returns: pieces in order. No piece is ever empty, and concatenating their `text` reproduces
+    ///   `text` exactly — both asserted in `ScriptRunSplitterTests`, on every case it has.
+    static func split<Slot: Equatable>(_ text: String,
+                                       classify: (Unicode.Scalar) -> Slot?,
+                                       family: (Slot) -> String?) -> [Piece] {
+        let scalars = text.unicodeScalars
+        var pieces: [Piece] = []
+        var pieceStart = scalars.startIndex
+
+        // `resolved` is the family of the piece being built. `isResolved` is separate from it being
+        // non-nil because `nil` is a real answer ("the document named no family"), so "we have not
+        // seen a classifying scalar yet" cannot be encoded as `resolved == nil`. Until the first one
+        // arrives, absorbed scalars accumulate into a piece whose family is still undecided — which
+        // is how a run that opens with a space or an opening bracket hands that punctuation to the
+        // first real piece instead of stranding it in one of its own.
+        var resolved: String?
+        var isResolved = false
+        var memoSlot: Slot?
+        var memoFamily: String?
+
+        var index = scalars.startIndex
+        while index < scalars.endIndex {
+            if let slot = classify(scalars[index]) {
+                let candidate: String?
+                if let memoSlot, memoSlot == slot {
+                    candidate = memoFamily
+                } else {
+                    candidate = family(slot)
+                    memoSlot = slot
+                    memoFamily = candidate
+                }
+                if !isResolved {
+                    resolved = candidate
+                    isResolved = true
+                } else if candidate != resolved {
+                    pieces.append(Piece(text: text[pieceStart..<index], family: resolved))
+                    pieceStart = index
+                    resolved = candidate
+                }
+            }
+            index = scalars.index(after: index)
+        }
+
+        // The tail, including the case where nothing classified at all: a run of pure punctuation is
+        // one piece with no family, not zero pieces and not a dropped tail.
+        if pieceStart < scalars.endIndex {
+            pieces.append(Piece(text: text[pieceStart..<scalars.endIndex], family: resolved))
+        }
+        return pieces
+    }
+}

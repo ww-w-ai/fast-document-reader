@@ -12,3 +12,7 @@ DerivedData/
 docs/
 # Sprint orchestration state — a working file for the run in progress, not a repo artifact.
 .ww-w-ai/
+# Where Scripts/gen-script-ranges.py parks the UCD files it downloads. The GENERATED table is
+# committed; its 1.3 MB of input is not, because the generator re-fetches it on demand and the
+# version it was built from is stamped into the output.
+.ucd-cache/
