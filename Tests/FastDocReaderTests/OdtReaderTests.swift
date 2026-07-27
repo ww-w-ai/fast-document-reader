@@ -1576,6 +1576,237 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "X", bold: true)])])
     }
 
+    // MARK: Font family SLOTS — ODF's three script types (§20.277-§20.279, table 22)
+    //
+    // The mapping from a character to one of the three slots lives in `OdfScriptTable` and is tested
+    // as a pure function in `OdtFontSlotTests`; what these cases prove is the READER — that the six
+    // attributes are read, that each slot inherits on its own, and that a run really is cut where the
+    // family it resolves to changes. The fixture-level before/after measurement is over there too.
+
+    /// The feature itself. One style names three different families through the indirect form, and a
+    /// run mixing all three writing systems comes back as three spans, each in the family ODF's own
+    /// table 22 assigns its characters — Latin letters to `style:font-name`, Hangul to
+    /// `style:font-name-asian`, Arabic to `style:font-name-complex`. Before this, all three were
+    /// drawn in the LATIN family, which is the defect: the document's Korean face was declared and
+    /// never used.
+    func testEachScriptTypeIsDrawnInTheFamilyItsOwnSlotDeclares() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">Ab가나\u{0627}\u{0628}</text:span></text:p>",
+            automaticStyles: """
+            <office:font-face-decls>
+              <style:font-face style:name="W" svg:font-family="&apos;Latin Face&apos;"/>
+              <style:font-face style:name="A" svg:font-family="&apos;Asian Face&apos;"/>
+              <style:font-face style:name="C" svg:font-family="&apos;Complex Face&apos;"/>
+            </office:font-face-decls>
+            <style:style style:name="S" style:family="text">
+              <style:text-properties style:font-name="W" style:font-name-asian="A" style:font-name-complex="C"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.map(\.text), ["Ab", "가나", "\u{0627}\u{0628}"])
+        XCTAssertEqual(spans.map(\.fontName), ["Latin Face", "Asian Face", "Complex Face"])
+    }
+
+    /// The same three slots stated in their DIRECT form. Both spellings appear together on one
+    /// element in every LibreOffice file, and the western member is `fo:`-prefixed while its two
+    /// twins are `style:`-prefixed — a naming asymmetry that defeats any `name + "-asian"` string
+    /// building, which is why the reader carries a literal table of pairs.
+    func testTheDirectFamilyAttributesFeedTheSameThreeSlots() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">Ab가나\u{0627}</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="Latin Face"
+                                     style:font-family-asian="Asian Face"
+                                     style:font-family-complex="Complex Face"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.map(\.fontName), ["Latin Face", "Asian Face", "Complex Face"])
+    }
+
+    /// §20.189, per slot: "Instead of this attribute, the `style:font-name` attribute should be
+    /// used" — so where a style writes both spellings of one slot, the indirect one wins. Asserted
+    /// on the asian slot specifically, because the latin slot's precedence predates this work and a
+    /// test that only covered it would prove nothing about the two new ones.
+    func testIndirectFontNameBeatsItsDirectTwinInEverySlot() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">가</text:span></text:p>",
+            automaticStyles: """
+            <office:font-face-decls>
+              <style:font-face style:name="A" svg:font-family="Indirect Asian"/>
+            </office:font-face-decls>
+            <style:style style:name="S" style:family="text">
+              <style:text-properties style:font-name-asian="A" style:font-family-asian="Direct Asian"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans[0].fontName, "Indirect Asian")
+    }
+
+    /// Per-slot inheritance, which is the reason the cascade carries three "was it declared" flags
+    /// rather than one. A child declaring ONLY the complex family must still inherit its parent's
+    /// latin and asian ones — the exact shape two paragraph styles in this repo's own fixtures use
+    /// (`List` and `Index` declare complex and nothing else). With a single flag the child's complex
+    /// declaration would close the walk and the parent's other two families would vanish.
+    func testAStyleDeclaringOnlyTheComplexSlotStillInheritsTheOtherTwo() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"Child\">A가\u{0627}</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="Parent" style:family="text">
+              <style:text-properties fo:font-family="Parent Latin" style:font-family-asian="Parent Asian"/>
+            </style:style>
+            <style:style style:name="Child" style:family="text" style:parent-style-name="Parent">
+              <style:text-properties style:font-family-complex="Child Complex"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.map(\.fontName), ["Parent Latin", "Parent Asian", "Child Complex"])
+    }
+
+    /// The empty-face case, now that there are three slots for it to reach. `<style:font-face
+    /// style:name="F" svg:font-family=""/>` used as `style:font-name-complex` is exactly what
+    /// `bus-headings.odt` and `tago-tables.odt` write, four times each. It states no typeface, so the
+    /// parent's complex family must still inherit through it.
+    func testAnEmptyFontFaceInTheComplexSlotDoesNotBlockInheritance() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"Child\">\u{0627}</text:span></text:p>",
+            automaticStyles: """
+            <office:font-face-decls>
+              <style:font-face style:name="F" svg:font-family=""/>
+            </office:font-face-decls>
+            <style:style style:name="Parent" style:family="text">
+              <style:text-properties style:font-family-complex="Parent Complex"/>
+            </style:style>
+            <style:style style:name="Child" style:family="text" style:parent-style-name="Parent">
+              <style:text-properties style:font-name-complex="F"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans[0].fontName, "Parent Complex")
+    }
+
+    /// A slot the document never declared resolves to NO family — the theme's own body font — and
+    /// never borrows the family from a neighbouring slot. Borrowing is precisely the defect this work
+    /// removes (Hangul drawn in the face chosen for English words), and ODF states the three
+    /// properties independently with no precedence between them.
+    func testAnUndeclaredSlotFallsToTheThemeFontRatherThanTheLatinFamily() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">A가</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="Only Latin"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.map(\.text), ["A", "가"])
+        XCTAssertEqual(spans[0].fontName, "Only Latin")
+        XCTAssertNil(spans[1].fontName)
+    }
+
+    /// Invariant 37, asserted rather than argued, and the reason a run breaks on the resolved FAMILY
+    /// and not on the slot index: a style that points all three slots at one face cannot produce a
+    /// boundary, so a run mixing Latin, Hangul, digits and punctuation stays ONE span — which is what
+    /// keeps `제1항` and `2026년` from fragmenting at every alternation in the overwhelmingly common
+    /// document that means one typeface.
+    func testAStyleNamingOneFamilyForAllThreeSlotsStillProducesOneSpan() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">제1항 2026년 (3) ABC</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="One Face"
+                                     style:font-family-asian="One Face"
+                                     style:font-family-complex="One Face"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.count, 1)
+        XCTAssertEqual(spans[0].text, "제1항 2026년 (3) ABC")
+        XCTAssertEqual(spans[0].fontName, "One Face")
+    }
+
+    /// A table 22 gap — the space at `U+0020` is one, and so is every character in General
+    /// Punctuation — never STARTS a piece: it joins the run in progress. Without that a single space
+    /// between two Korean words would end one span and begin another, and fragmentation would arrive
+    /// through the most common character in the document.
+    func testAGapCharacterJoinsTheRunInProgressRatherThanStartingOne() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">가 나 Ab</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="Latin Face" style:font-family-asian="Asian Face"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.map(\.text), ["가 나 ", "Ab"])
+        XCTAssertEqual(spans.map(\.fontName), ["Asian Face", "Latin Face"])
+    }
+
+    /// The same rule ACROSS calls. `text:tab` arrives as its own stretch of text, and every scalar in
+    /// it is a gap, so it states no script type at all — emitted verbatim it would strand a lone
+    /// theme-font span between two runs of one real family. It takes the neighbour's family instead
+    /// and merges away, so the tab between two Korean words is measured in the Korean face.
+    func testATabBetweenTwoRunsTakesTheNeighboursFamilyInsteadOfNone() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">가<text:tab/>나</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="Latin Face" style:font-family-asian="Asian Face"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.map(\.text), ["가\t나"])
+        XCTAssertEqual(spans[0].fontName, "Asian Face")
+    }
+
+    /// Nothing is dropped and nothing is reordered, whatever the split does: concatenating every span
+    /// of a run reproduces the run's own text exactly. Exercised on the shapes a naive UTF-16 walk
+    /// breaks — an astral pair, a variation-selector emoji, a regional-indicator pair and a ZWJ
+    /// sequence — all of which must also stay whole, since a boundary inside one of them would cut a
+    /// grapheme cluster in half.
+    ///
+    /// The combining acute is deliberately on a HANGUL base rather than a Latin one. Table 22 maps
+    /// `U+0301` into its latin range, so `A\u{0301}` would hold together even with no cluster floor at
+    /// all and would prove nothing; `가\u{0301}` splits the moment the floor is gone, because the base
+    /// and its own mark then select two different slots.
+    func testEverySpanConcatenatedReproducesTheRunExactly() throws {
+        let source = "Ab가\u{0301}\u{20B9F}\u{0627}\u{FE0F}\u{1F1F0}\u{1F1F7}\u{1F468}\u{200D}\u{1F469}!"
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">\(source)</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="Latin Face"
+                                     style:font-family-asian="Asian Face"
+                                     style:font-family-complex="Complex Face"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.map(\.text).joined(), source)
+        XCTAssertFalse(spans.contains { $0.text.isEmpty }, "no piece may be empty")
+        XCTAssertTrue(spans.contains { $0.text.contains("가\u{0301}") },
+                      "the combining acute belongs to the base it sits on, not to a piece of its own")
+    }
+
+    /// Invariant 29: every case above calls `OdtReader.read` itself, which proves the parser and says
+    /// nothing about the application reaching it. This one goes through `DocumentTypes.readOffice`,
+    /// the single dispatch the app and `--extract` both use, on a document declaring all three slots
+    /// and text exercising all three — so a three-slot resolution that worked only when called
+    /// directly would fail here.
+    func testThreeSlotResolutionSurvivesThroughDocumentTypesReadOffice() throws {
+        let zip = buildOdt(content: doc(
+            body: "<text:p><text:span text:style-name=\"S\">Ab가나\u{0627}\u{0628}</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="Latin Face"
+                                     style:font-family-asian="Asian Face"
+                                     style:font-family-complex="Complex Face"/>
+            </style:style>
+            """))
+        let blocks = try DocumentTypes.readOffice(try ZipArchive(data: zip), extension: "odt").blocks
+        guard case .paragraph(let spans, _, _, _, _) = blocks.first else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.map(\.fontName), ["Latin Face", "Asian Face", "Complex Face"])
+    }
+
     // MARK: S15 — table-cell styles: background, border
 
     func testTableCellBackgroundAndBorderApplyFromCellStyle() throws {
