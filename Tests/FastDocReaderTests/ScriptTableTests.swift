@@ -48,8 +48,11 @@ final class ScriptTableTests: XCTestCase {
         for raw in scriptRangeClasses {
             XCTAssertNotNil(ScriptClass(rawValue: raw), "table carries unknown class \(raw)")
         }
-        // Coalesced: two adjacent entries with the same class would be a wasted probe, and would
-        // mean the generator's merge step stopped working.
+        // Two adjacent entries with the same class would be a wasted probe. The generator builds
+        // this list by scanning its per-scalar class array for MAXIMAL runs, so the property is
+        // structural rather than the work of a separate merge step (an explicit `coalesce` pass
+        // was written, measured to be incapable of ever firing, and removed) — what this catches
+        // is that run-scan itself regressing into emitting one entry per scalar.
         for index in 1..<scriptRangeClasses.count {
             XCTAssertNotEqual(scriptRangeClasses[index - 1], scriptRangeClasses[index],
                               "entries \(index - 1)/\(index) share a class and should be one range")
@@ -135,9 +138,11 @@ final class ScriptTableTests: XCTestCase {
     func testEveryVariationSelectorIsAbsorbing() {
         // A variation selector changes which glyph CoreText picks for the character BEFORE it
         // (`FontSubstitutionCache.followingVariationSelector` already depends on this), so letting
-        // one start a piece would separate it from the character it modifies. They reach us through
-        // the Grapheme_Extend overlay rather than a rule of their own; this asserts that they do,
-        // instead of leaving it to coincidence.
+        // one start a piece would separate it from the character it modifies. They are absorbing
+        // TWICE OVER — every one of them is Script=Inherited in the UCD (`Scripts.txt`: FE00..FE0F
+        // and E0100..E01EF) *and* Grapheme_Extend — so this cannot fail while `.inherited` absorbs,
+        // whatever the overlay does. That redundancy is the point: it pins the OUTCOME the rest of
+        // the pipeline depends on rather than the particular rule that currently delivers it.
         var notAbsorbed: [UInt32] = []
         for value in UInt32(0)...0x10FFFF {
             guard let scalar = Unicode.Scalar(value), scalar.properties.isVariationSelector else { continue }

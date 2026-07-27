@@ -15,6 +15,11 @@ Usage:
     python3 Scripts/gen-script-ranges.py --version 18.0.0   # fetch a different UCD release
     python3 Scripts/gen-script-ranges.py --ucd ~/ucd        # use already-downloaded files
 
+The download cache is keyed BY VERSION (`.ucd-cache/<version>/`) rather than being one flat
+directory, so `--version 18.0.0` really fetches 18.0.0 instead of re-reading whatever release
+happens to be sitting there. `--ucd` bypasses the cache entirely and is taken at its word, so
+that directory's files are still checked against `--version` below.
+
 The version stamped into the generated file is READ OUT OF the data files' own headers, never
 passed in -- a stamp that a caller could get wrong is worse than no stamp, because the whole
 point of it is to tell a future reader which UCD the table and CoreText's font cascade were
@@ -35,7 +40,7 @@ import urllib.request
 
 # The class order is a CONTRACT with Swift's `ScriptClass` enum -- the generated table stores
 # each range's class as this list's index, so reordering it silently re-labels every scalar in
-# the app. `ScriptTableTests.testGeneratedClassNamesMatchTheEnumCaseOrder` compares the emitted
+# the app. `ScriptTableTests.testGeneratedClassNamesMatchTheEnumOrder` compares the emitted
 # names against the enum's own cases and fails if the two ever drift apart.
 CLASS_ORDER = [
     "latin",
@@ -169,19 +174,6 @@ def parse_ranges(text, wanted_property=None):
     return out
 
 
-def coalesce(ranges):
-    """Merge adjacent ranges that carry the same class. The table is keyed by START only, so
-    two touching ranges with one class must become one entry or the binary search does extra
-    probes for no reason."""
-    out = []
-    for first, last, value in ranges:
-        if out and out[-1][2] == value and out[-1][1] + 1 == first:
-            out[-1] = (out[-1][0], last, value)
-        else:
-            out.append((first, last, value))
-    return out
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", default="17.0.0",
@@ -193,7 +185,7 @@ def main():
     args = parser.parse_args()
 
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    cache_dir = args.ucd or os.path.join(repo, ".ucd-cache")
+    cache_dir = args.ucd or os.path.join(repo, ".ucd-cache", args.version)
     out_path = args.out or os.path.join(
         repo, "Sources/FastDocReader/Render/Office/Script/ScriptRanges.swift")
 
@@ -254,7 +246,6 @@ def main():
         if scalar > MAX_SCALAR or classes[scalar] != classes[start]:
             ranges.append((start, scalar - 1, CLASS_ORDER[classes[start]]))
             start = scalar
-    ranges = coalesce(ranges)
 
     starts = ",".join(str(first) for first, _, _ in ranges)
     values = ",".join(str(CLASS_ORDER.index(value)) for _, _, value in ranges)
