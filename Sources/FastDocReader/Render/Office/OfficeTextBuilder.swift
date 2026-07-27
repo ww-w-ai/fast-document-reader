@@ -56,8 +56,8 @@ enum OfficeTextBuilder {
     /// OOXML default when a document states none at all is 11pt — the same default this parameter
     /// itself defaults to, so a caller that hasn't wired a reader-supplied value through yet still
     /// gets the standard behaviour). This is the OTHER half of the font-size model, alongside
-    /// `Span.fontSize`: the document, as authored, is 100% — `theme.baseFontSize` (the user's
-    /// reading-size preference, `FontSizeStore.size`) is multiplied on top of it, as the RATIO
+    /// `Span.fontSize`: the document, as authored, is 100% — `theme.baseFontSize` (the reading
+    /// document's own `readingSize`) is multiplied on top of it, as the RATIO
     /// `theme.baseFontSize / documentDefaultFontSize`. A run that names an explicit size (a 22
     /// half-point body run, a 32 half-point heading — `Span.fontSize` 11pt/16pt) is scaled by that
     /// ratio; a run that names none keeps whatever the surrounding block's OWN base font already is

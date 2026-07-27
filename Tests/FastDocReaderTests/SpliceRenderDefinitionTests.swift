@@ -38,7 +38,7 @@ final class SpliceRenderDefinitionTests: XCTestCase {
     private func assertMatchesFullRender(_ doc: MarkdownDocument, _ wc: DocumentWindowController,
                                          _ what: String, file: StaticString = #filePath, line: UInt = #line) throws {
         let storage = try XCTUnwrap(wc.textStorageRef)
-        let theme = RenderTheme.current(size: FontSizeStore.size)
+        let theme = RenderTheme.current(size: doc.readingSize)
         let fresh = MarkdownRenderer.render(doc.text, theme: theme)
         XCTAssertEqual(storage.string, fresh.string, "\(what): rendered text", file: file, line: line)
         XCTAssertEqual(BlockEdit.spans(in: storage), BlockEdit.spans(in: fresh),
@@ -144,7 +144,7 @@ final class SpliceRenderDefinitionTests: XCTestCase {
         let source = "[ref]: https://first.example.com\n\nSee [text][ref] here.\n\n[ref]: https://second.example.com\n\nTail paragraph.\n"
         let (doc, wc) = try open(source)
         // Sanity: a full render resolves to the FIRST definition.
-        let fresh = MarkdownRenderer.render(doc.text, theme: RenderTheme.current(size: FontSizeStore.size))
+        let fresh = MarkdownRenderer.render(doc.text, theme: RenderTheme.current(size: doc.readingSize))
         XCTAssertEqual(linkDestination(of: "text", in: fresh), URL(string: "https://first.example.com"))
 
         let storage = try XCTUnwrap(wc.textStorageRef)

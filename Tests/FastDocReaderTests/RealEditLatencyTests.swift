@@ -76,7 +76,7 @@ final class RealEditLatencyTests: XCTestCase {
         spinRunLoop(seconds: 2)
 
         var t = Date()
-        let attr = PlainTextRenderer.render(doc.text, theme: .current(size: FontSizeStore.size))
+        let attr = PlainTextRenderer.render(doc.text, theme: .current(size: doc.readingSize))
         stamp("PlainTextRenderer.render", t)
 
         t = Date(); let anchor = wc.topVisibleCharIndex(); stamp("topVisibleCharIndex", t)

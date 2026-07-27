@@ -1123,8 +1123,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let whole = NSRange(location: 0, length: storage.length)
         // Signature of everything that determines overlay layout: visible code blocks (full range
         // + wrap state + vertical position) plus column width and font size. If unchanged since the
-        // last placement, existing overlays are still correct — skip the teardown + rebuild.
-        var sig = "\(Int(container.size.width))|\(FontSizeStore.size)"
+        // last placement, existing overlays are still correct — skip the teardown + rebuild. The
+        // font size comes from THIS window's own document — a stale/shared key here would mean an
+        // overlay placed for one document's size silently surviving a font-size change made through
+        // a DIFFERENT window (the exact bug `MarkdownDocument.readingSize` exists to fix).
+        let readingSize = (document as? MarkdownDocument)?.readingSize ?? FontSizeStore.defaultSize
+        var sig = "\(Int(container.size.width))|\(readingSize)"
         storage.enumerateAttribute(MDAttr.codeBlock, in: visibleChars) { value, visRange, _ in
             guard let code = value as? String else { return }
             var range = visRange
@@ -1274,7 +1278,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         tv.textContainer?.widthTracksTextView = false
         tv.textContainer?.containerSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        let overlayTheme = RenderTheme.current(size: FontSizeStore.size)
+        // This window's own document decides its overlay's font size — never a shared global (see
+        // `placeCopyButtons`'s cache-signature comment above for why a stale/shared key here would
+        // be exactly the bug `MarkdownDocument.readingSize` exists to fix).
+        let readingSize = (document as? MarkdownDocument)?.readingSize ?? FontSizeStore.defaultSize
+        let overlayTheme = RenderTheme.current(size: readingSize)
         let hl = NSMutableAttributedString(attributedString:
             CodeHighlighter.highlight(code, language: lang.isEmpty ? nil : lang, theme: overlayTheme))
         // Match the wrapped card's line leading so no-wrap lines aren't tighter than wrap mode.

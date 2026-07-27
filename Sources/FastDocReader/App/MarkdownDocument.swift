@@ -4,6 +4,17 @@ import ImageIO
 final class MarkdownDocument: NSDocument {
     private(set) var text: String = ""
 
+    /// THIS document's own reading font size — belongs here, not to a shared global (see
+    /// `FontSizeStore`'s own header comment for the bug this fixes). Seeded ONCE, at creation, from
+    /// the last size the reader chose, and never re-read from anywhere afterwards: that single read
+    /// is what keeps "remembered next time" true across launches, while the absence of any later
+    /// read is what stops one window's ⌘+ from reaching another. ⌘+/⌘−/Actual Size (below) change
+    /// only the document that received the menu action, and update the seed for the NEXT document
+    /// opened — never for one already open. Not `private(set)`: test setup that legitimately wants a
+    /// document to start pre-zoomed (simulating a reader who already changed it before the render
+    /// being measured) sets this directly, before the first `render(into:)`.
+    var readingSize: CGFloat = FontSizeStore.startingSize
+
     /// The office reader's output (`.docx` etc — see `Render/Office`). Blocks, not a finished
     /// attributed string: `render(into:)` re-runs `OfficeTextBuilder.build` every time (font-size
     /// change, ⌘R), so a cached string would freeze the document at whatever size it was built at.
@@ -414,7 +425,7 @@ final class MarkdownDocument: NSDocument {
         // The rendered range these blocks occupy must be one contiguous run to be replaceable.
         guard let rendered = renderedRange(ofSourceSpans: spans[first...last], in: storage) else { return false }
 
-        let theme = RenderTheme.current(size: FontSizeStore.size)
+        let theme = RenderTheme.current(size: readingSize)
         let fragmentSource = ns.substring(with: NSRange(location: oldStart, length: newLength))
         // `hasCrossBlockReferences` is the same cheap whole-document existence check every markdown
         // splice already paid before this fix — a document with none of the syntax takes the `nil`
@@ -818,9 +829,18 @@ final class MarkdownDocument: NSDocument {
         }
     }
 
-    @objc func increaseReaderFontSize(_ sender: Any?) { FontSizeStore.increase(); reRenderPreservingCaret() }
-    @objc func decreaseReaderFontSize(_ sender: Any?) { FontSizeStore.decrease(); reRenderPreservingCaret() }
-    @objc func resetReaderFontSize(_ sender: Any?) { FontSizeStore.reset(); reRenderPreservingCaret() }
+    /// The three live size actions. Each changes THIS document and then records the result as the
+    /// seed for the next document opened — writing the seed is the only thing that outlives this
+    /// document, and nothing already open ever reads it again (see `readingSize` above).
+    @objc func increaseReaderFontSize(_ sender: Any?) { setReadingSize(FontSizeStore.increased(from: readingSize)) }
+    @objc func decreaseReaderFontSize(_ sender: Any?) { setReadingSize(FontSizeStore.decreased(from: readingSize)) }
+    @objc func resetReaderFontSize(_ sender: Any?) { setReadingSize(FontSizeStore.defaultSize) }
+
+    private func setReadingSize(_ v: CGFloat) {
+        readingSize = v
+        FontSizeStore.startingSize = v
+        reRenderPreservingCaret()
+    }
 
     /// A queued font-size rebuild, kept so a burst of presses collapses into one (see below).
     private var pendingFontRerender: DispatchWorkItem?
@@ -829,7 +849,7 @@ final class MarkdownDocument: NSDocument {
     /// 38-table Word report and 0.8 s on a 62-table HWP. Pressing the key three times quickly used
     /// to cost three of those, one after another, and the reader sat through all three even though
     /// only the LAST size is ever seen. So the rebuild is debounced: each press cancels the queued
-    /// one and re-queues, and because `FontSizeStore` was already updated synchronously, the single
+    /// one and re-queues, and because `readingSize` was already updated synchronously, the single
     /// rebuild that survives renders the FINAL size. 120 ms is short enough to feel immediate and far
     /// shorter than one rebuild, so a burst now costs one rebuild instead of N.
     private func reRenderPreservingCaret() {
@@ -947,8 +967,8 @@ final class MarkdownDocument: NSDocument {
     var lineEnding: String { text.contains("\r\n") ? "\r\n" : "\n" }
 
     private func render(into wc: DocumentWindowController) {
-        // FontSizeStore is the SINGLE owner of font size — never read UserDefaults directly.
-        let theme = RenderTheme.current(size: FontSizeStore.size)
+        // THIS document is the single owner of the size it renders at — never a shared global.
+        let theme = RenderTheme.current(size: readingSize)
         // Refresh the reading column NOW that `wc.document` is wired (`makeWindowControllers` runs
         // `addWindowController` BEFORE this `render`): the controller's own `init` already ran
         // `updateTextInset` once, but that was before `document` was set, so an office document's
@@ -968,7 +988,7 @@ final class MarkdownDocument: NSDocument {
         // document at whatever size it was first opened at.
         // TWO independent scales, and keeping them independent is the whole point:
         //   • TEXT (and the absolute spacing/indent/tab stops that belong with it) rides the reader's
-        //     own size — `theme` above, i.e. `FontSizeStore.size ÷ officeDefaultBodyFontSize` inside
+        //     own size — `theme` above, i.e. `readingSize ÷ officeDefaultBodyFontSize` inside
         //     the builder (invariant 37). So ⌘+/⌘− works on an office document exactly as it does on
         //     markdown, which is the entire point of that setting.
         //   • GRAPHICS (images, chart/SmartArt placeholders) ride `graphicScale` = the reading column
@@ -1141,7 +1161,7 @@ final class MarkdownDocument: NSDocument {
         // away as the prose grows. Pictures follow for a plainer reason — someone enlarging the text
         // is asking to see MORE, and a diagram that stayed put while the words around it doubled
         // would look like a mistake. All three are vector or downscaled, so nothing loses sharpness.
-        let scale = FontSizeStore.size / FontSizeStore.defaultSize
+        let scale = readingSize / FontSizeStore.defaultSize
         if scale != 1 {
             size = NSSize(width: size.width * scale, height: size.height * scale)
         }

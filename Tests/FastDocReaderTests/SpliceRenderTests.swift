@@ -33,7 +33,7 @@ final class SpliceRenderTests: XCTestCase {
     private func assertMatchesFullRender(_ doc: MarkdownDocument, _ wc: DocumentWindowController,
                                          _ what: String, file: StaticString = #filePath, line: UInt = #line) throws {
         let storage = try XCTUnwrap(wc.textStorageRef)
-        let theme = RenderTheme.current(size: FontSizeStore.size)
+        let theme = RenderTheme.current(size: doc.readingSize)
         let fresh = doc.isPlainText ? PlainTextRenderer.render(doc.text, theme: theme)
                                     : MarkdownRenderer.render(doc.text, theme: theme)
         XCTAssertEqual(storage.string, fresh.string, "\(what): rendered text", file: file, line: line)

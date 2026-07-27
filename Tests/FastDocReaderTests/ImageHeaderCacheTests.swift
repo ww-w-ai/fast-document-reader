@@ -11,6 +11,12 @@ import AppKit
 /// counter) must equal the document's local-image count on the very first pass, and 0 more on
 /// every pass after — not a screenshot, not a stopwatch.
 final class ImageHeaderCacheTests: XCTestCase {
+    /// The reading size is now SEEDED from a persisted value (`FontSizeStore.startingSize`), so a
+    /// test that changes a document's size leaks into every later test's freshly opened document —
+    /// which is a property of the feature, not a bug, but it makes test order significant. Reset it
+    /// on both sides so this class neither inherits nor exports a size.
+    override func setUp() { super.setUp(); FontSizeStore.startingSize = FontSizeStore.defaultSize }
+    override func tearDown() { FontSizeStore.startingSize = FontSizeStore.defaultSize; super.tearDown() }
     private var temp: URL!
 
     override func setUpWithError() throws {
@@ -21,7 +27,8 @@ final class ImageHeaderCacheTests: XCTestCase {
 
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: temp)
-        FontSizeStore.reset()   // FontSizeStore persists to UserDefaults — must not leak into other tests
+        // No FontSizeStore.reset() needed any more: the reading size lives on each MarkdownDocument
+        // instance now, not in UserDefaults, so there's nothing here that can leak into another test.
     }
 
     /// A tiny real PNG (decodes via ImageIO) — not just arbitrary bytes, since the header-read path

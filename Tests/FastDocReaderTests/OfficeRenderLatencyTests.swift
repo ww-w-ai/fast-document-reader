@@ -25,6 +25,12 @@ import AppKit
 ///   • Machine noise is real: one run showed 2825 ms/2.1× that did not reproduce. Trust the
 ///     `rebuilds` count (deterministic) over the wall clock (not).
 final class OfficeRenderLatencyTests: XCTestCase {
+    /// The reading size is now SEEDED from a persisted value (`FontSizeStore.startingSize`), so a
+    /// test that changes a document's size leaks into every later test's freshly opened document —
+    /// which is a property of the feature, not a bug, but it makes test order significant. Reset it
+    /// on both sides so this class neither inherits nor exports a size.
+    override func setUp() { super.setUp(); FontSizeStore.startingSize = FontSizeStore.defaultSize }
+    override func tearDown() { FontSizeStore.startingSize = FontSizeStore.defaultSize; super.tearDown() }
     /// What paragraph STYLES a real HWP actually uses, and how often — the input to
     /// `HwpReader.headingLevel`'s matching. Run before widening that matcher, so the rule follows the
     /// documents instead of a guess about them (the same "measure the corpus before believing it"
@@ -100,21 +106,18 @@ final class OfficeRenderLatencyTests: XCTestCase {
             }
         }()
 
-        // `FontSizeStore` is backed by `UserDefaults.standard` under this process's OWN bundle
-        // identifier (`com.apple.dt.xctest.tool`), which macOS persists to DISK — so a write here
-        // outlives this test, this process, and this `swift test` invocation, silently poisoning
-        // every later run (including ones that never set `FMD_START_FONT`) until something resets
-        // it. Restore whatever was there before, unconditionally, regardless of how this test exits.
-        let originalFontSize = FontSizeStore.size
-        addTeardownBlock { FontSizeStore.size = originalFontSize }
-        if let start = ProcessInfo.processInfo.environment["FMD_START_FONT"].flatMap(Double.init) {
-            FontSizeStore.size = CGFloat(start)   // reproduce a reader who has already zoomed in
-        }
+        // The reading size lives on `doc` itself now, not in `UserDefaults` — so unlike the old
+        // `FontSizeStore.size` (backed by `UserDefaults.standard` under this process's own bundle
+        // identifier, which macOS persisted to DISK and could silently poison a later run), there is
+        // no cross-test/cross-process leak to guard against here any more.
         let doc = MarkdownDocument()
         doc.fileURL = url
         var t = Date()
         try doc.read(from: data, ofType: uti)
         stamp("read + parse", t)
+        if let start = ProcessInfo.processInfo.environment["FMD_START_FONT"].flatMap(Double.init) {
+            doc.readingSize = CGFloat(start)   // reproduce a reader who has already zoomed in
+        }
 
         var tables = 0, images = 0
         func countBlocks(_ blocks: [OfficeBlock]) {

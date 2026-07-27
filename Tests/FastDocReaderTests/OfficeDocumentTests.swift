@@ -14,6 +14,12 @@ import UniformTypeIdentifiers
 /// `OdtReader.read` directly, was structurally unable to catch. These tests go through
 /// `MarkdownDocument.read(from:ofType:)` itself for that reason.
 final class OfficeDocumentTests: XCTestCase {
+    /// The reading size is now SEEDED from a persisted value (`FontSizeStore.startingSize`), so a
+    /// test that changes a document's size leaks into every later test's freshly opened document —
+    /// which is a property of the feature, not a bug, but it makes test order significant. Reset it
+    /// on both sides so this class neither inherits nor exports a size.
+    override func setUp() { super.setUp(); FontSizeStore.startingSize = FontSizeStore.defaultSize }
+    override func tearDown() { FontSizeStore.startingSize = FontSizeStore.defaultSize; super.tearDown() }
     // MARK: Fixture construction — a real (stored-only) ZIP, built in memory (same shape as
     // `DocxReaderTests`, duplicated here so this file stays a self-contained unit).
 
@@ -191,10 +197,15 @@ final class OfficeDocumentTests: XCTestCase {
     /// the fixture pretends to be, exactly the two pieces of information `MarkdownDocument` itself
     /// has to work with (a file extension on disk, a UTI from the system) — using `docx` for both
     /// wherever the extension didn't matter for a given test would silently exercise only one path.
-    private func openOffice(_ data: Data, ext: String = "docx", uti: String = "org.openxmlformats.wordprocessingml.document") throws -> (MarkdownDocument, DocumentWindowController) {
+    /// `readingSize` seeds the document's own reading size before the first render (default:
+    /// `FontSizeStore.defaultSize`) — the seam a caller that wants to simulate a reader who has
+    /// already zoomed in uses, now that the size lives on the document rather than a shared global.
+    private func openOffice(_ data: Data, ext: String = "docx", uti: String = "org.openxmlformats.wordprocessingml.document",
+                            readingSize: CGFloat = FontSizeStore.defaultSize) throws -> (MarkdownDocument, DocumentWindowController) {
         let doc = MarkdownDocument()
         doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-fixture-\(UUID().uuidString).\(ext)")
         try doc.read(from: data, ofType: uti)
+        doc.readingSize = readingSize
         doc.makeWindowControllers()
         let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
         wc.window?.setFrame(NSRect(x: 0, y: 0, width: 800, height: 600), display: false)
@@ -380,8 +391,8 @@ final class OfficeDocumentTests: XCTestCase {
     }
 
     /// S13 invariant 29: `MarkdownDocument`'s own `render(into:)` is the ONE place that knows the
-    /// document's `officeDefaultBodyFontSize` (set via `setOfficeContent`) and the user's
-    /// `FontSizeStore` size both exist and must be combined — `OfficeTextBuilderTests` proves the
+    /// document's `officeDefaultBodyFontSize` (set via `setOfficeContent`) and the document's own
+    /// `readingSize` both exist and must be combined — `OfficeTextBuilderTests` proves the
     /// SCALING MATH in isolation, but not that `MarkdownDocument` actually wires its own stored
     /// `documentDefaultFontSize` into that call, which is exactly the kind of seam a parser-only or
     /// builder-only test cannot see (no reader sets this field yet, so this drives the document
@@ -391,13 +402,11 @@ final class OfficeDocumentTests: XCTestCase {
         let blocks: [OfficeBlock] = [.paragraph(spans: [body])]
         let archive = try ZipArchive(data: buildZip([("word/document.xml", Data())]))
 
-        let userSize: CGFloat = 22 // FontSizeStore.size stand-in, applied via RenderTheme.current below
-        let originalSize = FontSizeStore.size
-        FontSizeStore.size = userSize
-        defer { FontSizeStore.size = originalSize }
+        let userSize: CGFloat = 22 // stands in for a reader who has already zoomed in
 
         let doc = MarkdownDocument()
         doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-fontsize-fixture-\(UUID().uuidString).docx")
+        doc.readingSize = userSize
         // documentDefaultFontSize: 11 → scale == userSize/11 == 2, so the 11pt authored run must
         // render at exactly 22pt — a value that could ONLY come from `render(into:)` actually
         // passing `officeDefaultBodyFontSize` through, not from `OfficeTextBuilder.build`'s own
@@ -427,13 +436,11 @@ final class OfficeDocumentTests: XCTestCase {
     func testRenderScalesOfficeGraphicsByPageWidthAndLeavesThemUntouchedByFontSize() throws {
         let declared = CGSize(width: 100, height: 50)
         let pageWidth: CGFloat = 400
-        let original = FontSizeStore.size
-        defer { FontSizeStore.size = original }
 
         func renderOnce(readingSize: CGFloat) throws -> (image: CGSize, column: CGFloat, font: CGFloat) {
-            FontSizeStore.size = readingSize
             let doc = MarkdownDocument()
             doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-graphicscale-\(UUID().uuidString).docx")
+            doc.readingSize = readingSize
             doc.setOfficeContent(blocks: [.paragraph(spans: [Span(text: "Body")]),
                                           .image(id: "pic", size: declared)],
                                  archive: nil, defaultBodyFontSize: 10, pageContentWidth: pageWidth)
@@ -521,7 +528,7 @@ final class OfficeDocumentTests: XCTestCase {
 
         // The reflow path and the build path must agree at the same width (invariant 42's lesson:
         // two implementations of one geometry is where drift comes from).
-        let rebuilt = OfficeTextBuilder.build(doc.officeBlocks, theme: RenderTheme.current(size: FontSizeStore.size),
+        let rebuilt = OfficeTextBuilder.build(doc.officeBlocks, theme: RenderTheme.current(size: doc.readingSize),
                                               columnWidth: wideColumn, documentDefaultFontSize: 10,
                                               pageContentWidth: pageWidth)
         var rebuiltSize: CGSize?
@@ -663,11 +670,8 @@ final class OfficeDocumentTests: XCTestCase {
     }
 
     func testDocxDeclaringANonDefaultBodySizeRendersScaledThroughMarkdownDocumentsOwnReadPath() throws {
-        let originalSize = FontSizeStore.size
-        FontSizeStore.size = 20   // reading size == the document's own declared default (10pt) × 2
-        defer { FontSizeStore.size = originalSize }
-
-        let (doc, wc) = try openOffice(fixtureDocxWithDocDefaultsAndExplicitRun())
+        // reading size == the document's own declared default (10pt) × 2
+        let (doc, wc) = try openOffice(fixtureDocxWithDocDefaultsAndExplicitRun(), readingSize: 20)
         XCTAssertEqual(doc.officeDefaultBodyFontSize, 10,
                        "MarkdownDocument.read(from:) must call DocumentTypes.officeDefaultBodyFontSize, " +
                        "not leave the 11pt constant every call site used to hardcode")
@@ -678,12 +682,9 @@ final class OfficeDocumentTests: XCTestCase {
     }
 
     func testOdtDeclaringANonDefaultBodySizeRendersScaledThroughMarkdownDocumentsOwnReadPath() throws {
-        let originalSize = FontSizeStore.size
-        FontSizeStore.size = 26   // reading size == the document's own declared default (13pt) × 2
-        defer { FontSizeStore.size = originalSize }
-
+        // reading size == the document's own declared default (13pt) × 2
         let (doc, wc) = try openOffice(fixtureOdtWithDefaultStyleAndExplicitRun(),
-                                        ext: "odt", uti: "org.oasis-open.opendocument.text")
+                                        ext: "odt", uti: "org.oasis-open.opendocument.text", readingSize: 26)
         XCTAssertEqual(doc.officeDefaultBodyFontSize, 13,
                        "MarkdownDocument.read(from:) must call DocumentTypes.officeDefaultBodyFontSize " +
                        "for .odt too, through the SAME dispatch readOffice uses")
@@ -709,7 +710,7 @@ final class OfficeDocumentTests: XCTestCase {
         let bodyRange = try XCTUnwrap(storage.string.range(of: "Body text."))
         let bodyIndex = storage.string.distance(from: storage.string.startIndex, to: bodyRange.lowerBound)
         let font = try XCTUnwrap(storage.attribute(.font, at: bodyIndex, effectiveRange: nil) as? NSFont)
-        XCTAssertEqual(font.pointSize, FontSizeStore.size,
+        XCTAssertEqual(font.pointSize, doc.readingSize,
                        "an unsized run must render at the theme's own body size, unscaled")
     }
 
@@ -1049,11 +1050,8 @@ final class OfficeDocumentTests: XCTestCase {
     }
 
     func testParagraphSpacingIndentAndLineHeightReachTheRenderedStorageThroughMarkdownDocument() throws {
-        let originalSize = FontSizeStore.size
-        FontSizeStore.size = 20   // reading size == the document's own declared default (10pt) × 2
-        defer { FontSizeStore.size = originalSize }
-
-        let (_, wc) = try openOffice(fixtureDocxWithParagraphFormatting())
+        // reading size == the document's own declared default (10pt) × 2
+        let (_, wc) = try openOffice(fixtureDocxWithParagraphFormatting(), readingSize: 20)
         let storage = try XCTUnwrap(wc.textStorageRef)
         let loc = (storage.string as NSString).range(of: "Formatted").location
         let style = try XCTUnwrap(storage.attribute(.paragraphStyle, at: loc, effectiveRange: nil) as? NSParagraphStyle)
