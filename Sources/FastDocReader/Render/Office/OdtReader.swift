@@ -280,6 +280,39 @@ enum OdtReader: OfficeDocumentReader {
 
     // MARK: Text (span) styles — automatic-styles → bold/italic/underline/color/highlight/size/family
 
+    /// The family a style states for each of ODF's three script types, already resolved through
+    /// `office:font-face-decls` and `normalizedFontFamily`. `nil` in a slot means the style chain
+    /// declared no family for that script type — never a stand-in name, and never the family from a
+    /// NEIGHBOURING slot.
+    ///
+    /// Falling back across slots (asian → latin when only latin is declared) was considered and
+    /// rejected, and the reason is the whole point of this work: that fallback IS the defect being
+    /// removed, drawing Hangul in the face the document chose for its English words. ODF defines the
+    /// three properties independently — §20.277-§20.279 are the same sentence three times with the
+    /// script type swapped — and states no precedence between them, so an undeclared slot is
+    /// undeclared, and `nil` means what it has always meant everywhere else in this reader: the
+    /// theme's own body font (invariant 37).
+    private struct SlotFonts: Equatable {
+        var latin: String? = nil
+        var asian: String? = nil
+        var complex: String? = nil
+
+        /// True when no character in any script can pick a different family from any other — the
+        /// common case by far, since a document that means one typeface points all three slots at
+        /// it. `collectSpans` uses this to skip the per-scalar walk entirely, which is what makes
+        /// "the document declared one family, or none" cost exactly what it cost before per-slot
+        /// resolution existed rather than merely producing the same answer more slowly.
+        var isUniform: Bool { latin == asian && asian == complex }
+
+        func family(_ type: OdfScriptType) -> String? {
+            switch type {
+            case .latin: return latin
+            case .asian: return asian
+            case .complex: return complex
+            }
+        }
+    }
+
     private struct TextStyle: Equatable {
         var bold = false
         var italic = false
@@ -295,7 +328,10 @@ enum OdtReader: OfficeDocumentReader {
         var textColor: NSColor? = nil
         var highlightColor: NSColor? = nil
         var fontSize: CGFloat? = nil
-        var fontName: String? = nil
+        /// The three families, one per ODF script type. A `Span` still carries ONE `fontName` —
+        /// `collectSpans` cuts a run into pieces where the resolved family changes and gives each
+        /// piece its own, so nothing downstream of this reader learns that slots exist.
+        var fonts = SlotFonts()
         /// P4 — `Span.underlineStyle`/`.caps`/`.smallCaps`'s ODF sources (`style:text-underline-
         /// style`+`style:text-underline-type`, `fo:text-transform`, `fo:font-variant`). `underlineStyle`
         /// defaults `.single`, matching `Span`'s own default (meaningful only when `underline` above
@@ -319,7 +355,14 @@ enum OdtReader: OfficeDocumentReader {
         var textColor: NSColor? = nil
         var highlightColor: NSColor? = nil
         var fontSize: CGFloat? = nil
+        /// Three INDEPENDENT optionals, not one `SlotFonts` — a style may declare the complex family
+        /// and nothing else (both `List` and `Index` in this repo's own fixtures do exactly that),
+        /// and the two it stayed silent about have to keep inheriting from the parent. One combined
+        /// value with one "was it declared" flag would answer for all three at once and silently drop
+        /// the parent's other two families.
         var fontName: String? = nil
+        var fontNameAsian: String? = nil
+        var fontNameComplex: String? = nil
         var underlineStyle: UnderlineStyle? = nil
         var caps: Bool? = nil
         var smallCaps: Bool? = nil
@@ -363,18 +406,42 @@ enum OdtReader: OfficeDocumentReader {
                 // returns `nil` — read as "no size specified" rather than a wrong literal number. That
                 // is a deliberate skip, not an oversight (see this sprint's own report).
                 if let size = props.attributes["fo:font-size"] { decl.fontSize = parseLength(size) }
-                // Both routes end at `normalizedFontFamily`, the ONE place that turns an XSL
+                // ODF states the family THREE times, once per script type (§20.277-§20.279 are the
+                // same sentence with latin / asian / complex swapped), and each of the three has an
+                // indirect form naming a `style:font-face` and a direct form holding the family
+                // literally. Note the naming asymmetry that defeats any `name + "-asian"` string
+                // building: the western direct form is `fo:`-prefixed and the western indirect form
+                // is `style:`-prefixed, while every asian/complex twin is `style:`-prefixed. There is
+                // no mechanical transform, so the pairs are a literal table.
+                //
+                // All six routes end at `normalizedFontFamily`, the ONE place that turns an XSL
                 // `font-family` value into something `NSFont(name:)` can be handed — see its own
-                // doc. `style:font-name` names a `style:font-face`; when that face exists its
+                // doc. `style:font-name*` names a `style:font-face`; when that face exists its
                 // `svg:font-family` is used EVEN IF EMPTY (an emptily-declared face states no
                 // typeface, which must read as "this style says nothing about the family" so the
                 // parent's real one still inherits), and only a reference to a face that was never
                 // declared at all falls back to the reference name itself.
-                if let fontName = props.attributes["style:font-name"] {
-                    decl.fontName = normalizedFontFamily(fontFaces[fontName] ?? fontName)
-                } else if let family = props.attributes["fo:font-family"] {
-                    decl.fontName = normalizedFontFamily(family)
+                //
+                // Indirect BEATS direct per slot, which is the spec's own stated preference
+                // (§20.189: "Instead of this attribute, the style:font-name attribute should be
+                // used") — and it beats it even when it resolves to nothing, because the two are two
+                // spellings of one declaration rather than a preference list, and LibreOffice writes
+                // both onto the same element meaning the same thing. Falling through to the direct
+                // twin when the indirect one names an empty face was considered and rejected: it
+                // would change what the LATIN slot already resolves to today, which is a separate
+                // question from adding the other two.
+                func resolveSlot(indirect: String, direct: String) -> String? {
+                    if let faceName = props.attributes[indirect] {
+                        return normalizedFontFamily(fontFaces[faceName] ?? faceName)
+                    }
+                    if let family = props.attributes[direct] { return normalizedFontFamily(family) }
+                    return nil
                 }
+                decl.fontName = resolveSlot(indirect: "style:font-name", direct: "fo:font-family")
+                decl.fontNameAsian = resolveSlot(indirect: "style:font-name-asian",
+                                                 direct: "style:font-family-asian")
+                decl.fontNameComplex = resolveSlot(indirect: "style:font-name-complex",
+                                                   direct: "style:font-family-complex")
                 // P4 — `style:text-underline-type="double"` wins over `style:text-underline-style`
                 // (ODF lets both be stated together); read together so a double underline is never
                 // reported as merely a dotted/dashed/wavy `.single`. Absent style with a present type
@@ -487,8 +554,14 @@ enum OdtReader: OfficeDocumentReader {
     /// never declared anywhere in the chain keeps `TextStyle`'s own default (`false`/`nil`).
     private static func resolveTextStyle(_ styleName: String, decls: [String: TextStyleDecl]) -> TextStyle {
         var result = TextStyle()
+        // Three independent font flags, one per script type — the nearest-wins walk runs PER SLOT,
+        // so a child that declares only the complex family still inherits the parent's latin and
+        // asian ones. A single `font` flag would stop the walk for all three the moment any one of
+        // them was declared, which is the shape this repo's own fixtures break immediately: their
+        // `List` and `Index` styles declare the complex family and nothing else.
         var have = (bold: false, italic: false, underline: false, strike: false, sup: false, sub: false,
-                    color: false, highlight: false, size: false, font: false,
+                    color: false, highlight: false, size: false,
+                    font: false, fontAsian: false, fontComplex: false,
                     underlineStyle: false, caps: false, smallCaps: false)
         var currentName: String? = styleName
         var visited = Set<String>()
@@ -505,7 +578,11 @@ enum OdtReader: OfficeDocumentReader {
             if !have.color, let v = decl.textColor { result.textColor = v; have.color = true }
             if !have.highlight, let v = decl.highlightColor { result.highlightColor = v; have.highlight = true }
             if !have.size, let v = decl.fontSize { result.fontSize = v; have.size = true }
-            if !have.font, let v = decl.fontName { result.fontName = v; have.font = true }
+            if !have.font, let v = decl.fontName { result.fonts.latin = v; have.font = true }
+            if !have.fontAsian, let v = decl.fontNameAsian { result.fonts.asian = v; have.fontAsian = true }
+            if !have.fontComplex, let v = decl.fontNameComplex {
+                result.fonts.complex = v; have.fontComplex = true
+            }
             if !have.underlineStyle, let v = decl.underlineStyle { result.underlineStyle = v; have.underlineStyle = true }
             if !have.caps, let v = decl.caps { result.caps = v; have.caps = true }
             if !have.smallCaps, let v = decl.smallCaps { result.smallCaps = v; have.smallCaps = true }
@@ -1579,7 +1656,11 @@ enum OdtReader: OfficeDocumentReader {
         // content. ODF has no known equivalent of Word's auto-inserted `_GoBack`, so nothing is
         // filtered here.
         var pendingBookmarks: [String] = []
-        func appendMerging(_ text: String, _ style: TextStyle, _ link: String?) {
+        /// Emits ONE piece of a run: `family` is the family THIS stretch of text resolved to, which
+        /// is one of the style's three slots rather than "the style's font", and is the only thing
+        /// separating a piece from its neighbours. Everything else — the bookmark handover, the
+        /// comment ids, the run-merge equality — is exactly what it was before slots existed.
+        func appendPiece(_ text: String, _ style: TextStyle, _ family: String?, _ link: String?) {
             guard !text.isEmpty else { return }
             var bookmarks: [String] = []
             if !pendingBookmarks.isEmpty {
@@ -1596,7 +1677,7 @@ enum OdtReader: OfficeDocumentReader {
                     underlineStyle: style.underlineStyle, caps: style.caps, smallCaps: style.smallCaps, link: link,
                     strikethrough: style.strikethrough, superscript: style.superscript, subscripted: style.subscripted,
                     bookmarks: bookmarks, commentIds: commentIds, textColor: style.textColor, highlightColor: style.highlightColor,
-                    fontSize: style.fontSize, fontName: style.fontName))
+                    fontSize: style.fontSize, fontName: family))
                 return
             }
             // A bookmarked/commented span is never EXTENDED by trailing text either — see the
@@ -1624,7 +1705,7 @@ enum OdtReader: OfficeDocumentReader {
                last.bold == style.bold, last.italic == style.italic, last.underline == style.underline,
                last.strikethrough == style.strikethrough, last.superscript == style.superscript,
                last.subscripted == style.subscripted, last.link == link, last.textColor == style.textColor,
-               last.highlightColor == style.highlightColor, last.fontSize == style.fontSize, last.fontName == style.fontName,
+               last.highlightColor == style.highlightColor, last.fontSize == style.fontSize, last.fontName == family,
                last.underlineStyle == style.underlineStyle, last.caps == style.caps, last.smallCaps == style.smallCaps {
                 spans[spans.count - 1].text += text
             } else {
@@ -1633,8 +1714,47 @@ enum OdtReader: OfficeDocumentReader {
                     underlineStyle: style.underlineStyle, caps: style.caps, smallCaps: style.smallCaps, link: link,
                     strikethrough: style.strikethrough, superscript: style.superscript, subscripted: style.subscripted,
                     textColor: style.textColor, highlightColor: style.highlightColor, fontSize: style.fontSize,
-                    fontName: style.fontName))
+                    fontName: family))
             }
+        }
+        /// One run of text as the document wrote it, cut into the fewest pieces that each want one
+        /// typeface, and emitted in order.
+        ///
+        /// The cut is `ScriptRunSplitter`'s, driven by ODF's own §20.358 table 22 — and it breaks
+        /// where the resolved FAMILY changes, never where the slot changes, which is what keeps
+        /// `제1항` one piece in the overwhelmingly common document that points its latin and asian
+        /// slots at the same face.
+        func appendMerging(_ text: String, _ style: TextStyle, _ link: String?) {
+            guard !text.isEmpty else { return }
+            // The case invariant 37 rests on, and the one nearly every real document is in: when the
+            // three slots name one family — or name none at all — no character can select anything
+            // different from any other, so the scalar walk is skipped rather than run to rediscover
+            // that. Before/after is then identical by CONSTRUCTION and not merely by measurement,
+            // and costs nothing it did not cost before slots existed.
+            guard !style.fonts.isUniform else {
+                appendPiece(text, style, style.fonts.latin, link)
+                return
+            }
+            let pieces = ScriptRunSplitter.split(text, classify: OdfScriptTable.slot(for:),
+                                                 family: style.fonts.family)
+            // A run in which NOTHING classified — a tab, a stretch of spaces, a line of en dashes,
+            // all of them table 22 gaps — states no script type at all, and the splitter rightly
+            // hands it back carrying no family. Emitting that verbatim would strand a lone theme-font
+            // span between two runs of one real family, which is absorption failing at exactly the
+            // boundary it exists to protect; the neighbour's family carries across instead, so the
+            // space between two Korean words is measured in the face the document asked for and the
+            // piece merges away rather than becoming a span of its own. A single piece that resolved
+            // to `nil` because its OWN slot is undeclared is a different answer and keeps the `nil` —
+            // which is why this re-scans rather than testing `family == nil`, a test that cannot tell
+            // the two apart. The re-scan is reached only for a run that produced one family-less
+            // piece under a genuinely multi-family style, so it is neither the common path nor a
+            // second walk of anything long.
+            if pieces.count == 1, pieces[0].family == nil, let neighbour = spans.last?.fontName,
+               !text.unicodeScalars.contains(where: { OdfScriptTable.slot(for: $0) != nil }) {
+                appendPiece(text, style, neighbour, link)
+                return
+            }
+            for piece in pieces { appendPiece(String(piece.text), style, piece.family, link) }
         }
         func walk(_ node: XMLNode, style: TextStyle, link: String?) {
             for child in node.children {
