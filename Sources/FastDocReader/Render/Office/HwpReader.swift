@@ -180,6 +180,51 @@ enum HwpReader {
         return result
     }
 
+    /// What rhwp's per-script font export looks like once THIS file's own decoder has read it.
+    ///
+    /// The per-slot font work (`docs/per-script-font-design.md`) lands in two steps so the risky
+    /// half — replacing a 59 MB parser binary — can be verified before anything depends on it. Step
+    /// one adds `csId`/`charShapes` to the JSON and changes nothing else, so the rendered document
+    /// must be bit-identical; step two reads this table and splits a run where the resolved family
+    /// changes. This accessor exists for step one's proof and has no caller on the render path: it
+    /// is the only way to show that the new data survives the FFI, the rebuild and the decoder,
+    /// because every OTHER symptom of a failed rebuild is silence (invariant 45's stale link, and a
+    /// `JSONDecoder` with no key strategy turning a misnamed field into `nil` without an error).
+    ///
+    /// It decodes through the SAME `HwpEnvelope`/`HwpSpan` the mapper uses, deliberately — a test
+    /// that re-declared its own structs would prove the JSON and say nothing about whether this
+    /// reader receives it, which is invariant 29's lesson in miniature.
+    struct FontSlotExport: Equatable {
+        /// `charShapes`, or `[]` when the envelope carried none (a parser predating this field).
+        var charShapes: [[String]]
+        /// Every span's `csId` in document order, table cells included, `nil` where the span
+        /// carries none. Kept in order rather than as a set so a caller can also see how many spans
+        /// have no char shape at all.
+        var spanCharShapeIds: [Int?]
+    }
+
+    static func fontSlotExport(_ json: String) throws -> FontSlotExport {
+        guard let data = json.data(using: .utf8) else { throw MapError.malformedJSON }
+        let envelope: HwpEnvelope
+        do {
+            envelope = try JSONDecoder().decode(HwpEnvelope.self, from: data)
+        } catch {
+            throw MapError.malformedJSON
+        }
+        var ids: [Int?] = []
+        func walk(_ block: HwpBlock) {
+            switch block {
+            case .para(let p): ids.append(contentsOf: p.spans.map(\.csId))
+            case .table(let t):
+                for row in t.rows { for cell in row { cell.blocks.forEach(walk) } }
+            case .image, .unsupported, .equation:
+                break
+            }
+        }
+        envelope.blocks.forEach(walk)
+        return FontSlotExport(charShapes: envelope.charShapes ?? [], spanCharShapeIds: ids)
+    }
+
     // MARK: unit conversion (HWPUNIT = 1/7200 inch; points = HWPUNIT ÷ 100)
 
     /// A raw HWPUNIT PARAGRAPH-METRIC length (spacing / indent / margin) → points. HWP5 stores these
@@ -484,6 +529,15 @@ private struct HwpEnvelope: Decodable {
     /// no section/zero width → the mapper leaves `pageContentWidth` nil (reader falls back to
     /// window-filling). rhwp already emits points, so no further conversion.
     let pageContentWidth: Double?
+    /// One row per char shape, indexed by a span's `csId`; each row the SEVEN font families the
+    /// document declared for that char shape, in HWP's own fixed slot order — 0 Hangul, 1 Latin,
+    /// 2 Hanja, 3 Japanese, 4 Other, 5 Symbol, 6 User (`CharShape.font_ids`). An EMPTY string means
+    /// the document's font table had no entry for that slot, which is a real answer ("nothing
+    /// declared here") and not an error.
+    ///
+    /// Absent against a parser built before this existed — hence optional, and hence the reason a
+    /// test has to assert it is PRESENT for a real file rather than trusting the Rust source.
+    let charShapes: [[String]]?
     let blocks: [HwpBlock]
 }
 
@@ -560,9 +614,20 @@ private struct HwpSpan: Decodable {
     var font: String?
     var link: String?
     var bookmark: String?
+    /// Which row of the envelope's `charShapes` table this run's char shape is — i.e. the seven
+    /// per-script font families the DOCUMENT declared for it. Absent for a synthetic span (a
+    /// bookmark anchor, a footnote reference marker) which has no char shape of its own, and for a
+    /// run whose char-shape id fell outside the document's own table; rhwp omits the key in both
+    /// cases, so a present value is in range by construction and needs no bounds check here.
+    ///
+    /// NOTHING on the render path reads this yet — `font` above is still the single family a span
+    /// draws in. It is decoded now because the rebuild that added it has to be provable on its own:
+    /// a stale binary (invariant 45) or a snake_case rename would leave this `nil` with no error at
+    /// all, and that must fail loudly in a test rather than quietly in a month's rendering work.
+    var csId: Int?
 
     private enum CodingKeys: String, CodingKey {
-        case text, bold, italic, underline, strike, color, size, font, link, bookmark
+        case text, bold, italic, underline, strike, color, size, font, link, bookmark, csId
         case superscript = "super"
         case subscripted = "sub"
     }
