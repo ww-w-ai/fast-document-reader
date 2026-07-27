@@ -2552,16 +2552,267 @@ final class DocxReaderTests: XCTestCase {
 
     // MARK: w:rFonts — w:ascii chosen, w:hAnsi fallback
 
-    func testRFontsAsciiIsChosenAsTheRunsFontFamily() throws {
+    func testRFontsAsciiIsChosenForBasicLatinText() throws {
+        // Latin text selects `w:ascii`, and the `w:eastAsia` face declared beside it is simply never
+        // reached — there is no East Asian character here to reach it. One family, so one span.
         let blocks = try read(document: """
         <w:p><w:r><w:rPr><w:rFonts w:ascii="Georgia" w:hAnsi="Georgia" w:eastAsia="MS Mincho"/></w:rPr><w:t>Font</w:t></w:r></w:p>
         """)
         XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "Font", fontName: "Georgia")])])
     }
 
-    func testRFontsFallsBackToHAnsiWhenAsciiIsAbsent() throws {
+    /// This test used to assert the opposite, and the behaviour it asserted was invented.
+    ///
+    /// The reader read `w:ascii ?? w:hAnsi`, on the stated reasoning that "Word requires at least one
+    /// of the two on any `w:rFonts` that names a Latin font at all". MS-OI29500 §17.3.2.26 has no
+    /// such cross-slot fallback: Basic Latin selects `ascii`, High ANSI selects `hAnsi`, and a run
+    /// that declares only `hAnsi` has said nothing about its Basic Latin text. What Word draws there
+    /// is its own application default, which for this reader is `nil` — the theme's body font.
+    ///
+    /// Keeping the old rule would not have been a harmless approximation once the other three slots
+    /// arrived: `<w:rFonts w:hAnsi="Calibri" w:eastAsia="바탕"/>` would have put Calibri on the Latin
+    /// text AND, through the same coalesce, hidden the fact that the ascii slot was never set.
+    func testRFontsDoesNotBorrowHAnsiForBasicLatinWhenAsciiIsAbsent() throws {
         let blocks = try read(document: "<w:p><w:r><w:rPr><w:rFonts w:hAnsi=\"Calibri\"/></w:rPr><w:t>Font</w:t></w:r></w:p>")
-        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "Font", fontName: "Calibri")])])
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "Font", fontName: nil)])])
+    }
+
+    /// …and the same declaration DOES apply to text that genuinely lives in the hAnsi range. Thai is
+    /// absent from the spec's table altogether, so it falls to the catch-all — which is the only
+    /// reason `w:hAnsi` is reachable at all in a document with no `w:hint`.
+    func testRFontsHAnsiAppliesToTextTheTableDoesNotClassify() throws {
+        let blocks = try read(document: "<w:p><w:r><w:rPr><w:rFonts w:hAnsi=\"Calibri\"/></w:rPr><w:t>ไทย</w:t></w:r></w:p>")
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "ไทย", fontName: "Calibri")])])
+    }
+
+    // MARK: w:rFonts — four slots, the theme font scheme, and the cascade under them
+
+    /// The shape measured in five of five real Office themes in this project's corpus: `a:ea` and
+    /// `a:cs` are EMPTY, and the families that matter live in the `a:font script=` list. A fixture
+    /// that filled `a:ea` in would test a theme no real document has.
+    private let sampleFontTheme = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+      <a:themeElements>
+        <a:fontScheme name="Office">
+          <a:majorFont>
+            <a:latin typeface="Cambria"/><a:ea typeface=""/><a:cs typeface=""/>
+            <a:font script="Hang" typeface="맑은 고딕 Semilight"/>
+          </a:majorFont>
+          <a:minorFont>
+            <a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/>
+            <a:font script="Hang" typeface="맑은 고딕"/>
+            <a:font script="Jpan" typeface="ＭＳ 明朝"/>
+          </a:minorFont>
+        </a:fontScheme>
+      </a:themeElements>
+    </a:theme>
+    """
+
+    private func styles(_ body: String) -> String { "<w:styles>\(body)</w:styles>" }
+
+    private func spans(_ blocks: [OfficeBlock]) throws -> [Span] {
+        guard case let .paragraph(spans, _, _, _, _) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected one paragraph, got \(blocks)"); return []
+        }
+        return spans
+    }
+
+    /// `w:docDefaults/w:rPrDefault/w:rPr/w:rFonts` is the floor of the cascade (ISO/IEC 29500-1
+    /// §17.7.5.1) and was read by nothing at all before this work — four of the six documents in
+    /// this project's corpus declare one, and in the largest it IS the document's whole base font.
+    func testDocDefaultsRFontsSuppliesTheFamilyWhenNothingElseDoes() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:t>Body</w:t></w:r></w:p>",
+            styles: styles("<w:docDefaults><w:rPrDefault><w:rPr>"
+                           + "<w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\"/></w:rPr></w:rPrDefault></w:docDefaults>"))
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "Body", fontName: "Georgia")])])
+    }
+
+    /// A paragraph naming no style of its own inherits the `w:default="1"` paragraph style. Five of
+    /// six corpus documents declare one, and `walkStyleChain` returns immediately for a nil style
+    /// id, so before this every unstyled paragraph skipped the document's own Normal entirely.
+    func testTheDefaultParagraphStyleAppliesToAParagraphThatNamesNoStyle() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:t>Body</w:t></w:r></w:p>",
+            styles: styles("<w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\">"
+                           + "<w:rPr><w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\"/></w:rPr></w:style>"))
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "Body", fontName: "Georgia")])])
+    }
+
+    /// …and a paragraph that DOES name a style reaches Normal only if its own `w:basedOn` chain
+    /// leads there, which is what `w:default="1"` means. Characterises the boundary so that
+    /// widening it later is a deliberate change rather than a drift.
+    func testAParagraphNamingItsOwnStyleDoesNotAlsoInheritTheDefaultStyle() throws {
+        let blocks = try read(
+            document: "<w:p><w:pPr><w:pStyle w:val=\"Rooted\"/></w:pPr><w:r><w:t>Body</w:t></w:r></w:p>",
+            styles: styles("<w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\">"
+                           + "<w:rPr><w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\"/></w:rPr></w:style>"
+                           + "<w:style w:type=\"paragraph\" w:styleId=\"Rooted\"><w:rPr><w:sz w:val=\"24\"/></w:rPr></w:style>"))
+        XCTAssertEqual(try spans(blocks).map(\.fontName), [nil])
+    }
+
+    /// The reason each slot needs its OWN walk. The child style names only a Latin face; resolving
+    /// the whole `w:rFonts` in one walk would stop there and read the child's silence about East
+    /// Asian text as an answer, losing the ancestor's 바탕.
+    func testEachFontSlotCascadesIndependentlyThroughTheStyleChain() throws {
+        let blocks = try read(
+            document: "<w:p><w:pPr><w:pStyle w:val=\"Child\"/></w:pPr><w:r><w:t>가A</w:t></w:r></w:p>",
+            styles: styles("<w:style w:type=\"paragraph\" w:styleId=\"Base\">"
+                           + "<w:rPr><w:rFonts w:eastAsia=\"바탕\"/></w:rPr></w:style>"
+                           + "<w:style w:type=\"paragraph\" w:styleId=\"Child\"><w:basedOn w:val=\"Base\"/>"
+                           + "<w:rPr><w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\"/></w:rPr></w:style>"))
+        XCTAssertEqual(try spans(blocks).map { [$0.text, $0.fontName ?? "nil"] },
+                       [["가", "바탕"], ["A", "Georgia"]])
+    }
+
+    /// The headline case of this unit, and the one no synthetic assumption could have found: on a
+    /// real Office theme `a:ea` is empty, so `minorEastAsia` resolves through the `a:font
+    /// script="Hang"` entry or not at all. A reader parsing only `a:latin`/`a:ea`/`a:cs` gets the
+    /// empty string here and gains nothing on any real Korean document.
+    func testAnEastAsiaThemeReferenceResolvesThroughTheThemesOwnScriptList() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:t>한글English</w:t></w:r></w:p>",
+            styles: styles("<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:asciiTheme=\"minorHAnsi\""
+                           + " w:hAnsiTheme=\"minorHAnsi\" w:eastAsiaTheme=\"minorEastAsia\"/>"
+                           + "</w:rPr></w:rPrDefault></w:docDefaults>"),
+            theme: sampleFontTheme)
+        XCTAssertEqual(try spans(blocks).map { [$0.text, $0.fontName ?? "nil"] },
+                       [["한글", "맑은 고딕"], ["English", "Calibri"]])
+    }
+
+    /// The theme part must be read even when `word/styles.xml` is missing — a direct run can carry a
+    /// theme reference with no style involved. This is the exact early-return bug the theme COLOUR
+    /// reader already caught once (`parseStyles`' own comment says so); repeating it for fonts was
+    /// one guard away.
+    func testThemeFontsAreReadEvenWhenStylesXmlIsAbsent() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:rPr><w:rFonts w:eastAsiaTheme=\"minorEastAsia\"/></w:rPr><w:t>한글</w:t></w:r></w:p>",
+            styles: nil, theme: sampleFontTheme)
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "한글", fontName: "맑은 고딕")])])
+    }
+
+    /// MS-OI29500 §17.3.2.26 note e, across levels: an inherited `w:eastAsia` overrides a previously
+    /// specified `w:eastAsia` OR `w:eastAsiaTheme`. Modelling literal and theme as two independent
+    /// optionals would let the docDefaults theme reference leak past the style's literal.
+    func testALiteralSlotAtALowerLevelReplacesAnInheritedThemeReference() throws {
+        let blocks = try read(
+            document: "<w:p><w:pPr><w:pStyle w:val=\"Body\"/></w:pPr><w:r><w:t>한글</w:t></w:r></w:p>",
+            styles: styles("<w:docDefaults><w:rPrDefault><w:rPr>"
+                           + "<w:rFonts w:eastAsiaTheme=\"minorEastAsia\"/></w:rPr></w:rPrDefault></w:docDefaults>"
+                           + "<w:style w:type=\"paragraph\" w:styleId=\"Body\">"
+                           + "<w:rPr><w:rFonts w:eastAsia=\"바탕\"/></w:rPr></w:style>"),
+            theme: sampleFontTheme)
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "한글", fontName: "바탕")])])
+    }
+
+    /// The same note, WITHIN one element: the theme reference wins over the literal beside it.
+    func testAThemeReferenceWinsOverALiteralOnTheSameRFontsElement() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:rPr>"
+                + "<w:rFonts w:eastAsia=\"바탕\" w:eastAsiaTheme=\"minorEastAsia\"/></w:rPr><w:t>한글</w:t></w:r></w:p>",
+            styles: nil, theme: sampleFontTheme)
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "한글", fontName: "맑은 고딕")])])
+    }
+
+    /// The ONLY way the complex-script slot is ever reached: a run-level `w:cs` toggle puts the
+    /// whole run in `cs` *"regardless of the Unicode character values of the run's content"*, so the
+    /// Korean and the Latin here share one family and one span.
+    func testARunLevelComplexScriptToggleUsesTheCsSlotForEveryCharacter() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:rPr><w:cs/>"
+                + "<w:rFonts w:ascii=\"Georgia\" w:eastAsia=\"바탕\" w:cs=\"Arial\"/></w:rPr><w:t>가A</w:t></w:r></w:p>")
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "가A", fontName: "Arial")])])
+    }
+
+    func testARunLevelRtlToggleAlsoSelectsTheCsSlot() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:rPr><w:rtl/>"
+                + "<w:rFonts w:ascii=\"Georgia\" w:eastAsia=\"바탕\" w:cs=\"Arial\"/></w:rPr><w:t>가A</w:t></w:r></w:p>")
+        XCTAssertEqual(try spans(blocks).map { [$0.text, $0.fontName ?? "nil"] }, [["가A", "Arial"]])
+    }
+
+    /// Word's legacy exception: `eastAsia="Times New Roman"` beside two equal Latin slots is what
+    /// Word writes when nobody ever set an East Asian font, so it is read as unset and the Korean
+    /// text takes the ascii face — one family, one span.
+    func testTheLegacyTimesNewRomanEastAsiaIsReadAsUnset() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:rPr><w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\""
+                + " w:eastAsia=\"Times New Roman\"/></w:rPr><w:t>가A</w:t></w:r></w:p>")
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "가A", fontName: "Georgia")])])
+    }
+
+    /// `w:hint="eastAsia"` is what makes twenty-three of the table's rows do anything at all. Greek
+    /// is one of them and, unlike the symbol blocks, survives absorption to ask.
+    func testTheEastAsiaHintSendsGreekToTheEastAsiaSlot() throws {
+        let hinted = try read(
+            document: "<w:p><w:r><w:rPr><w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\""
+                + " w:eastAsia=\"바탕\" w:hint=\"eastAsia\"/></w:rPr><w:t>αA</w:t></w:r></w:p>")
+        XCTAssertEqual(try spans(hinted).map { [$0.text, $0.fontName ?? "nil"] }, [["α", "바탕"], ["A", "Georgia"]])
+        let unhinted = try read(
+            document: "<w:p><w:r><w:rPr><w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\""
+                + " w:eastAsia=\"바탕\"/></w:rPr><w:t>αA</w:t></w:r></w:p>")
+        XCTAssertEqual(try spans(unhinted).map { [$0.text, $0.fontName ?? "nil"] }, [["αA", "Georgia"]])
+    }
+
+    /// Invariant 37, structurally: pieces break on the resolved FAMILY, never on the slot, so a
+    /// document pointing all four slots at one face comes back as the single span it always was —
+    /// no matter how many times the text alternates between writing systems.
+    func testARunWhoseFourSlotsNameOneFamilyIsNeverSplit() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:rPr><w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\""
+                + " w:eastAsia=\"Georgia\" w:cs=\"Georgia\"/></w:rPr><w:t>가A1 나B2 다C</w:t></w:r></w:p>")
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "가A1 나B2 다C", fontName: "Georgia")])])
+    }
+
+    /// …and a document that declares no font at all is byte-identical to before any of this existed.
+    func testARunDeclaringNoFontAtAllIsUnchanged() throws {
+        let blocks = try read(document: "<w:p><w:r><w:t>가A1 나B2</w:t></w:r></w:p>")
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "가A1 나B2", fontName: nil)])])
+    }
+
+    /// A run made only of script-neutral characters has no neighbour to absorb into. The splitter's
+    /// own reading of that is "no family", which for Word is wrong rather than conservative — its
+    /// table says outright that Basic Latin selects `ascii`. Leaving it uncorrected silently dropped
+    /// declared families and ADDED spans, because such runs then matched none of their neighbours.
+    func testARunOfNothingButNeutralCharactersStillTakesTheTablesAnswer() throws {
+        let blocks = try read(
+            document: "<w:p><w:r><w:rPr><w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Georgia\""
+                + " w:eastAsia=\"바탕\"/></w:rPr><w:t>2026 (3)</w:t></w:r></w:p>")
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "2026 (3)", fontName: "Georgia")])])
+    }
+
+    /// Splitting must not lose or duplicate a character, and must not cut a grapheme cluster —
+    /// asserted on the traps Word's own table would otherwise break: a combining accent (its base is
+    /// `ascii`, the mark is `hAnsi`), and a ZWJ emoji pair (both emoji are `eastAsia`, the joiner
+    /// between them is `hAnsi`).
+    func testSplittingPreservesEveryCharacterAndNeverCutsACluster() throws {
+        let text = "e\u{0301}가A\u{1F468}\u{200D}\u{1F469}나 2026"
+        let blocks = try read(
+            document: "<w:p><w:r><w:rPr><w:rFonts w:ascii=\"Georgia\" w:hAnsi=\"Calibri\""
+                + " w:eastAsia=\"바탕\"/></w:rPr><w:t>\(text)</w:t></w:r></w:p>")
+        let produced = try spans(blocks)
+        XCTAssertEqual(produced.map(\.text).joined(), text, "concatenating the pieces must reproduce the run")
+        XCTAssertFalse(produced.contains { $0.text.isEmpty }, "no piece may be empty")
+        for piece in produced {
+            XCTAssertFalse(piece.text.unicodeScalars.first.map { UnicodeScript.of($0).isAbsorbing } ?? false,
+                           "a piece must never START on cluster machinery: \(piece.text.debugDescription)")
+        }
+    }
+
+    /// Invariant 29: the parser being right says nothing about the application reaching it. This is
+    /// the same document through `DocumentTypes.readOffice`, which is what `MarkdownDocument` and
+    /// `--extract` both call, and which also runs `resolvingFontSubstitution()` on the way out.
+    func testPerSlotFontsSurviveTheRealOfficeDispatch() throws {
+        let zip = buildDocx(
+            document: doc("<w:p><w:r><w:t>한글English</w:t></w:r></w:p>"),
+            styles: styles("<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:asciiTheme=\"minorHAnsi\""
+                           + " w:hAnsiTheme=\"minorHAnsi\" w:eastAsiaTheme=\"minorEastAsia\"/>"
+                           + "</w:rPr></w:rPrDefault></w:docDefaults>"),
+            theme: sampleFontTheme)
+        let result = try DocumentTypes.readOffice(try ZipArchive(data: zip), extension: "docx")
+        XCTAssertEqual(try spans(result.blocks).map { [$0.text, $0.fontName ?? "nil"] },
+                       [["한글", "맑은 고딕"], ["English", "Calibri"]])
     }
 
     // MARK: w:docDefaults — the document's own default body size

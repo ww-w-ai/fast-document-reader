@@ -38,7 +38,8 @@ enum DocxReader: OfficeDocumentReader {
             throw ReadError.malformedXML("word/document.xml")
         }
         let themeColors = parseThemeColors(from: archive)
-        let styleInfo = parseStyles(from: archive, themeColors: themeColors)
+        let themeFonts = parseThemeFonts(from: archive)
+        let styleInfo = parseStyles(from: archive, themeColors: themeColors, themeFonts: themeFonts)
         let numbering = parseNumbering(from: archive)
         let relationships = parseRelationships(from: archive)
         guard let body = documentRoot.child("w:body") else { return OfficeReadResult(blocks: []) }
@@ -342,11 +343,15 @@ enum DocxReader: OfficeDocumentReader {
     /// so `resolvedColor`/`resolvedFontSize`/… never have to re-resolve anything once they find an
     /// entry here. `nil` per field means that field, specifically, wasn't set at this style — the
     /// caller's chain walk keeps climbing `basedOn` for THAT field alone, not the whole struct.
+    ///
+    /// `w:rFonts` is deliberately NOT one of these fields. Its four slots each cascade on their own
+    /// (`resolvedRFonts`), so collapsing them into a single `fontName?` here would have exactly the
+    /// effect this per-script work exists to undo: it would stop the walk at the first ancestor that
+    /// mentioned ANY slot and lose the East Asian family declared further up.
     private struct RunStyleProps {
         var color: NSColor?
         var highlight: NSColor?
         var fontSize: CGFloat?
-        var fontName: String?
     }
 
     /// A style's own paragraph formatting relevant to this sprint — `w:jc`/`w:tabs` off a
@@ -391,8 +396,28 @@ enum DocxReader: OfficeDocumentReader {
         var outlineLevels: [String: Int] = [:]
         /// styleId → the styleId it's `w:basedOn`, for styles that declare one.
         var basedOn: [String: String] = [:]
-        /// styleId → its own `w:rPr`, only for styles that set at least one of the four fields.
+        /// styleId → its own `w:rPr`, only for styles that set at least one of the three fields.
         var runProps: [String: RunStyleProps] = [:]
+        /// styleId → its own `w:rPr/w:rFonts`, only for styles that declare at least one slot or a
+        /// `w:hint`. Separate from `runProps` because each of the four slots climbs the `w:basedOn`
+        /// chain independently — see `RunStyleProps`' own note.
+        var rFonts: [String: WordRFonts] = [:]
+        /// `w:docDefaults/w:rPrDefault/w:rPr/w:rFonts` — the floor of the font cascade, applied
+        /// before any style per ISO/IEC 29500-1 §17.7.5.1 (*"These properties are applied first in
+        /// the style hierarchy"*). Four of the six documents in this project's corpus declare one,
+        /// and in the largest it is the document's ENTIRE base font expressed as four theme
+        /// references, so a reader that skips this level reads nothing at all for most of its runs.
+        var docDefaultsRFonts = WordRFonts()
+        /// The `w:style w:type="paragraph" w:default="1"` id — the style a paragraph that names none
+        /// of its own inherits from. Present in five of six corpus documents and, until this work,
+        /// never consulted: `walkStyleChain` returns immediately for a nil id, so every unstyled
+        /// paragraph skipped the document's own Normal style entirely.
+        ///
+        /// Used ONLY by `resolvedRFonts`. Extending it to colour, size, spacing and indent would
+        /// change what those cascade to in every document that declares a default style — a real
+        /// improvement, and a separate invariant-37 event that has to be measured on its own rather
+        /// than smuggled in beside a font change.
+        var defaultParagraphStyleId: String?
         /// styleId → its own `w:pPr`'s `w:jc`/`w:tabs`/spacing/indent/line-height/contextualSpacing,
         /// only for styles that set at least one.
         var paraProps: [String: ParaStyleProps] = [:]
@@ -411,6 +436,12 @@ enum DocxReader: OfficeDocumentReader {
         /// `word/theme/theme1.xml` is absent or malformed — every theme-colour lookup then simply
         /// misses, degrading to "no colour" (`resolvedColorElement`), never a crash.
         var themeColors: [String: NSColor] = [:]
+        /// The document's theme FONT scheme (`word/theme/theme1.xml`'s `a:fontScheme`), carried here
+        /// for the same reason `themeColors` is — every `w:asciiTheme`/`w:eastAsiaTheme` lookup, at
+        /// any level of the cascade, needs it and every call site already holds a `StyleInfo`. Empty
+        /// when the theme part is absent or malformed, which makes every theme reference resolve to
+        /// `nil`, i.e. the reader's own body font — the same answer as a document that named no font.
+        var themeFonts = WordThemeFonts()
         /// styleId → the TABLE style it declares (`w:style w:type="table"`) — P5's table-STYLE
         /// shading/border cascade (`w:tblStylePr` conditional formatting). Only styles that
         /// declare a whole-table default OR at least one conditional region are present; a
@@ -462,21 +493,33 @@ enum DocxReader: OfficeDocumentReader {
     /// to the same literal every direct-run lookup does. A style declaring none of these is simply
     /// absent from every map — `resolvedOutlineLevel`'s existing "not a heading" reading, and the
     /// new resolvers' "keep climbing" reading, both already treat absence that way.
-    private static func parseStyles(from archive: ZipArchive, themeColors: [String: NSColor]) -> StyleInfo {
+    private static func parseStyles(from archive: ZipArchive, themeColors: [String: NSColor],
+                                    themeFonts: WordThemeFonts) -> StyleInfo {
         // `themeColors` must survive even when `word/styles.xml` itself is absent — a direct RUN
         // can carry a `w:themeColor` with no style involved at all, and that lookup goes through
         // THIS `StyleInfo`'s `themeColors` field (see `buildSpan`). An early `StyleInfo()` here,
         // discarding the parameter, was a real bug this sprint caught: it silently dropped every
-        // theme colour in any document with no styles part.
+        // theme colour in any document with no styles part. `themeFonts` is assigned in the same
+        // breath and for the identical reason — a direct run's `w:rFonts/@w:asciiTheme` resolves
+        // through this field with no style involved either, so repeating that early-return bug for
+        // fonts was one guard away.
         var info = StyleInfo()
         info.themeColors = themeColors
+        info.themeFonts = themeFonts
         guard archive.contains("word/styles.xml"),
               let data = try? archive.data(for: "word/styles.xml"),
               let root = try? buildTree(data)
         else { return info }
         info.docDefaultsParaProps = parseParaStyleProps(root.child("w:docDefaults")?.child("w:pPrDefault")?.child("w:pPr"))
+        info.docDefaultsRFonts = parseRFonts(root.child("w:docDefaults")?.child("w:rPrDefault")?.child("w:rPr"))
         for style in root.children where style.name == "w:style" {
             guard let id = style.attributes["w:styleId"] else { continue }
+            // Word marks exactly one paragraph style `w:default="1"`; if a malformed document marks
+            // several, the FIRST wins, matching every other "first one that answers" rule here.
+            if style.attributes["w:type"] == "paragraph", style.attributes["w:default"] == "1",
+               info.defaultParagraphStyleId == nil {
+                info.defaultParagraphStyleId = id
+            }
             if let val = style.child("w:pPr")?.child("w:outlineLvl")?.attributes["w:val"], let level = Int(val) {
                 info.outlineLevels[id] = level
             }
@@ -484,9 +527,11 @@ enum DocxReader: OfficeDocumentReader {
                 info.basedOn[id] = parent
             }
             let runProps = parseRunStyleProps(style.child("w:rPr"), themeColors: themeColors)
-            if runProps.color != nil || runProps.highlight != nil || runProps.fontSize != nil || runProps.fontName != nil {
+            if runProps.color != nil || runProps.highlight != nil || runProps.fontSize != nil {
                 info.runProps[id] = runProps
             }
+            let rFonts = parseRFonts(style.child("w:rPr"))
+            if !rFonts.isEmpty { info.rFonts[id] = rFonts }
             let paraProps = parseParaStyleProps(style.child("w:pPr"))
             if paraProps.alignment != nil || paraProps.tabStops != nil || paraProps.spacingBefore != nil
                 || paraProps.spacingAfter != nil || paraProps.lineHeight != nil || paraProps.indentStart != nil
@@ -666,19 +711,42 @@ enum DocxReader: OfficeDocumentReader {
         if let szVal = rPr?.child("w:sz")?.attributes["w:val"], let half = Double(szVal) {
             props.fontSize = CGFloat(half / 2)
         }
-        // `w:rFonts` carries separate attributes for Latin (`w:ascii`), East Asian (`w:eastAsia`),
-        // complex-script (`w:cs`) and a "high ANSI" fallback (`w:hAnsi`) text — Word substitutes
-        // whichever applies per RUN OF CHARACTERS within the same text, something this reader's
-        // single `Span.fontName` has no room to express. `w:ascii` is read as the representative
-        // choice: it is the font Word itself falls back to for any character its other three
-        // attributes don't specifically claim, i.e. the document's "default" declared font, and by
-        // far the most common case (plain Latin body text) has ONLY `w:ascii`/`w:hAnsi` set to the
-        // same value anyway. `w:hAnsi` is the fallback when `w:ascii` is absent (Word requires at
-        // least one of the two on any `w:rFonts` that names a Latin font at all).
-        if let rFonts = rPr?.child("w:rFonts") {
-            props.fontName = rFonts.attributes["w:ascii"] ?? rFonts.attributes["w:hAnsi"]
-        }
         return props
+    }
+
+    /// One level's `w:rPr/w:rFonts`, read into all four slots plus `w:hint`.
+    ///
+    /// Each slot accepts either a literal attribute (`w:ascii`) or a theme reference
+    /// (`w:asciiTheme`), and within one element the theme reference WINS — MS-OI29500 §17.3.2.26
+    /// note e: *"If the asciiTheme attribute is also specified, then this attribute shall be ignored
+    /// and that value shall be used instead"*. That precedence is per-element only; ACROSS levels
+    /// the two forms replace each other wholesale, which is why `WordFontDecl` is one cell.
+    ///
+    /// The complex-script theme attribute is `w:cstheme`, lowercase `t` — Word's own spelling, and
+    /// the odd one out among the four. `w:csTheme` is accepted too so a producer that regularised
+    /// the casing is not silently ignored; nothing else in the document can be spelled that way.
+    ///
+    /// An EMPTY attribute value is read as absent rather than as a family named "". Word does not
+    /// write one, but a producer that does would otherwise set a slot to a name no font can match,
+    /// and — worse — block the level below it from being consulted at all. That is the exact shape
+    /// of the live ODT defect recorded in `docs/per-script-font-design.md` §5.2, which cost that
+    /// format its inheritance; there is no reason to re-earn it here.
+    private static func parseRFonts(_ rPr: XMLNode?) -> WordRFonts {
+        var decl = WordRFonts()
+        guard let node = rPr?.child("w:rFonts") else { return decl }
+        func read(_ literal: String, _ themeAttributes: [String]) -> WordFontDecl? {
+            for name in themeAttributes {
+                if let ref = node.attributes[name], !ref.isEmpty { return .theme(ref) }
+            }
+            if let name = node.attributes[literal], !name.isEmpty { return .literal(name) }
+            return nil
+        }
+        decl.ascii = read("w:ascii", ["w:asciiTheme"])
+        decl.hAnsi = read("w:hAnsi", ["w:hAnsiTheme"])
+        decl.eastAsia = read("w:eastAsia", ["w:eastAsiaTheme"])
+        decl.cs = read("w:cs", ["w:cstheme", "w:csTheme"])
+        if let hint = node.attributes["w:hint"], !hint.isEmpty { decl.hint = hint }
+        return decl
     }
 
     /// One style's (or one paragraph's own, or `w:docDefaults/w:pPrDefault`'s) `w:pPr`, reduced to
@@ -856,8 +924,37 @@ enum DocxReader: OfficeDocumentReader {
         walkStyleChain(pStyleId, styleInfo: styleInfo) { styleInfo.runProps[$0]?.fontSize }
     }
 
-    private static func resolvedFontName(pStyleId: String?, styleInfo: StyleInfo) -> String? {
-        walkStyleChain(pStyleId, styleInfo: styleInfo) { styleInfo.runProps[$0]?.fontName }
+    /// The four font slots and the hint, each resolved on its OWN through the whole cascade:
+    /// direct `w:rPr` → the paragraph style's `w:basedOn` chain → the document's default paragraph
+    /// style → `w:docDefaults`. Later levels win, and a level silent about ONE slot is transparent
+    /// to that slot alone.
+    ///
+    /// Five independent walks, not one. Resolving the whole element in a single walk would stop at
+    /// the first style that set ANY slot and take that style's silence about the others as an
+    /// answer — which is how a heading style naming only a Latin face would erase the East Asian
+    /// face its ancestor declared. This is `walkStyleChain`'s own per-PROPERTY contract, applied
+    /// five times rather than bent once.
+    ///
+    /// The default paragraph style stands in only when the paragraph names none of its own, which is
+    /// what `w:default="1"` means; a paragraph that DOES name a style reaches Normal (or does not)
+    /// through its own `w:basedOn` chain, exactly as Word resolves it.
+    ///
+    /// Character styles (`w:rPr/w:rStyle`) are a level of the real cascade and are still not read —
+    /// they sit between the paragraph style chain and direct formatting. Measured at 29 of 12,482
+    /// runs (0.23%) in this project's corpus. Adding them would change colour and size as well as
+    /// fonts, so it belongs to whichever change measures those, not to this one.
+    private static func resolvedRFonts(pStyleId: String?, styleInfo: StyleInfo, direct: WordRFonts) -> WordRFonts {
+        let styleId = pStyleId ?? styleInfo.defaultParagraphStyleId
+        var out = WordRFonts()
+        for slot in WordFontSlot.allCases {
+            out[slot] = direct[slot]
+                ?? walkStyleChain(styleId, styleInfo: styleInfo) { styleInfo.rFonts[$0]?[slot] }
+                ?? styleInfo.docDefaultsRFonts[slot]
+        }
+        out.hint = direct.hint
+            ?? walkStyleChain(styleId, styleInfo: styleInfo) { styleInfo.rFonts[$0]?.hint }
+            ?? styleInfo.docDefaultsRFonts.hint
+        return out
     }
 
     private static func resolvedAlignment(pStyleId: String?, styleInfo: StyleInfo) -> NSTextAlignment? {
@@ -961,6 +1058,51 @@ enum DocxReader: OfficeDocumentReader {
             }
         }
         return colors
+    }
+
+    /// `word/theme/theme1.xml`'s `a:fontScheme` — the same shape, guard for guard, as
+    /// `parseThemeColors` above: the part path is fixed, `archive.contains` gates it, the scheme is
+    /// found by `firstDescendant`, and anything absent or malformed degrades to an EMPTY scheme
+    /// rather than throwing, so a `w:asciiTheme` in a document with no theme part simply resolves to
+    /// nothing (the reader's own body font) exactly as it did before this existed.
+    ///
+    /// `a:majorFont`/`a:minorFont` each hold `a:latin`/`a:ea`/`a:cs` plus a list of
+    /// `a:font script="…" typeface="…"` entries. The attributes are unprefixed, like `a:srgbClr`'s
+    /// `val` beside them.
+    ///
+    /// An empty `typeface=""` is read as ABSENT, which is the load-bearing case rather than a
+    /// nicety: `a:ea typeface=""` appears in five of five real themes measured here, and Brandwares'
+    /// reading of it — *"a setting of typeface='' means it has no theme font for that charset type"*
+    /// — is what makes the `a:font script=` list the only non-empty source of an East Asian family
+    /// in a real Office theme. Storing `""` instead would resolve `minorEastAsia` to a family name
+    /// no font can match and hide the script list behind it.
+    private static func parseThemeFonts(from archive: ZipArchive) -> WordThemeFonts {
+        guard archive.contains("word/theme/theme1.xml"),
+              let data = try? archive.data(for: "word/theme/theme1.xml"),
+              let root = try? buildTree(data),
+              let fontScheme = root.firstDescendant("a:fontScheme")
+        else { return WordThemeFonts() }
+        func scheme(_ name: String) -> WordThemeFonts.Scheme {
+            var out = WordThemeFonts.Scheme()
+            guard let node = fontScheme.child(name) else { return out }
+            func typeface(_ child: String) -> String? {
+                guard let value = node.child(child)?.attributes["typeface"], !value.isEmpty else { return nil }
+                return value
+            }
+            out.latin = typeface("a:latin")
+            out.eastAsian = typeface("a:ea")
+            out.complex = typeface("a:cs")
+            for font in node.children where font.name == "a:font" {
+                guard let script = font.attributes["script"], !script.isEmpty,
+                      let face = font.attributes["typeface"], !face.isEmpty else { continue }
+                out.byScript[script] = face
+            }
+            return out
+        }
+        var fonts = WordThemeFonts()
+        fonts.major = scheme("a:majorFont")
+        fonts.minor = scheme("a:minorFont")
+        return fonts
     }
 
     /// `w:themeColor`'s enumeration (ECMA-376 §17.18.98, `ST_ThemeColor`) names TEN colour roles —
@@ -2554,7 +2696,7 @@ enum DocxReader: OfficeDocumentReader {
                             continue
                         }
                     }
-                    if var span = buildSpan(from: child, styleInfo: styleInfo, pStyleId: pStyleId) {
+                    for var span in buildSpans(from: child, styleInfo: styleInfo, pStyleId: pStyleId) {
                         span.link = link
                         appendMerging(span)
                     }
@@ -2647,6 +2789,66 @@ enum DocxReader: OfficeDocumentReader {
         }
     }
 
+    /// One `w:r` → the `Span`s it needs, which is USUALLY exactly one.
+    ///
+    /// It is a list rather than a single span because Word picks a font per CHARACTER, not per run:
+    /// the four `w:rFonts` slots are selected by the character's Unicode block
+    /// (`WordFontBlockTable`), so one run reading `2026년 보고서 (Report)` can genuinely ask for two
+    /// typefaces. `ScriptRunSplitter` cuts it into the fewest pieces that each want one family, and
+    /// crucially cuts on the resolved FAMILY and never on the slot — so a document whose slots all
+    /// name the same face, which is the common case and every fixture in this repository, comes back
+    /// as a single piece identical to what this function returned before it could split at all.
+    private static func buildSpans(from run: XMLNode, styleInfo: StyleInfo, pStyleId: String?) -> [Span] {
+        guard let template = buildSpan(from: run, styleInfo: styleInfo, pStyleId: pStyleId) else { return [] }
+        let rPr = run.child("w:rPr")
+        let rFonts = resolvedRFonts(pStyleId: pStyleId, styleInfo: styleInfo, direct: parseRFonts(rPr))
+        // Run-level complex-script override, and the ONLY route to the `cs` slot: MS-OI29500
+        // §17.3.2.26 — *"If the run has the cs element or the rtl element, then the cs (or cstheme)
+        // font is used, REGARDLESS of the Unicode character values of the run's content."* Checked
+        // before any per-character work because it makes that work meaningless: one slot, one
+        // family, one span, whatever the text says. Neither signal occurs anywhere in this project's
+        // (Korean, left-to-right) corpus, which is a fact about the corpus and not about the rule —
+        // the app already ships right-to-left support.
+        if isOn(rPr, "w:cs") || isOn(rPr, "w:rtl") {
+            var span = template
+            span.fontName = rFonts.family(for: .cs, script: nil, theme: styleInfo.themeFonts)
+            return [span]
+        }
+        let hinted = rFonts.hintsEastAsia
+        let theme = styleInfo.themeFonts
+        let pieces = ScriptRunSplitter.split(
+            template.text,
+            classify: { WordFontBlockTable.slot(for: $0, hintsEastAsia: hinted) },
+            family: { rFonts.family(for: $0.slot, script: $0.script, theme: theme) })
+        // A run with nothing but script-neutral characters in it — `2026`, `(3)`, a lone tab — has
+        // no neighbour to absorb into, so the splitter hands back one piece with no family at all
+        // (its documented reading of "nothing classified"). For Word that answer is wrong rather
+        // than merely conservative: its table says outright that Basic Latin selects `ascii`, so a
+        // document declaring `w:ascii="Georgia"` really does draw `2026` in Georgia. Measured on the
+        // four fixtures here, leaving it uncorrected silently dropped three declared families and
+        // ADDED spans (bus-headings 755 → 1099), because those runs then differed in family from
+        // every neighbour and could no longer merge. Asking the table directly is the whole fix, and
+        // it costs one lookup on the only shape that can reach it.
+        if pieces.count == 1, pieces[0].family == nil,
+           let first = template.text.unicodeScalars.first,
+           !template.text.unicodeScalars.contains(where: { WordFontBlockTable.slot(for: $0, hintsEastAsia: hinted) != nil }) {
+            var span = template
+            span.fontName = rFonts.family(for: WordFontBlockTable.slot(forValue: first.value, hintsEastAsia: hinted),
+                                          script: nil, theme: theme)
+            return [span]
+        }
+        return pieces.map { piece in
+            var span = template
+            span.text = String(piece.text)
+            span.fontName = piece.family
+            return span
+        }
+    }
+
+    /// The run's text and every property EXCEPT its font family — the shape `buildSpans` clones per
+    /// piece. Split out so the per-character font work reads as one concern and the twenty-odd
+    /// toggles as another; the font is filled in by the caller, which is the only thing that varies
+    /// within one run.
     private static func buildSpan(from run: XMLNode, styleInfo: StyleInfo, pStyleId: String?) -> Span? {
         var text = ""
         for child in run.children {
@@ -2688,15 +2890,15 @@ enum DocxReader: OfficeDocumentReader {
         let highlight = directHighlight ?? resolvedHighlight(pStyleId: pStyleId, styleInfo: styleInfo)
         let directFontSize: CGFloat? = rPr?.child("w:sz")?.attributes["w:val"].flatMap(Double.init).map { CGFloat($0 / 2) }
         let fontSize = directFontSize ?? resolvedFontSize(pStyleId: pStyleId, styleInfo: styleInfo)
-        let directFontName = rPr?.child("w:rFonts").flatMap { $0.attributes["w:ascii"] ?? $0.attributes["w:hAnsi"] }
-        let fontName = directFontName ?? resolvedFontName(pStyleId: pStyleId, styleInfo: styleInfo)
+        // `fontName` is deliberately left nil here — `buildSpans` resolves the four `w:rFonts` slots
+        // per character and writes the family onto each piece it emits.
         return Span(
             text: text, bold: isOn(rPr, "w:b"), italic: isOn(rPr, "w:i"), underline: isOn(rPr, "w:u"),
             underlineStyle: underlineStyleValue(rPr), code: false,
             caps: isOn(rPr, "w:caps"), smallCaps: isOn(rPr, "w:smallCaps"),
             strikethrough: isOn(rPr, "w:strike"), superscript: vertAlign == "superscript",
             subscripted: vertAlign == "subscript", rtl: isOn(rPr, "w:rtl"),
-            textColor: color, highlightColor: highlight, fontSize: fontSize, fontName: fontName)
+            textColor: color, highlightColor: highlight, fontSize: fontSize)
     }
 
     /// Maps `w:rPr/w:u/@w:val` (§17.18.99 `ST_Underline`) to `UnderlineStyle` — see that enum's own
