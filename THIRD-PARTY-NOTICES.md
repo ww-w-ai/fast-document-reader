@@ -1,14 +1,15 @@
 # Third-Party Notices
 
 This product includes software developed by third parties. All components below are under
-permissive licenses (MIT, BSD-2-Clause, Apache-2.0, MPL-2.0, OFL-1.1); none is copyleft.
+permissive licenses (MIT, BSD-2-Clause, Apache-2.0, MPL-2.0, OFL-1.1, Unicode-3.0); none is copyleft.
 
 Standard license texts: [MIT](https://opensource.org/license/mit),
 [BSD-2-Clause](https://opensource.org/license/bsd-2-clause),
 [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0),
 [MPL-2.0](https://www.mozilla.org/en-US/MPL/2.0/).
-The OFL requires its text to travel with the fonts, so it is included in full:
-[`licenses/KaTeX-fonts-OFL-1.1.txt`](licenses/KaTeX-fonts-OFL-1.1.txt).
+Two licences require their notice to travel with the thing they cover, so both are included in full:
+[`licenses/KaTeX-fonts-OFL-1.1.txt`](licenses/KaTeX-fonts-OFL-1.1.txt) and
+[`licenses/UNICODE-LICENSE-V3.txt`](licenses/UNICODE-LICENSE-V3.txt).
 
 ## Swift dependencies (fetched at build time)
 
@@ -23,6 +24,23 @@ Pulled in transitively by swift-markdown. Multi-licensed, with several named hol
   Copyright (c) 2008-2009, Björn Höhrmann and Public Software Group (utf8 decoder);
   Copyright (c) 2015, Karl Dubost (normalization)
 - https://github.com/swiftlang/swift-cmark
+
+## Generated from third-party data
+
+### Unicode Character Database 17.0.0 — UNICODE LICENSE V3
+- Copyright (c) 1991-2026 Unicode, Inc. Unicode and the Unicode Logo are registered trademarks of
+  Unicode, Inc. in the U.S. and other countries.
+- https://www.unicode.org/Public/17.0.0/ucd/ — licence at https://www.unicode.org/license.txt,
+  which the data files' own headers point at via https://www.unicode.org/copyright.html.
+- `Sources/FastDocReader/Render/Office/Script/ScriptRanges.swift` is GENERATED from two UCD files —
+  `Scripts.txt` (the Unicode Script property) and `DerivedCoreProperties.txt` (`Grapheme_Extend`) —
+  by `Scripts/gen-script-ranges.py`, which is committed alongside it. No UCD file is redistributed;
+  what ships is a derived range table the reader uses to draw each character in the typeface its own
+  document assigned to that writing system. The generator re-fetches its input on demand and the UCD
+  release is stamped into the generated file's header.
+- The licence is permissive and requires only that the copyright and permission notice accompany the
+  data or its documentation. It does so in three places: the generated file's own header, this entry,
+  and the full text at [`licenses/UNICODE-LICENSE-V3.txt`](licenses/UNICODE-LICENSE-V3.txt).
 
 ## Vendored files (copied into this repository)
 
@@ -93,9 +111,13 @@ Smaller snippets carrying their own notices inside the same bundle:
 
 ## Notes on scope
 
-- `Sources/` and `Scripts/` contain no copied or ported third-party SOURCE (audited by grepping for
-  copyright/provenance markers — no hits). The one third-party binary is rhwp's parser, vendored as
+- `Sources/` and `Scripts/` contain no copied or ported third-party SOURCE. The one file in `Sources/`
+  carrying a third-party copyright is `Render/Office/Script/ScriptRanges.swift`, which is not copied
+  code but a table GENERATED from Unicode's data by a script in this repo (noted above); its header
+  carries the notice that licence requires. The one third-party binary is rhwp's parser, vendored as
   `Vendor/RhwpNative.xcframework` and noted above; `HwpReader.swift` only CALLS its C ABI.
+- `licenses/` is copied wholesale into the app bundle by `Scripts/make-app.sh`, so every licence text
+  added there travels with a shipped build without anyone having to remember it.
 - The app icon (`Resources/AppIcon.icns`, `Resources/AppIcon-1024.png`) is original work.
 - The only third-party fonts bundled are KaTeX's, above (OFL-1.1). Everything else the reader draws
   uses the fonts already on the Mac.
