@@ -100,6 +100,13 @@ final class OfficeRenderLatencyTests: XCTestCase {
             }
         }()
 
+        // `FontSizeStore` is backed by `UserDefaults.standard` under this process's OWN bundle
+        // identifier (`com.apple.dt.xctest.tool`), which macOS persists to DISK — so a write here
+        // outlives this test, this process, and this `swift test` invocation, silently poisoning
+        // every later run (including ones that never set `FMD_START_FONT`) until something resets
+        // it. Restore whatever was there before, unconditionally, regardless of how this test exits.
+        let originalFontSize = FontSizeStore.size
+        addTeardownBlock { FontSizeStore.size = originalFontSize }
         if let start = ProcessInfo.processInfo.environment["FMD_START_FONT"].flatMap(Double.init) {
             FontSizeStore.size = CGFloat(start)   // reproduce a reader who has already zoomed in
         }
@@ -465,38 +472,66 @@ extension OfficeRenderLatencyTests {
 /// finished 8.5pt short of a 2-column one at the same reading width. Two tables in one report then
 /// ended at visibly different x — the "tables look ragged" complaint, underneath the border colours.
 /// Measured before the fix: 2 cols -1.5, 3 cols -2.5, 5 cols -4.5, 9 cols -8.5 against a 600pt target.
+///
+/// With `collapsesBorders` off and every boundary resolved to exactly one owner (the table-border-
+/// conflict rewrite), the table lands EXACTLY on `target` — not "within 1pt" — for every shape tested,
+/// plain or merged. Every exactness measurement below runs the layout container `containerSlack`
+/// points WIDER than `target`: a container sized exactly at `target` silently CLIPS any overshoot, so
+/// "laidOut == target" measured in a same-size container is ambiguous between "genuinely exact" and
+/// "overshot and got clipped to look exact" — a real trap this rewrite hit once during its own
+/// measurement spike. A wide container can't clip, so it is the only honest way to claim exactness.
 final class TableWidthIndependenceTests: XCTestCase {
-    private func laidOutWidth(columns ncol: Int, target: CGFloat) -> CGFloat {
-        let theme = RenderTheme.current(size: 16)
-        let row = (0..<ncol).map { TableBlockBuilder.CellContent(content: NSAttributedString(string: "c\($0)")) }
-        let attr = TableBlockBuilder.build(rows: [row, row], headerRows: 0, theme: theme,
-                                           columnWidths: Array(repeating: target / CGFloat(ncol), count: ncol),
-                                           width: target)
+    private func laidOutWidth(of attr: NSAttributedString, containerWidth: CGFloat) -> CGFloat {
         let storage = NSTextStorage(attributedString: attr)
         let lm = NSLayoutManager()
-        let tc = NSTextContainer(size: NSSize(width: target, height: .greatestFiniteMagnitude))
+        let tc = NSTextContainer(size: NSSize(width: containerWidth, height: .greatestFiniteMagnitude))
         tc.lineFragmentPadding = 0
         storage.addLayoutManager(lm); lm.addTextContainer(tc)
         lm.ensureLayout(for: tc)
         return lm.usedRect(for: tc).width
     }
 
+    private func laidOutWidth(columns ncol: Int, target: CGFloat, containerSlack: CGFloat = 200) -> CGFloat {
+        let theme = RenderTheme.current(size: 16)
+        let row = (0..<ncol).map { TableBlockBuilder.CellContent(content: NSAttributedString(string: "c\($0)")) }
+        let attr = TableBlockBuilder.build(rows: [row, row], headerRows: 0, theme: theme,
+                                           columnWidths: Array(repeating: target / CGFloat(ncol), count: ncol),
+                                           width: target)
+        return laidOutWidth(of: attr, containerWidth: target + containerSlack)
+    }
+
+    /// Every distinct `NSTextTableBlock` in `attr`, in reading (row, column) order — the shared
+    /// helper this file's boundary/merge/geometry tests read block widths and spans back through.
+    private func placedBlocks(in attr: NSAttributedString) -> [NSTextTableBlock] {
+        var seen = Set<ObjectIdentifier>()
+        var out: [NSTextTableBlock] = []
+        attr.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: attr.length)) { value, _, _ in
+            guard let ps = value as? NSParagraphStyle, let block = ps.textBlocks.first as? NSTextTableBlock,
+                  seen.insert(ObjectIdentifier(block)).inserted else { return }
+            out.append(block)
+        }
+        return out.sorted { ($0.startingRow, $0.startingColumn) < ($1.startingRow, $1.startingColumn) }
+    }
+
     func testATableIsTheSameWidthWhateverItsColumnCount() {
         let target: CGFloat = 600
-        let widths = [2, 3, 5, 9].map { laidOutWidth(columns: $0, target: target) }
+        let widths = [2, 3, 5, 9, 13].map { laidOutWidth(columns: $0, target: target) }
         let spread = (widths.max() ?? 0) - (widths.min() ?? 0)
         XCTAssertLessThanOrEqual(spread, 0.01,
             "column count must not change the table's width — got \(widths)")
         for w in widths {
-            XCTAssertEqual(w, target, accuracy: 1.0,
-                "a table should fill its reading column, not fall short of it — got \(w)")
+            XCTAssertEqual(w, target, accuracy: 0.01,
+                "a table must fill its reading column EXACTLY, not fall short of it or overshoot it — got \(w)")
         }
     }
 }
 
 extension TableWidthIndependenceTests {
     /// MERGED rows were never measured. A header that spans three columns crosses interior boundaries
-    /// that are not drawn, so its border accounting differs from the unmerged row below it.
+    /// that are not drawn, so its border accounting differs from the unmerged row below it. Plain /
+    /// merged / mixed all land EXACTLY on `target` — merging is not a separate case for width (the
+    /// agent brief's own "do not assume merging is the culprit" — verified again here, now as a real
+    /// assertion instead of a print).
     func testMeasureMergedVsUnmergedRowWidth() {
         let target: CGFloat = 600
         let ncol = 13
@@ -515,15 +550,286 @@ extension TableWidthIndependenceTests {
                              ("merged + plain", [merged, plain])] {
             let attr = TableBlockBuilder.build(rows: rows, headerRows: 0, theme: theme,
                                                columnWidths: widths, width: target)
-            let storage = NSTextStorage(attributedString: attr)
-            let lm = NSLayoutManager()
-            let tc = NSTextContainer(size: NSSize(width: target, height: .greatestFiniteMagnitude))
-            tc.lineFragmentPadding = 0
-            storage.addLayoutManager(lm); lm.addTextContainer(tc)
-            lm.ensureLayout(for: tc)
-            print(String(format: "  %-16@ used=%.2f  target=%.1f  차이 %+.2f",
-                         name as NSString, lm.usedRect(for: tc).width, target,
-                         lm.usedRect(for: tc).width - target))
+            let used = laidOutWidth(of: attr, containerWidth: target + 200)
+            print(String(format: "  %-16@ used=%.4f  target=%.1f  차이 %+.4f",
+                         name as NSString, used, target, used - target))
+            XCTAssertEqual(used, target, accuracy: 0.01, "\(name) must land exactly on target — got \(used)")
+        }
+    }
+
+    // MARK: Boundary resolution (design doc §3, Step B) — measured through the SAME laid-out-block
+    // readback the rest of this file uses, never argued from source.
+
+    /// Two neighbours declaring DIFFERENT widths resolve to exactly ONE rule, at the WIDER winner's
+    /// width and colour, assigned to the OWNER side (the left cell's `.maxX` for an interior vertical
+    /// boundary) — the other side (the right cell's `.minX`) always reads 0. Mutation check: flipping
+    /// the tie-break comparison from `>` to `<` (narrower-wins) made this read 0.5 instead of 4 and
+    /// the assertion failed as predicted — see the implementation log.
+    func testDifferingNeighbourWidthsResolveToExactlyOneRuleOnTheOwnerSide() {
+        let theme = RenderTheme.current(size: 16)
+        var left = TableBlockBuilder.CellContent(content: NSAttributedString(string: "L"))
+        left.edgeBorders = EdgeBorders(right: .drawn(BorderSide(width: 1, color: .systemBlue)))
+        var right = TableBlockBuilder.CellContent(content: NSAttributedString(string: "R"))
+        right.edgeBorders = EdgeBorders(left: .drawn(BorderSide(width: 4, color: .systemRed)))
+        let attr = TableBlockBuilder.build(rows: [[left, right]], headerRows: 0, theme: theme, width: 400)
+        let blocks = placedBlocks(in: attr)
+        XCTAssertEqual(blocks.count, 2)
+        XCTAssertEqual(blocks[0].width(for: .border, edge: .maxX), 4, "the wider neighbour's width wins the boundary")
+        XCTAssertEqual(blocks[0].borderColor(for: .maxX), .systemRed, "and its colour travels with the winning width")
+        XCTAssertEqual(blocks[1].width(for: .border, edge: .minX), 0, "the non-owner side always reads 0")
+    }
+
+    /// `.suppressed` LOSES to a drawn rule rather than vetoing it (design doc §3, Step B rule 1 —
+    /// `nil` counts as width 0, so any real width beats it) — matching Word: removing one cell's own
+    /// border still leaves the neighbour's visible.
+    func testSuppressedLosesToADrawnRuleRatherThanVetoingIt() {
+        let theme = RenderTheme.current(size: 16)
+        var left = TableBlockBuilder.CellContent(content: NSAttributedString(string: "L"))
+        left.edgeBorders = EdgeBorders(right: .suppressed)
+        var right = TableBlockBuilder.CellContent(content: NSAttributedString(string: "R"))
+        right.edgeBorders = EdgeBorders(left: .drawn(BorderSide(width: 2, color: .systemGreen)))
+        let attr = TableBlockBuilder.build(rows: [[left, right]], headerRows: 0, theme: theme, width: 400)
+        let blocks = placedBlocks(in: attr)
+        XCTAssertEqual(blocks[0].width(for: .border, edge: .maxX), 2,
+                       "the drawn rule wins even though the OWNER side suppressed its own")
+        XCTAssertEqual(blocks[0].borderColor(for: .maxX), .systemGreen)
+        XCTAssertEqual(blocks[1].width(for: .border, edge: .minX), 0)
+    }
+
+    /// Two suppressed sides draw nothing — suppression only loses to a REAL rule, it never conjures
+    /// one out of another suppression.
+    func testBothSidesSuppressedDrawsNothing() {
+        let theme = RenderTheme.current(size: 16)
+        var left = TableBlockBuilder.CellContent(content: NSAttributedString(string: "L"))
+        left.edgeBorders = EdgeBorders(right: .suppressed)
+        var right = TableBlockBuilder.CellContent(content: NSAttributedString(string: "R"))
+        right.edgeBorders = EdgeBorders(left: .suppressed)
+        let attr = TableBlockBuilder.build(rows: [[left, right]], headerRows: 0, theme: theme, width: 400)
+        let blocks = placedBlocks(in: attr)
+        XCTAssertEqual(blocks[0].width(for: .border, edge: .maxX), 0)
+        XCTAssertEqual(blocks[1].width(for: .border, edge: .minX), 0)
+    }
+
+    /// Equal width defers to whichever side was actually DECLARED over a bare theme fallback (Step B
+    /// rule 2) — here the OWNER (left) never declared anything (pure fallback) and the NON-owner
+    /// (right) explicitly declared the same width in a different colour; the explicit declaration's
+    /// colour wins the tie even though it has to travel onto the owner's own edge to be drawn.
+    func testEqualWidthTieBreaksTowardTheExplicitlyDeclaredSideNotTheBareFallback() {
+        let theme = RenderTheme.current(size: 16)
+        let left = TableBlockBuilder.CellContent(content: NSAttributedString(string: "L"))   // no edgeBorders — bare theme fallback
+        var right = TableBlockBuilder.CellContent(content: NSAttributedString(string: "R"))
+        right.edgeBorders = EdgeBorders(left: .drawn(BorderSide(width: RenderTheme.tableBorderWidth, color: .systemPurple)))
+        let attr = TableBlockBuilder.build(rows: [[left, right]], headerRows: 0, theme: theme, width: 400)
+        let blocks = placedBlocks(in: attr)
+        XCTAssertEqual(blocks[0].width(for: .border, edge: .maxX), RenderTheme.tableBorderWidth,
+                       "equal width either way — the boundary still draws at the theme width")
+        XCTAssertEqual(blocks[0].borderColor(for: .maxX), .systemPurple,
+                       "the explicitly declared side wins the tie over a bare fallback, even from the non-owner")
+        XCTAssertEqual(blocks[1].width(for: .border, edge: .minX), 0)
+    }
+
+    /// Still tied (both sides explicitly declared, same width, different colour) keeps the OWNER's
+    /// own colour — deterministic regardless of which side of the boundary happens to be scanned
+    /// first (Step B rule 3).
+    func testEqualWidthTieBetweenTwoExplicitDeclarationsKeepsTheOwnersOwnColour() {
+        let theme = RenderTheme.current(size: 16)
+        var left = TableBlockBuilder.CellContent(content: NSAttributedString(string: "L"))
+        left.edgeBorders = EdgeBorders(right: .drawn(BorderSide(width: 2, color: .systemBlue)))
+        var right = TableBlockBuilder.CellContent(content: NSAttributedString(string: "R"))
+        right.edgeBorders = EdgeBorders(left: .drawn(BorderSide(width: 2, color: .systemRed)))
+        let attr = TableBlockBuilder.build(rows: [[left, right]], headerRows: 0, theme: theme, width: 400)
+        let blocks = placedBlocks(in: attr)
+        XCTAssertEqual(blocks[0].width(for: .border, edge: .maxX), 2)
+        XCTAssertEqual(blocks[0].borderColor(for: .maxX), .systemBlue,
+                       "both sides explicit and equal width — the OWNER's own colour wins")
+        XCTAssertEqual(blocks[1].width(for: .border, edge: .minX), 0)
+    }
+
+    /// MERGED-CELL UNIFORMITY (design doc §3, Step C) — a cell spanning rows 0…2 owns its `.maxX` for
+    /// its WHOLE span, so it takes the WIDEST of its three right-neighbours' left declarations (0.5,
+    /// 3.0 — deliberately the MIDDLE row, ruling out "just takes the first/last neighbour" as an
+    /// accidental correct answer — and 1.0) and draws that one rule uniformly down the whole merge:
+    /// `.maxX == 3.0`, not 0.5 (narrowest) or 1.0 (its own theme default) or an average. Mirrors the
+    /// design spike's Q3 measurement exactly. Mutation check: flipping the tie-break to "narrower
+    /// wins" folded this to 0.5 and the assertion failed as predicted — see the implementation log.
+    func testAVerticallyMergedCellTakesTheWidestOfItsRightNeighboursAndDrawsOneUniformRule() {
+        let theme = RenderTheme.current(size: 16)
+        let merged = TableBlockBuilder.CellContent(content: NSAttributedString(string: "M"), rowSpan: 3)
+        func neighbour(_ w: CGFloat) -> TableBlockBuilder.CellContent {
+            var c = TableBlockBuilder.CellContent(content: NSAttributedString(string: "n"))
+            c.edgeBorders = EdgeBorders(left: .drawn(BorderSide(width: w, color: .black)))
+            return c
+        }
+        let rows: [[TableBlockBuilder.CellContent]] = [[merged, neighbour(0.5)], [neighbour(3.0)], [neighbour(1.0)]]
+        let attr = TableBlockBuilder.build(rows: rows, headerRows: 0, theme: theme, width: 400)
+        let blocks = placedBlocks(in: attr)
+        let mergedBlock = try! XCTUnwrap(blocks.first { $0.rowSpan == 3 })
+        XCTAssertEqual(mergedBlock.width(for: .border, edge: .maxX), 3.0,
+                       "the widest of the three right-neighbour claims wins, uniformly down the whole merge")
+        let neighbours = blocks.filter { $0.startingColumn == 1 }
+        XCTAssertEqual(neighbours.count, 3)
+        for n in neighbours {
+            XCTAssertEqual(n.width(for: .border, edge: .minX), 0,
+                           "a right-neighbour never draws its own side of a boundary the merge owns")
+        }
+    }
+
+    /// TIE-BREAK DETERMINISM among MERGED-CELL neighbours (`wider`'s own fold). When several right-
+    /// neighbours tie at the SAME widest width but declare DIFFERENT colours, the winner must be the
+    /// SAME cell on every launch — not whichever a `Set<Int>`'s per-process-randomised hash-seed
+    /// iteration happened to visit first. Measured before `.sorted()`: 14 separate process launches
+    /// of this identical construction resolved red 6×, blue 5×, green 3× — the merged cell's rule
+    /// changed colour from launch to launch with nothing in the document asking for that, reintroducing
+    /// from a different direction the exact fault this whole pipeline exists to remove. Folding over
+    /// `neighbours.sorted()` (ascending placement index) makes the TOPMOST (row 0) neighbour's colour
+    /// the deterministic, reproducible winner. A single in-process run cannot force a second hash
+    /// seed to prove the OLD bug directly — the multi-process reproduction is in the mutation report.
+    func testTiedNeighbourWidthsResolveToTheSameColourDeterministically() {
+        let theme = RenderTheme.current(size: 16)
+        let merged = TableBlockBuilder.CellContent(content: NSAttributedString(string: "M"), rowSpan: 3)
+        func neighbour(_ color: NSColor) -> TableBlockBuilder.CellContent {
+            var c = TableBlockBuilder.CellContent(content: NSAttributedString(string: "n"))
+            c.edgeBorders = EdgeBorders(left: .drawn(BorderSide(width: 3, color: color)))
+            return c
+        }
+        let rows: [[TableBlockBuilder.CellContent]] = [[merged, neighbour(.systemRed)],
+                                                        [neighbour(.systemGreen)], [neighbour(.systemBlue)]]
+        let attr = TableBlockBuilder.build(rows: rows, headerRows: 0, theme: theme, width: 400)
+        let blocks = placedBlocks(in: attr)
+        let mergedBlock = try! XCTUnwrap(blocks.first { $0.rowSpan == 3 })
+        XCTAssertEqual(mergedBlock.width(for: .border, edge: .maxX), 3.0)
+        XCTAssertEqual(mergedBlock.borderColor(for: .maxX), .systemRed,
+                       "a width tie across neighbours must deterministically pick the TOPMOST (row 0) " +
+                       "one, not whichever a Set's hash-randomised iteration visited first")
+    }
+
+    /// MARKDOWN GEOMETRY PROBE — a GFM table passes NO border arguments at all (invariant 37's "the
+    /// document said nothing" case), so this exercises the exact call shape `MarkdownRenderer.
+    /// visitTable` uses. Two things this rewrite must hold for it: (1) every row of the SAME table
+    /// reads the SAME integer column boundary — measured here by reading back two DIFFERENT rows'
+    /// (one plain, one containing a 2-column merge) implied x-position (padding + border + content,
+    /// cumulative) and asserting they agree, the actual invariant-39 promise, proven from laid-out
+    /// blocks rather than argued from the shared `columnProportions` source; and (2) the laid-out
+    /// total moves from the measured pre-rewrite production baseline of `target − 0.5` (collapsing
+    /// ON + the halved-interior formula + the `width − 1` slack together — see `GridTextTable.edges(
+    /// forWidth:)`'s doc comment) to EXACTLY `target` now that collapsing is off and nothing is
+    /// double-counted. Isolating just the slack (mutation check: reverting `edges(forWidth:)` alone
+    /// back to `width − 1` while leaving collapsing off) lands at `target − 1`, not `target − 0.5` —
+    /// the 0.5 was specific to the OLD three-part combination; with collapsing off there is no
+    /// halving left to partially offset a reintroduced slack, so a single-part regression here is a
+    /// full point, not half of one. Both numbers are real measurements, not the same claim twice.
+    func testMarkdownTableGeometryColumnBoundariesAgreeAcrossRowsAndTotalIsExact() {
+        let target: CGFloat = 600
+        let ncol = 4
+        func cell(_ s: String, span: Int = 1) -> TableBlockBuilder.CellContent {
+            TableBlockBuilder.CellContent(content: NSAttributedString(string: s), columnSpan: span)
+        }
+        let plain = (0..<ncol).map { cell("c\($0)") }
+        let mixed = [cell("wide", span: 2), cell("x"), cell("y")]
+        let theme = RenderTheme.current(size: 16)
+        // NO border arguments — exactly `MarkdownRenderer.visitTable`'s call shape.
+        let attr = TableBlockBuilder.build(rows: [plain, mixed], headerRows: 1, theme: theme, width: target)
+
+        let blocks = placedBlocks(in: attr)
+        func impliedRightX(_ block: NSTextTableBlock) -> CGFloat {
+            var x: CGFloat = 0
+            for b in blocks where b.startingRow == block.startingRow && b.startingColumn < block.startingColumn {
+                x += b.width(for: .padding, edge: .minX) + b.width(for: .padding, edge: .maxX)
+                     + b.width(for: .border, edge: .minX) + b.width(for: .border, edge: .maxX) + b.contentWidth
+            }
+            x += block.width(for: .padding, edge: .minX) + block.width(for: .padding, edge: .maxX)
+                 + block.width(for: .border, edge: .minX) + block.width(for: .border, edge: .maxX) + block.contentWidth
+            return x
+        }
+        // Row 0 (plain, header) column 2 ends where row 1's merged (colSpan 2) cell also ends — the
+        // SAME boundary, read back from two structurally different rows of the same table.
+        let row0Col1 = try! XCTUnwrap(blocks.first { $0.startingRow == 0 && $0.startingColumn == 1 })
+        let row1Merged = try! XCTUnwrap(blocks.first { $0.startingRow == 1 && $0.columnSpan == 2 })
+        XCTAssertEqual(impliedRightX(row0Col1), impliedRightX(row1Merged), accuracy: 0.01,
+                       "the plain row and the merged row must agree on the SAME column boundary")
+
+        let used = laidOutWidth(of: attr, containerWidth: target + 200)
+        XCTAssertEqual(used, target, accuracy: 0.01,
+                       "a markdown table (no border arguments) must land EXACTLY on target now — got \(used); " +
+                       "the measured pre-rewrite PRODUCTION baseline (collapsing on) was target − 0.5")
+    }
+
+    /// FRACTIONAL reading-column widths must never OVERSHOOT. `edges(forWidth:)` cumulates each
+    /// column's edge with plain `.rounded()` (round-half-away-from-zero); at a width whose fractional
+    /// part sits in [0.5, 1.0) — 705.5, say — the FINAL edge used to round UP to 706, half a point
+    /// past the container, which then CLIPS the overshoot and silently drops the last column's right
+    /// rule — reintroducing, from a different angle, the exact clip condition the deleted `width - 1`
+    /// slack existed to prevent. The production column width is built from integer terms only
+    /// (`scrollView.contentSize.width - 64 - 2·lineFragmentPadding`), so this has not been observed
+    /// live, but nothing guarantees it stays that way (a split-view divider, a scaled display, or a
+    /// future inset change could all hand this a fractional width) — the fix (`edges(forWidth:)`
+    /// clamps only its LAST edge to `usable`'s floor) removes the exposure rather than waiting for it.
+    func testFractionalReadingColumnWidthsNeverOvershoot() {
+        let theme = RenderTheme.current(size: 16)
+        for target: CGFloat in [705.5, 600.5, 833.5] {
+            let ncol = 5
+            let row = (0..<ncol).map { TableBlockBuilder.CellContent(content: NSAttributedString(string: "c\($0)")) }
+            let attr = TableBlockBuilder.build(rows: [row, row], headerRows: 0, theme: theme,
+                                               columnWidths: Array(repeating: target / CGFloat(ncol), count: ncol),
+                                               width: target)
+            let used = laidOutWidth(of: attr, containerWidth: target + 200)
+            XCTAssertLessThanOrEqual(used, target, "a fractional target must never be exceeded — got \(used) at target \(target)")
+            XCTAssertGreaterThan(used, target - 1, "the shortfall must stay under 1pt, not the old width-1-style full point of slack — got \(used) at target \(target)")
+        }
+        // Integer widths must stay UNCHANGED — the clamp is a no-op once `usable` is already integer.
+        for target: CGFloat in [600, 400] {
+            let ncol = 5
+            let row = (0..<ncol).map { TableBlockBuilder.CellContent(content: NSAttributedString(string: "c\($0)")) }
+            let attr = TableBlockBuilder.build(rows: [row, row], headerRows: 0, theme: theme,
+                                               columnWidths: Array(repeating: target / CGFloat(ncol), count: ncol),
+                                               width: target)
+            let used = laidOutWidth(of: attr, containerWidth: target + 200)
+            XCTAssertEqual(used, target, accuracy: 0.01, "an integer target must stay exact")
+        }
+    }
+
+    /// NARROW COLUMNS — the doc comment on `edges(forWidth:)` used to claim exactness "for any column
+    /// count and any merge shape", unconditionally. It does not hold once a column is too narrow to
+    /// fit `TableBlockBuilder.defaultCellPadding` (7pt) on both sides: the 1pt content-width floor
+    /// then costs a real, per-column overshoot, and the container clips the last column's right rule
+    /// to hide it — measured before `build` shrank padding to fit: 40 cols/600pt overshot by 41pt,
+    /// 60 cols/600pt by 361pt, and a `w:gridCol w:w="0"` hidden column (`[0, 500, 100]`) by 17pt.
+    /// `build` now shrinks PADDING first (never a border — invariant 47 already decided those), down
+    /// to an INTEGER floor of 0 (invariant 42), before the content floor is ever reached — this is
+    /// bounded, not exact, and this test pins the bound rather than re-claiming exactness.
+    func testNarrowColumnsOvershootIsBoundedNotUnlimited() {
+        let theme = RenderTheme.current(size: 16)
+        func laidOut(columnWidths: [CGFloat], target: CGFloat) -> CGFloat {
+            let row = columnWidths.indices.map { TableBlockBuilder.CellContent(content: NSAttributedString(string: "c\($0)")) }
+            let attr = TableBlockBuilder.build(rows: [row], headerRows: 0, theme: theme,
+                                               columnWidths: columnWidths, width: target)
+            return laidOutWidth(of: attr, containerWidth: target + 600)
+        }
+        // 40/60 equal-width columns at 600pt — padding alone (or padding+border) exceeds the column,
+        // so it shrinks; the residual is the 1pt content floor, not the un-shrunk 7pt padding.
+        let cols40 = laidOut(columnWidths: Array(repeating: 600.0 / 40, count: 40), target: 600)
+        let cols60 = laidOut(columnWidths: Array(repeating: 600.0 / 60, count: 60), target: 600)
+        XCTAssertLessThan(cols40 - 600, 41, "must not regress past the measured pre-shrink overshoot")
+        XCTAssertLessThan(cols60 - 600, 120, "the padding shrink must cut this well below the pre-shrink 361pt")
+        // A genuinely 0pt source column (a hidden `w:gridCol`) and a 1pt spacer column.
+        let hiddenCol = laidOut(columnWidths: [0, 500, 100], target: 600)
+        let spacerCol = laidOut(columnWidths: [1, 9999], target: 10000)
+        XCTAssertLessThan(hiddenCol - 600, 4, "a hidden 0pt column must cost single digits, not the 17pt un-shrunk overshoot")
+        XCTAssertLessThan(spacerCol - 10000, 3)
+        for (name, delta) in [("40 cols", cols40 - 600), ("60 cols", cols60 - 600),
+                              ("hidden col", hiddenCol - 600), ("spacer col", spacerCol - 10000)] {
+            XCTAssertGreaterThanOrEqual(delta, 0, "\(name) must never fall SHORT of target — only bounded overshoot is expected")
+        }
+    }
+
+    /// The padding shrink must not touch a REALISTIC table at all — every shape this file already
+    /// measures as exact (2·3·5·9·13 plain columns, and the merged/mixed shapes) stays exactly on
+    /// target, because `availableForPadding` comfortably exceeds `defaultCellPadding` for all of them.
+    func testRealisticColumnCountsStayExactAfterThePaddingShrink() {
+        let target: CGFloat = 600
+        for ncol in [2, 3, 5, 9, 13] {
+            let w = laidOutWidth(columns: ncol, target: target)
+            XCTAssertEqual(w, target, accuracy: 0.01, "\(ncol) columns must stay exact — the shrink is for narrow columns only")
         }
     }
 }

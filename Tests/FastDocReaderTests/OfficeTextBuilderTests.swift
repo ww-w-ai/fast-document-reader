@@ -558,6 +558,48 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(cells.first?.colSpan, TableBlockBuilder.maxSpan)
     }
 
+    /// A rowSpan that claims MORE rows than the table actually has, on a cell that is NOT in the
+    /// last column, must not crash. `OdtReader` (`table:number-rows-spanned`) and `HwpReader` read
+    /// the span verbatim with no clamp of their own — only `DocxReader` clamps at its own source —
+    /// so an .odt/.hwp whose author (or a hand-edited/malformed file) wrote a taller span than the
+    /// table has rows below it reaches `TableBlockBuilder.build` completely untouched. The absurd-span
+    /// test above (`testAbsurdSpanIsClampedRatherThanLoopedOver`) does NOT cover this: its one cell is
+    /// also the LAST column, which hits the perimeter arm (`p.col + p.colSpan >= ncol`) and never
+    /// touches the `.maxX` neighbour scan below it — the one that was reading `grid[r]` for `r` up to
+    /// `p.row + p.rowSpan`, unclamped, against a `grid` sized to the table's real `rowCount`.
+    func testRowSpanPastTheLastRowInANonFinalColumnDoesNotCrash() {
+        // 1 row, rowSpan 3, column 0 of 2 — NOT the last column.
+        let oneRow: [[Cell]] = [
+            [Cell(spans: [span("Tall")], rowSpan: 3), Cell(spans: [span("B")])],
+        ]
+        let out1 = build([.table(rows: oneRow, headerRows: 0)])
+        XCTAssertGreaterThan(out1.length, 0, "a rowSpan taller than the table must not crash — untrusted input, not a fatal error")
+
+        // 2 rows, rowSpan 3 on the first row's first (non-final) column.
+        let twoRows: [[Cell]] = [
+            [Cell(spans: [span("Tall")], rowSpan: 3), Cell(spans: [span("B")])],
+            [Cell(spans: [span("C")])],
+        ]
+        let out2 = build([.table(rows: twoRows, headerRows: 0)])
+        XCTAssertGreaterThan(out2.length, 0)
+
+        // 3x4 grid, rowSpan 3 at (row 1, col 1) — reaches row 4 against a 3-row table.
+        let grid: [[Cell]] = [
+            [Cell(spans: [span("r0c0")]), Cell(spans: [span("r0c1")]), Cell(spans: [span("r0c2")]), Cell(spans: [span("r0c3")])],
+            [Cell(spans: [span("r1c0")]), Cell(spans: [span("tall")], rowSpan: 3), Cell(spans: [span("r1c2")]), Cell(spans: [span("r1c3")])],
+            [Cell(spans: [span("r2c0")]), Cell(spans: [span("r2c2")]), Cell(spans: [span("r2c3")])],
+        ]
+        let out3 = build([.table(rows: grid, headerRows: 0)])
+        XCTAssertGreaterThan(out3.length, 0)
+
+        // Same over-claim, but IN the last column — must have already been safe (the perimeter arm).
+        let lastColumn: [[Cell]] = [
+            [Cell(spans: [span("A")]), Cell(spans: [span("Tall")], rowSpan: 3)],
+        ]
+        let out4 = build([.table(rows: lastColumn, headerRows: 0)])
+        XCTAssertGreaterThan(out4.length, 0)
+    }
+
     /// A zero or negative span is nonsense but must not vanish the cell or stall the column cursor.
     func testZeroSpanIsTreatedAsOne() {
         let rows: [[Cell]] = [
@@ -1641,11 +1683,15 @@ final class OfficeTextBuilderTests: XCTestCase {
         for ratio in att.columnProportions { XCTAssertEqual(ratio, 1.0 / 3.0, accuracy: 0.001) }
     }
 
-    /// The `NSTextTable` equivalent of the old shared edge grid: every one of a 2×2 table's four
-    /// placed cells is bordered on ALL FOUR edges, and the table sets `collapsesBorders`, which is
-    /// what merges two adjacent cells' shared seam into a single drawn line — the property the old
-    /// engine's one-slot-per-boundary edge grid was hand-rolling.
-    func testEveryCellIsBorderedAndTheTableCollapsesSharedSeams() {
+    /// The `NSTextTable` equivalent of the old shared edge grid, UPDATED for the border-conflict
+    /// resolver: `collapsesBorders` is now OFF (this codebase resolves every boundary itself and
+    /// hands the winner to exactly one side, rather than asking AppKit to pick), so a 2×2 table's
+    /// four placed cells are NOT all bordered on all four edges any more — only the OWNING side of
+    /// each boundary is. Measured before this change: `collapsesBorders == true` and every cell's
+    /// four edges read `> 0` uniformly (both sides of a boundary carried a real width, and AppKit
+    /// silently picked one to draw — the defect this pipeline exists to remove). Measured after:
+    /// `collapsesBorders == false`, and each interior boundary has exactly one nonzero side.
+    func testEveryBoundaryHasExactlyOneOwnerNowThatCollapsingIsOff() {
         let rows: [[Cell]] = [
             [Cell(spans: [span("A")]), Cell(spans: [span("B")])],
             [Cell(spans: [span("C")]), Cell(spans: [span("D")])],
@@ -1656,13 +1702,25 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(tableRowCount(in: out), 2)
         let table = try! XCTUnwrap(firstGridTable(in: out))
         XCTAssertEqual(table.numberOfColumns, 2)
-        XCTAssertTrue(table.collapsesBorders, "adjacent cells' shared seam collapses to a single line")
+        XCTAssertFalse(table.collapsesBorders,
+                       "every boundary is resolved by this code now, not handed to AppKit to pick")
+        func at(_ row: Int, _ col: Int) -> PlacedCell { try! XCTUnwrap(cells.first { $0.row == row && $0.col == col }) }
+        // Every cell owns its OWN bottom-right rule (`.maxX`/`.maxY`); only column 0 / row 0 also own
+        // the table's own left/top perimeter on `.minX`/`.minY` — see the design's ownership table.
         for cell in cells {
-            for edge in [NSRectEdge.minX, .maxX, .minY, .maxY] {
-                XCTAssertGreaterThan(cell.block.width(for: .border, edge: edge), 0, "every cell edge is bordered")
-                XCTAssertNotNil(cell.block.borderColor(for: edge))
-            }
+            XCTAssertGreaterThan(cell.block.width(for: .border, edge: .maxX), 0, "cell (\(cell.row),\(cell.col)) owns its own right rule")
+            XCTAssertGreaterThan(cell.block.width(for: .border, edge: .maxY), 0, "cell (\(cell.row),\(cell.col)) owns its own bottom rule")
+            XCTAssertEqual(cell.block.width(for: .border, edge: .minX) > 0, cell.col == 0,
+                           "cell (\(cell.row),\(cell.col)) minX is only owned by column 0")
+            XCTAssertEqual(cell.block.width(for: .border, edge: .minY) > 0, cell.row == 0,
+                           "cell (\(cell.row),\(cell.col)) minY is only owned by row 0")
         }
+        // Exactly one rule per boundary — sum the two facing edges and it must equal the theme width,
+        // never 0 (a hole) and never double it (both sides drawing, what collapsing used to leave
+        // ambiguous to AppKit).
+        let T = RenderTheme.tableBorderWidth
+        XCTAssertEqual(at(0, 0).block.width(for: .border, edge: .maxX) + at(0, 1).block.width(for: .border, edge: .minX), T)
+        XCTAssertEqual(at(0, 0).block.width(for: .border, edge: .maxY) + at(1, 0).block.width(for: .border, edge: .minY), T)
     }
 
     /// `columnWidths` whose count doesn't match the table's own derived column count (a malformed
@@ -1754,13 +1812,24 @@ final class OfficeTextBuilderTests: XCTestCase {
                        "the table described its own box; interior seams it left out stay out")
     }
 
-    /// THE REGRESSION THIS FILE EXISTS TO PREVENT, in the shape Word actually produces it. Selecting
-    /// one cell and removing one rule writes a `w:tcBorders` holding a single `w:val="nil"` — the cell
-    /// has now "declared something" while saying nothing about its other three edges, and the table
-    /// itself declared nothing at all. That cell must still look like its neighbours everywhere the
-    /// author did not touch; an earlier version faded it to the outline colour and dropped two of its
-    /// edges to zero, which is the ragged-table fault this per-edge path was written to remove.
-    func testOneCellTurningOffOneEdgeStillMatchesItsNeighboursEverywhereElse() throws {
+    /// THE REGRESSION THIS FILE EXISTS TO PREVENT, in the shape Word actually produces it — an
+    /// author's deliberate suppression must not be silently overridden by the READER'S OWN invented
+    /// default. Selecting one cell and removing one rule writes a `w:tcBorders` holding a single
+    /// `w:val="nil"` — the cell has now "declared something" while saying nothing about its other
+    /// three edges, and the table itself declared nothing at all, so the untouched neighbour below
+    /// falls back to the ordinary theme rule (1pt) purely because NOBODY said anything about that
+    /// edge — not because the document asked for a rule there.
+    ///
+    /// Two independent reviews found the first implementation let that bare fallback win the
+    /// boundary purely on "wider wins" (0 vs 1pt) — making the author's `w:val="nil"` a complete
+    /// no-op whenever the table drew no box of its own. The fix (design doc §3, Step B rule 0) checks
+    /// EXPLICIT-suppression-vs-bare-fallback FIRST: the suppression wins, and the boundary the author
+    /// removed draws nothing — restoring the originally-expected behaviour. A suppression only loses
+    /// when the OTHER side is a GENUINELY declared rule (see
+    /// `testSuppressedLosesToADrawnRuleRatherThanVetoingIt` for that case, unaffected by this fix) —
+    /// which this test deliberately does NOT exercise: the untouched neighbour never declared
+    /// anything at all.
+    func testOneCellSuppressingAnEdgeStillBeatsAnUncontestedNeighbourFallback() throws {
         var quiet = Cell(spans: [span("plain")])
         quiet.edgeBorders = nil
         var touched = Cell(spans: [span("edited")])
@@ -1769,20 +1838,32 @@ final class OfficeTextBuilderTests: XCTestCase {
         let out = build([.table(rows: rows, headerRows: 0)])   // no TableFormat: the table says nothing
         let cells = tableCells(in: out)
         XCTAssertEqual(cells.count, 4)
-        let edited = try XCTUnwrap(cells.first)
+        let T = RenderTheme.tableBorderWidth
+        let edited = try XCTUnwrap(cells.first { $0.row == 0 && $0.col == 0 })
         let editedWidths = borderWidths(edited)
-        XCTAssertEqual(editedWidths.bottom, 0, "the one edge the author removed")
+        XCTAssertEqual(editedWidths.bottom, 0,
+                       "the author's own explicit suppression beats a bare, un-declared neighbour fallback")
         for (edge, width) in [("top", editedWidths.top), ("left", editedWidths.left), ("right", editedWidths.right)] {
-            XCTAssertEqual(width, RenderTheme.tableBorderWidth, "\(edge) must match the untouched cells")
+            XCTAssertEqual(width, T, "\(edge) must match the untouched cells — only bottom was touched")
         }
-        for side in [NSRectEdge.minY, .minX, .maxX] {
-        }
-        for neighbour in cells.dropFirst() {
-            let w = borderWidths(neighbour)
-            XCTAssertEqual([w.top, w.left, w.bottom, w.right],
-                           Array(repeating: RenderTheme.tableBorderWidth, count: 4),
-                           "cells that declared nothing are untouched by a sibling's declaration")
-        }
+        // The three untouched cells read their OWNERSHIP-CONSISTENT shape, not uniformly-4 any more:
+        // (0,1) owns nothing on its left (that boundary belongs to (0,0)); (1,0)/(1,1) own nothing on
+        // top (those boundaries belong to row 0). Every cell still owns its own bottom-right rule.
+        let atOneOne = try XCTUnwrap(cells.first { $0.row == 0 && $0.col == 1 })
+        XCTAssertEqual(borderWidths(atOneOne).left, 0, "(0,1)'s left boundary is owned by (0,0)")
+        XCTAssertEqual(borderWidths(atOneOne).top, T)
+        XCTAssertEqual(borderWidths(atOneOne).bottom, T)
+        XCTAssertEqual(borderWidths(atOneOne).right, T)
+        let atTenZero = try XCTUnwrap(cells.first { $0.row == 1 && $0.col == 0 })
+        XCTAssertEqual(borderWidths(atTenZero).top, 0, "(1,0)'s top boundary is owned by (0,0)")
+        XCTAssertEqual(borderWidths(atTenZero).left, T)
+        XCTAssertEqual(borderWidths(atTenZero).bottom, T)
+        XCTAssertEqual(borderWidths(atTenZero).right, T)
+        let atTenOne = try XCTUnwrap(cells.first { $0.row == 1 && $0.col == 1 })
+        XCTAssertEqual(borderWidths(atTenOne).top, 0, "(1,1)'s top boundary is owned by (0,1)")
+        XCTAssertEqual(borderWidths(atTenOne).left, 0, "(1,1)'s left boundary is owned by (1,0)")
+        XCTAssertEqual(borderWidths(atTenOne).bottom, T)
+        XCTAssertEqual(borderWidths(atTenOne).right, T)
     }
 
     /// An edge the document explicitly turned OFF draws nothing. The distinction from "never
@@ -1837,25 +1918,55 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(w.right, 0)
     }
 
-    /// INVARIANT 37 PIN — a table that declares NO border information at all (every markdown/HWP/ODT
-    /// table, and any docx without `w:tblBorders`/`w:tcBorders`) renders exactly as it always has:
-    /// `Palette.tableBorder` at the theme width on all four edges of every cell. The outer stand-in
-    /// must never reach a document that said nothing.
-    func testATableThatDeclaresNoBorderInformationKeepsExactlyTheThemeDefaultOnAllFourEdges() {
+    /// INVARIANT 37 PIN, RESTATED AS GEOMETRY (design doc §5) — a table that declares NO border
+    /// information at all (every markdown/HWP/ODT table, and any docx without `w:tblBorders`/
+    /// `w:tcBorders`) still draws every rule at the theme's own width and colour, exactly ONCE per
+    /// boundary — never a hole, never a double-drawn seam. The LITERAL former reading ("all four
+    /// edges of every cell read `RenderTheme.tableBorderWidth`") no longer holds, deliberately:
+    /// `collapsesBorders` is off, so an interior boundary has exactly one OWNER (Step C's per-edge
+    /// ownership) and the facing side reads back 0 — by construction, not by omission. Measured
+    /// before this change: every cell's four edges read `RenderTheme.tableBorderWidth` uniformly (2x,
+    /// both sides of a boundary drawing, AppKit picking one silently). Measured after: only the
+    /// owning side does; the boundary-sum assertions below are what actually protects "a document
+    /// that says nothing still gets a complete, undoubled grid".
+    func testATableThatDeclaresNoBorderInformationKeepsExactlyTheThemeDefaultOnEveryBoundary() {
         let rows: [[Cell]] = [[Cell(spans: [span("A")]), Cell(spans: [span("B")])],
                               [Cell(spans: [span("C")]), Cell(spans: [span("D")])]]
         let out = build([.table(rows: rows, headerRows: 0)])
         let cells = tableCells(in: out)
         XCTAssertEqual(cells.count, 4)
         XCTAssertEqual(RenderTheme.tableBorderWidth, 1, "the hoisted token still holds the shipped value")
-        for cell in cells {
-            for edge in [NSRectEdge.minX, .maxX, .minY, .maxY] {
-                XCTAssertEqual(cell.block.width(for: .border, edge: edge), RenderTheme.tableBorderWidth,
-                               "cell (\(cell.row),\(cell.col)) edge \(edge)")
-                XCTAssertEqual(cell.block.borderColor(for: edge), Palette.tableBorder,
-                               "cell (\(cell.row),\(cell.col)) edge \(edge)")
+        func at(_ row: Int, _ col: Int) -> PlacedCell { try! XCTUnwrap(cells.first { $0.row == row && $0.col == col }) }
+        let T = RenderTheme.tableBorderWidth
+        // Measured per-cell shape: top-left owns both perimeter sides AND both interior boundaries
+        // (it is column 0 AND row 0 AND the upper-left neighbour of both interior seams), so it is
+        // the one cell whose all-four-edges reading is unchanged from before this pipeline.
+        let expected: [(row: Int, col: Int, minX: CGFloat, maxX: CGFloat, minY: CGFloat, maxY: CGFloat)] = [
+            (0, 0, T, T, T, T),
+            (0, 1, 0, T, T, T),
+            (1, 0, T, T, 0, T),
+            (1, 1, 0, T, 0, T),
+        ]
+        for (row, col, minX, maxX, minY, maxY) in expected {
+            let cell = at(row, col)
+            XCTAssertEqual(cell.block.width(for: .border, edge: .minX), minX, "cell (\(row),\(col)) minX")
+            XCTAssertEqual(cell.block.width(for: .border, edge: .maxX), maxX, "cell (\(row),\(col)) maxX")
+            XCTAssertEqual(cell.block.width(for: .border, edge: .minY), minY, "cell (\(row),\(col)) minY")
+            XCTAssertEqual(cell.block.width(for: .border, edge: .maxY), maxY, "cell (\(row),\(col)) maxY")
+            for edge in [NSRectEdge.minX, .maxX, .minY, .maxY] where cell.block.width(for: .border, edge: edge) > 0 {
+                XCTAssertEqual(cell.block.borderColor(for: edge), Palette.tableBorder, "cell (\(row),\(col)) edge \(edge) colour")
             }
         }
+        // The geometry gate itself: every one of the grid's boundaries draws EXACTLY one rule at the
+        // theme width — sum the two facing sides and it is always `T`, never 0 and never `2 * T`.
+        XCTAssertEqual(at(0, 0).block.width(for: .border, edge: .maxX) + at(0, 1).block.width(for: .border, edge: .minX), T,
+                       "the (0,0)-(0,1) interior vertical boundary draws exactly one rule")
+        XCTAssertEqual(at(1, 0).block.width(for: .border, edge: .maxX) + at(1, 1).block.width(for: .border, edge: .minX), T,
+                       "the (1,0)-(1,1) interior vertical boundary draws exactly one rule")
+        XCTAssertEqual(at(0, 0).block.width(for: .border, edge: .maxY) + at(1, 0).block.width(for: .border, edge: .minY), T,
+                       "the (0,0)-(1,0) interior horizontal boundary draws exactly one rule")
+        XCTAssertEqual(at(0, 1).block.width(for: .border, edge: .maxY) + at(1, 1).block.width(for: .border, edge: .minY), T,
+                       "the (0,1)-(1,1) interior horizontal boundary draws exactly one rule")
     }
 
     /// Every placed block's `contentWidth`, in reading order — the value `resizeTables` recomputes.
@@ -1890,6 +2001,29 @@ final class OfficeTextBuilderTests: XCTestCase {
         TableBlockBuilder.resizeTables(in: storage, toWidth: 480)
         XCTAssertEqual(contentWidths(in: storage), built,
                        "re-solving at the build width must be a no-op — the two formulas agree")
+    }
+
+    /// The SAME parity check, but with a genuinely NONZERO, asymmetric border on both the perimeter
+    /// and an interior boundary — the previous test's table (top declared, left suppressed) happens
+    /// to leave every HORIZONTAL border at 0 for every cell, so a reintroduced halving in
+    /// `resizeTables` cannot be told apart from the correct full-subtraction formula there: both
+    /// compute `0 / 2 == 0`. This one gives the left cell a real 1pt perimeter `.minX` AND a real 4pt
+    /// owned interior `.maxX`, so a halving regression moves the content width by 2.5pt — well past
+    /// the 0.5pt "did this cell actually move" threshold `resizeTables` itself uses. Mutation check:
+    /// reintroducing `borderL / 2 - borderR / 2` in `resizeTables` (out of step with `build`'s full
+    /// subtraction) made this fail while leaving the OTHER (all-zero-border) parity test above
+    /// passing — see the implementation log.
+    func testResolvingColumnsAtTheBuildWidthMovesNoCellWhenBordersAreGenuinelyAsymmetricAndNonzero() {
+        var left = TableBlockBuilder.CellContent(content: NSAttributedString(string: "L\n"))
+        left.edgeBorders = EdgeBorders(right: .drawn(BorderSide(width: 4, color: .systemBlue)))
+        let right = TableBlockBuilder.CellContent(content: NSAttributedString(string: "R\n"))
+        let out = TableBlockBuilder.build(rows: [[left, right]], headerRows: 0, theme: theme, width: 480)
+        let storage = NSTextStorage(attributedString: out)
+        let built = contentWidths(in: storage)
+        XCTAssertEqual(built.count, 2)
+        TableBlockBuilder.resizeTables(in: storage, toWidth: 480)
+        XCTAssertEqual(contentWidths(in: storage), built,
+                       "re-solving at the build width must be a no-op even when a real border is asymmetric left/right")
     }
 
     /// Merged cells (R1's `colSpan`) must still work once a cell can ALSO carry shading — the two

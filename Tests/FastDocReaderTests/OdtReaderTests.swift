@@ -492,6 +492,32 @@ final class OdtReaderTests: XCTestCase {
         ], headerRows: 0)])
     }
 
+    /// A rowSpan that claims MORE rows than the table's SOURCE actually has must not crash
+    /// `OfficeTextBuilder.build` downstream. `OdtReader` reads `table:number-rows-spanned` VERBATIM
+    /// (unlike `DocxReader`, which clamps `rowSpan` at its own source) — a malformed/hand-edited
+    /// document (or an exporter quirk) whose declared span outruns the table's actual rows reaches
+    /// the shared table geometry solver completely untouched. Proven through the REAL path this bug
+    /// crashed on — `ZipArchive -> OdtReader.read -> OfficeTextBuilder.build` — not just a reader-
+    /// level assertion on `[OfficeBlock]` (invariant 29: a parser test alone can't show the BUILDER
+    /// survives what the parser hands it).
+    func testRowSpanClaimingMoreRowsThanTheTableHasDoesNotCrashTheBuilder() throws {
+        let blocks = try read(body: """
+        <table:table>
+          <table:table-row>
+            <table:table-cell table:number-rows-spanned="3"><text:p>Tall</text:p></table:table-cell>
+            <table:table-cell><text:p>B</text:p></table:table-cell>
+          </table:table-row>
+        </table:table>
+        """)
+        guard case let .table(rows, _, _, _) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected a table block, got \(blocks)")
+        }
+        XCTAssertEqual(rows.first?.first?.rowSpan, 3,
+                       "the span must reach the reader UNCLAMPED, or this test proves nothing about the builder's own defence")
+        let out = OfficeTextBuilder.build(blocks, theme: RenderTheme.current(size: 16))
+        XCTAssertGreaterThan(out.length, 0, "a rowSpan claiming more rows than the table has must not crash")
+    }
+
     /// `table:number-columns-repeated` can appear on `table:covered-table-cell` too (a wide merge's
     /// covered run compressed the same way an empty run would be) — it must not throw off the anchor
     /// that follows it, regardless of the repeat count.

@@ -8,20 +8,41 @@ import AppKit
 /// rounded integer edges, put every row's column boundary at the SAME integer x by construction.
 final class GridTextTable: NSTextTable {
     var columnProportions: [CGFloat] = []   // one per column, sums to 1
-    /// Integer cumulative x-edges (ncol+1) inside `width` — the shared grid every cell reads.
+    /// Integer cumulative x-edges (ncol+1) across the FULL `width` — the shared grid every cell reads.
     ///
-    /// One point of `width` is held back. With `collapsesBorders` on, AppKit charges roughly half a
-    /// rule at the table's own outer edges that a cell cannot account for through its content width
-    /// (proved by measurement: changing the outer share from a full rule to half moved the laid-out
-    /// total by exactly nothing, while the interior share moved it point for point). Solving the grid
-    /// inside `width` rather than across it leaves that slack unclaimed, so the table lands just
-    /// UNDER the reading column instead of half a point over it — and half a point over is not
-    /// harmless: the container clips it, and the right-hand rule of the last column disappears.
+    /// No slack is held back. `collapsesBorders` is OFF (see `TableBlockBuilder.build`'s own border
+    /// resolution) — each boundary is resolved to exactly ONE drawer with an explicit width, so a row
+    /// of `cellWidth`s (content + padding + the cell's own two border widths) sums to exactly this
+    /// array's last entry, for any column count and any merge shape WIDE ENOUGH to fit its own two
+    /// border widths (`build` shrinks padding, never a border, to make that true down to a genuinely
+    /// near-zero-width source column — e.g. `w:gridCol w:w="0"`, which Word writes for a hidden
+    /// bookmark column — leaving only a column narrower than its own borders with a real, bounded
+    /// overshoot; see `build`'s own comment at the content-width call). The old formula solved inside
+    /// `width - 1`: `collapsesBorders = true` charged a shared interior rule once but ignored the
+    /// table's own outer share, which this codebase measured as pure slack (moving that outer share
+    /// from a full rule to half changed the laid-out total by exactly nothing) — one point was held
+    /// back so the table landed just under the reading column instead of half a point over it, which
+    /// the container would clip. With collapsing off there is no shared rule left to protect against
+    /// double-counting, so the slack is gone and the table lands exactly on `width`, not `width - 1`.
     func edges(forWidth width: CGFloat) -> [CGFloat] {
-        let usable = max(1, width - 1)
+        let usable = max(1, width)
         var out: [CGFloat] = [0]
         var cum: CGFloat = 0
-        for p in columnProportions { cum += p; out.append((usable * cum).rounded()) }
+        for (i, p) in columnProportions.enumerated() {
+            cum += p
+            if i == columnProportions.count - 1 {
+                // The LAST edge is clamped to `usable`'s FLOOR, never rounded past it. `.rounded()`
+                // (round-half-away-from-zero) sends a `width` with a fractional part in [0.5, 1.0) —
+                // 705.5, say — to 706: half a point OVER the reading column, which the container then
+                // clips, exactly the fault the deleted `width - 1` slack existed to prevent (see this
+                // type's own doc comment above). Every earlier edge still rounds normally — unaffected,
+                // and still lands on the same integer whichever row reads a given boundary back — only
+                // the table's own OUTER right edge is ever at risk of rounding past its target.
+                out.append(min((usable * cum).rounded(), usable.rounded(.down)))
+            } else {
+                out.append((usable * cum).rounded())
+            }
+        }
         return out
     }
 }
@@ -202,7 +223,14 @@ enum TableBlockBuilder {
         let table = GridTextTable()
         table.numberOfColumns = ncol
         table.columnProportions = proportions
-        table.collapsesBorders = true
+        // Collapsing is OFF. With it on, two adjacent cells can each independently draw a different
+        // border and AppKit — not this code — silently picks which one shows, which is why a
+        // vertically merged cell used to change which rule it drew every time its neighbour changed
+        // (the defect this pipeline exists to remove). Off, every boundary below is resolved to
+        // exactly ONE drawer ourselves, so the result is ours to decide and stays consistent down a
+        // merge. It also removes the interior-rule double-charge collapsing caused — see
+        // `edges(forWidth:)`'s own comment for why that no longer needs to hold back any slack.
+        table.collapsesBorders = false
         table.hidesEmptyCells = false
         // Solve the grid at the width the table will ACTUALLY be displayed at when the caller knows
         // it. Building at the placeholder and letting `resizeTables` correct it a moment later is
@@ -211,9 +239,25 @@ enum TableBlockBuilder {
         // real width yet (markdown's renderer, and any build before a window exists).
         let edges = table.edges(forWidth: width)
 
+        // STEP A — unchanged from before this pipeline existed (two independent reviews already
+        // confirmed it, including the `tableDrewABox` fix): resolve each placement's OWN four edges
+        // to what THIS cell alone would draw, from the cascade cell-direct > table-direct >
+        // table-STYLE (P5) > theme default. `explicit` additionally records whether that came from
+        // an actual declaration (the cell's own per-edge decl, or the table's) rather than the bare
+        // theme fallback — Step B's tie-break needs to tell those apart, and a bare width/colour pair
+        // can't.
+        struct ResolvedEdge { var side: BorderSide?; var explicit: Bool }
+        struct PlacementBorders {
+            let borderColor: NSColor?
+            let background: NSColor?
+            let padding: CGFloat
+            let onLeft: Bool, onTop: Bool
+            let top: ResolvedEdge, bottom: ResolvedEdge, left: ResolvedEdge, right: ResolvedEdge
+        }
+        var info: [PlacementBorders] = []
+        info.reserveCapacity(placements.count)
         for placement in placements {
             let header = placement.row < headerRows
-            // cell-direct > table-direct > table-STYLE (P5) > theme default — unchanged resolution.
             let borderColor = placement.cell?.borderColor ?? tableBorderColor
                 ?? placement.cell?.styleBorderColor ?? Palette.tableBorder
             let borderWidth = placement.cell?.borderWidth ?? tableBorderWidth
@@ -226,9 +270,6 @@ enum TableBlockBuilder {
             else { background = nil }
             let padding = max(placement.cell?.padding ?? Self.defaultCellPadding, Self.defaultCellPadding)
 
-            let block = NSTextTableBlock(table: table,
-                                         startingRow: placement.row, rowSpan: placement.rowSpan,
-                                         startingColumn: placement.col, columnSpan: placement.colSpan)
             // PER-EDGE borders when the document declared them that way (docx `w:tcBorders`/
             // `w:tblBorders`), the uniform width/colour otherwise. Real reports state each edge
             // separately — a row whose top is a solid blue rule and whose bottom is a dotted hairline
@@ -242,19 +283,13 @@ enum TableBlockBuilder {
             let onTop = placement.row == 0, onLeft = placement.col == 0
             let onBottom = placement.row + placement.rowSpan >= rowCount
             let onRight = placement.col + placement.colSpan >= ncol
-            // Did this table say ANYTHING about borders (a cell's own edges, or the table's)? That
-            // one question separates the two silences: an edge nobody mentioned inside an otherwise
-            // bordered table, from a table that declared nothing at all — every markdown/HWP/ODT
-            // table and any docx without `w:tblBorders`/`w:tcBorders` — which must reach the theme
-            // default in the final arm, byte-identical to before any of this existed (invariant 37).
-            let declared = (cellEdges.map { !$0.isEmpty } ?? false) || (tableEdges.map { !$0.isEmpty } ?? false)
-            // Whether the TABLE drew a box is a different question. A cell that merely turned ONE of
-            // its own edges off — what Word writes when someone selects a cell and removes a single
-            // rule — says nothing about the other three, and those must keep resolving through
-            // `borderWidth`/`borderColor` above so the cell still matches its neighbours. Treating
-            // any declaration as "this table describes its own geometry" made that one cell render
-            // thin and open on the edges nobody touched, which is the ragged-table fault this whole
-            // per-edge path exists to remove.
+            // Whether the TABLE drew a box is a different question from whether a cell said anything.
+            // A cell that merely turned ONE of its own edges off — what Word writes when someone
+            // selects a cell and removes a single rule — says nothing about the other three, and
+            // those must keep resolving through `borderWidth`/`borderColor` above so the cell still
+            // matches its neighbours. Treating any declaration as "this table describes its own
+            // geometry" made that one cell render thin and open on the edges nobody touched, which is
+            // the ragged-table fault this whole per-edge path exists to remove.
             let tableDrewABox = tableEdges?.drawsAnyEdge ?? false
             // Step 1 — INHERIT: a cell's own declaration wins; otherwise it takes the table's OUTER
             // edge where it sits on that side of the grid and the table's INTERIOR edge where it
@@ -263,8 +298,12 @@ enum TableBlockBuilder {
                              isOuter: Bool) -> BorderDecl? {
                 own ?? (isOuter ? outer : inside)
             }
-            // Step 2 — RESOLVE a declaration to what is actually drawn. `.suppressed` draws nothing,
-            // deliberately and finally. An UNSPECIFIED edge depends on whether the TABLE drew a box:
+            // Step 2 — RESOLVE a declaration to what THIS cell alone would draw if nothing else were
+            // in play. `.suppressed` draws nothing here, but it is not yet final — Step B (below,
+            // after every placement's own resolution is known) is what decides whether a neighbour's
+            // rule still wins the boundary; `.suppressed` loses to a drawn rule rather than vetoing
+            // it, which is what keeps one cell's lone "off" from stripping the boundary entirely. An
+            // UNSPECIFIED edge depends on whether the TABLE drew a box:
             //
             //  • It did — nothing. The table described its own geometry and left this edge out, so
             //    leaving it out is what the document asked for. Standing a faint rule in its place
@@ -276,71 +315,206 @@ enum TableBlockBuilder {
             //    table-STYLE > theme value, i.e. exactly what this cell would have drawn before any
             //    per-edge data existed. This is the case where only a CELL spoke, and its silence on
             //    an edge must not cost that edge the cascade the rest of the table is using.
-            func side(_ decl: BorderDecl?) -> BorderSide? {
+            func resolvedEdge(_ decl: BorderDecl?) -> ResolvedEdge {
                 switch decl {
-                case .drawn(let stated): return stated
-                case .suppressed: return nil
+                case .drawn(let stated): return ResolvedEdge(side: stated, explicit: true)
+                case .suppressed: return ResolvedEdge(side: nil, explicit: true)
                 case nil:
-                    return tableDrewABox ? nil : BorderSide(width: borderWidth, color: borderColor)
+                    let fallback = tableDrewABox ? nil : BorderSide(width: borderWidth, color: borderColor)
+                    return ResolvedEdge(side: fallback, explicit: false)
                 }
             }
-            let t = side(declaration(cellEdges?.top, outer: tableEdges?.top,
-                                     inside: tableEdges?.insideH, isOuter: onTop))
-            let b = side(declaration(cellEdges?.bottom, outer: tableEdges?.bottom,
-                                     inside: tableEdges?.insideH, isOuter: onBottom))
-            let l = side(declaration(cellEdges?.left, outer: tableEdges?.left,
-                                     inside: tableEdges?.insideV, isOuter: onLeft))
-            let r = side(declaration(cellEdges?.right, outer: tableEdges?.right,
-                                     inside: tableEdges?.insideV, isOuter: onRight))
-            // Four edges that agree need only the UNIFORM setters — two calls instead of twelve. Most
-            // cells in most documents are uniform, and a table-heavy report has thousands of them: the
-            // per-edge path measured ~25 ms of extra ObjC traffic on a 2,489-cell document, paid on
-            // every font change. Only a cell whose edges genuinely differ pays for the difference.
-            let uniform = t == b && b == l && l == r
-            let perEdge = !uniform && declared
-            var leftWidth = borderWidth, rightWidth = borderWidth
-            if uniform, declared {
-                // Every edge the same AND declared — honour it uniformly. `t == nil` here is not
-                // "nothing was said", it is every edge resolving to nothing to draw (a table that
-                // turned all of them off), so it sets width 0 rather than falling through to the
-                // theme default the document just removed. `declared` is the whole guard: a table
-                // that said nothing never enters this arm.
-                block.setBorderColor(t?.color ?? borderColor)
-                block.setWidth(t?.width ?? 0, type: .absoluteValueType, for: .border)
-                leftWidth = t?.width ?? 0
-                rightWidth = t?.width ?? 0
-            } else if perEdge {
-                // One colour call for the common case, then only the edges that actually differ —
-                // a table-heavy report runs this thousands of times per font change, and most edges
-                // either state no colour (auto) or the same one.
-                block.setBorderColor(borderColor)
-                for (edge, spec) in [(NSRectEdge.minY, t), (.maxY, b), (.minX, l), (.maxX, r)] {
-                    block.setWidth(spec?.width ?? 0, type: .absoluteValueType, for: .border, edge: edge)
-                    if let c = spec?.color, c != borderColor { block.setBorderColor(c, for: edge) }
-                }
-                leftWidth = l?.width ?? 0
-                rightWidth = r?.width ?? 0
+            let top = resolvedEdge(declaration(cellEdges?.top, outer: tableEdges?.top,
+                                               inside: tableEdges?.insideH, isOuter: onTop))
+            let bottom = resolvedEdge(declaration(cellEdges?.bottom, outer: tableEdges?.bottom,
+                                                  inside: tableEdges?.insideH, isOuter: onBottom))
+            let left = resolvedEdge(declaration(cellEdges?.left, outer: tableEdges?.left,
+                                                inside: tableEdges?.insideV, isOuter: onLeft))
+            let right = resolvedEdge(declaration(cellEdges?.right, outer: tableEdges?.right,
+                                                 inside: tableEdges?.insideV, isOuter: onRight))
+            info.append(PlacementBorders(borderColor: borderColor, background: background, padding: padding,
+                                         onLeft: onLeft, onTop: onTop,
+                                         top: top, bottom: bottom, left: left, right: right))
+        }
+
+        // STEP B/C — one boundary, one drawer. A grid lookup (placement index covering each row and
+        // column, including the padding step's cellless positions) is how a cell finds the
+        // neighbour(s) facing its right/bottom edge without re-deriving the placement walk; the
+        // table's own left/top perimeter has no neighbour inside the table to contest it, so it is
+        // always just this cell's own resolved side, never a contest.
+        // `rowCount` is `rows.count` — the SOURCE's literal row count — and is not derived from any
+        // `rowSpan` the way `ncol` is derived from `colSpan` (see the placement walk above): a
+        // hostile document's absurd `rowSpan`, even after `maxSpan` clamps it, can still claim more
+        // rows than the table actually has (one real row, a clamped rowSpan of 512). `ncol` can't
+        // overshoot the same way — it IS the maximum extent the walk found — but both ends of THIS
+        // fill loop are clamped regardless, defensively, rather than relying on that asymmetry to
+        // hold. Every OTHER place that walks `p.row..<(p.row + p.rowSpan)` against `grid` needs its
+        // OWN clamp to `rowCount` — the fill loop clamping itself does not protect them.
+        var grid = Array(repeating: Array(repeating: -1, count: ncol), count: rowCount)
+        for (idx, p) in placements.enumerated() {
+            let rEnd = min(p.row + p.rowSpan, rowCount)
+            let cEnd = min(p.col + p.colSpan, ncol)
+            guard p.row < rEnd, p.col < cEnd else { continue }
+            for r in p.row..<rEnd {
+                for c in p.col..<cEnd { grid[r][c] = idx }
+            }
+        }
+        // The winner between two claimants to ONE boundary. `nil` (nothing to draw) counts as width
+        // 0, so `.suppressed` — which resolves to `nil` above — loses to any real rule instead of
+        // vetoing it (this is what matches Word: removing one cell's border still leaves the
+        // NEIGHBOUR'S OWN border visible). But "the neighbour's own border" presupposes the neighbour
+        // (or the table) actually DECLARED one — an EXPLICIT suppression against a bare, non-explicit
+        // FALLBACK is a different contest, and this rule is checked FIRST, ahead of "wider wins":
+        // that fallback is OUR invented default (used only because `tableDrewABox` is false), not a
+        // rule the document ever asked for, and a document that explicitly turned an edge off must
+        // not have that "off" overridden by a reader-invented default with nothing behind it. Only a
+        // GENUINELY declared rule — the neighbour's own edge, or the table's — still beats a
+        // suppression, matching Word's actual behaviour. Once neither side is "explicit suppression
+        // vs bare fallback", width decides (`nil` still counts as 0), equal width defers to whichever
+        // side was actually DECLARED over a bare theme fallback, and a full tie (both declared, or
+        // both fallback, at the same width) keeps the OWNER's own colour — so the result never
+        // depends on which side of the boundary happens to be scanned first.
+        func winner(owner: ResolvedEdge, other: ResolvedEdge) -> BorderSide? {
+            if owner.side == nil, owner.explicit, !other.explicit { return nil }
+            if other.side == nil, other.explicit, !owner.explicit { return nil }
+            let ow = owner.side?.width ?? 0, otw = other.side?.width ?? 0
+            if ow != otw { return ow > otw ? owner.side : other.side }
+            if owner.explicit != other.explicit { return owner.explicit ? owner.side : other.side }
+            return owner.side
+        }
+        // Folds a MERGED cell's several per-row/per-column boundary winners down to the single widest
+        // one it draws uniformly (design doc §3's "Merged cells" — a block has one width per edge).
+        // Ties are broken toward `a`, the fold's ACCUMULATOR — which only gives a stable, reproducible
+        // answer if the caller always visits the tied neighbours in the SAME order every run. It must
+        // NOT be handed a `Set<Int>`'s own iteration order: Swift randomises a `Set`'s per-process
+        // hash seed, so the same three tied-width, different-colour neighbours resolved red 6/14,
+        // blue 5/14 and green 3/14 across 14 separate process launches of the identical document —
+        // the merged cell's rule colour changed from launch to launch with nothing in the document
+        // asking for that, the exact fault this whole pipeline exists to remove, reintroduced from a
+        // different direction. The caller must fold over `neighbours.sorted()` (ascending placement
+        // index — topmost row for `.maxX`, leftmost column for `.maxY`), never the bare `Set`.
+        func wider(_ a: BorderSide?, _ b: BorderSide?) -> BorderSide? {
+            (a?.width ?? 0) >= (b?.width ?? 0) ? a : b
+        }
+        var assignedMinX: [BorderSide?] = Array(repeating: nil, count: placements.count)
+        var assignedMaxX: [BorderSide?] = Array(repeating: nil, count: placements.count)
+        var assignedMinY: [BorderSide?] = Array(repeating: nil, count: placements.count)
+        var assignedMaxY: [BorderSide?] = Array(repeating: nil, count: placements.count)
+        for (idx, p) in placements.enumerated() {
+            let me = info[idx]
+            assignedMinX[idx] = me.onLeft ? me.left.side : nil
+            assignedMinY[idx] = me.onTop ? me.top.side : nil
+            // `.maxX` — this cell's own right declaration against every right-neighbour's left
+            // declaration, WIDEST across the span: a merged cell's one `NSTextTableBlock` can only
+            // carry a single width per edge, so a cell spanning rows r0…r1 takes the widest of its
+            // per-row boundary winners and draws that one rule uniformly down the whole merge (the
+            // alternative — narrowest, or dropping to nothing — makes a rule disappear mid-table,
+            // the same fault by another route). No neighbour (the table's own right perimeter) ⇒
+            // just its own, unwon.
+            if p.col + p.colSpan >= ncol {
+                assignedMaxX[idx] = me.right.side
+            } else if p.rowSpan == 1 {
+                // FAST PATH — the overwhelming majority of cells in a real table (measured: ~25ms of
+                // extra ObjC traffic on 2,489 cells before this, design doc §6 item 7's own cost
+                // note). An un-merged cell has exactly ONE right-neighbour, so the `Set` allocation +
+                // sort below is pure overhead: `wider(nil, x) == x` always (`wider`'s own definition,
+                // `0 >= x.width` is true only when `x` is also nil/width-0, in which case both sides
+                // of that comparison are the same `nil`), so folding a ONE-element sorted set can only
+                // ever reproduce `winner(...)` directly.
+                let nIdx = grid[p.row][p.col + p.colSpan]
+                assignedMaxX[idx] = nIdx >= 0 ? winner(owner: me.right, other: info[nIdx].left) : me.right.side
             } else {
-                block.setBorderColor(borderColor)
-                block.setWidth(borderWidth, type: .absoluteValueType, for: .border)
+                var neighbours = Set<Int>()
+                // CLAMPED to `rowCount`, exactly like the grid-fill loop above (line 335) — `rowSpan`
+                // is untrusted input (`OdtReader`/`HwpReader` read `table:number-rows-spanned`/HWP's
+                // own span attribute VERBATIM, with no clamp of their own; only `DocxReader` clamps at
+                // its own source), so a cell whose declared span reaches past the table's last row was
+                // indexing `grid[r]` on rows that don't exist — an out-of-bounds trap, not a bad
+                // border. `.maxY` below is already guarded by its own `>= rowCount` branch; this was
+                // the one unclamped read the comment two blocks up wrongly claimed didn't exist.
+                let rEnd = min(p.row + p.rowSpan, rowCount)
+                for r in p.row..<rEnd { neighbours.insert(grid[r][p.col + p.colSpan]) }
+                var best: BorderSide?
+                // SORTED — see `wider`'s own comment: a bare `Set<Int>` iterates in a per-process
+                // hash-randomised order, which made a tie between neighbours resolve to a different
+                // colour on every launch.
+                for nIdx in neighbours.sorted() where nIdx >= 0 {
+                    best = wider(best, winner(owner: me.right, other: info[nIdx].left))
+                }
+                assignedMaxX[idx] = best
             }
-            block.setWidth(padding, type: .absoluteValueType, for: .padding)
-            // ABSOLUTE integer content width: the cell's integer span width minus its own padding and
-            // borders, so every row's column boundary lands on the same integer x (no percentage
-            // drift). The LEFT and RIGHT edges are subtracted individually — with per-edge borders
-            // they legitimately differ, and subtracting one of them twice moves the column boundary.
+            // `.maxY` — the same, downward, against every below-neighbour's top declaration.
+            if p.row + p.rowSpan >= rowCount {
+                assignedMaxY[idx] = me.bottom.side
+            } else if p.colSpan == 1 {
+                // FAST PATH — same reasoning as the `.maxX` arm above, mirrored for a single-column cell.
+                let nIdx = grid[p.row + p.rowSpan][p.col]
+                assignedMaxY[idx] = nIdx >= 0 ? winner(owner: me.bottom, other: info[nIdx].top) : me.bottom.side
+            } else {
+                var neighbours = Set<Int>()
+                for c in p.col..<(p.col + p.colSpan) { neighbours.insert(grid[p.row + p.rowSpan][c]) }
+                var best: BorderSide?
+                // SORTED — same reason as the `.maxX` arm above.
+                for nIdx in neighbours.sorted() where nIdx >= 0 {
+                    best = wider(best, winner(owner: me.bottom, other: info[nIdx].top))
+                }
+                assignedMaxY[idx] = best
+            }
+        }
+
+        for (idx, placement) in placements.enumerated() {
+            let me = info[idx]
+            let block = NSTextTableBlock(table: table,
+                                         startingRow: placement.row, rowSpan: placement.rowSpan,
+                                         startingColumn: placement.col, columnSpan: placement.colSpan)
+            // STEP D (part 1) — only the edges that actually draw something cost a call. A freshly
+            // created `NSTextTableBlock`'s border width already defaults to 0 for every edge (verified
+            // by the boundary/geometry tests reading a non-owner side back as exactly 0 without this
+            // code ever calling `setWidth` there), so a non-owner side needs no call at all — and most
+            // cells in a real table are interior, owning only two of their four edges. One base colour
+            // call covers every nonzero edge that shares the cascade's ordinary colour; only a
+            // genuinely differing per-edge colour pays for its own call. This is the reduction the
+            // design's own cost note asks for once collapsing is off and every cell is inherently
+            // asymmetric (a uniform 4-edges-at-once call no longer applies almost anywhere).
+            let owned: [(NSRectEdge, BorderSide?)] = [(.minX, assignedMinX[idx]), (.maxX, assignedMaxX[idx]),
+                                                       (.minY, assignedMinY[idx]), (.maxY, assignedMaxY[idx])]
+            let nonzero = owned.filter { ($0.1?.width ?? 0) > 0 }
+            if !nonzero.isEmpty {
+                block.setBorderColor(me.borderColor)
+                for (edge, side) in nonzero {
+                    block.setWidth(side!.width, type: .absoluteValueType, for: .border, edge: edge)
+                    if let c = side!.color, c != me.borderColor { block.setBorderColor(c, for: edge) }
+                }
+            }
+            // STEP D (part 2) — ABSOLUTE integer content width: the cell's integer span width minus
+            // its own padding and its own two (never halved) border widths. Collapsing is off, so
+            // nothing is shared with a neighbour to double-account for — each block occupies exactly
+            // `content + padding·2 + its own borders`, and summing a row's `cellWidth`s therefore
+            // reproduces `edges[ncol]` exactly, for any column count or merge shape wide enough to fit
+            // its own two border widths (see below for narrower ones). The old interior halving
+            // existed only to model AppKit's collapsing, which no longer runs.
             let cellWidth = edges[min(placement.col + placement.colSpan, ncol)] - edges[placement.col]
-            // Interior borders are SHARED — `collapsesBorders` is on, so AppKit charges the rule
-            // between two cells ONCE. Subtracting the full width from BOTH neighbours spent it twice,
-            // and every extra column cost another border: measured against a 600pt reading column, a
-            // 2-column table finished 1.5pt short and a 9-column one 8.5pt. Two tables of different
-            // shapes in one report therefore ended at visibly different x, which reads as a ragged
-            // document. An OUTER edge belongs to its cell alone and is still subtracted in full.
-            let lShare = onLeft ? leftWidth : leftWidth / 2
-            let rShare = onRight ? rightWidth : rightWidth / 2
-            block.setContentWidth(max(1, cellWidth - 2 * padding - lShare - rShare),
+            let leftWidth = assignedMinX[idx]?.width ?? 0
+            let rightWidth = assignedMaxX[idx]?.width ?? 0
+            // PADDING SHRINKS FIRST when a column is too narrow for `defaultCellPadding` on both
+            // sides — many columns crowded into one reading width, or a genuinely near-zero source
+            // column (`w:gridCol w:w="0"`, which Word writes for a hidden bookmark column). Padding
+            // is OUR cosmetic choice, never the document's, so it is what gives way before the "sums
+            // to exactly `cellWidth`" guarantee does. Borders are NOT shrunk here — invariant 47's
+            // per-edge resolution already decided them, and a document that asked for a rule gets it.
+            // Only when the borders ALONE already exceed `cellWidth` (padding already at its own
+            // floor of 0) does the 1pt content floor below still cost a real, bounded overshoot — a
+            // column narrower than its own border has no exact answer available at all.
+            // Rounded DOWN and kept an integer (invariant 42 — a fractional width belongs nowhere in
+            // this arithmetic, padding included): rounding up could make a shrunk pair of paddings
+            // sum to MORE than `availableForPadding`, reopening the very overshoot this exists to
+            // shrink; rounding down never does.
+            let availableForPadding = max(0, cellWidth - leftWidth - rightWidth)
+            let effectivePadding = min(me.padding, (availableForPadding / 2).rounded(.down))
+            block.setWidth(effectivePadding, type: .absoluteValueType, for: .padding)
+            block.setContentWidth(max(1, cellWidth - 2 * effectivePadding - leftWidth - rightWidth),
                                   type: .absoluteValueType)
-            if let background { block.backgroundColor = background }
+            if let background = me.background { block.backgroundColor = background }
             switch placement.cell?.verticalAlignment ?? .top {
             case .top: block.verticalAlignment = .topAlignment
             case .center: block.verticalAlignment = .middleAlignment
@@ -384,6 +558,13 @@ enum TableBlockBuilder {
     /// The absolute content width available to each ANCHOR cell's blocks at `width`, mirroring
     /// `build`'s own placement walk + integer-edge geometry (same column count, same proportion
     /// normalisation, same `edges(forWidth:)`, same `content = cellWidth − 2·padding − 2·border`).
+    /// The `edges` computed a few lines below solve over the SAME full `width` `GridTextTable.
+    /// edges(forWidth:)` does (no held-back slack in either) — they used to disagree (`build` solved
+    /// inside `width − 1`, this solved across the full `width`), which is now moot since neither
+    /// holds any back, but the two must keep matching if that ever changes again. This function keeps
+    /// its own `2·borderWidth` approximation regardless — a real per-edge asymmetric subtraction is
+    /// unneeded here since the result never feeds `resizeTables` (see below), only a build-time image
+    /// clamp, where a slightly generous estimate is harmless.
     /// Returned in the SAME `[row][index]` shape as `spans`. This exists so `OfficeTextBuilder` can
     /// clamp a cell IMAGE to its resolved column at BUILD time — the top-level `.image` path already
     /// clamps to the reading column; a cell image had no column to clamp to until now. Deliberately a
@@ -469,13 +650,15 @@ enum TableBlockBuilder {
             let padR = block.width(for: .padding, edge: .maxX)
             let borderL = block.width(for: .border, edge: .minX)
             let borderR = block.width(for: .border, edge: .maxX)
-            // HALVE an INTERIOR border, exactly as `build` does — `collapsesBorders` charges a shared
-            // rule once, and this formula must stay identical to the one in `build` or every cell
-            // reads as "changed" on every reflow (see the note above: real work plus a visible
-            // re-snap). An edge on the table's perimeter is that cell's alone and counts in full.
-            let lShare = c0 == 0 ? borderL : borderL / 2
-            let rShare = c1 >= ncol ? borderR : borderR / 2
-            let target = max(1, edges[c1] - edges[c0] - padL - padR - lShare - rShare)
+            // SUBTRACT BOTH IN FULL, exactly as `build` does — `collapsesBorders` is off, so nothing
+            // is shared with a neighbour to double-account for, and `build` already left a non-owner
+            // side at width 0 (see its Step B/C), so reading it back here and subtracting it in full
+            // costs nothing extra. This formula must stay identical to the one in `build` or every
+            // cell reads as "changed" on every reflow (see the note above: real work plus a visible
+            // re-snap) — the old halving existed only to model AppKit's collapsing, which no longer
+            // runs, and its perimeter-vs-interior distinction goes with it: every cell's own left/
+            // right width, owner or not, is now exactly what it should be subtracted at, in full.
+            let target = max(1, edges[c1] - edges[c0] - padL - padR - borderL - borderR)
             // Only cells whose width actually MOVES are touched. This pass runs on every reflow AND
             // in `display(_:)`'s tail, where the column usually hasn't changed at all — recording
             // every cell unconditionally meant invalidating the whole document to set widths to the

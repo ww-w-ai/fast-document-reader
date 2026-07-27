@@ -71,8 +71,25 @@ final class MarkdownRendererTests: XCTestCase {
         XCTAssertEqual(Set(blocks.map { ObjectIdentifier($0.block.table) }).count, 1)
         // Exactly the 2 header cells (row 0) are shaded — headerRows defaults to 1 for markdown.
         XCTAssertEqual(blocks.filter { $0.block.startingRow == 0 && $0.block.backgroundColor != nil }.count, 2)
-        // Every cell carries a border.
-        for (block, _) in blocks { XCTAssertGreaterThan(block.width(for: .border, edge: .minX), 0) }
+        // Every cell owns its own bottom-right rule (`.maxX`/`.maxY` — see the table-border-conflict
+        // design: an interior boundary has exactly ONE drawer, never both facing sides, and never
+        // neither). Only column 0 additionally owns the table's own left perimeter on `.minX`; a
+        // column-1 cell reads 0 there because that boundary is already drawn by its left neighbour —
+        // `collapsesBorders` is off, so this is a real per-cell assignment, not AppKit's own pick.
+        // Measured (this test, before this pipeline): every cell's `.minX` was `> 0` uniformly, because
+        // `collapsesBorders = true` let BOTH sides of a boundary carry a real width and AppKit silently
+        // picked one to draw.
+        for (block, _) in blocks {
+            XCTAssertGreaterThan(block.width(for: .border, edge: .maxX), 0,
+                                 "every cell draws its own right/interior rule")
+            if block.startingColumn == 0 {
+                XCTAssertGreaterThan(block.width(for: .border, edge: .minX), 0,
+                                     "column 0 owns the table's left perimeter")
+            } else {
+                XCTAssertEqual(block.width(for: .border, edge: .minX), 0,
+                               "an interior boundary is drawn once, by the left neighbour, not twice")
+            }
+        }
         // Row placement is exact: header at row 0, body at rows 1 and 2.
         XCTAssertEqual(Set(blocks.filter { $0.block.startingRow == 0 }.map { $0.block.startingColumn }), [0, 1])
         XCTAssertEqual(Set(blocks.filter { $0.block.startingRow != 0 }.map { $0.block.startingRow }), [1, 2])
