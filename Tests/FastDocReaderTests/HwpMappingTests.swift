@@ -462,6 +462,111 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertTrue(containsFormula(result.blocks),
                       "expected at least one .formula block (top-level or in a table cell) from \(path)")
     }
+
+    // MARK: per-script font slots — the data the rebuilt parser now carries (step 1 of the feature)
+
+    /// The rebuild's ONLY observable effect, asserted against a real document through the real FFI.
+    ///
+    /// Everything about this is deliberately end-to-end: the bytes go through `exportDocumentJSON`
+    /// (the linked rhwp binary), and the JSON comes back through the SAME decoder `mapJSON` uses.
+    /// A hand-written JSON literal would pass against a stale binary, which is precisely the failure
+    /// this test exists to catch — SwiftPM keys a `binaryTarget` off the xcframework's PATH, not its
+    /// bytes (invariant 45), so a vendored `.a` that never relinked looks completely healthy, and a
+    /// field named in snake_case decodes to `nil` with no error at all. Both faults are silent; only
+    /// asserting on real values from a real parse makes either of them loud.
+    ///
+    /// Three claims, matching what step 2 will rely on:
+    /// 1. `charShapes` arrives, and every row carries all seven slots.
+    /// 2. Real text spans carry `csId`.
+    /// 3. Every `csId` indexes a row that exists — rhwp omits the key rather than emitting an id it
+    ///    has no row for, so this is structural, and the assertion is here to keep it that way.
+    func testCharShapeFontSlotsArriveFromARealDocument() throws {
+        guard let path = ProcessInfo.processInfo.environment["FMD_HWP_SAMPLE"], !path.isEmpty else {
+            throw XCTSkip("set FMD_HWP_SAMPLE to a real .hwp/.hwpx to run this")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        guard let json = HwpReader.exportDocumentJSON(data) else {
+            return XCTFail("rhwp could not parse \(path)")
+        }
+        let export = try HwpReader.fontSlotExport(json)
+
+        XCTAssertFalse(export.charShapes.isEmpty,
+                       "no charShapes table — the linked rhwp binary predates it, or the field name drifted")
+        for (i, row) in export.charShapes.enumerated() {
+            XCTAssertEqual(row.count, 7, "charShapes[\(i)] must carry all seven slots, got \(row)")
+        }
+
+        let ids = export.spanCharShapeIds.compactMap { $0 }
+        XCTAssertFalse(ids.isEmpty, "text spans must carry csId")
+        for id in ids {
+            XCTAssertTrue(export.charShapes.indices.contains(id),
+                          "csId \(id) is outside the \(export.charShapes.count)-row charShapes table")
+        }
+
+        // Observation, not an assertion: what the seven names ACTUALLY are. `lookup_font_name`
+        // applies rhwp's own web-oriented substitution before we ever see a name, and it is
+        // lang_index-sensitive, so slots 2-6 fire rules this build has never exercised. Step 2 has
+        // to be designed against what they really return, not against what the slot order implies.
+        let distinctRows = Set(export.charShapes.map { $0.joined(separator: "\u{1}") })
+        print("""
+              FONTSLOTS \(URL(fileURLWithPath: path).lastPathComponent): \
+              \(export.charShapes.count) rows (\(distinctRows.count) distinct), \
+              \(export.spanCharShapeIds.count) spans (\(export.spanCharShapeIds.filter { $0 == nil }.count) without a csId)
+              """)
+        for row in export.charShapes.prefix(4) { print("  slots: \(row)") }
+    }
+
+    /// A span that carries no char shape of its own — a bookmark anchor, a footnote reference
+    /// marker — must decode to `csId == nil` rather than to a bogus row number, and the mapper must
+    /// go on treating it exactly as before. Synthetic here on purpose: this is a claim about the
+    /// DECODER's handling of an absent key, which no real file can vary.
+    func testSpanWithoutACharShapeDecodesToNoSlotRow() throws {
+        let json = """
+        {"v":1,"charShapes":[["A","B","C","D","E","F","G"]],"blocks":[
+          {"t":"para","spans":[
+            {"text":"x","size":1000,"font":"A","csId":0},
+            {"text":"","size":0,"font":"","bookmark":"anchor"}
+          ]}
+        ]}
+        """
+        let export = try HwpReader.fontSlotExport(json)
+        XCTAssertEqual(export.charShapes, [["A", "B", "C", "D", "E", "F", "G"]])
+        XCTAssertEqual(export.spanCharShapeIds, [0, nil])
+        // …and nothing about the mapped result changed: the anchor is still a bookmark span.
+        let blocks = try HwpReader.mapJSON(json).blocks
+        guard case let .paragraph(spans, _, _, _, _) = blocks[0] else {
+            return XCTFail("expected .paragraph, got \(blocks[0])")
+        }
+        XCTAssertEqual(spans.map(\.text), ["x", ""])
+        XCTAssertEqual(spans[1].bookmarks, ["anchor"])
+    }
+
+    /// An envelope from a parser that predates the field decodes to an EMPTY table, not a failure —
+    /// the whole point of shipping the rebuild additively is that the reader keeps working either
+    /// way, so "old binary" must be a legible state rather than a crash.
+    func testEnvelopeWithoutCharShapesDecodesToAnEmptyTable() throws {
+        let json = "{\"v\":1,\"blocks\":[{\"t\":\"para\",\"spans\":[{\"text\":\"x\",\"size\":0,\"font\":\"\"}]}]}"
+        let export = try HwpReader.fontSlotExport(json)
+        XCTAssertEqual(export.charShapes, [])
+        XCTAssertEqual(export.spanCharShapeIds, [nil])
+    }
+
+    /// `fontSlotExport` reaches spans nested in TABLE CELLS. A Korean report is mostly tables — a
+    /// walker that stopped at the top level would report "every csId is in range" having checked
+    /// almost none of them, which is invariant 30's unreachable-assertion failure exactly.
+    func testFontSlotExportReachesSpansInsideTableCells() throws {
+        let json = """
+        {"v":1,"charShapes":[["A","A","A","A","A","A","A"],["B","B","B","B","B","B","B"]],"blocks":[
+          {"t":"table","cols":1,"colWidths":[100],"rows":[[
+            {"colSpan":1,"rowSpan":1,"blocks":[
+              {"t":"para","spans":[{"text":"in a cell","size":1000,"font":"B","csId":1}]}
+            ]}
+          ]]}
+        ]}
+        """
+        let export = try HwpReader.fontSlotExport(json)
+        XCTAssertEqual(export.spanCharShapeIds, [1])
+    }
 }
 
 // MARK: - Style-derived headings, picture alignment, relative picture width (S10)
