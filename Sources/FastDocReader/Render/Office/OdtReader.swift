@@ -363,10 +363,17 @@ enum OdtReader: OfficeDocumentReader {
                 // returns `nil` — read as "no size specified" rather than a wrong literal number. That
                 // is a deliberate skip, not an oversight (see this sprint's own report).
                 if let size = props.attributes["fo:font-size"] { decl.fontSize = parseLength(size) }
+                // Both routes end at `normalizedFontFamily`, the ONE place that turns an XSL
+                // `font-family` value into something `NSFont(name:)` can be handed — see its own
+                // doc. `style:font-name` names a `style:font-face`; when that face exists its
+                // `svg:font-family` is used EVEN IF EMPTY (an emptily-declared face states no
+                // typeface, which must read as "this style says nothing about the family" so the
+                // parent's real one still inherits), and only a reference to a face that was never
+                // declared at all falls back to the reference name itself.
                 if let fontName = props.attributes["style:font-name"] {
-                    decl.fontName = fontFaces[fontName] ?? fontName
+                    decl.fontName = normalizedFontFamily(fontFaces[fontName] ?? fontName)
                 } else if let family = props.attributes["fo:font-family"] {
-                    decl.fontName = family
+                    decl.fontName = normalizedFontFamily(family)
                 }
                 // P4 — `style:text-underline-type="double"` wins over `style:text-underline-style`
                 // (ODF lets both be stated together); read together so a double underline is never
@@ -406,6 +413,13 @@ enum OdtReader: OfficeDocumentReader {
     /// the literal family name itself, which lives on that SAME element's `svg:font-family`. Searched
     /// the same "anywhere below root" way every other style table in this file is, since a font-face
     /// declaration can live in either part exactly like a style can.
+    ///
+    /// The family is stored VERBATIM, quoting and all, including an empty one — normalization
+    /// happens at the single point that consumes it (`parseTextStyleDecls` →
+    /// `normalizedFontFamily`). Dropping empty declarations here instead was the obvious shape and
+    /// is wrong: it makes a face that was DECLARED with no family indistinguishable from one that
+    /// was never declared, and those resolve differently — the first states no typeface (inherit),
+    /// the second falls back to the reference name.
     private static func parseFontFaceDecls(from root: XMLNode) -> [String: String] {
         var map: [String: String] = [:]
         for face in root.allDescendants("style:font-face") {
@@ -413,6 +427,56 @@ enum OdtReader: OfficeDocumentReader {
             map[name] = family
         }
         return map
+    }
+
+    /// One XSL `font-family` value (ODF `svg:font-family` / `fo:font-family`) → the single family
+    /// name to record on a `Span`, or `nil` when it names no typeface at all.
+    ///
+    /// Two things make the raw attribute unusable as a font name. It is a LIST of alternatives in
+    /// preference order, and its members are CSS-quoted whenever the name is not a bare identifier
+    /// — LibreOffice writes `svg:font-family="&apos;Noto Sans CJK KR&apos;"`, which unescapes to a
+    /// value carrying literal apostrophes. `NSFont(name:)` wants a family name, not a CSS token:
+    /// measured on this machine, `NSFont(name: "'Noto Sans CJK KR'", size: 12)` is `nil` while the
+    /// unquoted spelling resolves, so before this every quoted family in every ODT silently
+    /// resolved to nothing and the document's chosen typeface was never drawn. All four `.odt`
+    /// fixtures in `docs/fixtures/office` quote this way, so this is the common case, not an edge.
+    ///
+    /// The split is quote-AWARE rather than a plain `split(separator: ",")`: a comma inside a
+    /// quoted member belongs to the name. That case is vanishingly rare in real font names, but
+    /// tracking the quote state is what lets the SAME scan strip the quotes, so handling it costs
+    /// nothing extra and removes the question. A quote character is structural and never part of a
+    /// family name, so an UNBALANCED one (malformed, but it happens) still yields the bare name
+    /// rather than a name with a stray quote in it — which is the whole failure this function
+    /// exists to end. An apostrophe inside a double-quoted member is ordinary text, and vice versa.
+    ///
+    /// Only the FIRST member that names something is kept: a `Span` records one family, and the
+    /// remaining alternatives are fallbacks for a font that isn't installed — a question
+    /// `FontSubstitutionResolver` already answers against what this machine actually has, using
+    /// coverage rather than the author's guess. A leading member that names nothing (`", Arial"`)
+    /// is skipped rather than being read as "no family", because an empty member carries no
+    /// intent while `Arial` plainly does.
+    private static func normalizedFontFamily(_ raw: String) -> String? {
+        var members: [String] = []
+        var current = ""
+        var quote: Character? = nil
+        for character in raw {
+            if let open = quote {
+                if character == open { quote = nil } else { current.append(character) }
+            } else if character == "'" || character == "\"" {
+                quote = character
+            } else if character == "," {
+                members.append(current)
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        members.append(current)
+        for member in members {
+            let trimmed = member.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        return nil
     }
 
     /// Resolves one text style's `style:parent-style-name` chain into a final `TextStyle` — the
@@ -1539,7 +1603,23 @@ enum OdtReader: OfficeDocumentReader {
             // matching guard in `DocxReader.collectSpans`. `textColor`/`highlightColor`/`fontSize`/
             // `fontName`/`underlineStyle`/`caps`/`smallCaps` (P3/P4's own additions) join the same
             // equality check — two runs that only differ in, say, colour must stay two separate
-            // `Span`s, or the second run's colour would silently win for the whole merged range.
+            // `Span`s, or the FIRST run's colour would silently win for the whole merged range (a
+            // merge keeps the first span and appends only the second's text).
+            //
+            // That cross-reference described the docx guard as if it already matched this one, and
+            // for a long time it did not: the docx side compared none of those four fields, so the
+            // sentence above read as a shared contract while only one of the two readers honoured
+            // it. Both sides are aligned now, and each carries its own list rather than a pointer to
+            // the other — a comment cannot keep two lists in step, only a test can, so the real
+            // guard is a per-reader completeness test over everything that reader's own markup can
+            // express (`testEveryRunPropertyADocxCanCarryKeepsAdjacentRunsApart` and
+            // `testEveryTextPropertyAnOdtCanCarryKeepsAdjacentRunsApart`).
+            //
+            // `code` and `rtl` are absent here, unlike in the docx guard, because no ODT-sourced
+            // `Span` can differ in them: `code` is a markdown concept with no ODF equivalent, and
+            // ODF states direction only on a PARAGRAPH style (`style:writing-mode`), never on a
+            // `text:span` — see `Span.rtl`'s own doc. Both are left at their defaults by every
+            // construction site in this function, so comparing them would always be true.
             if let last = spans.last, last.bookmarks.isEmpty, last.commentIds.isEmpty,
                last.bold == style.bold, last.italic == style.italic, last.underline == style.underline,
                last.strikethrough == style.strikethrough, last.superscript == style.superscript,
