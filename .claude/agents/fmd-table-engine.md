@@ -36,9 +36,20 @@ above it. Your value is that you already know the numbers.
   nothing, while the interior share moved it point for point. The 0.5 is NOT harmless — the container
   clips it and the last column's right rule disappears. `edges(forWidth:)` therefore solves inside
   `width - 1`.
-- **`collapsesBorders = false` gives EXACTLY the target width** — 600.00 for 13 plain columns, for a
-  row of four 3-column merges, and for the two mixed — with full borders subtracted and no slack
-  reserved. This is the door to the real fix, and it removes the slack reservation as a side effect.
+- **`collapsesBorders = false` gives EXACTLY the target width** — 600.0000 for 2/3/5/9/13 plain
+  columns, for a row of four 3-column merges, and for both mixed shapes, with full borders subtracted
+  and no slack reserved. This is SHIPPED (see "the settled model" below), and it removed the slack.
+- **Measure exactness in a container `target + 200` pt WIDE.** `NSLayoutManager.usedRect` against a
+  container sized AT the target silently CLIPS an overshoot into reading as exact — a real +3.0pt
+  overshoot measured as +0.0000 twice before the container was widened. Any width-exactness claim
+  taken in a snug container is ambiguous between "exact" and "overshot and clipped".
+- **An `NSTextTableBlock` does not survive a storage rebuild.** Mutating a block pulled from one
+  `NSTextStorage(attributedString: attr)` has zero effect on a second storage built from the same
+  `attr`. For a before/after AppKit-behaviour experiment, reuse ONE storage and attach a second
+  `NSLayoutManager` to it; do not rebuild.
+- **A comparison that subtracts and adds back the same term proves nothing.** The first attempt to
+  measure double-charging rebuilt `cellWidth` from the same formula under test, so it reported
+  "no difference" tautologically. Mutate the already-built blocks in place instead.
 - **Merged rows are NOT a separate case** for width: with the interior halving, plain / merged /
   mixed all land identically. Verified — do not assume merging is the culprit.
 - **`build` and `resizeTables` must use the IDENTICAL formula.** When they disagreed, every cell read
@@ -52,14 +63,34 @@ above it. Your value is that you already know the numbers.
   `b816592` replaced it). It was written because percentage widths drifted; absolute integer widths
   fixed that with far less code and kept the text selectable. Do not rebuild it.
 
-## The open problem
+## The settled model — SHIPPED, do not re-derive (invariant 50)
 
-With collapsing ON, two adjacent cells declaring different borders let **AppKit** pick the winner and
-we cannot influence the choice — so one vertical rule changes appearance partway down a table wherever
-a vertically-merged cell changes who its neighbour is. The fix is to stop asking: turn collapsing off,
-resolve each boundary yourself (Word's order — wider wins, then style precedence, then the cell's own
-declaration over the table's), assign the winner to ONE side and zero to the other. Both renderers'
-output changes, so invariant 37 is the gate: a table that declared nothing must come out byte-identical.
+Collapsing is OFF and every boundary is resolved here, not by AppKit. Ownership: an interior vertical
+boundary belongs to the LEFT cell's `.maxX`, the table's left perimeter to the column-0 cell's
+`.minX`; an interior horizontal one to the cell ABOVE's `.maxY`, the top perimeter to the row-0 cell's
+`.minY`. Every other side is 0 and costs no call. Winner: explicit suppression beats a bare theme
+fallback → wider wins (`nil` = 0, so `.suppressed` loses to a genuinely declared rule, as in Word) →
+equal widths defer to the declared side → the owner's colour. A merged cell takes the WIDEST winner
+across its span, folded over a **sorted** neighbour order.
+
+Four things that bit, and will bite again:
+
+- **Style precedence is not implementable.** The original plan's "wider → double > solid > dashed >
+  dotted" cannot be built: `BorderSide` carries width and colour only, and `NSTextTableBlock` draws
+  solid rules. Do not add a style field expecting it to render.
+- **A bare `Set<Int>` fold is non-deterministic.** Swift randomises a Set's per-process hash seed;
+  three tied-width neighbours resolved red 6/14, blue 5/14, green 3/14 across 14 launches. Sort.
+- **`rowSpan` is untrusted.** `OdtReader`/`HwpReader` pass the declared span through verbatim; only
+  `DocxReader` clamps. Every walk of `p.row..<(p.row + p.rowSpan)` against the neighbour grid must
+  clamp to `rowCount` — one that didn't trapped `Index out of range` and killed the app on opening an
+  ordinary `.odt`, with the whole suite green because the docx path clamps first.
+- **The last edge is floored, not rounded.** A fractional reading column (705.5) rounds to 706 and
+  puts the final rule outside the container.
+
+Invariant 37 was relaxed DELIBERATELY here, from bytes to geometry: a silent table keeps every rule at
+the same colour, width and integer column boundary, and its total moves from `target − 0.5` to exactly
+`target`. Preserving literal byte-identity would have meant two geometry regimes and two formulas —
+the drift this codebase has already been burned by.
 
 ## How to work
 
