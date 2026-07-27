@@ -2613,7 +2613,8 @@ final class DocxReaderTests: XCTestCase {
 
     private func spans(_ blocks: [OfficeBlock]) throws -> [Span] {
         guard case let .paragraph(spans, _, _, _, _) = try XCTUnwrap(blocks.first) else {
-            return XCTFail("expected one paragraph, got \(blocks)"); return []
+            XCTFail("expected one paragraph, got \(blocks)")
+            return []
         }
         return spans
     }
