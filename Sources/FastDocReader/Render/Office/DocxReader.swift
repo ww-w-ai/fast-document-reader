@@ -2428,13 +2428,32 @@ enum DocxReader: OfficeDocumentReader {
             // merging trailing text into it would grow the marker's rendered span past its real
             // target/range, the same boundary-smearing `Span.bookmarks`'/`Span.commentIds`' doc
             // comments warn against, just from the other direction.
+            //
+            // A merge KEEPS THE FIRST span and appends only the second's TEXT, so this list is not
+            // "which fields we bother to compare" — it is "which fields cannot be silently
+            // overwritten by the run before them". Anything a run can carry and this check omits is
+            // a live data loss: `textColor`/`highlightColor`/`fontSize`/`fontName` were all missing
+            // here (while `OdtReader`'s twin already had them, which is how it went unnoticed for so
+            // long), so two runs differing only in colour merged and the SECOND run's colour was
+            // gone. Per-slot fonts make adjacent runs differ in family constantly
+            // (`docs/per-script-font-design.md` §5.1), which would have flattened that feature run
+            // by run. Two fields are deliberately absent: `bookmarks`/`commentIds` are handled by
+            // the `isEmpty` guards above (never merged at all, in either direction), and
+            // `resolvedFontDescriptor` is still `nil` for every span here — it is written by
+            // `resolvingFontSubstitution()`, which runs at the dispatch point AFTER this reader has
+            // returned (`DocumentTypes.readOffice`), and that pass does its own splitting rather
+            // than re-entering this one. Anything ADDED to `Span` that a `w:r` can express belongs
+            // in this list; `DocxReaderTests.testEveryRunPropertyADocxCanCarryKeepsAdjacentRunsApart`
+            // is the guard that says so out loud.
             if let last = spans.last, last.bookmarks.isEmpty, last.commentIds.isEmpty,
                last.bold == span.bold, last.italic == span.italic,
                last.underline == span.underline, last.underlineStyle == span.underlineStyle,
                last.caps == span.caps, last.smallCaps == span.smallCaps,
                last.code == span.code, last.link == span.link,
                last.strikethrough == span.strikethrough, last.superscript == span.superscript,
-               last.subscripted == span.subscripted, last.rtl == span.rtl {
+               last.subscripted == span.subscripted, last.rtl == span.rtl,
+               last.textColor == span.textColor, last.highlightColor == span.highlightColor,
+               last.fontSize == span.fontSize, last.fontName == span.fontName {
                 spans[spans.count - 1].text += span.text
             } else {
                 spans.append(span)

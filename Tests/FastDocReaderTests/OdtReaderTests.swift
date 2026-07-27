@@ -1330,6 +1330,201 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertEqual(spans[0].fontName, "Arial")
     }
 
+    // MARK: Font family NAMES — an XSL font-family list, CSS-quoted
+
+    /// `svg:font-family` and `fo:font-family` hold an XSL `font-family` LIST, whose members are
+    /// CSS-quoted whenever the name is not a bare identifier — LibreOffice writes
+    /// `svg:font-family="&apos;Noto Sans CJK KR&apos;"`, which unescapes to a value WITH literal
+    /// apostrophes. `NSFont(name:)` takes a family name, not a CSS token: measured on this machine,
+    /// `NSFont(name: "'Noto Sans CJK KR'", size: 12)` is `nil` while `NSFont(name: "Noto Sans CJK
+    /// KR", size: 12)` resolves. So every quoted family in every ODT resolved to a font that could
+    /// not be constructed and silently fell back to the theme's own face — the document's declared
+    /// typeface was dead, not wrong. Asserted through the reader on the exact byte sequence a real
+    /// LibreOffice file carries (all four `.odt` fixtures in `docs/fixtures/office` quote this way).
+    func testQuotedFontFamilyIsUnquotedSoItCanActuallyBeConstructed() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"Styled\">Text</text:span></text:p>",
+            automaticStyles: """
+            <office:font-face-decls>
+              <style:font-face style:name="F1" svg:font-family="&apos;Noto Sans CJK KR&apos;"/>
+            </office:font-face-decls>
+            <style:style style:name="Styled" style:family="text">
+              <style:text-properties style:font-name="F1"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans[0].fontName, "Noto Sans CJK KR")
+    }
+
+    /// The double-quoted form is equally legal CSS and appears in files from other producers.
+    func testDoubleQuotedFontFamilyIsUnquotedToo() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">Text</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="&quot;Liberation Serif&quot;"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans[0].fontName, "Liberation Serif")
+    }
+
+    /// A LIST, not a single name — the first member is the author's first choice, and the rest are
+    /// the fallbacks a CSS engine would walk. This reader records one family per span, so it takes
+    /// the first and leaves the rest to `FontSubstitutionResolver`, which resolves coverage against
+    /// what is actually installed. Handing the WHOLE list to `NSFont(name:)` yields `nil` just as a
+    /// quoted single name did.
+    func testFontFamilyListTakesTheFirstFamilyNotTheWholeList() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">Text</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="&apos;맑은 고딕&apos;, Arial, sans-serif"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans[0].fontName, "맑은 고딕")
+    }
+
+    /// "First family" means the first that NAMES something: a list whose leading member is empty
+    /// still plainly asks for the family after it, and reading that as "no family" would throw away
+    /// a real declaration over a stray comma.
+    func testFontFamilyListSkipsALeadingMemberThatNamesNothing() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">Text</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family=", Arial"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans[0].fontName, "Arial")
+    }
+
+    /// An unquoted bare identifier is already a family name and must come through byte-identical —
+    /// this is the invariant-37 half of the de-quoting change. `굴림체`, `Wingdings` and `OpenSymbol`
+    /// all appear unquoted in the real fixtures beside quoted names in the same file.
+    func testUnquotedFontFamilyIsUnchanged() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">Text</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="굴림체"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans[0].fontName, "굴림체")
+    }
+
+    /// An EMPTY family must behave exactly as an ABSENT one. `<style:font-face style:name="F"
+    /// svg:font-family=""/>` is written by LibreOffice and appears in two of this repo's own
+    /// fixtures (`bus-headings.odt`, `tago-tables.odt`). Resolved as a family it produced `""` —
+    /// non-`nil`, so the `??` fallback never fired and the cascade recorded "this style states a
+    /// family", which BLOCKS the parent's real family from being inherited. The span then asked for
+    /// a font named `""` and got nothing, so an inherited typeface was lost to a declaration that
+    /// names no typeface at all.
+    func testEmptyFontFamilyIsTreatedAsAbsentSoTheParentFamilyStillInherits() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"Child\">Text</text:span></text:p>",
+            automaticStyles: """
+            <office:font-face-decls>
+              <style:font-face style:name="Empty" svg:font-family=""/>
+            </office:font-face-decls>
+            <style:style style:name="Parent" style:family="text">
+              <style:text-properties fo:font-family="Georgia"/>
+            </style:style>
+            <style:style style:name="Child" style:family="text" style:parent-style-name="Parent">
+              <style:text-properties style:font-name="Empty"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans[0].fontName, "Georgia")
+    }
+
+    /// The same rule stated directly rather than through the font-face indirection, and with
+    /// nothing to inherit: an empty family is `nil` (the theme's own body font), never `""`, which
+    /// no font is named.
+    func testEmptyDirectFontFamilyResolvesToNoFamilyAtAll() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">Text</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="" fo:font-size="14pt"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertNil(spans[0].fontName)
+        XCTAssertEqual(spans[0].fontSize, 14, "the rest of the style must still be read")
+    }
+
+    /// A family of nothing but quotes, or nothing but spaces, is the same "names no typeface" case —
+    /// unquoting must not turn `"''"` into `""` and then hand that on as a real family.
+    func testFamilyThatIsOnlyQuotesOrWhitespaceIsAlsoTreatedAsAbsent() throws {
+        for family in ["&apos;&apos;", " ", "&apos; &apos;", ","] {
+            let blocks = try read(
+                body: "<text:p><text:span text:style-name=\"S\">Text</text:span></text:p>",
+                automaticStyles: """
+                <style:style style:name="S" style:family="text">
+                  <style:text-properties fo:font-family="\(family)"/>
+                </style:style>
+                """)
+            guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+            XCTAssertNil(spans[0].fontName, "family \(family) should name no typeface")
+        }
+    }
+
+    /// A font-face declaration whose `style:name` is referenced but which declares NO
+    /// `svg:font-family` at all is a different case from an empty one, and must keep its existing
+    /// behaviour: the reference falls through to the REFERENCE NAME itself (`fontFaces[n] ?? n`),
+    /// which for these files is usually a real family name too. Pinned so the empty-family fix
+    /// cannot quietly swallow this path as well.
+    func testFontNameWithNoMatchingFontFaceStillFallsBackToTheReferenceName() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">Text</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties style:font-name="Georgia"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans[0].fontName, "Georgia")
+    }
+
+    /// The completeness guard `OdtReader.appendMerging`'s own comment points at — the twin of
+    /// `DocxReaderTests.testEveryRunPropertyADocxCanCarryKeepsAdjacentRunsApart`. A merge keeps the
+    /// FIRST span's attributes, so every property an ODT text style can express must keep adjacent
+    /// runs apart or the second run's value is silently lost. `code`/`rtl` are absent by
+    /// construction (no ODF markup sets either on a `text:span` — see `appendMerging`'s comment);
+    /// `bookmarks`/`commentIds` are never merged at all and have their own tests.
+    func testEveryTextPropertyAnOdtCanCarryKeepsAdjacentRunsApart() throws {
+        let cases: [(field: String, a: String, b: String)] = [
+            ("bold", "fo:font-weight=\"bold\"", "fo:font-weight=\"normal\""),
+            ("italic", "fo:font-style=\"italic\"", "fo:font-style=\"normal\""),
+            ("underline", "style:text-underline-style=\"solid\"", "style:text-underline-style=\"none\""),
+            ("underlineStyle", "style:text-underline-style=\"solid\"", "style:text-underline-style=\"dotted\""),
+            ("strikethrough", "style:text-line-through-style=\"solid\"", "style:text-line-through-style=\"none\""),
+            ("superscript", "style:text-position=\"super 58%\"", "style:text-position=\"0% 100%\""),
+            ("subscripted", "style:text-position=\"sub 58%\"", "style:text-position=\"0% 100%\""),
+            ("caps", "fo:text-transform=\"uppercase\"", "fo:text-transform=\"none\""),
+            ("smallCaps", "fo:font-variant=\"small-caps\"", "fo:font-variant=\"normal\""),
+            ("textColor", "fo:color=\"#FF0000\"", "fo:color=\"#00FF00\""),
+            ("highlightColor", "fo:background-color=\"#FFFF00\"", "fo:background-color=\"#00FFFF\""),
+            ("fontSize", "fo:font-size=\"12pt\"", "fo:font-size=\"20pt\""),
+            ("fontName", "fo:font-family=\"Georgia\"", "fo:font-family=\"Verdana\""),
+        ]
+        for (field, a, b) in cases {
+            let blocks = try read(
+                body: "<text:p><text:span text:style-name=\"A\">A</text:span><text:span text:style-name=\"B\">B</text:span></text:p>",
+                automaticStyles: """
+                <style:style style:name="A" style:family="text"><style:text-properties \(a)/></style:style>
+                <style:style style:name="B" style:family="text"><style:text-properties \(b)/></style:style>
+                """)
+            guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+            XCTAssertEqual(spans.map(\.text), ["A", "B"],
+                           "two runs differing only in \(field) were merged — the second run's \(field) is lost")
+        }
+    }
+
     /// `fo:background-color="transparent"` means "no highlight", not black — must resolve to `nil`,
     /// same as the attribute being absent entirely.
     func testTransparentBackgroundColorMeansNoHighlight() throws {

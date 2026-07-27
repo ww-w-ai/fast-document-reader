@@ -217,6 +217,145 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "NotBold", bold: false)])])
     }
 
+    /// The symptom that named this defect: `appendMerging`'s equality check decides whether two
+    /// adjacent runs become ONE span, and it KEEPS THE FIRST run's attributes — so any field it
+    /// forgets to compare is not merely "ignored", it is the SECOND run's value being silently
+    /// replaced by the first's. Colour, highlight, size and family were all missing, which is why
+    /// this is asserted on the resolved value and not just on the span COUNT: a check that only
+    /// counted spans would still pass if a future merge kept the second run's colour instead.
+    func testTwoRunsDifferingOnlyInColourStayTwoSpansEachKeepingItsOwnColour() throws {
+        let blocks = try read(document: """
+        <w:p>
+          <w:r><w:rPr><w:color w:val="FF0000"/></w:rPr><w:t>Red</w:t></w:r>
+          <w:r><w:rPr><w:color w:val="0000FF"/></w:rPr><w:t>Blue</w:t></w:r>
+        </w:p>
+        """)
+        XCTAssertEqual(blocks, [.paragraph(spans: [
+            Span(text: "Red", textColor: rgb("FF0000")),
+            Span(text: "Blue", textColor: rgb("0000FF")),
+        ])])
+    }
+
+    func testTwoRunsDifferingOnlyInHighlightStayTwoSpansEachKeepingItsOwnHighlight() throws {
+        let blocks = try read(document: """
+        <w:p>
+          <w:r><w:rPr><w:highlight w:val="yellow"/></w:rPr><w:t>Y</w:t></w:r>
+          <w:r><w:rPr><w:highlight w:val="green"/></w:rPr><w:t>G</w:t></w:r>
+        </w:p>
+        """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        guard spans.count == 2 else { return XCTFail("expected two spans, got \(spans.map(\.text))") }
+        XCTAssertEqual(spans.map(\.text), ["Y", "G"])
+        XCTAssertNotEqual(spans[0].highlightColor, spans[1].highlightColor)
+    }
+
+    func testTwoRunsDifferingOnlyInSizeStayTwoSpansEachKeepingItsOwnSize() throws {
+        let blocks = try read(document: """
+        <w:p>
+          <w:r><w:rPr><w:sz w:val="24"/></w:rPr><w:t>Twelve</w:t></w:r>
+          <w:r><w:rPr><w:sz w:val="40"/></w:rPr><w:t>Twenty</w:t></w:r>
+        </w:p>
+        """)
+        XCTAssertEqual(blocks, [.paragraph(spans: [
+            Span(text: "Twelve", fontSize: 12),
+            Span(text: "Twenty", fontSize: 20),
+        ])])
+    }
+
+    /// The one that BLOCKS per-script fonts (`docs/per-script-font-design.md` §5.1): once each run
+    /// resolves its own family per script, adjacent runs differ in family constantly, and a merge
+    /// that ignores family would flatten exactly what that feature produces.
+    func testTwoRunsDifferingOnlyInFontFamilyStayTwoSpansEachKeepingItsOwnFamily() throws {
+        let blocks = try read(document: """
+        <w:p>
+          <w:r><w:rPr><w:rFonts w:ascii="Georgia"/></w:rPr><w:t>Serif</w:t></w:r>
+          <w:r><w:rPr><w:rFonts w:ascii="Verdana"/></w:rPr><w:t>Sans</w:t></w:r>
+        </w:p>
+        """)
+        XCTAssertEqual(blocks, [.paragraph(spans: [
+            Span(text: "Serif", fontName: "Georgia"),
+            Span(text: "Sans", fontName: "Verdana"),
+        ])])
+    }
+
+    /// The other half of the contract, and the reason the guard is a field-by-field comparison
+    /// rather than "never merge anything that names a colour/size/family": runs that AGREE must
+    /// still collapse. Fragmentation is ~93% of the build stage
+    /// (`SpanFragmentationProbeTests`), so a guard that over-splits would trade one defect for a
+    /// measured performance regression.
+    func testRunsAgreeingOnColourSizeAndFamilyStillMergeIntoOneSpan() throws {
+        let blocks = try read(document: """
+        <w:p>
+          <w:r><w:rPr><w:color w:val="FF0000"/><w:sz w:val="24"/><w:rFonts w:ascii="Georgia"/></w:rPr><w:t>One </w:t></w:r>
+          <w:r><w:rPr><w:color w:val="FF0000"/><w:sz w:val="24"/><w:rFonts w:ascii="Georgia"/></w:rPr><w:t>span</w:t></w:r>
+        </w:p>
+        """)
+        XCTAssertEqual(blocks, [.paragraph(spans: [
+            Span(text: "One span", textColor: rgb("FF0000"), fontSize: 12, fontName: "Georgia"),
+        ])])
+    }
+
+    /// A completeness guard over the whole `Span` vocabulary rather than the four fields this
+    /// defect happened to name: every run property a `.docx` can carry gets one row here, so a
+    /// future field added to `Span` and to `buildSpan` but forgotten in `appendMerging` fails HERE
+    /// instead of silently smearing across a merge. `code` is deliberately absent — `buildSpan`
+    /// hard-codes `code: false` (inline code is a markdown concept; Word has no equivalent run
+    /// property), so no `.docx` can produce two runs differing in it. `bookmarks`/`commentIds` are
+    /// absent too: those are never compared but never merged either, guarded one line earlier by
+    /// their own `isEmpty` check and covered by their own tests.
+    func testEveryRunPropertyADocxCanCarryKeepsAdjacentRunsApart() throws {
+        let cases: [(field: String, a: String, b: String)] = [
+            ("bold", "<w:b/>", ""),
+            ("italic", "<w:i/>", ""),
+            ("underline", "<w:u/>", ""),
+            ("underlineStyle", "<w:u w:val=\"single\"/>", "<w:u w:val=\"double\"/>"),
+            ("caps", "<w:caps/>", ""),
+            ("smallCaps", "<w:smallCaps/>", ""),
+            ("strikethrough", "<w:strike/>", ""),
+            ("superscript", "<w:vertAlign w:val=\"superscript\"/>", ""),
+            ("subscripted", "<w:vertAlign w:val=\"subscript\"/>", ""),
+            ("rtl", "<w:rtl/>", ""),
+            ("textColor", "<w:color w:val=\"FF0000\"/>", "<w:color w:val=\"00FF00\"/>"),
+            ("highlightColor", "<w:highlight w:val=\"yellow\"/>", "<w:highlight w:val=\"green\"/>"),
+            ("fontSize", "<w:sz w:val=\"24\"/>", "<w:sz w:val=\"40\"/>"),
+            ("fontName", "<w:rFonts w:ascii=\"Georgia\"/>", "<w:rFonts w:ascii=\"Verdana\"/>"),
+        ]
+        for (field, a, b) in cases {
+            let blocks = try read(document: """
+            <w:p>
+              <w:r><w:rPr>\(a)</w:rPr><w:t>A</w:t></w:r>
+              <w:r><w:rPr>\(b)</w:rPr><w:t>B</w:t></w:r>
+            </w:p>
+            """)
+            guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+            XCTAssertEqual(spans.map(\.text), ["A", "B"],
+                           "two runs differing only in \(field) were merged — the second run's \(field) is lost")
+        }
+    }
+
+    /// `link` is threaded onto the span AFTER `buildSpan` returns (`w:hyperlink` carries its target
+    /// as an attribute of a WRAPPER element, not as a run property), so it cannot be expressed as a
+    /// `w:rPr` row in the table above and gets its own case.
+    func testARunInsideAHyperlinkIsNeverMergedWithTheBareRunBesideIt() throws {
+        let blocks = try read(
+            document: """
+            <w:p>
+              <w:hyperlink r:id="rId1"><w:r><w:t>Linked</w:t></w:r></w:hyperlink>
+              <w:r><w:t>Bare</w:t></w:r>
+            </w:p>
+            """,
+            rels: """
+            <?xml version="1.0" encoding="UTF-8"?><Relationships>
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com" TargetMode="External"/>
+            </Relationships>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        guard spans.count == 2 else { return XCTFail("expected two spans, got \(spans.map(\.text))") }
+        XCTAssertEqual(spans.map(\.text), ["Linked", "Bare"])
+        XCTAssertEqual(spans[0].link, "https://example.com")
+        XCTAssertNil(spans[1].link)
+    }
+
     // MARK: Headings via outlineLvl
 
     private let headingStyles = """
