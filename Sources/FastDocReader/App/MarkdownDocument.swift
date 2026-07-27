@@ -114,6 +114,7 @@ final class MarkdownDocument: NSDocument {
             // "?" and looks corrupted. The detector reads the bytes for what they are.
             self.file = TextEncodingDetector.decode(data)
             self.text = file.text
+            cachedHasCrossBlockReferences = nil
             return
         }
         let ext = fileURL?.pathExtension ?? untitledExtension ?? ""
@@ -164,6 +165,7 @@ final class MarkdownDocument: NSDocument {
         self.officePageContentWidth = pageContentWidth
         self.text = ""
         self.file = TextFile(text: "", encoding: .utf8, hasBOM: false)
+        cachedHasCrossBlockReferences = nil
     }
 
     override func makeWindowControllers() {
@@ -268,6 +270,8 @@ final class MarkdownDocument: NSDocument {
                 if reread.text != self.text { undoManager?.removeAllActions() }
                 self.file = reread
                 self.text = reread.text
+                cachedHasCrossBlockReferences = nil
+                localImageSizeCache = [:]   // an image beside the file may have changed on disk too
                 updateChangeCount(.changeCleared)     // the document now matches the file again
             case .failure(let message):
                 // Nothing above this case has touched `self.text`/`self.file`/`officeBlocks` —
@@ -306,7 +310,15 @@ final class MarkdownDocument: NSDocument {
     func applySourceEdit(_ r: NSRange, with replacement: String, actionName: String = "Edit") {
         let ns = text as NSString
         guard r.location >= 0, r.location + r.length <= ns.length else { NSSound.beep(); return }
+        // Decided against the text BEFORE this edit — `spliceRender` runs after `self.text` below
+        // has already become the NEW text, so this is the only point that still has both "before"
+        // (`ns`/`r`) and "after" (`replacement`) in hand at once. See `editTouchesDefinitionLine`.
+        let touchesDefinitionLine = kind == .markdown
+            && Self.editTouchesDefinitionLine(r, replacement: replacement, in: ns)
         let updated = ns.replacingCharacters(in: r, with: replacement)
+        if kind == .markdown {
+            updateCrossBlockReferencesCache(before: ns, range: r, replacement: replacement, after: updated)
+        }
         let previous = ns.substring(with: r)
         self.text = updated
         self.file.text = updated          // keep the two in step; `file` also carries the encoding
@@ -321,7 +333,8 @@ final class MarkdownDocument: NSDocument {
         // so undo/redo of a small edit paid the price of the entire document. Splice the changed
         // blocks in instead, and fall back to the full path only when that can't be trusted.
         let newSpan = NSRange(location: r.location, length: (replacement as NSString).length)
-        if spliceRender(into: wc, editedSource: r, replacementLength: newSpan.length) {
+        if spliceRender(into: wc, editedSource: r, replacementLength: newSpan.length,
+                        touchesDefinitionLine: touchesDefinitionLine) {
             wc.revealEditedSource(newSpan, highlight: newSpan.length > 0)
             return
         }
@@ -342,18 +355,37 @@ final class MarkdownDocument: NSDocument {
     ///
     /// Safe because a block renders the same alone as it does in context — verified per block kind
     /// in FragmentRenderTests — with one documented exception: a reference-style link resolves
-    /// against a definition elsewhere in the file, so such documents take the full path.
+    /// against a DEFINITION that can live anywhere in the file. A definition renders to NOTHING in
+    /// CommonMark (`AttributedBuilder.tagBlock`'s `guard r.length > 0` never fires for one — no
+    /// glyphs, no `srcRange`, no footprint), so every one the document currently declares is
+    /// PREPENDED to the fragment's source before it renders (`definitionsPrefix`) — a reference
+    /// INSIDE the fragment then resolves exactly as it would in a full render, with nothing added
+    /// to what's on screen. Prepended, not appended: CommonMark resolves a duplicate label to
+    /// whichever definition the parser sees FIRST, and "run the fragment to where the next block
+    /// starts" (below) can already carry a definition of its own inside the fragment's tail — a
+    /// definition renders to nothing, so it gets no `srcRange` and so no entry in `BlockEdit.spans`,
+    /// meaning it never stops the fragment from swallowing it — and that one isn't necessarily the
+    /// document's true first for its label. Putting the document's real first-per-label definitions
+    /// at the very front of what gets parsed is what keeps that ordering honest regardless of what
+    /// the fragment happens to carry along; `rebase` corrects the local offsets a prefix shifts by
+    /// exactly its own length, so nothing here disturbs the srcRange story.
+    ///
+    /// That only covers references the FRAGMENT makes, though — a block elsewhere that references a
+    /// definition THIS edit adds, edits or removes would need its own re-render to notice, which a
+    /// splice never gives it. `touchesDefinitionLine` (computed by the caller, against the text
+    /// before AND after the edit) is what still sends such an edit down the full path — everything
+    /// else here now splices.
     ///
     /// Returns false when it cannot do the job, and the caller re-renders everything. Refusing is
     /// always correct here; guessing is not.
     private func spliceRender(into wc: DocumentWindowController, editedSource r: NSRange,
-                              replacementLength: Int) -> Bool {
+                              replacementLength: Int, touchesDefinitionLine: Bool) -> Bool {
         guard let storage = wc.textStorageRef, storage.length > 0 else { return false }
         // An office document has no source text to splice a substring out of — `text` is "" for
         // these (see `read(from:ofType:)`) — and it never reaches here anyway, since every path
         // that calls `applySourceEdit` is gated shut for `.office`. Refuse rather than assume.
         guard kind != .office else { return false }
-        if kind == .markdown && hasCrossBlockReferences { return false }
+        if touchesDefinitionLine { return false }
 
         let spans = BlockEdit.spans(in: storage)          // spans of the text BEFORE this edit
         guard let first = BlockEdit.indexOfBlock(containing: r.location, in: spans) else { return false }
@@ -384,12 +416,20 @@ final class MarkdownDocument: NSDocument {
 
         let theme = RenderTheme.current(size: FontSizeStore.size)
         let fragmentSource = ns.substring(with: NSRange(location: oldStart, length: newLength))
+        // `hasCrossBlockReferences` is the same cheap whole-document existence check every markdown
+        // splice already paid before this fix — a document with none of the syntax takes the `nil`
+        // arm and pays nothing further, `renderSource` identical to `fragmentSource`.
+        let prefix = (kind == .markdown && hasCrossBlockReferences)
+            ? Self.definitionsPrefix(documentText: text) : nil
+        let renderSource = (prefix ?? "") + fragmentSource
         let fragment = NSMutableAttributedString(attributedString:
             kind == .plainText ? PlainTextRenderer.render(fragmentSource, theme: theme)
-                               : MarkdownRenderer.render(fragmentSource, theme: theme))
-        // A fragment is rendered from position zero, so its source offsets and block ids are local.
-        // Lift both into the document's coordinates before it goes in.
-        rebase(fragment, sourceOffset: oldStart, idBase: blockIdBase)
+                               : MarkdownRenderer.render(renderSource, theme: theme))
+        // A fragment is rendered from position zero (plus, for markdown, whatever definitions
+        // prefix was glued ahead of it), so its source offsets and block ids are local. Lift both
+        // into the document's coordinates before it goes in.
+        let prefixLength = (prefix as NSString?)?.length ?? 0
+        rebase(fragment, sourceOffset: oldStart, idBase: blockIdBase, localOffsetTrim: prefixLength)
         blockIdBase += 100_000
 
         let tail = NSRange(location: rendered.location + rendered.length,
@@ -444,12 +484,22 @@ final class MarkdownDocument: NSDocument {
         return NSRange(location: lo, length: hi - lo)
     }
 
-    private func rebase(_ fragment: NSMutableAttributedString, sourceOffset: Int, idBase: Int) {
+    /// `localOffsetTrim` is the length of a synthetic definitions PREFIX (see `definitionsPrefix`)
+    /// that was glued ahead of the fragment's own source before rendering, if any. A definition
+    /// renders to nothing (no `srcRange` ever gets tagged for one — see this function's caller's
+    /// doc), so every `srcRange` this enumeration actually visits belongs to the fragment's OWN
+    /// content and sits at `localOffsetTrim` or later; subtracting it first recovers the offset
+    /// relative to the fragment alone, exactly as if no prefix had ever been glued on, before
+    /// re-basing onto the true document with `sourceOffset`. Zero when there was no prefix, so this
+    /// is a no-op for plain text and for markdown with no cross-block references — the common case.
+    private func rebase(_ fragment: NSMutableAttributedString, sourceOffset: Int, idBase: Int,
+                        localOffsetTrim: Int = 0) {
         let whole = NSRange(location: 0, length: fragment.length)
         fragment.enumerateAttribute(MDAttr.srcRange, in: whole) { value, range, _ in
             guard let s = (value as? NSValue)?.rangeValue else { return }
+            let local = max(0, s.location - localOffsetTrim)
             fragment.addAttribute(MDAttr.srcRange,
-                                  value: NSValue(range: NSRange(location: s.location + sourceOffset, length: s.length)),
+                                  value: NSValue(range: NSRange(location: local + sourceOffset, length: s.length)),
                                   range: range)
         }
         fragment.enumerateAttribute(MDAttr.blockId, in: whole) { value, range, _ in
@@ -458,13 +508,297 @@ final class MarkdownDocument: NSDocument {
         }
     }
 
-    /// True when the document has link/footnote definitions, which a single block can refer to from
-    /// anywhere — the one case where a block does NOT render the same on its own.
+    // MARK: - Cross-block references (link/footnote definitions)
+
+    /// Cache for `hasCrossBlockReferences` below — recomputing it is a whole-document line-by-line
+    /// scan (measured 29-33 ms on 1.2 MB, 57-58 ms on 2.4 MB), and `spliceRender` asks it on every
+    /// successful markdown splice, so it was the largest single cost left in the edit path. `nil`
+    /// means "not yet known"; the getter computes it fresh (once) the first time anything asks, and
+    /// `updateCrossBlockReferencesCache` keeps it in step after that — see its doc for the
+    /// invalidation rule. Reset to `nil` wherever `text` is replaced wholesale rather than through
+    /// `applySourceEdit` (`read(from:)`, `setOfficeContent`, `reloadDocument`'s text-reread branch,
+    /// `prepareUntitled`) — those are NOT edits this cache's incremental rule was built to track.
+    private var cachedHasCrossBlockReferences: Bool?
+
+    /// True when the document has a line that LOOKS LIKE a link reference definition — the coarse,
+    /// deliberately loose existence check `spliceRender` uses to decide whether it's worth looking
+    /// any closer (see `editTouchesDefinitionLine`, `definitionsPrefix`). A false positive here
+    /// (GFM footnote syntax `[^1]: …` matches too — see `isDefinitionLine`'s doc comment; so does a
+    /// definition-shaped line sitting inert inside a fenced code block) only ever costs an
+    /// unnecessary look from `definitionLineRanges`, which is itself precise — never a wrong render
+    /// — so looseness is safe here, which is also why the cache below is allowed to stay
+    /// stale-`true`, never stale-`false` (see `updateCrossBlockReferencesCache`).
     private var hasCrossBlockReferences: Bool {
-        text.split(separator: "\n", omittingEmptySubsequences: true).contains { line in
+        if let cached = cachedHasCrossBlockReferences { return cached }
+        let fresh = Self.containsReferenceDefinitionLine(text)
+        cachedHasCrossBlockReferences = fresh
+        return fresh
+    }
+
+    /// The SAME coarse test `hasCrossBlockReferences` uses, generalised to any string — reused, in
+    /// `editTouchesDefinitionLine`, against just the text an edit touches (bounded by the EDIT's
+    /// size, never the document's).
+    private static func containsReferenceDefinitionLine(_ s: String) -> Bool {
+        s.split(separator: "\n", omittingEmptySubsequences: true).contains { line in
             let t = line.trimmingCharacters(in: .whitespaces)
             return t.hasPrefix("[") && t.contains("]:")
         }
+    }
+
+    /// `r`, widened out to the full line(s) it lies within — from the newline immediately before it
+    /// (or the start of `s`) to the newline immediately after it (or the end of `s`), NOT including
+    /// either boundary newline itself. Bounded by the length of the surrounding line(s), not the
+    /// document — what keeps both `editTouchesDefinitionLine` and
+    /// `updateCrossBlockReferencesCache` cheap even in a huge file; they share this rather than each
+    /// re-deriving it.
+    private static func lineSpan(around r: NSRange, in s: NSString) -> NSRange {
+        var start = r.location
+        while start > 0, s.character(at: start - 1) != 10 { start -= 1 }   // 10 == "\n"
+        var end = r.location + r.length
+        while end < s.length, s.character(at: end) != 10 { end += 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
+    /// True when replacing `r` (in the text BEFORE this edit) with `replacement` can change which
+    /// labels the document DEFINES — either an existing definition line inside `r` is edited or
+    /// removed, or `replacement` itself types a new one. A definition resolves document-wide by
+    /// LABEL, not by position, so a change here can alter how a block far outside `r`'s own blocks
+    /// reads on screen — the one case `spliceRender` still can't trust to a splice (everything else
+    /// now does — see its doc comment).
+    ///
+    /// Widens `r` out to the full LINE(S) it lies within (`lineSpan`) and checks THAT — in the old
+    /// text as it stood, and in what the same span becomes once `replacement` lands — rather than
+    /// checking only `r`'s own substring and `replacement` in isolation. The widened old text is a
+    /// strict superset of `r`'s own substring and the widened new text is a strict superset of
+    /// `replacement`, so this subsumes a narrower "does r/replacement itself contain a bracket"
+    /// check rather than needing it alongside — and it is what closes a real gap that narrower check
+    /// has: deleting the blank line before `[ref]: url` merges it into the paragraph above (a real
+    /// definition becomes ordinary paragraph text — CommonMark reference definitions cannot
+    /// interrupt a paragraph), yet the character actually removed is only that blank line's own
+    /// "\n" — no bracket in it, so a check confined to the literal edited characters misses it.
+    /// Bounded by the length of the surrounding line(s), never the document, so this still costs
+    /// nothing extra for a typical edit even in a document that uses the syntax heavily.
+    private static func editTouchesDefinitionLine(_ r: NSRange, replacement: String, in ns: NSString) -> Bool {
+        let span = lineSpan(around: r, in: ns)
+        let prefix = ns.substring(with: NSRange(location: span.location, length: r.location - span.location))
+        let suffixStart = r.location + r.length
+        let suffix = ns.substring(with: NSRange(location: suffixStart, length: span.location + span.length - suffixStart))
+        if containsReferenceDefinitionLine(prefix + ns.substring(with: r) + suffix) { return true }
+        return containsReferenceDefinitionLine(prefix + replacement + suffix)
+    }
+
+    /// Keeps `cachedHasCrossBlockReferences` correct across an edit — called from `applySourceEdit`
+    /// for every markdown edit, with the same `ns` (text BEFORE the edit) / `r` / `replacement`
+    /// `editTouchesDefinitionLine` uses, plus `updated` (text AFTER), so this pays no extra string
+    /// work to obtain them.
+    ///
+    /// THE INVALIDATION RULE, AND WHY IT CANNOT MISS A CASE: a definition-candidate line's status
+    /// can only change for lines that lie inside the edited region OR are newly/formerly ADJACENT to
+    /// it because a newline was added or removed there — every line further away is untouched
+    /// byte-for-byte (same characters, same neighbours), so its candidate status cannot move. So
+    /// this widens `r` to its enclosing line boundaries (`lineSpan`, the SAME widening
+    /// `editTouchesDefinitionLine` uses and for the identical reason — a naive "does the touched
+    /// text itself contain a bracket" rule misses a newline-only edit that merges or splits an
+    /// UNTOUCHED bracket line) and asks only whether THAT widened span contains a candidate line,
+    /// before the edit and after:
+    ///   - after == true  → the document definitely has a candidate somewhere (this span is proof)
+    ///     — set the cache to `true` outright, no whole-document scan needed.
+    ///   - after == false, before == false → this span contributed nothing to the answer either
+    ///     time, so whatever the cache already said is still correct — leave it untouched.
+    ///   - after == false, before == true → a candidate that WAS inside this span is gone; the
+    ///     document-wide answer may have flipped (if this was the only one) or may not have (if
+    ///     another candidate exists elsewhere) — only a full scan can tell, so this is the one case
+    ///     that pays for one. Every other edit — the overwhelming common case for prose with no
+    ///     reference-style syntax nearby — costs two small, line-bounded scans and nothing more.
+    private func updateCrossBlockReferencesCache(before ns: NSString, range r: NSRange, replacement: String, after updated: String) {
+        let span = Self.lineSpan(around: r, in: ns)
+        let prefix = ns.substring(with: NSRange(location: span.location, length: r.location - span.location))
+        let suffixStart = r.location + r.length
+        let suffix = ns.substring(with: NSRange(location: suffixStart, length: span.location + span.length - suffixStart))
+        let beforeHasCandidate = Self.containsReferenceDefinitionLine(prefix + ns.substring(with: r) + suffix)
+        if Self.containsReferenceDefinitionLine(prefix + replacement + suffix) {
+            cachedHasCrossBlockReferences = true
+        } else if beforeHasCandidate {
+            cachedHasCrossBlockReferences = Self.containsReferenceDefinitionLine(updated)
+        }
+        // else (after == false, before == false): unchanged — leave the cache exactly as it was.
+    }
+
+    /// A precise, single-line link-reference-definition match: `[label]: destination`, optionally
+    /// followed by a same-line quoted/parenthesised title. Deliberately STRICTER than
+    /// `containsReferenceDefinitionLine`'s loose `[`…`]:` test above: that one is only ever used to
+    /// decide whether to look closer or fall back to looking at every definition, so a false
+    /// positive there is harmless (an unnecessary look, never a wrong render). This one decides
+    /// what text gets COPIED into another fragment's rendered source (`definitionsPrefix`), where a
+    /// false positive is NOT harmless — it would inject a real block's own text into every other
+    /// fragment as if it were an invisible definition. Concretely this is what rules out GFM
+    /// footnote syntax (`[^1]: The note.`): it starts with `[` and contains `]:` exactly like a
+    /// real definition, but "The note." isn't a valid destination-with-nothing-else-trailing, so
+    /// swift-markdown renders it as an ordinary PARAGRAPH, not nothing. Doesn't chase a title onto
+    /// a SECOND line (`[foo]: /url` on one line, `"title"` on the next, both valid CommonMark) —
+    /// harmless here, because the label+destination line alone already matches and already carries
+    /// everything this app's own renderer reads (`link.title` is never used, only
+    /// `link.destination`), so the omitted title line changes nothing visible.
+    private static let definitionLineRE = try! NSRegularExpression(
+        pattern: #"^\[[^\]\n]+\]:\s*(?:<[^<>\n]*>|\S+)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?$"#)
+
+    /// True when `line` is SHAPED like a link reference definition on its own — CommonMark also
+    /// requires it not be indented 4 or more spaces (that reads as an indented CODE block, or the
+    /// lazy continuation of one, never a fresh definition start — the same limit every other block
+    /// starter in the spec obeys). Checked against the RAW line, before any trimming: trimming
+    /// first and matching on the trimmed result is what let a `    [ref]: url` inside an indented
+    /// code block through — its indentation stripped away by that same trim, so the text got
+    /// copied into another fragment (`definitionsPrefix`) as a live definition instead of the
+    /// visible code it actually is, breaking both "renders to nothing" and every recorded srcRange
+    /// downstream of it.
+    private static func isDefinitionLine(_ line: String) -> Bool {
+        var indent = 0
+        for ch in line {
+            if ch == " " { indent += 1; if indent >= 4 { return false } }
+            else if ch == "\t" { return false }
+            else { break }
+        }
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return false }
+        let ts = t as NSString
+        return definitionLineRE.firstMatch(in: t, range: NSRange(location: 0, length: ts.length)) != nil
+    }
+
+    /// A CommonMark fence-OPENING line: 0-3 leading spaces, then a run of 3+ backticks or 3+
+    /// tildes. Marker and run length are returned so `isClosingFence` can require the SAME
+    /// character and AT LEAST that many of it (a longer closing fence is valid CommonMark; a
+    /// shorter one, or the other character, is not a close at all — it's still fence content). A
+    /// backtick fence's info string may not itself contain a backtick (CommonMark §4.5); a tilde
+    /// fence has no such restriction.
+    private static func openingFence(_ line: String) -> (marker: Character, minCloseLength: Int)? {
+        let chars = Array(line)
+        var i = 0, indent = 0
+        while i < chars.count, chars[i] == " ", indent < 3 { i += 1; indent += 1 }
+        guard i < chars.count, chars[i] == "`" || chars[i] == "~" else { return nil }
+        let marker = chars[i]
+        var runLength = 0
+        while i < chars.count, chars[i] == marker { i += 1; runLength += 1 }
+        guard runLength >= 3 else { return nil }
+        if marker == "`", chars[i...].contains("`") { return nil }
+        return (marker, runLength)
+    }
+
+    /// True when `line` closes a fence opened with `marker`/`minCloseLength` — 0-3 leading spaces,
+    /// a run of AT LEAST `minCloseLength` of the SAME `marker` character, and nothing after it but
+    /// trailing whitespace. An unclosed fence (no line in the rest of the document satisfies this)
+    /// runs to the end of the document, per CommonMark — `definitionLineRanges` below relies on
+    /// exactly that: the scanning loop simply never finds a close, so every remaining line falls
+    /// into the "still fenced" branch and none of them is ever a candidate.
+    private static func isClosingFence(_ line: String, marker: Character, minCloseLength: Int) -> Bool {
+        let chars = Array(line)
+        var i = 0, indent = 0
+        while i < chars.count, chars[i] == " ", indent < 3 { i += 1; indent += 1 }
+        var runLength = 0
+        while i < chars.count, chars[i] == marker { i += 1; runLength += 1 }
+        guard runLength >= minCloseLength else { return false }
+        return chars[i...].allSatisfy { $0 == " " || $0 == "\t" }
+    }
+
+    /// A generous, line-shape-only test for "this line closes whatever paragraph was open above it,
+    /// even with no blank line in between" — an ATX heading, a thematic break (or a setext heading's
+    /// own underline, which reads identically for this purpose: either way nothing is open after
+    /// it), a list item marker, a block quote marker, or a table-ish row. Deliberately loose: a
+    /// false positive here only ever makes the line AFTER it eligible for the definition-shape
+    /// check in `definitionLineRanges`, which still has to pass `isDefinitionLine` on its own — it
+    /// can never manufacture a definition that isn't itself shaped like one. Without this, a real
+    /// definition sitting directly under a heading or a thematic break (both valid CommonMark, both
+    /// common) was silently EXCLUDED — and because routing to the full-render fallback doesn't
+    /// depend on this precision (only on the coarse `hasCrossBlockReferences`/
+    /// `editTouchesDefinitionLine` checks above), that exclusion isn't a safe "do a bit more work
+    /// elsewhere" — it's a wrong render: the reference resolves in a full render and silently
+    /// doesn't in a splice.
+    private static func interruptsParagraph(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return false }
+        if t.hasPrefix("#") { return true }                          // ATX heading
+        if t.hasPrefix(">") { return true }                          // block quote
+        if t.contains("|") { return true }                           // table-ish row
+        let squeezed = t.replacingOccurrences(of: " ", with: "")
+        if squeezed.count >= 3, Set(squeezed).count == 1, let c = squeezed.first, "-*_=".contains(c) {
+            return true                                               // thematic break / setext underline
+        }
+        return t.range(of: #"^([-*+]|\d{1,9}[.)])(\s|$)"#, options: .regularExpression) != nil   // list item
+    }
+
+    /// Every line of `s` that is BOTH shaped like a link reference definition (`isDefinitionLine`)
+    /// AND is something the real CommonMark parser would actually read as one — not a line inside a
+    /// fenced or indented code block (verbatim text, never live syntax — indented is handled for
+    /// free by `isDefinitionLine` rejecting 4+ leading spaces; fenced is tracked explicitly below),
+    /// and not the lazy continuation of an open paragraph (a definition-shaped line directly
+    /// following ordinary paragraph text, with nothing between them that would end that paragraph,
+    /// is that paragraph's own text — CommonMark reference definitions cannot interrupt a
+    /// paragraph). Returned as each accepted line's own whole-line UTF-16 range (its own trailing
+    /// newline excluded, matching how a block's `srcRange` is cut elsewhere in this file), so its
+    /// exact source text can be pulled out and reused, not just known to exist.
+    ///
+    /// This is a coarse, line-shape-only scan, not a full block-grammar parse — it tracks just
+    /// enough state (fence open/close, and whether the line before "closed" whatever paragraph was
+    /// open) to answer those two questions safely. A false EXCLUSION here is a WRONG render, not a
+    /// harmless fallback (see `interruptsParagraph`'s doc) — so `interruptsParagraph` is
+    /// deliberately generous rather than exhaustive-and-risky.
+    private static func definitionLineRanges(in s: String) -> [NSRange] {
+        let ns = s as NSString
+        var out: [NSRange] = []
+        var start = 0
+        var precededByBlankOrDefinition = true   // start of document — nothing open above it
+        var fence: (marker: Character, minCloseLength: Int)?
+        while start <= ns.length {
+            var end = start
+            while end < ns.length, ns.character(at: end) != 10 { end += 1 }   // up to, not incl., \n
+            let lineRange = NSRange(location: start, length: end - start)
+            let line = ns.substring(with: lineRange)
+
+            if let open = fence {
+                if isClosingFence(line, marker: open.marker, minCloseLength: open.minCloseLength) {
+                    fence = nil
+                    // The block after a fence is fresh — like text after a blank line, it can
+                    // itself open a definition, whether or not this close line has a blank line
+                    // after it.
+                    precededByBlankOrDefinition = true
+                }
+                // Every other line here is fence CONTENT: verbatim, never a candidate.
+            } else if let opened = openingFence(line) {
+                fence = opened
+                precededByBlankOrDefinition = false   // a fence marker line is never itself a definition
+            } else {
+                let isBlank = lineRange.length == 0
+                    || line.trimmingCharacters(in: .whitespaces).isEmpty
+                let isCandidate = !isBlank && isDefinitionLine(line)
+                let accepted = isCandidate && precededByBlankOrDefinition
+                if accepted { out.append(lineRange) }
+                // The NEXT line is free to define when THIS one didn't leave a paragraph open
+                // beneath it — true when this line is blank, was itself just accepted (chaining
+                // consecutive definitions with no blank line required between entries), or is one
+                // of the other constructs that always closes a paragraph even with no blank line
+                // before it (`interruptsParagraph`). A REJECTED candidate, like any other ordinary
+                // text, leaves the paragraph open under it.
+                precededByBlankOrDefinition = isBlank || accepted
+                    || (!isCandidate && interruptsParagraph(line))
+            }
+
+            if end >= ns.length { break }
+            start = end + 1   // skip the \n
+        }
+        return out
+    }
+
+    /// The definitions text to PREPEND before a fragment's own source so a reference INSIDE it
+    /// resolves exactly as it would in a full render — `nil` when `documentText` declares none (the
+    /// common case: pure pass-through, no extra parse cost). Prepended, not appended — see
+    /// `spliceRender`'s doc for why the position matters for duplicate labels — joined by exactly
+    /// one blank line so the first prepended definition can't merge into whatever text follows it,
+    /// and ending in that same blank line so the fragment's own first line is never read as its
+    /// continuation.
+    private static func definitionsPrefix(documentText: String) -> String? {
+        let ns = documentText as NSString
+        let defs = definitionLineRanges(in: documentText).map { ns.substring(with: $0) }
+        guard !defs.isEmpty else { return nil }
+        return defs.joined(separator: "\n") + "\n\n"
     }
 
     // MARK: - Undo / Redo (⌘Z, ⇧⌘Z)
@@ -601,6 +935,7 @@ final class MarkdownDocument: NSDocument {
         let skeleton = markdown ? "# Title\n\nWrite here.\n\n## Section\n" : ""
         self.text = skeleton
         self.file = TextFile(text: skeleton, encoding: .utf8, hasBOM: false)
+        cachedHasCrossBlockReferences = nil
         // Dirty from the start: there IS content and it exists nowhere but memory, so closing must
         // ask rather than discard it silently.
         if !skeleton.isEmpty { updateChangeCount(.changeDone) }
@@ -839,7 +1174,7 @@ final class MarkdownDocument: NSDocument {
                 guard let src = v as? String, !src.hasPrefix("data:"),
                       let url = self.resolveImageURL(src, baseDir: baseDir) else { return }
                 if url.isFileURL {
-                    guard let px = MarkdownDocument.imagePixelSize(url) else { return }
+                    guard let px = self.cachedLocalImagePixelSize(url) else { return }
                     sets.append((px, r))
                 } else if let px = MarkdownDocument.remoteSizes[url.absoluteString] {
                     sets.append((px, r))
@@ -1108,13 +1443,43 @@ final class MarkdownDocument: NSDocument {
     }
 
     /// Pixel dimensions of an image WITHOUT decoding it (ImageIO reads only the header) — fast and
-    /// cheap, so a local image's exact height can be reserved before its pixels load.
+    /// cheap, so a local image's exact height can be reserved before its pixels load. Measured at
+    /// 0.117 ms/image, which sounds free until you count the callers: `presizeKnownMedia` asks for
+    /// EVERY local image in the WHOLE document, and it runs from four async tails — `render(into:)`'s
+    /// (every ⌘+ press), `spliceRender`'s (every edit), `prerenderAllDiagrams` and
+    /// `measureRemoteImages`. 120 images = 14 ms, 406 = ~48 ms, paid again on each of those passes
+    /// for a number that cannot have changed between them. `cachedLocalImagePixelSize` is the
+    /// memoised entry point every call site uses instead of calling this directly.
     private static func imagePixelSize(_ url: URL) -> NSSize? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
               let w = props[kCGImagePropertyPixelWidth] as? Double,
               let h = props[kCGImagePropertyPixelHeight] as? Double, w > 0, h > 0 else { return nil }
         return NSSize(width: w, height: h)
+    }
+
+    /// Memoised per document instance — see `imagePixelSize` for why. Reset on ⌘R
+    /// (`reloadDocument`), which re-reads the file from disk: an image beside it can have changed
+    /// size since the last read, so a reload must forget what it thought it knew — the same
+    /// discipline `cachedHasCrossBlockReferences` follows.
+    private var localImageSizeCache: [URL: NSSize] = [:]
+
+    /// Test-visible count of real header reads (cache MISSES only) — the deterministic knob this
+    /// cache is judged by, since wall clock on this machine swings far too much to prove anything:
+    /// the document's local-image count on the first pass, and 0 more on every pass after. See
+    /// `ImageHeaderCacheTests`.
+    private(set) var imageHeaderReadCount = 0
+
+    /// Only SUCCESSFUL reads are cached. A failure (the file is missing, unreadable, or not on disk
+    /// yet) is deliberately left unmemoised so a later pass can still find the image if it becomes
+    /// readable — pinning a transient failure for the rest of the session would be worse than
+    /// re-reading a header that is cheap anyway.
+    private func cachedLocalImagePixelSize(_ url: URL) -> NSSize? {
+        if let cached = localImageSizeCache[url] { return cached }
+        imageHeaderReadCount += 1
+        guard let px = Self.imagePixelSize(url) else { return nil }
+        localImageSizeCache[url] = px
+        return px
     }
 
     private static func loadImage(_ url: URL, completion: @escaping (NSImage?) -> Void) {

@@ -171,7 +171,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        lastClipWidth = scrollView.contentSize.width
+        // `lastClipWidth` is no longer set here directly — `updateTextInset` (called inside
+        // `reflow` below) is the one place that records it now, from whatever width is ACTUALLY
+        // current when it runs (see its doc). `suspendReflow` stays true until that call, so no
+        // `windowDidResize` can slip through and read a stale value in between.
+        //
         // Restore the reading position by CHARACTER, not by scroll offset. A narrower column wraps
         // the same text into more lines, so the document grows taller and the old offset lands
         // somewhere else entirely — further from where you were the longer the document is.
@@ -247,8 +251,27 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // one step and have no drag to be jerky — but reflow moves the text under the reader there
         // too, so the same anchor applies.
         guard !suspendReflow else { return }
+        // `windowDidResize` is not limited to those one-step programmatic cases either — it also
+        // fires for a purely VERTICAL drag (only the window's height changes, e.g. a bottom-edge
+        // drag) where the reading column is untouched: `updateTextInset` re-wraps text and re-solves
+        // table/tab geometry entirely from the column WIDTH, so a height-only event has nothing for
+        // it to redo. Gating on the width actually having moved skips that whole-document walk in
+        // exactly that case.
+        //
+        // It also keeps a width-changing resize from doing that walk TWICE: the text view is itself
+        // autoresized to the window's width (`autoresizingMask = [.width]`,
+        // `postsFrameChangedNotifications = true`), so the very same resize also fires
+        // `viewportChanged` via `NSView.frameDidChangeNotification` — synchronously in its own body,
+        // not merely its debounced button/media follow-up — which runs the identical width check
+        // against the SAME `lastClipWidth`. `updateTextInset` is the one place that value gets
+        // written (see its doc), so whichever of the two notification paths runs first does the
+        // real work and the other then sees its own width already matched and skips, in either
+        // firing order — this is a de-duplication between two independent notification paths for
+        // one resize, not a per-frame throttle (`suspendReflow` above already blocks every call
+        // during an actual live-resize drag, per-frame or not).
+        guard abs(scrollView.contentSize.width - lastClipWidth) > 0.5 else { return }
+        resizeGateReflowCount += 1
         let anchor = readingAnchor()
-        lastClipWidth = scrollView.contentSize.width
         updateTextInset()
         restore(anchor)
     }
@@ -306,7 +329,16 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     func settleReadingColumn() -> CGFloat? {
         let clipWidth = scrollView.contentSize.width
         guard clipWidth > 1, !suspendReflow else { return nil }
-        let column = max(200, clipWidth - 2 * minSideInset)
+        // The ONE place `lastClipWidth` is written. Every caller — this init/setup path,
+        // `reflow(keeping:)`, `display(_:)`, `windowDidResize`, `viewportChanged` — funnels through
+        // here, so the value can never disagree with the layout that actually just ran, regardless
+        // of which caller triggered it or whether an earlier caller's own bookkeeping went stale
+        // waiting for an async turn (concretely: `windowDidEndLiveResize` used to set this directly
+        // and could be overtaken by a second resize before `reflow`'s deferred work ran, leaving a
+        // width no longer true — see its own comment).
+        lastClipWidth = clipWidth
+        textInsetUpdateCount += 1
+        let column = max(200, clipWidth - 2 * minSideInset)   // fill the window minus margins
         textView.textContainerInset = NSSize(width: minSideInset, height: verticalInset)
         textView.textContainer?.containerSize = NSSize(width: column, height: CGFloat.greatestFiniteMagnitude)
         var f = textView.frame; f.size.width = clipWidth; textView.frame = f
@@ -1031,11 +1063,29 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var pendingPlace: DispatchWorkItem?
     private var lastClipWidth: CGFloat = 0
 
+    /// Test-visible: counts every time `updateTextInset` actually ran its body (as opposed to
+    /// early-returning) — from ANY caller. Useful for "did a reflow happen at all", but NOT for
+    /// isolating `windowDidResize`'s own gate: a width-changing resize also fires `viewportChanged`
+    /// via the text view's own autoresizing (see `windowDidResize`'s comment), which increments
+    /// this exact counter too — so a test that wants to prove `windowDidResize`'s gate SPECIFICALLY
+    /// isn't over-rejecting must use `resizeGateReflowCount` below instead, or it can pass for the
+    /// wrong reason (`WindowResizeGateTests`).
+    private(set) var textInsetUpdateCount = 0
+
+    /// Test-visible: counts only calls where `windowDidResize`'s OWN width-changed gate passed —
+    /// incremented inside `windowDidResize` itself, before it calls `updateTextInset`, so nothing
+    /// `viewportChanged` (or any other caller) does can move this number. This is the counter that
+    /// actually answers "did windowDidResize's gate allow a real width change through", the
+    /// question `textInsetUpdateCount` alone cannot answer on its own (see its doc).
+    private(set) var resizeGateReflowCount = 0
+
     @objc private func viewportChanged() {
-        // Recompute the centered column only when the width actually changed (a window
-        // resize), not on every scroll — avoids reflow churn while scrolling.
+        // Recompute the centered column only when the width actually changed (a window resize),
+        // not on every scroll — avoids reflow churn while scrolling. `updateTextInset` itself is
+        // what records the width it solved at (`lastClipWidth` — see its doc), so this check and
+        // `windowDidResize`'s share one source of truth for "did the width really move."
         let w = scrollView.contentSize.width
-        if abs(w - lastClipWidth) > 0.5 { lastClipWidth = w; updateTextInset() }
+        if abs(w - lastClipWidth) > 0.5 { updateTextInset() }
         pendingPlace?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
