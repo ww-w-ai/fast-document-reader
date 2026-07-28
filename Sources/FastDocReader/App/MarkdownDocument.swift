@@ -1302,7 +1302,15 @@ final class MarkdownDocument: NSDocument {
         storage.enumerateAttribute(MDAttr.image, in: whole) { v, r, _ in
             guard let src = v as? String, !src.isEmpty, let att = attach(r) else { return }
             if onScreen(r) {
-                guard att.image == nil else { return }
+                // `att.image == nil` used to mean "not loaded yet" and nothing else, because a
+                // failed load still assigned the broken-image icon and so closed this gate itself.
+                // A picture whose format has no decoder now keeps `image == nil` FOREVER and draws
+                // a labelled card from its cell instead (`SizedAttachmentCell.undrawableLabel`), so
+                // without the second half of this test we would re-read, re-decode and re-fail that
+                // picture on every reconcile — which is to say on every scroll — for as long as the
+                // document stays open. The document that prompted this work carries eight of them.
+                guard att.image == nil,
+                      (att.attachmentCell as? SizedAttachmentCell)?.undrawableLabel == nil else { return }
                 if kind == .office {
                     // A linked (not embedded) office image's id carries the file's real,
                     // real-world location — a `file:///…`/`http(s)://…` URL, exactly the shape
