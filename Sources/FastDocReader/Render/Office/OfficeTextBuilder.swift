@@ -1054,22 +1054,55 @@ enum OfficeTextBuilder {
     /// stretching the old bitmap would blur its label instead of re-laying it out.
     static func placeholderImage(label: String, size: CGSize) -> NSImage {
         NSImage(size: size, flipped: false) { rect in
-            Palette.codeCardBg.setFill()
-            rect.fill()
-            Palette.codeCardBorder.setStroke()
-            NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
-            let text = "[\(label)]" as NSString
-            let fontSize = max(9, min(14, rect.height * 0.18))
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: fontSize),
-                .foregroundColor: Palette.secondary,
-            ]
-            let textSize = text.size(withAttributes: attrs)
-            text.draw(at: NSPoint(x: (rect.width - textSize.width) / 2,
-                                  y: (rect.height - textSize.height) / 2), withAttributes: attrs)
+            drawPlaceholderCard(label: label, in: rect)
             return true
         }
     }
+
+    /// The card's actual pixels, drawn into whatever rect it is given. Split out of
+    /// `placeholderImage` so the OTHER discovery of "this reader cannot draw this graphic" —
+    /// `SizedAttachmentCell.undrawableLabel`, where the bytes turned out to be a format no
+    /// installed decoder reads — draws the identical card LIVE at its current cell frame instead
+    /// of baking a bitmap that a later resize would scale. One routine, so the two cannot drift.
+    ///
+    /// The label is fitted rather than allowed to run off the card: the font shrinks toward the
+    /// card's width and, if even the floor size cannot hold the sentence, only the label's FIRST
+    /// WORD is drawn — which is the format's name ("WMF"), the part worth keeping in a frame too
+    /// small for a sentence. A one-word label (`[Chart]`, every caller before this) is measured,
+    /// found to fit, and drawn exactly where it always was.
+    static func drawPlaceholderCard(label: String, in rect: NSRect) {
+        Palette.codeCardBg.setFill()
+        rect.fill()
+        Palette.codeCardBorder.setStroke()
+        NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5)).stroke()
+        let available = rect.width - placeholderCardTextInset
+        guard available > 0 else { return }
+        var fontSize = max(9, min(14, rect.height * 0.18))
+        var text = "[\(label)]" as NSString
+        func attributes(_ size: CGFloat) -> [NSAttributedString.Key: Any] {
+            [.font: NSFont.systemFont(ofSize: size), .foregroundColor: Palette.secondary]
+        }
+        var width = text.size(withAttributes: attributes(fontSize)).width
+        if width > available {
+            // Scale the size by exactly the overshoot (text width is very nearly linear in point
+            // size), floored so it never becomes unreadable — one step, no search loop.
+            fontSize = max(placeholderCardMinFontSize, fontSize * available / width)
+            width = text.size(withAttributes: attributes(fontSize)).width
+        }
+        if width > available, let firstWord = label.split(separator: " ").first, firstWord.count < label.count {
+            text = "[\(firstWord)]" as NSString
+            width = text.size(withAttributes: attributes(fontSize)).width
+        }
+        let attrs = attributes(fontSize)
+        let textSize = text.size(withAttributes: attrs)
+        text.draw(at: NSPoint(x: (rect.width - textSize.width) / 2,
+                              y: (rect.height - textSize.height) / 2), withAttributes: attrs)
+    }
+
+    /// Breathing room kept clear either side of a placeholder card's label.
+    static let placeholderCardTextInset: CGFloat = 8
+    /// Below this the label stops being readable, so a narrower card loses words instead of size.
+    static let placeholderCardMinFontSize: CGFloat = 7
 
     /// Reserves the (column-fitted) declared size via `SizedAttachmentCell`, image left `nil` —
     /// pixels arrive lazily via `MarkdownDocument.reconcileMedia`. This is invariant 1 of this

@@ -1270,9 +1270,28 @@ final class MarkdownDocument: NSDocument {
         // Deliberately never touches `cell.reservedSize`/`att.bounds`/`storage.edited`/`ensureLayout`
         // — that is invariant 1 (scroll-bar stability), and it is why this is its own function
         // rather than a branch inside `load` that someone could accidentally "simplify" back together.
-        func loadOfficePixels(_ image: NSImage?, _ r: NSRange) {
+        //
+        // When the pixels do NOT arrive, the honest report is a labelled card, and it is left as a
+        // LABEL on the cell rather than an image on the attachment (`SizedAttachmentCell
+        // .undrawableLabel`, which draws it at the live cell frame). Setting `att.image` here is the
+        // tempting one-liner and is the defect this replaces: an attachment built by `appendImage`
+        // carries `placeholderLabel == nil`, so `DocumentWindowController.resizeOfficeGraphics` never
+        // re-draws it and every window resize scales whatever bitmap was put there — which is how a
+        // 22×22 system glyph came to be stretched across a 700×465 frame and read as a corrupt file.
+        // `bytes` are the ones the decode was attempted ON, carried in only to NAME the format in
+        // that label; nothing here decides anything from them.
+        func loadOfficePixels(_ image: NSImage?, _ bytes: Data?, _ r: NSRange) {
             guard gen == self.renderGeneration, r.location < storage.length, let att = attach(r) else { return }
-            att.image = image ?? MarkdownDocument.brokenImage()
+            if let image {
+                att.image = image
+            } else if let cell = att.attachmentCell as? SizedAttachmentCell {
+                cell.undrawableLabel = MarkdownDocument.undrawablePictureLabel(for: bytes)
+            } else {
+                // No cell to draw through (invariant 31 — one was set once, so pixels had already
+                // loaded here at least once and AppKit dropped it). Rare, and the old mute glyph is
+                // still better than blank space.
+                att.image = MarkdownDocument.brokenImage()
+            }
             wc.redrawGlyphs(r)
             wc.refreshAfterImageFill()
         }
@@ -1351,7 +1370,7 @@ final class MarkdownDocument: NSDocument {
             // via `loadOfficePixels`, invariant 1/2/11 preserved; a nil image degrades to the broken
             // icon there, same as the archive path).
             if let data = officeImageBytes[id] {
-                loadOfficePixels(NSImage(data: data), r)
+                loadOfficePixels(NSImage(data: data), data, r)
                 continue
             }
             // Keyed by document path + archive entry id, NOT id alone: every `.docx` names its media
@@ -1359,11 +1378,11 @@ final class MarkdownDocument: NSDocument {
             // different file, so an id-only key would serve one document's image inside another.
             let cacheKey = "\(fileURL?.path ?? "")|\(id)" as NSString
             if let c = MarkdownDocument.officeImageCache.object(forKey: cacheKey) {
-                loadOfficePixels(c, r)
+                loadOfficePixels(c, nil, r)
             } else {
-                MarkdownDocument.loadOfficeImage(archive: officeArchive, id: id) { [weak wc] img in
+                MarkdownDocument.loadOfficeImage(archive: officeArchive, id: id) { [weak wc] img, bytes in
                     if let img { MarkdownDocument.officeImageCache.setObject(img, forKey: cacheKey) }
-                    if wc != nil { loadOfficePixels(img, r) }
+                    if wc != nil { loadOfficePixels(img, bytes, r) }
                 }
             }
         }
@@ -1527,18 +1546,23 @@ final class MarkdownDocument: NSDocument {
     /// function both check it, rather than the literal string repeated at each call site.
     static let officeExternalLinkPrefix = "docx-external-link:"
 
-    private static func loadOfficeImage(archive: ZipArchive?, id: String, completion: @escaping (NSImage?) -> Void) {
+    /// Hands back the BYTES alongside the image: when the decode fails they are the only evidence
+    /// of what the picture actually was, and naming that format is the difference between a reader
+    /// concluding "this document is corrupt" and "this is a chart in a format my Mac can't draw".
+    private static func loadOfficeImage(archive: ZipArchive?, id: String,
+                                        completion: @escaping (NSImage?, Data?) -> Void) {
         // A linked image never reaches this function — `reconcileMedia` routes
         // `officeExternalLinkPrefix` ids into the ordinary markdown image pipeline instead (see
         // there) — so an id arriving here that still starts with it would be a caller bug; treated
         // the same as any other unresolvable id (degrade to `nil`, never crash) rather than
         // asserting, since a rendering path is the wrong place to enforce that invariant.
         guard let archive, !id.hasPrefix("docx-unresolvable:"), !id.hasPrefix(officeExternalLinkPrefix) else {
-            completion(nil); return
+            completion(nil, nil); return
         }
         DispatchQueue.global(qos: .userInitiated).async {
-            let img = (try? archive.data(for: id)).flatMap { NSImage(data: $0) }
-            DispatchQueue.main.async { completion(img) }
+            let bytes = try? archive.data(for: id)
+            let img = bytes.flatMap { NSImage(data: $0) }
+            DispatchQueue.main.async { completion(img, bytes) }
         }
     }
 
@@ -1569,6 +1593,57 @@ final class MarkdownDocument: NSDocument {
         text.draw(at: NSPoint(x: pad + iconW, y: (size.height - textSize.height) / 2), withAttributes: attrs)
         img.unlockFocus()
         return img
+    }
+
+    /// What to write on the card when an office picture could not be turned into pixels.
+    ///
+    /// **The decision is never made here.** Whether a picture can be drawn is settled by ACTUALLY
+    /// ATTEMPTING the decode (`NSImage(data:)`, i.e. asking ImageIO's registry of installed
+    /// decoders) and only reaching this function when that attempt came back nil. These magic
+    /// bytes exist to put a NAME on that failure, nothing else — a wrong guess here costs one
+    /// wrong word on a card, never a picture that would have drawn. The practical consequence is
+    /// the one worth stating: **the day macOS ships a WMF decoder, `NSImage(data:)` starts
+    /// succeeding and the chart simply appears** — there is no allow-list to notice it, and this
+    /// list may then name a format nothing ever hands it, which is harmless.
+    ///
+    /// Measured on the rhwp sample corpus (340 HWP files, 1,825 embedded pictures through the real
+    /// reader): 95 undecodable, all of them WMF (93) or PCX (2); BMP, PNG, JPEG, GIF and TIFF all
+    /// decode natively. EMF, SVG and an OLE container are named because they are the neighbouring
+    /// shapes the same authoring tools produce, not because they were seen failing.
+    static func undrawablePictureLabel(for bytes: Data?) -> String {
+        guard let bytes, !bytes.isEmpty else { return "Image missing" }
+        guard let name = pictureFormatName(bytes) else { return "Image — no decoder" }
+        return "\(name) image — no decoder"
+    }
+
+    /// The format a picture's leading bytes claim to be, or `nil` when they claim nothing this
+    /// reader recognises. Naming only — see `undrawablePictureLabel`.
+    static func pictureFormatName(_ bytes: Data) -> String? {
+        func starts(_ magic: [UInt8]) -> Bool {
+            guard bytes.count >= magic.count else { return false }
+            for (i, b) in magic.enumerated() where bytes[bytes.startIndex + i] != b { return false }
+            return true
+        }
+        // Windows Metafile in both shapes Office writes: the "placeable" header Word prefers, and
+        // the bare METAFILEPICT one (a chart pasted as a picture, the whole of this corpus's gap).
+        if starts([0xD7, 0xCD, 0xC6, 0x9A]) || starts([0x01, 0x00, 0x09, 0x00]) { return "WMF" }
+        // Enhanced Metafile: EMR_HEADER, confirmed by the " EMF" signature at offset 40 — that
+        // second check matters because the record type alone is four very common bytes.
+        if starts([0x01, 0x00, 0x00, 0x00]), bytes.count >= 44 {
+            let sig = bytes.subdata(in: bytes.index(bytes.startIndex, offsetBy: 40)
+                                       ..< bytes.index(bytes.startIndex, offsetBy: 44))
+            if sig == Data([0x20, 0x45, 0x4D, 0x46]) { return "EMF" }
+        }
+        // PCX: manufacturer 0x0A, then a version in 0…5 and an encoding of 0 or 1.
+        if starts([0x0A]), bytes.count >= 3 {
+            let version = bytes[bytes.index(bytes.startIndex, offsetBy: 1)]
+            let encoding = bytes[bytes.index(bytes.startIndex, offsetBy: 2)]
+            if version <= 5, encoding <= 1 { return "PCX" }
+        }
+        if starts(Array("<svg".utf8)) || starts(Array("<?xml".utf8)) { return "SVG" }
+        // A compound-file container: an OLE object stored where a picture was expected.
+        if starts([0xD0, 0xCF, 0x11, 0xE0]) { return "Embedded object" }
+        return nil
     }
 
     /// A broken/missing-image placeholder so a failed load isn't just blank space.

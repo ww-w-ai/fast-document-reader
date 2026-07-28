@@ -171,7 +171,12 @@ final class OfficeImageLoadingTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exp.fulfill() }
         wait(for: [exp], timeout: 2)
 
-        XCTAssertNotNil(att.image, "an unresolvable id must still show a placeholder, not stay nil forever")
+        // The placeholder is a LABEL on the cell, not an image on the attachment: the cell draws
+        // the card at its live frame, so a resize re-draws it instead of scaling a baked bitmap
+        // (see `UndrawablePictureTests`, and `SizedAttachmentCell.undrawableLabel`'s own doc).
+        XCTAssertNil(att.image, "the card is drawn by the cell — setting .image would drop that cell (invariant 31)")
+        XCTAssertEqual(cell.undrawableLabel, "Image missing",
+                       "an unresolvable id must still SAY something, not stay blank forever")
         XCTAssertEqual(cell.reservedSize, reservedBefore, "the reserved area must survive degrading to a placeholder")
         XCTAssertEqual(att.bounds.size, reservedBefore, "the full declared area is kept — never collapses")
     }
@@ -192,7 +197,9 @@ final class OfficeImageLoadingTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exp.fulfill() }
         wait(for: [exp], timeout: 2)
 
-        XCTAssertNotNil(att.image)
+        XCTAssertNil(att.image)
+        XCTAssertEqual(cell.undrawableLabel, "Image missing",
+                       "a dangling entry id has no bytes to name a format from — say the honest thing")
         XCTAssertEqual(cell.reservedSize, reservedBefore)
     }
 
