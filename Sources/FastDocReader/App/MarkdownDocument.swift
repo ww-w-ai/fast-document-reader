@@ -65,6 +65,32 @@ final class MarkdownDocument: NSDocument {
     /// debounced re-render measures the debounce and stops before the work begins.
     private(set) var renderGeneration = 0
 
+    /// Indices into `officeBlocks` of the tables this render left out so the document could paint
+    /// (`OfficeTextBuilder.giantTableIndices`), cleared once `spliceDeferredTables` has put them all
+    /// back. Empty for every markdown/plain-text document and for 98.6% of office ones; `private(set)`
+    /// so a test can assert a document deferred nothing without reaching through the render path.
+    private(set) var deferredTables: Set<Int> = []
+
+    /// Deferral is a FIRST-PAINT device, and this is what confines it to one.
+    ///
+    /// Deferring on a RE-RENDER (⌘+/⌘−/⌘R) shipped a hang, and the mechanism is worth keeping
+    /// because it is not the obvious one. The re-render takes the reader's anchor against the FULL
+    /// document, then replaces the storage with the deferred string — a third the length — so
+    /// `restore` clamps that character to the deferred string's LAST one and parks the viewport at
+    /// its bottom. The splice then inserts 273,016 characters ABOVE that point, which leaves the
+    /// viewport sitting inside a grid nothing has laid out yet. From there it is not scrolling that
+    /// costs: DRAWING the visible rect has to fill the layout hole under it, and it advances about
+    /// 800 characters per pass at 150–300 ms a pass. Measured end to end at 69,460 and 80,008 ms —
+    /// the "infinite loop" a reader reports. With the reader at character 0 the same press costs a
+    /// 498 ms worst turn; at character 326,797, 9,038 ms and 181 turns over 100 ms.
+    ///
+    /// At first paint the anchor IS character 0, so none of that geometry exists, and the measured
+    /// prize (3,130 → 628 ms) is a first-paint prize anyway. Deferring on re-render can be revisited
+    /// only with an anchor that survives the swap — mapped through `MDAttr.blockId`, which is the one
+    /// identity both strings share — and it must be measured with the reader deep in the document,
+    /// because at the top every version of this looks perfect.
+    private var hasPaintedOnce = false
+
     // While the up-front measure pass is rendering uncached diagrams, their exact size isn't known
     // yet — reconcileMedia must NOT load them (that would resize under the reader). Cleared once the
     // pass finishes and every diagram has been sized. `prerenderToken` cancels a stale pass when a
@@ -1011,12 +1037,20 @@ final class MarkdownDocument: NSDocument {
             // placeholder width and visibly resized a moment later (the "table shrinks then grows"
             // flicker), and the resize pass then has real work to do on every single render.
             let pad = wc.textView.textContainer?.lineFragmentPadding ?? 5
+            // A handful of documents (1.4%) carry a table so large that BUILDING its grid is the
+            // whole opening freeze — 2,351 of 3,329 ms on a 51,816-cell report. Those are left out
+            // here and spliced in after the first paint (`spliceDeferredTables`). Empty for 99.3%
+            // of tables and for every markdown/plain-text document, and an empty set builds exactly
+            // the string this line built before (invariant 37).
+            deferredTables = hasPaintedOnce ? [] : OfficeTextBuilder.giantTableIndices(officeBlocks)
+            hasPaintedOnce = true
             attr = OfficeTextBuilder.build(officeBlocks, theme: theme,
                                            columnWidth: colW,
                                            documentDefaultFontSize: officeDefaultBodyFontSize,
                                            pageContentWidth: officePageContentWidth,
                                            tableWidth: max(1, colW - 2 * pad),
-                                           comments: officeComments)
+                                           comments: officeComments,
+                                           deferringTables: deferredTables)
         }
         wc.display(attr)
         wc.window?.title = displayName ?? "fast-md-reader"
@@ -1030,7 +1064,14 @@ final class MarkdownDocument: NSDocument {
             // Lay out the WHOLE document up front (media are just placeholders, so it's cheap): the
             // scrollbar then reflects the full length immediately — the user sees how much content
             // there is without scrolling. Content itself streams in lazily via reconcileMedia.
-            wc.precomputeLayout()
+            // The completion runs only if this walk finished on the string it started on, which is
+            // the guarantee the splice below needs: it may not edit under a running walk, and a
+            // superseded render must not splice at all.
+            let generation = self.renderGeneration
+            wc.precomputeLayout { [weak self, weak wc] in
+                guard let self, let wc, self.renderGeneration == generation else { return }
+                self.spliceDeferredTables(into: wc, generation: generation)
+            }
             self.reconcileMedia(in: wc)   // load only what's on screen now
             // Then, in the background, render EVERY uncached diagram to the disk cache so its exact
             // size is known — the scrollbar becomes correct and never resizes again as you scroll
@@ -1040,6 +1081,119 @@ final class MarkdownDocument: NSDocument {
             // is known before it lands. Docs with no remote images skip this.
             self.measureRemoteImages(in: wc)
         }
+    }
+
+    /// Puts each giant table's grid back, one per run-loop turn, after the document has already
+    /// painted without them. See `docs/giant-table-deferral-design.md` — the summary of why this
+    /// exists and why it is shaped this way:
+    ///
+    ///  • The freeze it removes is `OfficeTextBuilder.build` + `display`, ONE uninterruptible turn
+    ///    (invariant 49). On a 51,816-cell report that is 3,329 ms before anything is on screen;
+    ///    without these five grids it is 664 ms. The work is not saved, it is MOVED — 418 ms of
+    ///    deferred build plus 1,912 ms of payback here adds up to one full build, within 1%.
+    ///  • **Nothing here forces layout, and `precomputeLayout` must never run again afterwards.**
+    ///    That is the whole finding: forcing it costs a 211 ms freeze with two slices over 200 ms,
+    ///    while leaving TextKit to lay these tables out on its own settles the full document in
+    ///    ~7.5 s with a WORST slice of 45 ms and none over 50 — measured twice. Invariant 49 records
+    ///    two failed attempts to make this freeze smaller by slicing the walk finer; the answer was
+    ///    never a finer slice, it was not walking these tables at all.
+    ///  • One table per turn, because building one is 25–862 ms of real main-thread work. Doing all
+    ///    five in a turn would be a 1.9 s freeze — trading the freeze we removed for a later one.
+    ///
+    /// Media and the outline are refreshed once at the end (a splice moves every heading offset
+    /// after it), mirroring what `spliceRender` already does for a markdown edit.
+    private func spliceDeferredTables(into wc: DocumentWindowController, generation: Int) {
+        guard !deferredTables.isEmpty, kind == .office, wc.textStorageRef != nil else { return }
+        // The reader's position is recorded ONCE, before the first mutation, and carried forward:
+        // every splice above it pushes their line down by its own delta, so restoring the anchor
+        // unshifted would silently land them on different text. At open this is character 0 and
+        // costs nothing; it matters on ⌘+, which re-renders wherever the reader happens to be.
+        var anchor = wc.readingAnchor()
+
+        func spliceNext() {
+            guard renderGeneration == generation, let storage = wc.textStorageRef else { return }
+            // Found by attribute, never by matching the stand-in's text: the glyph is presentation
+            // and could change, the attribute is the contract (`MDAttr.deferredTable`).
+            var found: (range: NSRange, index: Int)?
+            storage.enumerateAttribute(MDAttr.deferredTable,
+                                       in: NSRange(location: 0, length: storage.length)) { value, range, stop in
+                guard let index = value as? Int else { return }
+                found = (range, index)
+                stop.pointee = true
+            }
+            guard let (standIn, blockIndex) = found, blockIndex < officeBlocks.count else {
+                finish()
+                return
+            }
+            let theme = RenderTheme.current(size: readingSize)
+            let colW = wc.textView.textContainer?.size.width ?? 800
+            let pad = wc.textView.textContainer?.lineFragmentPadding ?? 5
+            // Built with `deferringTables` EMPTY, so this one table renders in full — same builder,
+            // same widths as the surrounding document, so the first paint of the grid is its final
+            // one and `resizeTableColumns` finds nothing to move (invariant 48b).
+            let piece = NSMutableAttributedString(attributedString:
+                OfficeTextBuilder.build([officeBlocks[blockIndex]], theme: theme,
+                                        columnWidth: colW,
+                                        documentDefaultFontSize: officeDefaultBodyFontSize,
+                                        pageContentWidth: officePageContentWidth,
+                                        tableWidth: max(1, colW - 2 * pad),
+                                        comments: officeComments))
+            // A one-block build numbers its block from zero. The stand-in already holds the id this
+            // table had in the full document, so the grid inherits it — two neighbours sharing an id
+            // would merge into one stop for the reading cursor (invariant 19's lesson).
+            if let id = storage.attribute(MDAttr.blockId, at: standIn.location, effectiveRange: nil) {
+                piece.addAttribute(MDAttr.blockId, value: id,
+                                   range: NSRange(location: 0, length: piece.length))
+            }
+            let delta = piece.length - standIn.length
+            storage.beginEditing()
+            storage.replaceCharacters(in: standIn, with: piece)
+            storage.endEditing()
+            if standIn.location + standIn.length <= anchor.char {
+                anchor = DocumentWindowController.ReadingAnchor(char: anchor.char + delta,
+                                                                offsetFromTop: anchor.offsetFromTop)
+            } else if standIn.location < anchor.char {
+                // The reader was ON the stand-in itself; the grid that replaced it starts here.
+                anchor = DocumentWindowController.ReadingAnchor(char: standIn.location,
+                                                                offsetFromTop: anchor.offsetFromTop)
+            }
+            DispatchQueue.main.async { spliceNext() }
+        }
+
+        func finish() {
+            guard renderGeneration == generation else { return }
+            deferredTables = []
+            // Every heading after a splice sits at a different character now, and the outline reads
+            // those offsets to jump (invariant 23's rule: anything that changes the text ends here).
+            wc.refreshAfterMutation()
+            wc.reloadOutline()
+            // The pass's own anchor, shifted past each splice above it — at first paint that is
+            // character 0 unless the reader scrolled while the grids were arriving.
+            let target = anchor
+            presizeKnownMedia(in: wc)
+            // THE DOCUMENT MUST STILL BE WALKED. Skipping this was the shipped bug (`f813bbf`,
+            // reverted): leaving the giants unlaid is fine while the reader sits still — TextKit
+            // settles them in ~11 s in slices it chooses — but the moment they SCROLL to one, the
+            // arrival forces every unlaid character in between, in ONE call. Measured on the
+            // 51,816-cell report: **69,460 and 80,008 ms**, twice, which is the "infinite loop" a
+            // reader sees. With this walk the same scroll costs **3.2 and 5.1 ms**.
+            //
+            // The prototype rejected this walk on its worst slice (211 ms against 45 ms unwalked)
+            // and never priced the scroll, which is the whole reason the comparison came out wrong.
+            // Re-measured with arrival included, its slices (274–682 ms) are no worse than what the
+            // SHIPPING build already produces walking the same document undeferred (1,367 ms), and
+            // both are paid in the background after the reader already has the page.
+            //
+            // The anchor is restored FROM THE COMPLETION, not before the walk — invariant 24's rule,
+            // and it bit here exactly as that invariant describes. `restore` clamps its scroll to
+            // the text view's CURRENT height, and until the walk has run that height only covers
+            // what happens to be laid out, so restoring first put a reader who was 75% down at
+            // character 298 — the top of the document. Measured: 98,970 → 298 before this line moved.
+            wc.precomputeLayout { [weak wc] in wc?.restore(target) }
+            reconcileMedia(in: wc)
+        }
+
+        DispatchQueue.main.async { spliceNext() }
     }
 
     /// The up-front measure pass. On the FIRST open of a diagram-heavy document nothing is cached,
