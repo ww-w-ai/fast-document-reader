@@ -10,6 +10,12 @@ DerivedData/
 # ignored since the repo went public, but only commit-log/ ever was — the rest was merely untracked,
 # which is one `git add .` away from being public. Ignore the folder, as documented.
 docs/
+# Both spellings on purpose. A trailing slash does not match a SYMLINK named docs, and a symlink is
+# exactly what a git worktree needs here: the fixture tests reach docs/fixtures through #filePath, and
+# a fresh worktree has no docs/ precisely because of the line above. Every agent working in one is
+# told to `ln -s ../../../docs docs`, which then shows as untracked and is one `git add .` away from
+# publishing a link to a local-only folder in a PUBLIC repo.
+docs
 # Sprint orchestration state — a working file for the run in progress, not a repo artifact.
 .ww-w-ai/
 # Where Scripts/gen-script-ranges.py parks the UCD files it downloads. The GENERATED table is

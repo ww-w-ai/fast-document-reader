@@ -95,18 +95,24 @@ struct Span: Equatable {
     /// inconsistent with others for no reason a reader would understand.
     var fontName: String? = nil
     /// The SUBSTITUTE font's `NSFontDescriptor`, resolved ONCE at read time by
-    /// `FontSubstitutionResolver` and never touched again. `nil` is the overwhelmingly common case
-    /// and means "this span's declared font (code/`fontName`-override/theme default) already covers
-    /// every character" — `OfficeTextBuilder` then constructs that font completely UNCHANGED, which
-    /// is the byte-identical path invariant 37 depends on. Non-`nil` carries the descriptor of the
-    /// font `CTFontCreateForString` itself would substitute — the SAME font AppKit's own attribute
-    /// fixing already draws today somewhere in this span — so the CHOICE of font is never one of this
-    /// app's own picking; only WHEN that choice is made changes, from every ⌘+ press to once, at read
-    /// time (see `docs/font-substitution-cost-design.md`). Set at SPAN-run granularity, not per
-    /// character — see `FontSubstitutionResolver.resolveOne`'s doc for why per-character precision
-    /// was built, measured, and rejected (it reproduces the exact fragmentation this field exists to
-    /// eliminate): a declared-covered character sitting inside an otherwise-substituted stretch (a
-    /// space between two Korean words) rides along with that substitute rather than reverting.
+    /// `FontSubstitutionResolver` and never touched again.
+    ///
+    /// `nil` is the overwhelmingly common case and means **"this span's declared font draws the
+    /// SAMPLE character the document's census picked for that font"** — not, as this doc claimed
+    /// until the survey-and-apply design replaced the per-span one, that it covers every character
+    /// in the span. The difference is real and a reader should know it: a Times New Roman paragraph
+    /// whose census answers with a Latin letter comes back `nil` even though a stray Ⅴ or a
+    /// Wingdings bullet inside it has no glyph there, and AppKit substitutes that one character at
+    /// draw time exactly as it always did. That is the deliberate trade — see
+    /// `docs/font-substitution-cost-design.md` §6 — bought because asking per span cost 2,209
+    /// CoreText calls on the reference document where asking per declared font costs 22.
+    ///
+    /// `OfficeTextBuilder` constructs a `nil` span's font completely UNCHANGED, which is the
+    /// byte-identical path invariant 37 depends on. Non-`nil` carries the descriptor of the font
+    /// `CTFontCreateForString` itself chose for that sample — never a family of this app's own
+    /// picking — and is stamped across the span's WHOLE text: the resolver no longer splits a span
+    /// at all, because splitting on coverage was measured to create the very fragmentation this
+    /// field exists to remove (reference document: 17,910 spans against 9,328 without it).
     ///
     /// A DESCRIPTOR, deliberately NOT a PostScript name string (this field's first shape, changed
     /// after measuring why it silently did nothing): the theme's body/heading fonts are `.systemFont`,
