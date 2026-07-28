@@ -984,6 +984,11 @@ enum OfficeTextBuilder {
         // then TRIM the cell's own edges: the first paragraph's leading gap and the last paragraph's
         // trailing gap would pad the cell's inner top/bottom (a single-paragraph data cell would grow
         // by a whole paragraph gap) — that breathing is the cell's own vertical padding's job.
+        //
+        // The SECOND half of that same unification is `unifyTerminator` below: paragraph style alone
+        // left the separator carrying the cell's base font and no colour while the text either side
+        // carried its own resolved font and an `NSColor`, so it stayed a run of its own. Same pass,
+        // same "attributes of the paragraph's own start" rule, one more step — see `unifyTerminator`.
         let ns = result.string as NSString
         var paragraphs: [NSRange] = []
         ns.enumerateSubstrings(in: NSRange(location: 0, length: result.length), options: .byParagraphs) {
@@ -997,8 +1002,65 @@ enum OfficeTextBuilder {
             if i == 0 { m.paragraphSpacingBefore = 0 }
             if i == paragraphs.count - 1 { m.paragraphSpacing = 0 }
             result.addAttribute(.paragraphStyle, value: m.copy() as! NSParagraphStyle, range: range)
+            unifyTerminator(of: range, in: result, string: ns)
         }
         return result
+    }
+
+    /// Finishes the paragraph pass above: gives a paragraph's terminating `"\n"` the rest of the
+    /// attributes its OWN first character carries, so the two collapse into ONE attribute run.
+    ///
+    /// This is invariant 51 one layer up. `TableBlockBuilder` merged the newline that ends a whole
+    /// CELL; what it explicitly left behind — and named — is the separator `cellContent` joins
+    /// between two blocks of a MULTI-PARAGRAPH cell. That separator was appended carrying the cell's
+    /// base font and nothing else, while the text either side of it carries its own resolved font
+    /// (a declared family, a substitute) and an `NSColor`, so every interior separator cost a second
+    /// run. Measured through `OfficeTextBuilder.build` at a 700pt column: 2,176 of them on the
+    /// 600-page reference manual and 271 on the report — and an attribute run is what installing a
+    /// string into a live text view is priced by (~50 µs each, invariant 51).
+    ///
+    /// Three rules, each carried over from invariant 51 because each was earned there:
+    ///
+    /// **The separator belongs to the paragraph it TERMINATES, not to the one that follows.** It
+    /// cannot merge with both when the two blocks are genuinely differently styled, and this side is
+    /// forced rather than chosen: the loop above already stamps the PRECEDING paragraph's style on
+    /// this character, so taking the following block's font would leave the separator matching
+    /// NEITHER neighbour — one run saved becomes one run kept, and it would describe a paragraph that
+    /// does not exist. Measured by mutation: reading the following paragraph instead prints
+    /// `"\n둘째 문단"` as a run, a separator visibly attached to the wrong side. What that mutation
+    /// does NOT do is move the laid-out geometry, and neither does anything else put here — for
+    /// invariant 51's three reasons, unchanged: TextKit resolves a paragraph's metrics at its START,
+    /// a trailing newline contributes no glyph of its own, and AppKit builds an attachment glyph only
+    /// for U+FFFC. So the side is chosen for the RUN COUNT and for describing the document honestly,
+    /// not to protect a pixel.
+    ///
+    /// **The attributes come from the paragraph's OWN START, never from the character before it.**
+    /// That character belongs to the PREVIOUS block, and in invariant 51's case to the previous
+    /// CELL, where copying it took the neighbour's `NSTextTableBlock` with it. The risk is milder
+    /// inside one cell — the same cell, the same table block — but the discipline is what keeps this
+    /// pass local to one paragraph. The consequence is honest and measured: a paragraph whose start
+    /// and end differ (`**bold** then plain`) merges with neither and stays exactly as many runs as
+    /// it was, no better and no worse.
+    ///
+    /// **Inheritance is an ALLOW-list** — `TableBlockBuilder.inheritableTerminatorAttributes`, the
+    /// same one and deliberately not a second copy: it is the same question about the same character
+    /// (invariant 36's one-place rule), and a divergent second list is how the two halves of this
+    /// would drift apart. Everything that DRAWS or is CLICKED (`.attachment`, `.backgroundColor`,
+    /// `.underlineStyle`/`.strikethroughStyle`, `.link`) is absent, so a paragraph ending in a
+    /// picture, a highlight or a hyperlink falls back to exactly the separator it always had. A
+    /// paragraph with no content of its own (an empty block between two others) has no attributes to
+    /// inherit and keeps the bare separator, for invariant 51's empty-cell reason.
+    private static func unifyTerminator(of paragraph: NSRange, in result: NSMutableAttributedString,
+                                        string ns: NSString) {
+        // A terminator only exists where the paragraph's enclosing range ends in one; the LAST block
+        // of a cell has none (`cellContent` never appends a trailing separator), and a paragraph that
+        // is nothing BUT its terminator has no content of its own to inherit from.
+        guard paragraph.length > 1 else { return }
+        let terminator = NSRange(location: paragraph.location + paragraph.length - 1, length: 1)
+        guard ns.character(at: terminator.location) == 10 else { return }
+        let start = result.attributes(at: paragraph.location, effectiveRange: nil)
+        guard start.keys.allSatisfy({ TableBlockBuilder.inheritableTerminatorAttributes.contains($0) }) else { return }
+        result.setAttributes(start, range: terminator)
     }
 
     /// Flattens a nested table's cells into one run of text — a tab between cells, a newline after
