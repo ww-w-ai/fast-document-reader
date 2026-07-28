@@ -848,6 +848,16 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // re-solve the outgoing document's tabs and tables for nothing (see `settleReadingColumn`).
         // The async `updateTextInset()` below runs the real one, against the string just installed.
         settleReadingColumn()
+        // Park the viewport at the top BEFORE the storage is replaced. AppKit has to satisfy the
+        // clip view's current scroll offset against the NEW text, and with contiguous layout that
+        // means laying the incoming document out all the way down to wherever the reader happened
+        // to be — inside `setAttributedString`, in one uninterruptible call. Measured on a
+        // 401,765-character report with the reader 75% down: `display` alone took 87,638 ms and
+        // came back with 290,394 characters already laid out. Every caller either restores the
+        // reader's position afterwards (`performFontSizeRerender`, the splice pass) or wants the
+        // top anyway (a fresh open, ⌘R), so nothing loses a position it meant to keep.
+        scrollView.contentView.scroll(to: .zero)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
         textView.textStorage?.setAttributedString(attributed)
         textView.recomputeHeadingOffsets()
         reloadOutline()
@@ -997,10 +1007,19 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     /// Put an anchor back where it was on screen.
     func restore(_ anchor: ReadingAnchor) {
+        // The `numberOfGlyphs > 0` this guard used to ask for was being satisfied BY ACCIDENT: the
+        // storage swap happened with the clip view still parked deep in the outgoing document, so
+        // AppKit laid the incoming one out that far just to satisfy the scroll offset, and glyphs
+        // existed by the time anyone asked. Parking the viewport at the top first (see `display`)
+        // removed that 87,638 ms accident — and with it, silently, every restore: the guard saw
+        // zero glyphs and returned, leaving a reader who was 75% down at character 242. So generate
+        // glyphs for the character we actually want FIRST, and only then ask how many there are.
         guard let lm = textView.layoutManager, let storage = textView.textStorage,
-              lm.numberOfGlyphs > 0 else { return }
+              storage.length > 0 else { return }
         let char = min(max(0, anchor.char), max(0, storage.length - 1))
-        let glyph = min(lm.glyphIndexForCharacter(at: char), lm.numberOfGlyphs - 1)
+        let requested = lm.glyphIndexForCharacter(at: char)
+        guard lm.numberOfGlyphs > 0 else { return }
+        let glyph = min(requested, lm.numberOfGlyphs - 1)
         let lineTop = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
             + textView.textContainerInset.height
         var y = lineTop - anchor.offsetFromTop
