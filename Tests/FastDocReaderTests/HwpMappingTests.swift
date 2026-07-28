@@ -708,4 +708,171 @@ extension HwpMappingTests {
         XCTAssertNil(HwpReader.percentLineHeight(3))
         XCTAssertNil(HwpReader.percentLineHeight(2_000_000))
     }
+
+    // MARK: - per-slot fonts, THROUGH the real mapper (invariant 29)
+
+    /// `HwpFontSlotsTests` proves the classifier; these prove the READER REACHES it. Every case here
+    /// goes through `HwpReader.mapJSON`, the same function `HwpReader.read` calls, so a classifier
+    /// that is perfect and unwired fails here — which is exactly the shape of the `.odt` defect
+    /// invariant 29 records (a parser with 24 passing tests that could not be reached at all).
+    private func spans(_ json: String) throws -> [Span] {
+        guard case let .paragraph(spans, _, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+            throw XCTSkip("expected a paragraph")
+        }
+        return spans
+    }
+
+    /// A row whose seven slots name one family produces the ORIGINAL span, unchanged — the fast path
+    /// invariant 37 rests on, and the shape 46.4% of real documents are in.
+    func testAUniformRowProducesOneUnchangedSpan() throws {
+        let json = """
+        {"v":1,"charShapes":[["A","A","A","A","A","A","A"]],"blocks":[
+          {"t":"para","spans":[{"text":"이상무 KDI 전문위원","size":1000,"font":"A","csId":0}]}]}
+        """
+        let out = try spans(json)
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].text, "이상무 KDI 전문위원")
+        XCTAssertEqual(out[0].fontName, "A")
+    }
+
+    /// The case the whole feature exists for: the document asks for one face for Korean and another
+    /// for Latin, and the Latin stops being drawn in the Korean face.
+    func testAVaryingRowDrawsEachScriptInItsOwnDeclaredFamily() throws {
+        let json = """
+        {"v":1,"charShapes":[["휴먼명조","Palatino Linotype","HY신명조","HY신명조","HY신명조","HY신명조","HY견명조"]],
+         "blocks":[{"t":"para","spans":[{"text":"이상무 KDI 전문위원","size":1000,"font":"휴먼명조","csId":0}]}]}
+        """
+        let out = try spans(json)
+        XCTAssertEqual(out.map(\.text), ["이상무 ", "KDI ", "전문위원"])
+        XCTAssertEqual(out.map(\.fontName), ["휴먼명조", "Palatino Linotype", "휴먼명조"])
+        XCTAssertEqual(out.map(\.text).joined(), "이상무 KDI 전문위원", "no text may be lost in the split")
+    }
+
+    /// Every property other than the family is copied onto each piece — a split must not drop the
+    /// bold/colour/size the run carried.
+    func testASplitCarriesEveryOtherPropertyOntoBothPieces() throws {
+        let json = """
+        {"v":1,"charShapes":[["KO","LA","","","","",""]],"blocks":[
+          {"t":"para","spans":[{"text":"가나ABC","size":1200,"font":"KO","csId":0,
+            "bold":true,"italic":true,"underline":"double","strike":true,"color":"FF0000"}]}]}
+        """
+        let out = try spans(json)
+        XCTAssertEqual(out.count, 2)
+        for piece in out {
+            XCTAssertTrue(piece.bold); XCTAssertTrue(piece.italic)
+            XCTAssertTrue(piece.underline); XCTAssertEqual(piece.underlineStyle, .double)
+            XCTAssertTrue(piece.strikethrough)
+            XCTAssertEqual(piece.fontSize, 12)
+            XCTAssertNotNil(piece.textColor)
+        }
+    }
+
+    /// A span with no char shape of its own (a bookmark anchor, a footnote marker) and a span whose
+    /// `csId` is out of range must both degrade to EXACTLY what this reader drew before — rhwp's own
+    /// `font` — rather than to a guess or to nothing.
+    func testASpanWithNoOrOutOfRangeCharShapeKeepsTheParsersOwnFont() throws {
+        let noId = """
+        {"v":1,"charShapes":[["KO","LA","","","","",""]],"blocks":[
+          {"t":"para","spans":[{"text":"가나ABC","size":1000,"font":"기존폰트"}]}]}
+        """
+        XCTAssertEqual(try spans(noId).map(\.fontName), ["기존폰트"])
+        XCTAssertEqual(try spans(noId).count, 1, "no csId means no classification, so no split")
+
+        let outOfRange = """
+        {"v":1,"charShapes":[["KO","LA","","","","",""]],"blocks":[
+          {"t":"para","spans":[{"text":"가나ABC","size":1000,"font":"기존폰트","csId":97}]}]}
+        """
+        XCTAssertEqual(try spans(outOfRange).map(\.fontName), ["기존폰트"])
+
+        let noTable = """
+        {"v":1,"blocks":[{"t":"para","spans":[{"text":"가나ABC","size":1000,"font":"기존폰트","csId":0}]}]}
+        """
+        XCTAssertEqual(try spans(noTable).map(\.fontName), ["기존폰트"],
+                       "a parser predating charShapes must render exactly as before")
+    }
+
+    /// An empty-text span is a bookmark anchor, and the splitter yields NO pieces for empty input —
+    /// so without its own guard this pass would delete the anchor and every internal link to it.
+    ///
+    /// The anchor is given a `csId` on a NON-uniform row DELIBERATELY. rhwp omits `csId` for
+    /// synthetic spans today, so an anchor written the way rhwp writes it exits at the `csId` check
+    /// and never reaches the empty-text guard at all — which the first version of this test did, and
+    /// mutation testing caught it: deleting the guard left this test green, proving only that some
+    /// EARLIER branch worked (invariant 30, "a green assertion whose subject is unreachable proves
+    /// nothing"). Both shapes are asserted now, so the guard is covered on its own terms and stays
+    /// correct if rhwp ever starts stamping a char shape on its anchors.
+    func testAnEmptyBookmarkAnchorSurvivesTheSplitPass() throws {
+        let asRhwpWritesItToday = """
+        {"v":1,"charShapes":[["KO","LA","","","","",""]],"blocks":[
+          {"t":"para","spans":[{"text":"","bookmark":"target1"},
+                               {"text":"가나ABC","size":1000,"font":"KO","csId":0}]}]}
+        """
+        let out = try spans(asRhwpWritesItToday)
+        XCTAssertEqual(out.first?.bookmarks, ["target1"])
+        XCTAssertEqual(out.first?.text, "")
+
+        // The same anchor carrying a char shape, which is what makes the empty-text guard reachable.
+        let anchorWithACharShape = """
+        {"v":1,"charShapes":[["KO","LA","","","","",""]],"blocks":[
+          {"t":"para","spans":[{"text":"","bookmark":"target2","csId":0},
+                               {"text":"가나ABC","size":1000,"font":"KO","csId":0}]}]}
+        """
+        let out2 = try spans(anchorWithACharShape)
+        XCTAssertEqual(out2.first?.text, "", "the empty anchor span must not be dropped")
+        XCTAssertEqual(out2.first?.bookmarks, ["target2"],
+                       "an anchor with a csId must survive the splitter, which yields no pieces for empty text")
+    }
+
+    /// A bookmark is a POINT in the document. Copying it onto every piece of a split run would
+    /// publish the same name several times and give an internal link more than one place to land.
+    func testASplitRunKeepsItsBookmarkOnTheFirstPieceOnly() throws {
+        let json = """
+        {"v":1,"charShapes":[["KO","LA","","","","",""]],"blocks":[
+          {"t":"para","spans":[{"text":"가나ABC","size":1000,"font":"KO","csId":0,"bookmark":"anchor"}]}]}
+        """
+        let out = try spans(json)
+        XCTAssertEqual(out.count, 2)
+        XCTAssertEqual(out[0].bookmarks, ["anchor"])
+        XCTAssertEqual(out[1].bookmarks, [], "the anchor must not be duplicated onto the second piece")
+    }
+
+    /// A run of nothing but absorbing characters classifies nothing, so the splitter hands back one
+    /// piece with no family. Emitting that verbatim would strand a theme-font span between two runs
+    /// of a real family — the boundary absorption exists to protect.
+    func testARunOfOnlyNeutralCharactersKeepsTheDocumentsOwnFamily() throws {
+        let json = """
+        {"v":1,"charShapes":[["KO","LA","","","","",""]],"blocks":[
+          {"t":"para","spans":[{"text":"  (3) ","size":1000,"font":"KO","csId":0}]}]}
+        """
+        let out = try spans(json)
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].fontName, "KO", "must not fall back to the theme body font")
+    }
+
+    /// A Korean report is mostly tables, so a pass that stopped at the top level would leave most of
+    /// the document unimproved while every top-level assertion passed.
+    func testPerSlotFontsReachSpansInsideTableCells() throws {
+        let json = """
+        {"v":1,"charShapes":[["휴먼명조","Palatino Linotype","","","","",""]],
+         "blocks":[{"t":"table","colWidths":[100],"rows":[[{"colSpan":1,"rowSpan":1,"blocks":[
+           {"t":"para","spans":[{"text":"이상무 KDI","size":1000,"font":"휴먼명조","csId":0}]}]}]]}]}
+        """
+        guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0],
+              case let .paragraph(cellSpans, _, _, _, _) = rows[0][0].blocks[0] else {
+            return XCTFail("expected a table with a paragraph in its cell")
+        }
+        XCTAssertEqual(cellSpans.map(\.fontName), ["휴먼명조", "Palatino Linotype"])
+    }
+
+    /// Slot 4 is the correction to rhwp's own classifier, whose catch-all is the KOREAN slot — so
+    /// this is the assertion that would fail if anyone ever "simplified" by porting it.
+    func testNonCjkScriptsTakeTheOtherSlotThroughTheRealMapper() throws {
+        let json = """
+        {"v":1,"charShapes":[["KO","LA","HANJA","JP","OTHER","SYM","U"]],"blocks":[
+          {"t":"para","spans":[{"text":"가나 ABC Привет 漢字","size":1000,"font":"KO","csId":0}]}]}
+        """
+        let out = try spans(json)
+        XCTAssertEqual(out.map(\.text), ["가나 ", "ABC ", "Привет ", "漢字"])
+        XCTAssertEqual(out.map(\.fontName), ["KO", "LA", "OTHER", "HANJA"])
+    }
 }
