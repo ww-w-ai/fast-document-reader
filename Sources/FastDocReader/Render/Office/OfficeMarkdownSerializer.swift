@@ -185,13 +185,28 @@ enum OfficeMarkdownSerializer {
         return out
     }
 
-    /// `a` and `b` came from ONE span before font-substitution resolution split it iff clearing the
-    /// two fields that split is allowed to change (`text`, `resolvedFontDescriptor`) makes them
-    /// equal.
+    /// Two adjacent spans are the SAME as far as Markdown is concerned iff they agree on every
+    /// property Markdown can actually write down.
+    ///
+    /// **Stated as the short list of what counts, not as a growing list of what to ignore.** The
+    /// authority is `span(_:inCell:)` immediately below, which reads exactly these five fields and
+    /// nothing else: a `Span` also carries colour, highlight, size, family, underline style, caps,
+    /// small-caps, super/subscript, bookmarks and comment ids, and Markdown has no syntax for any of
+    /// them. Comparing all twenty fields therefore split emphasis on differences the output cannot
+    /// even express — `**text****more**`, an opening and closing marker around nothing, which is
+    /// exactly the corruption invariant 40 exists to keep out of what an AI reads.
+    ///
+    /// The subtractive version this replaces cleared `text` and `resolvedFontDescriptor`, which was
+    /// right for the one read-time pass that existed when it was written and silently wrong for
+    /// every pass added since. Per-script fonts (`docs/per-script-font-design.md`) split on
+    /// `fontName`, and on a real HWP report `제Ⅰ장 서론10` came out as `**제****Ⅰ****장 서론10**`
+    /// because Ⅰ (U+2160 ROMAN NUMERAL ONE) is Script=Latin, so the document's Hangul and Latin
+    /// families cut one heading into three. A list of exclusions has to be updated by whoever adds
+    /// the next splitting pass, and will not be; a list of inclusions only has to be updated by
+    /// whoever teaches `span(_:inCell:)` a new piece of Markdown syntax, which is the same edit.
     private static func sameMarkdownIdentity(_ a: Span, _ b: Span) -> Bool {
-        var x = a; x.text = ""; x.resolvedFontDescriptor = nil
-        var y = b; y.text = ""; y.resolvedFontDescriptor = nil
-        return x == y
+        a.code == b.code && a.bold == b.bold && a.italic == b.italic
+            && a.strikethrough == b.strikethrough && a.link == b.link
     }
 
     private static func span(_ s: Span, inCell: Bool) -> String {

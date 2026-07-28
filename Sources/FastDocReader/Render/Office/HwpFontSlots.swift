@@ -50,9 +50,11 @@ struct HwpSlotFonts: Equatable {
     /// Measured rather than assumed, and measured against the `font` string rhwp ACTUALLY EXPORTED
     /// rather than a re-derivation of its rule — the distinction matters because `lookup_font_name`
     /// applies rhwp's own `lang_index`-sensitive substitution before we ever see a name, so a row can
-    /// be self-consistent and still not match the span's string. Over 1,557 documents /
-    /// 218,745 rows / **1,085,915 spans: 0 disagreements, and 0 rows with slots 0 and 1 both empty**
-    /// (`HwpSlotClassifierProbeTests.testFallbackChainAgreesWithTheParsersOwnFontField`). The arm is
+    /// be self-consistent and still not match the span's string. Over 920 documents /
+    /// 114,696 rows / **565,909 spans: 0 disagreements, and 0 rows with slots 0 and 1 both empty**
+    /// (`HwpSlotClassifierProbeTests.testFallbackChainAgreesWithTheParsersOwnFontField` — the figures
+    /// this comment first carried, 1,557 / 218,745 / 1,085,915, were the pre-dedupe double count and
+    /// no invocation of that test can produce them; see `symbolSelectingScalar` for why). The arm is
     /// therefore unreached on real files and is here as an honest total function, not as a behaviour
     /// change — which is also why the neutral path below can use this chain rather than having to
     /// carry rhwp's answer separately to stay byte-identical.
@@ -134,10 +136,13 @@ enum HwpSlotTable {
     /// no-exception split — a piece count alone cannot tell you that, since a split can hand both
     /// halves the same family.
     ///
-    /// (920 and not the 1,557 quoted elsewhere for this corpus: the natural invocation names the
-    /// rhwp sample directory AND `$HOME/Documents`, and the first lives inside the second, so every
-    /// sample was walked twice. The probe now dedupes by resolved path. Ratios were unchanged by the
-    /// fix — 27.4% → 27.1%, +0.3% → +0.4% — which is what a uniform double-count predicts.)
+    /// (920 documents, and if an older note anywhere says 1,557 for this same corpus it is the
+    /// pre-dedupe figure: the natural invocation names the rhwp sample directory AND `$HOME/Documents`,
+    /// and the first lives inside the second, so every sample was walked twice. The probe now dedupes
+    /// by resolved path. Ratios were unchanged by the fix — 27.4% → 27.1%, +0.3% → +0.4% — which is
+    /// what a uniform double-count predicts. Note this is a DIFFERENT number from the 1,557-file
+    /// corpus in `docs/per-script-font-design.md` §6, which was a genuinely wider walk; the collision
+    /// of the two is exactly why the one above needed correcting rather than explaining away.)
     ///
     /// | rule | pieces | cost | chars re-faced |
     /// |---|---|---|---|
