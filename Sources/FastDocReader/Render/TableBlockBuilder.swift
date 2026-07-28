@@ -525,7 +525,11 @@ enum TableBlockBuilder {
             // paragraph style (alignment/indent/spacing) and only graft the table block onto it.
             let cellStr = NSMutableAttributedString(attributedString: placement.cell?.content ?? NSAttributedString())
             if cellStr.length == 0 || !cellStr.string.hasSuffix("\n") {
-                cellStr.append(NSAttributedString(string: "\n"))
+                // The terminator carries the cell's OWN attributes so it merges with the cell's
+                // content into ONE attribute run instead of two — see `terminatorAttributes`, which
+                // owns the reasoning and the empty-cell trap.
+                cellStr.append(NSAttributedString(string: "\n",
+                                                  attributes: Self.terminatorAttributes(inheritingFrom: cellStr)))
             }
             let whole = NSRange(location: 0, length: cellStr.length)
             cellStr.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
@@ -541,6 +545,62 @@ enum TableBlockBuilder {
         // a table that ends the document needs its own terminator.
         result.append(NSAttributedString(string: "\n"))
         return result
+    }
+
+    /// The attributes a cell's terminating `"\n"` is allowed to INHERIT from the cell's own last
+    /// character — an ALLOW-list, not a deny-list, so anything new falls back to the old bare
+    /// terminator instead of silently riding along on a character it was never measured against.
+    ///
+    /// Every one of these is inert on a newline, and that is MEASURED rather than reasoned — see
+    /// `TableCellTerminatorTests.testTheLaidOutGeometryIsUnchanged`, which records the mutations:
+    /// a `lineHeightMultiple` of 5 with 40pt spacing on the terminator moves the laid-out rect by
+    /// nothing (TextKit resolves a paragraph's metrics at its START), and neither does a 96pt `.font`
+    /// (a trailing newline contributes no glyph of its own to its line fragment — so `.font` is inert
+    /// here in BOTH directions, including a cell whose font is SMALLER than AppKit's own default,
+    /// where the line could otherwise have shrunk). Ten real documents lay out to an identical height
+    /// to five decimal places.
+    ///
+    /// What is deliberately ABSENT is everything that DRAWS or is CLICKED: `.attachment`,
+    /// `.backgroundColor`, `.underlineStyle`/`.strikethroughStyle` and `.link`. Being honest about
+    /// the strength of this: none of them was shown to change the laid-out geometry either — an
+    /// attachment on a newline draws nothing, because AppKit builds an attachment glyph only for
+    /// U+FFFC. So this exclusion is a POSTURE, not a proven bug fix: a picture's attributes describe
+    /// a glyph rather than a paragraph, a highlight or rule has no business trailing past the last
+    /// glyph, and every media pass (`reconcileMedia`, `resizeOfficeGraphics`, `presizeKnownMedia`)
+    /// keeps seeing exactly ONE run per picture instead of two that share an attachment object.
+    /// It is nearly free: measured across the two real reports plus every office fixture, these
+    /// account for 79 of ~57,000 cell terminators.
+    static let inheritableTerminatorAttributes: Set<NSAttributedString.Key> = [
+        .font, .foregroundColor, .paragraphStyle, .baselineOffset,
+        MDAttr.blockId, MDAttr.bookmarkTarget, MDAttr.srcRange,
+    ]
+
+    /// The attributes to give a cell's terminating `"\n"`, or `nil` to append it bare as before.
+    ///
+    /// A cell is emitted as its content plus this terminator. Appending that newline with NO
+    /// attributes — which is what shipped — made the `enumerateAttribute(.paragraphStyle)` loop below
+    /// hand it a FRESH `NSMutableParagraphStyle()`: default alignment, no font, no colour, an
+    /// attribute dictionary that can never equal the cell content's own. So EVERY cell cost TWO
+    /// attribute runs instead of one, and a run is what `setAttributedString` into a live text view
+    /// is priced by (~50 µs each, measured indifferent to WHICH attributes the run carries). On a
+    /// 51,816-cell report that is 53,522 runs of pure overhead — half the document's runs.
+    ///
+    /// Giving the terminator the cell's OWN attributes merges the two into one run. It must be the
+    /// cell's own and never simply "the preceding character's": for an EMPTY cell the preceding
+    /// character belongs to the PREVIOUS cell. On the FINISHED string that copies the previous cell's
+    /// `NSTextTableBlock` and merges two cells into one — which is how the throwaway measurement
+    /// behind this change's −49% estimate did it. Inside this function that half is already covered
+    /// by the loop below, which re-stamps `ps.textBlocks = [block]` over every run of the cell
+    /// (verified by mutation: inheriting from the result string left every block correct). What is
+    /// NOT covered, and what this `nil` prevents, is the previous cell's FONT, COLOUR and ALIGNMENT
+    /// bleeding into an empty cell, taking its line height with them. An empty cell has no attributes
+    /// of its own, so it keeps the bare terminator — byte-identical to before, and free, since a cell
+    /// with no content is one run either way.
+    static func terminatorAttributes(inheritingFrom cell: NSAttributedString) -> [NSAttributedString.Key: Any]? {
+        guard cell.length > 0 else { return nil }
+        let attrs = cell.attributes(at: cell.length - 1, effectiveRange: nil)
+        guard attrs.keys.allSatisfy({ inheritableTerminatorAttributes.contains($0) }) else { return nil }
+        return attrs
     }
 
     /// One anchor's span + already-resolved padding/border, the only inputs `anchorContentWidths`
