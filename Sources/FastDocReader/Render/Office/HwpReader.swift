@@ -164,8 +164,13 @@ enum HwpReader {
         // The document's own default body size is resolved BEFORE mapping: a percent line height is
         // relative to the text's size, so the mapper needs it to turn "200%" into points.
         let defaultBodySize = (envelope.defaultFontSizePt).flatMap { $0 > 0 ? CGFloat($0) : nil } ?? 11
+        // The seven families per char shape, each row resolved through HWP's fallback chain ONCE for
+        // the whole document — tens to low hundreds of rows, against the ~1.1 M spans that index into
+        // them. A parser predating the `charShapes` export yields `[]`, and every span then keeps
+        // rhwp's own `font`, which is exactly what this reader drew before per-slot fonts existed.
+        let slotFonts = (envelope.charShapes ?? []).map { HwpSlotFonts(row: $0) }
         var result = OfficeReadResult(blocks: envelope.blocks.map {
-            mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize)
+            mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts)
         }, comments: [])
         // The document's own default body size (Normal/"바탕글" style char-shape base size, in pt),
         // rhwp's analog of docx `w:docDefaults/…/w:sz`. `null`/≤0 → leave the `11` default so an HWP
@@ -201,6 +206,24 @@ enum HwpReader {
         /// carries none. Kept in order rather than as a set so a caller can also see how many spans
         /// have no char shape at all.
         var spanCharShapeIds: [Int?]
+
+        /// One entry per span, in the same order, carrying what a MEASUREMENT of the per-slot
+        /// classifier needs and the id list alone cannot give: the text a slot decision is made
+        /// over, and the single family rhwp itself resolved for that span.
+        ///
+        /// This exists so the two questions the design leaves open — how much a Symbol-slot
+        /// exception costs in extra pieces, and whether this reader's fallback chain ever disagrees
+        /// with rhwp's own `font` field — can be asked of a real corpus rather than argued. It is
+        /// read only by probes; the render path takes the mapped `Span`s, not this.
+        var spans: [SpanSample] = []
+
+        struct SpanSample: Equatable {
+            var text: String
+            var csId: Int?
+            /// rhwp's own single-family answer for this span — slot 0, falling back to slot 1 only
+            /// when slot 0 resolves empty. The value this reader drew before per-slot fonts existed.
+            var font: String?
+        }
     }
 
     static func fontSlotExport(_ json: String) throws -> FontSlotExport {
@@ -212,9 +235,14 @@ enum HwpReader {
             throw MapError.malformedJSON
         }
         var ids: [Int?] = []
+        var samples: [FontSlotExport.SpanSample] = []
         func walk(_ block: HwpBlock) {
             switch block {
-            case .para(let p): ids.append(contentsOf: p.spans.map(\.csId))
+            case .para(let p):
+                ids.append(contentsOf: p.spans.map(\.csId))
+                samples.append(contentsOf: p.spans.map {
+                    FontSlotExport.SpanSample(text: $0.text, csId: $0.csId, font: $0.font)
+                })
             case .table(let t):
                 for row in t.rows { for cell in row { cell.blocks.forEach(walk) } }
             case .image, .unsupported, .equation:
@@ -222,7 +250,8 @@ enum HwpReader {
             }
         }
         envelope.blocks.forEach(walk)
-        return FontSlotExport(charShapes: envelope.charShapes ?? [], spanCharShapeIds: ids)
+        return FontSlotExport(charShapes: envelope.charShapes ?? [], spanCharShapeIds: ids,
+                              spans: samples)
     }
 
     // MARK: unit conversion (HWPUNIT = 1/7200 inch; points = HWPUNIT ÷ 100)
@@ -282,7 +311,21 @@ enum HwpReader {
         }
     }
 
-    private static func mapSpan(_ s: HwpSpan) -> Span {
+    /// One rhwp span → the `Span`s it needs, which is USUALLY exactly one.
+    ///
+    /// It is a list rather than a single span because HWP picks a font per CHARACTER, not per run: a
+    /// char shape names seven families (`HwpFontSlot`) and the character's own writing system selects
+    /// between them, so one run reading `휴먼명조 and Palatino` can genuinely ask for two typefaces.
+    /// `ScriptRunSplitter` cuts it into the fewest pieces that each want one family, breaking where
+    /// the resolved FAMILY changes and never where the slot index changes — which is what keeps
+    /// `제1항` / `2026년` / `(3)` whole in every document that points its slots at one face.
+    ///
+    /// Before this existed the run took rhwp's `font` field, which is slot 0 falling back to slot 1
+    /// and stops there — so a document asking for 휴먼명조 for Korean and Palatino Linotype for Latin
+    /// had its Latin drawn in 휴먼명조. Measured over 1,557 real files, 53.6% of documents and 47.1%
+    /// of char-shape rows declare families that are not all identical, so this is the common case and
+    /// not an exotic one.
+    private static func mapSpan(_ s: HwpSpan, slotFonts: [HwpSlotFonts]) -> [Span] {
         let (ul, ulStyle) = underline(s.underline)
         var span = Span(text: s.text)
         span.bold = s.bold ?? false
@@ -295,10 +338,59 @@ enum HwpReader {
         span.textColor = color(s.color)
         // size is a base_size in HWPUNIT; ÷100 = points. 0/absent → unspecified (theme decides).
         if let sz = s.size, sz > 0 { span.fontSize = CGFloat(sz) / 100 }
-        if let font = s.font, !font.isEmpty { span.fontName = font }
         span.link = s.link
         if let bm = s.bookmark, !bm.isEmpty { span.bookmarks = [bm] }
-        return span
+
+        /// rhwp's own single-family answer, kept for every span this pass cannot improve on: a
+        /// synthetic span with no char shape, a `csId` outside the table, or a parser predating the
+        /// `charShapes` export. Each of those degrades to EXACTLY what this reader drew before.
+        let declared = (s.font?.isEmpty == false) ? s.font : nil
+
+        // An empty-text span is a bookmark anchor or a footnote marker, not something to classify —
+        // and the splitter yields no pieces for empty input, which would DELETE it. Bookmarks must
+        // survive (invariant 38: they are never merged away), so this returns before the walk.
+        guard !s.text.isEmpty else {
+            span.fontName = declared
+            return [span]
+        }
+        guard let id = s.csId, slotFonts.indices.contains(id) else {
+            span.fontName = declared
+            return [span]
+        }
+        let fonts = slotFonts[id]
+        // The case invariant 37 rests on, and the one 46.4% of real documents are in: when all seven
+        // slots resolve to one family — or to none at all — no character can select anything
+        // different from any other, so the scalar walk is skipped rather than run to rediscover
+        // that. Before/after is then identical by CONSTRUCTION, and this path costs nothing it did
+        // not cost before slots existed. `neutralFamily` is rhwp's own answer here: proven equal to
+        // the exported `font` on all 1,085,915 spans of the corpus, 0 disagreements.
+        guard !fonts.isUniform else {
+            span.fontName = fonts.neutralFamily
+            return [span]
+        }
+        let pieces = ScriptRunSplitter.split(s.text, classify: HwpSlotTable.slot(for:),
+                                             family: fonts.family)
+        // A run of nothing but absorbing characters — a tab, a stretch of spaces, `(3)` — classifies
+        // nothing, and the splitter rightly hands back one piece carrying no family. Emitting that
+        // verbatim would strand a theme-font span between two runs of a real family, which is
+        // absorption failing at exactly the boundary it exists to protect. Unlike the docx and ODT
+        // readers this needs no re-scan to recognise: on a NON-uniform row every slot resolves to a
+        // non-nil family by construction (some slot is named, so the chain's fallback is non-nil for
+        // all seven), so a `nil` family on this path can ONLY mean nothing classified.
+        if pieces.count == 1, pieces[0].family == nil {
+            span.fontName = fonts.neutralFamily
+            return [span]
+        }
+        return pieces.enumerated().map { index, piece in
+            var out = span
+            out.text = String(piece.text)
+            out.fontName = piece.family
+            // The anchor is a POINT in the document, not a property of the text, so it rides the
+            // first piece alone — copying it onto every piece would publish the same bookmark name
+            // several times and give an internal link more than one place to land.
+            if index > 0 { out.bookmarks = [] }
+            return out
+        }
     }
 
     private static func paragraphFormat(_ p: HwpPara, defaultBodySize: CGFloat) -> ParagraphFormat {
@@ -430,10 +522,11 @@ enum HwpReader {
         }
     }
 
-    private static func mapBlock(_ b: HwpBlock, pageWidth: CGFloat?, defaultBodySize: CGFloat) -> OfficeBlock {
+    private static func mapBlock(_ b: HwpBlock, pageWidth: CGFloat?, defaultBodySize: CGFloat,
+                                 slotFonts: [HwpSlotFonts]) -> OfficeBlock {
         switch b {
         case .para(let p):
-            let spans = p.spans.map(mapSpan)
+            let spans = p.spans.flatMap { mapSpan($0, slotFonts: slotFonts) }
             let align = alignment(p.align)
             let format = paragraphFormat(p, defaultBodySize: defaultBodySize)
             // An EXPLICIT outline paragraph is a heading because the document said so — no second
@@ -458,7 +551,10 @@ enum HwpReader {
             }
             return .paragraph(spans: spans, rtl: false, alignment: align, tabStops: [], format: format)
         case .table(let t):
-            let rows = t.rows.map { row in row.map { mapCell($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize) } }
+            let rows = t.rows.map { row in
+                row.map { mapCell($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
+                                  slotFonts: slotFonts) }
+            }
             // colWidths as ABSOLUTE INTEGER-derived points, never percentages (invariant 39/42).
             let columnWidths = t.colWidths.map { points($0) }
             // The table's own width as HWP laid it out (points), so a picture in a cell scales against
@@ -502,8 +598,11 @@ enum HwpReader {
         }
     }
 
-    private static func mapCell(_ c: HwpCell, pageWidth: CGFloat?, defaultBodySize: CGFloat) -> Cell {
-        let blocks = c.blocks.map { mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize) }
+    private static func mapCell(_ c: HwpCell, pageWidth: CGFloat?, defaultBodySize: CGFloat,
+                                slotFonts: [HwpSlotFonts]) -> Cell {
+        let blocks = c.blocks.map {
+            mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts)
+        }
         // "top" is Word/HWP's own default → nil, so a cell that only ever says "top" renders
         // byte-identical to one that says nothing (Cell.verticalAlignment's contract); only an
         // explicit center/bottom is carried.
