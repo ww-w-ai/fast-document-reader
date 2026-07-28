@@ -113,10 +113,17 @@ final class OdtFontSlotTests: XCTestCase {
     ///
     /// Skipped rather than failed when the fixtures are absent: `docs/` is gitignored, so a fresh
     /// clone has none of them.
+    ///
+    /// **The SPAN counts moved once since, and not because of anything in this file.** `readOffice`
+    /// also runs `resolvingFontSubstitution`, which used to CUT a span at every coverage boundary;
+    /// it now records one representative per declared font and never cuts. bus-headings went 755 →
+    /// 609 spans and tago-tables 901 → 740 on that change alone. What this test is actually guarding
+    /// — the character count and the resolved-FAMILY histogram, the only things three-slot
+    /// resolution can alter — is unchanged in every fixture, which is the assertion that matters.
     func testTheFourOdtFixturesResolveExactlyTheFamiliesTheyDidBeforeSlotsExisted() throws {
         let expected: [String: (spans: Int, characters: Int, families: [String: Int])] = [
-            "bus-headings": (755, 6670, ["<none>": 754, "휴먼엑스포": 1]),
-            "tago-tables": (901, 8248, ["<none>": 900, "휴먼엑스포": 1]),
+            "bus-headings": (609, 6670, ["<none>": 608, "휴먼엑스포": 1]),
+            "tago-tables": (740, 8248, ["<none>": 739, "휴먼엑스포": 1]),
             "notes": (14, 200, ["<none>": 14]),
             "embed": (12, 114, ["<none>": 12]),
         ]

@@ -163,19 +163,26 @@ final class OfficeMarkdownSerializerTests: XCTestCase {
         XCTAssertEqual(s, "**a**b", s)
     }
 
-    /// End-to-end through the real resolver (not a hand-built split): a bold run mixing digits and a
-    /// trailing Korean character — the report's own repro (`'18년`) — genuinely splits under font
-    /// substitution (digits are covered by the declared bold Latin font, `년` is not), and the
-    /// serializer must still emit it as one Markdown span.
-    func testBoldRunSplitByRealFontSubstitutionSerializesAsOneMarkdownSpan() {
+    /// End-to-end through the real resolver: the report's own repro (`'18년`), a bold run mixing a
+    /// curly quote, digits and a Korean character.
+    ///
+    /// **This test's SANITY assertion was inverted deliberately, and the inversion is the record of a
+    /// design change.** It used to demand `resolvedSpans.count > 1` — because the resolver split a
+    /// run at each coverage boundary, which is what could glue `**18****년**` together. That splitting
+    /// is gone: `FontSubstitutionResolver` now records ONE representative per declared font and never
+    /// cuts a span, so this run arrives whole and the serializer's coalescing is not even exercised
+    /// by it. The end-to-end assertion is kept (the output must still be right through the real
+    /// path); the hand-built
+    /// `testAdjacentSpansThatDifferOnlyInResolvedFontDescriptorCoalesceBeforeEmittingDelimiters`
+    /// above is now what actually exercises the coalescing, since a reader can still emit adjacent
+    /// spans differing only in that field.
+    func testABoldRunMixingScriptsSerializesAsOneMarkdownSpan() {
         let block = OfficeBlock.paragraph(spans: [Span(text: "\u{2018}18년", bold: true)])   // '18년
         let resolved = block.resolvingFontSubstitution()
         guard case let .paragraph(resolvedSpans, _, _, _, _) = resolved else {
             return XCTFail("must stay a paragraph")
         }
-        XCTAssertGreaterThan(resolvedSpans.count, 1,
-                             "sanity: this probe text must genuinely be split by real font substitution, " +
-                             "or this test would pass vacuously regardless of the coalescing fix")
+        XCTAssertEqual(resolvedSpans.count, 1, "the resolver must no longer split a run at all")
         let extracted = OfficeMarkdownSerializer.serialize([resolved])
         XCTAssertEqual(extracted, "**\u{2018}18년**", extracted)
         XCTAssertFalse(extracted.contains("****"), extracted)
