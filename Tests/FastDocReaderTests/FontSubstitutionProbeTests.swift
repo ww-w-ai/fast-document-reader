@@ -197,12 +197,26 @@ final class FontSubstitutionProbeTests: XCTestCase {
         urls.sort { $0.path < $1.path }
         let stride = max(1, urls.count / limit)
         let sample = Swift.stride(from: 0, to: urls.count, by: stride).map { urls[$0] }
-        print("corpus sample: \(sample.count) of \(urls.count) documents (every \(stride)th, sorted by path)")
+
+        // **Write to a FILE, not just stdout.** `swift test` buffers a test's stdout to process exit
+        // and then TRUNCATES it: a first run of this probe printed 47 of 121 documents and passed,
+        // with nothing anywhere saying the other 74 had been dropped — the exact silent truncation
+        // this project's working style forbids, and it would have quietly halved the corpus this
+        // change is judged on. `FMD_SUBST_CORPUS_OUT` names a file that gets every line.
+        var lines: [String] = ["corpus sample: \(sample.count) of \(urls.count) documents "
+                                + "(every \(stride)th, sorted by path)"]
+        func emit(_ line: String) { print(line); lines.append(line) }
+        defer {
+            if let out = ProcessInfo.processInfo.environment["FMD_SUBST_CORPUS_OUT"] {
+                try? lines.joined(separator: "\n").write(toFile: out, atomically: true, encoding: .utf8)
+            }
+        }
+        emit(lines[0])
 
         let theme = RenderTheme.current(size: 16)
         for url in sample {
             guard let raw = try? rawRead(url) else {
-                print("SKIP\t\(url.lastPathComponent)\tread threw")
+                emit("SKIP\t\(url.lastPathComponent)\tread threw")
                 continue
             }
             let cache = FontSubstitutionCache()
@@ -212,7 +226,7 @@ final class FontSubstitutionProbeTests: XCTestCase {
                                                 tableWidth: 600)
             let storage = NSTextStorage()
             storage.setAttributedString(built)
-            print("DOC\tchars=\(built.length)\tspans=\(spanCount(resolved.blocks))"
+            emit("DOC\tchars=\(built.length)\tspans=\(spanCount(resolved.blocks))"
                   + "\tbuiltFontRuns=\(fontRuns(built))\tinstalledFontRuns=\(fontRuns(storage))"
                   + "\tct=\(cache.coreTextCallCount)\t\(url.lastPathComponent)")
         }
