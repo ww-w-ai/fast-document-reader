@@ -65,12 +65,6 @@ final class MarkdownDocument: NSDocument {
     /// debounced re-render measures the debounce and stops before the work begins.
     private(set) var renderGeneration = 0
 
-    /// Indices into `officeBlocks` of the tables this render left out so the document could paint
-    /// (`OfficeTextBuilder.giantTableIndices`), cleared once `spliceDeferredTables` has put them all
-    /// back. Empty for every markdown/plain-text document and for 98.6% of office ones; `private(set)`
-    /// so a test can assert a document deferred nothing without reaching through the render path.
-    private(set) var deferredTables: Set<Int> = []
-
     // While the up-front measure pass is rendering uncached diagrams, their exact size isn't known
     // yet — reconcileMedia must NOT load them (that would resize under the reader). Cleared once the
     // pass finishes and every diagram has been sized. `prerenderToken` cancels a stale pass when a
@@ -1017,19 +1011,12 @@ final class MarkdownDocument: NSDocument {
             // placeholder width and visibly resized a moment later (the "table shrinks then grows"
             // flicker), and the resize pass then has real work to do on every single render.
             let pad = wc.textView.textContainer?.lineFragmentPadding ?? 5
-            // A handful of documents (1.4%) carry a table so large that BUILDING its grid is the
-            // whole opening freeze — 2,351 of 3,329 ms on a 51,816-cell report. Those are left out
-            // here and spliced in after the first paint (`spliceDeferredTables`). Empty for 99.3%
-            // of tables and for every markdown/plain-text document, and an empty set builds exactly
-            // the string this line built before (invariant 37).
-            deferredTables = OfficeTextBuilder.giantTableIndices(officeBlocks)
             attr = OfficeTextBuilder.build(officeBlocks, theme: theme,
                                            columnWidth: colW,
                                            documentDefaultFontSize: officeDefaultBodyFontSize,
                                            pageContentWidth: officePageContentWidth,
                                            tableWidth: max(1, colW - 2 * pad),
-                                           comments: officeComments,
-                                           deferringTables: deferredTables)
+                                           comments: officeComments)
         }
         wc.display(attr)
         wc.window?.title = displayName ?? "fast-md-reader"
@@ -1043,14 +1030,7 @@ final class MarkdownDocument: NSDocument {
             // Lay out the WHOLE document up front (media are just placeholders, so it's cheap): the
             // scrollbar then reflects the full length immediately — the user sees how much content
             // there is without scrolling. Content itself streams in lazily via reconcileMedia.
-            // The completion runs only if this walk finished on the string it started on, which is
-            // the guarantee the splice below needs: it may not edit under a running walk, and a
-            // superseded render must not splice at all.
-            let generation = self.renderGeneration
-            wc.precomputeLayout { [weak self, weak wc] in
-                guard let self, let wc, self.renderGeneration == generation else { return }
-                self.spliceDeferredTables(into: wc, generation: generation)
-            }
+            wc.precomputeLayout()
             self.reconcileMedia(in: wc)   // load only what's on screen now
             // Then, in the background, render EVERY uncached diagram to the disk cache so its exact
             // size is known — the scrollbar becomes correct and never resizes again as you scroll
@@ -1060,98 +1040,6 @@ final class MarkdownDocument: NSDocument {
             // is known before it lands. Docs with no remote images skip this.
             self.measureRemoteImages(in: wc)
         }
-    }
-
-    /// Puts each giant table's grid back, one per run-loop turn, after the document has already
-    /// painted without them. See `docs/giant-table-deferral-design.md` — the summary of why this
-    /// exists and why it is shaped this way:
-    ///
-    ///  • The freeze it removes is `OfficeTextBuilder.build` + `display`, ONE uninterruptible turn
-    ///    (invariant 49). On a 51,816-cell report that is 3,329 ms before anything is on screen;
-    ///    without these five grids it is 664 ms. The work is not saved, it is MOVED — 418 ms of
-    ///    deferred build plus 1,912 ms of payback here adds up to one full build, within 1%.
-    ///  • **Nothing here forces layout, and `precomputeLayout` must never run again afterwards.**
-    ///    That is the whole finding: forcing it costs a 211 ms freeze with two slices over 200 ms,
-    ///    while leaving TextKit to lay these tables out on its own settles the full document in
-    ///    ~7.5 s with a WORST slice of 45 ms and none over 50 — measured twice. Invariant 49 records
-    ///    two failed attempts to make this freeze smaller by slicing the walk finer; the answer was
-    ///    never a finer slice, it was not walking these tables at all.
-    ///  • One table per turn, because building one is 25–862 ms of real main-thread work. Doing all
-    ///    five in a turn would be a 1.9 s freeze — trading the freeze we removed for a later one.
-    ///
-    /// Media and the outline are refreshed once at the end (a splice moves every heading offset
-    /// after it), mirroring what `spliceRender` already does for a markdown edit.
-    private func spliceDeferredTables(into wc: DocumentWindowController, generation: Int) {
-        guard !deferredTables.isEmpty, kind == .office, wc.textStorageRef != nil else { return }
-        // The reader's position is recorded ONCE, before the first mutation, and carried forward:
-        // every splice above it pushes their line down by its own delta, so restoring the anchor
-        // unshifted would silently land them on different text. At open this is character 0 and
-        // costs nothing; it matters on ⌘+, which re-renders wherever the reader happens to be.
-        var anchor = wc.readingAnchor()
-
-        func spliceNext() {
-            guard renderGeneration == generation, let storage = wc.textStorageRef else { return }
-            // Found by attribute, never by matching the stand-in's text: the glyph is presentation
-            // and could change, the attribute is the contract (`MDAttr.deferredTable`).
-            var found: (range: NSRange, index: Int)?
-            storage.enumerateAttribute(MDAttr.deferredTable,
-                                       in: NSRange(location: 0, length: storage.length)) { value, range, stop in
-                guard let index = value as? Int else { return }
-                found = (range, index)
-                stop.pointee = true
-            }
-            guard let (standIn, blockIndex) = found, blockIndex < officeBlocks.count else {
-                finish()
-                return
-            }
-            let theme = RenderTheme.current(size: readingSize)
-            let colW = wc.textView.textContainer?.size.width ?? 800
-            let pad = wc.textView.textContainer?.lineFragmentPadding ?? 5
-            // Built with `deferringTables` EMPTY, so this one table renders in full — same builder,
-            // same widths as the surrounding document, so the first paint of the grid is its final
-            // one and `resizeTableColumns` finds nothing to move (invariant 48b).
-            let piece = NSMutableAttributedString(attributedString:
-                OfficeTextBuilder.build([officeBlocks[blockIndex]], theme: theme,
-                                        columnWidth: colW,
-                                        documentDefaultFontSize: officeDefaultBodyFontSize,
-                                        pageContentWidth: officePageContentWidth,
-                                        tableWidth: max(1, colW - 2 * pad),
-                                        comments: officeComments))
-            // A one-block build numbers its block from zero. The stand-in already holds the id this
-            // table had in the full document, so the grid inherits it — two neighbours sharing an id
-            // would merge into one stop for the reading cursor (invariant 19's lesson).
-            if let id = storage.attribute(MDAttr.blockId, at: standIn.location, effectiveRange: nil) {
-                piece.addAttribute(MDAttr.blockId, value: id,
-                                   range: NSRange(location: 0, length: piece.length))
-            }
-            let delta = piece.length - standIn.length
-            storage.beginEditing()
-            storage.replaceCharacters(in: standIn, with: piece)
-            storage.endEditing()
-            if standIn.location + standIn.length <= anchor.char {
-                anchor = DocumentWindowController.ReadingAnchor(char: anchor.char + delta,
-                                                                offsetFromTop: anchor.offsetFromTop)
-            } else if standIn.location < anchor.char {
-                // The reader was ON the stand-in itself; the grid that replaced it starts here.
-                anchor = DocumentWindowController.ReadingAnchor(char: standIn.location,
-                                                                offsetFromTop: anchor.offsetFromTop)
-            }
-            DispatchQueue.main.async { spliceNext() }
-        }
-
-        func finish() {
-            guard renderGeneration == generation else { return }
-            deferredTables = []
-            // Every heading after a splice sits at a different character now, and the outline reads
-            // those offsets to jump (invariant 23's rule: anything that changes the text ends here).
-            wc.refreshAfterMutation()
-            wc.reloadOutline()
-            wc.restore(anchor)
-            presizeKnownMedia(in: wc)
-            reconcileMedia(in: wc)
-        }
-
-        DispatchQueue.main.async { spliceNext() }
     }
 
     /// The up-front measure pass. On the FIRST open of a diagram-heavy document nothing is cached,

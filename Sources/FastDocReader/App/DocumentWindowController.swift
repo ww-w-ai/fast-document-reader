@@ -892,18 +892,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// are rasterized) so the scroll bar reflects the full length immediately: the reader sees how
     /// much content there is without scrolling. Done in small chunks across run-loop turns to keep
     /// the UI responsive; aborts if the document changes.
-    /// `then` runs ONLY when the walk reached the end of the document it started on, with its token
-    /// intact — i.e. no later render superseded it and nothing edited the storage underneath it. A
-    /// caller that splices content in (see `MarkdownDocument.spliceDeferredTables`) needs exactly
-    /// that guarantee: it must not mutate a string a walk is still crawling, and it must not fire at
-    /// all if the render it belongs to has already been replaced.
-    func precomputeLayout(then: (() -> Void)? = nil) {
+    func precomputeLayout() {
         layoutToken += 1
         let token = layoutToken
         layoutStepCount = 0
         guard let lm = textView.layoutManager, let storage = textView.textStorage else { return }
         let total = storage.length
-        if total == 0 { then?(); return }
         // MEASURED TWICE, don't re-derive. A flat CHARACTER count looks like the wrong bound here:
         // characters are a cost proxy that misreads office documents (the same proxy failure
         // `runBusy` documents at the top of this file), so a 38-table report of 20k characters is
@@ -932,12 +926,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // pins the character bound, so a third attempt has to measure rather than argue.
         let chunk = 20_000
         func step(_ loc: Int) {
-            guard token == self.layoutToken, self.textView.textStorage?.length == total else { return }
-            guard loc < total else { then?(); return }
+            guard token == self.layoutToken, loc < total, self.textView.textStorage?.length == total else { return }
             self.layoutStepCount += 1
             let end = min(loc + chunk, total)
             lm.ensureLayout(forCharacterRange: NSRange(location: loc, length: end - loc))
-            if end < total { DispatchQueue.main.async { step(end) } } else { then?() }
+            if end < total { DispatchQueue.main.async { step(end) } }
         }
         DispatchQueue.main.async { step(0) }
     }

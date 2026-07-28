@@ -93,41 +93,12 @@ enum OfficeTextBuilder {
     /// receive it — cells build through a separate, already-deep call chain
     /// (`appendTable`→`cellContent`) and a comment anchored inside a table cell is rare enough that
     /// widening that chain wasn't worth the added surface for this sprint.
-    /// Indices (into `blocks`) of the tables big enough that building their grid is what makes a
-    /// document freeze on open — the ONE place this line is drawn, so the render path and every test
-    /// judge the same tables. `rows >= 50 AND rows × maxColumns >= 500`, measured over 1,280
-    /// documents / 11,207 tables: it fires on 0.68% of tables and 1.4% of documents while removing
-    /// 30.9% of all grid cells, and on ZERO of the reference manual's 388 tables. Both halves are
-    /// load-bearing — row count alone catches a 103×2 prose table that costs nothing.
-    /// See `docs/giant-table-deferral-design.md`.
-    static func giantTableIndices(_ blocks: [OfficeBlock]) -> Set<Int> {
-        var out: Set<Int> = []
-        for (i, b) in blocks.enumerated() {
-            guard case let .table(rows, _, _, _) = b else { continue }
-            let r = rows.count
-            guard r >= 50 else { continue }
-            let cols = rows.map { $0.reduce(0) { $0 + $1.colSpan } }.max() ?? 0
-            if r * cols >= 500 { out.insert(i) }
-        }
-        return out
-    }
-
-    /// The stand-in a deferred table leaves behind. Deliberately language-neutral — this app has no
-    /// localisation table, and a word here would ship one language to all 23 stores. It is on screen
-    /// for about a second, and only for a reader who scrolled ~121 screens down within that second.
-    static let deferredTableStandIn = "⋯"
-
-    /// `deferringTables` — indices whose `.table` is replaced by a one-paragraph stand-in carrying
-    /// `MDAttr.deferredTable`, so `MarkdownDocument` can paint now and splice the grid in after
-    /// (invariant 49's freeze, see `docs/giant-table-deferral-design.md`). EMPTY is the default and
-    /// the identity: nothing about any other document changes, byte for byte (invariant 37).
     static func build(_ blocks: [OfficeBlock], theme: RenderTheme,
                       columnWidth: CGFloat = .greatestFiniteMagnitude,
                       documentDefaultFontSize: CGFloat = 11,
                       pageContentWidth: CGFloat? = nil,
                       tableWidth: CGFloat? = nil,
-                      comments: [OfficeComment] = [],
-                      deferringTables: Set<Int> = []) -> NSAttributedString {
+                      comments: [OfficeComment] = []) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var blockSeq = 0
         // Ordered-list numbering state, keyed by nesting level. Lives for the whole build() call
@@ -206,20 +177,6 @@ enum OfficeTextBuilder {
                                alignment: alignment, tabStops: tabStops, into: result,
                                theme: theme, orderedCounters: &orderedCounters, fontSizeScale: fontSizeScale,
                                format: format, commentNumbers: commentNumbers)
-
-            case .table where deferringTables.contains(index):
-                // Holds this table's PLACE (and, via `tagBlock` below, its block id) so the splice
-                // that follows is a local replacement rather than a re-render. Styled as an ordinary
-                // body paragraph: it must not reserve the grid's eventual height, because the whole
-                // point is that this document is short until the grid arrives.
-                let standIn = NSMutableAttributedString(string: Self.deferredTableStandIn + "\n")
-                standIn.addAttributes([.font: theme.bodyFont, .foregroundColor: theme.secondaryColor,
-                                       .paragraphStyle: bodyParagraphStyle(theme: theme, format: format,
-                                                                           fontSizeScale: fontSizeScale,
-                                                                           columnWidth: columnWidth),
-                                       MDAttr.deferredTable: index],
-                                      range: NSRange(location: 0, length: standIn.length))
-                result.append(standIn)
 
             case let .table(rows, headerRows, columnWidths, tableFormat):
                 appendTable(rows, headerRows: headerRows, columnWidths: columnWidths, tableFormat: tableFormat,

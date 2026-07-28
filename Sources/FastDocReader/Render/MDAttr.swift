@@ -105,13 +105,4 @@ enum MDAttr {
     /// the width the document happened to be built at. Office only; markdown images size themselves
     /// from their own pixels (`fittedSize`) and never carry this.
     static let officeGraphic = NSAttributedString.Key("mdOfficeGraphic")
-
-    /// Value = `Int`, the index into `MarkdownDocument.officeBlocks` of a table whose GRID was left
-    /// out of this build so the document could paint, set on the one-paragraph stand-in that holds
-    /// its place. `MarkdownDocument.spliceDeferredTables` finds each stand-in by THIS attribute —
-    /// never by matching the stand-in's text, which would break the moment the glyph changed — and
-    /// replaces it with the real table. Present only while a splice is outstanding: a document with
-    /// no qualifying table (99.3% of them) never carries it, and after the pass finishes none
-    /// remains. See `docs/giant-table-deferral-design.md`.
-    static let deferredTable = NSAttributedString.Key("mdDeferredTable")
 }
