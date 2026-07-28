@@ -81,11 +81,31 @@ enum ScriptRunSplitter {
         var pieceStart = scalars.startIndex
 
         // `resolved` is the family of the piece being built. `isResolved` is separate from it being
-        // non-nil because `nil` is a real answer ("the document named no family"), so "we have not
-        // seen a classifying scalar yet" cannot be encoded as `resolved == nil`. Until the first one
-        // arrives, absorbed scalars accumulate into a piece whose family is still undecided — which
-        // is how a run that opens with a space or an opening bracket hands that punctuation to the
-        // first real piece instead of stranding it in one of its own.
+        // non-nil because "we have not decided this piece's family yet" has to be distinguishable
+        // from "we decided, and the answer is no family" — until the first deciding scalar arrives,
+        // scalars accumulate into a piece whose family is still undecided, which is how a run that
+        // opens with a space or an opening bracket hands that punctuation to the first real piece
+        // instead of stranding it in one of its own.
+        //
+        // **A scalar whose slot resolves to NO FAMILY decides nothing and breaks nothing.** This is
+        // the correction three independent reviews arrived at from three different directions, all
+        // measuring the same defect: `nil` was being compared as though it were a family name, so a
+        // slot the document never declared read as "a different typeface" and reintroduced, through
+        // the back door, exactly the break-on-the-SLOT behaviour this splitter exists to avoid
+        // (`docs/per-script-font-design.md` §1). Measured through the real dispatch, before this
+        // line: an .odt whose style declares only the western slot turned a 167-character Korean
+        // paragraph from 2 spans into 50 — 제1항 became 제 / 1 / 항, character by character, because
+        // the undeclared East-Asian slot kept "disagreeing" with the declared Latin one; a .docx
+        // whose runs carry `w:asciiTheme="minorEastAsia"` (2,422 of them in one real corpus file)
+        // split every sentence in two and left the Latin half with no family at all, 1,189 spans
+        // becoming 2,186.
+        //
+        // Treating it as absorbing is not merely cheaper, it is what the document MEANS: a slot it
+        // never declared carries no opinion about this text, so the text belongs to whatever family
+        // its neighbours established. That also makes the invariant-37 guarantee stronger than it
+        // was — a document declaring exactly ONE slot now yields exactly one piece, i.e. byte for
+        // byte what it rendered before per-slot fonts existed, and the proof is structural rather
+        // than a fixture that happens to agree.
         var resolved: String?
         var isResolved = false
         var memoSlot: Slot?
@@ -102,13 +122,15 @@ enum ScriptRunSplitter {
                     memoSlot = slot
                     memoFamily = candidate
                 }
-                if !isResolved {
-                    resolved = candidate
-                    isResolved = true
-                } else if candidate != resolved {
-                    pieces.append(Piece(text: text[pieceStart..<index], family: resolved))
-                    pieceStart = index
-                    resolved = candidate
+                if let candidate {
+                    if !isResolved {
+                        resolved = candidate
+                        isResolved = true
+                    } else if candidate != resolved {
+                        pieces.append(Piece(text: text[pieceStart..<index], family: resolved))
+                        pieceStart = index
+                        resolved = candidate
+                    }
                 }
             }
             index = scalars.index(after: index)

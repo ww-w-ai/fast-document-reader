@@ -1686,11 +1686,30 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertEqual(spans[0].fontName, "Parent Complex")
     }
 
-    /// A slot the document never declared resolves to NO family — the theme's own body font — and
-    /// never borrows the family from a neighbouring slot. Borrowing is precisely the defect this work
-    /// removes (Hangul drawn in the face chosen for English words), and ODF states the three
-    /// properties independently with no precedence between them.
-    func testAnUndeclaredSlotFallsToTheThemeFontRatherThanTheLatinFamily() throws {
+    /// A slot the document never declared states NO OPINION, so it neither starts a piece nor breaks
+    /// one: the text rides along in whatever family its neighbours established.
+    ///
+    /// **This reverses what this test asserted when the slot work first landed, and the reversal was
+    /// forced by measurement, so the argument it replaces is recorded here rather than deleted.** The
+    /// original position was that an undeclared slot must resolve to the theme's own body font and
+    /// never borrow, because borrowing is how Hangul ends up drawn in the face chosen for English
+    /// words, and because ODF states the three properties independently with no precedence between
+    /// them. Both halves of that are true. What made it untenable is what it costs: `nil` then
+    /// compares as a family in its own right, so an undeclared slot "disagrees" with a declared one
+    /// at every alternation, and a real 167-character Korean paragraph under a western-only style
+    /// went from 2 spans to 50 — `제1항` rendered as 제 / 1 / 항 — which is verbatim the
+    /// per-character fragmentation `docs/per-script-font-design.md` §1 exists to prevent, measured on
+    /// this codebase at build 625 ms to 5.8 s and display 1.5 s to 34 s.
+    ///
+    /// What the reversal gives up is narrower than it first appears. Before per-slot fonts existed,
+    /// a style declaring only the western family applied it to the WHOLE run, Hangul included — so
+    /// riding along is not a new borrowing, it is the behaviour this document already had, and the
+    /// invariant-37 answer. And where the borrowed family has no glyphs for the script (the ordinary
+    /// case: a Latin face and Korean text), `FontSubstitutionResolver` substitutes a covering face
+    /// either way, so what a reader actually sees is nearly unchanged while the span count is not.
+    /// The case genuinely given up is a family that COVERS the script but was chosen for a different
+    /// one; that is rarer than the paragraph above, and quieter than fragmenting it.
+    func testAnUndeclaredSlotRidesAlongWithItsNeighbourRatherThanBreakingTheRun() throws {
         let blocks = try read(
             body: "<text:p><text:span text:style-name=\"S\">A가</text:span></text:p>",
             automaticStyles: """
@@ -1699,9 +1718,25 @@ final class OdtReaderTests: XCTestCase {
             </style:style>
             """)
         guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
-        XCTAssertEqual(spans.map(\.text), ["A", "가"])
+        XCTAssertEqual(spans.map(\.text), ["A가"])
         XCTAssertEqual(spans[0].fontName, "Only Latin")
-        XCTAssertNil(spans[1].fontName)
+    }
+
+    /// The other half of the same rule, and the half that keeps it from being "the western slot
+    /// always wins": once the document DOES declare the East Asian slot, the two families disagree
+    /// for real and the run breaks exactly where they part. Without this, the fix above would read
+    /// as a licence to ignore the asian slot entirely.
+    func testTwoDeclaredSlotsNamingDifferentFamiliesStillBreakTheRun() throws {
+        let blocks = try read(
+            body: "<text:p><text:span text:style-name=\"S\">A가</text:span></text:p>",
+            automaticStyles: """
+            <style:style style:name="S" style:family="text">
+              <style:text-properties fo:font-family="Only Latin" style:font-family-asian="Some Hangul"/>
+            </style:style>
+            """)
+        guard case .paragraph(let spans, _, _, _, _) = blocks[0] else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(spans.map(\.text), ["A", "가"])
+        XCTAssertEqual(spans.map(\.fontName), ["Only Latin", "Some Hangul"])
     }
 
     /// Invariant 37, asserted rather than argued, and the reason a run breaks on the resolved FAMILY

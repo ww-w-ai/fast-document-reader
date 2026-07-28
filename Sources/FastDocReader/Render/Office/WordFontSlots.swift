@@ -162,14 +162,24 @@ struct WordThemeFonts: Equatable {
     ///
     /// Where the two part company is a character whose script cannot be narrowed to one ISO-15924
     /// code. See `WordThemeFonts.scriptCode` for which those are and what they cost.
+    /// **The role's own default falls through to `a:latin` when it is empty**, and that fall-through
+    /// is load-bearing rather than defensive: `a:ea typeface=""` and `a:cs typeface=""` in five of
+    /// five real themes measured here, so a role that stopped at its own default resolved to nothing
+    /// on every real document the moment the character's script missed `byScript`. Measured through
+    /// the real dispatch before this fell through: a run carrying `w:asciiTheme="minorEastAsia"` —
+    /// 2,422 of them in one corpus file — gave its Latin text no family while the Korean beside it
+    /// got 맑은 고딕, so one authored sentence rendered in two faces where Word renders it in one.
+    /// Word reaches 맑은 고딕 there through `w:themeFontLang`, i.e. through the document's LANGUAGE;
+    /// `a:latin` reaches the same family on both corpus themes without naming a language anywhere,
+    /// which is the constraint this reader ships under.
     func family(forThemeRef ref: String, script: String?) -> String? {
         guard let (scheme, role) = Self.target(of: ref) else { return nil }
         let table = scheme == .major ? major : minor
         if let script, let named = table.byScript[script] { return named }
         switch role {
         case .latin: return table.latin
-        case .eastAsian: return table.eastAsian
-        case .complex: return table.complex
+        case .eastAsian: return table.eastAsian ?? table.latin
+        case .complex: return table.complex ?? table.latin
         }
     }
 

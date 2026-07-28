@@ -2696,7 +2696,8 @@ enum DocxReader: OfficeDocumentReader {
                             continue
                         }
                     }
-                    for var span in buildSpans(from: child, styleInfo: styleInfo, pStyleId: pStyleId) {
+                    for var span in buildSpans(from: child, styleInfo: styleInfo,
+                                               pStyleId: pStyleId, neighbourFamily: spans.last?.fontName) {
                         span.link = link
                         appendMerging(span)
                     }
@@ -2798,7 +2799,8 @@ enum DocxReader: OfficeDocumentReader {
     /// crucially cuts on the resolved FAMILY and never on the slot — so a document whose slots all
     /// name the same face, which is the common case and every fixture in this repository, comes back
     /// as a single piece identical to what this function returned before it could split at all.
-    private static func buildSpans(from run: XMLNode, styleInfo: StyleInfo, pStyleId: String?) -> [Span] {
+    private static func buildSpans(from run: XMLNode, styleInfo: StyleInfo, pStyleId: String?,
+                                   neighbourFamily: String? = nil) -> [Span] {
         guard let template = buildSpan(from: run, styleInfo: styleInfo, pStyleId: pStyleId) else { return [] }
         let rPr = run.child("w:rPr")
         let rFonts = resolvedRFonts(pStyleId: pStyleId, styleInfo: styleInfo, direct: parseRFonts(rPr))
@@ -2829,12 +2831,25 @@ enum DocxReader: OfficeDocumentReader {
         // ADDED spans (bus-headings 755 → 1099), because those runs then differed in family from
         // every neighbour and could no longer merge. Asking the table directly is the whole fix, and
         // it costs one lookup on the only shape that can reach it.
+        //
+        // **And when the table's own answer is also nothing, the NEIGHBOUR's family carries across**
+        // — the correction a review measured on a real document rather than on these four fixtures.
+        // Word splits a Korean sentence into one `w:r` per word, so the space between two words is
+        // its own run; in a document declaring only `w:eastAsia`, that run asks the table for the
+        // `ascii` slot, gets nothing, and becomes a family-less span wedged between two spans that
+        // do have one — measured through the real dispatch on one corpus file as 2,704 spans in
+        // 맑은 고딕 alternating with 2,692 carrying no family, including the ", " a reader can see.
+        // Absorption is meant to prevent exactly that, and cannot: it works within one run, and Word
+        // put the space in a different one. `OdtReader` already carries the neighbour across for the
+        // same reason; doing it here too is what stops one document fragmenting differently in the
+        // two formats. Order matters — the table is asked FIRST, so a document that really does
+        // declare `w:ascii="Georgia"` still draws its digits in Georgia.
         if pieces.count == 1, pieces[0].family == nil,
            let first = template.text.unicodeScalars.first,
            !template.text.unicodeScalars.contains(where: { WordFontBlockTable.slot(for: $0, hintsEastAsia: hinted) != nil }) {
             var span = template
             span.fontName = rFonts.family(for: WordFontBlockTable.slot(forValue: first.value, hintsEastAsia: hinted),
-                                          script: nil, theme: theme)
+                                          script: nil, theme: theme) ?? neighbourFamily
             return [span]
         }
         return pieces.map { piece in

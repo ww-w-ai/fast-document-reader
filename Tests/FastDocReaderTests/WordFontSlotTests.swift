@@ -190,8 +190,42 @@ final class WordFontSlotTests: XCTestCase {
     func testEastAsiaThemeReferenceResolvesThroughTheScriptListNotTheEmptyDefault() {
         let theme = koreanOfficeTheme()
         XCTAssertEqual(theme.family(forThemeRef: "minorEastAsia", script: "Hang"), "맑은 고딕")
-        XCTAssertNil(theme.family(forThemeRef: "minorEastAsia", script: nil),
-                     "with no script key there is only the empty a:ea to fall back to")
+    }
+
+    /// **And when the script key misses, the role falls through to `a:latin` rather than to nothing.**
+    /// This assertion is the inverse of the one that stood here first ("with no script key there is
+    /// only the empty a:ea to fall back to"), and the reversal was forced by measurement rather than
+    /// taste, so the case it turns on is pinned here.
+    ///
+    /// `w:asciiTheme="minorEastAsia"` is a real and common shape — 2,422 runs carry it in one corpus
+    /// document — and it asks this function for LATIN text, which no real theme has an
+    /// `a:font script="Latn"` entry for. Stopping at the empty `a:ea` therefore gave the Latin half
+    /// of a sentence no family while the Korean half beside it got 맑은 고딕: one authored run
+    /// rendered in two faces, and 1,189 spans became 2,186. Word reaches 맑은 고딕 there through
+    /// `w:themeFontLang`, i.e. through the document's LANGUAGE; `a:latin` reaches the same family on
+    /// both corpus themes without this reader ever naming a language, which is the constraint it
+    /// ships under. `.han` is the other caller that arrives here with no usable script key — a Han
+    /// character could belong to a `Hans`, `Hant` or `Jpan` entry and only the language separates
+    /// them — so a Hanja inside a Korean paragraph lands here too, and gets the document's own body
+    /// family instead of nothing.
+    func testAThemeRoleWhoseOwnDefaultIsEmptyFallsThroughToTheLatinDefault() {
+        let theme = koreanOfficeTheme()
+        XCTAssertEqual(theme.family(forThemeRef: "minorEastAsia", script: nil), "맑은 고딕")
+        XCTAssertEqual(theme.family(forThemeRef: "minorEastAsia", script: "Hani"), "맑은 고딕",
+                       "a Han character cannot be narrowed to one ISO-15924 entry without the language")
+        XCTAssertEqual(theme.family(forThemeRef: "minorBidi", script: nil), "맑은 고딕",
+                       "a:cs is empty in five of five real themes, so cs falls through the same way")
+        XCTAssertEqual(theme.family(forThemeRef: "minorBidi", script: "Arab"), "Arial",
+                       "a script the list DOES carry still wins over the fall-through")
+    }
+
+    /// The fall-through must not invent a family where the theme genuinely has none, or a document
+    /// with no font scheme at all would start drawing text in something it never asked for.
+    func testAThemeThatDeclaresNothingStillResolvesToNoFamily() {
+        let empty = WordThemeFonts()
+        XCTAssertNil(empty.family(forThemeRef: "minorEastAsia", script: nil))
+        XCTAssertNil(empty.family(forThemeRef: "minorAscii", script: "Hang"))
+        XCTAssertNil(empty.family(forThemeRef: "minorBidi", script: nil))
     }
 
     func testAsciiAndHAnsiThemeReferencesShareTheLatinDefaultAndMajorPicksTheMajorScheme() {
