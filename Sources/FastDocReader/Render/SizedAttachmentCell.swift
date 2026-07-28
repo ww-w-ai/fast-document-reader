@@ -11,6 +11,22 @@ import AppKit
 final class SizedAttachmentCell: NSTextAttachmentCell {
     var reservedSize: NSSize
 
+    /// Set when this picture's pixels were REACHED FOR and could not be produced — either the
+    /// bytes name a format no installed decoder reads (a Word/HWP chart pasted as WMF is the
+    /// common one), or there were no bytes to read at all. `nil` means "nothing has failed":
+    /// an attachment that is merely not-yet-loaded, or purged off-screen, keeps drawing nothing,
+    /// which is what invariant 1's reserved-but-empty space is supposed to look like.
+    ///
+    /// It is a LABEL, not an image, on purpose. The card is drawn HERE, at `cellFrame`, on every
+    /// paint — so a window resize (which re-solves `reservedSize` through
+    /// `DocumentWindowController.resizeOfficeGraphics`, invariant 46) redraws it crisply at the
+    /// new size instead of scaling a bitmap that was baked at some earlier width. Baking it into
+    /// `attachment.image` is what stretched a 22×22 system glyph across a 700×465 frame and made
+    /// an intact document read as a corrupt one; it would equally blur a labelled card.
+    /// Keeping the pixels out of `.image` is also what keeps THIS cell alive to draw them —
+    /// invariant 31: AppKit drops a custom `attachmentCell` the moment `.image` is set.
+    var undrawableLabel: String?
+
     init(reservedSize: NSSize) {
         self.reservedSize = reservedSize
         super.init()
@@ -26,7 +42,14 @@ final class SizedAttachmentCell: NSTextAttachmentCell {
     }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
-        attachment?.image?.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1.0)
+        if let image = attachment?.image {
+            image.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1.0)
+        } else if let undrawableLabel {
+            // The SAME card `OfficeTextBuilder` bakes for a chart it has no picture for at all —
+            // one drawing routine, so "a graphic this reader cannot draw" looks like itself
+            // wherever the discovery happened to be made.
+            OfficeTextBuilder.drawPlaceholderCard(label: undrawableLabel, in: cellFrame)
+        }
     }
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?,
                        characterIndex charIndex: Int, layoutManager: NSLayoutManager) {
