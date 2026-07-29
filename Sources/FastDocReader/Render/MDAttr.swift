@@ -82,6 +82,12 @@ enum MDAttr {
     /// document declared — set alongside the two above, never alone. Word's stock Title and Heading
     /// styles rule the bottom only, and drawing all four for them put every heading in a box.
     static let paraBorderEdges = NSAttributedString.Key("mdParaBorderEdges")
+    /// Value = `String` (a single character), the LEADER a tab should fill its advance with — docx
+    /// `w:tabs/w:tab/@w:leader`, the `······` a table of contents runs between a title and its page
+    /// number. Set on the TAB CHARACTER itself by `OfficeTextBuilder` and drawn at draw time:
+    /// `NSTextTab` has no leader-fill of its own, so the alternative to drawing it ourselves is not
+    /// drawing it at all, which is what this reader did until a real contents page was read.
+    static let tabLeader = NSAttributedString.Key("mdTabLeader")
     /// Value = `[Int]`, the DISPLAY number(s) (`OfficeComment.number`) of the reviewer comment(s)
     /// whose range this span falls within — set by `OfficeTextBuilder` from `Span.commentIds`
     /// resolved against the document's `officeComments` (P6a captured the ids; this is P6b's

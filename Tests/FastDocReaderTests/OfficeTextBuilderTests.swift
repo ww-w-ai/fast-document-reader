@@ -766,6 +766,32 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(officeURL, URL(string: "https://example.com/doc"))
     }
 
+    /// The `······` a contents entry runs between its title and its page number — docx
+    /// `w:tabs/w:tab/@w:leader`. `NSTextTab` has no leader-fill, so the leader is carried on the TAB
+    /// CHARACTER (`MDAttr.tabLeader`) and drawn at draw time; this is the build half.
+    ///
+    /// Only a paragraph whose stops DECLARE a leader gets one — the owner's own line was "유저가
+    /// 직접 지정한 경우에는 그리는게 낫긴 하겠지", so a plain tab stays a plain tab (which is every
+    /// markdown, plain-text and ODT tab, invariant 37).
+    func testATabIsMarkedWithTheLeaderItsOwnStopDeclared() {
+        let dotted = TabStop(position: 400, alignment: .right, leader: .dot)
+        let plain = TabStop(position: 400, alignment: .right, leader: .none)
+
+        func leader(of stop: TabStop) -> String? {
+            let out = build([.paragraph(spans: [span("Title"), span("\t"), span("3")],
+                                        tabStops: [stop])])
+            let tab = (out.string as NSString).range(of: "\t")
+            XCTAssertNotEqual(tab.location, NSNotFound, "the fixture must actually contain a tab")
+            return out.attribute(MDAttr.tabLeader, at: tab.location, effectiveRange: nil) as? String
+        }
+
+        XCTAssertEqual(leader(of: dotted), ".", "a declared dot leader reaches the tab character")
+        XCTAssertNil(leader(of: plain), "an ordinary tab must stay ordinary")
+        XCTAssertEqual(OfficeTextBuilder.leaderCharacter(.hyphen), "-")
+        XCTAssertEqual(OfficeTextBuilder.leaderCharacter(.underscore), "_")
+        XCTAssertNil(OfficeTextBuilder.leaderCharacter(TabLeader.none))
+    }
+
     /// invariant 57 reaching the link branch: a PAGED document that stated a colour on a link keeps
     /// it, because a printed manual setting its cross-references in black is not asking for the
     /// reader's blue. Three cases, and the two that must NOT change are the point of the test.

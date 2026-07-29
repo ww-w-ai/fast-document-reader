@@ -129,6 +129,35 @@ func drawMDDecorations(_ lm: NSLayoutManager, _ storage: NSTextStorage,
         path.stroke()
     }
 
+    // TAB LEADERS (docx `w:tabs/w:tab/@w:leader`) — the `······` a contents entry runs between its
+    // title and its page number. `NSTextTab` has no leader-fill, so the choice is draw it here or not
+    // at all; the owner's call was "유저가 직접 지정한 경우에는 그리는게 낫긴 하겠지", so only a tab
+    // whose own stop declared one is filled (`MDAttr.tabLeader`), never every tab.
+    //
+    // Drawn as TEXT in the run's own font and colour, not as painted dots, so the leader matches the
+    // line it belongs to at any zoom and in either appearance. The tab's own glyph rect IS the span to
+    // fill; a leader is inset half a character at each end so it never touches the words either side.
+    storage.enumerateAttribute(MDAttr.tabLeader, in: charRange) { value, range, _ in
+        guard let leader = value as? String, !leader.isEmpty else { return }
+        let gr = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+        let box = lm.boundingRect(forGlyphRange: gr, in: container).offsetBy(dx: origin.x, dy: origin.y)
+        let font = (storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)
+            ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let color = (storage.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor)
+            ?? Palette.text
+        let unit = NSAttributedString(string: leader, attributes: [.font: font, .foregroundColor: color])
+        let step = unit.size().width
+        guard step > 0.01, box.width > step * 3 else { return }   // too narrow to read as a leader
+        let count = Int(((box.width - step) / step).rounded(.down))
+        guard count > 0 else { return }
+        let run = NSAttributedString(string: String(repeating: leader, count: count),
+                                    attributes: [.font: font, .foregroundColor: color])
+        // Right-aligned inside the tab's span: the leader grows away from the text that follows it,
+        // which is what keeps the page number's own left edge clean.
+        let width = run.size().width
+        run.draw(at: NSPoint(x: box.maxX - width - step / 2, y: box.minY))
+    }
+
     // Thematic breaks → a full-width hairline centered on the marker line.
     storage.enumerateAttribute(MDAttr.rule, in: charRange) { value, range, _ in
         guard value != nil else { return }

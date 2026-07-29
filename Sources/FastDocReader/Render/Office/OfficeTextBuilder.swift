@@ -214,6 +214,7 @@ enum OfficeTextBuilder {
                 if let info = OfficeTextBuilder.fillMarginTabInfo(from: tabStops) {
                     result.addAttribute(MDAttr.fillMarginTab, value: info, range: paragraphRange)
                 }
+                markTabLeaders(tabStops, in: paragraphRange, on: result)
 
             case let .listItem(level, ordered, spans, marker, rtl, alignment, tabStops, _):
                 appendListItem(level: level, ordered: ordered, spans: spans, marker: marker, rtl: rtl,
@@ -851,6 +852,40 @@ enum OfficeTextBuilder {
     /// line their decimal points up under this stop — the same visible effect `.decimal` names.
     /// `leader` is READ but never turned into a drawing instruction here — see `TabLeader`'s own
     /// doc for why (no native AppKit primitive, and a faithful fill is a deferred rendering cost).
+    /// Marks every TAB character in `range` with the leader the document asked a tab to fill with —
+    /// the `······` between a contents entry and its page number. Drawn by `drawMDDecorations`;
+    /// `NSTextTab` carries no leader of its own, so this attribute is the only way the information
+    /// survives to draw time.
+    ///
+    /// ONE leader per paragraph, taken from the LAST stop that declares one: which stop a given tab
+    /// actually lands on is a layout answer, not a build-time one, and a contents line has exactly
+    /// one leader tab — the trailing right-aligned stop that carries the page number. A paragraph
+    /// whose stops declare no leader is untouched, which is every markdown, plain-text and ODT
+    /// paragraph and most docx ones (invariant 37).
+    private static func markTabLeaders(_ tabStops: [TabStop], in range: NSRange,
+                                       on result: NSMutableAttributedString) {
+        guard let leader = tabStops.last(where: { $0.leader != .none })?.leader,
+              let character = leaderCharacter(leader) else { return }
+        let text = result.string as NSString
+        var index = range.location
+        while index < range.upperBound {
+            let found = text.range(of: "\t", options: [], range: NSRange(location: index, length: range.upperBound - index))
+            guard found.location != NSNotFound else { break }
+            result.addAttribute(MDAttr.tabLeader, value: character, range: found)
+            index = found.upperBound
+        }
+    }
+
+    /// The character a `TabLeader` fills with. `.none` has none, which is why this is optional.
+    static func leaderCharacter(_ leader: TabLeader) -> String? {
+        switch leader {
+        case .none: return nil
+        case .dot: return "."
+        case .hyphen: return "-"
+        case .underscore: return "_"
+        }
+    }
+
     private static func officeTextTab(_ stop: TabStop) -> NSTextTab {
         switch stop.alignment {
         case .left: return NSTextTab(textAlignment: .left, location: stop.position, options: [:])
