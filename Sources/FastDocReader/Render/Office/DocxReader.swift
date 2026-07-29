@@ -1721,10 +1721,9 @@ enum DocxReader: OfficeDocumentReader {
     /// is inference by analogy, deliberately made, and worth re-checking if a real 15-item ganada
     /// level ever turns up.
     ///
-    /// NOT modelled on `letterSequence`, and that is not merely a style difference: `letterSequence`
-    /// does positional base-26 (z → aa → ab), which matches LibreOffice but NOT Word, whose Latin
-    /// lists actually go AA, BB, CC past Z by the same repeat rule used above. That divergence is
-    /// pre-existing, out of scope here, and left alone rather than fixed in passing.
+    /// `letterSequence` follows the SAME repeat rule for the same reason (it used to do positional
+    /// base-26 — z → aa → ab — which matches LibreOffice but not Word); the two are deliberately
+    /// consistent rather than one silently disagreeing with the other.
     private static func ganadaSequence(_ n: Int) -> String {
         guard n > 0 else { return "\(n)" }
         let index = (n - 1) % 14
@@ -1770,19 +1769,22 @@ enum DocxReader: OfficeDocumentReader {
         return result
     }
 
-    /// Spreadsheet-column-style base-26 letters (1→a, 26→z, 27→aa, 28→ab, …) — Word's own
-    /// `lowerLetter`/`upperLetter` numbering scheme. Lowercase; `formatNumber` uppercases it for
-    /// `upperLetter`.
+    /// `w:numFmt="lowerLetter"`/`"upperLetter"`: 1→a … 26→z, then 27→aa, 28→bb, 29→cc — the letter
+    /// REPEATED once per completed cycle, which is what Word draws. Lowercase; `formatNumber`
+    /// uppercases it for `upperLetter`.
+    ///
+    /// This was spreadsheet-style positional base-26 (z → aa → ab → ac), which is what LibreOffice
+    /// ships and what a programmer reaches for, but it is not Word: past Z, Word's own Latin lists go
+    /// AA, BB, CC. Microsoft documents exactly that repeat rule for the structurally identical
+    /// Turkish, Bulgarian and Greek fixed alphabets in its numFmt-extensions note, and `ganada` above
+    /// already follows it for Korean — the two schemes now agree instead of one silently disagreeing
+    /// with the other. ECMA-376 §17.18.59 says nothing either way, which is why the divergence
+    /// survived this long; the correction shows only past the 26th item of a list.
     private static func letterSequence(_ n: Int) -> String {
         guard n > 0 else { return "\(n)" }
-        var remainder = n
-        var letters = ""
-        while remainder > 0 {
-            let rem = (remainder - 1) % 26
-            letters = String(UnicodeScalar(UInt8(97 + rem))) + letters
-            remainder = (remainder - 1) / 26
-        }
-        return letters
+        let index = (n - 1) % 26
+        let repeats = (n - 1) / 26 + 1
+        return String(repeating: String(UnicodeScalar(UInt8(97 + index))), count: repeats)
     }
 
     // MARK: word/_rels/document.xml.rels — relationship id → target

@@ -871,6 +871,32 @@ final class DocxReaderTests: XCTestCase {
         ])
     }
 
+    /// Past the 26th item, Word REPEATS the letter — aa, bb, cc — rather than counting in base 26
+    /// like a spreadsheet column (aa, ab, ac). This reader did the spreadsheet thing, which is what
+    /// LibreOffice ships and what `ganada` right beside it already did NOT do; the two schemes agree
+    /// now. Nothing before item 27 moves, which is why the divergence went unnoticed.
+    func testLetterNumberingRepeatsPastZTheWayWordDoes() throws {
+        let numbering = """
+        <w:numbering>
+          <w:abstractNum w:abstractNumId="1">
+            <w:lvl w:ilvl="0"><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%1)"/></w:lvl>
+          </w:abstractNum>
+          <w:num w:numId="80"><w:abstractNumId w:val="1"/></w:num>
+        </w:numbering>
+        """
+        let body = (1...29).map { numberedItem("80", 0, "i\($0)") }.joined()
+        let blocks = try read(document: body, numbering: numbering)
+        let markers = blocks.compactMap { block -> String? in
+            if case .listItem(_, _, _, let marker, _, _, _, _) = block { return marker }
+            return nil
+        }
+        XCTAssertEqual(markers.count, 29)
+        XCTAssertEqual(Array(markers.prefix(3)), ["a)", "b)", "c)"], "the settled range must not move")
+        XCTAssertEqual(markers[25], "z)")
+        XCTAssertEqual(Array(markers[26...]), ["aa)", "bb)", "cc)"],
+                       "Word repeats the letter past Z; base-26 would give aa, ab, ac")
+    }
+
     /// Mechanism: an unknown `w:numFmt` falls back to decimal and still produces a number, rather
     /// than throwing or leaving the marker blank.
     func testUnknownNumFmtFallsBackToDecimal() throws {

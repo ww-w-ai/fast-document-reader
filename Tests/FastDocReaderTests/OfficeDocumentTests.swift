@@ -793,20 +793,31 @@ final class OfficeDocumentTests: XCTestCase {
     /// `display(_:)`'s tail also runs this pass, it would happen right after every render, not only
     /// on a live resize. Most images in real reports live in cells, so this is the common case, and
     /// it was invisible to a builder-only test.
+    /// The fixture is deliberately NOT paged. It used to declare `pageContentWidth: 400`, which made
+    /// the check vacuous for three sessions: a paged column never moves, so `updateTextInset` skips
+    /// the resize passes entirely and both window widths measured the same frozen numbers — an
+    /// assertion that could not tell a correct clamp from a pass that never ran. A document with no
+    /// page width, whose table states its own `sourceWidth`, is the shape where the column really
+    /// does move (`testResizingTheWindowResizesACellGraphicWithTheColumnWhenOnlyItsTableDeclaresAWidth`
+    /// covers the tracking half); this one covers the clamp. That the column moved is asserted, not
+    /// assumed — the guard that stops this going quietly vacuous again.
     func testCellGraphicStaysInsideItsCellWhenTheWindowResizes() throws {
-        // Authored wider than a third of the page: at any column this MUST be clamped by the cell,
-        // never by the column, which is exactly the case the ambient-column bug got wrong.
+        // Authored far wider than a third of the table: at any column this MUST be clamped by the
+        // cell, never by the column, which is exactly the case the ambient-column bug got wrong.
         let cellImage = Cell(blocks: [.image(id: "in-cell", size: CGSize(width: 300, height: 150))])
         let filler = Cell(spans: [Span(text: "b")])
         let doc = MarkdownDocument()
         doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-cellresize-\(UUID().uuidString).docx")
         doc.setOfficeContent(blocks: [.table(rows: [[cellImage, filler, filler]], headerRows: 0,
-                                             columnWidths: [1, 1, 1], format: TableFormat())],
-                             archive: nil, defaultBodyFontSize: 10, pageContentWidth: 400)
+                                             columnWidths: [1, 1, 1],
+                                             format: TableFormat(sourceWidth: 400))],
+                             archive: nil, defaultBodyFontSize: 10)
         doc.makeWindowControllers()
         let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
         let storage = try XCTUnwrap(wc.textStorageRef)
+        XCTAssertFalse(wc.isPaged, "a paged column cannot move, and this test is about what happens when it does")
 
+        var columns: [CGFloat] = []
         for windowWidth in [700.0, 1300.0] {
             wc.window?.setFrame(NSRect(x: 0, y: 0, width: windowWidth, height: 600), display: false)
             wc.updateTextInset()
@@ -819,10 +830,13 @@ final class OfficeDocumentTests: XCTestCase {
             }
             let image = try XCTUnwrap(imageWidth), cell = try XCTUnwrap(cellWidth)
             let column = try XCTUnwrap(wc.textView.textContainer?.size.width)
+            columns.append(column)
             XCTAssertLessThanOrEqual(image, cell + 0.5,
                                      "a cell picture must never exceed its cell (window \(Int(windowWidth)))")
             XCTAssertLessThan(cell, column, "the fixture's cell must genuinely be narrower than the column")
         }
+        XCTAssertGreaterThan(columns[1], columns[0] + 100,
+                             "the two passes must have measured DIFFERENT columns, or this proves nothing")
     }
 
     /// Alignment must survive the WHOLE path, not just the builder: reader → blocks → render →
