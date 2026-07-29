@@ -10,13 +10,26 @@ import AppKit
 /// the next's (header-footer-design.md build step 4 — geometry only; painting the header/footer
 /// into the space this reserves is step 5, not yet built).
 enum PageBandGeometry {
-    /// The gap between one page's footer and the next page's header. No `RenderTheme` token exists
-    /// for "space between pages" (its ratios are all body-text rhythm — line height, paragraph
-    /// spacing, indent), so this is a small fixed placeholder pending step 5's visual pass, not a
-    /// value derived from the document itself.
-    static let gap: CGFloat = 12
+    /// The space a document itself puts between one page's last body line and the next page's
+    /// first: its bottom margin plus the next page's top margin. Both are the PAPER margins — a
+    /// running header lives inside the top one and a footer inside the bottom one, in all three
+    /// formats — so this single number is exactly the band, already carrying the header and footer
+    /// areas the document allowed for.
+    ///
+    /// This replaced a fixed 12pt "gap between pages" the reader invented, which is the mistake
+    /// invariant 57 is about: the document had stated the answer and the app was filling in its own.
+    /// On a real .odt the two agree to within a point (declared 85.10pt against the old measured
+    /// 84.15pt), which is why the invented value looked plausible for as long as it did.
+    ///
+    /// Nil margins mean the document never said, and the band falls back to what this reader must
+    /// draw — see `bandHeight`.
+    static func declaredBand(marginTop: CGFloat?, marginBottom: CGFloat?) -> CGFloat {
+        max(0, (marginTop ?? 0)) + max(0, (marginBottom ?? 0))
+    }
 
-    /// `headerHeight + footerHeight + gap`, or exactly `0` when both measure empty — a document
+    /// The document's own inter-page space (`declaredBand`) — but never less than the header and
+    /// footer this reader actually draws, or they would land on top of the body text. Exactly `0`
+    /// when both measure empty — a document
     /// with no running header or footer must reserve nothing at all (see
     /// `PageBandLayoutDelegate.isActive`, which gates on this being `> 0`, and header-footer-
     /// design.md's own "a document with no header and no footer has band 0 and MUST behave exactly
@@ -33,15 +46,11 @@ enum PageBandGeometry {
     /// real text view.
     static func bandHeight(headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter],
                            theme: RenderTheme, columnWidth: CGFloat,
-                           documentDefaultFontSize: CGFloat, pageContentWidth: CGFloat?) -> CGFloat {
-        let h = measuredHeight(of: headers, theme: theme, columnWidth: columnWidth,
-                               documentDefaultFontSize: documentDefaultFontSize,
-                               pageContentWidth: pageContentWidth)
-        let f = measuredHeight(of: footers, theme: theme, columnWidth: columnWidth,
-                               documentDefaultFontSize: documentDefaultFontSize,
-                               pageContentWidth: pageContentWidth)
-        guard h > 0 || f > 0 else { return 0 }
-        return h + f + gap
+                           documentDefaultFontSize: CGFloat, pageContentWidth: CGFloat?,
+                           pageMarginTop: CGFloat? = nil, pageMarginBottom: CGFloat? = nil) -> CGFloat {
+        measure(headers: headers, footers: footers, theme: theme, columnWidth: columnWidth,
+                documentDefaultFontSize: documentDefaultFontSize, pageContentWidth: pageContentWidth,
+                pageMarginTop: pageMarginTop, pageMarginBottom: pageMarginBottom).band
     }
 
     /// The header height, the footer height, AND the combined band — measured together so a caller
@@ -59,14 +68,20 @@ enum PageBandGeometry {
 
     static func measure(headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter],
                         theme: RenderTheme, columnWidth: CGFloat,
-                        documentDefaultFontSize: CGFloat, pageContentWidth: CGFloat?) -> Sides {
+                        documentDefaultFontSize: CGFloat, pageContentWidth: CGFloat?,
+                        pageMarginTop: CGFloat? = nil, pageMarginBottom: CGFloat? = nil) -> Sides {
         let h = measuredHeight(of: headers, theme: theme, columnWidth: columnWidth,
                                documentDefaultFontSize: documentDefaultFontSize,
                                pageContentWidth: pageContentWidth)
         let f = measuredHeight(of: footers, theme: theme, columnWidth: columnWidth,
                                documentDefaultFontSize: documentDefaultFontSize,
                                pageContentWidth: pageContentWidth)
-        let band = (h > 0 || f > 0) ? h + f + gap : 0
+        guard h > 0 || f > 0 else { return Sides(header: h, footer: f, band: 0) }
+        // The document's own two margins when it stated them, and what this reader must draw when
+        // that is taller — the max, not a sum, because the header and footer are drawn INSIDE those
+        // margins rather than added to them. A document that never stated a margin falls back to the
+        // drawn height alone, which is the honest minimum and what the two sides need.
+        let band = max(declaredBand(marginTop: pageMarginTop, marginBottom: pageMarginBottom), h + f)
         return Sides(header: h, footer: f, band: band)
     }
 

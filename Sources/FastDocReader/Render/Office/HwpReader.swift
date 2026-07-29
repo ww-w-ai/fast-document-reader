@@ -392,6 +392,9 @@ enum HwpReader {
         if let sz = s.size, sz > 0 { span.fontSize = CGFloat(sz) / 100 }
         span.link = s.link
         if let bm = s.bookmark, !bm.isEmpty { span.bookmarks = [bm] }
+        // Only "page" is exported today; anything else is a future rhwp speaking a word this build
+        // does not know, and a page number drawn as its cached value beats one drawn as a guess.
+        if s.pageNumberField == "page" { span.pageNumberField = .page }
 
         /// rhwp's own single-family answer, kept for every span this pass cannot improve on: a
         /// synthetic span with no char shape, a `csId` outside the table, or a parser predating the
@@ -441,6 +444,10 @@ enum HwpReader {
             // first piece alone — copying it onto every piece would publish the same bookmark name
             // several times and give an internal link more than one place to land.
             if index > 0 { out.bookmarks = [] }
+            // Same reason, and the same shape: the field is ONE substitution site. Left on every
+            // piece, a page number that happened to split would be replaced once per piece and draw
+            // "33" on page 3. (Digits are one script, so this is a guard, not a path taken today.)
+            if index > 0 { out.pageNumberField = nil }
             return out
         }
     }
@@ -855,9 +862,18 @@ private struct HwpSpan: Decodable {
     /// a stale binary (invariant 45) or a snake_case rename would leave this `nil` with no error at
     /// all, and that must fail loudly in a test rather than quietly in a month's rendering work.
     var csId: Int?
+    /// `"page"` when this run stands in for HWP's live page-number control, absent otherwise.
+    ///
+    /// HWP writes a page number as a `Control::AutoNumber(Page)` — a control, not characters — so
+    /// before rhwp exported it a Korean footer reading `- 3 -` arrived as `-   -` with the number
+    /// missing entirely. The number rhwp computed rides along as this run's text (what a reader with
+    /// no pagination would show), and this marker lets `PageBandPainter` replace it with the page
+    /// actually being drawn, exactly as it does for Word's `PAGE` field.
+    var pageNumberField: String?
 
     private enum CodingKeys: String, CodingKey {
         case text, bold, italic, underline, strike, color, size, font, link, bookmark, csId
+        case pageNumberField
         case superscript = "super"
         case subscripted = "sub"
     }

@@ -107,6 +107,21 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertNil(try readResult(body: "<text:p>x</text:p>").pageContentWidth)
     }
 
+    func testPageContentWidthSkipsAPageLayoutThatDeclaresNoPaper() throws {
+        // A real writer emits page layouts that carry no paper at all: LibreOffice puts a bare
+        // `<style:page-layout-properties style:layout-grid-standard-mode="true"/>` AHEAD of the real
+        // one, and two of this repo's four page-bearing .odt fixtures (`bus-headings`, `tago-tables`)
+        // are shaped exactly like this. Stopping at the first match found that decoy and abandoned
+        // the whole root, so an A4 document reported NO page geometry — not merely a missing header
+        // band but not paged at all (invariant 57). The search must skip to the first layout that
+        // actually declares a width.
+        let r = try readResult(body: "<text:p>x</text:p>", automaticStyles:
+            "<style:page-layout style:name=\"pmDecoy\"><style:page-layout-properties style:layout-grid-standard-mode=\"true\"/></style:page-layout>"
+            + "<style:page-layout style:name=\"pm1\"><style:page-layout-properties fo:page-width=\"21cm\" fo:margin-left=\"2cm\" fo:margin-right=\"2cm\" fo:page-height=\"29.7cm\" fo:margin-top=\"1.5cm\" fo:margin-bottom=\"1.5cm\"/></style:page-layout>")
+        XCTAssertEqual(r.pageContentWidth ?? -1, 17.0 * 72 / 2.54, accuracy: 0.01)
+        XCTAssertEqual(r.pageContentHeight ?? -1, 26.7 * 72 / 2.54, accuracy: 0.01)
+    }
+
     func testPageContentWidthFromStylesXmlPageLayout() throws {
         // ODF overwhelmingly keeps the page layout in styles.xml — the reader searches both styleRoots.
         let styles = "<office:document-styles><office:automatic-styles>"
@@ -2483,6 +2498,33 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertEqual(result.footers, [
             OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Footer text")])]),
         ])
+    }
+
+    /// ODF caches a field's last-computed value as the element's own TEXT (§7.3.4/§7.5.19), so a
+    /// footer written "- 2 -" is literally the characters `-`, `2`, `-` in the file. Emitting them as
+    /// ordinary text made every page of a real .odt read "- 2 -"; the run has to be MARKED so the band
+    /// painter can put this page's number there instead. The surrounding punctuation must stay
+    /// ordinary text, and the marked run must not merge into it — otherwise substituting the field
+    /// would eat the dashes with it.
+    func testPageNumberAndPageCountFieldsAreMarkedForLiveSubstitution() throws {
+        let styles = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-styles>
+          <office:master-styles>
+            <style:master-page style:name="Standard" style:page-layout-name="pm1">
+              <style:footer><text:p>- <text:page-number text:select-page="current">2</text:page-number> / <text:page-count>9</text:page-count> -</text:p></style:footer>
+            </style:master-page>
+          </office:master-styles>
+        </office:document-styles>
+        """
+        let result = try readResult(body: "<text:p>Body</text:p>", styles: styles)
+        guard case .paragraph(let para)? = result.footers.first?.blocks.first else {
+            return XCTFail("expected one footer paragraph, got \(result.footers)")
+        }
+        let spans = para.spans
+        XCTAssertEqual(spans.map(\.text), ["- ", "2", " / ", "9", " -"],
+                       "each field is its own run so the punctuation around it survives substitution")
+        XCTAssertEqual(spans.map(\.pageNumberField), [nil, .page, nil, .numPages, nil])
     }
 
     /// `style:header-left`/`style:footer-left` — the even-page variant, otherwise untested above.

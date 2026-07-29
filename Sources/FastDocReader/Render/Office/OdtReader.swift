@@ -129,27 +129,34 @@ enum OdtReader: OfficeDocumentReader {
     /// lose its WIDTH, so a bad/missing height clamps only these three fields to nil.
     private static func pageGeometry(styleRoots: [XMLNode]) -> (content: CGFloat, left: CGFloat, right: CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?)? {
         for root in styleRoots {
-            guard let props = root.firstDescendant("style:page-layout-properties"),
-                  let widthRaw = props.attributes["fo:page-width"], let width = parseLength(widthRaw)
-            else { continue }
-            let left = props.attributes["fo:margin-left"].flatMap(parseLength) ?? 0
-            let right = props.attributes["fo:margin-right"].flatMap(parseLength) ?? 0
-            let content = width - left - right
-            guard content > 0 else { continue }
-            var height: CGFloat?
-            var top: CGFloat?
-            var bottom: CGFloat?
-            if let heightRaw = props.attributes["fo:page-height"], let pageHeight = parseLength(heightRaw) {
-                let t = props.attributes["fo:margin-top"].flatMap(parseLength) ?? 0
-                let b = props.attributes["fo:margin-bottom"].flatMap(parseLength) ?? 0
-                let contentHeight = pageHeight - t - b
-                if contentHeight > 0 {
-                    height = contentHeight
-                    top = max(0, t)
-                    bottom = max(0, b)
+            // EVERY page-layout-properties under this root, not just the first: a real writer emits
+            // page layouts that carry no paper at all — LibreOffice writes a bare
+            // `<style:page-layout-properties style:layout-grid-standard-mode="true"/>` ahead of the
+            // real one — and stopping at the first match found that decoy, gave up on the whole root
+            // and left an A4 document with no page geometry, i.e. not paged (invariant 57). Take the
+            // first that actually DECLARES a usable paper width.
+            for props in root.allDescendants("style:page-layout-properties") {
+                guard let widthRaw = props.attributes["fo:page-width"], let width = parseLength(widthRaw)
+                else { continue }
+                let left = props.attributes["fo:margin-left"].flatMap(parseLength) ?? 0
+                let right = props.attributes["fo:margin-right"].flatMap(parseLength) ?? 0
+                let content = width - left - right
+                guard content > 0 else { continue }
+                var height: CGFloat?
+                var top: CGFloat?
+                var bottom: CGFloat?
+                if let heightRaw = props.attributes["fo:page-height"], let pageHeight = parseLength(heightRaw) {
+                    let t = props.attributes["fo:margin-top"].flatMap(parseLength) ?? 0
+                    let b = props.attributes["fo:margin-bottom"].flatMap(parseLength) ?? 0
+                    let contentHeight = pageHeight - t - b
+                    if contentHeight > 0 {
+                        height = contentHeight
+                        top = max(0, t)
+                        bottom = max(0, b)
+                    }
                 }
+                return (content, max(0, left), max(0, right), height, top, bottom)
             }
-            return (content, max(0, left), max(0, right), height, top, bottom)
         }
         return nil
     }
@@ -1805,6 +1812,11 @@ enum OdtReader: OfficeDocumentReader {
         // content. ODF has no known equivalent of Word's auto-inserted `_GoBack`, so nothing is
         // filtered here.
         var pendingBookmarks: [String] = []
+        // Set for exactly the run a `text:page-number`/`text:page-count` field contributes, so the
+        // CACHED number ODF stores as that element's text can be swapped for this page's live value
+        // at paint time (`PageBandPainter.substitutingPageFields`). Without it an .odt footer reading
+        // "- 2 -" showed "- 2 -" on every page, because the file's last-computed 2 is ordinary text.
+        var pendingPageNumberField: PageNumberField?
         /// Emits ONE piece of a run: `family` is the family THIS stretch of text resolved to, which
         /// is one of the style's three slots rather than "the style's font", and is the only thing
         /// separating a piece from its neighbours. Everything else — the bookmark handover, the
@@ -1820,13 +1832,15 @@ enum OdtReader: OfficeDocumentReader {
             // comment's id — see `Span.commentIds` and the `office:annotation`/
             // `office:annotation-end` cases below.
             let commentIds = notes.activeCommentIds
-            guard bookmarks.isEmpty, commentIds.isEmpty else {
+            let field = pendingPageNumberField
+            pendingPageNumberField = nil
+            guard bookmarks.isEmpty, commentIds.isEmpty, field == nil else {
                 spans.append(Span(
                     text: text, bold: style.bold, italic: style.italic, underline: style.underline,
                     underlineStyle: style.underlineStyle, caps: style.caps, smallCaps: style.smallCaps, link: link,
                     strikethrough: style.strikethrough, superscript: style.superscript, subscripted: style.subscripted,
                     bookmarks: bookmarks, commentIds: commentIds, textColor: style.textColor, highlightColor: style.highlightColor,
-                    fontSize: style.fontSize, fontName: family))
+                    fontSize: style.fontSize, fontName: family, pageNumberField: field))
                 return
             }
             // A bookmarked/commented span is never EXTENDED by trailing text either — see the
@@ -1851,6 +1865,7 @@ enum OdtReader: OfficeDocumentReader {
             // `text:span` — see `Span.rtl`'s own doc. Both are left at their defaults by every
             // construction site in this function, so comparing them would always be true.
             if let last = spans.last, last.bookmarks.isEmpty, last.commentIds.isEmpty,
+               last.pageNumberField == nil,
                last.bold == style.bold, last.italic == style.italic, last.underline == style.underline,
                last.strikethrough == style.strikethrough, last.superscript == style.superscript,
                last.subscripted == style.subscripted, last.link == link, last.textColor == style.textColor,
@@ -1982,6 +1997,20 @@ enum OdtReader: OfficeDocumentReader {
                         ? (child.attributes["text:string-value-if-true"] ?? "")
                         : (child.attributes["text:string-value-if-false"] ?? "")
                     appendMerging(text, style, link)
+                case "text:page-number", "text:page-count":
+                    // ODF 1.3 Part 3 §7.3.4/§7.5.19: both elements CACHE their last-computed value as
+                    // their own text content, exactly like `text:hidden-text`'s `string-value`. That
+                    // cached text is emitted verbatim — it is what a reader with no pagination would
+                    // show, and it keeps the surrounding "- N -" punctuation intact — but the run is
+                    // MARKED so the band painter can replace it with this page's real number.
+                    //
+                    // `text:select-page` ("previous"/"current"/"next") is deliberately not honoured:
+                    // this reader's live value is the page the band is being drawn on, and offsetting
+                    // it would need a second field kind for a construct no real document here uses.
+                    // The cached text still shows the author's own intent for those rare cases.
+                    pendingPageNumberField = child.name == "text:page-count" ? .numPages : .page
+                    walk(child, style: style, link: link)
+                    pendingPageNumberField = nil   // never leaks onto the text that FOLLOWS the field
                 case "text:bookmark-start", "text:bookmark":
                     // `text:bookmark` (a zero-length, point bookmark — the common case for a
                     // cross-reference target) and `text:bookmark-start` (the open end of a ranged

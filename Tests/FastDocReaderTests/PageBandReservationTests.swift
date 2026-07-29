@@ -38,10 +38,14 @@ final class PageBandReservationTests: XCTestCase {
         XCTAssertEqual(band, 0, "a present-but-blank header/footer must still reserve nothing")
     }
 
-    /// The additive structure, checked algebraically rather than against a hardcoded point value
-    /// (which would be brittle to font metrics): `both == headerOnly + footerOnly - gap`, since the
-    /// gap is counted exactly once whether one side is present or both are.
-    func testBandHeightIsHeaderPlusFooterPlusExactlyOneGap() {
+    /// With no margins declared, the band is exactly what this reader must DRAW — the two sides,
+    /// nothing added. Checked algebraically rather than against a hardcoded point value (brittle to
+    /// font metrics): `both == headerOnly + footerOnly`.
+    ///
+    /// It used to be `+ 12pt`, a "space between pages" the reader invented; the document's own
+    /// margins say it instead now (`testBandTakesTheDocumentsOwnMarginsWhenItDeclaredThem`), and a
+    /// document that declared none gets no invented padding at all.
+    func testBandHeightIsExactlyHeaderPlusFooterWhenNoMarginsAreDeclared() {
         let header = OfficeHeaderFooter(appliesTo: .defaultPages,
                                         blocks: [.paragraph(spans: [Span(text: "Document Title")])])
         let footer = OfficeHeaderFooter(appliesTo: .defaultPages,
@@ -55,9 +59,36 @@ final class PageBandReservationTests: XCTestCase {
         let both = PageBandGeometry.bandHeight(headers: [header], footers: [footer], theme: theme,
                                                columnWidth: 400, documentDefaultFontSize: 11,
                                                pageContentWidth: 400)
-        XCTAssertGreaterThan(headerOnly, PageBandGeometry.gap, "must include real header height, not just the gap")
-        XCTAssertGreaterThan(footerOnly, PageBandGeometry.gap, "must include real footer height, not just the gap")
-        XCTAssertEqual(both, headerOnly + footerOnly - PageBandGeometry.gap, accuracy: 0.5)
+        XCTAssertGreaterThan(headerOnly, 0, "must include real header height")
+        XCTAssertGreaterThan(footerOnly, 0, "must include real footer height")
+        XCTAssertEqual(both, headerOnly + footerOnly, accuracy: 0.5)
+    }
+
+    /// invariant 57: the document states the space between two pages — its bottom margin plus the
+    /// next page's top margin — and a running header/footer lives INSIDE those margins rather than
+    /// on top of them. So the declared pair wins whenever it is roomy enough, and the drawn height
+    /// wins only when this reader would otherwise overlap the body.
+    func testBandTakesTheDocumentsOwnMarginsWhenItDeclaredThem() {
+        let header = OfficeHeaderFooter(appliesTo: .defaultPages,
+                                        blocks: [.paragraph(spans: [Span(text: "Document Title")])])
+        let drawn = PageBandGeometry.bandHeight(headers: [header], footers: [], theme: theme,
+                                                columnWidth: 400, documentDefaultFontSize: 11,
+                                                pageContentWidth: 400)
+        // Roomy margins (the ordinary case — a 1.5cm/1.5cm A4 is 85pt against a ~26pt header).
+        let roomy = PageBandGeometry.bandHeight(headers: [header], footers: [], theme: theme,
+                                                columnWidth: 400, documentDefaultFontSize: 11,
+                                                pageContentWidth: 400,
+                                                pageMarginTop: 60, pageMarginBottom: 40)
+        XCTAssertEqual(roomy, 100, accuracy: 0.01, "the paper's own 60+40 is the space between pages")
+        XCTAssertGreaterThan(roomy, drawn, "and it is roomier than the header alone needs")
+
+        // Margins too tight for what we draw: expand to fit rather than paint over the body.
+        let tight = PageBandGeometry.bandHeight(headers: [header], footers: [], theme: theme,
+                                                columnWidth: 400, documentDefaultFontSize: 11,
+                                                pageContentWidth: 400,
+                                                pageMarginTop: 1, pageMarginBottom: 1)
+        XCTAssertEqual(tight, drawn, accuracy: 0.01,
+                       "2pt of declared margin cannot hold the header this reader draws")
     }
 
     /// header-footer-design.md §7: even/odd headers are deferred past v1. An `.evenPages`-only
@@ -69,7 +100,7 @@ final class PageBandReservationTests: XCTestCase {
         let band = PageBandGeometry.bandHeight(headers: [evenOnly], footers: [], theme: theme,
                                                columnWidth: 400, documentDefaultFontSize: 11,
                                                pageContentWidth: 400)
-        XCTAssertGreaterThan(band, PageBandGeometry.gap)
+        XCTAssertGreaterThan(band, 0)
     }
 
     // MARK: - 2. PageBandLayoutDelegate (algorithm, in isolation)
@@ -493,7 +524,10 @@ final class PageBandReservationTests: XCTestCase {
         // Identity with the reservation: the SAME two heights step 4 measured (via
         // `PageBandGeometry.measure`) must be what step 5 paints with — not a second, independently
         // measured pair that could silently disagree with the space actually reserved.
-        XCTAssertEqual(content.headerHeight + content.footerHeight + PageBandGeometry.gap,
+        // (This fixture declares no page margins, so the band IS the two drawn heights — see
+        // `testBandTakesTheDocumentsOwnMarginsWhenItDeclaredThem` for the case where the paper's own
+        // margins are roomier and win instead.)
+        XCTAssertEqual(content.headerHeight + content.footerHeight,
                        wc.pageBandDelegate.band, accuracy: 0.01)
     }
 

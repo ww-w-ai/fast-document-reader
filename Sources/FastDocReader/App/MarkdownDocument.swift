@@ -1188,7 +1188,9 @@ final class MarkdownDocument: NSDocument {
                 ? PageBandGeometry.measure(headers: officeHeaders, footers: officeFooters,
                                            theme: theme, columnWidth: colW,
                                            documentDefaultFontSize: officeDefaultBodyFontSize,
-                                           pageContentWidth: officePageContentWidth)
+                                           pageContentWidth: officePageContentWidth,
+                                           pageMarginTop: officePageMarginTop,
+                                           pageMarginBottom: officePageMarginBottom)
                 : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
             wc.configurePageBand(pageContentHeight: officePageContentHeight, band: sides.band,
                                  headers: officeHeaders, footers: officeFooters, theme: theme,
