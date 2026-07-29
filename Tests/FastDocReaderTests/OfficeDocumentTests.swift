@@ -486,6 +486,43 @@ final class OfficeDocumentTests: XCTestCase {
         XCTAssertEqual(doc.officePageMarginRight, 56.7)
     }
 
+    /// invariant 57: a paged document's line is as wide as the page body it declared — no container
+    /// padding taken off either side. This is the defect's own shape, not a proxy for it. The
+    /// reference report's contents style puts its page-number tab at 481.40pt in a 481.90pt body:
+    /// 0.50pt inside what the document declared, and 9.50pt outside a body silently narrowed by
+    /// AppKit's 5pt-a-side default. Every entry's number wrapped to a second line, and the wrap then
+    /// made the entry's first line no longer its last, so `w:jc="both"` justified it and splayed the
+    /// title — two symptoms, one cause, both asserted here.
+    func testAPagedLineIsAsWideAsTheDeclaredPageBodySoATabAtItsEdgeDoesNotWrap() throws {
+        let body: CGFloat = 481.90
+        let tabAtEdge = TabStop(position: 481.40, alignment: .right, leader: .dot)
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-tocwrap-\(UUID().uuidString).docx")
+        doc.setOfficeContent(
+            blocks: [.paragraph(spans: [Span(text: "1. Service"), Span(text: "\t"), Span(text: "4")],
+                                alignment: .justified, tabStops: [tabAtEdge])],
+            archive: nil, defaultBodyFontSize: 10,
+            pageContentWidth: body, pageMarginLeft: 56.7, pageMarginRight: 56.7)
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        let container = try XCTUnwrap(wc.textView.textContainer)
+
+        XCTAssertTrue(wc.isPaged)
+        XCTAssertEqual(container.lineFragmentPadding, 0,
+                       "the app must not take its own margin off a width the document stated")
+        XCTAssertEqual(container.size.width - 2 * container.lineFragmentPadding, body, accuracy: 0.01,
+                       "the USABLE width, which is what a tab stop is measured against")
+
+        // The symptom: one line, so the page number sits beside its title rather than under it.
+        let layout = try XCTUnwrap(wc.textView.layoutManager)
+        layout.ensureLayout(for: container)
+        var lines = 0
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { _, _, _, _, _ in
+            lines += 1
+        }
+        XCTAssertEqual(lines, 1, "a tab 0.5pt inside the declared body must not push its number to a second line")
+    }
+
     func testSetOfficeContentLeavesPageHeightAndVerticalMarginsNilWhenNotPassed() throws {
         let doc = MarkdownDocument()
         doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-pagegeometry-nil-\(UUID().uuidString).docx")
@@ -1080,6 +1117,52 @@ final class OfficeDocumentTests: XCTestCase {
         // The window controllers are exercised (not just discarded) so a render-time crash in either
         // format's heading path would still fail this test.
         _ = (try XCTUnwrap(docxWc.textStorageRef), try XCTUnwrap(odtWc.textStorageRef))
+    }
+
+    /// The same defect as `testAPagedLineIsAsWideAsTheDeclaredPageBodySoATabAtItsEdgeDoesNotWrap`,
+    /// against the document it was reported on rather than a fixture built to its measurements. This
+    /// docx declares A4 with 56.7pt side margins (`w:pgSz w:w="11906"`, `w:pgMar` 1134 twips a side)
+    /// — a 481.90pt body — and its contents style puts a dotted right tab at `w:pos="9628"` twips =
+    /// 481.40pt, half a point inside it. Every table-of-contents entry is therefore a title, a tab,
+    /// and a page number that only fits if the line really is as wide as the document said.
+    func testTheReferenceDocumentsContentsEntriesKeepTheirPageNumbersOnOneLine() throws {
+        let url = repoRoot().appendingPathComponent("docs/fixtures/office/bus-headings.docx")
+        let (doc, wc) = try openOffice(try Data(contentsOf: url))
+        XCTAssertTrue(wc.isPaged, "this fixture declares a page — the whole point of the check")
+        XCTAssertEqual(doc.officePageContentWidth ?? 0, 481.90, accuracy: 0.1)
+
+        let storage = try XCTUnwrap(wc.textStorageRef)
+        let layout = try XCTUnwrap(wc.textView.layoutManager)
+        let container = try XCTUnwrap(wc.textView.textContainer)
+        layout.ensureLayout(for: container)
+
+        // A contents entry is recognised by what makes it one: a paragraph carrying that 481.40pt
+        // right tab. Recognising it by TEXT would silently pass on a day the fixture's wording moved.
+        // PER PARAGRAPH, not per attribute run: consecutive entries share one style, so TextKit hands
+        // back a single run covering several of them and "three line fragments" would mean three
+        // entries on one line each, not one entry wrapped three times.
+        var checked = 0
+        let ns = storage.string as NSString
+        var cursor = 0
+        while cursor < ns.length {
+            let para = ns.paragraphRange(for: NSRange(location: cursor, length: 0))
+            cursor = max(para.upperBound, cursor + 1)
+            guard let style = storage.attribute(.paragraphStyle, at: para.location,
+                                                effectiveRange: nil) as? NSParagraphStyle,
+                  style.tabStops.contains(where: { abs($0.location - 481.40) < 0.6 && $0.alignment == .right })
+            else { continue }
+            let text = ns.substring(with: para)
+            guard text.contains("\t"), text.trimmingCharacters(in: .whitespacesAndNewlines).count > 1 else { continue }
+            var lines = 0
+            layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(forCharacterRange: para,
+                                                                           actualCharacterRange: nil)) { _, _, _, _, _ in
+                lines += 1
+            }
+            checked += 1
+            XCTAssertEqual(lines, 1,
+                           "contents entry \(text.debugDescription) wrapped — its page number is on its own line")
+        }
+        XCTAssertGreaterThan(checked, 0, "found no contents entries; the fixture or the tab position changed")
     }
 
     // MARK: S5 — clause numbering, INVARIANT 29 (through `MarkdownDocument`, not `DocxReader` directly)

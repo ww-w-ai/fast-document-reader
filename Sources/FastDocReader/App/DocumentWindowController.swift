@@ -480,6 +480,21 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             let rightMargin = pagedMarginRight ?? minSideInset
             textView.textContainerInset = NSSize(width: leftMargin, height: verticalInset)
             textView.textContainer?.containerSize = NSSize(width: page, height: CGFloat.greatestFiniteMagnitude)
+            // ZERO, not AppKit's default 5 — the last place the app was quietly narrowing the page.
+            // `containerSize.width` is the body width the DOCUMENT declared, and a padding of 5 takes
+            // it off BOTH sides, so a 481.90pt column laid out at 471.90. Everything authored against
+            // the page's own width then missed by 10pt, and the reference report's table of contents
+            // is what showed it: its page-number tab sits at 481.40pt, 0.50pt inside the declared
+            // body and 9.50pt OUTSIDE the usable one, so every entry's number wrapped to a second
+            // line — and, wrapped, the entry's first line was no longer its LAST, so the style's own
+            // `w:jc="both"` justified it and splayed the title across the column. Two symptoms, one
+            // cause. The inset already positions the text at the paper's own left margin, so removing
+            // the padding does not move the text; it gives the line back the 10pt the document asked
+            // for. The table-width sites all read this padding live (`MarkdownDocument.render`,
+            // `spliceDeferredTables`, `resizeTableColumns`), so invariant 48b's "built at the width
+            // it is laid out at" follows automatically. NON-paged is untouched: it keeps the 5pt,
+            // and `OfficeTextBuilder.fillMarginTrailingInset` keeps re-anchoring tabs there.
+            textView.textContainer?.lineFragmentPadding = 0
             // The document view is FIXED at the page's width, not stretched to the clip. Both halves
             // matter: measured on this machine, a magnified clip's bounds shrink and an
             // autoresizing text view FOLLOWS them (883 → 441 pt at 2×), which would re-wrap the
@@ -541,6 +556,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let column = max(200, clipWidth - 2 * minSideInset)   // fill the window minus margins
         textView.textContainerInset = NSSize(width: minSideInset, height: verticalInset)
         textView.textContainer?.containerSize = NSSize(width: column, height: CGFloat.greatestFiniteMagnitude)
+        // Stated rather than inherited: the paged branch above sets this to 0, and every
+        // `?? 5` fallback in the table-width arithmetic assumes this path is the 5pt one. Assigning
+        // it here is a no-op against AppKit's default and stops that being a hidden dependency.
+        textView.textContainer?.lineFragmentPadding = 5
         var f = textView.frame; f.size.width = clipWidth; textView.frame = f
         return column
     }
