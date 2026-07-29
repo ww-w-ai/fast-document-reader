@@ -105,10 +105,26 @@ func drawMDDecorations(_ lm: NSLayoutManager, _ storage: NSTextStorage,
         _ = storage.attribute(MDAttr.paraBorderColor, at: r0.location, longestEffectiveRange: &range, in: whole)
         let gr = lm.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
         let rect = lm.boundingRect(forGlyphRange: gr, in: container).offsetBy(dx: origin.x, dy: origin.y)
-        let box = NSRect(x: origin.x + width / 2, y: rect.minY + width / 2,
-                         width: container.size.width - width, height: rect.height - width)
+        // The paragraph's OWN column, not the whole container: a border belongs to the paragraph, so
+        // an indented one is ruled where its text sits. `tailIndent` is measured from the trailing
+        // edge when negative (AppKit's convention) and is an absolute width when positive.
+        let style = storage.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle
+        let head = max(0, style?.headIndent ?? 0)
+        let tail = style?.tailIndent ?? 0
+        let right = tail < 0 ? -tail : (tail > 0 ? max(0, container.size.width - tail) : 0)
+        let box = NSRect(x: origin.x + head + width / 2, y: rect.minY + width / 2,
+                         width: max(0, container.size.width - head - right - width),
+                         height: rect.height - width)
         color.setStroke()
-        let path = NSBezierPath(rect: box)
+        // Only the edges the document declared. An absent attribute means every edge — the box this
+        // drew before edges were parsed, which is still what ODT and markdown produce.
+        let raw = (storage.attribute(MDAttr.paraBorderEdges, at: r0.location, effectiveRange: nil) as? NSNumber)?.intValue
+        let edges = raw.map { RectEdge(rawValue: $0) } ?? .all
+        let path = NSBezierPath()
+        if edges.contains(.top) { path.move(to: NSPoint(x: box.minX, y: box.minY)); path.line(to: NSPoint(x: box.maxX, y: box.minY)) }
+        if edges.contains(.bottom) { path.move(to: NSPoint(x: box.minX, y: box.maxY)); path.line(to: NSPoint(x: box.maxX, y: box.maxY)) }
+        if edges.contains(.left) { path.move(to: NSPoint(x: box.minX, y: box.minY)); path.line(to: NSPoint(x: box.minX, y: box.maxY)) }
+        if edges.contains(.right) { path.move(to: NSPoint(x: box.maxX, y: box.minY)); path.line(to: NSPoint(x: box.maxX, y: box.maxY)) }
         path.lineWidth = width
         path.stroke()
     }

@@ -78,6 +78,10 @@ enum MDAttr {
     /// Value = `NSNumber` (CGFloat), the paragraph border's stroke width in points — see
     /// `paraBorderColor`.
     static let paraBorderWidth = NSAttributedString.Key("mdParaBorderWidth")
+    /// Value = `NSNumber` (`RectEdge.rawValue`), WHICH of the paragraph border's four edges the
+    /// document declared — set alongside the two above, never alone. Word's stock Title and Heading
+    /// styles rule the bottom only, and drawing all four for them put every heading in a box.
+    static let paraBorderEdges = NSAttributedString.Key("mdParaBorderEdges")
     /// Value = `[Int]`, the DISPLAY number(s) (`OfficeComment.number`) of the reviewer comment(s)
     /// whose range this span falls within — set by `OfficeTextBuilder` from `Span.commentIds`
     /// resolved against the document's `officeComments` (P6a captured the ids; this is P6b's

@@ -278,6 +278,10 @@ enum OfficeTextBuilder {
                     let width = format.borderWidth ?? 1
                     result.addAttribute(MDAttr.paraBorderColor, value: color, range: range)
                     result.addAttribute(MDAttr.paraBorderWidth, value: NSNumber(value: Double(width)), range: range)
+                    // WHICH edges — empty means the reader said nothing per-edge, which is the
+                    // whole box this drew before the set existed (every ODT paragraph, invariant 37).
+                    let edges = format.borderEdges.isEmpty ? RectEdge.all : format.borderEdges
+                    result.addAttribute(MDAttr.paraBorderEdges, value: NSNumber(value: edges.rawValue), range: range)
                 }
             }
             tagBlock(from: start)
@@ -461,6 +465,24 @@ enum OfficeTextBuilder {
             // Same colour/underline treatment `MarkdownRenderer.inlineFragment`'s `Markdown.Link`
             // case uses — a link must look and behave identically whether it arrived via markdown
             // or an office hyperlink, not grow a second visual style.
+            // A PAGED document that stated a colour on the link keeps it — invariant 57, applied to
+            // the one attribute the link branch below always overwrote. A printed manual that sets
+            // its cross-references in black is not asking for the reader's blue.
+            //
+            // Only when the document SAID something, and this is the whole reason the rule is not
+            // simply "the document always wins": Word's own blue-and-underlined hyperlink comes from
+            // the `Hyperlink` CHARACTER style (`w:rPr/w:rStyle`), which this reader does not resolve
+            // (see `DocxReader.resolvedRFonts`' note — measured at 0.23% of runs, deferred because it
+            // moves size and font as well as colour). So an ordinary Word hyperlink arrives here with
+            // NO authored colour at all, and handing it the body colour would make every link in
+            // every document indistinguishable from the text around it — further from Word, not
+            // closer. The theme's link colour stands in for the style we cannot yet read.
+            //
+            // The UNDERLINE is left forced for a different reason: `Span.underline` is a Bool with no
+            // "unstated" value, so "the document turned underline off" and "the document said
+            // nothing" arrive identically, and the three-state distinction invariant 47 needed for
+            // borders does not exist here. Guessing wrong would silently drop the click affordance.
+            let linkKeepsAuthoredColour = paged && span.textColor != nil && !span.code
             if let link = span.link {
                 if link.hasPrefix("#") {
                     // An in-document anchor (docx `w:anchor`, odt same-document `xlink:href`) —
@@ -471,12 +493,12 @@ enum OfficeTextBuilder {
                     // bare `#fragment` as a relative file path — that misread (clicking a
                     // cross-reference tries to open a file named after the bookmark) is the defect
                     // this exists to prevent, not a style nicety.
-                    attrs[.foregroundColor] = theme.linkColor
+                    if !linkKeepsAuthoredColour { attrs[.foregroundColor] = theme.linkColor }
                     attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
                     attrs[MDAttr.anchor] = String(link.dropFirst())
                     attrs[.link] = URL(string: "fmdanchor:jump")!
                 } else if let url = URL(string: link) {
-                    attrs[.foregroundColor] = theme.linkColor
+                    if !linkKeepsAuthoredColour { attrs[.foregroundColor] = theme.linkColor }
                     attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
                     attrs[.link] = url
                 }

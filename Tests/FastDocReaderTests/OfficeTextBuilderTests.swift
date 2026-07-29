@@ -766,6 +766,35 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(officeURL, URL(string: "https://example.com/doc"))
     }
 
+    /// invariant 57 reaching the link branch: a PAGED document that stated a colour on a link keeps
+    /// it, because a printed manual setting its cross-references in black is not asking for the
+    /// reader's blue. Three cases, and the two that must NOT change are the point of the test.
+    func testAPagedLinkKeepsAnAuthoredColourButAnUncolouredOneStaysTheThemeLink() {
+        var authored = span("click here")
+        authored.link = "https://example.com/doc"
+        authored.textColor = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)   // the document's black
+        var plain = span("click here")
+        plain.link = "https://example.com/doc"
+
+        func colour(_ s: Span, paged: Bool) -> NSColor? {
+            OfficeTextBuilder.build([.paragraph(spans: [s])], theme: theme,
+                                    pageContentWidth: paged ? 400 : nil)
+                .attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+        }
+
+        XCTAssertEqual(colour(authored, paged: true),
+                       OfficeTextBuilder.resolvedTextColor(authored.textColor!, theme: theme),
+                       "a paged document's own link colour wins")
+        // Word's blue-and-underlined hyperlink comes from a CHARACTER style this reader does not
+        // resolve yet, so an uncoloured link must keep the theme's stand-in — handing it the body
+        // colour would make every link in every document invisible as a link.
+        XCTAssertEqual(colour(plain, paged: true), theme.linkColor,
+                       "no authored colour → the theme link colour still stands in")
+        // And the non-paged half does not move at all (invariant 57d).
+        XCTAssertEqual(colour(authored, paged: false), theme.linkColor)
+        XCTAssertEqual(colour(plain, paged: false), theme.linkColor)
+    }
+
     /// THE ACTUAL BUG (S11): an office in-document link (`span.link == "#BookmarkName"`, docx
     /// `w:anchor` / odt same-document `xlink:href`) must NEVER become a bare `.link` URL built from
     /// the raw fragment — `DocumentWindowController.textView(_:clickedOnLink:at:)` treats any
@@ -1606,6 +1635,25 @@ final class OfficeTextBuilderTests: XCTestCase {
         let out = build([.paragraph(spans: [span("Boxed")], format: format)])
         XCTAssertEqual(out.attribute(MDAttr.paraBorderColor, at: 0, effectiveRange: nil) as? NSColor, .systemRed)
         XCTAssertEqual((out.attribute(MDAttr.paraBorderWidth, at: 0, effectiveRange: nil) as? NSNumber)?.doubleValue, 2)
+    }
+
+    /// WHICH edges reaches the drawer, and a border that named none still means all four — the
+    /// unchanged behaviour for every ODT paragraph and every caller predating the edge set.
+    func testParagraphBorderEdgesReachTheDrawerAndDefaultToTheWholeBox() {
+        var underlined = ParagraphFormat()
+        underlined.borderColor = .systemRed
+        underlined.borderWidth = 2
+        underlined.borderEdges = [.bottom]
+        let ruled = build([.paragraph(spans: [span("Heading")], format: underlined)])
+        XCTAssertEqual((ruled.attribute(MDAttr.paraBorderEdges, at: 0, effectiveRange: nil) as? NSNumber)?.intValue,
+                       RectEdge.bottom.rawValue, "a bottom-only rule must not become a box")
+
+        var unspecified = ParagraphFormat()
+        unspecified.borderColor = .systemRed
+        unspecified.borderWidth = 2
+        let boxed = build([.paragraph(spans: [span("Boxed")], format: unspecified)])
+        XCTAssertEqual((boxed.attribute(MDAttr.paraBorderEdges, at: 0, effectiveRange: nil) as? NSNumber)?.intValue,
+                       RectEdge.all.rawValue)
     }
 
     /// A block with no shading/border at all (every pre-P2b call site) must carry NEITHER MDAttr —

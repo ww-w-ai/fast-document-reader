@@ -465,7 +465,7 @@ enum DocxReader: OfficeDocumentReader {
         /// drawn edge's colour/width, checked top/left/bottom/right. Carried as ONE optional pair
         /// (not two independent optionals) because a resolved border is only meaningful with both —
         /// see `ParagraphFormat.borderColor`/`.borderWidth`'s own "mirrors Cell" doc.
-        var border: (color: NSColor?, width: CGFloat?)?
+        var border: (color: NSColor?, width: CGFloat?, edges: RectEdge)?
     }
 
     private struct StyleInfo {
@@ -944,7 +944,7 @@ enum DocxReader: OfficeDocumentReader {
         }
         if let pBdr = pPr?.child("w:pBdr") {
             let border = paragraphBorder(pBdr)
-            if border.color != nil || border.width != nil { props.border = border }
+            if !border.edges.isEmpty { props.border = border }
         }
         return props
     }
@@ -955,14 +955,24 @@ enum DocxReader: OfficeDocumentReader {
     /// EIGHTHS of a point), duplicated rather than shared because the two live under different
     /// parent element names (`w:pBdr` also has `w:between`/`w:bar`, which a paragraph border never
     /// reduces to — this reader only reads the box edges a `Cell`'s single colour/width can express).
-    private static func paragraphBorder(_ pBdr: XMLNode) -> (color: NSColor?, width: CGFloat?) {
-        for edge in ["w:top", "w:left", "w:bottom", "w:right"] {
-            guard let e = pBdr.child(edge), let val = e.attributes["w:val"], val != "nil", val != "none" else { continue }
-            let color = e.attributes["w:color"].flatMap { $0.lowercased() == "auto" ? nil : colorFromHex($0) }
-            let width = e.attributes["w:sz"].flatMap(Double.init).map { CGFloat($0 / 8) }
-            return (color, width)
+    private static func paragraphBorder(_ pBdr: XMLNode) -> (color: NSColor?, width: CGFloat?, edges: RectEdge) {
+        var found: (color: NSColor?, width: CGFloat?)?
+        var edges: RectEdge = []
+        // EVERY edge, not the first one that speaks. Word's own stock Title and Heading styles rule
+        // the BOTTOM only, and returning at the first declared edge lost which one it was, so the
+        // drawer boxed the paragraph on all four sides — a heading with a rule under it came out
+        // inside a rectangle. The colour/width simplification stays (see `ParagraphFormat`), so the
+        // first declared edge still supplies those; what is new is that the others are not drawn.
+        for (name, edge) in [("w:top", RectEdge.top), ("w:left", .left), ("w:bottom", .bottom), ("w:right", .right)] {
+            guard let e = pBdr.child(name), let val = e.attributes["w:val"], val != "nil", val != "none" else { continue }
+            edges.insert(edge)
+            if found == nil {
+                found = (e.attributes["w:color"].flatMap { $0.lowercased() == "auto" ? nil : colorFromHex($0) },
+                         e.attributes["w:sz"].flatMap(Double.init).map { CGFloat($0 / 8) })
+            }
         }
-        return (nil, nil)
+        guard let found else { return (nil, nil, []) }
+        return (found.color, found.width, edges)
     }
 
     /// A `Bool?` sibling of `isOn` (below): `nil` when the tag is entirely absent — "this level has
@@ -1151,7 +1161,7 @@ enum DocxReader: OfficeDocumentReader {
         walkStyleChain(pStyleId, styleInfo: styleInfo) { styleInfo.paraProps[$0]?.shading }
     }
 
-    private static func resolvedBorder(pStyleId: String?, styleInfo: StyleInfo) -> (color: NSColor?, width: CGFloat?)? {
+    private static func resolvedBorder(pStyleId: String?, styleInfo: StyleInfo) -> (color: NSColor?, width: CGFloat?, edges: RectEdge)? {
         walkStyleChain(pStyleId, styleInfo: styleInfo) { styleInfo.paraProps[$0]?.border }
     }
 
@@ -1211,6 +1221,7 @@ enum DocxReader: OfficeDocumentReader {
         let border = direct.border ?? resolvedBorder(pStyleId: pStyleId, styleInfo: styleInfo) ?? defaults.border
         format.borderColor = border?.color
         format.borderWidth = border?.width
+        format.borderEdges = border?.edges ?? []
         return format
     }
 

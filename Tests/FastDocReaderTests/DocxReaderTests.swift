@@ -4081,6 +4081,31 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertEqual(format.borderWidth, 1)
     }
 
+    /// WHICH edges the document drew, which is separate from the one colour/width they collapse to.
+    /// Word's own stock Title and Heading styles rule the BOTTOM only, and reading just the first
+    /// drawn edge lost that: the drawer boxed the paragraph on all four sides, so a heading with a
+    /// rule under it came out inside a rectangle.
+    func testParagraphBorderRecordsWhichEdgesWereActuallyDrawn() throws {
+        let bottomOnly = try read(document: """
+        <w:p><w:pPr><w:pBdr><w:bottom w:val="single" w:sz="8" w:color="112233"/></w:pBdr></w:pPr><w:r><w:t>Title</w:t></w:r></w:p>
+        """)
+        guard case .paragraph(_, _, _, _, let ruled) = bottomOnly.first else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(ruled.borderEdges, [.bottom])
+
+        // An explicitly silenced edge is not a drawn one, and the survivors are still recorded.
+        let mixed = try read(document: """
+        <w:p><w:pPr><w:pBdr><w:top w:val="none"/><w:left w:val="single" w:sz="8"/><w:right w:val="nil"/><w:bottom w:val="single" w:sz="8"/></w:pBdr></w:pPr><w:r><w:t>Sided</w:t></w:r></w:p>
+        """)
+        guard case .paragraph(_, _, _, _, let sided) = mixed.first else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(sided.borderEdges, [.left, .bottom])
+
+        let all = try read(document: """
+        <w:p><w:pPr><w:pBdr><w:top w:val="single" w:sz="8"/><w:left w:val="single" w:sz="8"/><w:bottom w:val="single" w:sz="8"/><w:right w:val="single" w:sz="8"/></w:pBdr></w:pPr><w:r><w:t>Boxed</w:t></w:r></w:p>
+        """)
+        guard case .paragraph(_, _, _, _, let boxed) = all.first else { return XCTFail("expected a paragraph") }
+        XCTAssertEqual(boxed.borderEdges, .all)
+    }
+
     /// Shading/border join the SAME `basedOn` cascade the spacing/indent fields already use — a
     /// leaf style with no `w:shd`/`w:pBdr` of its own must still resolve them from its ancestor,
     /// not just from a paragraph's own direct `w:pPr`.

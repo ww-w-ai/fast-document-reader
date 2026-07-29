@@ -544,6 +544,28 @@ struct ParagraphFormat: Equatable {
     /// than this vocabulary carries, and one uniform colour/width already covers the measured need.
     var borderColor: NSColor? = nil
     var borderWidth: CGFloat? = nil
+    /// WHICH of the four edges the document actually declared — `[.top, .bottom]` for a rule above
+    /// and below, `[.bottom]` for the single underline Word's own stock Title and Heading styles
+    /// draw. Empty means "every edge", the box this reader drew before the set existed, so a
+    /// paragraph that declared nothing per-edge is unchanged (invariant 37).
+    ///
+    /// This is a SET rather than a full three-state `EdgeBorders`: a paragraph border has no
+    /// neighbour to disagree with, so invariant 47's "silenced vs never mentioned" distinction —
+    /// which exists to resolve a shared boundary between two cells — has nothing to resolve here.
+    /// What a paragraph needs is only "draw this edge or don't", and reducing the four edges to one
+    /// colour and width is still the deliberate simplification above; a document that rules its top
+    /// in red and its bottom in blue gets whichever it declared first, on both.
+    var borderEdges: RectEdge = []
+}
+
+/// The four sides of a rectangle, as a set — see `ParagraphFormat.borderEdges`.
+struct RectEdge: OptionSet, Equatable {
+    let rawValue: Int
+    static let top = RectEdge(rawValue: 1 << 0)
+    static let left = RectEdge(rawValue: 1 << 1)
+    static let bottom = RectEdge(rawValue: 1 << 2)
+    static let right = RectEdge(rawValue: 1 << 3)
+    static let all: RectEdge = [.top, .left, .bottom, .right]
 }
 
 /// The format-neutral block vocabulary between a document-format parser (docx/odt/… — later
