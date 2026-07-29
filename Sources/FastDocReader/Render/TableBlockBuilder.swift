@@ -111,6 +111,26 @@ enum TableBlockBuilder {
     /// `rowSpan`/`columnSpan` default to 1, so a caller with no merges (every markdown table, and
     /// an office table before its parser learns `w:gridSpan`/`w:vMerge`) builds these without ever
     /// mentioning them.
+    /// The width a border edge actually OCCUPIES once AppKit has laid it out: the declared width
+    /// rounded UP to a whole point. Both the `setWidth` call and the content-width subtraction go
+    /// through here so they can never disagree.
+    ///
+    /// Measured, not assumed (`SubPointRuleSpikeTests`): a whole-point rule lands exactly at every
+    /// column count, and a FRACTIONAL one overshoots by about a point per column boundary, growing
+    /// with the count — 0.5pt rules finished +2 / +3 / +5 / +9 / +13 past a 600pt target at 2 / 3 /
+    /// 5 / 9 / 13 columns. AppKit charges whole points for a border whatever it is told, so a
+    /// document's `w:sz="4"` (Word's ordinary half point) was being subtracted as 0.5 and charged as
+    /// something larger, and the difference accumulated across every boundary in the row.
+    ///
+    /// This makes the GEOMETRY honest. It does not make the rule thinner: a half-point border still
+    /// DRAWS as one point, which is what AppKit does with it and what this reader showed before.
+    /// Drawing a genuine sub-point rule needs the custom block the spike's own doc sketches — set
+    /// AppKit's width to 0 (or its colour to clear) and stroke it ourselves — and that is a visual
+    /// change that wants an eye on it, not a geometry fix that a test can settle.
+    static func laidOutBorderWidth(_ declared: CGFloat) -> CGFloat {
+        declared > 0 ? declared.rounded(.up) : 0
+    }
+
     struct CellContent {
         var content: NSAttributedString
         var rowSpan: Int = 1
@@ -604,7 +624,8 @@ enum TableBlockBuilder {
             if !nonzero.isEmpty {
                 block.setBorderColor(me.borderColor)
                 for (edge, side) in nonzero {
-                    block.setWidth(side!.width, type: .absoluteValueType, for: .border, edge: edge)
+                    block.setWidth(Self.laidOutBorderWidth(side!.width),
+                                   type: .absoluteValueType, for: .border, edge: edge)
                     if let c = side!.color, c != me.borderColor { block.setBorderColor(c, for: edge) }
                 }
             }
@@ -616,8 +637,8 @@ enum TableBlockBuilder {
             // its own two border widths (see below for narrower ones). The old interior halving
             // existed only to model AppKit's collapsing, which no longer runs.
             let cellWidth = edges[min(placement.col + placement.colSpan, ncol)] - edges[placement.col]
-            let leftWidth = assignedMinX[idx]?.width ?? 0
-            let rightWidth = assignedMaxX[idx]?.width ?? 0
+            let leftWidth = Self.laidOutBorderWidth(assignedMinX[idx]?.width ?? 0)
+            let rightWidth = Self.laidOutBorderWidth(assignedMaxX[idx]?.width ?? 0)
             // PADDING SHRINKS FIRST when a column is too narrow for `defaultCellPadding` on both
             // sides — many columns crowded into one reading width, or a genuinely near-zero source
             // column (`w:gridCol w:w="0"`, which Word writes for a hidden bookmark column). Padding

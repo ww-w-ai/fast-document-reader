@@ -69,41 +69,44 @@ final class SubPointRuleSpikeTests: XCTestCase {
         return lm.usedRect(for: tc).width
     }
 
-    /// THE MEASUREMENT, through this reader's own builder at a 600pt target. Overshoot in points,
-    /// by declared border width, for 2 / 3 / 5 / 9 / 13 columns:
+    /// THE MEASUREMENT that produced `TableBlockBuilder.laidOutBorderWidth`, and the check that it
+    /// still holds. Overshoot in points against a 600pt target, at 2 / 3 / 5 / 9 / 13 columns,
+    /// BEFORE the fix — i.e. while the builder subtracted the width a document DECLARED:
     ///
-    ///     0.10pt   +3  +4  +6  +10  +14
-    ///     0.25pt   +3  +4  +6  +10  +14
-    ///     0.50pt   +2  +3  +5   +9  +13
-    ///     0.75pt   +2  +3  +5   +9  +13
-    ///     1.00pt    0   0   0    0    0
-    ///     1.25pt   +3  +4  +6  +10  +14
-    ///     1.50pt   +2  +3  +5   +9  +13
-    ///     2.00pt    0   0   0    0    0
+    ///     0.10pt   +3  +4  +6  +10  +14        1.00pt    0   0   0    0    0
+    ///     0.25pt   +3  +4  +6  +10  +14        1.25pt   +3  +4  +6  +10  +14
+    ///     0.50pt   +2  +3  +5   +9  +13        1.50pt   +2  +3  +5   +9  +13
+    ///     0.75pt   +2  +3  +5   +9  +13        2.00pt    0   0   0    0    0
     ///
-    /// Read off it: a WHOLE-point width lands exactly and every fractional one overshoots, by about
-    /// a point per column boundary, growing linearly with the column count. The size of the fraction
-    /// barely matters — what matters is that there IS one — so this cannot be tuned away by picking a
-    /// friendlier number, and a 13-column table declaring Word's ordinary half-point rules finishes
-    /// 13pt past the column it was solved for.
-    func testOnlyAWholePointBorderLandsExactlyAndFractionsOvershootPerColumn() {
+    /// Only WHOLE-point widths landed exactly; every fraction overshot by about a point per column
+    /// boundary and grew with the count, so a 13-column table of Word's ordinary half-point rules
+    /// ended 13pt past its column. The size of the fraction barely mattered (0.10 behaves like 0.25,
+    /// 0.50 like 0.75), which is what ruled out picking a friendlier number: AppKit charges whole
+    /// points for a border whatever it is told, and the builder was subtracting something else.
+    ///
+    /// AFTER: every width lands exactly, because the same rounded-up number is both set on the block
+    /// and subtracted from its content. All eight are asserted, not just the fractions — the two
+    /// whole-point widths are the control that says the fix did not buy exactness by breaking what
+    /// already worked.
+    func testEveryBorderWidthNowLaysOutExactlyWhateverTheColumnCount() {
         let target: CGFloat = 600
-        let counts = [2, 3, 5, 9, 13]
-        for whole: CGFloat in [1.0, 2.0] {
-            for ncol in counts {
-                XCTAssertEqual(laidOutWidth(borderWidth: whole, columns: ncol, target: target), target,
-                               accuracy: 0.01,
-                               "\(whole)pt × \(ncol) columns must land exactly — the arithmetic is right")
+        for declared: CGFloat in [0.1, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0] {
+            for ncol in [2, 3, 5, 9, 13] {
+                XCTAssertEqual(laidOutWidth(borderWidth: declared, columns: ncol, target: target),
+                               target, accuracy: 0.01,
+                               "\(declared)pt × \(ncol) columns must land exactly on \(target)")
             }
         }
-        for fraction: CGFloat in [0.1, 0.25, 0.5, 0.75, 1.25, 1.5] {
-            let overshoots = counts.map { laidOutWidth(borderWidth: fraction, columns: $0, target: target) - target }
-            for o in overshoots {
-                XCTAssertGreaterThanOrEqual(o, 2, "\(fraction)pt overshoots at every width — got \(overshoots)")
-            }
-            XCTAssertEqual(overshoots.last! - overshoots.first!, 11, accuracy: 0.01,
-                           "and it grows one point per column: 2 → 13 columns adds 11 — got \(overshoots)")
-        }
+    }
+
+    /// The rounding itself, stated once so the arithmetic above has a named rule to point at.
+    func testLaidOutBorderWidthRoundsUpToAWholePointAndLeavesZeroAlone() {
+        XCTAssertEqual(TableBlockBuilder.laidOutBorderWidth(0), 0, "no border costs no space")
+        XCTAssertEqual(TableBlockBuilder.laidOutBorderWidth(0.1), 1)
+        XCTAssertEqual(TableBlockBuilder.laidOutBorderWidth(0.5), 1)
+        XCTAssertEqual(TableBlockBuilder.laidOutBorderWidth(1.0), 1, "a whole point is already exact")
+        XCTAssertEqual(TableBlockBuilder.laidOutBorderWidth(1.25), 2)
+        XCTAssertEqual(TableBlockBuilder.laidOutBorderWidth(2.0), 2)
     }
 
     /// Why `TableBlockBuilder` cannot notice this by itself: the block answers with what it was told.
