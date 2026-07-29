@@ -4380,6 +4380,24 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertEqual(spans, [Span(text: "3", pageNumberField: .page)])
     }
 
+    /// The shape a real footer is actually written in: text, the field, text — `- 3 -`. The test
+    /// above has the field ALONE in its paragraph, and that is exactly why the defect it was meant to
+    /// cover survived it. With a run before the field, the cached result carries the same formatting
+    /// as that run, so run-merging folded the "3" into the "- " beside it; the old code stamped the
+    /// marker on the spans AFTER walking the field, by which point the span count had not grown and
+    /// the range being stamped was empty. Measured on a real fixture as "- 9 -" on every page.
+    func testPageFieldViaFldSimpleSurvivesBeingSurroundedByOrdinaryText() throws {
+        let blocks = try read(document: """
+        <w:p><w:r><w:t xml:space="preserve">- </w:t></w:r><w:fldSimple w:instr="PAGE"><w:r><w:t>9</w:t></w:r></w:fldSimple><w:r><w:t xml:space="preserve"> -</w:t></w:r></w:p>
+        """)
+        guard case .paragraph(let spans, _, _, _, _) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected a paragraph")
+        }
+        XCTAssertEqual(spans.map(\.text), ["- ", "9", " -"],
+                       "the field must be its OWN run, or substituting it would eat the dashes too")
+        XCTAssertEqual(spans.map(\.pageNumberField), [nil, .page, nil])
+    }
+
     /// `STYLEREF` via `w:fldSimple` (header1.xml's own "Documment Name" field) — cached text
     /// survives, exactly as it always did, but with NO marker (header-footer-design.md §7: no live
     /// value is planned for `STYLEREF`).

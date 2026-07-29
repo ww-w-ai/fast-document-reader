@@ -3123,12 +3123,19 @@ enum DocxReader: OfficeDocumentReader {
                 // the same ordinary recursion every other wrapper gets — `w:r` inside it needs no
                 // special case of its own).
                 case "w:fldSimple":
-                    let kind = child.attributes["w:instr"].flatMap(pageNumberFieldKind)
-                    let startIndex = spans.count
+                    // Marked through the SAME `fieldState` the compound encoding uses, for the
+                    // duration of this element's own walk — NOT by stamping the spans afterwards.
+                    // Stamping afterwards silently did nothing: the cached result run carries the
+                    // footer's ordinary formatting, so `appendMerging` folded it into the text right
+                    // before it ("- " in a `- 9 -` footer), the span count did not grow, and the
+                    // range that was about to be stamped was empty. Measured on a real fixture as
+                    // "- 9 -" on every page — the file's own stale number, exactly what the live
+                    // substitution exists to replace. Setting the state FIRST means the span is born
+                    // marked, which also keeps it out of the merge (the guard excludes a marked span).
+                    let outerFieldState = fieldState
+                    fieldState = .inResult(kind: child.attributes["w:instr"].flatMap(pageNumberFieldKind))
                     walk(child, link: link)
-                    if let kind {
-                        for i in startIndex..<spans.count { spans[i].pageNumberField = kind }
-                    }
+                    fieldState = outerFieldState
                     continue
                 case "w:hyperlink":
                     // A hyperlink whose target can't be resolved (no `r:id`/`w:anchor`, or a

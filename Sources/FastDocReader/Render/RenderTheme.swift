@@ -64,6 +64,15 @@ enum Palette {
     static let tableBorderAuthored = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.85),
                                                      dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.70))
     static let tableHeaderBg   = NSColor(rgb: 0x878378, alpha: 0.10)   // warm neutral, both modes
+    /// The gap between two pages of a paged document, and the hairline that closes it — the
+    /// page-break divider. Without one the band reads as a hole in the document rather than as a
+    /// page ending: the reader sees a long blank stretch and a header floating in it, with
+    /// nothing saying why. Darker than the paper in light mode and lighter in dark mode, so the
+    /// paper always reads as the sheet and the gap as the desk behind it.
+    static let pageGapBg       = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.045),
+                                                dark: NSColor(rgb: 0x000000, alpha: 0.22))
+    static let pageGapEdge     = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.14),
+                                                dark: NSColor(rgb: 0xFFFFFF, alpha: 0.10))
     // P6b: comment highlight — a faint amber wash behind a commented span (only drawn while the
     // comments panel is open, see `drawCommentMarks`), and the number badge it's paired with. Amber
     // rather than the reading-line's blue tint so the two "you should look here" signals never read

@@ -49,7 +49,10 @@ final class ReaderTextView: NSTextView {
         // already reserved. `pageBandContent` is `nil` for the overwhelming common case (no header/
         // footer, or not paged at all) — one optional-unwrap and nothing else happens.
         if let wc = window?.windowController as? DocumentWindowController,
-           let content = wc.pageBandContent {
+           var content = wc.pageBandContent {
+            // Read LIVE, not from the snapshot `configurePageBand` built: which boundaries layout
+            // managed to open is only known once layout has run, and it changes with every reflow.
+            content.openedBoundaries = wc.pageBandDelegate.openedBoundaries
             PageBandPainter.draw(content, pageContentHeight: wc.pageBandDelegate.pageContentHeight,
                                  band: wc.pageBandDelegate.band,
                                  documentHeight: lm.usedRect(for: tc).height,

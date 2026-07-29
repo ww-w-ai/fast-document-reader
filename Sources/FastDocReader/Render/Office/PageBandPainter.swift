@@ -23,6 +23,13 @@ struct PageBandContent {
     /// between-page ones — see `PageBandPainter.draw`'s `page == 0` / `page == total - 1` arms.
     var leadingBand: CGFloat
     var trailingBand: CGFloat
+    /// The between-page boundaries that layout actually OPENED (`PageBandLayoutDelegate.
+    /// openedBoundaries`). A boundary missing from this set has NO empty band — the line that would
+    /// have started the next page was inside a table and could not be moved — so nothing may be
+    /// painted there. `nil` means "not known", and then every arithmetic boundary is painted, which
+    /// is the behaviour every existing test was written against and the right answer for a caller
+    /// (or a test) that drives the painter without a layout pass.
+    var openedBoundaries: Set<Int>?
 }
 
 /// Paints the running header/footer INTO the band `PageBandLayoutDelegate` already reserved between
@@ -52,6 +59,22 @@ enum PageBandPainter {
     /// even/odd DIFFERENCE is deferred past v1, but a document that provides one anyway should not
     /// be ignored). Returns `nil` when even `.defaultPages` is absent — a document with no header/
     /// footer at all, or one whose only entries are for a page class this page doesn't belong to.
+    /// Is there real, empty space in the band AFTER `page` — i.e. did layout manage to open that
+    /// boundary? THE one gate both between-page arms of `draw` go through, so a header and the footer
+    /// facing it across the same band can never disagree about whether that band exists.
+    ///
+    /// A boundary falling inside a table cannot be opened (`PageBandLayoutDelegate.isInsideTable`), so
+    /// painting there lands on the table's own rows. Reported on a real report as a page number
+    /// printed across a table's header row and the running title across a data row — which reads as a
+    /// corrupt document, strictly worse than the missing header that skipping gives.
+    ///
+    /// `nil` (`openedBoundaries` unset — a caller that never ran layout) means "no information", and
+    /// then every arithmetic boundary paints, which is exactly what this did before the set existed.
+    static func bandExists(after page: Int, in content: PageBandContent) -> Bool {
+        guard let opened = content.openedBoundaries else { return true }
+        return opened.contains(page)
+    }
+
     static func applicableEntry(_ entries: [OfficeHeaderFooter], pageIndex: Int) -> OfficeHeaderFooter? {
         if pageIndex == 0, let first = entries.first(where: { $0.appliesTo == .firstPage }) {
             return first
@@ -132,9 +155,39 @@ enum PageBandPainter {
         let lastPage = min(total - 1, Int(((visibleRect.maxY - leading) / pitch).rounded(.up)) + 1)
         guard firstPage <= lastPage else { return }
         for page in firstPage...lastPage {
+            // Did layout actually MAKE the band after this page? A boundary falling inside a table
+            // could not be opened (`PageBandLayoutDelegate.isInsideTable`), so there is no empty
+            // space there and painting would land on the table's own rows — measured on a real
+            // report as a page number across a table's header row and a running title across a data
+            // row. Both BETWEEN-page arms below are gated on it; the two OUTER edges are not, because
+            // they are reserved by different mechanisms that a table cannot block.
+            let boundaryIsOpen = bandExists(after: page, in: content)
+            // THE PAGE BREAK ITSELF — drawn before the header/footer that sit inside it, so the two
+            // land on top of the gap rather than under it. Only where layout actually opened the
+            // band: filling a boundary that was never opened would put a grey stripe across a table.
+            //
+            // Why it exists: the band is the document's own two margins (invariant 57e), which on A4
+            // is ~170pt of white. With nothing marking it, a reader sees a long blank stretch with a
+            // header floating in the middle and no way to tell a page ended from a rendering fault —
+            // reported as exactly that. Word shows the same break as a gap between two sheets; this
+            // is that gap, one shade off the paper, closed by a hairline at each edge.
+            if boundaryIsOpen, page < total - 1 {
+                let gapTop = CGFloat(page) * pitch + pageContentHeight + leading + origin.y
+                let rect = NSRect(x: origin.x, y: gapTop, width: content.columnWidth, height: band)
+                if rect.intersects(visibleRect) {
+                    Palette.pageGapBg.setFill()
+                    rect.fill()
+                    Palette.pageGapEdge.setFill()
+                    // A whole DEVICE pixel, so the line is crisp at any magnification rather than a
+                    // blurred two-pixel smear — the same reason invariant 42 keeps table rules integral.
+                    let hair = 1 / max(1, NSScreen.main?.backingScaleFactor ?? 2)
+                    NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: hair).fill()
+                    NSRect(x: rect.minX, y: rect.maxY - hair, width: rect.width, height: hair).fill()
+                }
+            }
             // Footer of THIS page draws in the band that FOLLOWS it — never for the last page, which
             // has no following BETWEEN-PAGE band; its own trailing footer is the dedicated arm below.
-            if page < total - 1, content.footerHeight > 0,
+            if boundaryIsOpen, page < total - 1, content.footerHeight > 0,
                let entry = applicableEntry(content.footers, pageIndex: page), !entry.blocks.isEmpty {
                 let top = CGFloat(page) * pitch + pageContentHeight + leading
                 paint(entry, pageIndex: page, totalPages: total, content: content,
@@ -142,7 +195,9 @@ enum PageBandPainter {
             }
             // Header of THIS page draws in the band that PRECEDES it — never for page 0, whose own
             // leading header is the dedicated arm below (a different reservation mechanism entirely).
-            if page > 0, content.headerHeight > 0,
+            // Gated on the boundary BEFORE this page — the one whose band this header sits in.
+            if bandExists(after: page - 1, in: content),
+               page > 0, content.headerHeight > 0,
                let entry = applicableEntry(content.headers, pageIndex: page), !entry.blocks.isEmpty {
                 let top = CGFloat(page) * pitch - content.headerHeight + leading
                 paint(entry, pageIndex: page, totalPages: total, content: content,

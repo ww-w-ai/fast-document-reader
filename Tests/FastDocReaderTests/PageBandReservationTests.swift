@@ -286,6 +286,79 @@ final class PageBandReservationTests: XCTestCase {
             return rect.maxY > page * pitch + 60 + 0.5
         }
         XCTAssertTrue(anyOverran, "precondition: this table must actually cross a page boundary for the test to mean anything")
+        // THE REPORTED DEFECT, from the other side: no boundary was opened, so the painter must have
+        // nothing to paint into. It used to compute the boundaries arithmetically and paint them
+        // regardless, which put a page number across a real report's table header row and the running
+        // title across a data row — the document read as corrupt rather than as missing a header.
+        XCTAssertTrue(delegate.openedBoundaries.isEmpty,
+                      "a boundary layout could not open must not be reported as painted space")
+    }
+
+    /// The same claim where it MATTERS — a document that is part prose, part long table. The prose
+    /// boundaries open and must still be painted; the ones inside the table do not and must not be.
+    /// A blanket "skip painting whenever a table exists" would pass the test above and lose every
+    /// header in a report that happens to contain a table, which is most of them.
+    func testOnlyTheBoundariesLayoutOpenedAreOfferedToThePainter() {
+        let table = GridTextTable()
+        table.numberOfColumns = 1
+        let block = NSTextTableBlock(table: table, startingRow: 0, rowSpan: 1, startingColumn: 0, columnSpan: 1)
+        let cellStyle = NSMutableParagraphStyle()
+        cellStyle.textBlocks = [block]
+        let font = NSFont.systemFont(ofSize: 13)
+        let sentence = "The quick brown fox jumps over the lazy dog near the riverbank at dusk. "
+
+        let out = NSMutableAttributedString()
+        for _ in 0..<12 {   // prose first: these boundaries CAN be opened
+            out.append(NSAttributedString(string: String(repeating: sentence, count: 3) + "\n",
+                                          attributes: [.font: font]))
+        }
+        for _ in 0..<12 {   // then a long table: these cannot
+            out.append(NSAttributedString(string: String(repeating: sentence, count: 3) + "\n",
+                                          attributes: [.font: font, .paragraphStyle: cellStyle]))
+        }
+
+        let delegate = PageBandLayoutDelegate(pageContentHeight: 60, band: 40)
+        let (storage, layout, container) = makeStack(columnWidth: 400, delegate: delegate)
+        storage.setAttributedString(out)
+        _ = lineRects(layout, container)   // the delegate only speaks once layout has actually run
+
+        XCTAssertFalse(delegate.openedBoundaries.isEmpty,
+                       "the prose half must still paginate — the fix must not disable headers wholesale")
+        XCTAssertEqual(delegate.openedBoundaries.count, delegate.shiftCount,
+                       "one opened boundary per shifted line, so the painter's gate and layout agree")
+        // Every boundary the table straddles is absent: the highest opened one is inside the prose.
+        let proseBoundaries = delegate.openedBoundaries.count
+        XCTAssertLessThan(proseBoundaries, 23,
+                          "a 24-paragraph document at this pitch crosses far more boundaries than the prose half alone")
+    }
+
+    /// The painter's own half of the gate — `PageBandPainter.bandExists(after:in:)`, the SAME function
+    /// both between-page arms of `draw` call, not a re-implementation of its condition here. (An
+    /// earlier version of this test did re-implement it and passed with the gate removed from the
+    /// painter entirely — invariant 30's lesson, self-inflicted.)
+    func testThePainterSkipsABoundaryLayoutDidNotOpen() {
+        func content(_ openedBoundaries: Set<Int>?) -> PageBandContent {
+            var c = PageBandContent(headers: [], footers: [], theme: theme, columnWidth: 400,
+                                    documentDefaultFontSize: 11, pageContentWidth: 400,
+                                    headerHeight: 20, footerHeight: 0,
+                                    leadingBand: 0, trailingBand: 0)
+            c.openedBoundaries = openedBoundaries
+            return c
+        }
+        // No information (a caller that never ran layout) → paint every boundary, exactly as before.
+        for page in 0..<3 {
+            XCTAssertTrue(PageBandPainter.bandExists(after: page, in: content(nil)))
+        }
+        XCTAssertTrue(PageBandPainter.bandExists(after: 0, in: content([0, 1, 2])))
+        XCTAssertTrue(PageBandPainter.bandExists(after: 2, in: content([0, 1, 2])))
+        // Only the open one — the others are inside a table and have no space to paint into.
+        XCTAssertTrue(PageBandPainter.bandExists(after: 0, in: content([0])))
+        XCTAssertFalse(PageBandPainter.bandExists(after: 1, in: content([0])))
+        XCTAssertFalse(PageBandPainter.bandExists(after: 2, in: content([0])))
+        // Nothing open at all: a document that is one long table paints nothing over it.
+        for page in 0..<3 {
+            XCTAssertFalse(PageBandPainter.bandExists(after: page, in: content([])))
+        }
     }
 
     // MARK: - 3. The real production stack (MarkdownDocument + DocumentWindowController)

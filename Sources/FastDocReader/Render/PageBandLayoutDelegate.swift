@@ -54,6 +54,26 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// positions itself.
     private(set) var shiftCount = 0
 
+    /// The page boundaries this delegate actually OPENED — page `n` is present when the first line of
+    /// page `n+1` was pushed down, i.e. when the band between them is real, empty space.
+    ///
+    /// The painter must consult this rather than compute boundaries arithmetically, and that is not a
+    /// tidiness point: a line inside a table cannot be shifted (see `isInsideTable` below), so when a
+    /// page boundary falls inside a long table NO space is made there — and a painter that trusted
+    /// the arithmetic drew the header and the footer straight over the table's own rows. Reported on
+    /// a real report: `- 3 -` printed across a table's header row and the running title across a data
+    /// row, which reads as a corrupt document rather than as a missing header.
+    ///
+    /// Reset on every layout pass that re-runs, because a re-render re-decides every boundary; a
+    /// stale entry would paint into space the new layout did not make.
+    private(set) var openedBoundaries: Set<Int> = []
+
+    /// Called when the storage is about to be laid out afresh — see `openedBoundaries`.
+    func resetOpenedBoundaries() {
+        openedBoundaries = []
+        shiftCount = 0
+    }
+
     func layoutManager(_ layoutManager: NSLayoutManager,
                         shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
                         lineFragmentUsedRect: UnsafeMutablePointer<NSRect>,
@@ -86,6 +106,11 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         lineFragmentRect.pointee.origin.y += shift
         lineFragmentUsedRect.pointee.origin.y += shift
         shiftCount += 1
+        // This line begins page `page + 1`, so the boundary that was just opened is page `page`'s.
+        // Page 0's own first line falls out of the same formula as `page == -1` (see above), and a
+        // negative index is not a between-page boundary at all — the leading band is its own
+        // mechanism — so it is deliberately not recorded.
+        if page >= 0 { openedBoundaries.insert(Int(page)) }
         return true
     }
 

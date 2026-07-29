@@ -247,12 +247,14 @@ final class PagedZoomTests: XCTestCase {
     func testAPagedDocumentOpensAtTheDefaultZoomAndResetPutsItBackThere() throws {
         let (doc, wc) = try openPaged(pageContentWidth: 400)
         let opening = wc.pageZoom
-        // THE NUMBER HAS MOVED TWICE AND BOTH MOVES WERE MEASURED, so read this before changing it
-        // again. It began as fit-to-window, which opened documents 1.5×–2.9× oversized. It was then
-        // pinned to 1.0 on the claim that "Word and Pages open at 100%" — a claim nobody had
-        // measured, and it is FALSE: on the owner's machine Word opens at 120%, Pages at 125%, and
-        // Hancom's HWP Viewer at ~115%, so 1.0 made this reader the smallest of the four and the
-        // owner reported that in turn. `defaultPageZoom` is Word's own 120%.
+        // THE NUMBER HAS MOVED THREE TIMES AND EVERY MOVE CAME FROM READING A REAL DOCUMENT, so read
+        // this before changing it again. It began as fit-to-window, which opened documents 1.5×–2.9×
+        // oversized. It was then pinned to 1.0 on the claim that "Word and Pages open at 100%" — a
+        // claim nobody had measured, and it is FALSE: on the owner's machine Word opens at 120%,
+        // Pages at 125%, Hancom's HWP Viewer at ~115%, so 1.0 made this reader the smallest of the
+        // four and the owner reported that in turn. 1.2 (Word's own) was still too small on a Korean
+        // report set in 10pt, and the owner asked for half again as much — hence 1.8. The peer band
+        // is the FLOOR here, not the target.
         //
         // Asserting against the constant rather than a literal is deliberate: the property under
         // test is "opening zoom and ⌘0 agree", which must survive a future re-tuning of the number.
@@ -272,6 +274,56 @@ final class PagedZoomTests: XCTestCase {
                        "reader wherever they zoomed to")
         XCTAssertEqual(doc.renderGeneration, generationBefore,
                        "…and like the other two keys it rebuilds nothing")
+    }
+
+    /// The owner's rule, in their own words: "cmd+/- 할 때는 창의 크기는 변함없도록 하자 — 워드가
+    /// 그렇게 열리네". A zoom press changes how large the page is DRAWN, never the frame the reader put
+    /// it in. Both directions, and ⌘0 too, since all three are the same family.
+    func testZoomingDoesNotMoveTheWindow() throws {
+        let (doc, wc) = try openPaged(pageContentWidth: 400)
+        // ORDERED FRONT, and that is load-bearing: `fitWindowToPage` returns immediately for a window
+        // that is not visible, so a test that skips this passes even with the window-follows-zoom rule
+        // put back — measured, the first version of this test did exactly that.
+        let window = try XCTUnwrap(wc.window)
+        window.makeKeyAndOrderFront(nil)
+        try XCTSkipIf(!window.isVisible, "this environment cannot order a window front")
+        let before = window.frame
+
+        doc.increaseReaderFontSize(nil)
+        doc.increaseReaderFontSize(nil)
+        XCTAssertEqual(window.frame, before, "⌘+ must not resize the window")
+
+        doc.decreaseReaderFontSize(nil)
+        XCTAssertEqual(window.frame, before, "⌘− must not resize the window")
+
+        doc.resetReaderFontSize(nil)
+        XCTAssertEqual(window.frame, before,
+                       "⌘0 restores the ZOOM only — the window is the reader's, not the app's")
+    }
+
+    /// A paged document opens with the page on a desk, not filling the frame edge to edge: the window
+    /// is the page at the opening zoom PLUS a margin either side (`pageWindowSideMargin`).
+    ///
+    /// Asserted on the CLIP width against the page's own on-screen width, not on the window frame —
+    /// the frame carries a title bar, a possible sidebar and the scroller, none of which this rule is
+    /// about. Skipped when the seed could not run (a window that was never ordered front, which is
+    /// how the other tests here keep the opening geometry still).
+    func testAPagedWindowOpensWiderThanThePageByAMarginEitherSide() throws {
+        let (_, wc) = try openPaged(pageContentWidth: 400)
+        let window = try XCTUnwrap(wc.window)
+        let sheet = try XCTUnwrap(wc.pagedDocumentWidth)
+        window.makeKeyAndOrderFront(nil)
+        try XCTSkipIf(!window.isVisible, "this environment cannot order a window front")
+        let widthBefore = window.frame.width
+        wc.fitWindowToPage()
+        let pageOnScreen = sheet * wc.pageZoom
+        let grew = window.frame.width - widthBefore
+        XCTAssertGreaterThan(window.frame.width, pageOnScreen,
+                             "the window must be wider than the page it holds")
+        // The margin is the POINT of the rule: exactly the page would fill the frame edge to edge.
+        XCTAssertGreaterThanOrEqual(window.frame.width - pageOnScreen,
+                                    2 * DocumentWindowController.pageWindowSideMargin - 0.5,
+                                    "a margin either side, not a frame the page exactly fills (grew \(grew))")
     }
 
     // MARK: - Fixtures
