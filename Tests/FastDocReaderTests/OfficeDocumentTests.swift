@@ -89,6 +89,46 @@ final class OfficeDocumentTests: XCTestCase {
 
     /// One heading + one paragraph — enough to exercise the outline sidebar (`MDAttr.heading`) and
     /// the body text path in the same fixture.
+    /// A paged docx (it declares a page size) whose section states a LINE GRID — the shape a Korean
+    /// or Japanese Word document uses to put every line on a fixed pitch.
+    private func fixtureDocxWithLineGrid(_ grid: String?) -> Data {
+        let sect = """
+        <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:left="1134" w:right="1134"/>\
+        \(grid ?? "")</w:sectPr>
+        """
+        let document = """
+        <?xml version="1.0" encoding="UTF-8"?><w:document><w:body>
+          <w:p><w:r><w:t>Body text.</w:t></w:r></w:p>
+          \(sect)
+        </w:body></w:document>
+        """
+        return buildZip([("word/document.xml", Data(document.utf8))])
+    }
+
+    /// END TO END, not through the reader alone: a section's `w:docGrid` must reach the paragraph
+    /// style the document is actually laid out with. A reader-only assertion cannot see the wiring
+    /// between them, and this project has shipped a fully-parsed feature that no render path ever
+    /// reached (invariant 29).
+    ///
+    /// The grid is a FLOOR — Word applies it to a paragraph that states no spacing of its own and
+    /// lets a paragraph that states more keep it — so the assertion is on `minimumLineHeight`,
+    /// which is where a floor lives, and the no-grid case must stay at 0 so every document without
+    /// one is byte-identical (invariant 37).
+    func testDocGridReachesTheRenderedParagraphStyleOfAPagedDocument() throws {
+        let (_, withGrid) = try openOffice(fixtureDocxWithLineGrid(
+            "<w:docGrid w:type=\"lines\" w:linePitch=\"360\"/>"))
+        let gridded = try XCTUnwrap(withGrid.textStorageRef)
+        let style = try XCTUnwrap(gridded.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(style.minimumLineHeight, 18, accuracy: 0.001,
+                       "360 twips of line grid must become an 18pt floor on the laid-out paragraph")
+
+        let (_, noGrid) = try openOffice(fixtureDocxWithLineGrid(nil))
+        let plain = try XCTUnwrap(noGrid.textStorageRef)
+        let plainStyle = try XCTUnwrap(plain.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(plainStyle.minimumLineHeight, 0, accuracy: 0.001,
+                       "a paged document with no grid keeps the natural line height it has today")
+    }
+
     private func fixtureDocx() -> Data {
         let document = """
         <?xml version="1.0" encoding="UTF-8"?><w:document><w:body>
@@ -424,26 +464,37 @@ final class OfficeDocumentTests: XCTestCase {
                        "render(into:) must use the DOCUMENT's own default (8), not OfficeTextBuilder's 11pt fallback")
     }
 
-    /// Invariant 29 applied to the GRAPHIC scale: `OfficeTextBuilderTests` proves the builder honours
-    /// `graphicScale`, which says nothing about whether `render(into:)` computes it from the
-    /// document's own `officePageContentWidth` and passes it — the exact seam where a working
-    /// mechanism sits unreachable. Drives the REAL render path, and asserts the two scales stay
-    /// SEPARATE: a 2.5× reading-size change must move the text and leave the picture untouched.
+    /// Invariant 29 applied to the GRAPHIC scale, on a PAGED document — one whose reader found a page
+    /// body width. `OfficeTextBuilderTests` proves the builder honours `graphicScale`, which says
+    /// nothing about whether `render(into:)` computes it from the document's own
+    /// `officePageContentWidth` and passes it: the exact seam where a working mechanism sits
+    /// unreachable. What that wiring looks like under the paged model is a reading column PINNED to
+    /// the page body, so `graphicScale` comes out as exactly 1 and the picture lands at its AUTHORED
+    /// size — invariant 46 reached from the other direction. The picture still holds the share of the
+    /// column it held of the page; that share is now all of it.
+    ///
+    /// The two scales still stay SEPARATE, and under paged BOTH of them are pinned at once: ⌘+/⌘−
+    /// magnifies the finished page (`DocumentWindowController.stepPageZoom`) instead of rebuilding
+    /// it, so the reading size may move neither the picture nor the text. The half of this test that
+    /// said a reading size still resizes office TEXT is not dead — it MOVED, to the no-page-width
+    /// test just below, which is the only arm where that model still applies.
     ///
     /// The window frame is deliberately NOT changed after `makeWindowControllers()` — graphic sizes
     /// freeze at build time (invariant 1/11), so the column is read from the container that produced
     /// them rather than assumed, and the expectation is derived from that same column.
-    func testRenderScalesOfficeGraphicsByPageWidthAndLeavesThemUntouchedByFontSize() throws {
+    func testPagedRenderPinsTheColumnToItsPageSoGraphicsLandAtAuthoredSizeAndTheReadingSizeMovesNothing() throws {
         let declared = CGSize(width: 100, height: 50)
         let pageWidth: CGFloat = 400
+        let documentDefault: CGFloat = 10
 
-        func renderOnce(readingSize: CGFloat) throws -> (image: CGSize, column: CGFloat, font: CGFloat) {
+        func renderOnce(readingSize: CGFloat) throws -> (image: CGSize, column: CGFloat, font: CGFloat,
+                                                         windowWidth: CGFloat, paged: Bool) {
             let doc = MarkdownDocument()
             doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-graphicscale-\(UUID().uuidString).docx")
             doc.readingSize = readingSize
             doc.setOfficeContent(blocks: [.paragraph(spans: [Span(text: "Body")]),
                                           .image(id: "pic", size: declared)],
-                                 archive: nil, defaultBodyFontSize: 10, pageContentWidth: pageWidth)
+                                 archive: nil, defaultBodyFontSize: documentDefault, pageContentWidth: pageWidth)
             doc.makeWindowControllers()
             let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
             let storage = try XCTUnwrap(wc.textStorageRef)
@@ -455,34 +506,90 @@ final class OfficeDocumentTests: XCTestCase {
                 }
             }
             let font = try XCTUnwrap(storage.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
-            return (try XCTUnwrap(reserved), column, font.pointSize)
+            let windowWidth = try XCTUnwrap(wc.window?.contentView?.bounds.width)
+            return (try XCTUnwrap(reserved), column, font.pointSize, windowWidth, wc.isPaged)
         }
 
         let small = try renderOnce(readingSize: 12)
         let large = try renderOnce(readingSize: 30)
 
-        // The page-proportional size: the picture holds the share of the column it held of the page.
-        XCTAssertGreaterThan(small.column, 1, "the reading column must be real before graphics freeze")
-        XCTAssertEqual(small.image.width, declared.width * (small.column / pageWidth), accuracy: 0.5,
-                       "render(into:) must divide the reading column by the document's OWN page width")
-        XCTAssertEqual(small.image.height, declared.height * (small.column / pageWidth), accuracy: 0.5)
-        XCTAssertNotEqual(small.image.width, declared.width, accuracy: 0.5,
-                          "a graphicScale of 1 here would mean render never wired the page width through")
+        // The pin itself, which is what makes both scales 1. Asserted against a window that is far
+        // wider than the page, so "the column IS the page" cannot be true by coincidence — under the
+        // fill-the-window model this same document's column would be the window minus its margins.
+        XCTAssertTrue(small.paged, "a document declaring a page body width must read as paged")
+        XCTAssertGreaterThan(small.windowWidth, pageWidth * 1.5,
+                             "the window must be genuinely wider than the page, or the pin proves nothing")
+        XCTAssertEqual(small.column, pageWidth, accuracy: 0.5,
+                       "a paged document's reading column IS its page body — the window no longer decides it")
 
-        // …and it is a TEXT setting that must not touch it.
-        XCTAssertEqual(large.column, small.column, accuracy: 0.5, "same window ⇒ same column")
+        // …so a picture is reproduced at exactly the size its author gave it.
+        XCTAssertEqual(small.image.width, declared.width, accuracy: 0.5,
+                       "column ÷ page width == 1 ⇒ the authored size, verbatim")
+        XCTAssertEqual(small.image.height, declared.height, accuracy: 0.5)
+
+        // And the reading size moves NEITHER scale: ⌘+ magnifies this page rather than rebuilding it.
+        XCTAssertEqual(large.column, small.column, accuracy: 0.5, "the page column never varies")
         XCTAssertEqual(large.image, small.image, "⌘+/⌘− must never resize a picture")
-        XCTAssertGreaterThan(large.font, small.font,
-                             "⌘+/⌘− must still resize office TEXT — fusing the two scales killed this")
+        XCTAssertEqual(large.font, small.font,
+                       "a paged page is built at the size it was AUTHORED at; the reader's size magnifies it")
+        XCTAssertEqual(small.font, documentDefault, accuracy: 0.5,
+                       "…and that authored size is the document's OWN default (12/30 would be the reader's)")
     }
 
-    /// Resizing the WINDOW must resize the pictures with it. A graphic holds the share of the reading
-    /// column it held of the source page, so a wider column means a bigger picture — without this the
-    /// text re-wrapped and the tables re-filled while the images stayed frozen at their build width.
+    /// The OTHER arm, and the reason the paged switch is keyed on `officePageContentWidth != nil` and
+    /// never on `kind == .office`: an office document whose reader found NO page width — a real,
+    /// tested state in all three formats — keeps the reading-size model, so ⌘+/⌘− still rebuilds its
+    /// text at a new size. Its pictures have no page to hold a share of, so they stay at exactly
+    /// their authored size at any reading size.
     ///
-    /// Also asserts the reflow result MATCHES what a rebuild at that width produces: two code paths
-    /// computing a size independently is how a resized document drifts away from a reopened one.
-    func testResizingTheWindowResizesOfficeGraphicsProportionally() throws {
+    /// That pairing is the "two scales stay SEPARATE" property this file used to prove on a paged
+    /// document, which can no longer show it: under paged both scales are pinned at once, so a test
+    /// there cannot tell "the picture ignores the font setting" from "nothing moves at all".
+    func testOfficeDocumentDeclaringNoPageWidthStillResizesItsTextWithTheReadingSizeButNeverItsGraphics() throws {
+        let declared = CGSize(width: 100, height: 50)
+
+        func renderOnce(readingSize: CGFloat) throws -> (image: CGSize, font: CGFloat, paged: Bool) {
+            let doc = MarkdownDocument()
+            doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-nopage-fontsize-\(UUID().uuidString).docx")
+            doc.readingSize = readingSize
+            doc.setOfficeContent(blocks: [.paragraph(spans: [Span(text: "Body")]),
+                                          .image(id: "pic", size: declared)],
+                                 archive: nil, defaultBodyFontSize: 10)
+            doc.makeWindowControllers()
+            let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+            let storage = try XCTUnwrap(wc.textStorageRef)
+            var reserved: CGSize?
+            storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+                if let cell = (value as? NSTextAttachment)?.attachmentCell as? SizedAttachmentCell {
+                    reserved = cell.reservedSize
+                }
+            }
+            let font = try XCTUnwrap(storage.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+            return (try XCTUnwrap(reserved), font.pointSize, wc.isPaged)
+        }
+
+        let small = try renderOnce(readingSize: 12)
+        let large = try renderOnce(readingSize: 30)
+
+        XCTAssertFalse(small.paged, "no page width ⇒ not paged, whatever the document's kind is")
+        XCTAssertGreaterThan(large.font, small.font,
+                             "⌘+/⌘− must still rebuild office TEXT on a document with no page to zoom")
+        XCTAssertEqual(small.image, declared, "no page width ⇒ the authored size, unscaled")
+        XCTAssertEqual(large.image, small.image, "…and a TEXT setting must not touch it")
+    }
+
+    /// Resizing the window past a PAGED document must move nothing — and the size the build froze
+    /// must still be exactly what a rebuild at that column produces. Two properties, asserted
+    /// together because the second is what makes the first safe.
+    ///
+    /// `DocumentWindowController.updateTextInset` SKIPS its three whole-storage passes for a paged
+    /// document (they are kept for the no-page-width fallback, which is the test below), so nothing
+    /// re-solves a picture after the build. That is only correct while the build's own column and
+    /// the settled column are the same number — which is what the parity check here asserts, through
+    /// the same `OfficeTextBuilder.build` the reader itself calls (invariant 42's lesson: two
+    /// implementations of one geometry is where drift comes from, and a skipped reflow cannot
+    /// correct a build that was made against a stale width).
+    func testReflowOfAPagedDocumentChangesNothingAndStillMatchesARebuildAtItsPageColumn() throws {
         let declared = CGSize(width: 100, height: 50)
         let pageWidth: CGFloat = 400
         let doc = MarkdownDocument()
@@ -519,16 +626,21 @@ final class OfficeDocumentTests: XCTestCase {
         let wideColumn = try XCTUnwrap(wc.textView.textContainer?.size.width)
         let wide = try imageSize()
 
-        XCTAssertGreaterThan(wideColumn, narrowColumn, "the test must actually widen the reading column")
-        XCTAssertEqual(wide.width / narrow.width, wideColumn / narrowColumn, accuracy: 0.02,
-                       "a picture must grow in the same proportion as the column")
-        XCTAssertEqual(wide.width, declared.width * (wideColumn / pageWidth), accuracy: 0.5)
+        // Nearly doubling the window must move neither the column nor the picture: the page decides
+        // both, and a zoom (not a reflow) is what a reader changes.
+        XCTAssertEqual(narrowColumn, pageWidth, accuracy: 0.5, "the column is the page body at 700pt…")
+        XCTAssertEqual(wideColumn, pageWidth, accuracy: 0.5, "…and still the page body at 1300pt")
+        XCTAssertEqual(wide, narrow, "a paged picture must not move when the window does")
+        XCTAssertEqual(wide.width, declared.width, accuracy: 0.5, "column ÷ page width == 1 ⇒ authored size")
         XCTAssertEqual(try reservedSize(), wide,
                        "the reserved layout size must move with the bounds, or the space and the picture disagree")
 
-        // The reflow path and the build path must agree at the same width (invariant 42's lesson:
-        // two implementations of one geometry is where drift comes from).
-        let rebuilt = OfficeTextBuilder.build(doc.officeBlocks, theme: RenderTheme.current(size: doc.readingSize),
+        // The reflow path and the build path must agree at the same width. The theme mirrors the one
+        // `render(into:)` uses for a PAGED document — the document's own default body size, not the
+        // reader's — because a parity check built against a theme the reader never uses quietly stops
+        // mirroring the thing it claims to mirror.
+        let rebuilt = OfficeTextBuilder.build(doc.officeBlocks,
+                                              theme: RenderTheme.current(size: doc.officeDefaultBodyFontSize),
                                               columnWidth: wideColumn, documentDefaultFontSize: 10,
                                               pageContentWidth: pageWidth)
         var rebuiltSize: CGSize?
@@ -536,7 +648,74 @@ final class OfficeDocumentTests: XCTestCase {
             if let att = v as? NSTextAttachment { rebuiltSize = att.bounds.size }
         }
         XCTAssertEqual(try XCTUnwrap(rebuiltSize), wide,
-                       "resizing must land on exactly what rebuilding at that width would produce")
+                       "a reflow must land on exactly what rebuilding at that column would produce")
+    }
+
+    /// Resizing the WINDOW must still resize the pictures with it — on the arm where the reading
+    /// column still moves. A graphic holds the share of its container that it held of the same
+    /// container in the source, so a wider column means a bigger picture; without this pass the text
+    /// re-wrapped and the tables re-filled while the images stayed frozen at their build width.
+    ///
+    /// After the paged change the only graphic a MOVING column can still cross is one inside a TABLE:
+    /// its basis is that table's own `TableFormat.sourceWidth` (`OfficeTextBuilder.build`'s
+    /// `graphicBasis`), which a docx states in `w:tblGrid` whether or not the document states a page
+    /// size — so "no page width, but a table that declares its grid" is a real shape, and the one
+    /// that keeps `resizeOfficeGraphics` under test. A document that DID declare a page cannot show
+    /// this at all — its column is constant and `updateTextInset` skips the pass outright (the test
+    /// above) — and a top-level picture in a document with no page width has no basis to scale
+    /// against, so it holds its authored size at every width (the fallback guard below).
+    func testResizingTheWindowResizesACellGraphicWithTheColumnWhenOnlyItsTableDeclaresAWidth() throws {
+        // Small enough that the CELL's clamp never bites at either window width — otherwise the
+        // measurement would be of the clamp, not of the tracking (asserted explicitly below).
+        let declared = CGSize(width: 40, height: 20)
+        let tableWidth: CGFloat = 400
+        let cellImage = Cell(blocks: [.image(id: "in-cell", size: declared)])
+        let filler = Cell(spans: [Span(text: "b")])
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-cellresize-nopage-\(UUID().uuidString).docx")
+        doc.setOfficeContent(blocks: [.table(rows: [[cellImage, filler, filler]], headerRows: 0,
+                                             columnWidths: [1, 1, 1],
+                                             format: TableFormat(sourceWidth: tableWidth))],
+                             archive: nil, defaultBodyFontSize: 10)
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        let storage = try XCTUnwrap(wc.textStorageRef)
+        XCTAssertFalse(wc.isPaged, "this fixture declares no page — that is what lets the column move")
+
+        /// The picture's bounds, the size reserved for it, and the width of the cell it sits in, all
+        /// read at the graphic's own location so they cannot describe different attachments.
+        func measure() throws -> (image: CGSize, reserved: CGSize, cell: CGFloat) {
+            var image: CGSize?, reserved: CGSize?, cell: CGFloat?
+            storage.enumerateAttribute(MDAttr.officeGraphic, in: NSRange(location: 0, length: storage.length)) { v, r, _ in
+                guard v is OfficeGraphicInfo else { return }
+                let att = storage.attribute(.attachment, at: r.location, effectiveRange: nil) as? NSTextAttachment
+                image = att?.bounds.size
+                reserved = (att?.attachmentCell as? SizedAttachmentCell)?.reservedSize
+                cell = (storage.attribute(.paragraphStyle, at: r.location, effectiveRange: nil) as? NSParagraphStyle)
+                    .flatMap { $0.textBlocks.first as? NSTextTableBlock }?.contentWidth
+            }
+            return (try XCTUnwrap(image), try XCTUnwrap(reserved), try XCTUnwrap(cell))
+        }
+
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 700, height: 600), display: false)
+        wc.updateTextInset()
+        let narrowColumn = try XCTUnwrap(wc.textView.textContainer?.size.width)
+        let narrow = try measure()
+
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 1300, height: 600), display: false)
+        wc.updateTextInset()
+        let wideColumn = try XCTUnwrap(wc.textView.textContainer?.size.width)
+        let wide = try measure()
+
+        XCTAssertGreaterThan(wideColumn, narrowColumn, "the test must actually widen the reading column")
+        XCTAssertEqual(wide.image.width / narrow.image.width, wideColumn / narrowColumn, accuracy: 0.02,
+                       "a picture must grow in the same proportion as the column")
+        XCTAssertEqual(wide.image.width, declared.width * (wideColumn / tableWidth), accuracy: 0.5,
+                       "a cell picture is measured against its TABLE's own width, not the page's")
+        XCTAssertEqual(wide.reserved, wide.image,
+                       "the reserved layout size must move with the bounds, or the space and the picture disagree")
+        XCTAssertLessThan(wide.image.width, wide.cell,
+                          "the picture must fit its cell with room to spare, or this measured the clamp")
     }
 
     /// A picture inside a TABLE CELL must stay inside its cell when the window is resized. The build
@@ -694,9 +873,12 @@ final class OfficeDocumentTests: XCTestCase {
         XCTAssertEqual(font.pointSize, 22)
     }
 
-    func testDocumentDeclaringNoDefaultStillUses11PointFallback() throws {
+    /// See `DocxReaderTests.testDocumentDefaultFontSizeFallsBackToTenWhenNotDeclared` for why the
+    /// number is 10 — this is the same fallback observed one layer up, through the document's own
+    /// read path rather than the reader's function (invariant 29's rule).
+    func testDocumentDeclaringNoDefaultStillUses10PointFallback() throws {
         let (doc, _) = try openOffice(fixtureDocx())
-        XCTAssertEqual(doc.officeDefaultBodyFontSize, 11)
+        XCTAssertEqual(doc.officeDefaultBodyFontSize, 10)
     }
 
     /// An unstyled document (no `Span.fontSize` anywhere) must render exactly as it did before this
@@ -705,7 +887,7 @@ final class OfficeDocumentTests: XCTestCase {
     /// `officeDefaultBodyFontSize` resolves to.
     func testUnstyledDocumentIsUnaffectedByTheDefaultBodyFontSizeWiring() throws {
         let (doc, wc) = try openOffice(fixtureDocx())
-        XCTAssertEqual(doc.officeDefaultBodyFontSize, 11)
+        XCTAssertEqual(doc.officeDefaultBodyFontSize, 10)
         let storage = try XCTUnwrap(wc.textStorageRef)
         let bodyRange = try XCTUnwrap(storage.string.range(of: "Body text."))
         let bodyIndex = storage.string.distance(from: storage.string.startIndex, to: bodyRange.lowerBound)
@@ -729,7 +911,7 @@ final class OfficeDocumentTests: XCTestCase {
         try doc.read(from: data, ofType: "org.openxmlformats.wordprocessingml.document")
         XCTAssertEqual(doc.officeDefaultBodyFontSize, 10)
 
-        guard case .office(_, _, _, _, let reloadedDefault, _) =
+        guard case .office(_, _, _, _, let reloadedDefault, _, _, _, _) =
             MarkdownDocument.reloadOutcome(url: url, kind: .office, extension: "docx")
         else { return XCTFail("expected a successful office reload") }
         XCTAssertEqual(reloadedDefault, doc.officeDefaultBodyFontSize,

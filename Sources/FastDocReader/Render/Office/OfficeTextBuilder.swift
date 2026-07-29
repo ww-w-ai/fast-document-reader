@@ -125,7 +125,9 @@ enum OfficeTextBuilder {
                       columnWidth: CGFloat = .greatestFiniteMagnitude,
                       documentDefaultFontSize: CGFloat = 11,
                       pageContentWidth: CGFloat? = nil,
+                      pageMarginRight: CGFloat? = nil,
                       tableWidth: CGFloat? = nil,
+                      lineGridPitch: CGFloat? = nil,
                       comments: [OfficeComment] = [],
                       deferringTables: Set<Int> = []) -> NSAttributedString {
         let result = NSMutableAttributedString()
@@ -137,6 +139,12 @@ enum OfficeTextBuilder {
         // A graphic in the text flow is measured against the source PAGE; one inside a table is
         // measured against that TABLE (see `pageContentWidth`'s doc above and `appendTable`).
         let pageBasis: CGFloat? = (pageContentWidth ?? 0) > 0 ? pageContentWidth : nil
+        // THE paged predicate, in one place, exactly as `DocumentWindowController.pagedWidth` states
+        // it: a declared page body width is what makes a document paged, and every rule below that
+        // says "the document wins" is gated on this and nothing else.
+        let paged = pageBasis != nil
+        // How far a picture may run past the body before it is shrunk after all (`bleedAllowance`).
+        let bleed = bleedAllowance(paged: paged, pageMarginRight: pageMarginRight)
         func scale(basis: CGFloat?) -> CGFloat {
             guard let basis, basis > 0, columnWidth.isFinite, columnWidth > 0 else { return 1 }
             return columnWidth / basis
@@ -165,9 +173,11 @@ enum OfficeTextBuilder {
             let format = contextualSpacingAdjustedFormat(for: block, at: index, in: blocks)
             switch block {
             case let .heading(level, spans, rtl, alignment, tabStops, _):
-                result.append(spansAttributedString(spans, baseFont: theme.headingFont(level: level),
+                let headingBase = headingBaseFont(level: level, theme: theme, paged: paged)
+                result.append(spansAttributedString(spans, baseFont: headingBase,
                                                      baseColor: theme.textColor, theme: theme,
-                                                     fontSizeScale: fontSizeScale, commentNumbers: commentNumbers))
+                                                     fontSizeScale: fontSizeScale, paged: paged,
+                                                     commentNumbers: commentNumbers))
                 // Tagged BEFORE the trailing newline is appended, so a substring of this range is
                 // exactly the heading's text — precisely what the outline sidebar reads
                 // (`OutlinePanel.reload` trims and shows it verbatim).
@@ -176,9 +186,11 @@ enum OfficeTextBuilder {
                 result.append(NSAttributedString(string: "\n"))
                 let headingRange = NSRange(location: start, length: result.length - start)
                 result.addAttribute(.paragraphStyle,
-                                    value: headingParagraphStyle(level: level, theme: theme, rtl: rtl,
+                                    value: headingParagraphStyle(level: level, spans: spans, theme: theme,
+                                                                  rtl: rtl,
                                                                   alignment: alignment, tabStops: tabStops,
                                                                   format: format, fontSizeScale: fontSizeScale,
+                                                                  paged: paged, lineGridPitch: lineGridPitch,
                                                                   columnWidth: columnWidth),
                                     range: headingRange)
                 if let info = OfficeTextBuilder.fillMarginTabInfo(from: tabStops) {
@@ -188,13 +200,15 @@ enum OfficeTextBuilder {
             case let .paragraph(spans, rtl, alignment, tabStops, _):
                 result.append(spansAttributedString(spans, baseFont: theme.bodyFont,
                                                      baseColor: theme.textColor, theme: theme,
-                                                     fontSizeScale: fontSizeScale, commentNumbers: commentNumbers))
+                                                     fontSizeScale: fontSizeScale, paged: paged,
+                                                     commentNumbers: commentNumbers))
                 result.append(NSAttributedString(string: "\n"))
                 let paragraphRange = NSRange(location: start, length: result.length - start)
                 result.addAttribute(.paragraphStyle,
                                     value: bodyParagraphStyle(theme: theme, rtl: rtl, alignment: alignment,
                                                                tabStops: tabStops, format: format,
                                                                fontSizeScale: fontSizeScale,
+                                                               paged: paged, lineGridPitch: lineGridPitch,
                                                                columnWidth: columnWidth),
                                     range: paragraphRange)
                 if let info = OfficeTextBuilder.fillMarginTabInfo(from: tabStops) {
@@ -205,7 +219,8 @@ enum OfficeTextBuilder {
                 appendListItem(level: level, ordered: ordered, spans: spans, marker: marker, rtl: rtl,
                                alignment: alignment, tabStops: tabStops, into: result,
                                theme: theme, orderedCounters: &orderedCounters, fontSizeScale: fontSizeScale,
-                               format: format, commentNumbers: commentNumbers)
+                               paged: paged, lineGridPitch: lineGridPitch, format: format,
+                               commentNumbers: commentNumbers)
 
             case .table where deferringTables.contains(index):
                 // Holds this table's PLACE (and, via `tagBlock` below, its block id) so the splice
@@ -216,6 +231,7 @@ enum OfficeTextBuilder {
                 standIn.addAttributes([.font: theme.bodyFont, .foregroundColor: theme.secondaryColor,
                                        .paragraphStyle: bodyParagraphStyle(theme: theme, format: format,
                                                                            fontSizeScale: fontSizeScale,
+                                                                           paged: paged, lineGridPitch: lineGridPitch,
                                                                            columnWidth: columnWidth),
                                        MDAttr.deferredTable: index],
                                       range: NSRange(location: 0, length: standIn.length))
@@ -227,16 +243,18 @@ enum OfficeTextBuilder {
                             // A cell picture is measured against the table's own source width when the
                             // format stated one, else it falls back to the page — never left unscaled.
                             graphicBasis: tableFormat.sourceWidth ?? pageBasis,
+                            paged: paged, lineGridPitch: lineGridPitch,
                             tableWidth: tableWidth)
 
             case let .image(id, size, alignment):
                 appendImage(id: id, size: size, columnWidth: columnWidth, basis: pageBasis,
-                            scale: scale(basis: pageBasis), alignment: alignment, insideCell: false, into: result)
+                            scale: scale(basis: pageBasis), alignment: alignment, insideCell: false,
+                            bleed: bleed, into: result)
 
             case let .unsupportedGraphic(label, size, alignment):
                 appendUnsupportedGraphic(label: label, size: size, columnWidth: columnWidth, basis: pageBasis,
                                          scale: scale(basis: pageBasis), alignment: alignment, insideCell: false,
-                                         into: result)
+                                         bleed: bleed, into: result)
 
             case let .formula(latex):
                 appendFormula(latex: latex, into: result)
@@ -318,8 +336,11 @@ enum OfficeTextBuilder {
     /// number — see `build`'s doc. Defaults to empty so every pre-P6b call site (every test, and
     /// the table-cell chain — see `build`'s doc for why cells don't thread this) keeps compiling
     /// and behaving exactly as before: a span with no matching number gets no `MDAttr.commentMark`.
+    /// `paged` (see `build`'s own `pageContentWidth`) governs ONE thing here: whether an authored
+    /// point size is rounded to a whole point — see the `span.fontSize` branch below.
     static func spansAttributedString(_ spans: [Span], baseFont: NSFont, baseColor: NSColor,
                                       theme: RenderTheme, fontSizeScale: CGFloat = 1,
+                                      paged: Bool = false,
                                       commentNumbers: [String: Int] = [:]) -> NSAttributedString {
         let out = NSMutableAttributedString()
         for span in spans {
@@ -367,9 +388,21 @@ enum OfficeTextBuilder {
             // it, so those still layer on top of the right starting point (traits preserve family,
             // not size; scaling preserves family, not traits — order doesn't matter between the
             // two, but both must happen before either reads `font.pointSize` for anything else).
+            //
+            // The `.rounded()` is the NON-paged half of the model and belongs there: a run's size
+            // has been multiplied by `fontSizeScale` (reading size ÷ the document's own default),
+            // which turns the document's own tidy numbers into arbitrary fractions, and rounding
+            // those back to whole points is what keeps a re-typeset document's sizes coalescing into
+            // a small set of attribute runs. PAGED has neither the cause nor the licence: the scale
+            // is exactly 1 there (`MarkdownDocument.render` builds the theme at the document's own
+            // default body size), so the only thing rounding can do is DESTROY a size the author
+            // stated. Word's `w:sz` is in HALF-points, so 10.5pt is an ordinary authored size, not an
+            // exotic one — measured on one real report, 106 of its 617 runs declare a fractional
+            // size, and every one of them was being drawn a half point too large or too small.
             if let authoredSize = span.fontSize {
-                let scaled = max(1, (authoredSize * fontSizeScale).rounded())
-                font = NSFont(descriptor: font.fontDescriptor, size: scaled) ?? font
+                let scaled = authoredSize * fontSizeScale
+                font = NSFont(descriptor: font.fontDescriptor,
+                              size: max(1, paged ? scaled : scaled.rounded())) ?? font
             }
             if !hasResolvedSubstitute {
                 var traits: NSFontDescriptor.SymbolicTraits = []
@@ -545,6 +578,8 @@ enum OfficeTextBuilder {
                                             tabStops: [TabStop] = [],
                                             format: ParagraphFormat? = nil,
                                             fontSizeScale: CGFloat = 1,
+                                            paged: Bool = false,
+                                            lineGridPitch: CGFloat? = nil,
                                             columnWidth: CGFloat = .greatestFiniteMagnitude) -> NSParagraphStyle {
         let p = NSMutableParagraphStyle()
         let lh = (theme.baseFontSize * theme.lineHeightRatio).rounded()
@@ -556,40 +591,143 @@ enum OfficeTextBuilder {
         // Normal body (font ≤ base) is byte-identical: 16pt text's natural height is below the floor,
         // so the `minimumLineHeight` floor still governs. Explicit `.multiple`/`.exact`/`.atLeast`
         // line rules from the document (applyParagraphFormat, below) override this per their own contract.
-        p.minimumLineHeight = lh
+        // PAGED: the app supplies NO rhythm of its own. A paragraph the document said nothing about
+        // gets the font's natural line height and no trailing gap — which is what Word draws for the
+        // same paragraph — instead of the reader's 1.45x line and 0.9x gap. Those two ratios are the
+        // editorial rhythm this app applies to its OWN markdown, and carrying them onto a page we are
+        // reproducing is exactly the "우리 자체 판단" the owner asked to be removed: "예전에는 자체
+        // 비율로 보여지는거라 우리가 맘대로 줄간격 등을 조정했지만 이제는 아니야".
+        // `applyParagraphFormat` below still applies every line rule and gap the document DID state.
+        // PAGED + the section declares a LINE GRID: that pitch is the floor instead of "natural".
+        // Word snaps a paragraph that states no spacing of its own onto the grid, and skipping it is
+        // why a row Word draws at 18.48pt came out at 13.33pt here — the font's natural height, five
+        // points short. `applyParagraphFormat` still overrides this for any paragraph that DID state
+        // a rule, so the grid is a floor and never a cap. No grid → 0, i.e. exactly today.
+        p.minimumLineHeight = paged ? (lineGridPitch ?? 0) : lh
         p.maximumLineHeight = 0
-        p.paragraphSpacing = theme.baseFontSize * theme.paragraphSpacingRatio
+        p.paragraphSpacing = paged ? 0 : theme.baseFontSize * theme.paragraphSpacingRatio
         if rtl { p.baseWritingDirection = .rightToLeft }
         if let alignment { p.alignment = alignment }
-        if !tabStops.isEmpty { p.tabStops = resolvedTabStops(tabStops, columnWidth: columnWidth) }
+        if !tabStops.isEmpty { p.tabStops = resolvedTabStops(tabStops, columnWidth: columnWidth, paged: paged) }
         // Body only: a `.multiple` line rule never renders below the readability floor (see
         // `OfficeStyle.bodyMinLineHeightRatio`). Headings pass none — they are effectively single-line
         // and carry their own comfortable `headingLineHeightRatio`.
+        //
+        // PAGED: both floors are switched OFF. Their entire justification (RenderTheme.swift:138-156)
+        // is that a dense document rendering tighter than this reader's OWN markdown body "reads as a
+        // defect" — a reader-first judgement that holds while office text is being re-typeset at the
+        // READER's 16pt size, and stops holding the moment the reader is deliberately reproducing the
+        // author's page. Measured on a typical Korean report at a 10pt document default they cost
+        // +1pt on every line and +2pt on every paragraph gap, and because `cellContent` routes every
+        // table cell through this same style they are paid again on every row of every table — half
+        // of the "표가 너무 큼" the owner reported. The no-page-width fallback keeps them, because
+        // there the old window-filling model (and its justification) is still what is running.
         let officeStyle = OfficeStyle(theme: theme)
         applyParagraphFormat(format, fontSizeScale: fontSizeScale,
-                             minLineHeight: theme.baseFontSize * officeStyle.bodyMinLineHeightRatio,
-                             minParagraphSpacing: theme.baseFontSize * officeStyle.bodyMinParagraphSpacingRatio,
+                             minLineHeight: paged ? 0 : theme.baseFontSize * officeStyle.bodyMinLineHeightRatio,
+                             minParagraphSpacing: paged ? 0 : theme.baseFontSize * officeStyle.bodyMinParagraphSpacingRatio,
                              to: p)
         return p.copy() as! NSParagraphStyle
     }
 
-    private static func headingParagraphStyle(level: Int, theme: RenderTheme, rtl: Bool = false,
+    /// The font a heading's spans START from. `RenderTheme.headingFont(level:)` is
+    /// `.systemFont(weight: .semibold)`, so every office heading used to be drawn SEMIBOLD whatever
+    /// its runs said — a weight the document never asked for, and one that on a Korean face is also
+    /// WIDER, so a heading wrapped where the document's own weight would not have.
+    ///
+    /// PAGED drops the weight and keeps the size, letting `Span.bold` decide — which is only safe
+    /// because `DocxReader` now resolves bold through the `w:basedOn` style chain
+    /// (`resolvedBold`/`toggleState`). Before that it read only the run's DIRECT `w:rPr`, and a Word
+    /// heading takes its bold from its STYLE: measured on two real reports, 39 of 39 and 38 of 38
+    /// headings carried no run-bold at all while their `heading 1/2/3` styles declared `<w:b/>`, so
+    /// this same change would have un-bolded every one of them. ODT and HWP already carried a
+    /// resolved weight.
+    ///
+    /// The size is taken from the theme's own heading font rather than recomputed, so this stays
+    /// correct if the app's heading ladder changes or is removed — it only ever REMOVES the weight.
+    ///
+    /// One honest limit: a span that needed font SUBSTITUTION carries a descriptor
+    /// `FontSubstitutionResolver` resolved at READ time against `blockWeight: .semibold`, and
+    /// `spansAttributedString` uses such a descriptor verbatim (re-traiting a resolved private
+    /// system-UI descriptor is measured-unreliable — see its own comment). So a substituted heading
+    /// run still draws semibold. That is the majority-inert case, not the common one: a
+    /// `resolvedFontDescriptor` is nil for the overwhelming majority of spans.
+    private static func headingBaseFont(level: Int, theme: RenderTheme, paged: Bool) -> NSFont {
+        let themed = theme.headingFont(level: level)
+        guard paged else { return themed }
+        // PAGED: no ladder and no weight of our own. The owner's rule, verbatim — "그냥 우리 자체
+        // 판단을 버리고, 파싱하는 정보 그대로 다 보여지게 하자 (정의되지 않은 값들만 디폴트를 뭘로
+        // 지정할지만 옵션)" — leaves exactly one decision here, WHICH default an unstated heading
+        // size takes, and the honest answer is the document's own default body size. That is also
+        // what Word draws: measured on the file this came from, its `heading 1` style declares 12pt
+        // while `heading 3/4/5` declare no size at all, so Word renders those at the document
+        // default — where the ladder drew them at 12 x 1.875 = 22.5 and 12 x 1.25 = 15. That gap is
+        // the "폰트가 과도하게 큼" reported after comparing us against Word and Pages.
+        //
+        // A heading whose runs DO state a size is unaffected: `spansAttributedString` replaces this
+        // base with the authored size either way.
+        return .systemFont(ofSize: theme.baseFontSize)
+    }
+
+    /// The size a heading's own RUNS state, in points, already through `fontSizeScale` — `nil` when
+    /// none of them state one, which is the case `RenderTheme.headingSize(level:)` exists for. The
+    /// LARGEST is taken: this feeds a line-height FLOOR, and a floor derived from the smallest run
+    /// of a mixed-size heading would sit under its tallest glyphs.
+    private static func headingOwnSize(_ spans: [Span], fontSizeScale: CGFloat) -> CGFloat? {
+        guard let largest = spans.compactMap({ $0.fontSize }).max() else { return nil }
+        return largest * fontSizeScale
+    }
+
+    /// The line-height FLOOR is derived from the heading's OWN spans, and this function takes them
+    /// rather than a precomputed basis ON PURPOSE. It was a `lineHeightBasis: CGFloat?` parameter
+    /// first, and that shape lost the rule twice in one afternoon: a caller that reshapes this call
+    /// (and both callers were reshaped) writes `nil` for it without anything failing to compile, and
+    /// the floor silently falls back to the ladder. Passing the spans makes the rule impossible to
+    /// drop by editing a call site — the decision lives here, with the arithmetic it feeds.
+    private static func headingParagraphStyle(level: Int, spans: [Span] = [], theme: RenderTheme,
+                                               rtl: Bool = false,
                                                alignment: NSTextAlignment? = nil,
                                                tabStops: [TabStop] = [],
                                                format: ParagraphFormat? = nil,
                                                fontSizeScale: CGFloat = 1,
+                                               paged: Bool = false,
+                                               lineGridPitch: CGFloat? = nil,
                                                columnWidth: CGFloat = .greatestFiniteMagnitude) -> NSParagraphStyle {
         let b = theme.baseFontSize
         let style = OfficeStyle(theme: theme)
         let p = NSMutableParagraphStyle()
-        let lh = (theme.headingSize(level: level) * theme.headingLineHeightRatio).rounded()
+        // The floor is a ratio of the heading's OWN size wherever the document stated one (paged) —
+        // not of `theme.headingSize(level:)`, which is the app's ladder over the document's default
+        // body size and has nothing to do with what this heading was authored at. Concretely, an
+        // 11pt-default report whose H1 runs declare 19pt got a floor of 11 × 1.875 × 1.25 = 26pt
+        // under a 19pt line: a heading held apart from its own text by 7pt of invented leading.
+        // Where the runs state NOTHING the ladder is still the only size there is, so the basis
+        // falls back to it — and so does every NON-paged call, byte-identically to before this.
+        // Paged: the floor follows the heading's own stated size, and where it states none it follows
+        // the size the heading is ACTUALLY drawn at — the document's default body size, since the
+        // ladder is gone (see `headingBaseFont`). Unpaged keeps the ladder, unchanged.
+        let basis = paged
+            ? (headingOwnSize(spans, fontSizeScale: fontSizeScale) ?? theme.baseFontSize)
+            : theme.headingSize(level: level)
+        let lh = (basis * theme.headingLineHeightRatio).rounded()
         p.minimumLineHeight = lh
-        p.maximumLineHeight = lh
-        p.paragraphSpacing = b * theme.headingSpacingAfterRatio
-        p.paragraphSpacingBefore = style.headingSpacingBefore(level: level)
+        // Cleared for the SAME reason the body path was (see `bodyParagraphStyle`, and the comment
+        // there naming a 32pt HWP title whose glyphs overlapped at ~23pt): a cap derived from the
+        // app's own heading scale CLIPS a heading the document made larger than that scale. The
+        // heading path was missed when body was fixed, and the paged model made it bite: the cap now
+        // shrinks with the document's own base (11pt → H1 cap 26) while the run's size is taken
+        // verbatim, so an ordinary 22–28pt Word/HWP title is cut. A floor still governs anything
+        // shorter, and an explicit line rule from the document still overrides both.
+        p.maximumLineHeight = 0
+        // Paged: no invented space around a heading either. `applyParagraphFormat` below still
+        // applies whatever the document's own `spacingBefore`/`spacingAfter` resolved to, so a
+        // document that asked for room gets exactly the room it asked for — and one that asked for
+        // none gets none, instead of the app's 1.9x/0.4x editorial rhythm on top.
+        p.paragraphSpacing = paged ? 0 : b * theme.headingSpacingAfterRatio
+        p.paragraphSpacingBefore = paged ? 0 : style.headingSpacingBefore(level: level)
         if rtl { p.baseWritingDirection = .rightToLeft }
         if let alignment { p.alignment = alignment }
-        if !tabStops.isEmpty { p.tabStops = resolvedTabStops(tabStops, columnWidth: columnWidth) }
+        if !tabStops.isEmpty { p.tabStops = resolvedTabStops(tabStops, columnWidth: columnWidth, paged: paged) }
         applyParagraphFormat(format, fontSizeScale: fontSizeScale, to: p)
         return p.copy() as! NSParagraphStyle
     }
@@ -604,7 +742,19 @@ enum OfficeTextBuilder {
     /// where "no reflow will ever correct this" makes the original position the honest answer).
     /// Either way this is only ever a STARTING point — `DocumentWindowController.updateTextInset`
     /// re-anchors it to the actual reading column on first layout and every reflow after.
-    private static func resolvedTabStops(_ tabStops: [TabStop], columnWidth: CGFloat) -> [NSTextTab] {
+    private static func resolvedTabStops(_ tabStops: [TabStop], columnWidth: CGFloat,
+                                          paged: Bool = false) -> [NSTextTab] {
+        // PAGED: the authored position is kept, full stop. This whole mechanism exists to correct a
+        // MISMATCH between the source page's width and this reader's window-sized column (see
+        // `MDAttr.fillMarginTab`), and a paged document has no mismatch — the column IS the page
+        // body, so the position the author wrote is already the position it should be drawn at.
+        // Rebuilding it anyway does pure damage twice over: a TOC page number lands
+        // `fillMarginTrailingInset` (12pt) left of where the author put it and stays there for good
+        // (`DocumentWindowController.updateTextInset` skips `reanchorFillMarginTabs` when paged), and
+        // a right tab the author placed MID-column — at 200pt in a 451pt page, an ordinary two-column
+        // header — is yanked out to 439pt, because `fillMarginTabInfo` picks the RIGHTMOST right tab
+        // with no proximity test at all and this branch then discards its position outright.
+        guard !paged else { return tabStops.map(officeTextTab) }
         guard let info = fillMarginTabInfo(from: tabStops) else { return tabStops.map(officeTextTab) }
         let hasRealColumn = columnWidth < .greatestFiniteMagnitude
         let width: CGFloat
@@ -776,14 +926,28 @@ enum OfficeTextBuilder {
                                             rtl: Bool = false, alignment: NSTextAlignment? = nil,
                                             extraTabStops: [TabStop] = [],
                                             format: ParagraphFormat? = nil,
+                                            paged: Bool = false,
+                                            lineGridPitch: CGFloat? = nil,
                                             fontSizeScale: CGFloat = 1) -> NSParagraphStyle {
         let p = NSMutableParagraphStyle()
         let lh = (theme.baseFontSize * theme.lineHeightRatio).rounded()
-        p.minimumLineHeight = lh
-        p.maximumLineHeight = lh
-        p.paragraphSpacing = theme.baseFontSize * theme.tightSpacingRatio
+        // Paged: the app's line rhythm and inter-item gap are BOTH withheld, exactly as in
+        // `bodyParagraphStyle` — a list item is a paragraph and gets the same treatment. What the
+        // document itself states still arrives through `applyParagraphFormat` below.
+        p.minimumLineHeight = paged ? (lineGridPitch ?? 0) : lh
+        // Cleared for the same reason as body and heading: pinning the maximum to the app's own
+        // rhythm clips a list item whose run the document made larger than the document default
+        // (a 14pt callout in an 11pt document is capped at 16 against a ~17pt natural line). A
+        // floor, not a cap.
+        p.maximumLineHeight = 0
+        p.paragraphSpacing = paged ? 0 : theme.baseFontSize * theme.tightSpacingRatio
         p.firstLineHeadIndent = markerX
         p.headIndent = textX
+        // NOT routed through `resolvedTabStops`: a list item's authored stops have ALWAYS been mapped
+        // straight through here, never re-anchored to the column, so there is no fill-margin
+        // correction to switch off for paged (item 7 is a body/heading question only). Sending them
+        // through it "for symmetry" would newly apply that correction to every NON-paged list item,
+        // which is a change to the model that must stay byte-identical.
         p.tabStops = [NSTextTab(textAlignment: .left, location: textX)] + extraTabStops.map(officeTextTab)
         p.defaultTabInterval = textX
         // The marker/hang-indent geometry (`markerX`/`textX`) is left exactly as it is for an LTR
@@ -820,7 +984,9 @@ enum OfficeTextBuilder {
                                        rtl: Bool = false, alignment: NSTextAlignment? = nil,
                                        tabStops: [TabStop] = [], into result: NSMutableAttributedString,
                                        theme: RenderTheme, orderedCounters: inout [Int: Int],
-                                       fontSizeScale: CGFloat = 1, format: ParagraphFormat? = nil,
+                                       fontSizeScale: CGFloat = 1, paged: Bool = false,
+                                       lineGridPitch: CGFloat? = nil,
+                                       format: ParagraphFormat? = nil,
                                        commentNumbers: [String: Int] = [:]) {
         let marker: String
         if let suppliedMarker {
@@ -845,15 +1011,37 @@ enum OfficeTextBuilder {
         let markerX = CGFloat(level) * hang
         let textX = CGFloat(level + 1) * hang
         let start = result.length
+        // The item's text is rendered FIRST (into a local — the appended order is unchanged) so the
+        // marker can be drawn to match it. PAGED takes the marker's SIZE and COLOUR from the item's
+        // own first resolved span: a bullet beside a 14pt item was drawn at the document's default
+        // 11pt, and a marker beside coloured text stayed the theme's ink. Deliberately size+colour
+        // only — the FAMILY stays `theme.bodyFont`'s, so an item that opens with a monospaced `code`
+        // run does not get a monospaced bullet, and a marker never inherits bold/italic/underline
+        // from the word that happens to follow it. Read off the RENDERED run rather than off
+        // `Span.fontSize` so it is the one cascade in `spansAttributedString` deciding this, not a
+        // second copy of it here. Non-paged is unchanged: theme body font, theme ink.
+        let body = spansAttributedString(spans, baseFont: theme.bodyFont, baseColor: theme.textColor,
+                                          theme: theme, fontSizeScale: fontSizeScale, paged: paged,
+                                          commentNumbers: commentNumbers)
+        var markerFont = theme.bodyFont
+        var markerColor = theme.textColor
+        if paged, body.length > 0 {
+            let first = body.attributes(at: 0, effectiveRange: nil)
+            if let f = first[.font] as? NSFont,
+               let sized = NSFont(descriptor: theme.bodyFont.fontDescriptor, size: f.pointSize) {
+                markerFont = sized
+            }
+            if let c = first[.foregroundColor] as? NSColor { markerColor = c }
+        }
         result.append(NSAttributedString(string: marker,
-            attributes: [.font: theme.bodyFont, .foregroundColor: theme.textColor]))
-        result.append(spansAttributedString(spans, baseFont: theme.bodyFont, baseColor: theme.textColor,
-                                            theme: theme, fontSizeScale: fontSizeScale, commentNumbers: commentNumbers))
+            attributes: [.font: markerFont, .foregroundColor: markerColor]))
+        result.append(body)
         result.append(NSAttributedString(string: "\n"))
         result.addAttribute(.paragraphStyle,
                             value: listParagraphStyle(markerX: markerX, textX: textX, theme: theme, rtl: rtl,
                                                        alignment: alignment, extraTabStops: tabStops,
-                                                       format: format, fontSizeScale: fontSizeScale),
+                                                       format: format, paged: paged,
+                                                       lineGridPitch: lineGridPitch, fontSizeScale: fontSizeScale),
                             range: NSRange(location: start, length: result.length - start))
     }
 
@@ -871,22 +1059,50 @@ enum OfficeTextBuilder {
                                     theme: RenderTheme, fontSizeScale: CGFloat = 1,
                                     columnWidth: CGFloat = .greatestFiniteMagnitude,
                                     graphicBasis: CGFloat? = nil,
+                                    paged: Bool = false,
+                                    lineGridPitch: CGFloat? = nil,
                                     tableWidth: CGFloat? = nil) {
         guard rows.contains(where: { !$0.isEmpty }) else {
             result.append(NSAttributedString(string: "\n"))
             return
         }
-        let headerFont = fontAdding(.bold, to: theme.bodyFont)
+        // PAGED: a header row's runs decide their own weight. `headerRows` comes from docx
+        // `w:tblHeader` (`DocxReader` reads it as `headerRows`), and ECMA-376 §17.4.49 defines that
+        // as "repeat this row at the top of each page" — a PAGINATION instruction, not emphasis.
+        // Bolding on it states something the document did not, and on a Korean face the bold form is
+        // also WIDER, so the header row's cells wrap at different points than the body rows under
+        // them — the column reads as misaligned for a reason nothing in the document explains. Where
+        // a header really is emphasised the runs say so (`Span.bold`) and it stays bold either way.
+        // Non-paged keeps the app's own convention, which is the model that branch is still running.
+        //
+        // This changes the WEIGHT only. The header row's SHADING is a different decision made in a
+        // different place — `TableBlockBuilder` gives a header cell `Palette.tableHeaderBg`, and only
+        // as a last resort, after the cell's own, the table's, and the table style's shading — and it
+        // is deliberately left exactly as it is here.
+        let headerFont = paged ? theme.bodyFont : fontAdding(.bold, to: theme.bodyFont)
         // Each cell's absolute content width at the reading column, resolved by `TableBlockBuilder`'s
         // own placement + edge geometry (single source of truth for column math) so a cell IMAGE can
         // be clamped to its column at BUILD time — mirroring the top-level `.image` path, which
         // already clamps to `columnWidth`. Padding/border are resolved here EXACTLY as
         // `TableBlockBuilder.build`'s per-placement loop does (cell-direct > table-default >
-        // style > floor/1), then handed to the helper so the width math stays in one place.
+        // style > floor/1 for non-paged; cell-edge > table-edge > `defaultCellPadding` fallback for
+        // paged, via the SAME `TableBlockBuilder.resolvedPagedPadding` `build` itself calls — two
+        // independent copies of this cascade is exactly the drift invariant 47 warns about), then
+        // handed to the helper so the width math stays in one place. `AnchorSpan.padding` only ever
+        // needs an APPROXIMATE horizontal figure (this feeds a build-time image clamp, not the real
+        // grid — see its own doc: "a slightly generous estimate is harmless"), so a paged cell's
+        // asymmetric left/right edges are averaged into the one number that shape wants.
         let spanGrid: [[TableBlockBuilder.AnchorSpan]] = rows.map { anchors in
             anchors.map { cell in
-                let padding = max(cell.padding ?? TableBlockBuilder.defaultCellPadding,
+                let padding: CGFloat
+                if paged {
+                    let resolved = TableBlockBuilder.resolvedPagedPadding(cell: cell.edgePadding,
+                                                                          table: tableFormat.defaultPadding)
+                    padding = (resolved.left + resolved.right) / 2
+                } else {
+                    padding = max(cell.padding ?? TableBlockBuilder.defaultCellPadding,
                                   TableBlockBuilder.defaultCellPadding)
+                }
                 let borderWidth = cell.borderWidth ?? tableFormat.defaultBorderWidth
                     ?? cell.styleBorderWidth ?? 1
                 return TableBlockBuilder.AnchorSpan(rowSpan: cell.rowSpan, colSpan: cell.colSpan,
@@ -895,8 +1111,16 @@ enum OfficeTextBuilder {
         }
         // The width the table is really laid out at (the reading column minus the text container's
         // own padding), so cell content widths and the built grid agree with the final layout from
-        // the FIRST paint — see `TableBlockBuilder.build`'s `width`.
-        let solvedWidth = tableWidth ?? columnWidth
+        // the FIRST paint — see `TableBlockBuilder.build`'s `width`. For a PAGED document, clamped
+        // DOWN to the table's own authored width (`TableFormat.sourceWidth`) when it declared one
+        // narrower than the column — Job 2: a table drawn at 68% of the page body must not become
+        // 100% of it just because the reader fills the column. Never clamped UP: a table wider than
+        // the column, or a non-paged one, still fills it exactly as before this existed. `maxWidth`
+        // is ALSO handed to `TableBlockBuilder.build` below so a LATER reflow re-derives the same
+        // clamp against the full column rather than re-stretching the table back out to it.
+        let requestedWidth = tableWidth ?? columnWidth
+        let maxWidth: CGFloat? = paged ? tableFormat.sourceWidth : nil
+        let solvedWidth = GridTextTable.clampedWidth(requestedWidth, maxWidth: maxWidth)
         let cellContentWidths = TableBlockBuilder.anchorContentWidths(spans: spanGrid,
                                                                       columnWidths: columnWidths,
                                                                       width: solvedWidth)
@@ -906,7 +1130,8 @@ enum OfficeTextBuilder {
                 let content = cellContent(cell.blocks, baseFont: isHeader ? headerFont : theme.bodyFont,
                                           theme: theme, fontSizeScale: fontSizeScale,
                                           imageColumnWidth: cellContentWidths[r][i],
-                                          graphicBasis: graphicBasis, tableWidth: solvedWidth)
+                                          graphicBasis: graphicBasis, paged: paged,
+                                          lineGridPitch: lineGridPitch, tableWidth: solvedWidth)
                 return TableBlockBuilder.CellContent(content: content, rowSpan: cell.rowSpan, columnSpan: cell.colSpan,
                                                       backgroundColor: cell.backgroundColor,
                                                       borderColor: cell.borderColor, borderWidth: cell.borderWidth,
@@ -914,7 +1139,7 @@ enum OfficeTextBuilder {
                                                       padding: cell.padding, styleShading: cell.styleShading,
                                                       styleBorderColor: cell.styleBorderColor,
                                                       styleBorderWidth: cell.styleBorderWidth,
-                                                      edgeBorders: cell.edgeBorders)
+                                                      edgeBorders: cell.edgeBorders, edgePadding: cell.edgePadding)
             }
         }
         result.append(TableBlockBuilder.build(rows: cellRows, headerRows: headerRows, theme: theme,
@@ -923,6 +1148,8 @@ enum OfficeTextBuilder {
                                               tableBorderWidth: tableFormat.defaultBorderWidth,
                                               tableShading: tableFormat.defaultShading,
                                               tableEdges: tableFormat.edgeBorders,
+                                              tablePadding: tableFormat.defaultPadding,
+                                              paged: paged, maxWidth: maxWidth,
                                               width: solvedWidth))
         result.append(NSAttributedString(string: "\n"))
     }
@@ -952,6 +1179,8 @@ enum OfficeTextBuilder {
                                     fontSizeScale: CGFloat = 1,
                                     imageColumnWidth: CGFloat = .greatestFiniteMagnitude,
                                     graphicBasis: CGFloat? = nil,
+                                    paged: Bool = false,
+                                    lineGridPitch: CGFloat? = nil,
                                     tableWidth: CGFloat = .greatestFiniteMagnitude) -> NSAttributedString {
         // A cell picture's scale is the TABLE's on-screen width over the table's source width — not
         // the cell's over the cell's. They are the same ratio (every column keeps its proportion when
@@ -971,21 +1200,26 @@ enum OfficeTextBuilder {
             // (`Span.rtl`, `Span.textColor`, …) still applies, unaffected — it's carried entirely
             // inside `spansAttributedString`.
             case let .heading(level, spans, rtl, alignment, tabStops, format):
+                let headingBase = headingBaseFont(level: level, theme: theme, paged: paged)
                 let str = NSMutableAttributedString(attributedString:
-                    spansAttributedString(spans, baseFont: theme.headingFont(level: level),
-                                          baseColor: theme.textColor, theme: theme, fontSizeScale: fontSizeScale))
+                    spansAttributedString(spans, baseFont: headingBase,
+                                          baseColor: theme.textColor, theme: theme,
+                                          fontSizeScale: fontSizeScale, paged: paged))
                 str.addAttribute(.paragraphStyle,
-                    value: headingParagraphStyle(level: level, theme: theme, rtl: rtl, alignment: alignment,
-                                                 tabStops: tabStops, format: format, fontSizeScale: fontSizeScale),
+                    value: headingParagraphStyle(level: level, spans: spans, theme: theme, rtl: rtl,
+                                                 alignment: alignment, tabStops: tabStops, format: format,
+                                                 fontSizeScale: fontSizeScale, paged: paged,
+                                                 lineGridPitch: lineGridPitch),
                     range: NSRange(location: 0, length: str.length))
                 result.append(str)
             case let .paragraph(spans, rtl, alignment, tabStops, format):
                 let str = NSMutableAttributedString(attributedString:
                     spansAttributedString(spans, baseFont: baseFont, baseColor: theme.textColor,
-                                          theme: theme, fontSizeScale: fontSizeScale))
+                                          theme: theme, fontSizeScale: fontSizeScale, paged: paged))
                 str.addAttribute(.paragraphStyle,
                     value: bodyParagraphStyle(theme: theme, rtl: rtl, alignment: alignment,
-                                              tabStops: tabStops, format: format, fontSizeScale: fontSizeScale),
+                                              tabStops: tabStops, format: format, fontSizeScale: fontSizeScale,
+                                              paged: paged, lineGridPitch: lineGridPitch),
                     range: NSRange(location: 0, length: str.length))
                 result.append(str)
             case let .listItem(level, ordered, spans, marker, _, _, _, _):
@@ -993,21 +1227,26 @@ enum OfficeTextBuilder {
                 // count begun in a sibling cell or at top level.
                 var counters: [Int: Int] = [:]
                 appendListItem(level: level, ordered: ordered, spans: spans, marker: marker, into: result,
-                                theme: theme, orderedCounters: &counters, fontSizeScale: fontSizeScale)
+                                theme: theme, orderedCounters: &counters, fontSizeScale: fontSizeScale,
+                                paged: paged, lineGridPitch: lineGridPitch)
                 if result.length > 0, result.string.hasSuffix("\n") {
                     result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
                 }
             case let .table(nestedRows, _, _, _):
                 result.append(flattenTableToText(nestedRows, baseFont: baseFont, theme: theme))
             case let .image(id, size, alignment):
+                // A CELL picture is clamped whether paged or not — see `fittedOfficeSize`'s doc for
+                // why the bleed decision stops at the cell edge (invariant 39's fixed grid).
                 appendImage(id: id, size: size, columnWidth: imageColumnWidth, basis: graphicBasis,
-                            scale: cellGraphicScale, alignment: alignment, insideCell: true, into: result)
+                            scale: cellGraphicScale, alignment: alignment, insideCell: true,
+                            bleed: 0, into: result)
                 if result.length > 0, result.string.hasSuffix("\n") {
                     result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
                 }
             case let .unsupportedGraphic(label, size, alignment):
                 appendUnsupportedGraphic(label: label, size: size, columnWidth: imageColumnWidth, basis: graphicBasis,
-                                         scale: cellGraphicScale, alignment: alignment, insideCell: true, into: result)
+                                         scale: cellGraphicScale, alignment: alignment, insideCell: true,
+                                         bleed: 0, into: result)
                 if result.length > 0, result.string.hasSuffix("\n") {
                     result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
                 }
@@ -1144,14 +1383,83 @@ enum OfficeTextBuilder {
         return CGSize(width: columnWidth.rounded(), height: (declared.height * scale).rounded())
     }
 
+    /// How far past the reading column a PAGED document's picture may run before it is shrunk after
+    /// all — the owner's "이 앱은 뷰어니 보이게 하는 게 더 중요하다" decision, bounded by what is
+    /// actually DRAWABLE rather than by what would be nice.
+    ///
+    /// Word and HWP let a figure bleed off the body into the page MARGINS, and the geometry to do
+    /// that now exists: `DocumentWindowController.settleReadingColumn`'s paged branch sets the text
+    /// container to the BODY width, the container's left inset to the document's own LEFT margin, and
+    /// the text view's FRAME to `left + body + right` — the author's whole sheet. A line fragment
+    /// starts at the container's left edge, so an oversize attachment overruns to the RIGHT only, and
+    /// the space it has to overrun into is exactly one number: the document's own RIGHT margin. Past
+    /// that it is off the sheet and off the view's bounds, and a view clips its own drawing to its
+    /// bounds — so it would be CUT, not bled. A clipped picture is strictly worse than a shrunk one
+    /// (the reader loses the right of the figure and nothing on screen says why), which is why the
+    /// allowance is the real margin and never a guess at it.
+    ///
+    /// `nil` — no margin supplied — means NO bleed, i.e. exactly the clamp-to-column behaviour that
+    /// preceded this. That is the honest default: without the margin there is no width this can be
+    /// proven safe at, and inventing one trades a shrunk picture for a possibly-clipped one.
+    ///
+    /// **RETURNS 0 TODAY, DELIBERATELY — the premise above is FALSE and was measured to be.** The
+    /// paragraph above assumes an attachment wider than the text container paints on into the
+    /// frame's spare width and is stopped only by the view's bounds. It is not: **AppKit clips an
+    /// attachment to the TEXT CONTAINER**, and the frame is never the limit. Measured by drawing a
+    /// real `NSTextView` in exactly `settleReadingColumn`'s paged geometry (inset = left margin,
+    /// `containerSize` = body, frame = `left + body + right`), painting a solid attachment through
+    /// `cacheDisplay`, and scanning the bitmap for the rightmost painted pixel — container 451.3,
+    /// inset 32, frame 515.3:
+    ///
+    ///     authored  container   rightmost painted   unclipped would be
+    ///      411.3      451.3          447.3               448.3    ← fits, whole
+    ///      451.3      451.3          482.3               488.3
+    ///      481.3      451.3          482.3               518.3
+    ///      551.3      451.3          482.3               588.3
+    ///      651.3      451.3          482.3               688.3
+    ///      551.3      551.3          582.3               588.3    ← CONTROL, whole
+    ///      651.3      651.3          682.3               688.3    ← CONTROL, whole
+    ///
+    /// The painted extent tracks the CONTAINER and nothing else: pinned at 482.3 for every oversize
+    /// width, while the two controls — same pictures, container widened to match — paint whole. So
+    /// letting the authored width exceed the column does not bleed the picture, it CROPS it: the
+    /// reader loses the right of the figure with nothing on screen to explain it, which is strictly
+    /// worse than the shrink it would replace. The gate is here, and not a revert, because the
+    /// mechanism and the `pageMarginRight` thread are both correct and the finding must not have to
+    /// be re-derived.
+    ///
+    /// What actually unlocks it: `DocumentWindowController.settleReadingColumn`'s paged branch has to
+    /// give the container the whole SHEET (`left + body + right`, `textContainerInset.width` 0) and
+    /// pull body text back to the body column with paragraph indents instead of with the container.
+    /// Then this returns `right` and the numbers above say it will be drawn. That composes with every
+    /// indent `applyParagraphFormat` already sets and with `TableBlockBuilder`'s column solve, so it
+    /// wants measuring rather than assuming.
+    ///
+    /// Measured before any of it, on 41 real documents (4 docx + 37 HWP): not ONE picture is authored
+    /// wider than its own page body — the widest observed is exactly the body width. The feature has
+    /// no subject in this corpus, which is also why gating it costs nothing today.
+    private static func bleedAllowance(paged: Bool, pageMarginRight: CGFloat?) -> CGFloat {
+        guard paged, let right = pageMarginRight, right > 0 else { return 0 }
+        _ = right          // see above: re-enable by returning `right` once the container is the sheet
+        return 0
+    }
+
     /// THE size an office graphic occupies, in one place: authored size × page-proportional scale,
     /// then column-fitted. Called at build time here, and again by
     /// `DocumentWindowController.resizeOfficeGraphics` on every reflow — one function so a picture
     /// cannot drift from what a rebuild at the same width would have produced. (Two copies of this
     /// arithmetic is precisely how a resized document ends up disagreeing with a reopened one.)
-    static func graphicSize(authored: CGSize, graphicScale: CGFloat, columnWidth: CGFloat) -> CGSize {
+    /// `bleed` widens the clamp by that many points — see `bleedAllowance`. `0`, the default, is every
+    /// non-paged build, every cell picture, every paged document whose reader found no right margin,
+    /// and `DocumentWindowController.resizeOfficeGraphics`, which is skipped outright for a paged
+    /// document and so can never reach the widened arm.
+    static func graphicSize(authored: CGSize, graphicScale: CGFloat, columnWidth: CGFloat,
+                            bleed: CGFloat = 0) -> CGSize {
         let scaled = CGSize(width: authored.width * graphicScale, height: authored.height * graphicScale)
-        return fittedOfficeSize(scaled, columnWidth: columnWidth)
+        let limit = bleed > 0 && columnWidth.isFinite ? columnWidth + bleed : columnWidth
+        // Clamped to `limit`, but never SCALED UP to it: `fittedOfficeSize` only ever shrinks, so a
+        // picture narrower than the column keeps its authored width exactly as before.
+        return fittedOfficeSize(scaled, columnWidth: limit)
     }
 
     /// The chart/SmartArt frame's pixels. Extracted so a reflow can REDRAW it at the new size —
@@ -1215,6 +1523,7 @@ enum OfficeTextBuilder {
     /// scroll bar swings when it loads/purges.
     private static func appendImage(id: String, size: CGSize, columnWidth: CGFloat, basis: CGFloat?,
                                     scale: CGFloat, alignment: NSTextAlignment?, insideCell: Bool,
+                                    bleed: CGFloat = 0,
                                     into result: NSMutableAttributedString) {
         // `scale` (= the on-screen width of what this picture was measured against ÷ that thing's
         // SOURCE width — page for a picture in the flow, table for one in a cell), NOT `fontSizeScale`:
@@ -1222,7 +1531,7 @@ enum OfficeTextBuilder {
         // the document's own font↔image proportion at any window size — while leaving ⌘+/⌘− (a TEXT
         // setting) unable to inflate a photograph. Scale first, THEN fit, so a scaled image still never
         // exceeds its column or its cell.
-        let fitted = graphicSize(authored: size, graphicScale: scale, columnWidth: columnWidth)
+        let fitted = graphicSize(authored: size, graphicScale: scale, columnWidth: columnWidth, bleed: bleed)
         let att = NSTextAttachment()
         att.bounds = NSRect(origin: .zero, size: fitted)
         att.attachmentCell = SizedAttachmentCell(reservedSize: fitted)
@@ -1267,10 +1576,11 @@ enum OfficeTextBuilder {
     /// understands ("Chart", "Diagram"), never an XML element name.
     private static func appendUnsupportedGraphic(label: String, size: CGSize, columnWidth: CGFloat, basis: CGFloat?,
                                                   scale: CGFloat, alignment: NSTextAlignment?, insideCell: Bool,
+                                                  bleed: CGFloat = 0,
                                                   into result: NSMutableAttributedString) {
         // Same proportional scaling as `appendImage` — a chart/SmartArt placeholder stands in for the
         // space the real graphic would occupy, so it must hold that same share of its container.
-        let fitted = graphicSize(authored: size, graphicScale: scale, columnWidth: columnWidth)
+        let fitted = graphicSize(authored: size, graphicScale: scale, columnWidth: columnWidth, bleed: bleed)
         let att = NSTextAttachment()
         att.bounds = NSRect(origin: .zero, size: fitted)
         att.image = placeholderImage(label: label, size: fitted)

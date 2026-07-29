@@ -1,6 +1,23 @@
 import AppKit
 import UniformTypeIdentifiers
 
+/// Centres the document view HORIZONTALLY when it is narrower than the viewport — a paged document
+/// pins its column to the page's own body width, so at anything below "fit" there is spare window
+/// on both sides and the page belongs in the middle of it (paged-zoom design §2c).
+///
+/// Deliberately NOT `DiagramZoomWindow.CenteringClipView`, which centres BOTH axes: that is right for
+/// a diagram (a small picture floats in the middle of its window) and wrong for a document (a short
+/// markdown file would drift to the vertical centre instead of starting at the top). Same idea, one
+/// axis, because the two callers want different things — not a duplicate to be "unified" later.
+final class PageCenteringClipView: NSClipView {
+    override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
+        var rect = super.constrainBoundsRect(proposedBounds)
+        guard let doc = documentView, doc.frame.width < rect.width else { return rect }
+        rect.origin.x = (doc.frame.width - rect.width) / 2
+        return rect
+    }
+}
+
 final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTextViewDelegate,
                                      NSMenuItemValidation {
     // Explicit TextKit 1 stack (C2): building the view with init(frame:textContainer:)
@@ -83,10 +100,22 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
 
+        // The clip view is swapped BEFORE `documentView` is set: assigning `contentView`
+        // afterwards drops the document view AppKit had already installed on the old clip.
+        // For markdown and plain text this class is a no-op (the document view is exactly as wide
+        // as the clip), so it is installed unconditionally rather than per document kind.
+        scrollView.contentView = PageCenteringClipView()
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false   // viewer never scrolls sideways; text wraps
         scrollView.drawsBackground = true
+        // Paged documents (docx/odt/HWP that declared a page) are ZOOMED rather than re-typeset, so
+        // the reader's ⌘+/⌘− becomes a view transform over a column that never moves. Turning this
+        // on costs markdown nothing: `magnification` stays 1 unless `setPageZoom` is called, and
+        // only a paged document ever calls it. Bounds mirror `DiagramZoomWindow`'s.
+        scrollView.allowsMagnification = true
+        scrollView.minMagnification = Self.minPageZoom
+        scrollView.maxMagnification = Self.maxPageZoom
         // NSClipView repaints only the newly-exposed strip while scrolling, so custom card/quote
         // backgrounds can tear briefly mid-scroll. That's fine: viewportChanged repaints the whole
         // visible area ONCE when scrolling settles.
@@ -329,6 +358,72 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     func settleReadingColumn() -> CGFloat? {
         let clipWidth = scrollView.contentSize.width
         guard clipWidth > 1, !suspendReflow else { return nil }
+        // PAGED: the column is the DOCUMENT's own page body and the window no longer decides it.
+        // `lastClipWidth` is still written (below, in the shared path) because both resize gates
+        // de-duplicate against it — pinning the COLUMN must not strand the GATE.
+        if let page = pagedWidth {
+            let widthMoved = abs(clipWidth - lastClipWidth) > 0.5
+            lastClipWidth = clipWidth
+            textInsetUpdateCount += 1
+            // The sheet is the DOCUMENT's: its own left margin positions the text and its own right
+            // margin trails it, so `left + body + right` is the author's paper. Reproducing only the
+            // BODY was measured as the largest remaining size gap against Word and Pages — they show
+            // the whole sheet, so at the same window width a body-only layout magnifies the text by
+            // paper ÷ body, which is 1.24×–1.32× on four real A4 documents. A reader that found no
+            // margins falls back to the app's own inset, unchanged.
+            let leftMargin = pagedMarginLeft ?? minSideInset
+            let rightMargin = pagedMarginRight ?? minSideInset
+            textView.textContainerInset = NSSize(width: leftMargin, height: verticalInset)
+            textView.textContainer?.containerSize = NSSize(width: page, height: CGFloat.greatestFiniteMagnitude)
+            // The document view is FIXED at the page's width, not stretched to the clip. Both halves
+            // matter: measured on this machine, a magnified clip's bounds shrink and an
+            // autoresizing text view FOLLOWS them (883 → 441 pt at 2×), which would re-wrap the
+            // text on every zoom press — the exact re-typesetting this change exists to remove,
+            // arriving through the back door. `PageCenteringClipView` puts the spare width in the
+            // margins instead.
+            textView.autoresizingMask = []
+            var f = textView.frame
+            f.size.width = leftMargin + page + rightMargin
+            textView.frame = f
+            // First paged settle: open at `defaultPageZoom`, and bring the window to the page rather
+            // than the page to the window.
+            //
+            // This was first built as fit-to-window, which opened every document 1.5×–2.9× larger than
+            // the applications the reader compares us with, and the owner reported the type as
+            // oversized. It was then corrected to 1.0 on the belief that "Word and Pages open at
+            // 100%". THAT BELIEF WAS WRONG and is the reason this comment is long: measured on this
+            // machine, Word opens at 120%, Pages at 125%, and Hancom's HWP Viewer at ~115%, so 1.0
+            // made us the smallest of the four and the owner reported THAT. The fix is neither
+            // extreme — a fixed multiple of actual size (see `defaultPageZoom`), which keeps the
+            // page's authored proportions while landing in the band the three peers occupy.
+            //
+            // §2a's window-follows-page rule is what keeps the result from looking marooned: the
+            // WINDOW comes to the page's size, so the page fills it at the opening zoom and the
+            // zoom-follows-window rule below then holds rather than fighting.
+            if !pageZoomSeeded, scrollView.contentSize.width > 1 {
+                pageZoomSeeded = true
+                applyMagnification(Self.defaultPageZoom)
+                DispatchQueue.main.async { [weak self] in self?.fitWindowToPage() }
+            } else if widthMoved, let fit = fitPageZoomValue() {
+                // THE WINDOW CHANGED WIDTH → the zoom follows it, so the page keeps filling the
+                // reading area (owner's instruction, which deliberately reverses the design doc's
+                // §2c "a manual resize does not change the zoom").
+                //
+                // The latch is what stops the two rules eating each other: §2a has a ⌘+ press GROW
+                // the window, and that growth arrives back here as a width change. Re-fitting it
+                // would immediately undo the press. So a resize WE caused is consumed once and
+                // ignored — a one-shot rather than a plain flag, because entering full screen
+                // resizes asynchronously and the notification lands turns later.
+                if zoomDrivenResizePending {
+                    zoomDrivenResizePending = false
+                } else {
+                    applyMagnification(fit)
+                }
+            }
+            syncHorizontalScroller()
+            return page
+        }
+        textView.autoresizingMask = [.width]
         // The ONE place `lastClipWidth` is written. Every caller — this init/setup path,
         // `reflow(keeping:)`, `display(_:)`, `windowDidResize`, `viewportChanged` — funnels through
         // here, so the value can never disagree with the layout that actually just ran, regardless
@@ -346,16 +441,203 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func updateTextInset() {
-        // The reading column ALWAYS fills the window (minus side margins) — for every kind, office
-        // included. Pinning an office document's column to its page width was tried and rejected: it
-        // left a narrow column marooned in a wide window. Instead `render(into:)` divides this column
-        // by the document's own page width to get its GRAPHIC scale, so pictures hold
-        // the share of the column they held of the page and grow with the window, while text keeps
-        // following the reader's own ⌘+/⌘− size. markdown/plain text unchanged.
+        // The reading column fills the window (minus side margins) for markdown, plain text, and an
+        // office document whose reader could NOT determine a page width. A PAGED document instead
+        // pins the column to its own page body and zooms (`settleReadingColumn`, paged-zoom design
+        // §2) — the earlier attempt at that pin was rejected as "a narrow column marooned in a wide
+        // window", and the thing that fixes it is the zoom, which that attempt did not have.
+        //
+        // `settleReadingColumn` always runs — it pins the container, keeps `lastClipWidth` current
+        // for both resize gates, and seeds the opening zoom.
         guard let column = settleReadingColumn() else { return }
+        // PAGED: the three passes are SKIPPED, not deleted. All three are pure functions of the
+        // reading column, and a paged column is constant for the life of the document, so each one
+        // provably recomputes the value it already holds: `reanchorFillMarginTabs` re-derives the
+        // same tab stops, `resizeTableColumns` moves 0 cells (the build used this very width), and
+        // `resizeOfficeGraphics` computes `scale = column ÷ basis` = 1, i.e. the authored size the
+        // build already applied.
+        //
+        // Skipping is not just an optimisation here, it is required by §2a: a zoom press RESIZES
+        // THE WINDOW, which lands on `windowDidResize` and would otherwise pay a full walk of the
+        // storage on every press — 91 ms on a 62-table HWP and far worse on a 51,816-cell report,
+        // reintroducing on the window-follow exactly the cost the zoom exists to remove.
+        //
+        // They are kept, not deleted, because they remain the ENTIRE implementation of the
+        // no-page-width fallback (design §7) — an office document whose reader found no page size
+        // still re-solves against a window-sized column, exactly as before.
+        if isPaged { return }
         reanchorFillMarginTabs(toColumn: column)
         resizeTableColumns(toColumn: column)
         resizeOfficeGraphics(toColumn: column)
+    }
+
+    // MARK: - Paged zoom (paged-zoom design §2 / §5 step 1)
+
+    static let minPageZoom: CGFloat = 0.25
+    static let maxPageZoom: CGFloat = 8
+    /// One press. Matches `DiagramZoomWindow.ZoomScrollView.zoom(by:)` so the two zoom surfaces in
+    /// the app step by the same amount.
+    static let pageZoomStep: CGFloat = 1.25
+
+    /// The zoom a paged document OPENS at, and the one ⌘0 returns to.
+    ///
+    /// NOT 1.0, and the reason is measured rather than argued. Every application this reader is
+    /// compared against shows a page LARGER than actual size by default, on the same screen:
+    /// Word 120%, Pages 125%, and Hancom's HWP Viewer ~115% (its status bar reads "86%" because it
+    /// counts in 96-DPI units — 0.86 × 96/72 = 1.147; confirmed independently off its own ruler, where
+    /// 1 cm measured 65.4 px on a 2× display against 56.7 px at actual size). Opening at 1.0 therefore
+    /// made us the smallest of the four and the owner reported exactly that. 1.2 is Word's own number,
+    /// and it sits inside the 1.15–1.25 band the three of them occupy.
+    ///
+    /// This does NOT re-open the question `c46dcfa` settled: fit-to-window is still wrong (it opened
+    /// documents 1.5×–2.9× larger, which is what made the owner call the type oversized). A fixed
+    /// multiple of actual size is a different thing — the page keeps its authored proportions and only
+    /// its on-screen size changes, so ⌘− once lands within 4% of true actual size.
+    static let defaultPageZoom: CGFloat = 1.2
+
+    /// The page body width this document declared, or nil for every other kind. THE paged predicate:
+    /// `kind == .office` is NOT it — an office document whose reader found no page width (a real,
+    /// tested state in all three formats) keeps the fill-the-window model, and five existing tests
+    /// go red the moment that distinction is lost.
+    var pagedWidth: CGFloat? {
+        guard let doc = document as? MarkdownDocument, let w = doc.officePageContentWidth, w > 0 else { return nil }
+        return w
+    }
+
+    var isPaged: Bool { pagedWidth != nil }
+
+    /// The live magnification. Read-only to the outside; `scrollView` is private on purpose.
+    var pageZoom: CGFloat { scrollView.magnification }
+
+    /// Test-visible, in the shape of `textInsetUpdateCount` / `resizeGateReflowCount`: counts how
+    /// many times a zoom was actually applied, so a test can assert a press did something without
+    /// a stopwatch.
+    private(set) var pageZoomChangeCount = 0
+
+    /// Set once the first paged settle has chosen an opening zoom, so a later reflow does not
+    /// silently reset the reader's own choice back to fit.
+    private var pageZoomSeeded = false
+
+    /// One-shot: the next width change was caused by OUR OWN zoom-driven window resize, so the
+    /// zoom-follows-window rule must skip it exactly once. See the settle that consumes it.
+    private var zoomDrivenResizePending = false
+
+    /// The page's own left/right margins, when its reader found them. `nil` → the app's own inset.
+    private var pagedMarginLeft: CGFloat? { (document as? MarkdownDocument)?.officePageMarginLeft }
+    private var pagedMarginRight: CGFloat? { (document as? MarkdownDocument)?.officePageMarginRight }
+
+    /// The document view's full width in document points — the PAPER: the author's own left margin,
+    /// their body column, and their own right margin. This is the number the zoom multiplies and the
+    /// one the window is sized against, so at magnification 1.0 the sheet on screen is the sheet Word
+    /// and Pages draw at 100%.
+    private var pagedDocumentWidth: CGFloat? {
+        pagedWidth.map { (pagedMarginLeft ?? minSideInset) + $0 + (pagedMarginRight ?? minSideInset) }
+    }
+
+    /// The zoom that makes the page exactly fill the reading area, or nil when there is nothing
+    /// real to fit against yet (no page, or a clip view with no width).
+    private func fitPageZoomValue() -> CGFloat? {
+        guard let d = pagedDocumentWidth, d > 0 else { return nil }
+        let available = scrollView.contentSize.width
+        guard available > 1 else { return nil }
+        return clampPageZoom(available / d)
+    }
+
+    private func clampPageZoom(_ z: CGFloat) -> CGFloat {
+        min(Self.maxPageZoom, max(Self.minPageZoom, z))
+    }
+
+    /// A page magnified past the viewport has to be reachable sideways. Called from both the zoom
+    /// and the settle, because the page can outgrow the clip either by zooming IN or by the window
+    /// shrinking. The horizontal scroller consumes HEIGHT, never width, so toggling it cannot move
+    /// `contentSize.width` and cannot disturb either resize gate.
+    private func syncHorizontalScroller() {
+        guard let d = pagedDocumentWidth else { return }
+        scrollView.hasHorizontalScroller = d * scrollView.magnification > scrollView.contentSize.width + 0.5
+    }
+
+    /// The ONLY thing a zoom is allowed to touch. It must never reach `settleReadingColumn` or
+    /// `updateTextInset`: invariant 56b's 65,853 ms freeze is AppKit filling layout holes inside
+    /// `NSTextTable`, and magnification creates none — but changing the container width by even a
+    /// point re-wraps the document and brings the freeze straight back.
+    ///
+    /// Returns whether the zoom actually moved, so a press already at the clamp does not go on to
+    /// resize the window for nothing.
+    @discardableResult
+    private func applyMagnification(_ z: CGFloat) -> Bool {
+        let target = clampPageZoom(z)
+        guard abs(scrollView.magnification - target) > 0.0001 else { return false }
+        // The point is in the DOCUMENT view's space — same call, same space, as
+        // `DiagramZoomWindow.ZoomScrollView.zoom(by:)`, which is the shipped precedent.
+        let visible = scrollView.contentView.documentVisibleRect
+        scrollView.setMagnification(target, centeredAt: NSPoint(x: visible.midX, y: visible.midY))
+        pageZoomChangeCount += 1
+        syncHorizontalScroller()
+        return true
+    }
+
+    /// ⌘+ / ⌘− for a paged document. Returns false when this document is not paged, so the caller
+    /// falls through to the reading-font-size model.
+    @discardableResult
+    func stepPageZoom(magnifying: Bool) -> Bool {
+        guard isPaged else { return false }
+        let moved = applyMagnification(scrollView.magnification * (magnifying ? Self.pageZoomStep : 1 / Self.pageZoomStep))
+        if moved { fitWindowToPage() }
+        return true
+    }
+
+    /// ⌘0 for a paged document — ACTUAL SIZE, and the window comes back with it.
+    ///
+    /// Resetting the magnification alone reads as "the key did nothing": the page snaps back to 100%
+    /// inside whatever window the reader had grown, and then the zoom-follows-window rule immediately
+    /// re-fits it to that window, putting the zoom straight back where it was. The window is half of
+    /// the state, so ⌘0 has to restore both — which is also what "기본 배율" means to a reader: the way
+    /// the document looked when it opened.
+    @discardableResult
+    func fitPageZoom() -> Bool {
+        guard isPaged else { return false }
+        applyMagnification(Self.defaultPageZoom)
+        // The window follows the page, and the resize this causes must NOT be read back as a
+        // user resize — otherwise the re-fit undoes the 1.0 we just set.
+        fitWindowToPage()
+        syncHorizontalScroller()
+        return true
+    }
+
+    /// Design §2a: while it can, the window tracks the page so the page always fits it exactly; at
+    /// the screen's limit it hands over to full screen and further zoom just scrolls the page.
+    ///
+    /// Guarded on a VISIBLE window: the suite builds controllers with `setFrame` and never orders
+    /// them front, and a headless `toggleFullScreen` would be both meaningless and slow. The zoom
+    /// itself has already been applied by the time this runs, so a test still observes the whole
+    /// behaviour it cares about.
+    private func fitWindowToPage() {
+        guard let window, window.isVisible, let d = pagedDocumentWidth else { return }
+        guard let screen = window.screen ?? NSScreen.main else { return }
+        let want = d * scrollView.magnification
+        let have = scrollView.contentSize.width
+        let delta = want - have
+        guard abs(delta) > 0.5 else { return }
+        let visible = screen.visibleFrame
+        let isFullScreen = window.styleMask.contains(.fullScreen)
+        let target = window.frame.width + delta
+        if target > visible.width {
+            if !isFullScreen {
+                zoomDrivenResizePending = true
+                window.toggleFullScreen(nil)                    // §2a: stop growing, start scrolling
+            }
+            return
+        }
+        if isFullScreen {
+            zoomDrivenResizePending = true
+            window.toggleFullScreen(nil)                        // shrinking back under the limit
+            return
+        }
+        var frame = window.frame
+        frame.size.width = max(400, target)
+        if frame.maxX > visible.maxX { frame.origin.x = max(visible.minX, visible.maxX - frame.width) }
+        zoomDrivenResizePending = true
+        window.setFrame(frame, display: true, animate: false)
     }
 
     /// Office-only (markdown/plain never carry `MDAttr.fillMarginTab`): re-anchors a paragraph's

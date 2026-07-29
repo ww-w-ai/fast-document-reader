@@ -219,10 +219,11 @@ final class HwpMappingTests: XCTestCase {
             }
             return format.lineHeight
         }
-        // percent: only the format's OWN default (160%) is neutral — that one normalizes to the
-        // app's house rhythm so HWP body reads consistently with markdown/docx (invariant 37). Any
-        // other percentage is an author's choice and is honoured as a floor; the earlier policy
-        // discarded all of them, which silently overrode 772 paragraphs in one measured document.
+        // NON-PAGED (this envelope declares no `pageContentWidth`): the old window-filling model,
+        // where 160% is treated as "nothing stated" and normalizes to the app's house rhythm so HWP
+        // body reads consistently with markdown/docx (invariant 37). Any other percentage is an
+        // author's choice and is honoured as a floor. A PAGED document honours 160 too and measures
+        // it against the paragraph's own run size — see `testPagedHonoursTheFormatDefaultPercent`.
         XCTAssertNil(try lh("percent", 160))
         XCTAssertEqual(try lh("percent", 200), .atLeast(22))   // 200% of the 11pt default
         // fixed/at-least are author-chosen ABSOLUTE heights, stored 2× in HWP5 → ÷200.
@@ -673,10 +674,12 @@ extension HwpMappingTests {
 }
 
 extension HwpMappingTests {
-    /// HWP's own default spacing (160%) means "nothing stated" → the reader's house rhythm, so HWP
-    /// body reads like markdown/docx body. Every OTHER percentage is the author's choice and is
-    /// honoured — measured: one real document carries 772 paragraphs at 110–180% that were being
-    /// thrown away. Applied as a FLOOR so a tall CJK glyph is never clipped.
+    /// NON-PAGED ONLY — this envelope declares no `pageContentWidth`. There the old window-filling
+    /// model still runs: HWP's own default spacing (160%) means "nothing stated" → the reader's
+    /// house rhythm, so HWP body reads like markdown/docx body in the same window. Every OTHER
+    /// percentage is the author's choice and is honoured, as a FLOOR so a tall CJK glyph is never
+    /// clipped. Measured: 637 of 637 real files DO declare a page width, so this arm is reached only
+    /// by a document that declares none — for which byte-identical is the contract.
     func testPercentLineHeightHonoursAuthorChoicesButNotTheFormatDefault() throws {
         func lineHeight(_ percent: Int) throws -> LineHeight? {
             let json = """
@@ -698,6 +701,110 @@ extension HwpMappingTests {
         }
         XCTAssertEqual(tight, 11, accuracy: 0.01)
         XCTAssertNotNil(try lineHeight(158), "158% is a choice, not a rounding of the default")
+    }
+
+    // MARK: - PAGED: HWP's own percent rule, reproduced
+
+    /// One paragraph, built through the real `mapJSON`, with the page width that makes it PAGED.
+    /// `runSize` is the size the paragraph's single run declares, in points (`nil` = declares none).
+    private func pagedLineHeight(percent: Int, defaultPt: Double = 10,
+                                 runSize: Double?) throws -> LineHeight? {
+        let size = runSize.map { ",\"size\":\(Int($0 * 100))" } ?? ""
+        let json = """
+        {"v":1,"defaultFontSizePt":\(defaultPt),"pageContentWidth":420,
+         "blocks":[{"t":"para","spans":[{"text":"본문"\(size)}],
+         "lineHeight":{"type":"percent","value":\(percent)}}]}
+        """
+        guard case let .paragraph(_, _, _, _, format) = try HwpReader.mapJSON(json).blocks[0] else {
+            XCTFail("expected a paragraph"); return nil
+        }
+        return format.lineHeight
+    }
+
+    /// The change this sprint is about: a PAGED document's 160% is the author's line rule, not
+    /// silence. It used to be discarded, which drew the most common Korean page (225,654 of 525,054
+    /// percent paragraphs across 637 real files) at the app's 1.45× house rhythm instead of the
+    /// 1.6× em HWP asks for.
+    func testPagedHonoursTheFormatDefaultPercent() throws {
+        guard case .atLeast(let pt)? = try pagedLineHeight(percent: 160, runSize: 10) else {
+            return XCTFail("a paged 160% must be honoured, not discarded")
+        }
+        // rhwp's own rule, stated in three places in its renderer: pitch = max_fs × percent / 100.
+        // 10pt text at 160% = 16pt — exactly 1.6× em, NOT the 1.81× the superseded comment estimated
+        // (that figure was a property of `.multiple`, which this reader does not use).
+        XCTAssertEqual(pt, 16, accuracy: 0.01)
+    }
+
+    /// The SAME document without a page width keeps the old model exactly — so the page width, and
+    /// nothing else, is what switches the rule. This is the byte-identical half of the contract.
+    func testNonPagedStillDiscardsTheFormatDefaultPercent() throws {
+        let json = """
+        {"v":1,"defaultFontSizePt":10,"blocks":[{"t":"para","spans":[{"text":"본문","size":1000}],
+         "lineHeight":{"type":"percent","value":160}}]}
+        """
+        guard case let .paragraph(_, _, _, _, format) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected a paragraph")
+        }
+        XCTAssertNil(format.lineHeight, "with no page width the old window-filling model stands")
+    }
+
+    /// HWP measures its percentage against the TEXT'S OWN size (rhwp's `max_fs`), not against the
+    /// document default. Measured across 637 files: only 76,601 of 392,216 percent paragraphs (19.5%)
+    /// have a run size within 5% of the document default, and 47 files report a default that is not
+    /// a plausible body size at all (1pt, 24pt, 40pt) — so the default is the wrong basis four times
+    /// in five. A 20pt heading-ish paragraph in a 10pt document wants 32pt of line, not 16pt.
+    func testPagedPercentIsMeasuredAgainstTheParagraphsOwnRunSize() throws {
+        guard case .atLeast(let big)? = try pagedLineHeight(percent: 160, defaultPt: 10, runSize: 20)
+        else { return XCTFail("expected a floor") }
+        XCTAssertEqual(big, 32, accuracy: 0.01, "160% of the paragraph's OWN 20pt, not of the 10pt default")
+
+        // ...and the other direction: text SMALLER than the default must not be over-spaced.
+        guard case .atLeast(let small)? = try pagedLineHeight(percent: 160, defaultPt: 10, runSize: 8)
+        else { return XCTFail("expected a floor") }
+        XCTAssertEqual(small, 12.8, accuracy: 0.01, "160% of 8pt, not the 16pt the default would give")
+    }
+
+    /// The paragraph's own size is an ANSWER, not always present — an empty paragraph, or a run that
+    /// inherits its size, declares none. Then, and only then, the document default is the basis.
+    func testPagedPercentFallsBackToTheDocumentDefaultWhenNoRunStatesASize() throws {
+        guard case .atLeast(let pt)? = try pagedLineHeight(percent: 160, defaultPt: 10, runSize: nil)
+        else { return XCTFail("expected a floor") }
+        XCTAssertEqual(pt, 16, accuracy: 0.01, "no run size → the document's own default is the basis")
+    }
+
+    /// A paragraph MIXING sizes takes the largest, so the tall line is never the one that gets too
+    /// little room — the one-directional degradation `maxRunSize`'s doc names (HWP re-picks `max_fs`
+    /// per wrapped LINE; an `NSParagraphStyle` carries one rule for the whole paragraph).
+    func testPagedPercentTakesTheLargestRunInAMixedParagraph() throws {
+        let json = """
+        {"v":1,"defaultFontSizePt":10,"pageContentWidth":420,
+         "blocks":[{"t":"para","spans":[{"text":"작은","size":900},{"text":"큰","size":1800}],
+         "lineHeight":{"type":"percent","value":150}}]}
+        """
+        guard case let .paragraph(_, _, _, _, format) = try HwpReader.mapJSON(json).blocks[0],
+              case .atLeast(let pt)? = format.lineHeight else {
+            return XCTFail("expected a paragraph with a floor")
+        }
+        XCTAssertEqual(pt, 27, accuracy: 0.01, "150% of the 18pt run, not of the 9pt one")
+    }
+
+    /// The rule reaches a paragraph inside a TABLE CELL too — `mapCell` recurses through the same
+    /// `mapBlock`, and a Korean report puts most of its text in tables.
+    func testPagedPercentReachesTableCellParagraphs() throws {
+        let json = """
+        {"v":1,"defaultFontSizePt":10,"pageContentWidth":420,
+         "blocks":[{"t":"table","colWidths":[10000],"rows":[[{"colSpan":1,"rowSpan":1,
+         "blocks":[{"t":"para","spans":[{"text":"칸","size":1000}],
+         "lineHeight":{"type":"percent","value":160}}]}]]}]}
+        """
+        guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0],
+              case let .paragraph(_, _, _, _, format) = rows[0][0].blocks[0] else {
+            return XCTFail("expected a table cell paragraph")
+        }
+        guard case .atLeast(let pt)? = format.lineHeight else {
+            return XCTFail("a cell paragraph's 160% must be honoured too")
+        }
+        XCTAssertEqual(pt, 16, accuracy: 0.01)
     }
 
     /// The same field is written as a percentage by some HWP versions and as percent×100 by others.

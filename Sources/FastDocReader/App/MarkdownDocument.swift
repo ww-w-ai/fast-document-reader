@@ -36,13 +36,34 @@ final class MarkdownDocument: NSDocument {
 
     /// The SOURCE document's own page BODY width in points (paper − margins), or nil when the reader
     /// could not determine it — see `OfficeReadResult.pageContentWidth`. Set alongside `officeBlocks`
-    /// on every read/reload. `render(into:)` divides the reading column by it to get the GRAPHIC scale
-    /// it hands `OfficeTextBuilder.build` (`graphicScale`), so an image occupies the same share of the
-    /// column that it occupied of the source page. It does NOT change the column itself — the column
-    /// always fills the window (pinning it to the page width was tried and rejected, see
-    /// `DocumentWindowController.updateTextInset`). nil for every non-office kind, and nil here means
-    /// graphics keep their authored point size exactly as before this existed.
+    /// on every read/reload.
+    ///
+    /// **Non-nil here is what makes a document PAGED**, which is the single predicate the whole
+    /// paged-zoom model branches on (`DocumentWindowController.pagedWidth`): the reading column is
+    /// pinned to this width, the theme is built at the document's OWN default size so
+    /// `fontSizeScale` is 1, and ⌘+/⌘−/⌘0 magnify the view instead of rebuilding the document.
+    /// `render(into:)` still divides the column by it for the GRAPHIC scale — which is now exactly
+    /// 1, i.e. a picture at its authored size.
+    ///
+    /// nil for every non-office kind, AND for an office document whose reader found no page size (a
+    /// real, tested state in docx, odt and HWP alike). That case keeps the fill-the-window column
+    /// and the reading-font-size model, unchanged. Do NOT substitute `kind == .office` for this
+    /// check — they are different sets, and five tests in `OfficeDocumentTests` exist on the
+    /// difference.
     private(set) var officePageContentWidth: CGFloat?
+
+    /// The section's line-grid pitch — see `OfficeReadResult.lineGridPitch`. Carried on the document
+    /// for the same reason the page width is: `render` rebuilds through `OfficeTextBuilder` on every
+    /// zoom/reflow and has to hand it the document's own instruction each time.
+    private(set) var officeLineGridPitch: CGFloat?
+
+    /// The page's own left/right margins in points — see `OfficeReadResult.pageMarginLeft`. Together
+    /// with `officePageContentWidth` they give the PAPER width, which is what a paged view must
+    /// reproduce: Word and Pages show the whole sheet, so laying out only the body magnifies the text
+    /// by `paper ÷ body` relative to them at the same window width (1.24×–1.32× on four real A4
+    /// documents). `nil` → the view falls back to its own side inset, exactly as before.
+    private(set) var officePageMarginLeft: CGFloat?
+    private(set) var officePageMarginRight: CGFloat?
 
     /// The archive `officeBlocks` was parsed from, kept so an `.image` block's id (an archive entry
     /// path, e.g. `"word/media/image1.png"`) can be pulled on demand when it scrolls into view — the
@@ -172,7 +193,9 @@ final class MarkdownDocument: NSDocument {
             setOfficeContent(
                 blocks: result.blocks, comments: result.comments, archive: nil,
                 images: result.images, defaultBodyFontSize: result.defaultBodyFontSize,
-                pageContentWidth: result.pageContentWidth)
+                pageContentWidth: result.pageContentWidth,
+                pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
+                lineGridPitch: result.lineGridPitch)
             return
         }
         let archive = try ZipArchive(data: data)
@@ -181,7 +204,9 @@ final class MarkdownDocument: NSDocument {
             blocks: result.blocks, comments: result.comments, archive: archive,
             images: result.images,
             defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext),
-            pageContentWidth: result.pageContentWidth)
+            pageContentWidth: result.pageContentWidth,
+                pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
+                lineGridPitch: result.lineGridPitch)
     }
 
     /// The office-document seam `read(from:)` and `reloadDocument` both go through: the parser's
@@ -192,7 +217,9 @@ final class MarkdownDocument: NSDocument {
     func setOfficeContent(
         blocks: [OfficeBlock], comments: [OfficeComment] = [], archive: ZipArchive?,
         images: [String: Data] = [:], defaultBodyFontSize: CGFloat = 11,
-        pageContentWidth: CGFloat? = nil
+        pageContentWidth: CGFloat? = nil,
+        pageMarginLeft: CGFloat? = nil, pageMarginRight: CGFloat? = nil,
+        lineGridPitch: CGFloat? = nil
     ) {
         self.officeBlocks = blocks
         self.officeComments = comments
@@ -200,6 +227,9 @@ final class MarkdownDocument: NSDocument {
         self.officeImageBytes = images
         self.officeDefaultBodyFontSize = defaultBodyFontSize
         self.officePageContentWidth = pageContentWidth
+        self.officePageMarginLeft = pageMarginLeft
+        self.officePageMarginRight = pageMarginRight
+        self.officeLineGridPitch = lineGridPitch
         self.text = ""
         self.file = TextFile(text: "", encoding: .utf8, hasBOM: false)
         cachedHasCrossBlockReferences = nil
@@ -228,7 +258,7 @@ final class MarkdownDocument: NSDocument {
     /// failing meant the function silently did nothing, which looks identical to a successful no-op
     /// reload and hides a real problem (deleted file, permissions, a corrupted archive) from the user.
     enum ReloadOutcome {
-        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?)
+        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?, pageMarginLeft: CGFloat?, pageMarginRight: CGFloat?, lineGridPitch: CGFloat?)
         case text(TextFile)
         case failure(String)
     }
@@ -259,7 +289,9 @@ final class MarkdownDocument: NSDocument {
                 return .office(
                     blocks: result.blocks, comments: result.comments, archive: nil,
                     images: result.images, defaultBodyFontSize: result.defaultBodyFontSize,
-                    pageContentWidth: result.pageContentWidth)
+                    pageContentWidth: result.pageContentWidth,
+                pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
+                lineGridPitch: result.lineGridPitch)
             }
             let archive = try ZipArchive(data: data)
             let result = try DocumentTypes.readOffice(archive, extension: ext)
@@ -267,7 +299,9 @@ final class MarkdownDocument: NSDocument {
             return .office(
                 blocks: result.blocks, comments: result.comments, archive: archive,
                 images: result.images, defaultBodyFontSize: defaultBodyFontSize,
-                pageContentWidth: result.pageContentWidth)
+                pageContentWidth: result.pageContentWidth,
+                pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
+                lineGridPitch: result.lineGridPitch)
         } catch {
             return .failure(error.localizedDescription)
         }
@@ -291,13 +325,16 @@ final class MarkdownDocument: NSDocument {
         if let url = fileURL {
             let ext = url.pathExtension.isEmpty ? (untitledExtension ?? "") : url.pathExtension
             switch Self.reloadOutcome(url: url, kind: kind, extension: ext) {
-            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth):
+            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth, let pageMarginLeft, let pageMarginRight, let lineGridPitch):
                 // Re-parse the archive, same as the initial read — never through the text-decode
                 // path (invariant: an office document's bytes are never handed to
                 // `TextEncodingDetector`). `defaultBodyFontSize` is carried through too, so a
                 // reload renders identically to the first open of the same file (see invariant 29's
                 // "reload must behave the same as first open" lesson).
-                setOfficeContent(blocks: blocks, comments: comments, archive: archive, images: images, defaultBodyFontSize: defaultBodyFontSize, pageContentWidth: pageContentWidth)
+                setOfficeContent(blocks: blocks, comments: comments, archive: archive, images: images,
+                                 defaultBodyFontSize: defaultBodyFontSize, pageContentWidth: pageContentWidth,
+                                 pageMarginLeft: pageMarginLeft, pageMarginRight: pageMarginRight,
+                                 lineGridPitch: lineGridPitch)
             case .text(let reread):
                 // The undo stack holds source OFFSETS into the text we're replacing. Re-reading the
                 // file can move every one of them (the file may have changed behind us), so an undo
@@ -858,9 +895,33 @@ final class MarkdownDocument: NSDocument {
     /// The three live size actions. Each changes THIS document and then records the result as the
     /// seed for the next document opened — writing the seed is the only thing that outlives this
     /// document, and nothing already open ever reads it again (see `readingSize` above).
-    @objc func increaseReaderFontSize(_ sender: Any?) { setReadingSize(FontSizeStore.increased(from: readingSize)) }
-    @objc func decreaseReaderFontSize(_ sender: Any?) { setReadingSize(FontSizeStore.decreased(from: readingSize)) }
-    @objc func resetReaderFontSize(_ sender: Any?) { setReadingSize(FontSizeStore.defaultSize) }
+    ///
+    /// A PAGED document takes none of that road: it is shown at its own scale and ZOOMED, so each
+    /// action becomes a view transform on the window controller and returns before anything is
+    /// rebuilt. That is the whole point — a rebuild deep in a 401,765-character report cost a
+    /// 65,853 ms freeze (invariant 56b), and a document that is never rebuilt cannot pay it.
+    /// The fork lives here, at the top of the chain, because this is where `officePageContentWidth`
+    /// is visible; everything below (`setReadingSize`, the debounce, `render`) stays untouched and
+    /// keeps serving markdown, plain text, and office documents with no page width.
+    @objc func increaseReaderFontSize(_ sender: Any?) {
+        if pagedController?.stepPageZoom(magnifying: true) == true { return }
+        setReadingSize(FontSizeStore.increased(from: readingSize))
+    }
+    @objc func decreaseReaderFontSize(_ sender: Any?) {
+        if pagedController?.stepPageZoom(magnifying: false) == true { return }
+        setReadingSize(FontSizeStore.decreased(from: readingSize))
+    }
+    @objc func resetReaderFontSize(_ sender: Any?) {
+        if pagedController?.fitPageZoom() == true { return }
+        setReadingSize(FontSizeStore.defaultSize)
+    }
+
+    /// This document's window controller, but only while the document is paged — so a caller that
+    /// asks for it is asking exactly the question "should this be a zoom?".
+    private var pagedController: DocumentWindowController? {
+        guard let wc = windowControllers.first as? DocumentWindowController, wc.isPaged else { return nil }
+        return wc
+    }
 
     private func setReadingSize(_ v: CGFloat) {
         readingSize = v
@@ -994,7 +1055,19 @@ final class MarkdownDocument: NSDocument {
 
     private func render(into wc: DocumentWindowController) {
         // THIS document is the single owner of the size it renders at — never a shared global.
-        let theme = RenderTheme.current(size: readingSize)
+        //
+        // A PAGED document is built at the size it was AUTHORED at, not at the reader's. That makes
+        // `fontSizeScale` (= theme.baseFontSize ÷ documentDefaultFontSize) come out as exactly 1
+        // through the existing arithmetic, so every absolute point the document states — run sizes,
+        // spacing, indents, tab stops — reaches the page verbatim and the line breaks are the
+        // author's. Zoom then multiplies the whole page uniformly.
+        //
+        // Pinning `fontSizeScale` directly instead would be INCOHERENT and is the trap here: a span
+        // that declares 10 pt would render at 10 pt while a span that declares nothing kept
+        // `theme.bodyFont` at the reader's 16 pt — neighbouring paragraphs differing by 60% for no
+        // reason the document gives, which is exactly what invariant 37 exists to prevent. Moving
+        // the THEME keeps "declared nothing → theme token" resolving to the document's own default.
+        let theme = RenderTheme.current(size: officePageContentWidth != nil ? officeDefaultBodyFontSize : readingSize)
         // Refresh the reading column NOW that `wc.document` is wired (`makeWindowControllers` runs
         // `addWindowController` BEFORE this `render`): the controller's own `init` already ran
         // `updateTextInset` once, but that was before `document` was set, so an office document's
@@ -1002,6 +1075,8 @@ final class MarkdownDocument: NSDocument {
         // fallback. Re-run it here so the office `columnWidth` read below is the FINAL pinned+centred
         // page column, not the stale pre-document width — office image sizes are frozen at build time
         // and never re-derived (invariant 1/11), so they MUST be built against the real column.
+        // ("pinned+centred" was aspirational prose left over from an abandoned attempt for a long
+        // time; as of the paged-zoom change it describes what actually happens.)
         // Geometry ONLY (`settleReadingColumn`, not the full `updateTextInset`): the storage still
         // holds the outgoing document that the string built below is about to replace.
         wc.settleReadingColumn()
@@ -1009,25 +1084,29 @@ final class MarkdownDocument: NSDocument {
         switch kind {
         case .plainText: attr = PlainTextRenderer.render(text, theme: theme)
         case .markdown: attr = MarkdownRenderer.render(text, theme: theme)
-        // Rebuilt from blocks every render, not cached: a font-size change (⌘+/⌘−) or ⌘R must
-        // reflow office text exactly like markdown does — a finished string would freeze the
-        // document at whatever size it was first opened at.
-        // TWO independent scales, and keeping them independent is the whole point:
-        //   • TEXT (and the absolute spacing/indent/tab stops that belong with it) rides the reader's
-        //     own size — `theme` above, i.e. `readingSize ÷ officeDefaultBodyFontSize` inside
-        //     the builder (invariant 37). So ⌘+/⌘− works on an office document exactly as it does on
-        //     markdown, which is the entire point of that setting.
+        // Rebuilt from blocks every render, not cached: ⌘R (and, for a document with no page width,
+        // ⌘+/⌘−) must reflow office text exactly like markdown does — a finished string would
+        // freeze the document at whatever size it was first opened at.
+        //
+        // TWO scales, and which of them varies depends on whether the document declared a page:
+        //   • TEXT (with the absolute spacing/indent/tab stops that belong with it) rides `theme`,
+        //     i.e. `theme.baseFontSize ÷ officeDefaultBodyFontSize` inside the builder (invariant 37).
+        //     NO page width → that is `readingSize ÷ default`, so ⌘+/⌘− reflows like markdown.
+        //     PAGED → the theme was built at the document's own default just above, so the ratio is
+        //     1 and the text is laid out as authored; the reader's ⌘+ magnifies instead.
         //   • GRAPHICS (images, chart/SmartArt placeholders) ride `graphicScale` = the reading column
         //     ÷ the SOURCE page's body width. A picture was authored as a fraction of its page, so
-        //     reproducing that fraction of the column keeps the document's own font↔image proportion
-        //     and makes pictures grow/shrink with the WINDOW — never with the font setting.
-        // Both were briefly fused (the page fitted to the column by faking the base font size); that
-        // made ⌘+/⌘− dead on office documents and tied photograph size to a text preference.
+        //     reproducing that fraction of the column keeps the document's own font↔image proportion.
+        //     NO page width → scale 1, authored sizes verbatim. PAGED → the column IS the page body,
+        //     so the ratio is again exactly 1 and a picture lands at its authored size, this time
+        //     because the page is being reproduced rather than because nothing was known.
+        // The two must not be FUSED — that was tried (fitting the page to the column by faking the
+        // base font size) and it made ⌘+/⌘− dead on office documents and tied photograph size to a
+        // text preference. Under the paged model they are not fused; they independently arrive at 1.
         // The column read here is real — `wc.settleReadingColumn()` above ran with `document` wired —
         // and it MUST be, because graphic sizes freeze at build time and are never re-derived
-        // (invariant 1/11). A document whose reader could not determine a page width gets scale 1,
-        // i.e. authored sizes verbatim, the pre-existing behaviour. Identical for docx/odt/HWP: one
-        // `OfficeBlock` vocabulary, one builder, no per-format branch.
+        // (invariant 1/11). Identical for docx/odt/HWP: one `OfficeBlock` vocabulary, one builder,
+        // no per-format branch.
         case .office:
             let colW = wc.textView.textContainer?.size.width ?? 800
             // The width tables are ACTUALLY laid out at: the reading column minus the text
@@ -1049,6 +1128,7 @@ final class MarkdownDocument: NSDocument {
                                            documentDefaultFontSize: officeDefaultBodyFontSize,
                                            pageContentWidth: officePageContentWidth,
                                            tableWidth: max(1, colW - 2 * pad),
+                                           lineGridPitch: officeLineGridPitch,
                                            comments: officeComments,
                                            deferringTables: deferredTables)
         }
@@ -1137,6 +1217,7 @@ final class MarkdownDocument: NSDocument {
                                         documentDefaultFontSize: officeDefaultBodyFontSize,
                                         pageContentWidth: officePageContentWidth,
                                         tableWidth: max(1, colW - 2 * pad),
+                                        lineGridPitch: officeLineGridPitch,
                                         comments: officeComments))
             // A one-block build numbers its block from zero. The stand-in already holds the id this
             // table had in the full document, so the grid inherits it — two neighbours sharing an id

@@ -72,8 +72,28 @@ enum DocxReader: OfficeDocumentReader {
             styleInfo: styleInfo, numbering: numbering, relationships: relationships, notes: notes, comments: comments,
             listState: listState)
         let officeComments = parseComments(from: archive, numberById: commentNumberById)
+        let page = pageGeometry(body: body)
         return OfficeReadResult(blocks: bodyBlocks + noteBlocks, comments: officeComments,
-                                pageContentWidth: pageContentWidth(body: body))
+                                pageContentWidth: page?.content,
+                                pageMarginLeft: page?.left, pageMarginRight: page?.right,
+                                lineGridPitch: lineGridPitch(body: body))
+    }
+
+    /// The body section's line-grid pitch in points, or nil when it declares none — see
+    /// `OfficeReadResult.lineGridPitch` for what it is FOR.
+    ///
+    /// Only the two `w:type` values that put lines on a grid count. `"default"` means no grid at all
+    /// and `"chars"` grids the horizontal axis only, so neither may set a line height; reading them
+    /// as one would impose an 18pt floor on documents Word leaves alone. A non-positive pitch is
+    /// discarded for the same reason `pageGeometry` guards its width — a malformed number must not
+    /// become a layout instruction.
+    private static func lineGridPitch(body: XMLNode) -> CGFloat? {
+        guard let sectPr = body.children.last(where: { $0.name == "w:sectPr" }),
+              let grid = sectPr.child("w:docGrid") else { return nil }
+        let type = grid.attributes["w:type"] ?? "default"
+        guard type == "lines" || type == "linesAndChars" else { return nil }
+        guard let pitchStr = grid.attributes["w:linePitch"], let twips = Double(pitchStr), twips > 0 else { return nil }
+        return CGFloat(twips / 20)
     }
 
     /// The document's page BODY width in points — the body-level `w:sectPr`'s `w:pgSz@w:w` minus its
@@ -85,6 +105,14 @@ enum DocxReader: OfficeDocumentReader {
     /// document that declares no page size). Twips÷20 matches every other length in this reader
     /// (`gridCol`, indents).
     private static func pageContentWidth(body: XMLNode) -> CGFloat? {
+        pageGeometry(body: body)?.content
+    }
+
+    /// The body `w:sectPr`'s page geometry in points: the printable column and the margins either
+    /// side of it. The margins were always computed here in order to be SUBTRACTED; they are kept now
+    /// because a paged view reproduces the PAPER (`left + content + right`), not just the column —
+    /// see `OfficeReadResult.pageMarginLeft`.
+    private static func pageGeometry(body: XMLNode) -> (content: CGFloat, left: CGFloat, right: CGFloat)? {
         guard let sectPr = body.children.last(where: { $0.name == "w:sectPr" }),
               let pgSz = sectPr.child("w:pgSz"),
               let wStr = pgSz.attributes["w:w"], let w = Double(wStr) else { return nil }
@@ -92,13 +120,26 @@ enum DocxReader: OfficeDocumentReader {
         let left = Double(mar?.attributes["w:left"] ?? "") ?? 0
         let right = Double(mar?.attributes["w:right"] ?? "") ?? 0
         let content = (w - left - right) / 20  // twips → pt
-        return content > 0 ? CGFloat(content) : nil
+        guard content > 0 else { return nil }
+        // A negative margin is legal in the schema and meaningless as white space — clamp rather than
+        // let it eat into the paper width and produce a sheet narrower than its own text column.
+        return (CGFloat(content), CGFloat(max(0, left) / 20), CGFloat(max(0, right) / 20))
     }
 
     /// The source document's own default BODY run size, in points — `word/styles.xml`'s
-    /// `w:docDefaults/w:rPrDefault/w:rPr/w:sz` (HALF-points), or Word's own fallback of 11pt when
-    /// the document declares none at all (no `word/styles.xml`, no `w:docDefaults`, or no `w:sz`
-    /// inside it). This is the OTHER half of `OfficeTextBuilder.build`'s font-size model — see its
+    /// `w:docDefaults/w:rPrDefault/w:rPr/w:sz` (HALF-points), or **10pt** when the document declares
+    /// none at all (no `word/styles.xml`, no `w:docDefaults`, or no `w:sz` inside it).
+    ///
+    /// 10, not the 11 this shipped with, and the difference is measured rather than looked up. 11 is
+    /// what MODERN Word WRITES into a new document's `w:docDefaults`; it is not what Word ASSUMES
+    /// when the element is missing, and the two are easy to confuse. On a real Korean report that
+    /// declares no `w:sz` anywhere, Word's own PDF draws 국경일 30.08pt wide across three full-width
+    /// glyphs — a 10.03pt em. Under the paged model this constant IS the theme base size, so it
+    /// decided 99.1% of that document's characters (9,567 of 9,657) and made every one of them ~10%
+    /// too large.
+    ///
+    /// A document that DOES declare a size is untouched, which is the case invariant 37 protects.
+    /// This is the OTHER half of `OfficeTextBuilder.build`'s font-size model — see its
     /// `documentDefaultFontSize` parameter's own doc. Named (and shaped) to match `OfficeDocumentReader`
     /// exactly, and reached ONLY through `DocumentTypes.officeDefaultBodyFontSize` — see that file for
     /// why a second, direct call site would risk the same reader/extension divergence invariant 29
@@ -109,7 +150,7 @@ enum DocxReader: OfficeDocumentReader {
               let root = try? buildTree(data),
               let szVal = root.child("w:docDefaults")?.child("w:rPrDefault")?.child("w:rPr")?.child("w:sz")?.attributes["w:val"],
               let half = Double(szVal)
-        else { return 11 }
+        else { return 10 }
         return CGFloat(half / 2)
     }
 
@@ -352,6 +393,13 @@ enum DocxReader: OfficeDocumentReader {
         var color: NSColor?
         var highlight: NSColor?
         var fontSize: CGFloat?
+        /// `w:b` / `w:i` as the STYLE states them — three-state on purpose. `nil` = this level said
+        /// nothing, so the walk keeps climbing; `false` = this level explicitly turned it OFF
+        /// (`<w:b w:val="0"/>`), which must STOP the walk rather than fall through to a bold
+        /// ancestor. Collapsing the two would make a deliberately un-bolded run inherit its parent
+        /// style's bold — the same "silent ≠ off" mistake invariant 47 records for table borders.
+        var bold: Bool?
+        var italic: Bool?
     }
 
     /// A style's own paragraph formatting relevant to this sprint — `w:jc`/`w:tabs` off a
@@ -449,6 +497,17 @@ enum DocxReader: OfficeDocumentReader {
         /// is not itself type-scoped — see `parseStyles`'s unconditional read of it), so
         /// `walkStyleChain` climbs a table style's ancestry exactly like every other style kind.
         var tableStyles: [String: TableStyle] = [:]
+        /// styleId → that TABLE style's own `w:tblPr/w:tblCellMar`, per edge. Kept OUTSIDE
+        /// `tableStyles` on purpose: that map admits a style only when it declares shading or a
+        /// border, and the style this exists for — Word's stock `Normal Table` — declares neither.
+        /// It carries nothing but the cell margin, and dropping it is what made every table in a
+        /// document that never wrote its own `w:tblCellMar` fall back to the reader's own 7pt on
+        /// all four edges while the document had explicitly said `top=0 bottom=0`.
+        var tableCellMargins: [String: EdgePadding] = [:]
+        /// `w:style w:type="table" w:default="1"` — the table style a table that names none of its
+        /// own inherits from, the table-side twin of `defaultParagraphStyleId`. Word writes exactly
+        /// one; a malformed document marking several keeps the first, matching that field's rule.
+        var defaultTableStyleId: String?
     }
 
     /// One resolved layer of a table style's conditional formatting — either the style's own
@@ -527,7 +586,8 @@ enum DocxReader: OfficeDocumentReader {
                 info.basedOn[id] = parent
             }
             let runProps = parseRunStyleProps(style.child("w:rPr"), themeColors: themeColors)
-            if runProps.color != nil || runProps.highlight != nil || runProps.fontSize != nil {
+            if runProps.color != nil || runProps.highlight != nil || runProps.fontSize != nil
+                || runProps.bold != nil || runProps.italic != nil {
                 info.runProps[id] = runProps
             }
             let rFonts = parseRFonts(style.child("w:rPr"))
@@ -540,6 +600,12 @@ enum DocxReader: OfficeDocumentReader {
                 info.paraProps[id] = paraProps
             }
             if style.attributes["w:type"] == "table" {
+                if style.attributes["w:default"] == "1", info.defaultTableStyleId == nil {
+                    info.defaultTableStyleId = id
+                }
+                if let margins = cellEdgePadding(style.child("w:tblPr")?.child("w:tblCellMar")) {
+                    info.tableCellMargins[id] = margins
+                }
                 var tableStyle = TableStyle()
                 tableStyle.wholeTable = parseTableConditionalStyle(style)
                 for pr in style.children where pr.name == "w:tblStylePr" {
@@ -711,7 +777,19 @@ enum DocxReader: OfficeDocumentReader {
         if let szVal = rPr?.child("w:sz")?.attributes["w:val"], let half = Double(szVal) {
             props.fontSize = CGFloat(half / 2)
         }
+        props.bold = toggleState(rPr, "w:b")
+        props.italic = toggleState(rPr, "w:i")
         return props
+    }
+
+    /// An OOXML on/off toggle (§17.17.4 `ST_OnOff`) as THREE states: the element absent (`nil` — this
+    /// level says nothing), present and on (`true`), present and explicitly off (`false`). `isOn` —
+    /// which every direct-run read uses — collapses the last two, which is right for a run's own
+    /// properties but wrong for a style CHAIN, where "off" has to stop the climb.
+    private static func toggleState(_ rPr: XMLNode?, _ name: String) -> Bool? {
+        guard let node = rPr?.child(name) else { return nil }
+        guard let val = node.attributes["w:val"] else { return true }   // bare <w:b/> means on
+        return !(val == "0" || val == "false" || val == "off")
     }
 
     /// One level's `w:rPr/w:rFonts`, read into all four slots plus `w:hint`.
@@ -918,6 +996,24 @@ enum DocxReader: OfficeDocumentReader {
 
     private static func resolvedHighlight(pStyleId: String?, styleInfo: StyleInfo) -> NSColor? {
         walkStyleChain(pStyleId, styleInfo: styleInfo) { styleInfo.runProps[$0]?.highlight }
+    }
+
+    /// `w:b` / `w:i` resolved through the `w:basedOn` chain, the same way `resolvedFontSize` resolves
+    /// size. Measured on four real documents: a Word heading's bold lives in its STYLE, not in its
+    /// runs — TeamBridge declares 39 headings with ZERO run-level `w:b` while its `heading 1/2/3`
+    /// styles each carry `<w:b/>`, and the OpenAPI guide is 38 and 0. Reading only the run's direct
+    /// `w:rPr` therefore reported every one of those headings as not bold, which was invisible for as
+    /// long as the builder drew all headings semibold on its own — and would have un-bolded every one
+    /// of them the moment that app-side default was removed.
+    ///
+    /// Returns `nil` when nothing in the chain mentions the toggle, so the caller can tell "the
+    /// document never said" from "the document said off".
+    private static func resolvedBold(pStyleId: String?, styleInfo: StyleInfo) -> Bool? {
+        walkStyleChain(pStyleId, styleInfo: styleInfo) { styleInfo.runProps[$0]?.bold }
+    }
+
+    private static func resolvedItalic(pStyleId: String?, styleInfo: StyleInfo) -> Bool? {
+        walkStyleChain(pStyleId, styleInfo: styleInfo) { styleInfo.runProps[$0]?.italic }
     }
 
     private static func resolvedFontSize(pStyleId: String?, styleInfo: StyleInfo) -> CGFloat? {
@@ -2132,6 +2228,24 @@ enum DocxReader: OfficeDocumentReader {
         // per-cell `w:tcPr/w:tcMar` (read below, per cell) falls back to before `Cell.padding`
         // itself falls back to `nil` (and `TableBlockBuilder`'s pre-existing 7pt default).
         let tableDefaultMargin = cellMargin(tblPr?.child("w:tblCellMar"))
+        // The SAME element, per-edge — feeds `TableFormat.defaultPadding` below, the PAGED model's
+        // table-wide fallback layer beneath a cell's own `edgePadding`.
+        //
+        // Resolved through the STYLE CHAIN, not from `w:tblPr` alone, and that is the whole point:
+        // Word puts its stock cell margin (`top=0 left=108 bottom=0 right=108`) in the DEFAULT TABLE
+        // STYLE, so a table that writes no `w:tblCellMar` of its own — the common case — was reading
+        // as "the document said nothing" and falling through to `TableBlockBuilder.defaultCellPadding`
+        // (7pt) on all four edges. Measured on one real report: 14pt of vertical padding the document
+        // had explicitly set to ZERO, which is the bulk of a 28.3pt row where Word draws 18.5pt.
+        //
+        // Order is Word's own: the table's direct `w:tblPr` beats its named `w:tblStyle` (walked up
+        // `w:basedOn`, cycle-guarded by `walkStyleChain`) beats the default table style. The single
+        // -value `tableDefaultMargin` above is deliberately NOT given the same treatment — it feeds
+        // only the non-paged model, which invariant 37 requires to stay byte-identical.
+        let tableStyleId = tblPr?.child("w:tblStyle")?.attributes["w:val"]
+        let tableDefaultEdgePadding = cellEdgePadding(tblPr?.child("w:tblCellMar"))
+            ?? walkStyleChain(tableStyleId, styleInfo: styleInfo) { styleInfo.tableCellMargins[$0] }
+            ?? styleInfo.defaultTableStyleId.flatMap { styleInfo.tableCellMargins[$0] }
         var rows: [[Cell]] = []
         // Parallel to `rows` — each anchor cell's own starting grid column, so a second pass
         // (below, after the grid's full row/column extent is known) can resolve its table-STYLE
@@ -2189,6 +2303,11 @@ enum DocxReader: OfficeDocumentReader {
                     // document states its edges individually (the uniform pair above stays as the
                     // fallback for everything that doesn't).
                     cell.edgeBorders = resolveEdgeBorders(tcPr?.child("w:tcBorders"))
+                    // This CELL's own `w:tcMar`, per edge — deliberately NOT merged with the table's
+                    // default here (unlike `resolvedMargin` above): `TableBlockBuilder`'s own PAGED
+                    // resolution cascades cell-edge > table-edge > theme fallback itself, so merging
+                    // the two here would just hide the table default's own doc-comment-visible layer.
+                    cell.edgePadding = cellEdgePadding(tcPr?.child("w:tcMar"))
                     rowCells.append(cell)
                     rowPositions.append(gridCol)
                     if vMerge != nil {
@@ -2231,6 +2350,9 @@ enum DocxReader: OfficeDocumentReader {
         let (tableBorderColor, tableBorderWidth) = tableBorder(tblPr)
         var format = TableFormat(defaultBorderColor: tableBorderColor, defaultBorderWidth: tableBorderWidth,
                                  defaultShading: cellShading(tblPr))
+        // The table-wide `w:tblCellMar` default, per edge — the PAGED model's fallback layer beneath
+        // a cell's own `edgePadding` (see `Cell.edgePadding`'s own doc for the cascade).
+        format.defaultPadding = tableDefaultEdgePadding
         // `w:tblBorders` per edge, INCLUDING `w:insideH`/`w:insideV` — the interior rules a cell
         // inherits when it is not on that side of the grid (the position test is the renderer's).
         format.edgeBorders = resolveEdgeBorders(tblPr?.child("w:tblBorders"))
@@ -2405,6 +2527,27 @@ enum DocxReader: OfficeDocumentReader {
         let edge = marNode.child("w:start") ?? marNode.child("w:left")
         guard let wStr = edge?.attributes["w:w"], let value = Double(wStr), value >= 0 else { return nil }
         return CGFloat(value / 20)
+    }
+
+    /// The SAME `w:tcMar`/`w:tblCellMar` element `cellMargin` reads, but ALL FOUR edges
+    /// independently — `Cell.edgePadding`'s PAGED counterpart to that single-value model. `nil` per
+    /// edge means the element didn't state THAT edge (mirroring `cellMargin`'s own "start/left is
+    /// absent" reading, applied to each side rather than collapsed to one representative). This is
+    /// what lets Word's own stock `w:tblCellMar` (`left=start 108, right=end 108, top=0, bottom=0`
+    /// twips = 5.4pt sides, EXPLICITLY zero top/bottom) survive as a real zero rather than being
+    /// smeared with the left value the way `cellMargin`'s single-value model necessarily does.
+    private static func cellEdgePadding(_ marNode: XMLNode?) -> EdgePadding? {
+        guard let marNode else { return nil }
+        func edge(_ node: XMLNode?) -> CGFloat? {
+            guard let wStr = node?.attributes["w:w"], let value = Double(wStr), value >= 0 else { return nil }
+            return CGFloat(value / 20)
+        }
+        let top = edge(marNode.child("w:top"))
+        let left = edge(marNode.child("w:start") ?? marNode.child("w:left"))
+        let bottom = edge(marNode.child("w:bottom"))
+        let right = edge(marNode.child("w:end") ?? marNode.child("w:right"))
+        guard top != nil || left != nil || bottom != nil || right != nil else { return nil }
+        return EdgePadding(top: top, left: left, bottom: bottom, right: right)
     }
 
     /// A cell's own declared column width — `w:tcPr/w:tcW`, whose `@w:type` names which of THREE
@@ -2915,8 +3058,14 @@ enum DocxReader: OfficeDocumentReader {
         let fontSize = directFontSize ?? resolvedFontSize(pStyleId: pStyleId, styleInfo: styleInfo)
         // `fontName` is deliberately left nil here — `buildSpans` resolves the four `w:rFonts` slots
         // per character and writes the family onto each piece it emits.
+        // Direct run properties win; where the run says nothing, the paragraph style's own chain
+        // decides (see `resolvedBold` — a Word heading's bold is almost always the STYLE's, not the
+        // run's). `toggleState` keeps "explicitly off" distinct from "unstated" so a deliberately
+        // un-bolded run does not inherit a bold ancestor.
+        let bold = toggleState(rPr, "w:b") ?? resolvedBold(pStyleId: pStyleId, styleInfo: styleInfo) ?? false
+        let italic = toggleState(rPr, "w:i") ?? resolvedItalic(pStyleId: pStyleId, styleInfo: styleInfo) ?? false
         return Span(
-            text: text, bold: isOn(rPr, "w:b"), italic: isOn(rPr, "w:i"), underline: isOn(rPr, "w:u"),
+            text: text, bold: bold, italic: italic, underline: isOn(rPr, "w:u"),
             underlineStyle: underlineStyleValue(rPr), code: false,
             caps: isOn(rPr, "w:caps"), smallCaps: isOn(rPr, "w:smallCaps"),
             strikethrough: isOn(rPr, "w:strike"), superscript: vertAlign == "superscript",

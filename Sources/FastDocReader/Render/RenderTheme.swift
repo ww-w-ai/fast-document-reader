@@ -39,6 +39,30 @@ enum Palette {
                                                  dark:  NSColor(rgb: 0x6CB0F5, alpha: 0.10))
     static let tableBorder     = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.16),
                                                  dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.16))
+    /// The colour a rule the DOCUMENT DREW takes when the document left the colour to us — Word's
+    /// `w:color="auto"`, which means "the application decides" and which Word itself decides as
+    /// BLACK. Only a PAGED document reaches this (`TableBlockBuilder.build`'s `paged`), where the
+    /// reader is reproducing the author's own page: there, an ordinary ruled contract table drawn at
+    /// `tableBorder`'s 16% tint renders washed out beside its own text — and worse, RAGGED, because
+    /// the edges that did state a hex colour drew dark immediately next to it. Measured across three
+    /// real reports, 2,184 of 10,832 drawn cell edges (20.2%) are `auto` with nothing stated
+    /// anywhere above them, and one report alone mixes 1,853 such edges against 3,568 that carry
+    /// their own colour — the same table, two weights, for no reason the reader can see.
+    ///
+    /// NOT Word's literal black. Blended over the page this is ≈ RGB(85,84,80) in light mode, a hair
+    /// LIGHTER than the reader's own body text (`text`, RGB(55,53,48)): a 1pt pure-black grid on a
+    /// backlit screen reads heavier than the prose it rules, inverting the hierarchy a reader wants,
+    /// so one step back from black keeps the table unmistakably ruled while the words stay the
+    /// darkest thing on the page. Dark mode mirrors that RELATIONSHIP rather than the value (≈
+    /// RGB(192) against text at RGB(212) — a black rule would simply vanish there).
+    ///
+    /// Deliberately DISTINCT from `tableBorder`, which is unchanged and now means only two things:
+    /// the reader's OWN invented stand-in rule, for an edge nothing in the document ever mentioned
+    /// (invariant 47's third state, which must not start asserting itself as though an author had
+    /// drawn it), and every non-paged table — markdown, and office with no page width — which
+    /// invariant 36's parity harness holds byte-identical.
+    static let tableBorderAuthored = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.85),
+                                                     dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.70))
     static let tableHeaderBg   = NSColor(rgb: 0x878378, alpha: 0.10)   // warm neutral, both modes
     // P6b: comment highlight — a faint amber wash behind a commented span (only drawn while the
     // comments panel is open, see `drawCommentMarks`), and the number badge it's paired with. Amber

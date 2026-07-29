@@ -128,12 +128,11 @@ enum HwpReader {
     /// inference — an explicitly outlined paragraph is honoured at any length.
     static let headingTextLimit = 80
 
-    /// HWP's own default line spacing. A paragraph that says exactly this is saying nothing — it is
-    /// the value nearly every document carries — so it maps to the reader's house rhythm and HWP body
-    /// text reads like markdown/docx body in the same window. Any OTHER percentage is an author's
-    /// deliberate choice and is honoured — measured on one real document: 1,188 paragraphs sit at
-    /// 160% while 772 others carry 110/120/130/140/180%, every one of which this reader used to
-    /// discard. The match is near-exact (±0.5) on purpose: 158% is a choice, not a rounding of 160.
+    /// HWP's own default line spacing, and the value a NON-PAGED HWP still treats as "nothing
+    /// stated" — see `paragraphFormat`'s percent arm for why that treatment survives there and
+    /// nowhere else. The match is near-exact (±0.5) on purpose: 158% is a choice, not a rounding
+    /// of 160. Measured across 637 real files, 225,654 of 525,054 percent paragraphs (43%) sit
+    /// here, so this constant decides the most common Korean page there is.
     static let neutralPercentLineHeight: CGFloat = 160
 
     /// A percent line height as a plain percentage, whatever encoding the file used. HWP writes this
@@ -169,8 +168,12 @@ enum HwpReader {
         // them. A parser predating the `charShapes` export yields `[]`, and every span then keeps
         // rhwp's own `font`, which is exactly what this reader drew before per-slot fonts existed.
         let slotFonts = (envelope.charShapes ?? []).map { HwpSlotFonts(row: $0) }
+        // `paged` is not a second flag — it is the SAME predicate `OfficeTextBuilder.build` resolves
+        // as `pageBasis != nil` (a page content width the document actually stated), read here from
+        // the same field so the reader and the builder cannot drift on what "paged" means.
         var result = OfficeReadResult(blocks: envelope.blocks.map {
-            mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts)
+            mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
+                     paged: pageWidth != nil)
         }, comments: [])
         // The document's own default body size (Normal/"바탕글" style char-shape base size, in pt),
         // rhwp's analog of docx `w:docDefaults/…/w:sz`. `null`/≤0 → leave the `11` default so an HWP
@@ -393,7 +396,25 @@ enum HwpReader {
         }
     }
 
-    private static func paragraphFormat(_ p: HwpPara, defaultBodySize: CGFloat) -> ParagraphFormat {
+    /// rhwp's own `max_fs` for one paragraph: the largest size any of its runs DECLARES, in points.
+    /// `nil` when no run declares one (an empty paragraph, or a run that inherits its size), and the
+    /// caller then falls back to the document default.
+    ///
+    /// Per-PARAGRAPH rather than per-LINE, which is the one honest gap against HWP: HWP re-picks
+    /// `max_fs` for every wrapped line, and an `NSParagraphStyle` carries a single line rule for the
+    /// whole paragraph, so a paragraph mixing one 20pt word into 10pt prose spaces all of its lines
+    /// for the 20pt one. Taking the MAXIMUM (rather than, say, the first or the most common run) is
+    /// what keeps that degradation on the safe side of invariant 1's territory — a floor that is too
+    /// generous adds space, while one that is too small lets the tall line set its own natural
+    /// height and silently under-spaces exactly the line that needed the room.
+    private static func maxRunSize(_ spans: [HwpSpan]) -> CGFloat? {
+        // Same conversion `mapSpan` applies to `Span.fontSize` (base_size in HWPUNIT, ÷100 = points),
+        // so the basis a line is spaced by is the size that line is actually drawn at.
+        spans.compactMap { $0.size.flatMap { $0 > 0 ? CGFloat($0) / 100 : nil } }.max()
+    }
+
+    private static func paragraphFormat(_ p: HwpPara, defaultBodySize: CGFloat,
+                                        paged: Bool) -> ParagraphFormat {
         var f = ParagraphFormat()
         f.spacingBefore = nonZeroPoints(p.spaceBefore)
         f.spacingAfter = nonZeroPoints(p.spaceAfter)
@@ -409,25 +430,57 @@ enum HwpReader {
         }
         if let lh = p.lineHeight, lh.value > 0 {
             switch lh.type {
-            // HWP percent line spacing is the format's NEUTRAL default (near-universal 160%, its
-            // docDefault-equivalent). Treat it as UNSPECIFIED (invariant 37) → leave lineHeight nil →
-            // the app's house rhythm (1.45× em fixed), so HWP body reads IDENTICALLY to markdown/docx
-            // body in the SAME app. `.multiple(1.6)` would render ~1.81× em — looser than md/docx AND
-            // font-dependent/uneven on CJK (exactly why MarkdownRenderer refuses lineHeightMultiple).
-            // Author-chosen ABSOLUTE line heights (fixed/at-least) ARE honoured; HWP5 stores them 2× → ÷200.
-            // A percent line height that IS the format's own default (160%) is treated as "the
-            // document said nothing" → the app's house rhythm, so HWP body reads like markdown/docx
-            // body in the same window. Anything ELSE is an author's deliberate choice and is
-            // honoured: 200% really does mean double-spaced, and forcing it back to the house rhythm
-            // was overriding the document. Expressed as a FLOOR (`atLeast`) rather than a fixed
-            // height so a tall CJK glyph is never clipped, and against the document's own default
-            // body size, which `OfficeTextBuilder` then scales by the reading size exactly as it does
-            // every other absolute metric (invariant 37).
+            // HWP percent line spacing, resolved the way HWP ITSELF resolves it — which is not what
+            // the estimate this code used to carry said. rhwp is a full HWP renderer and states the
+            // rule in three independent places (`renderer/mod.rs` `corrected_line_height`,
+            // `composer/line_breaking.rs` `compute_line_spacing_hwp`, `height_measurer.rs`):
+            //
+            //     line pitch = max_fs × percent / 100
+            //
+            // where `max_fs` is the largest FONT SIZE in the line, and `LineSeg.line_height` IS that
+            // font size (rhwp's own empirical note: 10pt → 1000, 12pt → 1200, 25pt → 2500 HWPUNIT).
+            // So 160% is exactly 1.6× em. The superseded comment estimated "~1.81× em" and concluded
+            // 160% must therefore be discarded as looser than the house rhythm — but that 1.81 was a
+            // property of `.multiple(1.6)`, i.e. `NSParagraphStyle.lineHeightMultiple` scaling the
+            // FONT's natural height (≈1.13 em on a Korean face), never a property of HWP. The
+            // measurement was of the wrong subject, and this reader now uses `.atLeast(points)`,
+            // which is em-relative and font-independent, so the hazard it named cannot arise.
+            //
+            // PAGED → every percentage is honoured, 160 included. Discarding the most common rule in
+            // Korean typesetting (225,654 of 525,054 percent paragraphs across 637 real files) is
+            // exactly the "document stated something, app overrode it" the paged model exists to
+            // stop: HWP asks for 1.6× em and the house rhythm draws 1.45×, so the most common Korean
+            // page came out ~9% tighter than its author set it and every line break downstream moved.
+            //
+            // NON-PAGED → unchanged, deliberately. There the old window-filling model still runs
+            // (office text re-typeset at the READER's size), and with it the old justification that
+            // HWP body should read like markdown/docx body in the same window. Measured: 637 of 637
+            // real files declare a page width, so this arm is reached only by a document that
+            // declares none — for which byte-identical is the contract.
+            //
+            // The BASIS is the paragraph's own `max_fs`, not the document default, because HWP's
+            // percentage is of the text's OWN size. Measured across the corpus, only 76,601 of
+            // 392,216 percent paragraphs (19.5%) have a run size within 5% of the document default —
+            // so the default is the wrong basis four times in five, and 47 of 637 files report a
+            // default that is not a plausible body size at all (1pt, 24pt, 40pt). Using it would
+            // have made the small-text majority WORSE than the house rhythm it replaced: a
+            // 0.8×-default paragraph wants 1.28× the default and would have been given 1.6×, a 25%
+            // over-space against the 13% the house rhythm already cost.
+            //
+            // A FLOOR (`atLeast`) rather than `.exact` so a tall CJK glyph or a substituted face is
+            // never clipped. The cost is honest and one-directional: below ~120% the floor sits under
+            // the font's natural height and the line renders looser than HWP would draw it (63,931
+            // paragraphs ask for 100%). Looser never clips; `.exact` would.
             case "percent":
-                if let percent = percentLineHeight(lh.value),
-                   abs(percent - neutralPercentLineHeight) > 0.5 {
-                    f.lineHeight = .atLeast(defaultBodySize * percent / 100)
+                if let percent = percentLineHeight(lh.value) {
+                    if paged {
+                        f.lineHeight = .atLeast((maxRunSize(p.spans) ?? defaultBodySize) * percent / 100)
+                    } else if abs(percent - neutralPercentLineHeight) > 0.5 {
+                        f.lineHeight = .atLeast(defaultBodySize * percent / 100)
+                    }
                 }
+            // Author-chosen ABSOLUTE line heights are honoured in both models; HWP5 stores these
+            // 2× → ÷200 (see `nonZeroPoints`).
             case "at_least": f.lineHeight = .atLeast(CGFloat(lh.value) / 200)
             case "fixed": f.lineHeight = .exact(CGFloat(lh.value) / 200)
             default: break
@@ -523,12 +576,12 @@ enum HwpReader {
     }
 
     private static func mapBlock(_ b: HwpBlock, pageWidth: CGFloat?, defaultBodySize: CGFloat,
-                                 slotFonts: [HwpSlotFonts]) -> OfficeBlock {
+                                 slotFonts: [HwpSlotFonts], paged: Bool) -> OfficeBlock {
         switch b {
         case .para(let p):
             let spans = p.spans.flatMap { mapSpan($0, slotFonts: slotFonts) }
             let align = alignment(p.align)
-            let format = paragraphFormat(p, defaultBodySize: defaultBodySize)
+            let format = paragraphFormat(p, defaultBodySize: defaultBodySize, paged: paged)
             // An EXPLICIT outline paragraph is a heading because the document said so — no second
             // guessing. A STYLE-derived one is an inference, so it also has to look like a heading:
             // non-empty, and short enough to be a label rather than a sentence. Measured need — one
@@ -553,7 +606,7 @@ enum HwpReader {
         case .table(let t):
             let rows = t.rows.map { row in
                 row.map { mapCell($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
-                                  slotFonts: slotFonts) }
+                                  slotFonts: slotFonts, paged: paged) }
             }
             // colWidths as ABSOLUTE INTEGER-derived points, never percentages (invariant 39/42).
             let columnWidths = t.colWidths.map { points($0) }
@@ -599,9 +652,10 @@ enum HwpReader {
     }
 
     private static func mapCell(_ c: HwpCell, pageWidth: CGFloat?, defaultBodySize: CGFloat,
-                                slotFonts: [HwpSlotFonts]) -> Cell {
+                                slotFonts: [HwpSlotFonts], paged: Bool) -> Cell {
         let blocks = c.blocks.map {
-            mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts)
+            mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
+                     paged: paged)
         }
         // "top" is Word/HWP's own default → nil, so a cell that only ever says "top" renders
         // byte-identical to one that says nothing (Cell.verticalAlignment's contract); only an

@@ -196,14 +196,29 @@ struct Cell: Equatable {
     var verticalAlignment: CellVAlign? = nil
     /// The cell's own resolved cell margin/padding, in POINTS, ALREADY resolved by the reader
     /// against the table's default before reaching this struct (docx: per-cell `w:tcPr/w:tcMar` →
-    /// table-wide `w:tblPr/w:tblCellMar` → `nil`; ODT, P4, carries no equivalent yet) — `nil` means
-    /// neither the cell nor its table said anything, and `TableBlockBuilder` keeps its own
+    /// table-wide `w:tblPr/w:tblCellMar` → `nil`; odt `fo:padding`/its per-side fallbacks) — `nil`
+    /// means neither the cell nor its table said anything, and `TableBlockBuilder` keeps its own
     /// pre-existing 7pt default exactly as before this field existed. A uniform value, mirroring
-    /// `borderColor`/`borderWidth`'s same simplification: `w:tcMar`/`w:tblCellMar` can express four
-    /// independent edges, and this reader takes the START/left edge as representative (the same
-    /// edge `ParagraphFormat.indentStart` reads for indentation) rather than inventing a four-field
-    /// per-edge model nothing here would consistently fill in.
+    /// `borderColor`/`borderWidth`'s same simplification: this reader takes the START/left edge as
+    /// representative (the same edge `ParagraphFormat.indentStart` reads for indentation).
+    ///
+    /// Consulted ONLY by the non-paged (window-filling) rendering model — a PAGED document uses
+    /// `edgePadding` below instead, where four independent edges genuinely matter (Word's own stock
+    /// `w:tblCellMar` default is `top=bottom=0, left=right=5.4pt`, and smearing that 5.4pt onto top
+    /// and bottom is exactly the "표가 너무 큼" defect this field's sibling exists to fix).
     var padding: CGFloat? = nil
+    /// The cell's own FOUR edges of padding/inset, independently — docx `w:tcPr/w:tcMar` (this
+    /// cell's own declaration ONLY; the table's `w:tblPr/w:tblCellMar` default lives on
+    /// `TableFormat.defaultPadding`, and the two are combined per edge by `TableBlockBuilder`,
+    /// mirroring `EdgeBorders`' cell-then-table cascade), odt `fo:padding-{top,left,bottom,right}`
+    /// (falling back to the uniform `fo:padding` shorthand per edge). `nil` per edge means THAT
+    /// edge wasn't declared, carried through undiminished — a genuinely-zero edge must stay
+    /// distinguishable from an edge nobody mentioned, invariant 47's discipline reused here for
+    /// padding instead of borders. Consulted ONLY by the PAGED table-geometry model
+    /// (`TableBlockBuilder.build`'s own per-edge resolution); the non-paged model keeps using the
+    /// single `padding` value above, unaffected — this field did not exist before it, so a
+    /// non-paged document renders byte-identical whether or not its reader populates this.
+    var edgePadding: EdgePadding? = nil
 
     /// The cell's shading RESOLVED from the table's named STYLE (docx `w:tbl/w:tblPr/w:tblStyle`
     /// cascaded through that style's `w:tblStylePr` conditional blocks for this cell's grid
@@ -326,6 +341,23 @@ struct EdgeBorders: Equatable {
     }
 }
 
+/// A cell's (or a table's own default) four edges of PADDING/INSET, in POINTS, independently —
+/// `Cell.edgePadding`'s and `TableFormat.defaultPadding`'s shared shape. Only two states per edge
+/// (unlike `BorderDecl`'s three): a declared value, which may legitimately be `0`, or `nil` meaning
+/// the edge wasn't declared at all — there is no "explicitly turned off" equivalent for padding the
+/// way `.suppressed` exists for a border, so a plain optional says everything this needs to. `nil`
+/// is carried through undiminished rather than defaulted here so a genuinely-zero edge (Word's own
+/// stock `w:tblCellMar` is `top=bottom=0, left=right=5.4pt`) stays distinguishable from an edge
+/// nobody mentioned — the same discipline `EdgeBorders`/`BorderDecl` apply to borders, reused here
+/// for padding. Consulted ONLY by the PAGED table-geometry model; see `Cell.edgePadding`'s own doc
+/// for why the non-paged (window-filling) model keeps its separate, single-value `Cell.padding`.
+struct EdgePadding: Equatable {
+    var top: CGFloat?
+    var left: CGFloat?
+    var bottom: CGFloat?
+    var right: CGFloat?
+}
+
 extension OfficeBlock {
     /// Returns this block with the CONTAINING paragraph's alignment applied, if it is a graphic and
     /// doesn't already carry one of its own. Shared by every reader so "a figure inherits its
@@ -353,20 +385,32 @@ struct TableFormat: Equatable {
     /// twips summed, HWP's HWPUNIT column widths summed, ODF `style:column-width` summed) — `nil`
     /// when the format states only proportions (ODF `style:rel-column-width`) or nothing at all.
     ///
-    /// Used for ONE thing: a picture inside a cell is sized against THIS width, not the page width.
-    /// The reader stretches every table to fill the reading column (invariant 39), so a table that
-    /// was half the page wide in the source becomes twice as wide relative to its content here — a
-    /// picture scaled against the page would then sit small in a cell that grew around it. Scaling
-    /// against the table's own width keeps the picture's share of its cell exactly as authored, at
-    /// any window size. Each reader converts to points itself, so this field has ONE unit whatever
-    /// the format stored (a mixed-unit field is how a "source width" quietly becomes twips here and
-    /// points there).
+    /// Used for TWO things, one original and one added by the paged-geometry work. Originally: a
+    /// picture inside a cell is sized against THIS width, not the page width. The NON-paged model
+    /// stretches every table to fill the reading column (invariant 39), so a table that was half the
+    /// page wide in the source becomes twice as wide relative to its content there — a picture scaled
+    /// against the page would then sit small in a cell that grew around it. Scaling against the
+    /// table's own width keeps the picture's share of its cell exactly as authored, at any window
+    /// size. Each reader converts to points itself, so this field has ONE unit whatever the format
+    /// stored (a mixed-unit field is how a "source width" quietly becomes twips here and points
+    /// there). Second, for a PAGED document: the table itself is laid out at this width (clamped to
+    /// the reading column, never wider) rather than stretched to fill it — `TableBlockBuilder`'s own
+    /// `GridTextTable.maxWidth`. `nil` (every markdown table, and any office table whose grid total
+    /// wasn't readable) leaves a paged table exactly as before this second use — filling the column.
     var sourceWidth: CGFloat? = nil
     /// The table's own declared edges, INCLUDING the interior ones (`w:tblBorders`' `w:insideH`/
     /// `w:insideV`). A cell inherits the outer edge when it sits on that side of the table and the
     /// interior edge when it does not — the position test lives in `TableBlockBuilder`, which is the
     /// only place that knows where a cell sits in the grid.
     var edgeBorders: EdgeBorders? = nil
+    /// The table's own default cell margin/padding per edge (docx `w:tblPr/w:tblCellMar`; ODT has no
+    /// table-wide equivalent — `fo:padding` lives on the cell's own STYLE only, so an ODT-sourced
+    /// `TableFormat` never populates this) — the layer beneath a cell's own `Cell.edgePadding`,
+    /// mirroring `edgeBorders`' cell-then-table cascade. `nil` per edge (including a wholly-`nil`
+    /// `defaultPadding`) means the table said nothing about that edge either, and the PAGED
+    /// resolution falls through to `TableBlockBuilder.defaultCellPadding`. Consulted ONLY by the
+    /// PAGED model — see `Cell.edgePadding`'s own doc.
+    var defaultPadding: EdgePadding? = nil
 }
 
 /// A paragraph's line-spacing mode — docx `w:pPr/w:spacing/@w:lineRule` (`auto`/`exact`/`atLeast`)
@@ -664,15 +708,47 @@ struct OfficeReadResult: Equatable {
     /// DENOMINATOR of the graphic scale and nothing else: `MarkdownDocument.render(into:)` divides the
     /// reading column by it and hands the ratio to `OfficeTextBuilder.build(graphicScale:)`, so a
     /// picture — authored as a fraction of THIS body width — keeps that same fraction of the column at
-    /// any window size, while remaining immune to the reading-size setting. It does NOT change the
-    /// column, which always fills the window (pinning the column to the page width and centring it was
-    /// tried and rejected — a narrow column marooned in a wide window), and it does NOT touch table
-    /// geometry (columns stay `TableBlockBuilder`'s proportions re-solved per reflow, invariant 39).
+    /// any window size, while remaining immune to the reading-size setting.
+    ///
+    /// It is ALSO, now, what makes a document PAGED: non-nil pins the reading column to this width and
+    /// switches ⌘+/⌘− from re-typesetting to magnifying (see `MarkdownDocument.officePageContentWidth`).
     /// `nil` = the reader could not determine it (no section/page-layout, or an out-of-range value) →
-    /// graphic scale 1, i.e. authored point sizes verbatim, so a document that declares nothing is
-    /// byte-identical to before this field existed. Each reader
+    /// graphic scale 1, the old window-filling column, and authored point sizes verbatim, so a document
+    /// that declares nothing is byte-identical to before this field existed. Each reader
     /// sources it from its own format: HWP from rhwp's `PageDef` (landscape swaps width/height), docx
     /// from the body `w:sectPr`'s `w:pgSz`/`w:pgMar` (twips), odt from `styles.xml`'s
     /// `style:page-layout-properties` (`fo:page-width`/`fo:margin-*`).
     var pageContentWidth: CGFloat? = nil
+
+    /// The page's own LEFT and RIGHT margins in points — the white space either side of
+    /// `pageContentWidth`, so `left + pageContentWidth + right` is the PAPER width.
+    ///
+    /// Carried because a paged view has to reproduce the PAPER, not just the body. Word and Pages show
+    /// the whole sheet, so at the same window width a reader that lays out only the body magnifies it
+    /// by `paper ÷ body` relative to them — measured on four real A4 documents as **1.24× – 1.32×**,
+    /// which is most of "우리가 폰트가 과도하게 큰데?". The margins were already being computed by every
+    /// reader in order to SUBTRACT them; they were simply thrown away afterwards.
+    ///
+    /// Kept as two independent values rather than one symmetric inset because a document may set them
+    /// differently (a bound report with a wide gutter), and the difference is visible: the text sits
+    /// off-centre on the sheet exactly as the author placed it. `nil` for either = the reader did not
+    /// find one, and the view falls back to its own margin, unchanged.
+    var pageMarginLeft: CGFloat? = nil
+    var pageMarginRight: CGFloat? = nil
+
+    /// The section's LINE GRID pitch in points — Word's `w:sectPr/w:docGrid` with
+    /// `@w:type="lines"`/`"linesAndChars"`, whose `@w:linePitch` is in twips.
+    ///
+    /// This is how a Korean or Japanese Word document states "every line sits on an N-point grid",
+    /// and it is applied to text that declares no line spacing of its own — which, in the document
+    /// this was found on, is nearly all of it. Word snaps to 18.00pt there; TextKit, given the same
+    /// runs and no instruction, produces the font's natural 13.0pt. Measured on that file's tables:
+    /// a row Word draws at 18.48pt came out at 13.33pt once the cell-padding error above it was
+    /// fixed — five points SHORT, not over. Reading the grid is what closes it.
+    ///
+    /// `nil` for ODT, HWP, markdown and every docx without a `w:docGrid`, which keeps all of them
+    /// byte-identical (invariant 37): the paged branch falls back to the natural line height it uses
+    /// today. It is a FLOOR, never a ceiling — a paragraph that states its own larger spacing keeps
+    /// it, exactly as Word does.
+    var lineGridPitch: CGFloat? = nil
 }

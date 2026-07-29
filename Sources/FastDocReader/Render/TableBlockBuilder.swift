@@ -8,6 +8,26 @@ import AppKit
 /// rounded integer edges, put every row's column boundary at the SAME integer x by construction.
 final class GridTextTable: NSTextTable {
     var columnProportions: [CGFloat] = []   // one per column, sums to 1
+    /// The table's own AUTHORED width, in points — set only for a PAGED document's table that
+    /// declared one (`TableFormat.sourceWidth`, threaded through `TableBlockBuilder.build`'s own
+    /// `maxWidth` parameter). `nil` (every markdown table, every non-paged office table, and a
+    /// paged table whose format stated no grid total) means no cap at all — `edges(forWidth:)`
+    /// solves across whatever width it is asked to, exactly as before this property existed. Never
+    /// clamps UPWARD: a reading column narrower than this table's own authored width still shrinks
+    /// the table to fit it, same as a paragraph would. Stored on the table object (not just applied
+    /// once at build time) so a LATER reflow — `resizeTables(in:toWidth:)`, called with the FULL,
+    /// unclamped reading column — re-derives the identical clamped width rather than snapping the
+    /// table back out to the column (invariant 48's "build and resizeTables must use the IDENTICAL
+    /// formula": both now call the same `edges(forWidth:)`, which applies this clamp internally).
+    var maxWidth: CGFloat? = nil
+    /// `width`, capped to `maxWidth` when the table declared a narrower authored one — the ONE
+    /// place this clamp is expressed, so every caller (`edges(forWidth:)` below, and
+    /// `OfficeTextBuilder.appendTable`'s own pre-clamp for the picture-scale/image-clamp math that
+    /// runs before a `GridTextTable` even exists) shares it instead of drifting apart.
+    static func clampedWidth(_ width: CGFloat, maxWidth: CGFloat?) -> CGFloat {
+        guard let maxWidth, maxWidth > 0 else { return width }
+        return min(width, maxWidth)
+    }
     /// Integer cumulative x-edges (ncol+1) across the FULL `width` — the shared grid every cell reads.
     ///
     /// No slack is held back. `collapsesBorders` is OFF (see `TableBlockBuilder.build`'s own border
@@ -25,7 +45,7 @@ final class GridTextTable: NSTextTable {
     /// the container would clip. With collapsing off there is no shared rule left to protect against
     /// double-counting, so the slack is gone and the table lands exactly on `width`, not `width - 1`.
     func edges(forWidth width: CGFloat) -> [CGFloat] {
-        let usable = max(1, width)
+        let usable = max(1, Self.clampedWidth(width, maxWidth: maxWidth))
         var out: [CGFloat] = [0]
         var cum: CGFloat = 0
         for (i, p) in columnProportions.enumerated() {
@@ -72,6 +92,21 @@ enum TableBlockBuilder {
     /// their own but never render below it, so a `fo:padding="0cm"` cell reads with room, not cramped.
     static let defaultCellPadding: CGFloat = 7
 
+    /// The PAGED padding cascade — cell-own edge > table-default edge > `defaultCellPadding` as a
+    /// FALLBACK (never a floor: a document's own zero survives) — exposed so a caller resolving
+    /// padding OUTSIDE `build` (`OfficeTextBuilder.appendTable`'s build-time cell-IMAGE clamp,
+    /// which needs an approximate width before a `GridTextTable` exists at all) uses the IDENTICAL
+    /// cascade `build`'s own Step A applies, rather than a second copy that could drift out of step
+    /// with it — the exact trap invariant 47 already names for the border cascade, reused here.
+    /// Floored to an integer per edge (`.rounded(.down)`), same reasoning as `build`'s own use.
+    static func resolvedPagedPadding(cell: EdgePadding?, table: EdgePadding?)
+        -> (top: CGFloat, left: CGFloat, bottom: CGFloat, right: CGFloat) {
+        func edge(_ pick: (EdgePadding) -> CGFloat?) -> CGFloat {
+            (cell.flatMap(pick) ?? table.flatMap(pick) ?? Self.defaultCellPadding).rounded(.down)
+        }
+        return (top: edge { $0.top }, left: edge { $0.left }, bottom: edge { $0.bottom }, right: edge { $0.right })
+    }
+
     /// One already-styled cell, plus how many rows/columns its `NSTextTableBlock` covers.
     /// `rowSpan`/`columnSpan` default to 1, so a caller with no merges (every markdown table, and
     /// an office table before its parser learns `w:gridSpan`/`w:vMerge`) builds these without ever
@@ -107,6 +142,11 @@ enum TableBlockBuilder {
         /// individually. `nil` (markdown, and any format that states one uniform border) keeps the
         /// single-width path above, byte-identical to before this existed.
         var edgeBorders: EdgeBorders? = nil
+        /// Mirrors `Cell.edgePadding` — the cell's four edges of padding, consulted ONLY when
+        /// `build` is told this table is PAGED. `nil` (every non-paged caller, and any paged cell
+        /// whose reader didn't populate it) leaves the single `padding` value above governing,
+        /// byte-identical to before this existed.
+        var edgePadding: EdgePadding? = nil
     }
 
     /// - Parameters:
@@ -131,10 +171,23 @@ enum TableBlockBuilder {
     ///     function's pre-existing theme default. All three default to `nil`, so a caller that never
     ///     mentions them (every markdown table) renders BYTE-IDENTICAL to before these parameters
     ///     existed.
+    ///   - tablePadding: the table's own default cell margin/padding per edge (`TableFormat.
+    ///     defaultPadding`) — the layer beneath a cell's own `CellContent.edgePadding`, consulted
+    ///     ONLY when `paged` is `true`. `nil` (every non-paged caller) is inert.
+    ///   - paged: whether the CALLER is a paged document reproducing its own page — switches the
+    ///     per-cell padding resolution from the single-value floor model (`CellContent.padding`,
+    ///     `Self.defaultCellPadding` as a FLOOR) to the four-edge model (`CellContent.edgePadding` >
+    ///     `tablePadding` > `Self.defaultCellPadding` as a FALLBACK, no floor — a document's own
+    ///     zero survives). `false` (every markdown table, and every existing call site before this
+    ///     parameter existed) renders BYTE-IDENTICAL to before it existed.
+    ///   - maxWidth: the table's own AUTHORED width (`TableFormat.sourceWidth`), when `paged` — see
+    ///     `GridTextTable.maxWidth`'s own doc. `nil` leaves the table filling `width` exactly as
+    ///     before this parameter existed.
     static func build(rows: [[CellContent]], headerRows: Int, theme: RenderTheme,
                        columnWidths: [CGFloat] = [], tableBorderColor: NSColor? = nil,
                        tableBorderWidth: CGFloat? = nil, tableShading: NSColor? = nil,
-                       tableEdges: EdgeBorders? = nil,
+                       tableEdges: EdgeBorders? = nil, tablePadding: EdgePadding? = nil,
+                       paged: Bool = false, maxWidth: CGFloat? = nil,
                        width: CGFloat = Self.initialColumnWidth) -> NSAttributedString {
         let result = NSMutableAttributedString()
         guard !rows.isEmpty else { return result }
@@ -223,6 +276,10 @@ enum TableBlockBuilder {
         let table = GridTextTable()
         table.numberOfColumns = ncol
         table.columnProportions = proportions
+        // Job 2: a PAGED table with a known authored width never grows past it, even on a LATER
+        // reflow that asks `edges(forWidth:)` for the full column — see `GridTextTable.maxWidth`'s
+        // own doc for why this is stored on the table object rather than applied only here.
+        table.maxWidth = maxWidth
         // Collapsing is OFF. With it on, two adjacent cells can each independently draw a different
         // border and AppKit — not this code — silently picks which one shows, which is why a
         // vertically merged cell used to change which rule it drew every time its neighbour changed
@@ -248,9 +305,20 @@ enum TableBlockBuilder {
         // can't.
         struct ResolvedEdge { var side: BorderSide?; var explicit: Bool }
         struct PlacementBorders {
+            /// `authoredBorderColor` — the block's BASE border colour (Step D), i.e. what an edge
+            /// the DOCUMENT drew resolves to when it stated no colour of its own. The reader's
+            /// invented stand-in rule does NOT use this: it carries `standInBorderColor` on its own
+            /// `BorderSide` and overrides back to the faint tint. See the two-last-resort comment
+            /// where both are computed.
             let borderColor: NSColor?
             let background: NSColor?
-            let padding: CGFloat
+            // PADDING RAW values — "raw" because the LEFT/RIGHT pair is still subject to Step D's
+            // width-availability shrink (a column too narrow for the declared padding on both
+            // sides), which needs `cellWidth`/border widths not yet known here. TOP/BOTTOM never
+            // compete for `cellWidth` (they don't touch the grid's horizontal geometry at all), so
+            // they are already final. Non-paged: all four equal the SAME uniform floor-applied
+            // value `padding` used to be — see the `paged` branch below.
+            let paddingTop: CGFloat, paddingLeft: CGFloat, paddingBottom: CGFloat, paddingRight: CGFloat
             let onLeft: Bool, onTop: Bool
             let top: ResolvedEdge, bottom: ResolvedEdge, left: ResolvedEdge, right: ResolvedEdge
         }
@@ -258,8 +326,35 @@ enum TableBlockBuilder {
         info.reserveCapacity(placements.count)
         for placement in placements {
             let header = placement.row < headerRows
-            let borderColor = placement.cell?.borderColor ?? tableBorderColor
-                ?? placement.cell?.styleBorderColor ?? Palette.tableBorder
+            // The cascade's DOCUMENT layers — cell-direct > table-direct > table-STYLE — and then
+            // TWO different last resorts, because "a rule the document DREW and left the colour of"
+            // and "a rule the READER invented because nothing described this edge" are different
+            // statements, and only the first should look like the author's own table. This is
+            // invariant 47's three states applied to COLOUR: the state is decided per edge below,
+            // in `resolvedEdge`, and each state picks its own last resort here.
+            //
+            //  • `authoredBorderColor` — what a `.drawn` edge takes when no layer stated a colour
+            //    (Word writes `w:color="auto"`, i.e. "the application decides", and decides BLACK
+            //    itself). PAGED reproduces the author's page, so it gets a real dark rule; the
+            //    document asked for a rule here and only left the colour to us. Carried as the
+            //    BLOCK's base colour (Step D), which is exactly where a `.drawn` side with a `nil`
+            //    colour already resolved — so nothing about how it reaches the screen changes,
+            //    only what the value is when the cascade runs out.
+            //  • `standInBorderColor` — what the reader's OWN fallback rule takes, the one
+            //    `resolvedEdge` invents for an edge NOBODY mentioned in a table that drew no box.
+            //    Always `Palette.tableBorder`: a rule with no document behind it must not start
+            //    asserting itself as though an author had drawn it. A `.suppressed` edge draws
+            //    nothing at all and so has no colour to change either way.
+            //
+            // The two are the SAME object unless `paged` AND the cascade ran all the way out, so a
+            // non-paged table — every markdown table, every office document with no page width —
+            // renders byte-identically to before this split, including the per-edge override call
+            // in Step D, which compares them and finds them equal (invariant 36's parity harness).
+            let statedBorderColor = placement.cell?.borderColor ?? tableBorderColor
+                ?? placement.cell?.styleBorderColor
+            let authoredBorderColor = statedBorderColor
+                ?? (paged ? Palette.tableBorderAuthored : Palette.tableBorder)
+            let standInBorderColor = statedBorderColor ?? Palette.tableBorder
             let borderWidth = placement.cell?.borderWidth ?? tableBorderWidth
                 ?? placement.cell?.styleBorderWidth ?? RenderTheme.tableBorderWidth
             let background: NSColor?
@@ -268,7 +363,26 @@ enum TableBlockBuilder {
             else if let styleBg = placement.cell?.styleShading { background = styleBg }
             else if header { background = Palette.tableHeaderBg }
             else { background = nil }
-            let padding = max(placement.cell?.padding ?? Self.defaultCellPadding, Self.defaultCellPadding)
+            // PADDING — two entirely different models, gated on `paged`:
+            //
+            //  • non-paged (unchanged): ONE uniform value, and `Self.defaultCellPadding` is a FLOOR
+            //    (`max`, never a document's smaller number) — the pre-existing behaviour, byte-
+            //    identical to before this `paged` branch existed.
+            //  • paged: FOUR independent edges, cell-own > table-default > `Self.defaultCellPadding`
+            //    as a FALLBACK only when NEITHER said anything — a document's own zero (Word's stock
+            //    `w:tblCellMar` top/bottom) survives rather than being floored up to 7pt. Floored to
+            //    an integer (`.rounded(.down)`) for invariant 42's discipline, reused here for
+            //    padding: a fractional twip-converted value (108/20 = 5.4) has no business in this
+            //    grid's arithmetic either.
+            let paddingTop: CGFloat, paddingLeft: CGFloat, paddingBottom: CGFloat, paddingRight: CGFloat
+            if paged {
+                let resolved = Self.resolvedPagedPadding(cell: placement.cell?.edgePadding, table: tablePadding)
+                paddingTop = resolved.top; paddingLeft = resolved.left
+                paddingBottom = resolved.bottom; paddingRight = resolved.right
+            } else {
+                let uniform = max(placement.cell?.padding ?? Self.defaultCellPadding, Self.defaultCellPadding)
+                paddingTop = uniform; paddingLeft = uniform; paddingBottom = uniform; paddingRight = uniform
+            }
 
             // PER-EDGE borders when the document declared them that way (docx `w:tcBorders`/
             // `w:tblBorders`), the uniform width/colour otherwise. Real reports state each edge
@@ -320,7 +434,13 @@ enum TableBlockBuilder {
                 case .drawn(let stated): return ResolvedEdge(side: stated, explicit: true)
                 case .suppressed: return ResolvedEdge(side: nil, explicit: true)
                 case nil:
-                    let fallback = tableDrewABox ? nil : BorderSide(width: borderWidth, color: borderColor)
+                    // `standInBorderColor`, never `authoredBorderColor` — this arm is the reader's
+                    // own invented rule (the document never mentioned this edge and the table drew
+                    // no box), so it keeps the faint tint even on a paged page. Making it dark would
+                    // put an assertive rule on an edge nobody asked for, in the same table where a
+                    // genuinely drawn edge is already dark — the ragged look this whole per-edge
+                    // path exists to remove, reintroduced from the other direction.
+                    let fallback = tableDrewABox ? nil : BorderSide(width: borderWidth, color: standInBorderColor)
                     return ResolvedEdge(side: fallback, explicit: false)
                 }
             }
@@ -332,7 +452,9 @@ enum TableBlockBuilder {
                                                 inside: tableEdges?.insideV, isOuter: onLeft))
             let right = resolvedEdge(declaration(cellEdges?.right, outer: tableEdges?.right,
                                                  inside: tableEdges?.insideV, isOuter: onRight))
-            info.append(PlacementBorders(borderColor: borderColor, background: background, padding: padding,
+            info.append(PlacementBorders(borderColor: authoredBorderColor, background: background,
+                                         paddingTop: paddingTop, paddingLeft: paddingLeft,
+                                         paddingBottom: paddingBottom, paddingRight: paddingRight,
                                          onLeft: onLeft, onTop: onTop,
                                          top: top, bottom: bottom, left: left, right: right))
         }
@@ -510,9 +632,31 @@ enum TableBlockBuilder {
             // sum to MORE than `availableForPadding`, reopening the very overshoot this exists to
             // shrink; rounding down never does.
             let availableForPadding = max(0, cellWidth - leftWidth - rightWidth)
-            let effectivePadding = min(me.padding, (availableForPadding / 2).rounded(.down))
-            block.setWidth(effectivePadding, type: .absoluteValueType, for: .padding)
-            block.setContentWidth(max(1, cellWidth - 2 * effectivePadding - leftWidth - rightWidth),
+            let effLeft: CGFloat, effRight: CGFloat
+            if paged {
+                // PER-EDGE — the left/right pair can genuinely differ (a document's own asymmetric
+                // margin), so each is capped independently against HALF the available room rather
+                // than forced to a shared value first; TOP/BOTTOM need no such cap at all — they
+                // never compete for `cellWidth`, which is a purely horizontal quantity, and are
+                // applied to their own edges exactly as resolved in Step A.
+                let maxEachSide = (availableForPadding / 2).rounded(.down)
+                effLeft = min(me.paddingLeft, maxEachSide)
+                effRight = min(me.paddingRight, maxEachSide)
+                block.setWidth(effLeft, type: .absoluteValueType, for: .padding, edge: .minX)
+                block.setWidth(effRight, type: .absoluteValueType, for: .padding, edge: .maxX)
+                block.setWidth(me.paddingTop, type: .absoluteValueType, for: .padding, edge: .minY)
+                block.setWidth(me.paddingBottom, type: .absoluteValueType, for: .padding, edge: .maxY)
+            } else {
+                // UNCHANGED — the exact call this file made before the `paged` branch existed: ONE
+                // uniform value, set for all four edges via the no-`edge:` overload. `paddingLeft`
+                // stands in for the old single `padding` field: Step A made all four fields equal
+                // for the non-paged branch, so reading any one of them here is the same number.
+                let effectivePadding = min(me.paddingLeft, (availableForPadding / 2).rounded(.down))
+                effLeft = effectivePadding
+                effRight = effectivePadding
+                block.setWidth(effectivePadding, type: .absoluteValueType, for: .padding)
+            }
+            block.setContentWidth(max(1, cellWidth - effLeft - effRight - leftWidth - rightWidth),
                                   type: .absoluteValueType)
             if let background = me.background { block.backgroundColor = background }
             switch placement.cell?.verticalAlignment ?? .top {

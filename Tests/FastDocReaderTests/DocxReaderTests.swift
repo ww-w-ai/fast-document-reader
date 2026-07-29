@@ -2825,10 +2825,88 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertEqual(DocxReader.documentDefaultBodyFontSize(archive), 10)
     }
 
-    func testDocumentDefaultFontSizeFallsBackToElevenWhenNotDeclared() throws {
+    /// 10, not the 11 this asserted for a long time. 11 is what modern Word WRITES into a new
+    /// document's `w:docDefaults`; it is not what Word ASSUMES when the element is absent, and this
+    /// test asserted the former while the reader needed the latter. Measured against Word's own
+    /// output on a real Korean report that declares no `w:sz` anywhere: Word draws its body at a
+    /// 10.03pt em. Under the paged model this number is the theme base size, so it decided 99.1% of
+    /// that document's characters.
+    func testDocumentDefaultFontSizeFallsBackToTenWhenNotDeclared() throws {
         let zip = buildDocx(document: doc("<w:p><w:r><w:t>Body</w:t></w:r></w:p>"))
         let archive = try ZipArchive(data: zip)
-        XCTAssertEqual(DocxReader.documentDefaultBodyFontSize(archive), 11)
+        XCTAssertEqual(DocxReader.documentDefaultBodyFontSize(archive), 10)
+    }
+
+    // MARK: w:tblCellMar through the table-style chain, and w:docGrid
+
+    /// Word puts its stock cell margin in the DEFAULT TABLE STYLE, not on the table, so a table that
+    /// declares no `w:tblCellMar` of its own is NOT saying "nothing" — it is inheriting
+    /// `top=0 left=108 bottom=0 right=108`. Reading only `w:tblPr` made every such table fall through
+    /// to `TableBlockBuilder.defaultCellPadding` (7pt) on all four edges; measured on a real report,
+    /// that is 14pt of vertical padding the document had explicitly set to ZERO, and the bulk of a
+    /// 28.3pt row where Word draws 18.5pt.
+    func testTableCellMarginIsInheritedFromTheDefaultTableStyle() throws {
+        let styles = """
+        <w:styles><w:style w:type="table" w:default="1" w:styleId="a1"><w:name w:val="Normal Table"/>\
+        <w:tblPr><w:tblCellMar><w:top w:w="0"/><w:left w:w="108"/><w:bottom w:w="0"/><w:right w:w="108"/>\
+        </w:tblCellMar></w:tblPr></w:style></w:styles>
+        """
+        let table = "<w:tbl><w:tblPr/><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+        let blocks = try read(document: table, styles: styles)
+        guard case let .table(_, _, _, format)? = blocks.first(where: { if case .table = $0 { return true }; return false })
+        else { return XCTFail("expected a table block") }
+        let padding = try XCTUnwrap(format.defaultPadding, "the default table style's cell margin must reach TableFormat")
+        XCTAssertEqual(padding.top, 0, "the document said ZERO top margin — not 'nothing'")
+        XCTAssertEqual(padding.bottom, 0)
+        XCTAssertEqual(try XCTUnwrap(padding.left), 5.4, accuracy: 0.001, "108 twips")
+        XCTAssertEqual(try XCTUnwrap(padding.right), 5.4, accuracy: 0.001)
+    }
+
+    /// A table's OWN `w:tblCellMar` still wins over the style it would otherwise inherit — the
+    /// cascade is direct > named style > default style, exactly as Word resolves it.
+    func testATablesOwnCellMarginBeatsTheDefaultTableStyle() throws {
+        let styles = """
+        <w:styles><w:style w:type="table" w:default="1" w:styleId="a1"><w:name w:val="Normal Table"/>\
+        <w:tblPr><w:tblCellMar><w:top w:w="0"/><w:left w:w="108"/><w:bottom w:w="0"/><w:right w:w="108"/>\
+        </w:tblCellMar></w:tblPr></w:style></w:styles>
+        """
+        let table = """
+        <w:tbl><w:tblPr><w:tblCellMar><w:top w:w="40"/><w:left w:w="40"/><w:bottom w:w="40"/><w:right w:w="40"/>\
+        </w:tblCellMar></w:tblPr><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """
+        let blocks = try read(document: table, styles: styles)
+        guard case let .table(_, _, _, format)? = blocks.first(where: { if case .table = $0 { return true }; return false })
+        else { return XCTFail("expected a table block") }
+        let padding = try XCTUnwrap(format.defaultPadding)
+        XCTAssertEqual(try XCTUnwrap(padding.top), 2, accuracy: 0.001, "40 twips — the table's own value, not the style's 0")
+    }
+
+    /// A table in a document with no table styles at all keeps reading as "nothing declared", so
+    /// every existing fixture and every document that never wrote one is byte-identical (invariant 37).
+    func testATableInADocumentWithNoTableStyleStillDeclaresNoPadding() throws {
+        let table = "<w:tbl><w:tblPr/><w:tr><w:tc><w:p><w:r><w:t>A</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+        let blocks = try read(document: table)
+        guard case let .table(_, _, _, format)? = blocks.first(where: { if case .table = $0 { return true }; return false })
+        else { return XCTFail("expected a table block") }
+        XCTAssertNil(format.defaultPadding)
+    }
+
+    /// `w:docGrid` is how a Korean/Japanese Word document says "every line sits on an N-point grid".
+    /// Only the two types that grid the LINE axis count — `default` grids nothing and `chars` grids
+    /// only the horizontal axis, so reading either as a line height would impose a floor Word does
+    /// not apply.
+    func testDocGridLinePitchIsReadOnlyForLineGriddingTypes() throws {
+        func pitch(_ sectPr: String) throws -> CGFloat? {
+            let zip = buildDocx(document: doc("<w:p><w:r><w:t>Body</w:t></w:r></w:p>" + sectPr))
+            return try DocxReader.read(ZipArchive(data: zip)).lineGridPitch
+        }
+        XCTAssertEqual(try pitch("<w:sectPr><w:docGrid w:type=\"lines\" w:linePitch=\"360\"/></w:sectPr>"), 18)
+        XCTAssertEqual(try pitch("<w:sectPr><w:docGrid w:type=\"linesAndChars\" w:linePitch=\"312\"/></w:sectPr>"), 15.6)
+        XCTAssertNil(try pitch("<w:sectPr><w:docGrid w:type=\"default\" w:linePitch=\"360\"/></w:sectPr>"))
+        XCTAssertNil(try pitch("<w:sectPr><w:docGrid w:type=\"chars\" w:linePitch=\"360\"/></w:sectPr>"))
+        XCTAssertNil(try pitch("<w:sectPr><w:docGrid w:type=\"lines\" w:linePitch=\"0\"/></w:sectPr>"),
+                     "a non-positive pitch is malformed, not an instruction")
+        XCTAssertNil(try pitch("<w:sectPr/>"), "no grid → nil, so every document without one is unchanged")
     }
 
     // MARK: w:jc — alignment, and winning over the rtl default
@@ -3220,6 +3298,88 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertNil(rows[0][0].padding)
     }
 
+    // MARK: PAGED per-edge cell margins (Cell.edgePadding, TableFormat.defaultPadding) — the SAME
+    // `w:tcMar`/`w:tblCellMar` elements the P3b tests above read, but all FOUR edges independently,
+    // consulted only by the PAGED table-geometry model.
+
+    /// Word's own STOCK default (`left=start 108, right=end 108, top=0, bottom=0` twips = 5.4pt
+    /// sides, EXPLICITLY zero top/bottom) must survive as a real zero, not be smeared with the
+    /// left/start value the way the single-value `padding` above necessarily reduces it to.
+    func testCellOwnTcMarPerEdgeKeepsAnExplicitZeroDistinctFromTheSideValue() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tr><w:tc><w:tcPr><w:tcMar>
+        <w:top w:w="0" w:type="dxa"/><w:start w:w="108" w:type="dxa"/>
+        <w:bottom w:w="0" w:type="dxa"/><w:end w:w="108" w:type="dxa"/>
+        </w:tcMar></w:tcPr><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(let rows, _, _, _) = blocks.first else { return XCTFail("expected a table") }
+        let edges = try XCTUnwrap(rows[0][0].edgePadding)
+        XCTAssertEqual(edges.top, 0)
+        XCTAssertEqual(edges.bottom, 0)
+        XCTAssertEqual(edges.left ?? -1, 5.4, accuracy: 0.001)
+        XCTAssertEqual(edges.right ?? -1, 5.4, accuracy: 0.001)
+    }
+
+    /// A `w:tcMar` that only states SOME edges leaves the others genuinely `nil` (undeclared), not
+    /// zero — an edge the document never mentioned must fall through the cascade, not be read as an
+    /// explicit zero it never asked for.
+    func testCellOwnTcMarLeavesUnstatedEdgesNil() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tr><w:tc><w:tcPr><w:tcMar>
+        <w:start w:w="200" w:type="dxa"/>
+        </w:tcMar></w:tcPr><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(let rows, _, _, _) = blocks.first else { return XCTFail("expected a table") }
+        let edges = try XCTUnwrap(rows[0][0].edgePadding)
+        XCTAssertEqual(edges.left, 10)
+        XCTAssertNil(edges.top, "an edge the document never mentioned must stay nil, not fall to 0")
+        XCTAssertNil(edges.bottom)
+        XCTAssertNil(edges.right)
+    }
+
+    /// The table's own `w:tblCellMar`, per edge, reaches `TableFormat.defaultPadding` — the PAGED
+    /// fallback layer beneath a cell's own `edgePadding`.
+    func testTableWideTblCellMarPerEdgeReachesTableFormatDefaultPadding() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tblPr><w:tblCellMar>
+        <w:top w:w="0" w:type="dxa"/><w:start w:w="160" w:type="dxa"/>
+        <w:bottom w:w="0" w:type="dxa"/><w:end w:w="160" w:type="dxa"/>
+        </w:tblCellMar></w:tblPr>
+        <w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(_, _, _, let format) = blocks.first else { return XCTFail("expected a table") }
+        let edges = try XCTUnwrap(format.defaultPadding)
+        XCTAssertEqual(edges.top, 0)
+        XCTAssertEqual(edges.bottom, 0)
+        XCTAssertEqual(edges.left, 8)
+        XCTAssertEqual(edges.right, 8)
+    }
+
+    /// A cell's own `edgePadding` is kept SEPARATE from the table's default — `TableBlockBuilder`'s
+    /// own cascade combines the two, the reader must not pre-merge them (unlike the single-value
+    /// `padding` above, which pre-merges by necessity since it has no per-edge fallback to defer to).
+    func testCellOwnEdgePaddingIsNotPreMergedWithTheTableDefault() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tblPr><w:tblCellMar><w:start w:w="140" w:type="dxa"/></w:tblCellMar></w:tblPr>
+        <w:tr><w:tc><w:tcPr><w:tcMar><w:start w:w="200" w:type="dxa"/></w:tcMar></w:tcPr>
+        <w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(let rows, _, _, let format) = blocks.first else { return XCTFail("expected a table") }
+        XCTAssertEqual(rows[0][0].edgePadding?.left, 10, "the cell's own declared edge, untouched by the table default")
+        XCTAssertEqual(format.defaultPadding?.left, 7, "the table's own default, kept as its own separate layer")
+    }
+
+    /// Neither the cell nor the table declares a margin — `edgePadding`/`defaultPadding` both stay
+    /// `nil`, exactly like `padding` above.
+    func testCellWithNeitherOwnNorTableMarginHasNilEdgePadding() throws {
+        let blocks = try read(document: """
+        <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+        """)
+        guard case .table(let rows, _, _, let format) = blocks.first else { return XCTFail("expected a table") }
+        XCTAssertNil(rows[0][0].edgePadding)
+        XCTAssertNil(format.defaultPadding)
+    }
+
     // MARK: P5 — table-STYLE shading/border cascade (w:tblStyle + w:tblStylePr + w:tblLook)
 
     /// A table style with a whole-table border, a `firstRow` shading and `band1Horz`/`band2Horz`
@@ -3524,6 +3684,64 @@ final class DocxReaderTests: XCTestCase {
         let blocks = try read(document: "<w:p><w:r><w:t>Untouched</w:t></w:r></w:p>")
         guard case .paragraph(_, _, _, _, let format) = blocks.first else { return XCTFail("expected a paragraph") }
         XCTAssertEqual(format, ParagraphFormat())
+    }
+
+    // MARK: Bold/italic through the STYLE chain, not just the run's own w:rPr
+
+    /// A Word heading's bold lives in its STYLE, essentially never in its runs — measured on four
+    /// real documents (TeamBridge: 39 headings, ZERO run-level `w:b`, `heading 1/2/3` all carrying
+    /// `<w:b/>`; the OpenAPI guide: 38 and 0). Reading only the run's direct `w:rPr` reported every
+    /// one of them as not bold. That was invisible while the builder drew all headings semibold on
+    /// its own, and would have un-bolded all of them the moment that app-side default was removed
+    /// for the paged model — so the weight has to come from the document, resolved the same way
+    /// `resolvedFontSize` resolves size.
+    func testBoldDeclaredByTheParagraphStyleReachesTheRunEvenWhenTheRunSaysNothing() throws {
+        let styles = """
+        <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>
+            <w:rPr><w:b/><w:sz w:val="24"/></w:rPr></w:style>
+        </w:styles>
+        """
+        let document = """
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+          <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>제목</w:t></w:r></w:p>
+        </w:body></w:document>
+        """
+        let archive = try ZipArchive(data: buildDocx(document: document, styles: styles))
+        let blocks = try DocxReader.read(archive).blocks
+        guard case let .heading(_, spans, _, _, _, _) = blocks.first else {
+            return XCTFail("expected a heading, got \(String(describing: blocks.first))")
+        }
+        XCTAssertEqual(spans.first?.bold, true,
+                       "the run declares no w:b — its bold must come from the Heading1 style")
+        XCTAssertEqual(spans.first?.fontSize, 12,
+                       "and the same chain still supplies the size, as it did before")
+    }
+
+    /// The other half, and the reason the style props are three-state: a run that EXPLICITLY turns
+    /// bold off must not inherit its style's bold. `isOn` collapses "absent" and "off" into false,
+    /// which is right for a run read in isolation and wrong for a chain — the same "silent is not
+    /// the same as off" distinction invariant 47 draws for table borders.
+    func testRunExplicitlyTurningBoldOffIsNotOverriddenByABoldStyle() throws {
+        let styles = """
+        <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+          <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>
+            <w:rPr><w:b/></w:rPr></w:style>
+        </w:styles>
+        """
+        let document = """
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+          <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+            <w:r><w:rPr><w:b w:val="0"/></w:rPr><w:t>보통</w:t></w:r></w:p>
+        </w:body></w:document>
+        """
+        let archive = try ZipArchive(data: buildDocx(document: document, styles: styles))
+        let blocks = try DocxReader.read(archive).blocks
+        guard case let .heading(_, spans, _, _, _, _) = blocks.first else {
+            return XCTFail("expected a heading, got \(String(describing: blocks.first))")
+        }
+        XCTAssertEqual(spans.first?.bold, false,
+                       "an explicit <w:b w:val=\"0\"/> must stop the climb, not fall through to the style")
     }
 
     // MARK: P2b — paragraph shading (w:pPr/w:shd) and border (w:pPr/w:pBdr)

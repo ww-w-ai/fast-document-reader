@@ -121,9 +121,17 @@ final class OdtFontSlotTests: XCTestCase {
     /// — the character count and the resolved-FAMILY histogram, the only things three-slot
     /// resolution can alter — is unchanged in every fixture, which is the assertion that matters.
     func testTheFourOdtFixturesResolveExactlyTheFamiliesTheyDidBeforeSlotsExisted() throws {
+        // bus-headings 609 → 615 and tago-tables 740 → 746 (+6 in BOTH, character counts and the
+        // family histogram's SHAPE unchanged) when `OdtReader` started resolving a paragraph style's
+        // own `fo:font-weight` into its spans. A heading's weight lives on its paragraph style in
+        // ODF, so reading only the text family reported every such heading as not bold — measured at
+        // 32 heading characters across three of this repo's own fixtures rendering lighter than
+        // LibreOffice draws them. Spans no longer merge across a bold boundary, which is what the +6
+        // is: a real distinction the reader previously could not see, not a regression. The
+        // per-family counts move with it because the extra pieces carry no family of their own.
         let expected: [String: (spans: Int, characters: Int, families: [String: Int])] = [
-            "bus-headings": (609, 6670, ["<none>": 608, "휴먼엑스포": 1]),
-            "tago-tables": (740, 8248, ["<none>": 739, "휴먼엑스포": 1]),
+            "bus-headings": (615, 6670, ["<none>": 614, "휴먼엑스포": 1]),
+            "tago-tables": (746, 8248, ["<none>": 745, "휴먼엑스포": 1]),
             "notes": (14, 200, ["<none>": 14]),
             "embed": (12, 114, ["<none>": 12]),
         ]

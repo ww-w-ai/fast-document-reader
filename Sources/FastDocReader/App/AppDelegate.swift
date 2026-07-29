@@ -2,6 +2,28 @@ import AppKit
 import UniformTypeIdentifiers
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    // The two menus this object is the delegate of. Held so `menuNeedsUpdate` can tell them apart by
+    // IDENTITY rather than by title: its Open Recent branch begins with `removeAllItems()`, and one
+    // menu arriving at the wrong branch would empty the View menu instead of retitling it. An
+    // unrecognised menu does nothing, which is the safe direction to fail in.
+    // (`NSMenu.delegate` is not a strong reference, so holding the menu here is not a cycle.)
+    private var recentMenu: NSMenu?
+    private var viewMenu: NSMenu?
+
+    /// The three View-menu items whose MEANING depends on the document, with the wording for each
+    /// model. A paged document (one that declared a page body width — docx/odt/HWP) is shown at its
+    /// own scale and ZOOMED, so ⌘0 returns it to the zoom it OPENED at
+    /// (`DocumentWindowController.defaultPageZoom`, 120% — the band Word, Pages and Hancom's viewer
+    /// occupy) and brings the window back with it. It does not return to 100%, which is what made the
+    /// shipped title "Actual Size" a lie — and "Zoom to Fit" was the second wording to overpromise,
+    /// since the reset is a fixed zoom rather than a fit. Everything else — markdown, plain text, an
+    /// office document whose reader found no page width — still changes a reading font size.
+    ///
+    /// Titles only. The selectors and key equivalents are identical either way, deliberately:
+    /// `MarkdownDocument` already forks on paged-ness at the top of the responder chain, so the menu
+    /// has nothing to route and only has to stop describing the wrong one of the two.
+    private var sizeMenuItems: [(item: NSMenuItem, fontTitle: String, zoomTitle: String)] = []
+
     // MUST stay false. After its last document closes, the app returns to a windowless menu-bar
     // state — a normal, intended resting state, not a reason to quit. This matters more now that
     // launch presents the Open panel (invariant 43): returning true here would let DISMISSING that
@@ -85,6 +107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let recentMenu = NSMenu(title: "Open Recent")
         recentMenu.delegate = self
         recentItem.submenu = recentMenu
+        self.recentMenu = recentMenu
         let close = fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         close.keyEquivalentModifierMask = [.command]
         // Edits live in memory until this. Closing with unsaved changes gets AppKit's own
@@ -122,12 +145,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let find = editMenu.addItem(withTitle: "Find…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
         find.tag = 1 // NSFindPanelAction.showFindPanel → shows the find bar (usesFindBar)
 
-        // View menu (font size)
+        // View menu (size — a font size, or a page zoom; see `sizeMenuItems`)
         let viewItem = NSMenuItem(); mainMenu.addItem(viewItem)
         let viewMenu = NSMenu(title: "View"); viewItem.submenu = viewMenu
-        viewMenu.addItem(withTitle: "Increase Font Size", action: Selector(("increaseReaderFontSize:")), keyEquivalent: "+")
-        viewMenu.addItem(withTitle: "Decrease Font Size", action: Selector(("decreaseReaderFontSize:")), keyEquivalent: "-")
-        viewMenu.addItem(withTitle: "Actual Size", action: Selector(("resetReaderFontSize:")), keyEquivalent: "0")
+        let increase = viewMenu.addItem(withTitle: "Increase Font Size", action: Selector(("increaseReaderFontSize:")), keyEquivalent: "+")
+        let decrease = viewMenu.addItem(withTitle: "Decrease Font Size", action: Selector(("decreaseReaderFontSize:")), keyEquivalent: "-")
+        let actual = viewMenu.addItem(withTitle: "Actual Size", action: Selector(("resetReaderFontSize:")), keyEquivalent: "0")
+        // Same three items, two vocabularies — retitled in `menuNeedsUpdate` from the key document.
+        sizeMenuItems = [(increase, "Increase Font Size", "Zoom In"),
+                         (decrease, "Decrease Font Size", "Zoom Out"),
+                         (actual, "Actual Size", "Default Zoom")]
+        viewMenu.delegate = self
+        self.viewMenu = viewMenu
         viewMenu.addItem(.separator())
         // Table of contents — markdown with headings only; the window controller validates it, so
         // it greys out for a .txt or a document that has no headings rather than opening empty.
@@ -155,6 +184,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.helpMenu = helpMenu
 
         NSApp.mainMenu = mainMenu
+    }
+
+    /// The window controller a nil-targeted View-menu action will actually reach. The chain starts at
+    /// the KEY window, so that is what the menu must describe; `mainWindow` covers the moment a sheet
+    /// or the find bar holds key while the document behind it is still the one being read.
+    ///
+    /// The ordered-windows fallback is not belt and braces — it is the only arm that answers while the
+    /// app is INACTIVE, where `keyWindow` and `mainWindow` are BOTH nil. Measured, not assumed: with
+    /// only the first two arms, a running app holding one paged document reported no controller at
+    /// all and titled itself "Increase Font Size" — the exact wrong answer this exists to remove.
+    /// A menu can be read while the app is inactive (Accessibility does it), so the answer has to
+    /// hold there too.
+    ///
+    /// Nil — no document window at all — reads as "not paged", which leaves the shipped font wording
+    /// in place.
+    private var keyDocumentController: DocumentWindowController? {
+        for window in [NSApp.keyWindow, NSApp.mainWindow] {
+            if let controller = window?.windowController as? DocumentWindowController { return controller }
+        }
+        return NSApp.orderedWindows.lazy
+            .compactMap { $0.windowController as? DocumentWindowController }
+            .first
     }
 
     // MARK: - New file
@@ -334,8 +385,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension AppDelegate: NSMenuDelegate {
-    // Rebuild the Open Recent submenu each time it opens: recent files first, then Clear Menu.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        // The View menu: retitle the three size items for the document the keys will actually reach.
+        // Done here rather than in a `validateMenuItem` because those items are nil-targeted — their
+        // validation goes to whichever responder implements the selector (the document), not to this
+        // object, so this file could never see it. Kept idempotent and free of side effects: this
+        // pass runs whenever AppKit decides it needs the menu's current shape, which is more often
+        // than "the user clicked View" (an Accessibility read of the menu triggers it too).
+        if menu === viewMenu {
+            let paged = keyDocumentController?.isPaged == true
+            for entry in sizeMenuItems { entry.item.title = paged ? entry.zoomTitle : entry.fontTitle }
+            return
+        }
+        // Rebuild the Open Recent submenu each time it opens: recent files first, then Clear Menu.
+        // Invariant 7: `recentDocumentURLs` is read ONLY from here, so the branch above must return
+        // before reaching it — the View menu opening is not a reason to spend a security-scoped
+        // extension from the sandbox's limited pool.
+        guard menu === recentMenu else { return }
         menu.removeAllItems()
         let urls = NSDocumentController.shared.recentDocumentURLs
         for url in urls {

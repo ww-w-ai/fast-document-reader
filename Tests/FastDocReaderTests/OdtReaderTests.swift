@@ -1903,6 +1903,79 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertEqual(cell.padding, 3)
     }
 
+    /// PAGED per-edge padding (`Cell.edgePadding`): the uniform `fo:padding` shorthand applies to
+    /// all four edges when no per-side override is present — ODF's own shorthand-then-override rule.
+    func testTableCellEdgePaddingFallsBackToTheUniformShorthandOnEveryEdge() throws {
+        let blocks = try read(
+            body: """
+            <table:table><table:table-row>
+              <table:table-cell table:style-name="Mid"><text:p>A</text:p></table:table-cell>
+            </table:table-row></table:table>
+            """,
+            automaticStyles: """
+            <style:style style:name="Mid" style:family="table-cell">
+              <style:table-cell-properties style:vertical-align="middle" fo:padding="3pt"/>
+            </style:style>
+            """)
+        guard case .table(let rows, _, _, _) = blocks[0], let cell = rows.first?.first else { return XCTFail("expected a table cell") }
+        let edges = try XCTUnwrap(cell.edgePadding)
+        XCTAssertEqual(edges.top, 3); XCTAssertEqual(edges.left, 3)
+        XCTAssertEqual(edges.bottom, 3); XCTAssertEqual(edges.right, 3)
+    }
+
+    /// A per-side override (`fo:padding-top`) wins over the uniform shorthand for THAT edge only —
+    /// the other three still fall back to it.
+    func testTableCellEdgePaddingPerSideOverrideWinsForThatEdgeOnly() throws {
+        let blocks = try read(
+            body: """
+            <table:table><table:table-row>
+              <table:table-cell table:style-name="Asym"><text:p>A</text:p></table:table-cell>
+            </table:table-row></table:table>
+            """,
+            automaticStyles: """
+            <style:style style:name="Asym" style:family="table-cell">
+              <style:table-cell-properties fo:padding="3pt" fo:padding-top="0pt"/>
+            </style:style>
+            """)
+        guard case .table(let rows, _, _, _) = blocks[0], let cell = rows.first?.first else { return XCTFail("expected a table cell") }
+        let edges = try XCTUnwrap(cell.edgePadding)
+        XCTAssertEqual(edges.top, 0, "the per-side override must win, and a declared ZERO must survive")
+        XCTAssertEqual(edges.left, 3, "every other edge still falls back to the uniform shorthand")
+        XCTAssertEqual(edges.bottom, 3)
+        XCTAssertEqual(edges.right, 3)
+    }
+
+    /// No cell style at all — `edgePadding` stays `nil`, exactly like `padding` above.
+    func testTableCellWithNoStyleHasNilEdgePadding() throws {
+        let blocks = try read(
+            body: """
+            <table:table><table:table-row>
+              <table:table-cell><text:p>A</text:p></table:table-cell>
+            </table:table-row></table:table>
+            """,
+            automaticStyles: "")
+        guard case .table(let rows, _, _, _) = blocks[0], let cell = rows.first?.first else { return XCTFail("expected a table cell") }
+        XCTAssertNil(cell.edgePadding)
+    }
+
+    /// ODF `TableFormat.defaultPadding` is table-wide (docx `w:tblCellMar`'s counterpart) and ODF has
+    /// no such construct — must stay `nil` even when the cell itself declares padding.
+    func testOdtTableFormatNeverPopulatesDefaultPadding() throws {
+        let blocks = try read(
+            body: """
+            <table:table><table:table-row>
+              <table:table-cell table:style-name="Mid"><text:p>A</text:p></table:table-cell>
+            </table:table-row></table:table>
+            """,
+            automaticStyles: """
+            <style:style style:name="Mid" style:family="table-cell">
+              <style:table-cell-properties fo:padding="3pt"/>
+            </style:style>
+            """)
+        guard case .table(_, _, _, let format) = blocks[0] else { return XCTFail("expected a table") }
+        XCTAssertNil(format.defaultPadding, "ODF has no table-wide cell-margin equivalent to w:tblCellMar")
+    }
+
     /// ODF `style:contextual-spacing` (docx's `w:contextualSpacing`) reaches the paragraph's format,
     /// so the builder can drop the space between adjacent same-style paragraphs. Absent → false.
     func testParagraphContextualSpacingReadsFromStyle() throws {
@@ -2285,4 +2358,41 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertFalse(spans[0].caps)
         XCTAssertFalse(spans[0].smallCaps)
     }
+    // MARK: Bold/italic declared by the PARAGRAPH style (a heading's weight lives there)
+
+    /// ODF puts a heading's weight on its `style:family="paragraph"` style's own
+    /// `style:text-properties` — `Heading_20_1` carries `fo:font-weight="bold"` and no text-family
+    /// style is involved. Reading only the text family reported every such heading as not bold;
+    /// measured on this repo's own fixtures, 32 heading characters across `notes.odt`, `embed.odt`
+    /// and `giant-table.odt` rendered a weight lighter than LibreOffice draws them. The docx twin of
+    /// this gap is `DocxReader.resolvedBold`.
+    func testBoldDeclaredByTheParagraphStyleReachesTheRun() throws {
+        let styles = """
+        <office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" \
+        xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" \
+        xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0">
+          <office:styles>
+            <style:style style:name="Heading_20_1" style:family="paragraph" style:default-outline-level="1">
+              <style:text-properties fo:font-weight="bold"/>
+            </style:style>
+          </office:styles>
+        </office:document-styles>
+        """
+        let content = """
+        <office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" \
+        xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+          <office:body><office:text>
+            <text:h text:style-name="Heading_20_1" text:outline-level="1">제목</text:h>
+          </office:text></office:body>
+        </office:document-content>
+        """
+        let archive = try ZipArchive(data: buildOdt(content: content, styles: styles))
+        let blocks = try OdtReader.read(archive).blocks
+        guard case let .heading(_, spans, _, _, _, _) = blocks.first else {
+            return XCTFail("expected a heading, got \(String(describing: blocks.first))")
+        }
+        XCTAssertEqual(spans.first?.bold, true,
+                       "the run declares no style of its own — its bold must come from Heading_20_1")
+    }
+
 }

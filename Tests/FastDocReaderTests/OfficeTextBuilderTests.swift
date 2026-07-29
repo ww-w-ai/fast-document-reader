@@ -911,14 +911,37 @@ final class OfficeTextBuilderTests: XCTestCase {
     /// every cell picture unscaled, which is most of them in a real report).
     func testCellImageFollowsGraphicScale() throws {
         let cell = Cell(blocks: [.image(id: "in-cell", size: CGSize(width: 100, height: 50))])
-        // A CELL picture is measured against the TABLE's own source width (400pt), not the page:
-        // the table is stretched to the 1200pt column, so the picture grows by that same 3×.
+        // A CELL picture is measured against the TABLE's own source width (400pt) — and for a PAGED
+        // document (`pageContentWidth` non-nil — this table-width-clamp job) the table itself is now
+        // laid out at that AUTHORED 400pt rather than stretched to fill the 1200pt column (a table
+        // drawn at 400pt of a 1200pt column must not become 100% of it just because the reader fills
+        // the column), so the ratio the picture scales by is 400÷400 = 1: it keeps its authored size
+        // exactly. This used to assert 3× growth (300×150) — that was the SAME over-stretch defect
+        // this table-width fix removes from the table, seen from the picture's side; see the sibling
+        // test below for the ratio still doing real work when the column, not the table, is the
+        // narrower one.
         let out = OfficeTextBuilder.build([.table(rows: [[cell]], headerRows: 0, columnWidths: [1],
                                                   format: TableFormat(sourceWidth: 400))],
                                           theme: theme, columnWidth: 1200, pageContentWidth: 9999)
         let size = try reservedImageSize(out)
-        XCTAssertEqual(size.width, 300, accuracy: 0.5)
-        XCTAssertEqual(size.height, 150, accuracy: 0.5)
+        XCTAssertEqual(size.width, 100, accuracy: 0.5)
+        XCTAssertEqual(size.height, 50, accuracy: 0.5)
+    }
+
+    /// The complementary case: when the READING COLUMN is narrower than the table's own authored
+    /// width, a paged table shrinks to fit it (never grows past the column — `GridTextTable.
+    /// maxWidth` only ever clamps DOWN), and a cell picture shrinks by the exact same ratio, keeping
+    /// its share of the cell exactly as authored. Proves the scale ratio still does real work after
+    /// the table-width fix above — it is not hardcoded to 1.
+    func testCellImageShrinksWithATableClampedToANarrowerColumn() throws {
+        let cell = Cell(blocks: [.image(id: "in-cell", size: CGSize(width: 100, height: 50))])
+        let out = OfficeTextBuilder.build([.table(rows: [[cell]], headerRows: 0, columnWidths: [1],
+                                                  format: TableFormat(sourceWidth: 400))],
+                                          theme: theme, columnWidth: 200, pageContentWidth: 9999)
+        let size = try reservedImageSize(out)
+        // The table clamps to min(400, 200) = 200 → scale 200 ÷ 400 = 0.5.
+        XCTAssertEqual(size.width, 50, accuracy: 0.5)
+        XCTAssertEqual(size.height, 25, accuracy: 0.5)
     }
 
     // MARK: Graphic alignment

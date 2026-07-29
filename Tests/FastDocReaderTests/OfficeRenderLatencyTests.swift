@@ -10,6 +10,15 @@ import AppKit
 /// rather than a guess, and so a future change that makes it worse is visible (the same reason
 /// `FloatWrapExclusionSpikeTests` and `CorpusProbeTests` are kept).
 ///
+/// **A PAGED document takes a different road and this probe forks with it.** Since the paged-zoom
+/// change, a document that declared a page width (`officePageContentWidth != nil`) answers ⌘+/⌘− with
+/// `NSScrollView.magnification` and is never rebuilt, so `renderGeneration` deliberately does NOT
+/// move — which is precisely the signal the press timer used to wait on. Left alone, the timer spun
+/// its whole 15 s budget, reported `0 ms`, and stayed GREEN, because nothing here asserts. That is a
+/// worse failure than a red test: an instrument reporting a number while measuring nothing (invariant
+/// 30, one level up). `timePresses` now picks its settle signal per arm and FAILS if that signal
+/// never arrives, so this can no longer happen quietly for any future change of model.
+///
 /// Skips unless `FMD_OFFICE_LATENCY_FILE` points at a .docx/.odt/.hwp/.hwpx. Nothing from the
 /// document's contents is printed — only sizes and timings.
 ///
@@ -24,6 +33,18 @@ import AppKit
 ///     tried against it and made things worse — see that function's comment.
 ///   • Machine noise is real: one run showed 2825 ms/2.1× that did not reproduce. Trust the
 ///     `rebuilds` count (deterministic) over the wall clock (not).
+///
+/// And what it establishes about the two arms now that the fork exists, both run under load ~7:
+///   • PAGED — the 401,765-character / 129-table 시장구조조사.hwp (page width 368.5 pt, 51,968 cells):
+///     **1.2 ms per press, worst hitch 1.2 ms, 0 rebuilds**, a 3-press burst 1.9 ms. Against invariant
+///     56b's 65,853 ms deep-⌘+ freeze on this same document, which is what it replaces. `zoom steps`
+///     equals the press count exactly, so nothing is coalescing or clamping. The three reflow passes
+///     are skipped under a pinned column, and the walk they would otherwise have paid still measures
+///     26.8–28.5 ms right below — the saving is the gap between those two lines.
+///   • NOT PAGED — `docs/fixtures/office/giant-table.odt` (page width nil, so it takes the fallback
+///     arm): 2371 ms per press, worst hitch 2298 ms, 1 rebuild per press, and the 3-press burst
+///     collapses to 2 rebuilds at 1.0× one press — today's debounce behaviour, unchanged. Running
+///     this file is the only way to exercise that arm on a machine whose sample documents are paged.
 final class OfficeRenderLatencyTests: XCTestCase {
     /// The reading size is now SEEDED from a persisted value (`FontSizeStore.startingSize`), so a
     /// test that changes a document's size leaks into every later test's freshly opened document —
@@ -145,10 +166,19 @@ final class OfficeRenderLatencyTests: XCTestCase {
         let storage = try XCTUnwrap(wc.textStorageRef)
         print("  characters rendered: \(storage.length)")
 
-        // Stage 1 — the pure string rebuild (what changing the font size fundamentally requires).
+        // Stage 1 — the pure string rebuild. For markdown, plain text and an office document with no
+        // page width this is what changing the font size fundamentally requires, once per press. A
+        // PAGED document no longer pays it on ⌘+ at all (the press is a magnification), so for one of
+        // those this stage is the cost of what still DOES rebuild: opening the document, ⌘R, a resize.
+        //
+        // Build it at the theme the reader would really use. A paged document is pinned to its own
+        // default body size (`MarkdownDocument.render`, paged-zoom design D3), so measuring it at a
+        // reading size of 20 would time a document with a different amount of line wrapping — and
+        // therefore a different number of laid-out lines — than the one on screen.
         let colW = wc.textView.textContainer?.size.width ?? 800
+        let rebuildTheme = RenderTheme.current(size: wc.isPaged ? doc.officeDefaultBodyFontSize : 20)
         t = Date()
-        let rebuilt = OfficeTextBuilder.build(doc.officeBlocks, theme: RenderTheme.current(size: 20),
+        let rebuilt = OfficeTextBuilder.build(doc.officeBlocks, theme: rebuildTheme,
                                               columnWidth: colW,
                                               documentDefaultFontSize: doc.officeDefaultBodyFontSize,
                                               pageContentWidth: doc.officePageContentWidth,
@@ -162,6 +192,15 @@ final class OfficeRenderLatencyTests: XCTestCase {
         // Stage 2 — `updateTextInset` with the document ALREADY rendered. `render(into:)` calls this
         // before every rebuild, and its two tail passes (tab reanchor + table column re-solve) walk
         // the FULL current storage — which the rebuild is about to throw away.
+        //
+        // A PAGED document measures something DIFFERENT here, and reading this line as though it were
+        // the same number is the trap. Its column is constant for the life of the document, so
+        // `updateTextInset` settles the geometry and returns without running the three passes at all
+        // (they would provably recompute the values they already hold). What is left is the pin plus
+        // the container/frame bookkeeping — which is not free either, since changing the text view's
+        // frame width invalidates layout, so this line still swings with whether the frame actually
+        // moved. What the SKIPPED passes would have cost is measured directly one stage below; the
+        // saving is the gap between the two, which is why they are printed next to each other.
         t = Date()
         wc.updateTextInset()
         stamp("updateTextInset (full storage)", t)
@@ -248,41 +287,103 @@ final class OfficeRenderLatencyTests: XCTestCase {
         }
 
         // Stage 4+ — a press measured to the point the document is FULLY laid out again, which is
-        // when it stops feeling busy. Two things make a naive timer lie here: `runBusy` defers the
-        // work a run-loop turn, and the rebuild is DEBOUNCED — so "layout is complete" is true the
-        // instant after the press, before anything has started. Waiting for `renderGeneration` to
-        // advance first is what makes this measure the work rather than the wait.
+        // when it stops feeling busy. Two things make a naive timer lie on the REBUILD arm: `runBusy`
+        // defers the work a run-loop turn, and the rebuild is DEBOUNCED — so "layout is complete" is
+        // true the instant after the press, before anything has started. Waiting for a signal that
+        // the press was actually PICKED UP is what makes this measure the work rather than the wait.
         let lm = try XCTUnwrap(wc.textView.layoutManager)
+
+        /// Is the whole document laid out right now? Both arms have to wait for this, because a press
+        /// that returns instantly and leaves the reader looking at unlaid text has not finished.
+        func fullyLaidOut() -> Bool {
+            let total = wc.textView.textStorage?.length ?? 0
+            return total > 0 && lm.firstUnlaidCharacterIndex() >= total
+        }
+
         /// Returns (settle, worstHitch). `worstHitch` is what "slow" actually feels like: a 10 ms
         /// run-loop slice that takes 500 ms to come back means the main thread was blocked that whole
         /// time and the window was frozen. Total settle time can stay the same while the hitch drops,
-        /// and the app still feels far better — so both are reported.
+        /// and the app still feels far better — so both are reported. The presses' own synchronous
+        /// cost seeds `worst`, because that is main-thread time too — and on the paged arm it is the
+        /// ONLY main-thread time, so a loop that only measured its own slices would report a zero
+        /// hitch for work that did happen.
+        ///
+        /// The settle signal is chosen per arm, and the two are not interchangeable:
+        ///   • NOT PAGED — the press rebuilds the string, so wait for `renderGeneration` to advance.
+        ///   • PAGED — the press is a view transform and MUST NOT bump `renderGeneration` (step 1's
+        ///     whole point), so that signal never arrives; wait for `pageZoomChangeCount` instead and
+        ///     assert the rebuild count really did stay put.
+        /// If the chosen signal never arrives inside the 15 s budget this FAILS. It used to return 0
+        /// and stay green, which is how the paged change silently emptied this probe.
         func timePresses(_ n: Int, _ label: String) -> (Double, Double) {
+            // Start every paged gesture from `fit`. Two reasons, both needed: a zoom already pinned at
+            // `maxPageZoom` cannot move, so its press would be indistinguishable from a probe that is
+            // measuring nothing; and starting all three measurements below from the same zoom is what
+            // makes them comparable to each other.
+            if wc.isPaged { wc.fitPageZoom(); spin(0.2) }
             let gen = doc.renderGeneration
+            let zooms = wc.pageZoomChangeCount
+            let zoomBefore = wc.pageZoom
             let start = Date()
             for _ in 0..<n { doc.increaseReaderFontSize(nil) }
-            var elapsed = 0.0, worst = 0.0
+            // `settled` is a flag rather than "elapsed != 0" on purpose: a press that costs almost
+            // nothing — which is exactly what the paged arm is supposed to cost — must not be
+            // indistinguishable from a press that never happened. That conflation is the bug being
+            // fixed here, and re-encoding it in the sentinel would smuggle it back in.
+            var settled = false
+            var elapsed = 0.0, worst = ms(start)
+            let pressed: () -> Bool = wc.isPaged
+                ? { wc.pageZoomChangeCount > zooms }
+                : { doc.renderGeneration > gen }
             for _ in 0..<1500 {
+                if pressed(), fullyLaidOut() { elapsed = ms(start); settled = true; break }
                 let sliceStart = Date()
                 spin(0.01)
                 worst = max(worst, ms(sliceStart))
-                let total = wc.textView.textStorage?.length ?? 0
-                if doc.renderGeneration > gen, total > 0, lm.firstUnlaidCharacterIndex() >= total {
-                    elapsed = ms(start); break
-                }
+            }
+            if !settled {
+                // Report BOTH counters, never only the one this arm chose. Verified by running the
+                // mutation: forcing the paged arm back onto `renderGeneration` printed "zoom count
+                // stayed" while the zoom had in fact moved twice — a diagnostic that named the wrong
+                // culprit and would have sent the next reader after the zoom instead of the arm.
+                XCTFail("""
+                    \(label): the press never settled inside 15 s. \
+                    Waiting on \(wc.isPaged ? "pageZoomChangeCount" : "renderGeneration") \
+                    (this document is \(wc.isPaged ? "PAGED" : "NOT paged")). \
+                    zoom steps \(zooms) → \(wc.pageZoomChangeCount), \
+                    zoom \(String(format: "%.3f", zoomBefore)) → \(String(format: "%.3f", wc.pageZoom)) \
+                    (max \(DocumentWindowController.maxPageZoom)), \
+                    rebuilds \(gen) → \(doc.renderGeneration), fully laid out: \(fullyLaidOut()). \
+                    This probe must never report a number it did not measure, so it fails instead of \
+                    printing 0 (invariant 30).
+                    """)
+                return (0, worst)
             }
             // Decisive check for coalescing: how many REBUILDS did this gesture actually cause?
             // Three presses that produce three renders means the debounce is not collapsing them,
-            // whatever the wall clock says.
+            // whatever the wall clock says. On the paged arm the same counter is an ASSERTION rather
+            // than an observation — a paged press that rebuilds anything has lost the entire prize
+            // (invariant 56b's 65,853 ms freeze), and it must be loud, not a line of output.
             spin(0.5)
-            print(String(format: "  %-30@ %7.1f ms   worst freeze %6.1f ms   rebuilds %d",
-                         label as NSString, elapsed, worst, doc.renderGeneration - gen))
+            if wc.isPaged {
+                XCTAssertEqual(doc.renderGeneration, gen,
+                               "\(label): a paged press is a view transform and must not rebuild — "
+                               + "\(doc.renderGeneration - gen) rebuild(s) happened")
+            }
+            print(String(format: "  %-30@ %7.1f ms   worst freeze %6.1f ms   rebuilds %d   zoom %.3f → %.3f (%d steps)",
+                         label as NSString, elapsed, worst, doc.renderGeneration - gen,
+                         zoomBefore, wc.pageZoom, wc.pageZoomChangeCount - zooms))
             return (elapsed, worst)
         }
+        print(wc.isPaged
+              ? "  model: PAGED — ⌘+ magnifies, settle signal = pageZoomChangeCount"
+              : "  model: REBUILD — ⌘+ re-renders, settle signal = renderGeneration")
         _ = timePresses(1, "first ⌘+ (cold)")
         let warm = timePresses(1, "warm ⌘+ press")
-        // The real gesture: three presses as fast as the key repeats. Uncoalesced this is three full
-        // rebuilds back to back, and the reader waits through all three to see only the last size.
+        // The real gesture: three presses as fast as the key repeats. On the rebuild arm, uncoalesced,
+        // this is three full rebuilds back to back and the reader waits through all three to see only
+        // the last size; on the paged arm it is three bounds transforms and should cost the same as
+        // one, which is the number this whole change exists to produce.
         let burst = timePresses(3, "3-press burst")
         print(String(format: "  VERDICT: 1 press %.0f ms (worst freeze %.0f ms) · 3-press burst %.0f ms (%.1f× one press)",
                      warm.0, warm.1, burst.0, warm.0 > 0 ? burst.0 / warm.0 : 0))
@@ -835,4 +936,160 @@ extension TableWidthIndependenceTests {
             XCTAssertEqual(w, target, accuracy: 0.01, "\(ncol) columns must stay exact — the shrink is for narrow columns only")
         }
     }
+}
+
+// MARK: - Document-faithful table geometry (paged padding + table width, "표가 너무 큼")
+
+extension TableWidthIndependenceTests {
+    /// JOB 1 — PADDING is a FALLBACK for paged, not a FLOOR: a cell's own declared value survives at
+    /// ANY size including 0, and each of the four edges is independent. Reproduces the owner's own
+    /// measured report shape: a 4-column table, 10pt document default, cells declaring Word's stock
+    /// `w:tblCellMar` (`top=bottom=0, left=right=5.4pt`) — before this fix every cell read
+    /// `max(2, 7) = 7` on ALL four edges (the floor bug at `TableBlockBuilder.swift`'s old line 271,
+    /// smeared onto top/bottom by `DocxReader`'s old single-edge `cellMargin`); after it, the block
+    /// reads back EXACTLY what the document declared.
+    func testPagedCellPaddingUsesTheDocumentsOwnZeroNotTheFloor() {
+        let theme = RenderTheme.current(size: 16)
+        var cell = TableBlockBuilder.CellContent(content: NSAttributedString(string: "x"))
+        cell.edgePadding = EdgePadding(top: 0, left: 5, bottom: 0, right: 5)
+        let attr = TableBlockBuilder.build(rows: [[cell]], headerRows: 0, theme: theme,
+                                           paged: true, width: 400)
+        let block = try! XCTUnwrap(placedBlocks(in: attr).first)
+        XCTAssertEqual(block.width(for: .padding, edge: .minY), 0, "a declared ZERO top must survive, not float up to the 7pt floor")
+        XCTAssertEqual(block.width(for: .padding, edge: .maxY), 0, "same for bottom")
+        XCTAssertEqual(block.width(for: .padding, edge: .minX), 5, "the declared 5pt side must be used exactly, not maxed against 7")
+        XCTAssertEqual(block.width(for: .padding, edge: .maxX), 5)
+    }
+
+    /// The cascade's THIRD layer: an edge NEITHER the cell nor the table declared still falls back to
+    /// `defaultCellPadding` (7) — the fallback only disappears where the document actually spoke.
+    func testPagedCellPaddingFallsBackToTheComfortableDefaultWhenNothingIsDeclared() {
+        let theme = RenderTheme.current(size: 16)
+        let cell = TableBlockBuilder.CellContent(content: NSAttributedString(string: "x"))   // no edgePadding at all
+        let attr = TableBlockBuilder.build(rows: [[cell]], headerRows: 0, theme: theme, paged: true, width: 400)
+        let block = try! XCTUnwrap(placedBlocks(in: attr).first)
+        for edge: NSRectEdge in [.minX, .maxX, .minY, .maxY] {
+            XCTAssertEqual(block.width(for: .padding, edge: edge), TableBlockBuilder.defaultCellPadding,
+                           "an undeclared edge must still get the theme's own comfortable default")
+        }
+    }
+
+    /// The TABLE's own default (`tablePadding`, docx `w:tblCellMar`) is the layer BENEATH a cell's own
+    /// edge, exactly mirroring `EdgeBorders`' cell-then-table cascade — a cell that says nothing
+    /// inherits the table's declared default rather than skipping straight to the 7pt fallback.
+    func testPagedCellPaddingInheritsTheTablesOwnDefaultBeforeFallingBackToTheTheme() {
+        let theme = RenderTheme.current(size: 16)
+        let cell = TableBlockBuilder.CellContent(content: NSAttributedString(string: "x"))   // no edgePadding
+        let tablePadding = EdgePadding(top: 0, left: 3, bottom: 0, right: 3)
+        let attr = TableBlockBuilder.build(rows: [[cell]], headerRows: 0, theme: theme,
+                                           tablePadding: tablePadding, paged: true, width: 400)
+        let block = try! XCTUnwrap(placedBlocks(in: attr).first)
+        XCTAssertEqual(block.width(for: .padding, edge: .minY), 0, "inherits the TABLE's own zero top")
+        XCTAssertEqual(block.width(for: .padding, edge: .minX), 3, "inherits the TABLE's own 3pt side")
+    }
+
+    /// The NON-paged model must stay BYTE IDENTICAL: `edgePadding`/`tablePadding` are simply never
+    /// consulted, and the floor (`max`, never a document's smaller number) still governs — this is
+    /// the exact call shape (no `paged:`) every markdown table and every non-paged office table uses.
+    func testNonPagedCellPaddingStaysAFloorRegardlessOfEdgePadding() {
+        let theme = RenderTheme.current(size: 16)
+        var cell = TableBlockBuilder.CellContent(content: NSAttributedString(string: "x"))
+        cell.edgePadding = EdgePadding(top: 0, left: 0, bottom: 0, right: 0)   // must be IGNORED
+        cell.padding = 2
+        let attr = TableBlockBuilder.build(rows: [[cell]], headerRows: 0, theme: theme, width: 400)   // paged defaults false
+        let block = try! XCTUnwrap(placedBlocks(in: attr).first)
+        for edge: NSRectEdge in [.minX, .maxX, .minY, .maxY] {
+            XCTAssertEqual(block.width(for: .padding, edge: edge), TableBlockBuilder.defaultCellPadding,
+                           "non-paged: `max(2, 7) == 7` on every edge, edgePadding ignored entirely")
+        }
+    }
+
+    /// JOB 2 — a PAGED table's own authored width (`maxWidth`, `TableFormat.sourceWidth`) is what it
+    /// lays out at, clamped DOWN from the column — never stretched to fill it. Reproduces the "표가
+    /// 너무 큼" shape: a 300pt table inside a 600pt column lands at EXACTLY 300, not 600 (the
+    /// pre-fix 2.0× stretch — the owner's real report measured 1.43×, same defect at a different
+    /// ratio). The wide-container discipline (`laidOutWidth`'s own doc) still applies: a container
+    /// sized exactly at the CLAMPED width would silently clip an overshoot into looking exact.
+    func testPagedTableLaysOutAtItsOwnAuthoredWidthNotTheColumn() {
+        let theme = RenderTheme.current(size: 16)
+        let ncol = 3
+        let row = (0..<ncol).map { TableBlockBuilder.CellContent(content: NSAttributedString(string: "c\($0)")) }
+        let attr = TableBlockBuilder.build(rows: [row, row], headerRows: 0, theme: theme,
+                                           columnWidths: Array(repeating: 100, count: ncol),   // sums to 300
+                                           paged: true, maxWidth: 300, width: 600)
+        let used = laidOutWidth(of: attr, containerWidth: 600 + 200)
+        XCTAssertEqual(used, 300, accuracy: 0.01,
+                       "a paged table narrower than the column must lay out at its OWN width, not stretch to 600")
+    }
+
+    /// The clamp only ever narrows: a table whose authored width is WIDER than the column still fills
+    /// the column exactly (unchanged from before this concept existed) — `maxWidth` never grows a
+    /// table past what the reading column actually has.
+    func testPagedTableNeverGrowsPastTheColumnEvenWithAWiderAuthoredWidth() {
+        let theme = RenderTheme.current(size: 16)
+        let ncol = 3
+        let row = (0..<ncol).map { TableBlockBuilder.CellContent(content: NSAttributedString(string: "c\($0)")) }
+        let attr = TableBlockBuilder.build(rows: [row, row], headerRows: 0, theme: theme,
+                                           columnWidths: Array(repeating: 100, count: ncol),
+                                           paged: true, maxWidth: 900, width: 600)
+        let used = laidOutWidth(of: attr, containerWidth: 600 + 200)
+        XCTAssertEqual(used, 600, accuracy: 0.01, "maxWidth must never stretch a table PAST the reading column")
+    }
+
+    /// A non-paged table (`maxWidth` never even passed) is untouched — the exact call shape every
+    /// existing markdown/office call site used before Job 2 existed.
+    func testNonPagedTableIgnoresMaxWidthEntirely() {
+        let target: CGFloat = 600
+        let w = laidOutWidth(columns: 5, target: target)   // uses the file's own helper — no maxWidth param at all
+        XCTAssertEqual(w, target, accuracy: 0.01)
+    }
+
+    /// FORMULA PARITY (invariant 48) for the PAGED clamp specifically: `resizeTables` is asked for the
+    /// FULL, unclamped reading column (900) — exactly what a real reflow does — and the table must
+    /// still land on its own 300pt authored width, not snap out to fill the column. This is the
+    /// concrete risk `GridTextTable.maxWidth` exists to remove: without it, `edges(forWidth:)` would
+    /// solve at whatever `resizeTables` passes, re-stretching a paged table on the very next reflow.
+    func testResizeTablesRespectsThePagedTablesOwnMaxWidthOnAFullColumnReflow() {
+        let theme = RenderTheme.current(size: 16)
+        let ncol = 3
+        let row = (0..<ncol).map { TableBlockBuilder.CellContent(content: NSAttributedString(string: "c\($0)")) }
+        let attr = TableBlockBuilder.build(rows: [row, row], headerRows: 0, theme: theme,
+                                           columnWidths: Array(repeating: 100, count: ncol),
+                                           paged: true, maxWidth: 300, width: 600)
+        let storage = NSTextStorage(attributedString: attr)
+        // A real reflow passes the FULL reading column (900), not the table's own clamped width.
+        TableBlockBuilder.resizeTables(in: storage, toWidth: 900)
+        let used = laidOutWidth(of: NSAttributedString(attributedString: storage), containerWidth: 900 + 200)
+        XCTAssertEqual(used, 300, accuracy: 0.01,
+                       "a full-column reflow must not re-stretch a paged table past its own authored width")
+    }
+
+    /// FORMULA PARITY, the OTHER half: build and resizeTables must derive the SAME cells-moved answer
+    /// for a PAGED table too, not just the plain shapes the pre-existing suite already covers — a
+    /// render immediately followed by a resize to the SAME (already-clamped) width must move NOTHING.
+    func testResizeTablesMovesNothingForAPagedTableAlreadyAtItsOwnWidth() {
+        let theme = RenderTheme.current(size: 16)
+        var cell = TableBlockBuilder.CellContent(content: NSAttributedString(string: "x"))
+        cell.edgePadding = EdgePadding(top: 0, left: 5, bottom: 0, right: 5)
+        let rows = [[cell], [cell]]
+        let attr = TableBlockBuilder.build(rows: rows, headerRows: 0, theme: theme,
+                                           paged: true, maxWidth: 300, width: 600)
+        let storage = NSTextStorage(attributedString: attr)
+        func widths() -> [CGFloat] {
+            var out: [CGFloat] = []
+            storage.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: storage.length)) { v, _, _ in
+                if let ps = v as? NSParagraphStyle, let b = ps.textBlocks.first as? NSTextTableBlock { out.append(b.contentWidth) }
+            }
+            return out
+        }
+        let before = widths()
+        // A resize to the FULL column (900) — the paged clamp must reproduce the identical 300pt
+        // solve `build` already did, so nothing here should be treated as "moved".
+        TableBlockBuilder.resizeTables(in: storage, toWidth: 900)
+        let after = widths()
+        let moved = zip(before, after).filter { abs($0 - $1) > 0.5 }.count
+        print("  [paged] cells the resize pass still moves after a render: \(moved) of \(before.count)")
+        XCTAssertEqual(moved, 0, "formula parity: build and resizeTables must agree on a paged table's clamped width")
+    }
+
 }

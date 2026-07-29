@@ -91,10 +91,12 @@ enum OdtReader: OfficeDocumentReader {
         let notes = NoteCollector()
         let bodyBlocks = parseBody(body, styles: styles, archive: archive, notes: notes)
         let noteBlocks = buildNoteBlocks(notes.entries, styles: styles, archive: archive)
+        let page = pageGeometry(styleRoots: styleRoots)
         return OfficeReadResult(
             blocks: bodyBlocks + noteBlocks,
             comments: notes.comments.sorted { $0.number < $1.number },
-            pageContentWidth: pageContentWidth(styleRoots: styleRoots))
+            pageContentWidth: page?.content,
+            pageMarginLeft: page?.left, pageMarginRight: page?.right)
     }
 
     /// The document's page BODY width in points — a `style:page-layout-properties`' `fo:page-width`
@@ -106,6 +108,14 @@ enum OdtReader: OfficeDocumentReader {
     /// orientation-applied paper width, so landscape needs no swap. Returns nil when no page layout /
     /// no `fo:page-width` / width ≤0 → the reader keeps its window-filling column.
     private static func pageContentWidth(styleRoots: [XMLNode]) -> CGFloat? {
+        pageGeometry(styleRoots: styleRoots)?.content
+    }
+
+    /// The page layout's geometry in points: the printable column and the margins either side of it.
+    /// The margins were always read here in order to be SUBTRACTED; they are kept now because a paged
+    /// view reproduces the PAPER (`left + content + right`), not just the column — see
+    /// `OfficeReadResult.pageMarginLeft`.
+    private static func pageGeometry(styleRoots: [XMLNode]) -> (content: CGFloat, left: CGFloat, right: CGFloat)? {
         for root in styleRoots {
             guard let props = root.firstDescendant("style:page-layout-properties"),
                   let widthRaw = props.attributes["fo:page-width"], let width = parseLength(widthRaw)
@@ -113,7 +123,7 @@ enum OdtReader: OfficeDocumentReader {
             let left = props.attributes["fo:margin-left"].flatMap(parseLength) ?? 0
             let right = props.attributes["fo:margin-right"].flatMap(parseLength) ?? 0
             let content = width - left - right
-            if content > 0 { return content }
+            if content > 0 { return (content, max(0, left), max(0, right)) }
         }
         return nil
     }
@@ -636,6 +646,11 @@ enum OdtReader: OfficeDocumentReader {
 
     private struct ResolvedParagraphStyle {
         var outlineLevel: Int? = nil
+        /// The paragraph style's own run weight/posture — the BASE every span in the paragraph starts
+        /// from, which a text-family style on an individual run then overrides. See
+        /// `ParagraphStyleDecl.bold`.
+        var bold: Bool? = nil
+        var italic: Bool? = nil
         var rtl = false
         var alignment: NSTextAlignment? = nil
         /// Each `style:tab-stop`'s `style:position` plus its `style:type` (alignment: left/center/
@@ -657,6 +672,11 @@ enum OdtReader: OfficeDocumentReader {
     /// resolved `rtl` is known (see `resolveParagraphStyle`), so converting eagerly per-declaration
     /// would risk resolving against the wrong (this style's OWN, not yet inherited) writing mode.
     private struct ParagraphStyleDecl {
+        /// `fo:font-weight`/`fo:font-style` off this paragraph style's own
+        /// `style:text-properties`. Three-state like every other field here: `nil` = this level
+        /// said nothing (keep climbing), `false` = it explicitly said normal.
+        var bold: Bool? = nil
+        var italic: Bool? = nil
         var outlineLevel: Int? = nil
         var rtl: Bool? = nil
         var alignmentRaw: String? = nil
@@ -708,6 +728,17 @@ enum OdtReader: OfficeDocumentReader {
             decl.parent = styleNode.attributes["style:parent-style-name"]
             if let levelString = styleNode.attributes["style:default-outline-level"], let level = Int(levelString) {
                 decl.outlineLevel = level
+            }
+            // A PARAGRAPH-family style may carry run properties too, and for a heading that is where
+            // its weight almost always lives — `Heading_20_1` declares `fo:font-weight="bold"` on its
+            // own `style:text-properties`, not on any text-family style. Reading only the text family
+            // (`parseTextStyleDecls`, which filters `style:family == "text"`) therefore reported every
+            // such heading as not bold. Measured on this repo's own fixtures: 32 heading characters
+            // across notes.odt / embed.odt / giant-table.odt render a weight lighter than LibreOffice
+            // draws them. Exactly the gap `DocxReader.resolvedBold` closes on the other side.
+            if let textProps = styleNode.child("style:text-properties") {
+                if let weight = textProps.attributes["fo:font-weight"] { decl.bold = weight == "bold" }
+                if let posture = textProps.attributes["fo:font-style"] { decl.italic = posture == "italic" }
             }
             if let props = styleNode.child("style:paragraph-properties") {
                 if let mode = props.attributes["style:writing-mode"] { decl.rtl = mode == "rl-tb" }
@@ -806,7 +837,7 @@ enum OdtReader: OfficeDocumentReader {
     private static func resolveParagraphStyle(_ styleName: String, decls: [String: ParagraphStyleDecl]) -> ResolvedParagraphStyle {
         var result = ResolvedParagraphStyle()
         var alignmentRaw: String? = nil
-        var have = (outline: false, rtl: false, align: false, tabs: false,
+        var have = (outline: false, bold: false, italic: false, rtl: false, align: false, tabs: false,
                     spacingBefore: false, spacingAfter: false, indentStart: false, indentEnd: false,
                     firstLineIndent: false, hangingIndent: false, lineHeight: false, shading: false,
                     borderColor: false, borderWidth: false, contextualSpacing: false)
@@ -817,6 +848,8 @@ enum OdtReader: OfficeDocumentReader {
             visited.insert(name)
             guard let decl = decls[name] else { break }
             if !have.outline, let v = decl.outlineLevel { result.outlineLevel = v; have.outline = true }
+            if !have.bold, let v = decl.bold { result.bold = v; have.bold = true }
+            if !have.italic, let v = decl.italic { result.italic = v; have.italic = true }
             if !have.rtl, let v = decl.rtl { result.rtl = v; have.rtl = true }
             if !have.align, let v = decl.alignmentRaw { alignmentRaw = v; have.align = true }
             if !have.tabs, !decl.tabStops.isEmpty { result.tabStops = decl.tabStops; have.tabs = true }
@@ -866,6 +899,13 @@ enum OdtReader: OfficeDocumentReader {
         var borderWidth: CGFloat? = nil
         var verticalAlignment: CellVAlign? = nil
         var padding: CGFloat? = nil
+        /// Per-edge padding for the PAGED model (Job 1) — see `parseTableCellStyleDecls`'s own doc
+        /// for how each is resolved from `fo:padding-{side}`/the `fo:padding` shorthand. `padding`
+        /// above stays the single-value representative the non-paged model keeps using, unaffected.
+        var paddingTop: CGFloat? = nil
+        var paddingLeft: CGFloat? = nil
+        var paddingBottom: CGFloat? = nil
+        var paddingRight: CGFloat? = nil
     }
 
     private struct TableCellStyleDecl {
@@ -874,6 +914,10 @@ enum OdtReader: OfficeDocumentReader {
         var borderWidth: CGFloat? = nil
         var verticalAlignment: CellVAlign? = nil
         var padding: CGFloat? = nil
+        var paddingTop: CGFloat? = nil
+        var paddingLeft: CGFloat? = nil
+        var paddingBottom: CGFloat? = nil
+        var paddingRight: CGFloat? = nil
         var parent: String? = nil
     }
 
@@ -908,6 +952,16 @@ enum OdtReader: OfficeDocumentReader {
                 decl.padding = props.attributes["fo:padding"].flatMap(parseLength)
                     ?? props.attributes["fo:padding-left"].flatMap(parseLength)
                     ?? props.attributes["fo:padding-top"].flatMap(parseLength)
+                // PER-EDGE, for the PAGED model (Job 1): ODF's own shorthand-then-override precedence
+                // — a specific `fo:padding-{side}` wins, else the uniform `fo:padding` shorthand
+                // applies to that side, else the edge is genuinely undeclared (`nil`, carried through
+                // rather than defaulted here — see `Cell.edgePadding`'s own doc for why a genuine
+                // zero must stay distinguishable from silence).
+                let uniform = props.attributes["fo:padding"].flatMap(parseLength)
+                decl.paddingTop = props.attributes["fo:padding-top"].flatMap(parseLength) ?? uniform
+                decl.paddingLeft = props.attributes["fo:padding-left"].flatMap(parseLength) ?? uniform
+                decl.paddingBottom = props.attributes["fo:padding-bottom"].flatMap(parseLength) ?? uniform
+                decl.paddingRight = props.attributes["fo:padding-right"].flatMap(parseLength) ?? uniform
             }
             map[name] = decl
         }
@@ -920,7 +974,8 @@ enum OdtReader: OfficeDocumentReader {
     /// assumed unreachable.
     private static func resolveTableCellStyle(_ styleName: String, decls: [String: TableCellStyleDecl]) -> TableCellStyle {
         var result = TableCellStyle()
-        var have = (bg: false, borderColor: false, borderWidth: false, valign: false, padding: false)
+        var have = (bg: false, borderColor: false, borderWidth: false, valign: false, padding: false,
+                    padTop: false, padLeft: false, padBottom: false, padRight: false)
         var currentName: String? = styleName
         var visited = Set<String>()
         while let name = currentName {
@@ -932,6 +987,10 @@ enum OdtReader: OfficeDocumentReader {
             if !have.borderWidth, let v = decl.borderWidth { result.borderWidth = v; have.borderWidth = true }
             if !have.valign, let v = decl.verticalAlignment { result.verticalAlignment = v; have.valign = true }
             if !have.padding, let v = decl.padding { result.padding = v; have.padding = true }
+            if !have.padTop, let v = decl.paddingTop { result.paddingTop = v; have.padTop = true }
+            if !have.padLeft, let v = decl.paddingLeft { result.paddingLeft = v; have.padLeft = true }
+            if !have.padBottom, let v = decl.paddingBottom { result.paddingBottom = v; have.padBottom = true }
+            if !have.padRight, let v = decl.paddingRight { result.paddingRight = v; have.padRight = true }
             currentName = decl.parent
         }
         return result
@@ -1159,7 +1218,15 @@ enum OdtReader: OfficeDocumentReader {
     private static func paragraphLikeBlocks(
         _ node: XMLNode, make: ([Span]) -> OfficeBlock, styles: ParsedStyles, archive: ZipArchive, notes: NoteCollector
     ) -> [OfficeBlock] {
-        let spans = collectSpans(in: node, style: TextStyle(), textStyles: styles.textStyles, notes: notes)
+        // The paragraph style's own weight/posture is the BASE every span starts from — a heading's
+        // bold lives there, not on a text-family style (see `ParagraphStyleDecl.bold`). A run's own
+        // `text:style-name` still overrides it, because `collectSpans` replaces the whole style when
+        // it meets one.
+        let paraStyle = resolvedStyle(node.attributes["text:style-name"], styles: styles)
+        var base = TextStyle()
+        if let bold = paraStyle.bold { base.bold = bold }
+        if let italic = paraStyle.italic { base.italic = italic }
+        let spans = collectSpans(in: node, style: base, textStyles: styles.textStyles, notes: notes)
         // A figure inherits its paragraph's alignment (see `OfficeBlock.image`'s `alignment`), read
         // back through the SAME `resolvedStyle` lookup the caller used to build `make` — so the
         // picture and the text around it can never disagree about how this paragraph is aligned.
@@ -1346,10 +1413,19 @@ enum OdtReader: OfficeDocumentReader {
                     // cascade; the theme default in `TableBlockBuilder` remains the final fallback.
                     let columnDefault = columnIndex < columnDefaultCellStyles.count ? columnDefaultCellStyles[columnIndex] : nil
                     let cellStyle = ownStyle ?? rowDefaultStyle ?? columnDefault
-                    cells.append(Cell(
+                    var cell = Cell(
                         blocks: blocks, rowSpan: rowSpan, colSpan: colSpan, backgroundColor: cellStyle?.backgroundColor,
                         borderColor: cellStyle?.borderColor, borderWidth: cellStyle?.borderWidth, width: width,
-                        verticalAlignment: cellStyle?.verticalAlignment, padding: cellStyle?.padding))
+                        verticalAlignment: cellStyle?.verticalAlignment, padding: cellStyle?.padding)
+                    // PAGED model's per-edge padding (Job 1) — `nil` when the resolved style named
+                    // no edge at all, so a cell with no cell-style keeps `edgePadding == nil` exactly
+                    // like every other still-unpopulated field here.
+                    if let s = cellStyle, s.paddingTop != nil || s.paddingLeft != nil
+                        || s.paddingBottom != nil || s.paddingRight != nil {
+                        cell.edgePadding = EdgePadding(top: s.paddingTop, left: s.paddingLeft,
+                                                       bottom: s.paddingBottom, right: s.paddingRight)
+                    }
+                    cells.append(cell)
                     columnIndex += 1
                 }
             case "table:covered-table-cell":

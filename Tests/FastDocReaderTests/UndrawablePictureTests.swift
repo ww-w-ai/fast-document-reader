@@ -207,15 +207,38 @@ final class UndrawablePictureTests: XCTestCase {
     /// A real window resize: the reserved size is re-solved through `resizeOfficeGraphics`
     /// (invariant 46) and the card must still be a card — label intact, `.image` still nil, so the
     /// next paint draws it at the new size rather than scaling anything.
+    ///
+    /// The DRIVER is the whole difficulty here, and it had to move with the paged-zoom model. This
+    /// used to declare a page width and widen the window, which is now self-contradictory: a
+    /// document that declares a page pins its column to the page body, so the window no longer
+    /// decides anything and `updateTextInset` skips all three reflow passes — each provably
+    /// recomputes the value it already holds. The geometry change a paged document actually gets is
+    /// a magnification, and a magnification is required to touch nothing in the storage at all
+    /// (invariant 56b), so driving `stepPageZoom` here would assert on an attachment no code had
+    /// been near: green, and proving nothing (invariant 30).
+    ///
+    /// The re-solve is still live for every office document whose reader found NO page width — that
+    /// fallback is the entire reason the three passes are skipped rather than deleted — and there a
+    /// picture inside a CELL still carries a basis of its own, its table's `TableFormat.sourceWidth`
+    /// (invariant 46), where a picture in the flow would have none and be skipped by
+    /// `resizeOfficeGraphics` outright. So the fixture is one WMF picture in a one-cell table: the
+    /// column really moves with the window, this attachment really is re-entered, and what comes out
+    /// of the pass still has to be a card.
     func testTheCardSurvivesAWindowResizeAsALabelNotABitmap() throws {
         let (doc, wc) = try openOffice(
-            blocks: [.image(id: "hwpimg:5", size: CGSize(width: 300, height: 200))],
-            archiveEntries: [], images: ["hwpimg:5": wmfData()], pageContentWidth: 400)
+            blocks: [.table(rows: [[Cell(blocks: [.image(id: "hwpimg:5",
+                                                         size: CGSize(width: 300, height: 200))])]],
+                            headerRows: 0, columnWidths: [400],
+                            format: TableFormat(sourceWidth: 400))],
+            archiveEntries: [], images: ["hwpimg:5": wmfData()])
         let storage = try XCTUnwrap(wc.textStorageRef)
         let att = try imageAttachment(in: storage)
         let cell = try XCTUnwrap(att.attachmentCell as? SizedAttachmentCell)
         doc.reconcileMedia(in: wc)
         XCTAssertEqual(cell.undrawableLabel, "WMF image — no decoder")
+        XCTAssertNil(wc.pagedWidth,
+                     "precondition: this document declared no page, so the WINDOW still decides its " +
+                     "column — the arm where a reflow re-solves a graphic at all")
         let sizeAt800 = cell.reservedSize
 
         wc.window?.setFrame(NSRect(x: 0, y: 0, width: 1200, height: 600), display: true)
