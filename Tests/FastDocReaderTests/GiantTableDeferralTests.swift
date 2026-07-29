@@ -8,6 +8,13 @@ import AppKit
 /// FOR BYTE (invariant 37), and a document above it must end up with exactly the string it would
 /// have had anyway — the deferral is a schedule, not a different document.
 final class GiantTableDeferralTests: XCTestCase {
+    /// The reading size is SEEDED from a persisted value, so a test that zooms leaks into every
+    /// later test's freshly opened document — `OfficeRenderLatencyTests` carries the same guard for
+    /// the same reason. Without it `testZoomingDeepInsideAGiantTableKeepsTheReadersPlace` passes
+    /// alone and fails inside the class, which reads exactly like a product bug and is not one.
+    override func setUp() { super.setUp(); FontSizeStore.startingSize = FontSizeStore.defaultSize }
+    override func tearDown() { FontSizeStore.startingSize = FontSizeStore.defaultSize; super.tearDown() }
+
     private let theme = RenderTheme.current(size: 16)
 
     // MARK: Structural comparison
@@ -397,46 +404,20 @@ final class GiantTableDeferralTests: XCTestCase {
         }
     }
 
-    /// ⌘+ while the reader is deep inside a giant table — the sequence that shipped a hang.
-    ///
-    /// A RE-render must not defer. If it does, the anchor taken against the full document clamps to
-    /// the deferred string's last character, the splice inserts 273,016 characters ABOVE the
-    /// viewport, and DRAWING the visible rect then fills the layout hole ~800 characters per pass at
-    /// 150–300 ms a pass. Asserting the reader keeps their place is how that stays fixed: the clamp
-    /// is exactly what moves them, and it moves them to the end of the document.
-    func testZoomingDeepInsideAGiantTableKeepsTheReadersPlace() throws {
-        let url = try Self.fixture("giant-table.odt")
-        let doc = MarkdownDocument()
-        doc.fileURL = url
-        try doc.read(from: try Data(contentsOf: url), ofType: "org.oasis-open.opendocument.text")
-        doc.makeWindowControllers()
-        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
-        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 1000, height: 800), display: false)
-        for _ in 0..<300 where !doc.deferredTables.isEmpty { spin(0.02) }
-        let storage = try XCTUnwrap(wc.textStorageRef)
-        let lm = try XCTUnwrap(wc.textView.layoutManager)
-        for _ in 0..<400 where lm.firstUnlaidCharacterIndex() < storage.length { spin(0.02) }
-        let fullLength = storage.length
-
-        let target = Int(Double(fullLength) * 0.75)
-        wc.textView.scrollRangeToVisible(NSRange(location: target, length: 1))
-        wc.textView.setSelectedRange(NSRange(location: target, length: 0))
-        spin(0.2)
-        let before = wc.readingAnchor().char
-
-        doc.increaseReaderFontSize(nil)
-        for _ in 0..<300 { spin(0.02) }
-
-        XCTAssertTrue(doc.deferredTables.isEmpty,
-                      "a RE-render must not defer — that is what parks the viewport inside an unlaid "
-                      + "grid and turns drawing into a 69,460 ms hole-fill")
-        XCTAssertEqual(wc.textStorageRef?.length, fullLength,
-                       "the document must still hold every cell after the zoom")
-        XCTAssertEqual(standInCount(try XCTUnwrap(wc.textStorageRef)), 0)
-        let after = wc.readingAnchor().char
-        XCTAssertLessThan(abs(after - before), fullLength / 10,
-                          "zooming moved the reader from \(before) to \(after)")
-    }
+    // NOT TESTED HERE, DELIBERATELY — two properties this unit depends on have no honest test in
+    // this harness, and three attempts at each produced tests that passed with the fix REMOVED:
+    //
+    //   • "a RE-render never defers" (`hasPaintedOnce`). Its signature is the storage briefly
+    //     shrinking, and on any fixture small enough to ship that window is under one run-loop turn,
+    //     so sampling cannot see it. It is observable only on a document of the size the repo cannot
+    //     ship (401,765 characters), where the splice takes ~2 s.
+    //   • "restore works before anything is laid out" (the glyph-first fix in
+    //     `DocumentWindowController.restore`). Reproducing the not-yet-laid-out state is what fails:
+    //     `display` itself lays enough out that the old pre-guard passes anyway.
+    //
+    // Both were verified by MEASUREMENT instead — see invariant 56 — and both regress loudly on the
+    // real document. Do not add a test here that merely goes green; check it against a mutation
+    // first (invariant 30), and if it cannot fail, leave this comment rather than the test.
 
     /// The seam the splice hangs off: the completion fires when the walk finishes, and NOT when a
     /// later render supersedes it — otherwise a superseded pass would splice into a document that no
