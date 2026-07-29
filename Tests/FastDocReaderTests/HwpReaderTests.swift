@@ -51,13 +51,40 @@ final class HwpReaderTests: XCTestCase {
         }
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let result = try HwpReader.read(data)
-        print("FMD_HWP_SAMPLE pageContentWidth = \(String(describing: result.pageContentWidth))")
+        print("""
+            FMD_HWP_SAMPLE geometry \
+            content=\(String(describing: result.pageContentWidth))x\(String(describing: result.pageContentHeight)) \
+            margins L=\(String(describing: result.pageMarginLeft)) R=\(String(describing: result.pageMarginRight)) \
+            T=\(String(describing: result.pageMarginTop)) B=\(String(describing: result.pageMarginBottom))
+            """)
         if let expect = ProcessInfo.processInfo.environment["FMD_HWP_EXPECT_WIDTH_PT"].flatMap(Double.init) {
             let w = try XCTUnwrap(result.pageContentWidth, "expected a page width for this sample")
             XCTAssertEqual(w, CGFloat(expect), accuracy: 0.5)
         } else if let w = result.pageContentWidth {
             XCTAssertGreaterThan(w, 0, "a page width, when present, must be positive")
             XCTAssertLessThan(w, 2000, "a sane page body width is well under 2000pt")
+        }
+        // The margins are the whole point of surfacing geometry at all: rhwp used to hand over the
+        // BODY width alone, so a document declaring A4 with 40mm margins opened as a 432pt "page"
+        // (the app's own 32pt side inset either side of a 368pt body) instead of the 595pt sheet the
+        // file actually declares. Reconstructing the paper from left + body + right is what proves
+        // they arrived, and it is the one relation that must hold for every document: a margin is
+        // never negative (rhwp derives it by subtracting the body's edges from a resolved paper
+        // size, so a corrupt file could otherwise push it below zero), and the sheet they rebuild
+        // has to be a sheet. Pass FMD_HWP_EXPECT_PAPER_PT to pin the exact width for a known file —
+        // 595.28 for A4 portrait.
+        for (name, value) in [("left", result.pageMarginLeft), ("right", result.pageMarginRight),
+                              ("top", result.pageMarginTop), ("bottom", result.pageMarginBottom)] {
+            if let value { XCTAssertGreaterThanOrEqual(value, 0, "a \(name) margin must not be negative") }
+        }
+        if let body = result.pageContentWidth, let left = result.pageMarginLeft, let right = result.pageMarginRight {
+            let paper = left + body + right
+            XCTAssertGreaterThan(paper, body, "the sheet must be wider than its own body")
+            XCTAssertLessThan(paper, 3000, "a sane sheet is well under 3000pt")
+            if let expect = ProcessInfo.processInfo.environment["FMD_HWP_EXPECT_PAPER_PT"].flatMap(Double.init) {
+                XCTAssertEqual(paper, CGFloat(expect), accuracy: 0.5,
+                               "left + body + right must rebuild the declared sheet")
+            }
         }
     }
 

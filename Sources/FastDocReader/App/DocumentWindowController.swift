@@ -305,6 +305,110 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         restore(anchor)
     }
 
+    /// Running-header/footer page-boundary reservation (header-footer-design.md §4, build step 4).
+    /// Held here — not just assigned to `layout.delegate` — because `NSLayoutManager.delegate` is
+    /// `weak`; installed UNCONDITIONALLY in `init` below and left inert wherever it doesn't apply
+    /// (`PageBandLayoutDelegate.isActive`), so no call site has to gate on whether the current
+    /// document is paged or has a header/footer at all. `MarkdownDocument.render(into:)` is the one
+    /// place that updates its two numbers, every render, via `configurePageBand`.
+    let pageBandDelegate = PageBandLayoutDelegate()
+
+    /// Everything `PageBandPainter.draw` (header-footer-design.md build step 5) needs to actually
+    /// PAINT the band `pageBandDelegate` reserves — `nil` whenever `band == 0` (no header/footer at
+    /// all), so `ReaderTextView.drawBackground(in:)` costs one optional-unwrap for the common
+    /// non-paged/no-header case, exactly like `pageBandDelegate.isActive` costs one bool check for
+    /// the layout half. See `PageBandContent`'s own doc for why this and `pageBandDelegate` are
+    /// always set TOGETHER, from the same `configurePageBand` call.
+    private(set) var pageBandContent: PageBandContent?
+
+    /// Wires `pageBandDelegate`'s two numbers AND `pageBandContent` for whatever this document just
+    /// became — called from `MarkdownDocument.render(into:)`, before `display(_:)` below replaces the
+    /// storage, so the layout manager's delegate reflects THIS render's own numbers before a single
+    /// line of the new document is laid out. `pageContentHeight` nil or `band` `0` leaves the
+    /// delegate inactive (`PageBandLayoutDelegate.isActive`) AND clears `pageBandContent` — a
+    /// document with no header/footer, and every markdown/plain-text document (which never call this
+    /// at all), stay exactly as they were before either of these existed. The painting parameters
+    /// default to the "nothing to paint" shape so every PRE-step-5 call site (there was exactly one,
+    /// and it is now updated, but a future test calling the old two-argument form still compiles and
+    /// still means "no header/footer content").
+    func configurePageBand(pageContentHeight: CGFloat?, band: CGFloat,
+                            headers: [OfficeHeaderFooter] = [], footers: [OfficeHeaderFooter] = [],
+                            theme: RenderTheme = .current(size: 11), columnWidth: CGFloat = 0,
+                            documentDefaultFontSize: CGFloat = 11, pageContentWidth: CGFloat? = nil,
+                            headerHeight: CGFloat = 0, footerHeight: CGFloat = 0) {
+        pageBandDelegate.pageContentHeight = pageContentHeight ?? 0
+        pageBandDelegate.band = band
+        // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
+        // edges the between-page reservation cannot reach on its own (header-footer-design.md's own
+        // recorded gap). LEADING is gated on page 0's OWN applicable header actually carrying
+        // content: an explicit blank `.firstPage` entry (the OOXML "no header on the cover" rule,
+        // §2d) must reserve nothing, not merely paint nothing — a document that deliberately blanked
+        // its cover should not grow an unexplained gap above it either. TRAILING uses the same
+        // `footerHeight > 0` gate the between-page footer bands already use — real per-page "is the
+        // LAST page's own entry blank" tracking is the same even/odd-class simplification
+        // header-footer-design.md §7 already accepts for the ordinary bands (`headerHeight`/
+        // `footerHeight` themselves are already `0` for a non-paged office document — the caller
+        // gates `PageBandGeometry.measure` on `officePageContentHeight != nil` before this is ever
+        // reached with non-zero values — so this never reserves anything for that far more common
+        // case either).
+        let firstPageHeader = PageBandPainter.applicableEntry(headers, pageIndex: 0)
+        let leading: CGFloat = (firstPageHeader != nil && !(firstPageHeader?.blocks.isEmpty ?? true))
+            ? headerHeight : 0
+        let trailing: CGFloat = footerHeight > 0 ? footerHeight : 0
+        pageBandDelegate.leadingBand = leading
+        pageBandDelegate.trailingBand = trailing
+        pageBandContent = band > 0
+            ? PageBandContent(headers: headers, footers: footers, theme: theme, columnWidth: columnWidth,
+                              documentDefaultFontSize: documentDefaultFontSize, pageContentWidth: pageContentWidth,
+                              headerHeight: headerHeight, footerHeight: footerHeight,
+                              leadingBand: leading, trailingBand: trailing)
+            : nil
+    }
+
+    /// Reserves the TRAILING footer band — the space below the very LAST line of a paged document,
+    /// the other edge of header-footer-design.md's own recorded gap (`PageBandLayoutDelegate.
+    /// leadingBand`, wired from `configurePageBand`, fixes the LEADING one). The between-page
+    /// mechanism only ever shifts an EXISTING line; there is no line after the very last one to push
+    /// down, so this instead widens `NSLayoutManager`'s own "extra line fragment" — normally one line
+    /// tall, reserved for cursor placement after a trailing paragraph break. `usedRect(for:)` (and so
+    /// `isVerticallyResizable`'s automatic frame-height math) DOES fold that in, confirmed by a
+    /// standalone spike before this was built: widening it to `trailingBand` tall grows the view's
+    /// frame by exactly that much, nothing is written into the text storage (§4's "nothing inserted"
+    /// rule intact — invariant 40's `--extract` guarantee is untouched by construction, structurally
+    /// unreachable from the serializer), and it does not fight `textContainerInset` the way a naive
+    /// height bump would: that same spike found `textContainerInset.height` pads the top AND bottom
+    /// by the SAME amount always, so there is no way to give the two edges different reservations
+    /// through it alone — exactly why the leading side above uses a completely different mechanism.
+    ///
+    /// MUST be called only once the WHOLE document is actually laid out — asking for the last
+    /// glyph's position any earlier forces every unlaid character in between to lay out in one call,
+    /// exactly the freeze invariant 49 measured and rejected (69–80 SECONDS on a real report).
+    /// `precomputeLayout`'s own completion is that guarantee (see its call of this method below) —
+    /// including the deferred-giant-table splice's own re-walk (`MarkdownDocument.
+    /// spliceDeferredTables.finish()`), which funnels through the exact same function, so a document
+    /// with BOTH a footer and a giant table still ends up with the reservation in the right place
+    /// once splicing finishes.
+    ///
+    /// Idempotent and safe to call unconditionally (paged or not, footer or not): it derives its
+    /// target purely from the CURRENT last line's own rect, never from a previous call's effect, and
+    /// zeroes the reservation whenever there is nothing to reserve — a stale reservation must never
+    /// survive from one document to the next on the SAME reused text view/layout manager (`display(_:)`
+    /// also clears it up front, before the new document's own walk has had a chance to run at all, so
+    /// nothing is ever left showing a PREVIOUS document's footer-sized gap even for one frame).
+    func applyTrailingFooterBand() {
+        guard pageBandDelegate.isActive else { return }   // markdown/plain-text/non-paged: never reached
+        guard let lm = textView.layoutManager, let tc = textView.textContainer else { return }
+        let trailing = pageBandDelegate.trailingBand
+        let lastGlyph = lm.numberOfGlyphs - 1
+        let baseline: CGFloat = lastGlyph >= 0
+            ? lm.lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil).maxY
+            : 0
+        let width = trailing > 0 ? tc.size.width : 0
+        let rect = NSRect(x: 0, y: baseline, width: width, height: trailing)
+        lm.setExtraLineFragmentRect(rect, usedRect: rect, textContainer: tc)
+        textView.sizeToFit()
+    }
+
     override init(window: NSWindow?) {
         let storage = NSTextStorage()
         let layout = CodeCardLayoutManager()   // draws code blocks as rounded cards
@@ -324,6 +428,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         layout.addTextContainer(container)
         textView = ReaderTextView(frame: .zero, textContainer: container)
         super.init(window: window)
+        layout.delegate = pageBandDelegate
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -505,6 +610,21 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     var isPaged: Bool { pagedWidth != nil }
+
+    /// The page body HEIGHT this document declared, or nil — the vertical twin of `pagedWidth`, from
+    /// `MarkdownDocument.officePageContentHeight`. NOT YET consumed by any layout pass: this is the
+    /// prerequisite `officePageContentHeight`'s own doc comment describes (running headers/footers,
+    /// showing where a page ends), and wiring it into `settleReadingColumn`'s vertical inset is a
+    /// separate, measured change — see that function's hardcoded `verticalInset`.
+    var pagedHeight: CGFloat? {
+        guard let doc = document as? MarkdownDocument, let h = doc.officePageContentHeight, h > 0 else { return nil }
+        return h
+    }
+
+    /// The page's own top/bottom margins, when its reader found them — the vertical twins of
+    /// `pagedMarginLeft`/`pagedMarginRight`. Same non-consumption caveat as `pagedHeight`.
+    private var pagedMarginTop: CGFloat? { (document as? MarkdownDocument)?.officePageMarginTop }
+    private var pagedMarginBottom: CGFloat? { (document as? MarkdownDocument)?.officePageMarginBottom }
 
     /// The live magnification. Read-only to the outside; `scrollView` is private on purpose.
     var pageZoom: CGFloat { scrollView.magnification }
@@ -1130,6 +1250,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // re-solve the outgoing document's tabs and tables for nothing (see `settleReadingColumn`).
         // The async `updateTextInset()` below runs the real one, against the string just installed.
         settleReadingColumn()
+        // Clear any TRAILING footer-band reservation the PREVIOUS document may have left behind
+        // (`applyTrailingFooterBand`) — `NSLayoutManager.setExtraLineFragmentRect` is layout-manager-
+        // level state that a plain `setAttributedString` does NOT reset on its own (confirmed by the
+        // same spike `applyTrailingFooterBand` records: calling `ensureLayout` again leaves a
+        // manually-set override in place), so a document with no footer opened right after one that
+        // HAD one would otherwise inherit a stale blank gap at its own bottom until the new
+        // document's own walk got around to correcting it. `precomputeLayout`'s completion re-adds
+        // the correct amount moments later for whichever new document actually has one.
+        if let lm = textView.layoutManager, let tc = textView.textContainer {
+            lm.setExtraLineFragmentRect(.zero, usedRect: .zero, textContainer: tc)
+        }
         textView.textStorage?.setAttributedString(attributed)
         textView.recomputeHeadingOffsets()
         reloadOutline()
@@ -1179,13 +1310,23 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// caller that splices content in (see `MarkdownDocument.spliceDeferredTables`) needs exactly
     /// that guarantee: it must not mutate a string a walk is still crawling, and it must not fire at
     /// all if the render it belongs to has already been replaced.
+    ///
+    /// Every completion path below also reserves the TRAILING footer band first
+    /// (`applyTrailingFooterBand`) — this IS the "whole document actually laid out" guarantee that
+    /// method's own doc requires, and funnelling every caller (the ordinary open/reflow path, AND
+    /// `MarkdownDocument.spliceDeferredTables.finish()`'s own second walk) through this one function
+    /// is what makes that true regardless of which of them asked.
     func precomputeLayout(then: (() -> Void)? = nil) {
         layoutToken += 1
         let token = layoutToken
         layoutStepCount = 0
         guard let lm = textView.layoutManager, let storage = textView.textStorage else { return }
         let total = storage.length
-        if total == 0 { then?(); return }
+        func finishWalk() {
+            applyTrailingFooterBand()
+            then?()
+        }
+        if total == 0 { finishWalk(); return }
         // MEASURED TWICE, don't re-derive. A flat CHARACTER count looks like the wrong bound here:
         // characters are a cost proxy that misreads office documents (the same proxy failure
         // `runBusy` documents at the top of this file), so a 38-table report of 20k characters is
@@ -1215,11 +1356,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let chunk = 20_000
         func step(_ loc: Int) {
             guard token == self.layoutToken, self.textView.textStorage?.length == total else { return }
-            guard loc < total else { then?(); return }
+            guard loc < total else { finishWalk(); return }
             self.layoutStepCount += 1
             let end = min(loc + chunk, total)
             lm.ensureLayout(forCharacterRange: NSRange(location: loc, length: end - loc))
-            if end < total { DispatchQueue.main.async { step(end) } } else { then?() }
+            if end < total { DispatchQueue.main.async { step(end) } } else { finishWalk() }
         }
         DispatchQueue.main.async { step(0) }
     }
@@ -1295,7 +1436,16 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let lineTop = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY
             + textView.textContainerInset.height
         var y = lineTop - anchor.offsetFromTop
-        if y <= textView.textContainerInset.height { y = 0 }   // keep the page's top margin
+        // Keep the page's top margin — AND, when this document reserved a leading header band
+        // (`PageBandLayoutDelegate.leadingBand`, header-footer-design.md build step 4's outer edge),
+        // keep that visible too: `lineTop` for the very first line already sits at
+        // `inset.height + leadingBand` (the delegate baked the shift into the line's own rect before
+        // this ever reads it), so without adding `leadingBand` here this guard would stop firing the
+        // moment a header is reserved, landing the reader just past the band with the header
+        // scrolled out of sight instead of at the true top. `leadingBand` is 0 for every document
+        // without a leading header — including every markdown/plain-text one — so this reduces
+        // identically to the original check there.
+        if y <= textView.textContainerInset.height + pageBandDelegate.leadingBand { y = 0 }
         let clip = scrollView.contentView
         let maxY = max(0, textView.bounds.height - clip.bounds.height)
         clip.scroll(to: NSPoint(x: 0, y: min(max(0, y), maxY)))
@@ -1323,9 +1473,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         rect.origin.y += textView.textContainerInset.height
         var targetY = rect.origin.y - CGFloat(lineOffset) * rect.height
         // The first line is a special case: putting it flush with the top edge scrolls the page's
-        // top margin out of sight, so the document looks like it lost its padding. Nothing above it
-        // needs the room, so go to the very top instead.
-        if targetY <= textView.textContainerInset.height { targetY = 0 }
+        // top margin — and, when reserved, its leading header band (see `restore(_:)`'s identical
+        // guard, which explains why `leadingBand` belongs in this threshold) — out of sight, so the
+        // document looks like it lost its padding. Nothing above it needs the room, so go to the
+        // very top instead.
+        if targetY <= textView.textContainerInset.height + pageBandDelegate.leadingBand { targetY = 0 }
         let clip = scrollView.contentView
         let maxY = max(0, textView.bounds.height - clip.bounds.height)
         clip.scroll(to: NSPoint(x: 0, y: min(max(0, targetY), maxY)))

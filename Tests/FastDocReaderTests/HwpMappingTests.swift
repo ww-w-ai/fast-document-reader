@@ -37,6 +37,59 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertNil(try HwpReader.mapJSON("{\"v\":1,\"pageContentWidth\":-5,\"blocks\":[]}").pageContentWidth)
     }
 
+    // MARK: page content height + all four margins — HWP wired NONE of these before this change
+
+    func testPageGeometryDecodedFromEnvelope() throws {
+        // rhwp exports the first section's body height and all four margins already in pt.
+        let r = try HwpReader.mapJSON("""
+        {"v":1,"pageContentWidth":432.48,"pageContentHeight":762.3,\
+        "pageMarginLeft":56.7,"pageMarginRight":56.7,"pageMarginTop":42.5,"pageMarginBottom":42.5,\
+        "blocks":[]}
+        """)
+        XCTAssertEqual(r.pageContentWidth, 432.48)
+        XCTAssertEqual(r.pageContentHeight, 762.3)
+        XCTAssertEqual(r.pageMarginLeft, 56.7)
+        XCTAssertEqual(r.pageMarginRight, 56.7)
+        XCTAssertEqual(r.pageMarginTop, 42.5)
+        XCTAssertEqual(r.pageMarginBottom, 42.5)
+    }
+
+    func testPageGeometryAbsentIsNilForEveryNewField() throws {
+        // A parser predating these fields (or a document with no section) → every one of them nil,
+        // exactly like `pageContentWidth` already behaves — none of the five are wired together.
+        let r = try HwpReader.mapJSON(envelope(""))
+        XCTAssertNil(r.pageContentHeight)
+        XCTAssertNil(r.pageMarginLeft)
+        XCTAssertNil(r.pageMarginRight)
+        XCTAssertNil(r.pageMarginTop)
+        XCTAssertNil(r.pageMarginBottom)
+    }
+
+    func testPageGeometryNonPositiveIsNil() throws {
+        // Each field is clamped independently, exactly like the `pageContentWidth` line it mirrors.
+        let r = try HwpReader.mapJSON("""
+        {"v":1,"pageContentHeight":0,"pageMarginLeft":-5,"pageMarginRight":0,\
+        "pageMarginTop":-1,"pageMarginBottom":0,"blocks":[]}
+        """)
+        XCTAssertNil(r.pageContentHeight)
+        XCTAssertNil(r.pageMarginLeft)
+        XCTAssertNil(r.pageMarginRight)
+        XCTAssertNil(r.pageMarginTop)
+        XCTAssertNil(r.pageMarginBottom)
+    }
+
+    func testPageGeometryFieldsAreIndependentOfEachOther() throws {
+        // A document that reports width and height but not margins (or vice versa) keeps exactly the
+        // fields it has — one field failing must not null out its neighbours.
+        let r = try HwpReader.mapJSON("{\"v\":1,\"pageContentWidth\":432.48,\"pageContentHeight\":762.3,\"blocks\":[]}")
+        XCTAssertEqual(r.pageContentWidth, 432.48)
+        XCTAssertEqual(r.pageContentHeight, 762.3)
+        XCTAssertNil(r.pageMarginLeft)
+        XCTAssertNil(r.pageMarginRight)
+        XCTAssertNil(r.pageMarginTop)
+        XCTAssertNil(r.pageMarginBottom)
+    }
+
     // MARK: paragraph + mixed-style spans
 
     func testBodyParagraphWithMixedStyleSpans() throws {
@@ -981,5 +1034,74 @@ extension HwpMappingTests {
         let out = try spans(json)
         XCTAssertEqual(out.map(\.text), ["가나 ", "ABC ", "Привет ", "漢字"])
         XCTAssertEqual(out.map(\.fontName), ["KO", "LA", "OTHER", "HANJA"])
+    }
+
+    // MARK: Headers/footers — rhwp's top-level `headers`/`footers` arrays (header-footer-design.md §3)
+
+    /// `blocks` inside a header/footer entry are the SAME `HwpBlock` shape the body decodes, mapped
+    /// through the identical `mapBlock` — zero new block-parsing code, mirroring what
+    /// header-footer-design.md §2c already established for docx/odt.
+    func testHeadersAndFootersDecodedFromEnvelopeArrays() throws {
+        let json = """
+        {"v":1,"blocks":[],
+         "headers":[{"applyTo":"both","blocks":[{"t":"para","spans":[{"text":"Running header"}]}]}],
+         "footers":[{"applyTo":"odd","blocks":[{"t":"para","spans":[{"text":"Odd footer"}]}]},
+                    {"applyTo":"even","blocks":[{"t":"para","spans":[{"text":"Even footer"}]}]}]}
+        """
+        let result = try HwpReader.mapJSON(json)
+        XCTAssertEqual(result.headers, [
+            OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Running header")])]),
+        ])
+        XCTAssertEqual(result.footers, [
+            OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Odd footer")])]),
+            OfficeHeaderFooter(appliesTo: .evenPages, blocks: [.paragraph(spans: [Span(text: "Even footer")])]),
+        ])
+    }
+
+    /// A parser built before `headers`/`footers` existed (or a document with genuinely none) decodes
+    /// to `nil`, which the mapper treats exactly like `[]` — invariant 37's contract, restated here.
+    func testHeadersAndFootersAbsentFromEnvelopeDecodeToEmptyArrays() throws {
+        let result = try HwpReader.mapJSON(envelope(""))
+        XCTAssertEqual(result.headers, [])
+        XCTAssertEqual(result.footers, [])
+    }
+
+    /// rhwp's `"both"` (no even override declared anywhere in the section) and `"odd"` (an even
+    /// override EXISTS elsewhere, so this entry is explicitly the non-even pages) both fold into
+    /// `.defaultPages` — see `HeaderFooterApplicability`'s own doc for why HWP's split is not
+    /// docx's three-way one. `"even"` is the one honest match.
+    func testApplyToBothAndOddBothMapToDefaultPagesWhileEvenMapsToEvenPages() throws {
+        let json = """
+        {"v":1,"blocks":[],
+         "headers":[{"applyTo":"both","blocks":[]},{"applyTo":"odd","blocks":[]},{"applyTo":"even","blocks":[]}]}
+        """
+        let result = try HwpReader.mapJSON(json)
+        XCTAssertEqual(result.headers.map(\.appliesTo), [.defaultPages, .defaultPages, .evenPages])
+    }
+
+    /// An unrecognized `applyTo` (a future rhwp version this mapper doesn't yet know) degrades to
+    /// `.defaultPages` rather than being silently dropped — the entry's CONTENT still survives.
+    func testUnrecognizedApplyToDegradesToDefaultPagesRatherThanBeingDropped() throws {
+        let json = """
+        {"v":1,"blocks":[],"headers":[{"applyTo":"mystery","blocks":[{"t":"para","spans":[{"text":"x"}]}]}]}
+        """
+        let result = try HwpReader.mapJSON(json)
+        XCTAssertEqual(result.headers.count, 1)
+        XCTAssertEqual(result.headers[0].appliesTo, .defaultPages)
+        XCTAssertEqual(result.headers[0].blocks, [.paragraph(spans: [Span(text: "x")])])
+    }
+
+    /// Proves the SAME mapper is reused, not a simplified stand-in: a bold/coloured span inside a
+    /// header block resolves exactly like one in the body would.
+    func testHeaderSpanFormattingResolvesThroughTheSameMapperAsTheBody() throws {
+        let json = """
+        {"v":1,"blocks":[],
+         "headers":[{"applyTo":"both","blocks":[{"t":"para","spans":[{"text":"Bold","bold":true,"color":"FF0000"}]}]}]}
+        """
+        let result = try HwpReader.mapJSON(json)
+        guard case .paragraph(let spans, _, _, _, _) = try XCTUnwrap(result.headers.first?.blocks.first) else {
+            return XCTFail("expected a paragraph")
+        }
+        XCTAssertEqual(spans, [Span(text: "Bold", bold: true, textColor: NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))])
     }
 }

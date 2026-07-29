@@ -185,7 +185,56 @@ enum HwpReader {
         // tables are untouched. Absent/≤0 → leave nil = authored sizes verbatim. Identical handling to
         // docx/odt: one field, one consumer, no HWP-specific layout path.
         if let w = envelope.pageContentWidth, w > 0 { result.pageContentWidth = CGFloat(w) }
+        // The vertical twin, plus all four margins — HWP wired NONE of these before this change
+        // (only the body width was read), so this is new ground for the format, not an extension of
+        // an existing HWP layout path. Each is adopted independently and ONLY when present and
+        // positive, exactly like the `pageContentWidth` line above: a document a parser predating
+        // these fields produced leaves every one of them nil, unchanged (invariant 37's "unspecified
+        // → theme/fallback" contract, restated for geometry rather than typography).
+        if let h = envelope.pageContentHeight, h > 0 { result.pageContentHeight = CGFloat(h) }
+        if let l = envelope.pageMarginLeft, l > 0 { result.pageMarginLeft = CGFloat(l) }
+        if let r = envelope.pageMarginRight, r > 0 { result.pageMarginRight = CGFloat(r) }
+        if let t = envelope.pageMarginTop, t > 0 { result.pageMarginTop = CGFloat(t) }
+        if let b = envelope.pageMarginBottom, b > 0 { result.pageMarginBottom = CGFloat(b) }
+        // header-footer-design.md step 2/3 — read ONLY, nothing renders these yet. `nil` (a parser
+        // built before this field existed) behaves exactly like `[]`: no running header/footer
+        // captured, same as every other reader that finds none.
+        result.headers = (envelope.headers ?? []).map {
+            mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
+                                 slotFonts: slotFonts, paged: pageWidth != nil)
+        }
+        result.footers = (envelope.footers ?? []).map {
+            mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
+                                 slotFonts: slotFonts, paged: pageWidth != nil)
+        }
         return result
+    }
+
+    /// One rhwp header/footer entry (`{"applyTo":"both"|"even"|"odd","blocks":[…]}`) → the SAME
+    /// format-neutral `OfficeHeaderFooter` docx/odt produce — its `blocks` are the identical `HwpBlock`
+    /// shape the body uses, mapped through the SAME `mapBlock` (zero new block-parsing code, mirroring
+    /// header-footer-design.md §2c's "parseBody already generalizes" for docx/odt).
+    private static func mapHeaderFooterEntry(
+        _ entry: HwpHeaderFooterEntry, pageWidth: CGFloat?, defaultBodySize: CGFloat,
+        slotFonts: [HwpSlotFonts], paged: Bool
+    ) -> OfficeHeaderFooter {
+        OfficeHeaderFooter(
+            appliesTo: mapHeaderFooterApplyTo(entry.applyTo),
+            blocks: entry.blocks.map {
+                mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts, paged: paged)
+            })
+    }
+
+    /// rhwp's `apply_to` (`"both"`/`"even"`/`"odd"`) → `HeaderFooterApplicability` — see that enum's
+    /// own doc for why this is NOT a case-for-case correspondence with docx's three types. `"even"`
+    /// is the one honest match. `"both"` (no even override declared anywhere in the section — this
+    /// entry covers every page) and `"odd"` (an even override EXISTS elsewhere, so this entry is
+    /// explicitly the non-even pages) both fold into `.defaultPages`: this reader has no consumer
+    /// yet that would need the two told apart, and docx's own `.defaultPages` already means "every
+    /// page not covered by a more specific entry" — the same shape. An unrecognized value (a rhwp
+    /// version ahead of this mapper) degrades to `.defaultPages` too, rather than being dropped.
+    private static func mapHeaderFooterApplyTo(_ raw: String) -> HeaderFooterApplicability {
+        raw == "even" ? .evenPages : .defaultPages
     }
 
     /// What rhwp's per-script font export looks like once THIS file's own decoder has read it.
@@ -682,6 +731,17 @@ private struct HwpEnvelope: Decodable {
     /// no section/zero width → the mapper leaves `pageContentWidth` nil (reader falls back to
     /// window-filling). rhwp already emits points, so no further conversion.
     let pageContentWidth: Double?
+    /// The first section's page BODY height in points (rhwp: `PageAreas::from_page_def().body_area`
+    /// height ÷100, landscape/binding/gutter honoured) — the vertical twin of `pageContentWidth`, same
+    /// absent/null → nil semantics.
+    let pageContentHeight: Double?
+    /// The first section's page margins in points (rhwp: paper size minus the resolved body area, on
+    /// each of the four edges) — nil/absent for a parser built before this existed, same as
+    /// `pageContentWidth`/`pageContentHeight`.
+    let pageMarginLeft: Double?
+    let pageMarginRight: Double?
+    let pageMarginTop: Double?
+    let pageMarginBottom: Double?
     /// One row per char shape, indexed by a span's `csId`; each row the SEVEN font families the
     /// document declared for that char shape, in HWP's own fixed slot order — 0 Hangul, 1 Latin,
     /// 2 Hanja, 3 Japanese, 4 Other, 5 Symbol, 6 User (`CharShape.font_ids`). An EMPTY string means
@@ -692,6 +752,23 @@ private struct HwpEnvelope: Decodable {
     /// test has to assert it is PRESENT for a real file rather than trusting the Rust source.
     let charShapes: [[String]]?
     let blocks: [HwpBlock]
+    /// Running headers/footers (header-footer-design.md §3) — rhwp's `model/header_footer.rs`
+    /// `Header`/`Footer`, each with its own `apply_to` and full paragraph body, exported by
+    /// `document_json.rs`'s `append_control_blocks` (a Rust-side change tracked separately from
+    /// this Swift mapper — see that design doc's step 6). `nil` for a parser built before this
+    /// export existed, which the mapper treats exactly like `[]`: no running header/footer at all,
+    /// unchanged from before this field existed (invariant 37's contract, restated for HWP).
+    let headers: [HwpHeaderFooterEntry]?
+    let footers: [HwpHeaderFooterEntry]?
+}
+
+/// One running header or footer entry, decoded straight off rhwp's own export shape
+/// (`{"applyTo":"both"|"even"|"odd","blocks":[…]}`) — `blocks` are the SAME `HwpBlock` the document
+/// body decodes, so mapping one is exactly `mapBlock`, called nowhere differently than the body's own
+/// blocks are.
+private struct HwpHeaderFooterEntry: Decodable {
+    var applyTo: String
+    var blocks: [HwpBlock]
 }
 
 /// A body block, discriminated by its `"t"` tag. Decoding re-reads the SAME object through the

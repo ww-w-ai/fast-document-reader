@@ -22,7 +22,13 @@ final class DocxReaderTests: XCTestCase {
     private func buildDocx(
         document: String, styles: String? = nil, numbering: String? = nil, rels: String? = nil,
         footnotes: String? = nil, endnotes: String? = nil, theme: String? = nil, comments: String? = nil,
-        media: [(name: String, bytes: [UInt8])] = []
+        media: [(name: String, bytes: [UInt8])] = [],
+        // Arbitrary extra parts (header-footer-design.md coverage) — path relative to the archive
+        // root, e.g. `("word/header1.xml", "<w:hdr>…")` or `("word/_rels/header1.xml.rels", "…")`.
+        // A generic escape hatch rather than a named parameter per part, since a header/footer test
+        // needs a combination (a header part + ITS OWN rels + a footer part) no fixed set of named
+        // parameters could anticipate.
+        extraParts: [(path: String, xml: String)] = []
     ) -> Data {
         var entries: [(String, Data)] = [("word/document.xml", Data(document.utf8))]
         if let styles { entries.append(("word/styles.xml", Data(styles.utf8))) }
@@ -33,6 +39,7 @@ final class DocxReaderTests: XCTestCase {
         if let theme { entries.append(("word/theme/theme1.xml", Data(theme.utf8))) }
         if let comments { entries.append(("word/comments.xml", Data(comments.utf8))) }
         for (name, bytes) in media { entries.append(("word/media/" + name, Data(bytes))) }
+        for (path, xml) in extraParts { entries.append((path, Data(xml.utf8))) }
         return buildZip(entries)
     }
 
@@ -126,8 +133,10 @@ final class DocxReaderTests: XCTestCase {
     }
 
     /// Full result (not just blocks) so page-width parsing off the body `w:sectPr` is assertable.
-    private func readResult(_ document: String) throws -> OfficeReadResult {
-        try DocxReader.read(try ZipArchive(data: buildDocx(document: doc(document))))
+    private func readResult(
+        _ document: String, rels: String? = nil, extraParts: [(path: String, xml: String)] = []
+    ) throws -> OfficeReadResult {
+        try DocxReader.read(try ZipArchive(data: buildDocx(document: doc(document), rels: rels, extraParts: extraParts)))
     }
 
     // MARK: page content width (body w:sectPr → pgSz − pgMar, twips÷20 = pt)
@@ -156,6 +165,59 @@ final class DocxReaderTests: XCTestCase {
         // Degenerate: margins ≥ page → computed ≤0 → nil, never a negative column.
         XCTAssertNil(try readResult(
             "<w:sectPr><w:pgSz w:w=\"2000\"/><w:pgMar w:left=\"1200\" w:right=\"1200\"/></w:sectPr>").pageContentWidth)
+    }
+
+    // MARK: page content HEIGHT + top/bottom margins (body w:sectPr → pgSz@w:h − pgMar@top/bottom)
+
+    func testPageContentHeightAndVerticalMarginsFromBodySectPr() throws {
+        // The reference document's own declared numbers: h=16838 twips (841.9pt), top=1985 twips
+        // (99.25pt), bottom=1418 twips (70.9pt) → content height 841.9 - 99.25 - 70.9 = 671.75pt.
+        let r = try readResult(
+            "<w:p><w:r><w:t>x</w:t></w:r></w:p>"
+            + "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/>"
+            + "<w:pgMar w:left=\"1701\" w:right=\"1701\" w:top=\"1985\" w:bottom=\"1418\"/></w:sectPr>")
+        XCTAssertEqual(r.pageContentHeight ?? -1, 671.75, accuracy: 0.01)
+        XCTAssertEqual(r.pageMarginTop ?? -1, 99.25, accuracy: 0.01)
+        XCTAssertEqual(r.pageMarginBottom ?? -1, 70.9, accuracy: 0.01)
+        // Width/left/right are untouched by adding height/margins.
+        XCTAssertEqual(r.pageContentWidth ?? -1, (11906.0 - 1701 - 1701) / 20, accuracy: 0.01)
+    }
+
+    func testPageContentHeightNilWhenNoSectPr() throws {
+        let r = try readResult("<w:p><w:r><w:t>x</w:t></w:r></w:p>")
+        XCTAssertNil(r.pageContentHeight)
+        XCTAssertNil(r.pageMarginTop)
+        XCTAssertNil(r.pageMarginBottom)
+    }
+
+    func testPageContentHeightNilWhenPgSzHasNoHeightButWidthSurvives() throws {
+        // `w:pgSz` with no `w:h` at all → height/top/bottom nil, but width/left/right (which do not
+        // depend on height) must be untouched — the two guards are independent.
+        let r = try readResult(
+            "<w:sectPr><w:pgSz w:w=\"11906\"/><w:pgMar w:left=\"1701\" w:right=\"1701\" w:top=\"1985\" w:bottom=\"1418\"/></w:sectPr>")
+        XCTAssertNil(r.pageContentHeight)
+        XCTAssertNil(r.pageMarginTop)
+        XCTAssertNil(r.pageMarginBottom)
+        XCTAssertEqual(r.pageContentWidth ?? -1, (11906.0 - 1701 - 1701) / 20, accuracy: 0.01)
+    }
+
+    func testPageContentHeightUsesFullPageWhenNoVerticalMargins() throws {
+        // pgSz@w:h without pgMar top/bottom → margins default 0 → height = full page height.
+        let r = try readResult("<w:sectPr><w:pgSz w:w=\"12240\" w:h=\"15840\"/></w:sectPr>")
+        XCTAssertEqual(r.pageContentHeight ?? -1, 15840.0 / 20, accuracy: 0.01)  // 792pt
+        XCTAssertEqual(r.pageMarginTop ?? -1, 0, accuracy: 0.01)
+        XCTAssertEqual(r.pageMarginBottom ?? -1, 0, accuracy: 0.01)
+    }
+
+    func testPageContentHeightNilWhenVerticalMarginsExceedPage() throws {
+        // Degenerate: top+bottom ≥ h → computed ≤0 → nil, but width stays valid (independent guard).
+        let r = try readResult(
+            "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"2000\"/>"
+            + "<w:pgMar w:left=\"1701\" w:right=\"1701\" w:top=\"1200\" w:bottom=\"1200\"/></w:sectPr>")
+        XCTAssertNil(r.pageContentHeight)
+        XCTAssertNil(r.pageMarginTop)
+        XCTAssertNil(r.pageMarginBottom)
+        XCTAssertEqual(r.pageContentWidth ?? -1, (11906.0 - 1701 - 1701) / 20, accuracy: 0.01)
     }
 
     private func read(document: String, rels: String?, media: [(name: String, bytes: [UInt8])] = []) throws -> [OfficeBlock] {
@@ -886,6 +948,135 @@ final class DocxReaderTests: XCTestCase {
             return nil
         }
         XCTAssertEqual(markers, ["\u{2460}", "\u{2461}", "\u{2462}"])
+    }
+
+    // MARK: Heading numbering — a HeadingN style's own numPr renders into the heading's text
+    //
+    // Reference document's own shape (a real Korean services contract): numId 1 → abstractNumId
+    // 7, ilvl0 decimal "%1." suff=space, ilvl1 decimal "%1.%2." suff=nothing, ilvl2 ganada "%3."
+    // suff=nothing — and the heading PARAGRAPHS carry only `w:pStyle`; the `w:numPr` lives on the
+    // `HeadingN` STYLE definitions in `styles.xml`, which is exactly what `resolvedNumPr`'s
+    // `w:basedOn` walk exists to reach.
+
+    private let headingClauseNumbering = """
+    <w:numbering>
+      <w:abstractNum w:abstractNumId="7">
+        <w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:suff w:val="space"/></w:lvl>
+        <w:lvl w:ilvl="1"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1.%2."/><w:suff w:val="nothing"/></w:lvl>
+        <w:lvl w:ilvl="2"><w:numFmt w:val="ganada"/><w:lvlText w:val="%3."/><w:suff w:val="nothing"/></w:lvl>
+      </w:abstractNum>
+      <w:num w:numId="1"><w:abstractNumId w:val="7"/></w:num>
+    </w:numbering>
+    """
+
+    /// `w:numPr` on the STYLE, never on the paragraph — mirrors the reference document exactly.
+    private let numberedHeadingStyles = """
+    <w:styles>
+      <w:style w:type="paragraph" w:styleId="Heading1">
+        <w:pPr><w:outlineLvl w:val="0"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr></w:pPr>
+      </w:style>
+      <w:style w:type="paragraph" w:styleId="Heading2">
+        <w:pPr><w:outlineLvl w:val="1"/><w:numPr><w:ilvl w:val="1"/><w:numId w:val="1"/></w:numPr></w:pPr>
+      </w:style>
+      <w:style w:type="paragraph" w:styleId="Heading3">
+        <w:pPr><w:outlineLvl w:val="2"/><w:numPr><w:ilvl w:val="2"/><w:numId w:val="1"/></w:numPr></w:pPr>
+      </w:style>
+    </w:styles>
+    """
+
+    /// (a) The core mechanism this sprint exists for: numbering declared on the STYLE, never
+    /// repeated on the paragraph, still produces the marker — the exact shape that used to render
+    /// "서비스 사용" with no leading "1." at all.
+    func testHeadingNumberingDeclaredOnTheStyleNotTheParagraphProducesTheMarker() throws {
+        let blocks = try read(
+            document: """
+            <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>서비스 사용</w:t></w:r></w:p>
+            """,
+            styles: numberedHeadingStyles, numbering: headingClauseNumbering)
+        XCTAssertEqual(blocks, [
+            .heading(level: 1, spans: [Span(text: "1. "), Span(text: "서비스 사용")]),
+        ])
+    }
+
+    /// (b) The multi-level case: a level-0 heading followed by two level-1 headings gives
+    /// "1." then "1.1." then "1.2." — the level-0 counter feeding `%1` without being re-incremented
+    /// by the level-1 items, exactly as `testShallowerItemResetsDeeperLevelsButDeeperRunDoesNotDisturbShallower`
+    /// already proves for plain list items.
+    func testHeadingNumberingMultiLevelGivesOneThenOnePointOneThenOnePointTwo() throws {
+        let blocks = try read(
+            document: """
+            <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>서비스 사용</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>서비스 신규 신청</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>서비스 이용 정지</w:t></w:r></w:p>
+            """,
+            styles: numberedHeadingStyles, numbering: headingClauseNumbering)
+        XCTAssertEqual(blocks, [
+            .heading(level: 1, spans: [Span(text: "1. "), Span(text: "서비스 사용")]),
+            .heading(level: 2, spans: [Span(text: "1.1."), Span(text: "서비스 신규 신청")]),
+            .heading(level: 2, spans: [Span(text: "1.2."), Span(text: "서비스 이용 정지")]),
+        ])
+    }
+
+    /// (c) `ganada` at ilvl2 gives 가. 나. 다. — the format the reference document actually uses
+    /// for its third heading level.
+    func testHeadingNumberingGanadaGivesGaNaDa() throws {
+        let blocks = try read(
+            document: """
+            <w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>First</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>Second</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Heading3"/></w:pPr><w:r><w:t>Third</w:t></w:r></w:p>
+            """,
+            styles: numberedHeadingStyles, numbering: headingClauseNumbering)
+        XCTAssertEqual(blocks, [
+            .heading(level: 3, spans: [Span(text: "가."), Span(text: "First")]),
+            .heading(level: 3, spans: [Span(text: "나."), Span(text: "Second")]),
+            .heading(level: 3, spans: [Span(text: "다."), Span(text: "Third")]),
+        ])
+    }
+
+    /// (d) `w:suff="space"` (ilvl0) yields a literal space between marker and suffix; `w:suff="nothing"`
+    /// (ilvl1) yields none at all — asserted directly against the exact marker-span text rather
+    /// than inferred from (a)/(b) above.
+    func testSuffSpaceYieldsASpaceAndSuffNothingYieldsNone() throws {
+        let blocks = try read(
+            document: """
+            <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>Top</w:t></w:r></w:p>
+            <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>Sub</w:t></w:r></w:p>
+            """,
+            styles: numberedHeadingStyles, numbering: headingClauseNumbering)
+        guard case .heading(_, let topSpans, _, _, _, _) = blocks[0],
+              case .heading(_, let subSpans, _, _, _, _) = blocks[1]
+        else { return XCTFail("expected two headings") }
+        XCTAssertEqual(topSpans.first?.text, "1. ", "suff=space must produce a trailing space")
+        XCTAssertEqual(subSpans.first?.text, "1.1.", "suff=nothing must produce no trailing separator at all")
+    }
+
+    /// (e) invariant 37's own contract, restated for this sprint: a heading with NO numbering
+    /// anywhere (no styleNumbering, no numbering.xml at all) renders byte-identical to every
+    /// pre-sprint heading test above it in this file — a single span, no marker prepended.
+    func testHeadingWithNoNumberingAnywhereIsUnchanged() throws {
+        let blocks = try read(
+            document: "<w:p><w:pPr><w:pStyle w:val=\"Heading2\"/></w:pPr><w:r><w:t>Plain heading</w:t></w:r></w:p>",
+            styles: headingStyles)
+        XCTAssertEqual(blocks, [.heading(level: 2, spans: [Span(text: "Plain heading")])])
+    }
+
+    /// (f) the marker span carries the heading's own run formatting (bold + size here), never a
+    /// reader-invented default — it is a copy of `spans[0]` with only its text replaced.
+    func testMarkerSpanCarriesTheHeadingsOwnBoldAndSize() throws {
+        let blocks = try read(
+            document: """
+            <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>
+              <w:r><w:rPr><w:b/><w:sz w:val="32"/></w:rPr><w:t>서비스 사용</w:t></w:r>
+            </w:p>
+            """,
+            styles: numberedHeadingStyles, numbering: headingClauseNumbering)
+        XCTAssertEqual(blocks, [
+            .heading(level: 1, spans: [
+                Span(text: "1. ", bold: true, fontSize: 16),
+                Span(text: "서비스 사용", bold: true, fontSize: 16),
+            ]),
+        ])
     }
 
     // MARK: Tables
@@ -1933,6 +2124,108 @@ final class DocxReaderTests: XCTestCase {
         """
         let blocks = try read(document: "<w:p><w:r>\(shapeGroup)</w:r></w:p>", rels: nil)
         XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "Caption")])])
+    }
+
+    /// Same double-render guard as the test above, on the OTHER real structural family the
+    /// measurement phase found (§3a: an UNGROUPED shape — `wps:wsp/wps:txbx/w:txbxContent` directly
+    /// under `a:graphicData`, no `wpg:wgp` at all — the mammoth `text-box.docx` fixture's own
+    /// shape). Also covers "a modern wps text box's text appears" in its own right: this fixture
+    /// has no `pic:pic` anywhere, so `.paragraph(["Datum plane"])` can only come from the Choice
+    /// half's `w:txbxContent`. If the Fallback's `w:pict`/`v:imagedata` were ALSO walked, the
+    /// result would carry an extra `.image` block (or the same text twice) instead of exactly one
+    /// paragraph — the assertion below rules out both.
+    func testUngroupedModernTextBoxTextAppearsOnceNeverFromVMLFallback() throws {
+        let ungroupedShape = """
+        <mc:AlternateContent>
+          <mc:Choice Requires="wps">
+            <w:drawing><wp:anchor><wp:extent cx="914400" cy="914400"/>
+              <a:graphic><a:graphicData>
+                <wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>Datum plane</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp>
+              </a:graphicData></a:graphic>
+            </wp:anchor></w:drawing>
+          </mc:Choice>
+          <mc:Fallback>\(vmlPict(style: "width:72pt;height:72pt", rId: "rIdFallback"))</mc:Fallback>
+        </mc:AlternateContent>
+        """
+        let blocks = try read(document: "<w:p><w:r>\(ungroupedShape)</w:r></w:p>", rels: nil)
+        XCTAssertEqual(blocks, [.paragraph(spans: [Span(text: "Datum plane")])])
+    }
+
+    /// OOXML permits a `w:tbl` as a direct child of `w:txbxContent` (a table typed inside a text
+    /// box) alongside `w:p` — the measurement phase found `textBoxBlocks` only ever looked at `w:p`
+    /// children, silently dropping this (unexercised by the real corpus, but a real gap). Routing
+    /// through the SAME `parseBodyChild` the body uses closes it: this asserts a real `.table`
+    /// block (not a flattened/raw dump) comes out of a text box's own table, with the cell's text
+    /// intact.
+    func testTextBoxContainingATableProducesARealTableBlock() throws {
+        let shapeGroup = """
+        <w:drawing><wp:inline><wp:extent cx="914400" cy="914400"/>
+          <wpg:wgp>
+            <wps:wsp><wps:txbx><w:txbxContent>
+              <w:tbl><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+            </w:txbxContent></wps:txbx></wps:wsp>
+          </wpg:wgp>
+        </wp:inline></w:drawing>
+        """
+        let blocks = try read(document: "<w:p><w:r>\(shapeGroup)</w:r></w:p>", rels: nil)
+        XCTAssertEqual(blocks.count, 1)
+        guard case .table(let rows, _, _, _) = blocks.first else {
+            return XCTFail("expected a real table block from inside the text box, got \(blocks)")
+        }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].count, 1)
+        XCTAssertEqual(rows[0][0].blocks, [.paragraph(spans: [Span(text: "Cell")])])
+    }
+
+    /// A group can hold a real picture AND a captioned shape as separate siblings (a background
+    /// photo with a text label on top of it) — the pre-fix code computed `imageBlocks` first and,
+    /// the moment it found a picture, `continue`d without ever calling `textBoxBlocks` for that same
+    /// `w:drawing`, silently dropping the caption. Both must survive, in the drawing's own document
+    /// order (the picture's `pic:pic` precedes the caption's `wps:wsp` in this fixture, same as the
+    /// blocks array below).
+    func testDrawingWithBothAPictureAndATextBoxYieldsBothInDocumentOrder() throws {
+        let shapeGroup = """
+        <w:drawing><wp:inline><wp:extent cx="914400" cy="914400"/>
+          <wpg:wgp>
+            <pic:pic><pic:blipFill><a:blip r:embed="rId8"/></pic:blipFill></pic:pic>
+            <wps:wsp><wps:txbx><w:txbxContent><w:p><w:r><w:t>Caption</w:t></w:r></w:p></w:txbxContent></wps:txbx></wps:wsp>
+          </wpg:wgp>
+        </wp:inline></w:drawing>
+        """
+        let blocks = try read(
+            document: "<w:p><w:r>\(shapeGroup)</w:r></w:p>",
+            rels: rels([(id: "rId8", target: "media/image1.png", external: false)]))
+        XCTAssertEqual(blocks, [
+            .image(id: "word/media/image1.png", size: CGSize(width: 72, height: 72)),
+            .paragraph(spans: [Span(text: "Caption")]),
+        ])
+    }
+
+    /// A plain picture-only drawing (no `w:txbxContent` anywhere in it) renders EXACTLY as before
+    /// the "both survive" fix — `collectDrawingBlocks` now always computes `textBoxBlocks` alongside
+    /// `imageBlocks` rather than skipping it once a picture is found, but that computation is always
+    /// empty here (no text box at all), so the result is unchanged. Same fixture as
+    /// `testDrawingGroupingMultiplePicturesEmitsOneImagePerPictureNotJustTheFirst`, re-asserted to
+    /// prove the change is additive for the common (no-text-box) case, not a behaviour change.
+    func testDrawingWithNoTextBoxAtAllIsUnaffectedByTheBothSurviveChange() throws {
+        let groupedDrawing = """
+        <w:drawing><wp:inline><wp:extent cx="914400" cy="914400"/>
+          <wpg:wgp>
+            <pic:pic><pic:blipFill><a:blip r:embed="rId8"/></pic:blipFill></pic:pic>
+            <pic:pic><pic:blipFill><a:blip r:embed="rId9"/></pic:blipFill></pic:pic>
+          </wpg:wgp>
+        </wp:inline></w:drawing>
+        """
+        let blocks = try read(
+            document: "<w:p><w:r>\(groupedDrawing)</w:r></w:p>",
+            rels: rels([
+                (id: "rId8", target: "media/image1.png", external: false),
+                (id: "rId9", target: "media/image2.png", external: false),
+            ]))
+        XCTAssertEqual(blocks, [
+            .image(id: "word/media/image1.png", size: CGSize(width: 72, height: 72)),
+            .image(id: "word/media/image2.png", size: CGSize(width: 72, height: 72)),
+        ])
     }
 
     // MARK: Charts / SmartArt (S9) — mc:Fallback picture recovery, and the placeholder frame
@@ -3823,5 +4116,229 @@ final class DocxReaderTests: XCTestCase {
         """, styles: styles)
         guard case .paragraph(_, _, _, _, let format) = blocks.first else { return XCTFail("expected a paragraph") }
         XCTAssertEqual(format.shading, rgb("112233"))
+    }
+
+    // MARK: Headers/footers — w:sectPr's headerReference/footerReference (header-footer-design.md §2)
+
+    func testDefaultHeaderAndFooterResolvedFromSectPrReferences() throws {
+        let result = try readResult(
+            """
+            <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+            <w:sectPr>
+              <w:headerReference w:type="default" r:id="rId10"/>
+              <w:footerReference w:type="default" r:id="rId11"/>
+            </w:sectPr>
+            """,
+            rels: rels([(id: "rId10", target: "header1.xml", external: false),
+                        (id: "rId11", target: "footer1.xml", external: false)]),
+            extraParts: [
+                (path: "word/header1.xml", xml: "<w:hdr><w:p><w:r><w:t>Header text</w:t></w:r></w:p></w:hdr>"),
+                (path: "word/footer1.xml", xml: "<w:ftr><w:p><w:r><w:t>Footer text</w:t></w:r></w:p></w:ftr>"),
+            ])
+        XCTAssertEqual(result.headers, [
+            OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Header text")])]),
+        ])
+        XCTAssertEqual(result.footers, [
+            OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Footer text")])]),
+        ])
+    }
+
+    /// TRAP (header-footer-design.md §2b): a header/footer part carries its OWN relationship
+    /// id-space. The body's `rId1` here resolves to something else entirely (a customizations
+    /// part), and the header's `rId1` — same id, different table — resolves to its own image.
+    /// Getting this wrong (resolving the header's `r:embed="rId1"` against the BODY's table)
+    /// would silently pick up the wrong target or none.
+    func testHeaderPartResolvesImagesThroughItsOwnRelationshipsNotTheBodys() throws {
+        let bodyRels = rels([
+            (id: "rId1", target: "customizations.xml", external: false),
+            (id: "rId10", target: "header1.xml", external: false),
+        ])
+        let headerRels = rels([(id: "rId1", target: "media/headerimg.png", external: false)])
+        let result = try readResult(
+            """
+            <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+            <w:sectPr><w:headerReference w:type="default" r:id="rId10"/></w:sectPr>
+            """,
+            rels: bodyRels,
+            extraParts: [
+                (path: "word/header1.xml",
+                 xml: "<w:hdr><w:p><w:r>\(drawing(cx: 914_400, cy: 914_400, embed: "rId1"))</w:r></w:p></w:hdr>"),
+                (path: "word/_rels/header1.xml.rels", xml: headerRels),
+            ])
+        XCTAssertEqual(result.headers.count, 1)
+        XCTAssertEqual(result.headers[0].appliesTo, .defaultPages)
+        XCTAssertEqual(result.headers[0].blocks, [.image(id: "word/media/headerimg.png", size: CGSize(width: 72, height: 72))])
+    }
+
+    /// header-footer-design.md §2d — the counter-intuitive rule: `w:titlePg` set, a `first`-type
+    /// FOOTER reference that resolves to real (if blank) content, but NO `first`-type HEADER
+    /// reference at all. Per OOXML this does not mean "use the default header on page one" — it
+    /// means a BLANK header for the first page, represented here as an explicit `.firstPage` entry
+    /// with empty blocks, never as `.defaultPages`' content reused. The footer, which DOES have an
+    /// actual `first`-type reference, reads that part's own (empty) content instead.
+    func testTitlePgWithNoFirstHeaderReferenceSynthesizesABlankFirstPageEntryNotTheDefault() throws {
+        let result = try readResult(
+            """
+            <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+            <w:sectPr>
+              <w:headerReference w:type="default" r:id="rId10"/>
+              <w:footerReference w:type="default" r:id="rId11"/>
+              <w:footerReference w:type="first" r:id="rId12"/>
+              <w:titlePg/>
+            </w:sectPr>
+            """,
+            rels: rels([(id: "rId10", target: "header1.xml", external: false),
+                        (id: "rId11", target: "footer1.xml", external: false),
+                        (id: "rId12", target: "footer2.xml", external: false)]),
+            extraParts: [
+                (path: "word/header1.xml", xml: "<w:hdr><w:p><w:r><w:t>Running header</w:t></w:r></w:p></w:hdr>"),
+                (path: "word/footer1.xml", xml: "<w:ftr><w:p><w:r><w:t>Running footer</w:t></w:r></w:p></w:ftr>"),
+                (path: "word/footer2.xml", xml: "<w:ftr><w:p/><w:p/></w:ftr>"),
+            ])
+        // The running header/footer are present as `.defaultPages`, and the first page gets its OWN
+        // entry — never `.defaultPages`' text reused under a `.firstPage` label.
+        XCTAssertEqual(result.headers.count, 2, "expected .defaultPages plus a synthesized blank .firstPage")
+        XCTAssertEqual(result.headers[0], OfficeHeaderFooter(
+            appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Running header")])]))
+        XCTAssertEqual(result.headers[1].appliesTo, .firstPage)
+        XCTAssertEqual(result.headers[1].blocks, [], "no headerReference type=\"first\" + titlePg = a BLANK header, not the default's text")
+
+        // The footer DOES have a real first-type reference (footer2.xml — two empty paragraphs, the
+        // reference document's own shape), so its `.firstPage` entry reads THAT part's content.
+        XCTAssertEqual(result.footers.count, 2)
+        XCTAssertEqual(result.footers[0], OfficeHeaderFooter(
+            appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Running footer")])]))
+        XCTAssertEqual(result.footers[1].appliesTo, .firstPage)
+        XCTAssertEqual(result.footers[1].blocks.count, 2)
+        for block in result.footers[1].blocks {
+            guard case .paragraph(let spans, _, _, _, _) = block else { return XCTFail("expected a paragraph") }
+            XCTAssertTrue(spans.isEmpty)
+        }
+    }
+
+    /// No `w:titlePg` at all, and no `first`-type reference either — the ordinary case, and the one
+    /// every ACTUAL real single-section document without a cover page has. No `.firstPage` entry is
+    /// synthesized; the section never differentiated a first page, so there is nothing to represent.
+    func testNoTitlePgAndNoFirstReferenceProducesNoFirstPageEntry() throws {
+        let result = try readResult(
+            """
+            <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+            <w:sectPr><w:headerReference w:type="default" r:id="rId10"/></w:sectPr>
+            """,
+            rels: rels([(id: "rId10", target: "header1.xml", external: false)]),
+            extraParts: [(path: "word/header1.xml", xml: "<w:hdr><w:p><w:r><w:t>H</w:t></w:r></w:p></w:hdr>")])
+        XCTAssertEqual(result.headers.count, 1)
+        XCTAssertEqual(result.headers[0].appliesTo, .defaultPages)
+    }
+
+    /// A document with NO header/footer references at all — invariant 37's "unspecified → nothing"
+    /// contract, restated for this feature: `headers`/`footers` are simply empty, exactly as they
+    /// default for every document this reader parsed before this feature existed.
+    func testDocumentWithNoHeaderFooterReferencesProducesEmptyArrays() throws {
+        let result = try readResult("<w:p><w:r><w:t>Body</w:t></w:r></w:p><w:sectPr/>")
+        XCTAssertEqual(result.headers, [])
+        XCTAssertEqual(result.footers, [])
+    }
+
+    /// An even-page header/footer — the third `w:type`, otherwise untested above.
+    func testEvenPageHeaderAndFooterResolvedFromSectPrReferences() throws {
+        let result = try readResult(
+            """
+            <w:p><w:r><w:t>Body</w:t></w:r></w:p>
+            <w:sectPr>
+              <w:headerReference w:type="even" r:id="rId10"/>
+              <w:footerReference w:type="even" r:id="rId11"/>
+            </w:sectPr>
+            """,
+            rels: rels([(id: "rId10", target: "header1.xml", external: false),
+                        (id: "rId11", target: "footer1.xml", external: false)]),
+            extraParts: [
+                (path: "word/header1.xml", xml: "<w:hdr><w:p><w:r><w:t>Even header</w:t></w:r></w:p></w:hdr>"),
+                (path: "word/footer1.xml", xml: "<w:ftr><w:p><w:r><w:t>Even footer</w:t></w:r></w:p></w:ftr>"),
+            ])
+        XCTAssertEqual(result.headers.map(\.appliesTo), [.evenPages])
+        XCTAssertEqual(result.footers.map(\.appliesTo), [.evenPages])
+    }
+
+    // MARK: Page-number fields — w:fldSimple and w:fldChar/w:instrText (header-footer-design.md §5)
+
+    /// The `fldChar`/`instrText`/`separate`/`end` encoding, with a real cached result run in
+    /// between — footer1.xml's own shape ("- 2 -"). The marked span must NOT merge with the plain
+    /// text around it (a page-number marker's exact boundary has to survive for later substitution).
+    func testPageFieldViaFldCharMarksOnlyTheCachedResultSpan() throws {
+        let blocks = try read(document: """
+        <w:p>
+          <w:r><w:t xml:space="preserve">- </w:t></w:r>
+          <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+          <w:r><w:instrText>PAGE   \\* MERGEFORMAT</w:instrText></w:r>
+          <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+          <w:r><w:t>2</w:t></w:r>
+          <w:r><w:fldChar w:fldCharType="end"/></w:r>
+          <w:r><w:t xml:space="preserve"> -</w:t></w:r>
+        </w:p>
+        """)
+        guard case .paragraph(let spans, _, _, _, _) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected a paragraph")
+        }
+        XCTAssertEqual(spans.map(\.text), ["- ", "2", " -"], "the field marker must prevent merging with its neighbours")
+        XCTAssertEqual(spans.map(\.pageNumberField), [nil, .page, nil])
+    }
+
+    /// `NUMPAGES` — the other field name this reader recognizes.
+    func testNumPagesFieldViaFldCharIsMarked() throws {
+        let blocks = try read(document: """
+        <w:p>
+          <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+          <w:r><w:instrText xml:space="preserve"> NUMPAGES  \\* MERGEFORMAT </w:instrText></w:r>
+          <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+          <w:r><w:t>5</w:t></w:r>
+          <w:r><w:fldChar w:fldCharType="end"/></w:r>
+        </w:p>
+        """)
+        guard case .paragraph(let spans, _, _, _, _) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected a paragraph")
+        }
+        XCTAssertEqual(spans, [Span(text: "5", pageNumberField: .numPages)])
+    }
+
+    /// TRAP (header-footer-design.md §5): `STYLEREF` in this reader's own reference document has NO
+    /// `separate` and no result run at all — straight from `begin`+`instrText` to `end`. This must
+    /// not crash, and must produce no text and no marker (nothing to mark — the field never opened a
+    /// result region).
+    func testStyleRefFieldWithNoSeparateAndNoResultProducesNoTextAndNoMarker() throws {
+        let blocks = try read(document: """
+        <w:p>
+          <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+          <w:r><w:instrText xml:space="preserve"> STYLEREF  "Project Name"  \\* MERGEFORMAT </w:instrText></w:r>
+          <w:r><w:fldChar w:fldCharType="end"/></w:r>
+        </w:p>
+        """)
+        XCTAssertEqual(blocks, [.paragraph(spans: [])])
+    }
+
+    /// The OTHER field encoding: `w:fldSimple`'s own `w:instr` attribute wraps an ordinary cached-
+    /// result run, no `begin`/`separate`/`end` pair. `PAGE` here must be marked exactly like the
+    /// compound-field form above.
+    func testPageFieldViaFldSimpleIsMarked() throws {
+        let blocks = try read(document: """
+        <w:p><w:fldSimple w:instr=" PAGE  \\* MERGEFORMAT "><w:r><w:t>3</w:t></w:r></w:fldSimple></w:p>
+        """)
+        guard case .paragraph(let spans, _, _, _, _) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected a paragraph")
+        }
+        XCTAssertEqual(spans, [Span(text: "3", pageNumberField: .page)])
+    }
+
+    /// `STYLEREF` via `w:fldSimple` (header1.xml's own "Documment Name" field) — cached text
+    /// survives, exactly as it always did, but with NO marker (header-footer-design.md §7: no live
+    /// value is planned for `STYLEREF`).
+    func testStyleRefFieldViaFldSimpleProducesNoMarker() throws {
+        let blocks = try read(document: """
+        <w:p><w:fldSimple w:instr=" STYLEREF  &quot;Documment Name&quot;  \\* MERGEFORMAT "><w:r><w:t>OpenAPI Guide</w:t></w:r></w:fldSimple></w:p>
+        """)
+        guard case .paragraph(let spans, _, _, _, _) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected a paragraph")
+        }
+        XCTAssertEqual(spans, [Span(text: "OpenAPI Guide")])
     }
 }

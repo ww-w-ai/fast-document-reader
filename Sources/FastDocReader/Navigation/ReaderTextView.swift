@@ -45,6 +45,16 @@ final class ReaderTextView: NSTextView {
         if commentsVisible {
             drawCommentMarks(lm, storage, tc, glyphsToShow: glyphRange, at: textContainerOrigin)
         }
+        // header-footer-design.md build step 5: paint the running header/footer into the band step 4
+        // already reserved. `pageBandContent` is `nil` for the overwhelming common case (no header/
+        // footer, or not paged at all) — one optional-unwrap and nothing else happens.
+        if let wc = window?.windowController as? DocumentWindowController,
+           let content = wc.pageBandContent {
+            PageBandPainter.draw(content, pageContentHeight: wc.pageBandDelegate.pageContentHeight,
+                                 band: wc.pageBandDelegate.band,
+                                 documentHeight: lm.usedRect(for: tc).height,
+                                 visibleRect: visibleRect, origin: textContainerOrigin)
+        }
     }
 
     /// A faint band across the line the reading cursor sits on, so a glance finds your place after a

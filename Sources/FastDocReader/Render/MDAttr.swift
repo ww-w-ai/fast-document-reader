@@ -114,4 +114,15 @@ enum MDAttr {
     /// no qualifying table (99.3% of them) never carries it, and after the pass finishes none
     /// remains. See `docs/giant-table-deferral-design.md`.
     static let deferredTable = NSAttributedString.Key("mdDeferredTable")
+
+    /// Value = `PageNumberField` (`.page`/`.numPages`) — the attribute-string mirror of
+    /// `Span.pageNumberField`, stamped by `OfficeTextBuilder.spansAttributedString` on a running
+    /// header/footer's PAGE/NUMPAGES run so `PageBandPainter.substitutingPageFields` can find and
+    /// replace it with the LIVE per-page value in a freshly-built header/footer string (header-
+    /// footer-design.md §5, build step 5) — never touching the shared document storage or the span
+    /// model underneath it, the same "compute a display transform on a copy" discipline `caps`
+    /// already uses. A span with no page-number field never carries this; ordinary body text (the
+    /// document's main storage) never carries it either, because only a header/footer entry's
+    /// blocks are ever built through the live-substitution path.
+    static let pageNumberField = NSAttributedString.Key("mdPageNumberField")
 }

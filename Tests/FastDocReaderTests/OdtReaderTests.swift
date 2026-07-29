@@ -116,6 +116,57 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertEqual(r.pageContentWidth ?? -1, 18.0 * 72 / 2.54, accuracy: 0.01)
     }
 
+    // MARK: page content HEIGHT + top/bottom margins (fo:page-height − fo:margin-top/-bottom, →pt)
+
+    func testPageContentHeightAndVerticalMarginsFromContentPageLayout() throws {
+        // A4 in cm: 29.7cm page height, 2cm top, 1.5cm bottom → 26.2cm body, through the SAME
+        // `parseLength` unit parser the width test above already exercises (no second unit parser).
+        let r = try readResult(body: "<text:p>x</text:p>", automaticStyles:
+            "<style:page-layout style:name=\"pm1\"><style:page-layout-properties fo:page-width=\"21cm\" fo:margin-left=\"2cm\" fo:margin-right=\"2cm\" fo:page-height=\"29.7cm\" fo:margin-top=\"2cm\" fo:margin-bottom=\"1.5cm\"/></style:page-layout>")
+        XCTAssertEqual(r.pageContentHeight ?? -1, 26.2 * 72 / 2.54, accuracy: 0.01)
+        XCTAssertEqual(r.pageMarginTop ?? -1, 2.0 * 72 / 2.54, accuracy: 0.01)
+        XCTAssertEqual(r.pageMarginBottom ?? -1, 1.5 * 72 / 2.54, accuracy: 0.01)
+        // Width/left/right are untouched by adding height/margins.
+        XCTAssertEqual(r.pageContentWidth ?? -1, 17.0 * 72 / 2.54, accuracy: 0.01)
+    }
+
+    func testPageContentHeightNilWhenNoPageLayout() throws {
+        let r = try readResult(body: "<text:p>x</text:p>")
+        XCTAssertNil(r.pageContentHeight)
+        XCTAssertNil(r.pageMarginTop)
+        XCTAssertNil(r.pageMarginBottom)
+    }
+
+    func testPageContentHeightNilWhenLayoutHasNoHeightButWidthSurvives() throws {
+        // A page-layout-properties with a width but no fo:page-height at all → height/top/bottom
+        // nil, while width/left/right (independent of height) stay valid.
+        let r = try readResult(body: "<text:p>x</text:p>", automaticStyles:
+            "<style:page-layout style:name=\"pm1\"><style:page-layout-properties fo:page-width=\"21cm\" fo:margin-left=\"2cm\" fo:margin-right=\"2cm\"/></style:page-layout>")
+        XCTAssertNil(r.pageContentHeight)
+        XCTAssertNil(r.pageMarginTop)
+        XCTAssertNil(r.pageMarginBottom)
+        XCTAssertEqual(r.pageContentWidth ?? -1, 17.0 * 72 / 2.54, accuracy: 0.01)
+    }
+
+    func testPageContentHeightUsesFullPageWhenNoVerticalMargins() throws {
+        // page-height without top/bottom margins → margins default 0 → height = full page height.
+        let r = try readResult(body: "<text:p>x</text:p>", automaticStyles:
+            "<style:page-layout style:name=\"pm1\"><style:page-layout-properties fo:page-width=\"21cm\" fo:page-height=\"29.7cm\"/></style:page-layout>")
+        XCTAssertEqual(r.pageContentHeight ?? -1, 29.7 * 72 / 2.54, accuracy: 0.01)
+        XCTAssertEqual(r.pageMarginTop ?? -1, 0, accuracy: 0.01)
+        XCTAssertEqual(r.pageMarginBottom ?? -1, 0, accuracy: 0.01)
+    }
+
+    func testPageContentHeightNilWhenVerticalMarginsExceedPage() throws {
+        // Degenerate: top+bottom ≥ page-height → computed ≤0 → nil, width stays valid.
+        let r = try readResult(body: "<text:p>x</text:p>", automaticStyles:
+            "<style:page-layout style:name=\"pm1\"><style:page-layout-properties fo:page-width=\"21cm\" fo:margin-left=\"2cm\" fo:margin-right=\"2cm\" fo:page-height=\"2cm\" fo:margin-top=\"1.5cm\" fo:margin-bottom=\"1.5cm\"/></style:page-layout>")
+        XCTAssertNil(r.pageContentHeight)
+        XCTAssertNil(r.pageMarginTop)
+        XCTAssertNil(r.pageMarginBottom)
+        XCTAssertEqual(r.pageContentWidth ?? -1, 17.0 * 72 / 2.54, accuracy: 0.01)
+    }
+
     /// Matches `OdtReader.parseODFColor`'s own construction (`deviceRed:`, not `srgbRed:`) so a
     /// comparison against a reader-resolved colour isn't tripped up by a colour-space mismatch that
     /// has nothing to do with whether the RGB VALUES themselves are right.
@@ -2395,4 +2446,97 @@ final class OdtReaderTests: XCTestCase {
                        "the run declares no style of its own — its bold must come from Heading_20_1")
     }
 
+    // MARK: Headers/footers — office:master-styles/style:master-page (header-footer-design.md §4)
+
+    /// TRAP, from the design doc: `style:header-style`/`style:footer-style` (inside
+    /// `style:page-layout`) are geometry-only siblings of the CONTENT-bearing `style:header`/
+    /// `style:footer` (inside `style:master-page`) — present here specifically to prove this
+    /// reader doesn't false-positive on them.
+    private let masterPageStylesXML = """
+    <?xml version="1.0" encoding="UTF-8"?>
+    <office:document-styles>
+      <office:automatic-styles>
+        <style:page-layout style:name="pm1">
+          <style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm" fo:margin-right="2cm"/>
+          <style:header-style><style:header-footer-properties fo:min-height="2cm"/></style:header-style>
+          <style:footer-style><style:header-footer-properties fo:min-height="1cm"/></style:footer-style>
+        </style:page-layout>
+      </office:automatic-styles>
+      <office:master-styles>
+        <style:master-page style:name="Standard" style:page-layout-name="pm1">
+          <style:header><text:p>Header text</text:p></style:header>
+          <style:header-first><text:p/></style:header-first>
+          <style:footer><text:p>Footer text</text:p></style:footer>
+        </style:master-page>
+      </office:master-styles>
+    </office:document-styles>
+    """
+
+    func testMasterPageHeaderAndFooterResolvedFromStylesXML() throws {
+        let result = try readResult(body: "<text:p>Body</text:p>", styles: masterPageStylesXML)
+        XCTAssertEqual(result.headers.count, 2, "expected style:header (.defaultPages) plus style:header-first (.firstPage)")
+        XCTAssertEqual(result.headers[0], OfficeHeaderFooter(
+            appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Header text")])]))
+        XCTAssertEqual(result.headers[1].appliesTo, .firstPage)
+        XCTAssertEqual(result.headers[1].blocks, [.paragraph(spans: [])], "style:header-first is an empty text:p — a real, honest blank first page")
+
+        XCTAssertEqual(result.footers, [
+            OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Footer text")])]),
+        ])
+    }
+
+    /// `style:header-left`/`style:footer-left` — the even-page variant, otherwise untested above.
+    func testMasterPageLeftVariantMapsToEvenPages() throws {
+        let styles = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-styles>
+          <office:master-styles>
+            <style:master-page style:name="Standard" style:page-layout-name="pm1">
+              <style:header-left><text:p>Even header</text:p></style:header-left>
+              <style:footer-left><text:p>Even footer</text:p></style:footer-left>
+            </style:master-page>
+          </office:master-styles>
+        </office:document-styles>
+        """
+        let result = try readResult(body: "<text:p>Body</text:p>", styles: styles)
+        XCTAssertEqual(result.headers.map(\.appliesTo), [.evenPages])
+        XCTAssertEqual(result.footers.map(\.appliesTo), [.evenPages])
+    }
+
+    /// A document with no `office:master-styles` at all — the ordinary case for every synthetic
+    /// fixture elsewhere in this file — must produce empty arrays, exactly as it always did before
+    /// this feature existed (invariant 37's contract).
+    func testNoMasterStylesProducesEmptyHeaderFooterArrays() throws {
+        let result = try readResult(body: "<text:p>Body</text:p>")
+        XCTAssertEqual(result.headers, [])
+        XCTAssertEqual(result.footers, [])
+    }
+
+    private func repoRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    /// Real fixtures (header-footer-design.md §4: `bus-headings.odt` and `tago-tables.odt` — their
+    /// header XML is byte-identical, so treat this as ONE data point) — the master-page mechanism
+    /// reached through the ACTUAL zip/XML this format ships, not just a hand-built synthetic one.
+    func testRealFixtureBusHeadingsHasADefaultAndABlankFirstPageHeader() throws {
+        let url = repoRoot().appendingPathComponent("docs/fixtures/office/bus-headings.odt")
+        guard let data = try? Data(contentsOf: url) else {
+            throw XCTSkip("docs/fixtures/office is gitignored and absent in this checkout")
+        }
+        let result = try OdtReader.read(try ZipArchive(data: data))
+        XCTAssertEqual(result.headers.map(\.appliesTo), [.defaultPages, .firstPage])
+        XCTAssertFalse(result.headers[0].blocks.isEmpty, "the running header carries real content (a logo + title text box)")
+        // style:header-first is a lone `<text:p text:style-name="Header"/>` in this fixture — its
+        // FORMAT comes from that style (so the block itself isn't the bare all-nil default), but its
+        // TEXT is empty: a real blank first page, not the default header's text reused.
+        XCTAssertEqual(result.headers[1].blocks.count, 1)
+        guard case .paragraph(let firstPageSpans, _, _, _, _) = result.headers[1].blocks[0] else {
+            return XCTFail("expected a paragraph")
+        }
+        XCTAssertTrue(firstPageSpans.isEmpty)
+        XCTAssertEqual(result.footers.map(\.appliesTo), [.defaultPages, .firstPage])
+        XCTAssertFalse(result.footers[0].blocks.isEmpty, "the running footer carries a page-number field's cached text")
+    }
 }

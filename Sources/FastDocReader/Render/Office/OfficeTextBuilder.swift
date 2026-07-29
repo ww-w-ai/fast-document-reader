@@ -491,6 +491,14 @@ enum OfficeTextBuilder {
                 let numbers = span.commentIds.compactMap { commentNumbers[$0] }
                 if !numbers.isEmpty { attrs[MDAttr.commentMark] = numbers }
             }
+            // header-footer-design.md §5 (build step 5): mark a PAGE/NUMPAGES run so a header/footer
+            // draw pass can substitute the live value — see `MDAttr.pageNumberField`'s own doc for
+            // why this never touches `displayText`/the span model itself (the cached text still
+            // renders verbatim everywhere else, including `--extract`, which never reaches this
+            // function at all — invariant 40's blocks→serializer path is entirely separate).
+            if let field = span.pageNumberField {
+                attrs[MDAttr.pageNumberField] = field
+            }
             // An explicitly-marked run (docx `w:rPr/w:rtl`) gets TextKit's own run-level embedding
             // override — the same mechanism a Unicode RLE/PDF control character would produce, just
             // stated declaratively instead of via invisible characters in the string. This is

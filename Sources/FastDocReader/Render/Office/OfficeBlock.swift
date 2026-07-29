@@ -131,6 +131,27 @@ struct Span: Equatable {
     /// into multiple `Span`s at read time (one per maximal same-substitute run), each carrying its
     /// own value here — this field is never "some characters use it, others don't" within one span.
     var resolvedFontDescriptor: NSFontDescriptor? = nil
+    /// A live page-number FIELD this span stands in for (docx `PAGE`/`NUMPAGES` — see
+    /// header-footer-design.md §5), or `nil` for ordinary text. The span's own `text` still carries
+    /// the document's CACHED result (Word's last-computed value, stale the moment the page reflows
+    /// under a real reader), so a document with no live-substitution step yet — every one today —
+    /// renders EXACTLY what it always would; this field only marks the span for a later pagination
+    /// sprint to find and replace at draw time. Never set for `STYLEREF` (header-footer-design.md
+    /// §7: no live value is planned for it — its cached result is kept as the honest stand-in), nor
+    /// for any other field name this reader doesn't recognize.
+    ///
+    /// A span carrying a marker is never merged with its neighbour, in either direction (see both
+    /// readers' `appendMerging`) — the same reasoning `bookmarks`/`commentIds` document: merging
+    /// would smear the substitutable text into literal characters that must never be replaced (the
+    /// dashes around a page number, say), which is exactly the boundary a live substitution needs
+    /// intact.
+    var pageNumberField: PageNumberField? = nil
+}
+
+/// Which live page-number field a span stands in for — see `Span.pageNumberField`'s own doc.
+enum PageNumberField: Equatable {
+    case page
+    case numPages
 }
 
 /// An underline's drawn style — docx `w:rPr/w:u/@w:val` (§17.18.99 `ST_Underline`), collapsed from
@@ -673,6 +694,41 @@ struct OfficeComment: Equatable {
     var number: Int
 }
 
+/// Which pages a header or footer entry applies to — deliberately ONE enum shared by every source
+/// format, even though the formats don't carve the space up the same way (header-footer-design.md
+/// §2d/§3). docx states three named types directly (`w:headerReference`/`w:footerReference`'s
+/// `@w:type`: `"default"`/`"first"`/`"even"`); ODF's `style:master-page` names its variants by
+/// element suffix (`style:header`/`-first`/`-left`) rather than an attribute, but the three-way
+/// split is the same shape and maps case-for-case. HWP (rhwp's `apply_to`) has NO first-page
+/// concept in this mechanism at all — see `HwpReader`'s own mapping comment for exactly what its
+/// `"both"`/`"odd"`/`"even"` fold onto here, and what distinction is lost by doing so.
+enum HeaderFooterApplicability: Equatable {
+    /// docx `w:type="default"`; odt `style:header`/`style:footer` (the un-suffixed, base variant);
+    /// HWP `"both"` (no even override declared) and `"odd"` (an even override exists elsewhere, so
+    /// this entry is explicitly the non-even pages) both fold in here — see `HwpReader`.
+    case defaultPages
+    /// docx `w:type="first"`, OR the explicit blank header/footer OOXML creates when `w:titlePg` is
+    /// set and no `first`-type reference exists (see `DocxReader`'s own comment on that rule — both
+    /// are represented as an entry here, the synthesized one with empty `blocks`); odt
+    /// `style:header-first`/`style:footer-first`. HWP has no equivalent in THIS mechanism — its own
+    /// first-page device (바탕쪽/master-page overrides) is a separate feature, out of v1.
+    case firstPage
+    /// docx `w:type="even"`; odt `style:header-left`/`style:footer-left` (ODF names the mirrored
+    /// page by reading side, not parity — treated as the even-page equivalent here, the same
+    /// approximation every other "first section only" scope in this reader makes); HWP `"even"` —
+    /// the one case where every format means the same thing.
+    case evenPages
+}
+
+/// One header or footer PART, resolved into the format-neutral block vocabulary (parsed through the
+/// SAME `parseBody`/body-walk each reader already uses for the document's own text — see
+/// header-footer-design.md §2c) plus which pages it applies to. Read-only vocabulary: nothing paints
+/// these yet (steps 4/5 of that design), so this struct exists for a later sprint to consume.
+struct OfficeHeaderFooter: Equatable {
+    var appliesTo: HeaderFooterApplicability
+    var blocks: [OfficeBlock]
+}
+
 /// What `OfficeDocumentReader.read` and `DocumentTypes.readOffice` return — the block vocabulary an
 /// office document's BODY becomes, plus every reviewer comment the source declares (P6a; see
 /// `OfficeComment`). Bundled into one result, rather than two independent return values, so the
@@ -735,6 +791,38 @@ struct OfficeReadResult: Equatable {
     /// find one, and the view falls back to its own margin, unchanged.
     var pageMarginLeft: CGFloat? = nil
     var pageMarginRight: CGFloat? = nil
+
+    /// The document's page BODY height in points — the printable row span between the top and bottom
+    /// page margins, the vertical twin of `pageContentWidth`. It exists for the same two reasons that
+    /// field does, one already true and one still ahead: it is the second half of the PAPER a paged
+    /// view has to reproduce (`top + pageContentHeight + bottom` is the sheet's full height, exactly
+    /// as `left + pageContentWidth + right` is its full width), and it is the hard prerequisite for
+    /// showing where a page ENDS and for placing running headers/footers, neither of which this
+    /// change wires up. `nil` = the reader could not determine it (no section/page-layout, no
+    /// declared height, or a computed value ≤0) → unchanged from before this field existed, exactly
+    /// like a document that declares no `pageContentWidth`. Sourced the same way per format: HWP from
+    /// rhwp's `PageAreas` (paper height − top/bottom margins, landscape-swapped), docx from the body
+    /// `w:sectPr`'s `w:pgSz@w:h`/`w:pgMar@w:top`/`@w:bottom` (twips), odt from `styles.xml`'s
+    /// `fo:page-height`/`fo:margin-top`/`fo:margin-bottom`.
+    var pageContentHeight: CGFloat? = nil
+
+    /// The page's own TOP and BOTTOM margins in points — the vertical twins of `pageMarginLeft`/
+    /// `pageMarginRight`, present together with `pageContentHeight` (one reader-internal computation
+    /// each) and `nil` together with it when the reader found no page height. Kept as two independent
+    /// values, not one symmetric inset, for the same reason the horizontal pair is: a document may
+    /// set them differently (running headers eat more of the top margin than the bottom), and a
+    /// consumer reproducing the sheet needs to know which is which.
+    var pageMarginTop: CGFloat? = nil
+    var pageMarginBottom: CGFloat? = nil
+
+    /// Running headers/footers this document declares (header-footer-design.md step 2) — read-only
+    /// vocabulary, nothing paints these yet (steps 4/5 of that design). Empty for every document
+    /// with none, and for markdown/plain text (they never reach this struct at all). See
+    /// `OfficeHeaderFooter`/`HeaderFooterApplicability`. Defaults to `[]` so every pre-existing
+    /// construction site (every test, every other reader) keeps compiling and means exactly what it
+    /// always meant: no running header/footer captured.
+    var headers: [OfficeHeaderFooter] = []
+    var footers: [OfficeHeaderFooter] = []
 
     /// The section's LINE GRID pitch in points — Word's `w:sectPr/w:docGrid` with
     /// `@w:type="lines"`/`"linesAndChars"`, whose `@w:linePitch` is in twips.

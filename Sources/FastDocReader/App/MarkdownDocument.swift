@@ -27,6 +27,14 @@ final class MarkdownDocument: NSDocument {
     /// comments. P6a captures this ONLY — no view reads it yet (the sidebar panel is P6b).
     private(set) var officeComments: [OfficeComment] = []
 
+    /// Running headers/footers the source document declares (header-footer-design.md step 2) — see
+    /// `OfficeHeaderFooter`. Threaded through exactly like `officeComments` above (same
+    /// `setOfficeContent`/`ReloadOutcome`/`reloadOutcome` seam): set alongside `officeBlocks` on every
+    /// read/reload, empty for every non-office kind and for an office document with none. Read-only
+    /// capture — no view paints these yet (steps 4/5 of that design).
+    private(set) var officeHeaders: [OfficeHeaderFooter] = []
+    private(set) var officeFooters: [OfficeHeaderFooter] = []
+
     /// The SOURCE document's own default body run size, in points — see
     /// `OfficeTextBuilder.build`'s `documentDefaultFontSize` doc for the font-size model this
     /// feeds. Set from `DocumentTypes.officeDefaultBodyFontSize`, both on first `read(from:)` and on
@@ -64,6 +72,18 @@ final class MarkdownDocument: NSDocument {
     /// documents). `nil` → the view falls back to its own side inset, exactly as before.
     private(set) var officePageMarginLeft: CGFloat?
     private(set) var officePageMarginRight: CGFloat?
+
+    /// The page's own BODY height in points — see `OfficeReadResult.pageContentHeight`. The vertical
+    /// twin of `officePageContentWidth`, carried the same way for the same reason: it is the hard
+    /// prerequisite for running headers/footers and for showing where a page ends, neither of which
+    /// this field wires up on its own. `nil` for every non-office kind and for an office document
+    /// whose reader found no page height (unchanged, exactly like a document with no page width).
+    private(set) var officePageContentHeight: CGFloat?
+
+    /// The page's own top/bottom margins in points — see `OfficeReadResult.pageMarginTop`/
+    /// `pageMarginBottom`, the vertical twins of `officePageMarginLeft`/`officePageMarginRight`.
+    private(set) var officePageMarginTop: CGFloat?
+    private(set) var officePageMarginBottom: CGFloat?
 
     /// The archive `officeBlocks` was parsed from, kept so an `.image` block's id (an archive entry
     /// path, e.g. `"word/media/image1.png"`) can be pulled on demand when it scrolls into view — the
@@ -195,6 +215,9 @@ final class MarkdownDocument: NSDocument {
                 images: result.images, defaultBodyFontSize: result.defaultBodyFontSize,
                 pageContentWidth: result.pageContentWidth,
                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
+                pageContentHeight: result.pageContentHeight,
+                pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
+                headers: result.headers, footers: result.footers,
                 lineGridPitch: result.lineGridPitch)
             return
         }
@@ -206,6 +229,9 @@ final class MarkdownDocument: NSDocument {
             defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext),
             pageContentWidth: result.pageContentWidth,
                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
+                pageContentHeight: result.pageContentHeight,
+                pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
+                headers: result.headers, footers: result.footers,
                 lineGridPitch: result.lineGridPitch)
     }
 
@@ -219,6 +245,9 @@ final class MarkdownDocument: NSDocument {
         images: [String: Data] = [:], defaultBodyFontSize: CGFloat = 11,
         pageContentWidth: CGFloat? = nil,
         pageMarginLeft: CGFloat? = nil, pageMarginRight: CGFloat? = nil,
+        pageContentHeight: CGFloat? = nil,
+        pageMarginTop: CGFloat? = nil, pageMarginBottom: CGFloat? = nil,
+        headers: [OfficeHeaderFooter] = [], footers: [OfficeHeaderFooter] = [],
         lineGridPitch: CGFloat? = nil
     ) {
         self.officeBlocks = blocks
@@ -229,6 +258,11 @@ final class MarkdownDocument: NSDocument {
         self.officePageContentWidth = pageContentWidth
         self.officePageMarginLeft = pageMarginLeft
         self.officePageMarginRight = pageMarginRight
+        self.officePageContentHeight = pageContentHeight
+        self.officePageMarginTop = pageMarginTop
+        self.officePageMarginBottom = pageMarginBottom
+        self.officeHeaders = headers
+        self.officeFooters = footers
         self.officeLineGridPitch = lineGridPitch
         self.text = ""
         self.file = TextFile(text: "", encoding: .utf8, hasBOM: false)
@@ -258,7 +292,7 @@ final class MarkdownDocument: NSDocument {
     /// failing meant the function silently did nothing, which looks identical to a successful no-op
     /// reload and hides a real problem (deleted file, permissions, a corrupted archive) from the user.
     enum ReloadOutcome {
-        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?, pageMarginLeft: CGFloat?, pageMarginRight: CGFloat?, lineGridPitch: CGFloat?)
+        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?, pageMarginLeft: CGFloat?, pageMarginRight: CGFloat?, pageContentHeight: CGFloat?, pageMarginTop: CGFloat?, pageMarginBottom: CGFloat?, headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter], lineGridPitch: CGFloat?)
         case text(TextFile)
         case failure(String)
     }
@@ -291,6 +325,9 @@ final class MarkdownDocument: NSDocument {
                     images: result.images, defaultBodyFontSize: result.defaultBodyFontSize,
                     pageContentWidth: result.pageContentWidth,
                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
+                pageContentHeight: result.pageContentHeight,
+                pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
+                headers: result.headers, footers: result.footers,
                 lineGridPitch: result.lineGridPitch)
             }
             let archive = try ZipArchive(data: data)
@@ -301,6 +338,9 @@ final class MarkdownDocument: NSDocument {
                 images: result.images, defaultBodyFontSize: defaultBodyFontSize,
                 pageContentWidth: result.pageContentWidth,
                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
+                pageContentHeight: result.pageContentHeight,
+                pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
+                headers: result.headers, footers: result.footers,
                 lineGridPitch: result.lineGridPitch)
         } catch {
             return .failure(error.localizedDescription)
@@ -325,7 +365,7 @@ final class MarkdownDocument: NSDocument {
         if let url = fileURL {
             let ext = url.pathExtension.isEmpty ? (untitledExtension ?? "") : url.pathExtension
             switch Self.reloadOutcome(url: url, kind: kind, extension: ext) {
-            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth, let pageMarginLeft, let pageMarginRight, let lineGridPitch):
+            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth, let pageMarginLeft, let pageMarginRight, let pageContentHeight, let pageMarginTop, let pageMarginBottom, let headers, let footers, let lineGridPitch):
                 // Re-parse the archive, same as the initial read — never through the text-decode
                 // path (invariant: an office document's bytes are never handed to
                 // `TextEncodingDetector`). `defaultBodyFontSize` is carried through too, so a
@@ -334,6 +374,9 @@ final class MarkdownDocument: NSDocument {
                 setOfficeContent(blocks: blocks, comments: comments, archive: archive, images: images,
                                  defaultBodyFontSize: defaultBodyFontSize, pageContentWidth: pageContentWidth,
                                  pageMarginLeft: pageMarginLeft, pageMarginRight: pageMarginRight,
+                                 pageContentHeight: pageContentHeight,
+                                 pageMarginTop: pageMarginTop, pageMarginBottom: pageMarginBottom,
+                                 headers: headers, footers: footers,
                                  lineGridPitch: lineGridPitch)
             case .text(let reread):
                 // The undo stack holds source OFFSETS into the text we're replacing. Re-reading the
@@ -1131,6 +1174,27 @@ final class MarkdownDocument: NSDocument {
                                            lineGridPitch: officeLineGridPitch,
                                            comments: officeComments,
                                            deferringTables: deferredTables)
+            // Running-header/footer page-boundary reservation AND painting (header-footer-design.md
+            // §4/§5, build steps 4/5): wired here, before `wc.display(attr)` below replaces the
+            // storage, so the layout manager's delegate reflects THIS render's own numbers before any
+            // line of the new document is laid out. Measuring only when this document declared a page
+            // HEIGHT at all skips the (harmless but pointless) header/footer build+layout pass on
+            // every ⌘+/⌘R of the much more common non-paged office document — `configurePageBand`'s
+            // own gate would make it inert anyway, this just avoids doing the measurement for nothing.
+            // `PageBandGeometry.measure` (not the older `bandHeight` this replaced) measures the
+            // header and footer heights ONCE and hands step 5's painter the SAME two numbers step 4's
+            // reservation is built from, rather than measuring them a second time at draw time.
+            let sides = officePageContentHeight != nil
+                ? PageBandGeometry.measure(headers: officeHeaders, footers: officeFooters,
+                                           theme: theme, columnWidth: colW,
+                                           documentDefaultFontSize: officeDefaultBodyFontSize,
+                                           pageContentWidth: officePageContentWidth)
+                : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
+            wc.configurePageBand(pageContentHeight: officePageContentHeight, band: sides.band,
+                                 headers: officeHeaders, footers: officeFooters, theme: theme,
+                                 columnWidth: colW, documentDefaultFontSize: officeDefaultBodyFontSize,
+                                 pageContentWidth: officePageContentWidth,
+                                 headerHeight: sides.header, footerHeight: sides.footer)
         }
         wc.display(attr)
         wc.window?.title = displayName ?? "fast-md-reader"

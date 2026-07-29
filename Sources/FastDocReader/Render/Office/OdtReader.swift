@@ -92,11 +92,16 @@ enum OdtReader: OfficeDocumentReader {
         let bodyBlocks = parseBody(body, styles: styles, archive: archive, notes: notes)
         let noteBlocks = buildNoteBlocks(notes.entries, styles: styles, archive: archive)
         let page = pageGeometry(styleRoots: styleRoots)
+        // header-footer-design.md step 2/4 — read ONLY, nothing renders these yet.
+        let headerFooter = masterPageHeaderFooters(styleRoots: styleRoots, styles: styles, archive: archive)
         return OfficeReadResult(
             blocks: bodyBlocks + noteBlocks,
             comments: notes.comments.sorted { $0.number < $1.number },
             pageContentWidth: page?.content,
-            pageMarginLeft: page?.left, pageMarginRight: page?.right)
+            pageMarginLeft: page?.left, pageMarginRight: page?.right,
+            pageContentHeight: page?.height,
+            pageMarginTop: page?.top, pageMarginBottom: page?.bottom,
+            headers: headerFooter.headers, footers: headerFooter.footers)
     }
 
     /// The document's page BODY width in points — a `style:page-layout-properties`' `fo:page-width`
@@ -111,11 +116,18 @@ enum OdtReader: OfficeDocumentReader {
         pageGeometry(styleRoots: styleRoots)?.content
     }
 
-    /// The page layout's geometry in points: the printable column and the margins either side of it.
-    /// The margins were always read here in order to be SUBTRACTED; they are kept now because a paged
-    /// view reproduces the PAPER (`left + content + right`), not just the column — see
+    /// The page layout's geometry in points: the printable column and the margins either side of it,
+    /// PLUS the vertical twin of that same pair — the printable row span and the margins above/below
+    /// it (`OfficeReadResult.pageContentHeight`), read through the same `parseLength` (cm/mm/in/pt→pt)
+    /// as everything else here rather than a second unit parser. The margins were always read here in
+    /// order to be SUBTRACTED; they are kept now because a paged view reproduces the PAPER
+    /// (`left + content + right`, `top + height + bottom`), not just the column — see
     /// `OfficeReadResult.pageMarginLeft`.
-    private static func pageGeometry(styleRoots: [XMLNode]) -> (content: CGFloat, left: CGFloat, right: CGFloat)? {
+    ///
+    /// Height/top/bottom are a SEPARATE guard from width/left/right: a page layout that declares
+    /// `fo:page-width` but not `fo:page-height` (or whose vertical geometry computes to ≤0) must not
+    /// lose its WIDTH, so a bad/missing height clamps only these three fields to nil.
+    private static func pageGeometry(styleRoots: [XMLNode]) -> (content: CGFloat, left: CGFloat, right: CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?)? {
         for root in styleRoots {
             guard let props = root.firstDescendant("style:page-layout-properties"),
                   let widthRaw = props.attributes["fo:page-width"], let width = parseLength(widthRaw)
@@ -123,9 +135,70 @@ enum OdtReader: OfficeDocumentReader {
             let left = props.attributes["fo:margin-left"].flatMap(parseLength) ?? 0
             let right = props.attributes["fo:margin-right"].flatMap(parseLength) ?? 0
             let content = width - left - right
-            if content > 0 { return (content, max(0, left), max(0, right)) }
+            guard content > 0 else { continue }
+            var height: CGFloat?
+            var top: CGFloat?
+            var bottom: CGFloat?
+            if let heightRaw = props.attributes["fo:page-height"], let pageHeight = parseLength(heightRaw) {
+                let t = props.attributes["fo:margin-top"].flatMap(parseLength) ?? 0
+                let b = props.attributes["fo:margin-bottom"].flatMap(parseLength) ?? 0
+                let contentHeight = pageHeight - t - b
+                if contentHeight > 0 {
+                    height = contentHeight
+                    top = max(0, t)
+                    bottom = max(0, b)
+                }
+            }
+            return (content, max(0, left), max(0, right), height, top, bottom)
         }
         return nil
+    }
+
+    // MARK: Headers/footers — office:master-styles/style:master-page (header-footer-design.md §4)
+
+    /// `office:master-styles/style:master-page`'s `style:header`/`style:footer` (+ `-first`/`-left`
+    /// variants), each fed through the SAME `parseBody` the document's own `office:text` uses — zero
+    /// new block-parsing code (header-footer-design.md §2c's docx precedent, restated for ODF: a
+    /// `text:p`/`table:table` under `style:header` is parsed exactly like one under `office:text`).
+    ///
+    /// TRAP, real and measured (both `docs/fixtures/office/bus-headings.odt` and `tago-tables.odt`
+    /// declare it, byte-identical between the two — treat them as one data point): a page layout's
+    /// `style:page-layout` carries its OWN `style:header-style`/`style:footer-style` — a DIFFERENT,
+    /// geometry-only element (`fo:min-height`/margins) that is nearly always present and always
+    /// empty of content. A grep for "header-style" false-positives on it; this function only ever
+    /// looks inside `style:master-page` (never `style:page-layout`), where the CONTENT-bearing
+    /// `style:header`/`style:footer` elements actually live.
+    ///
+    /// Only the FIRST `style:master-page` is read — the same "first section/page-layout only" scope
+    /// `pageGeometry` above already documents for this reader; a document with more than one master
+    /// page (mirrored left/right sections beyond the `-left` variant, multiple page styles) is not
+    /// resolved per-section. `styleRoots` is searched in order (content.xml, then styles.xml) and
+    /// the first root that HAS an `office:master-styles` wins outright — ODF keeps master-styles in
+    /// `styles.xml` in every real document this reader has seen, but nothing stops a producer from
+    /// putting it in content.xml instead, so both are checked rather than hardcoding one part.
+    private static func masterPageHeaderFooters(
+        styleRoots: [XMLNode], styles: ParsedStyles, archive: ZipArchive
+    ) -> (headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter]) {
+        for root in styleRoots {
+            guard let masterStyles = root.child("office:master-styles"),
+                  let masterPage = masterStyles.child("style:master-page")
+            else { continue }
+            var headers: [OfficeHeaderFooter] = []
+            var footers: [OfficeHeaderFooter] = []
+            func append(_ tag: String, appliesTo: HeaderFooterApplicability, into list: inout [OfficeHeaderFooter]) {
+                guard let node = masterPage.child(tag) else { return }
+                let blocks = parseBody(node, styles: styles, archive: archive, notes: NoteCollector())
+                list.append(OfficeHeaderFooter(appliesTo: appliesTo, blocks: blocks))
+            }
+            append("style:header", appliesTo: .defaultPages, into: &headers)
+            append("style:header-first", appliesTo: .firstPage, into: &headers)
+            append("style:header-left", appliesTo: .evenPages, into: &headers)
+            append("style:footer", appliesTo: .defaultPages, into: &footers)
+            append("style:footer-first", appliesTo: .firstPage, into: &footers)
+            append("style:footer-left", appliesTo: .evenPages, into: &footers)
+            return (headers, footers)
+        }
+        return ([], [])
     }
 
     /// The document's own default BODY paragraph size, in points — ODF states this in

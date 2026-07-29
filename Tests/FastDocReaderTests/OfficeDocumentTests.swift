@@ -464,6 +464,37 @@ final class OfficeDocumentTests: XCTestCase {
                        "render(into:) must use the DOCUMENT's own default (8), not OfficeTextBuilder's 11pt fallback")
     }
 
+    /// `setOfficeContent` is the ONE seam `read(from:)`/`reloadDocument` both go through (see its own
+    /// doc comment) — a test here proves the mechanical pass-through the height/margin prerequisite
+    /// depends on: the reader's page geometry reaches `officePageContentHeight`/
+    /// `officePageMarginTop`/`officePageMarginBottom` unchanged, exactly as `pageContentWidth`
+    /// already does, and an office document that declares none of them (the default arguments) keeps
+    /// every one of the three nil — the same "unspecified → nothing changes" contract invariant 37
+    /// states for typography, restated here for geometry.
+    func testSetOfficeContentThreadsPageHeightAndVerticalMarginsToTheDocument() throws {
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-pagegeometry-\(UUID().uuidString).docx")
+        doc.setOfficeContent(blocks: [.paragraph(spans: [Span(text: "Body")])], archive: nil,
+                              pageContentWidth: 432.48, pageMarginLeft: 56.7, pageMarginRight: 56.7,
+                              pageContentHeight: 671.75, pageMarginTop: 99.25, pageMarginBottom: 70.9)
+        XCTAssertEqual(doc.officePageContentHeight, 671.75)
+        XCTAssertEqual(doc.officePageMarginTop, 99.25)
+        XCTAssertEqual(doc.officePageMarginBottom, 70.9)
+        // The pre-existing fields this task must not disturb.
+        XCTAssertEqual(doc.officePageContentWidth, 432.48)
+        XCTAssertEqual(doc.officePageMarginLeft, 56.7)
+        XCTAssertEqual(doc.officePageMarginRight, 56.7)
+    }
+
+    func testSetOfficeContentLeavesPageHeightAndVerticalMarginsNilWhenNotPassed() throws {
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-office-pagegeometry-nil-\(UUID().uuidString).docx")
+        doc.setOfficeContent(blocks: [.paragraph(spans: [Span(text: "Body")])], archive: nil)
+        XCTAssertNil(doc.officePageContentHeight)
+        XCTAssertNil(doc.officePageMarginTop)
+        XCTAssertNil(doc.officePageMarginBottom)
+    }
+
     /// Invariant 29 applied to the GRAPHIC scale, on a PAGED document — one whose reader found a page
     /// body width. `OfficeTextBuilderTests` proves the builder honours `graphicScale`, which says
     /// nothing about whether `render(into:)` computes it from the document's own
@@ -911,7 +942,7 @@ final class OfficeDocumentTests: XCTestCase {
         try doc.read(from: data, ofType: "org.openxmlformats.wordprocessingml.document")
         XCTAssertEqual(doc.officeDefaultBodyFontSize, 10)
 
-        guard case .office(_, _, _, _, let reloadedDefault, _, _, _, _) =
+        guard case .office(_, _, _, _, let reloadedDefault, _, _, _, _, _, _, _, _, _) =
             MarkdownDocument.reloadOutcome(url: url, kind: .office, extension: "docx")
         else { return XCTFail("expected a successful office reload") }
         XCTAssertEqual(reloadedDefault, doc.officeDefaultBodyFontSize,

@@ -73,9 +73,19 @@ enum DocxReader: OfficeDocumentReader {
             listState: listState)
         let officeComments = parseComments(from: archive, numberById: commentNumberById)
         let page = pageGeometry(body: body)
+        // header-footer-design.md step 2 — read ONLY, nothing renders these yet.
+        let headers = headerFooterEntries(
+            body: body, tag: "w:headerReference", relationships: relationships, archive: archive,
+            styleInfo: styleInfo, numbering: numbering)
+        let footers = headerFooterEntries(
+            body: body, tag: "w:footerReference", relationships: relationships, archive: archive,
+            styleInfo: styleInfo, numbering: numbering)
         return OfficeReadResult(blocks: bodyBlocks + noteBlocks, comments: officeComments,
                                 pageContentWidth: page?.content,
                                 pageMarginLeft: page?.left, pageMarginRight: page?.right,
+                                pageContentHeight: page?.height,
+                                pageMarginTop: page?.top, pageMarginBottom: page?.bottom,
+                                headers: headers, footers: footers,
                                 lineGridPitch: lineGridPitch(body: body))
     }
 
@@ -109,10 +119,18 @@ enum DocxReader: OfficeDocumentReader {
     }
 
     /// The body `w:sectPr`'s page geometry in points: the printable column and the margins either
-    /// side of it. The margins were always computed here in order to be SUBTRACTED; they are kept now
-    /// because a paged view reproduces the PAPER (`left + content + right`), not just the column —
-    /// see `OfficeReadResult.pageMarginLeft`.
-    private static func pageGeometry(body: XMLNode) -> (content: CGFloat, left: CGFloat, right: CGFloat)? {
+    /// side of it, PLUS the vertical twin of that same pair — the printable row span and the margins
+    /// above/below it (`OfficeReadResult.pageContentHeight`). The margins were always computed here in
+    /// order to be SUBTRACTED; they are kept now because a paged view reproduces the PAPER
+    /// (`left + content + right`, `top + height + bottom`), not just the column — see
+    /// `OfficeReadResult.pageMarginLeft`.
+    ///
+    /// Height/top/bottom are a SEPARATE guard from width/left/right above: a document that states
+    /// `w:pgSz@w:w` but not `@w:h` (or whose vertical geometry computes to ≤0) must not lose its
+    /// WIDTH, which the width guard already protects on its own without needing `w:pgMar` to exist at
+    /// all — so a bad/missing height clamps only `height`/`top`/`bottom` to nil, never the whole
+    /// return value.
+    private static func pageGeometry(body: XMLNode) -> (content: CGFloat, left: CGFloat, right: CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?)? {
         guard let sectPr = body.children.last(where: { $0.name == "w:sectPr" }),
               let pgSz = sectPr.child("w:pgSz"),
               let wStr = pgSz.attributes["w:w"], let w = Double(wStr) else { return nil }
@@ -123,7 +141,20 @@ enum DocxReader: OfficeDocumentReader {
         guard content > 0 else { return nil }
         // A negative margin is legal in the schema and meaningless as white space — clamp rather than
         // let it eat into the paper width and produce a sheet narrower than its own text column.
-        return (CGFloat(content), CGFloat(max(0, left) / 20), CGFloat(max(0, right) / 20))
+        var height: CGFloat?
+        var top: CGFloat?
+        var bottom: CGFloat?
+        if let hStr = pgSz.attributes["w:h"], let h = Double(hStr) {
+            let t = Double(mar?.attributes["w:top"] ?? "") ?? 0
+            let b = Double(mar?.attributes["w:bottom"] ?? "") ?? 0
+            let contentHeight = (h - t - b) / 20
+            if contentHeight > 0 {
+                height = CGFloat(contentHeight)
+                top = CGFloat(max(0, t) / 20)
+                bottom = CGFloat(max(0, b) / 20)
+            }
+        }
+        return (CGFloat(content), CGFloat(max(0, left) / 20), CGFloat(max(0, right) / 20), height, top, bottom)
     }
 
     /// The source document's own default BODY run size, in points — `word/styles.xml`'s
@@ -508,6 +539,12 @@ enum DocxReader: OfficeDocumentReader {
         /// own inherits from, the table-side twin of `defaultParagraphStyleId`. Word writes exactly
         /// one; a malformed document marking several keeps the first, matching that field's rule.
         var defaultTableStyleId: String?
+        /// styleId → its own `w:pPr/w:numPr` — see `WordNumPr`'s own doc for why this exists at
+        /// all: a numbered HEADING style. Only styles that declare a `w:numPr` are present;
+        /// resolved through the SAME `w:basedOn` chain as every other per-style property here
+        /// (`resolvedNumPr`), so a style silent about numbering is transparent to it, exactly like
+        /// `runProps`/`paraProps`/`rFonts` are silent about whatever THEY don't set.
+        var styleNumbering: [String: WordNumPr] = [:]
     }
 
     /// One resolved layer of a table style's conditional formatting — either the style's own
@@ -543,6 +580,19 @@ enum DocxReader: OfficeDocumentReader {
         var lastColumn = false
         var noHBand = false
         var noVBand = false
+    }
+
+    /// One style's own `w:pPr/w:numPr` — the mechanism a numbered HEADING STYLE attaches its clause
+    /// numbering through. Word writes `w:numPr` on the `HeadingN` style DEFINITION itself, not on
+    /// every paragraph that uses it (the same "declared once, on the style" shape `w:outlineLvl`'s
+    /// mechanism (b) already relies on for the level itself) — so a heading paragraph naming only
+    /// `w:pStyle` needs this resolved through the `w:basedOn` chain to find its numbering at all
+    /// (`resolvedNumPr`). `ilvl` is `Int?`, not a defaulted `Int`, for the same reason every other
+    /// per-style optional here is: a style that names `w:numId` but omits `w:ilvl` still means
+    /// something (level 0), and `resolvedNumPr` is where that default is actually applied, not here.
+    private struct WordNumPr {
+        var numId: String?
+        var ilvl: Int?
     }
 
     /// Reads every per-style signal this reader now resolves through the `w:basedOn` chain:
@@ -598,6 +648,17 @@ enum DocxReader: OfficeDocumentReader {
                 || paraProps.indentEnd != nil || paraProps.firstLineIndent != nil || paraProps.hangingIndent != nil
                 || paraProps.contextualSpacing != nil || paraProps.shading != nil || paraProps.border != nil {
                 info.paraProps[id] = paraProps
+            }
+            // A numbered HEADING style's `w:numPr` — see `WordNumPr`'s own doc. Kept OUTSIDE
+            // `ParaStyleProps` deliberately: that struct feeds `resolvedParagraphFormat`'s P2
+            // cascade, which invariant 37 requires to stay byte-identical for a document that sets
+            // none of ITS fields, and numbering is a wholly separate concern from spacing/indent.
+            if let numPr = style.child("w:pPr")?.child("w:numPr") {
+                let numId = numPr.child("w:numId")?.attributes["w:val"]
+                let ilvl = numPr.child("w:ilvl")?.attributes["w:val"].flatMap(Int.init)
+                if numId != nil || ilvl != nil {
+                    info.styleNumbering[id] = WordNumPr(numId: numId, ilvl: ilvl)
+                }
             }
             if style.attributes["w:type"] == "table" {
                 if style.attributes["w:default"] == "1", info.defaultTableStyleId == nil {
@@ -1053,6 +1114,31 @@ enum DocxReader: OfficeDocumentReader {
         return out
     }
 
+    /// Resolves one paragraph's numbering to a `(numId, ilvl)` pair for the HEADING-numbering path
+    /// (`parseParagraph`'s heading branch) — the paragraph's OWN `w:numPr`, if it has one, wins as
+    /// a WHOLE element (Word technically lets `w:numId` and `w:ilvl` be inherited independently,
+    /// but a paragraph that carries `w:numPr` at all is stating both together, and this reader
+    /// deliberately doesn't split them — same posture as every other "resolve the whole element,
+    /// not field-by-field" choice already made for numbering); failing that, the `w:basedOn` chain
+    /// is walked for the NEAREST style that declared its own `w:numPr` (`resolvedRFonts`'s own
+    /// `walkStyleChain` pattern, reused here) — this is the mechanism that makes a document whose
+    /// headings carry ONLY `w:pStyle` (numbering lives on the `HeadingN` style, never repeated per
+    /// paragraph) number themselves at all. `ilvl` defaults to 0 when the winning source omitted
+    /// it, matching every other numPr read in this file (`parseParagraph`'s own `.listItem`
+    /// branch). `nil` means neither the paragraph nor any style in its chain declared numbering.
+    private static func resolvedNumPr(
+        pPr: XMLNode?, pStyleId: String?, styleInfo: StyleInfo
+    ) -> (numId: String?, ilvl: Int)? {
+        if let ownNumPr = pPr?.child("w:numPr") {
+            let numId = ownNumPr.child("w:numId")?.attributes["w:val"]
+            let ilvl = ownNumPr.child("w:ilvl")?.attributes["w:val"].flatMap(Int.init) ?? 0
+            return (numId, ilvl)
+        }
+        guard let inherited = walkStyleChain(pStyleId, styleInfo: styleInfo, resolve: { styleInfo.styleNumbering[$0] })
+        else { return nil }
+        return (inherited.numId, inherited.ilvl ?? 0)
+    }
+
     private static func resolvedAlignment(pStyleId: String?, styleInfo: StyleInfo) -> NSTextAlignment? {
         walkStyleChain(pStyleId, styleInfo: styleInfo) { styleInfo.paraProps[$0]?.alignment }
     }
@@ -1356,6 +1442,15 @@ enum DocxReader: OfficeDocumentReader {
         /// this level's `lvlText` displays as plain Arabic digits regardless of that sub-level's
         /// OWN `w:numFmt` — the convention real contracts use so `1.a.i` still shows as `1.1.1`.
         var isLgl: Bool
+        /// The separator Word draws between this level's substituted marker and whatever follows
+        /// it — `w:suff` (§17.9.22 `ST_LevelSuffix`), already mapped to the literal string to
+        /// insert (`"tab"` → `"\t"`, `"space"` → `" "`, `"nothing"` → `""`) rather than the raw XML
+        /// token, so every caller just concatenates it. ECMA-376's own default when the element is
+        /// absent is `"tab"` — Word only writes `w:suff` when a level deviates from that. Consumed
+        /// ONLY by the heading-numbering path this field was added for (`parseParagraph`'s heading
+        /// branch): the pre-existing `.listItem` path spaces its marker `OfficeTextBuilder`'s own
+        /// way and must keep doing so byte-for-byte, so nothing there reads this field.
+        var suff: String
     }
 
     /// A single level's per-numId override, from `w:num/w:lvlOverride`: `startOverride` resets
@@ -1429,7 +1524,13 @@ enum DocxReader: OfficeDocumentReader {
         guard let fmt = lvl.child("w:numFmt")?.attributes["w:val"] else { return nil }
         let lvlText = lvl.child("w:lvlText")?.attributes["w:val"]
         let start = lvl.child("w:start")?.attributes["w:val"].flatMap(Int.init) ?? 1
-        return AbstractLevel(numFmt: fmt, lvlText: lvlText, start: start, isLgl: lvl.child("w:isLgl") != nil)
+        let suff: String
+        switch lvl.child("w:suff")?.attributes["w:val"] {
+        case "space": suff = " "
+        case "nothing": suff = ""
+        default: suff = "\t" // "tab", and an absent element (ECMA-376's own default), both mean tab
+        }
+        return AbstractLevel(numFmt: fmt, lvlText: lvlText, start: start, isLgl: lvl.child("w:isLgl") != nil, suff: suff)
     }
 
     /// Resolves one `(numId, ilvl)` to its effective definition: the abstract level, with any
@@ -1571,8 +1672,53 @@ enum DocxReader: OfficeDocumentReader {
         // back to plain `decimal` rather than fabricating a multi-character approximation.
         case "decimalEnclosedCircle" where n >= 1 && n <= 20:
             return String(UnicodeScalar(0x2460 + (n - 1))!)
+        // `ganada` (§17.18.59 `ST_NumberFormat`) — Korea's usual outline letter-list format, the
+        // rough equivalent of `lowerLetter`'s a/b/c: Word cycles through 14 consonant-vowel
+        // syllables. See `ganadaSequence`'s own doc for the algorithm and what is and isn't
+        // verified about it.
+        case "ganada": return ganadaSequence(n)
         default: return "\(n)"
         }
+    }
+
+    /// `가나다라마바사아자차카타파하` — the 14 `w:numFmt="ganada"` glyphs, in Word's own cycling
+    /// order. Verified against a real document's `1.`/`가.`/`나.`/`다.` clause numbering (1–3 only).
+    private static let ganadaGlyphs: [Character] = [
+        "가", "나", "다", "라", "마", "바", "사", "아", "자", "차", "카", "타", "파", "하",
+    ]
+
+    /// `n` (1-based) → its `ganada` glyph. 1...14 is settled; the overflow is a REASONED CHOICE
+    /// between three real conventions, recorded here so it isn't re-litigated from scratch.
+    ///
+    /// ECMA-376 §17.18.59 defines `ganada` in one sentence — *"sequential numbers from the Korean
+    /// Ganada format"* — and never states the glyph table or what happens past its end (it is
+    /// equally thin for `upperLetter`, which is the same shape of problem). `[MS-DOCX]`'s numFmt
+    /// extensions do pin the glyphs (U+AC00, U+B098, U+B2E4 … = 가, 나, 다) and confirm `ganada`
+    /// (syllables) is a DIFFERENT format from `chosung` (the 14 bare jamo ㄱㄴㄷ…ㅎ), which this
+    /// reader does not implement. Past the 14th item, three genuinely different conventions exist
+    /// and no source pins Word itself:
+    ///   - repeat the glyph once per completed cycle (15th → 가가, 29th → 가가가) — the algorithm
+    ///     Microsoft DOES document, verbatim, for the structurally identical Turkish/Bulgarian/Greek
+    ///     fixed alphabets in the same numFmt-extensions note; chosen here as the closest thing to
+    ///     evidence about Word's own numbering engine;
+    ///   - plain modulo wrap (15th → 가 again) — what LibreOffice actually ships
+    ///     (`bRecycleSymbol`), rejected because it renders items 1 and 15 identically, which is
+    ///     worse than wrong for a reader;
+    ///   - 거/너/더… (swap the vowel) — Korea's own 사무관리규정 시행규칙 for official documents; a
+    ///     real convention, but not evidence about Word.
+    /// So: 1...14 verified against a real document's 가./나./다. clause numbering; beyond that this
+    /// is inference by analogy, deliberately made, and worth re-checking if a real 15-item ganada
+    /// level ever turns up.
+    ///
+    /// NOT modelled on `letterSequence`, and that is not merely a style difference: `letterSequence`
+    /// does positional base-26 (z → aa → ab), which matches LibreOffice but NOT Word, whose Latin
+    /// lists actually go AA, BB, CC past Z by the same repeat rule used above. That divergence is
+    /// pre-existing, out of scope here, and left alone rather than fixed in passing.
+    private static func ganadaSequence(_ n: Int) -> String {
+        guard n > 0 else { return "\(n)" }
+        let index = (n - 1) % 14
+        let repeats = (n - 1) / 14 + 1
+        return String(repeating: String(ganadaGlyphs[index]), count: repeats)
     }
 
     /// Ideograph numeral digits 0–9 (〇一二三四五六七八九) — CJK Unified Ideographs, the digit
@@ -1642,24 +1788,113 @@ enum DocxReader: OfficeDocumentReader {
         var byId: [String: Relationship] = [:]
     }
 
+    /// The relationships PART for a given content part, per OPC convention: `<dir>/_rels/<file>.rels`
+    /// sits alongside the `_rels` folder in the SAME directory as the part itself. Every content
+    /// part carries its OWN relationship id-space — `word/header1.xml`'s `rId1` can point somewhere
+    /// completely different than `word/document.xml`'s `rId1` — so resolving one part's `r:embed`
+    /// against another's table silently returns the wrong target or none (header-footer-design.md
+    /// §2b). Parameterizing THIS function (mirroring `parseNoteBodies`'s own `part:` argument,
+    /// rather than a second mechanism) is what lets a header/footer part resolve through its own
+    /// table instead of the body's.
+    private static func relsPath(for part: String) -> String {
+        let dir = (part as NSString).deletingLastPathComponent
+        let file = (part as NSString).lastPathComponent
+        return dir.isEmpty ? "_rels/\(file).rels" : "\(dir)/_rels/\(file).rels"
+    }
+
     /// Absent from an image-less document exactly like `styles.xml`/`numbering.xml` — falls back
     /// to an empty table, so every `r:embed`/`r:link` lookup below simply misses and the reader
-    /// still produces `.image` blocks (marked unresolvable) instead of crashing.
-    private static func parseRelationships(from archive: ZipArchive) -> Relationships {
-        guard archive.contains("word/_rels/document.xml.rels"),
-              let data = try? archive.data(for: "word/_rels/document.xml.rels"),
+    /// still produces `.image` blocks (marked unresolvable) instead of crashing. Also the normal
+    /// case for a footer part: `footer1.xml`/`footer2.xml` commonly have NO `_rels` part at all
+    /// (nothing in them ever needs a relationship), which this same fallback handles — absent is
+    /// normal, not an error, exactly like a document with no images.
+    private static func parseRelationships(from archive: ZipArchive, part: String = "word/document.xml") -> Relationships {
+        let relsPart = relsPath(for: part)
+        guard archive.contains(relsPart),
+              let data = try? archive.data(for: relsPart),
               let root = try? buildTree(data)
         else { return Relationships() }
         var rels = Relationships()
+        // A relationship's Target is relative to the PART's own directory, not always "word/" — a
+        // header/footer part's rels live in "word/_rels/", and its embedded targets are relative to
+        // "word/" exactly like the body's, since Word keeps every part directly under "word/" with
+        // no further nesting. Computed from `part`'s own directory rather than hardcoded so this
+        // stays correct if that ever changes.
+        let partDir = (part as NSString).deletingLastPathComponent
         for rel in root.children where rel.name == "Relationship" {
             guard let id = rel.attributes["Id"], let target = rel.attributes["Target"] else { continue }
             let external = rel.attributes["TargetMode"] == "External"
-            // An embedded Target is package-relative to `word/` ("media/image1.png"); an external
-            // Target is already a complete `file:///…`/`http://…` reference and must not be
-            // rewritten into a path that looks like it lives in this archive.
-            rels.byId[id] = Relationship(target: external ? target : "word/" + target, external: external)
+            // An embedded Target is package-relative to the part's own directory ("media/image1.png"
+            // under "word/"); an external Target is already a complete `file:///…`/`http://…`
+            // reference and must not be rewritten into a path that looks like it lives in this
+            // archive.
+            let resolved = external ? target : (partDir.isEmpty ? target : "\(partDir)/\(target)")
+            rels.byId[id] = Relationship(target: resolved, external: external)
         }
         return rels
+    }
+
+    // MARK: Headers/footers — w:sectPr's headerReference/footerReference (header-footer-design.md §2)
+
+    /// The body's own trailing `w:sectPr`'s header/footer references (`tag` is
+    /// `"w:headerReference"` or `"w:footerReference"`), resolved through `relationships` (the
+    /// BODY's own table — `w:headerReference/@r:id` is one of the body's relationship ids, unlike
+    /// the CONTENT of the part it points to, which carries its own separate table) to a part path,
+    /// each part then read through its OWN relationships (§2b) and the SAME `parseBody` every
+    /// other body/note/text-box walk in this reader already uses (§2c — zero new block-parsing
+    /// code). A document with more than one section (an inline `w:pPr/w:sectPr` mid-body) can
+    /// declare a DIFFERENT header/footer per section; this reader resolves only the body's trailing
+    /// section, matching `pageGeometry`'s own documented scope and every real single-section
+    /// document this feature was measured against.
+    ///
+    /// The counter-intuitive rule (§2d) is encoded here, not left for a later consumer to
+    /// rediscover: when `w:titlePg` is set and NO `first`-type reference resolves, OOXML does not
+    /// mean "use `.defaultPages` on page one" — it means Word created a BLANK header/footer for the
+    /// first page, because this is the section's own title page. That is represented EXPLICITLY, as
+    /// a `.firstPage` entry with empty `blocks`, rather than by the entry's mere absence — an
+    /// absent `.firstPage` entry means "this section never differentiated a first page at all", and
+    /// conflating the two would put the running header back on the cover page, the exact bug this
+    /// rule exists to prevent. `w:titlePg` present alongside an ACTUAL `first`-type reference reads
+    /// that reference's own (possibly non-empty) content instead — footer2.xml in the reference
+    /// document is exactly this case: a real reference to a part that happens to hold two empty
+    /// paragraphs.
+    private static func headerFooterEntries(
+        body: XMLNode, tag: String, relationships: Relationships, archive: ZipArchive,
+        styleInfo: StyleInfo, numbering: NumberingInfo
+    ) -> [OfficeHeaderFooter] {
+        guard let sectPr = body.children.last(where: { $0.name == "w:sectPr" }) else { return [] }
+        let titlePg = sectPr.child("w:titlePg") != nil
+        var blocksByType: [String: [OfficeBlock]] = [:]
+        for ref in sectPr.children where ref.name == tag {
+            guard let type = ref.attributes["w:type"], let rId = ref.attributes["r:id"],
+                  let target = relationships.byId[rId], !target.external,
+                  archive.contains(target.target),
+                  let data = try? archive.data(for: target.target),
+                  let partRoot = try? buildTree(data)
+            else { continue }
+            // Every part gets its OWN fresh footnote/comment/list-numbering state — a header/footer
+            // in real documents carries none of these, and starting fresh (rather than threading the
+            // body's own, still-live state into a part the body never actually contains) keeps this
+            // read from mutating counters the body's own walk still owns.
+            let partRelationships = parseRelationships(from: archive, part: target.target)
+            blocksByType[type] = parseBody(
+                partRoot, styleInfo: styleInfo, numbering: numbering, relationships: partRelationships,
+                notes: NoteNumbering(), comments: CommentRangeTracking(numberById: [:]),
+                listState: ListNumberingState())
+        }
+        var entries: [OfficeHeaderFooter] = []
+        if let blocks = blocksByType["default"] {
+            entries.append(OfficeHeaderFooter(appliesTo: .defaultPages, blocks: blocks))
+        }
+        if let blocks = blocksByType["even"] {
+            entries.append(OfficeHeaderFooter(appliesTo: .evenPages, blocks: blocks))
+        }
+        if let blocks = blocksByType["first"] {
+            entries.append(OfficeHeaderFooter(appliesTo: .firstPage, blocks: blocks))
+        } else if titlePg {
+            entries.append(OfficeHeaderFooter(appliesTo: .firstPage, blocks: []))
+        }
+        return entries
     }
 
     // MARK: Images — w:drawing (DrawingML) and w:pict (legacy VML)
@@ -1727,30 +1962,36 @@ enum DocxReader: OfficeDocumentReader {
                         blocks.append(placeholder)
                     }
                 case "w:drawing":
+                    // A picture and a text box are NOT mutually exclusive within one `w:drawing` —
+                    // a group can hold a `pic:pic` (say, a background photo) alongside a `wps:wsp`
+                    // carrying `w:txbxContent` (a caption on top of it), as separate siblings. Both
+                    // are always computed and both survive, picture(s) first then text, in the
+                    // drawing's own document order; a placeholder is reached only when NEITHER
+                    // produced anything (unchanged from before).
                     let pictures = imageBlocks(fromDrawing: child, relationships: relationships)
-                    if !pictures.isEmpty {
-                        blocks.append(contentsOf: pictures)
-                        continue
-                    }
                     let text = textBoxBlocks(
                         in: child, styleInfo: styleInfo, numbering: numbering,
                         relationships: relationships, notes: notes, comments: comments, listState: listState)
-                    if !text.isEmpty {
+                    if !pictures.isEmpty || !text.isEmpty {
+                        blocks.append(contentsOf: pictures)
                         blocks.append(contentsOf: text)
-                    } else if allowGraphicPlaceholder, let placeholder = graphicPlaceholderBlock(for: child) {
+                        continue
+                    }
+                    if allowGraphicPlaceholder, let placeholder = graphicPlaceholderBlock(for: child) {
                         // A chart/diagram with no `mc:AlternateContent` wrapper at all (some
                         // producers emit one without the legacy-fallback ceremony) — there is no
                         // Fallback to try, so this is the placeholder's only chance to appear.
                         blocks.append(placeholder)
                     }
                 case "w:pict":
-                    if let block = imageBlock(fromPict: child, relationships: relationships) {
-                        blocks.append(block)
-                    } else {
-                        blocks.append(contentsOf: textBoxBlocks(
-                            in: child, styleInfo: styleInfo, numbering: numbering,
-                            relationships: relationships, notes: notes, comments: comments, listState: listState))
-                    }
+                    // Same "both survive" rule as `w:drawing` above — a legacy VML picture and a
+                    // legacy VML text box are two different child elements of `w:pict` and neither
+                    // one's presence should suppress the other.
+                    let picture = imageBlock(fromPict: child, relationships: relationships)
+                    if let picture { blocks.append(picture) }
+                    blocks.append(contentsOf: textBoxBlocks(
+                        in: child, styleInfo: styleInfo, numbering: numbering,
+                        relationships: relationships, notes: notes, comments: comments, listState: listState))
                 default:
                     walk(child)
                 }
@@ -1795,24 +2036,32 @@ enum DocxReader: OfficeDocumentReader {
     }
 
     /// A shape's caption/callout text lives in `w:txbxContent` (one or more, nested arbitrarily
-    /// deep inside `wps:wsp`/`wpg:wgp`), each holding ordinary `w:p` paragraphs — reads them with
-    /// the SAME paragraph classification as the document body (`parseParagraph`), so a heading or
-    /// list style inside a text box is honoured exactly like one in the body. An empty paragraph
-    /// here (Word leaves a placeholder `<w:p/>` in the text frame of an otherwise-empty AutoShape)
-    /// is real content in the document BODY but not here — a shape with nothing typed into it has
-    /// no text, and must produce no block; the body's own "empty paragraph = a blank line" reading
-    /// does not apply to shape decoration.
+    /// deep inside `wps:wsp`/`wpg:wgp`) — routed through the SAME body-level dispatch
+    /// (`parseBodyChild`) the document body itself uses, rather than only handling its `w:p`
+    /// children directly: OOXML permits a `w:tbl` as a direct child of `w:txbxContent` too (a table
+    /// typed inside a text box), and `parseBodyChild` already knows how to turn that into a real
+    /// `.table` block via `parseTable` — no parallel mini-parser, no special case, and a text box
+    /// carrying a list or an `w:sdt`-wrapped paragraph is handled the identical way. Rendered
+    /// INLINE, in the text box's own document order — this reader does not attempt the shape's
+    /// float/wrap position (invariant 31 measured that path too expensive and deliberately unshipped;
+    /// a text box is not an exception to it). An empty paragraph here (Word leaves a placeholder
+    /// `<w:p/>` in the text frame of an otherwise-empty AutoShape) is real content in the document
+    /// BODY but not here — a shape with nothing typed into it has no text, and must produce no
+    /// block; the body's own "empty paragraph = a blank line" reading does not apply to shape
+    /// decoration. `isEmptyTextBlock` only ever filters a text/heading/list block with no spans —
+    /// a `.table` block from a text box's own `w:tbl` always survives, empty visual rows included,
+    /// exactly like an ordinary body table.
     private static func textBoxBlocks(
         in node: XMLNode, styleInfo: StyleInfo, numbering: NumberingInfo, relationships: Relationships,
         notes: NoteNumbering, comments: CommentRangeTracking, listState: ListNumberingState
     ) -> [OfficeBlock] {
         var blocks: [OfficeBlock] = []
         for txbx in node.allDescendants("w:txbxContent") {
-            for p in txbx.children where p.name == "w:p" {
-                let paragraphBlocks = parseParagraph(
-                    p, styleInfo: styleInfo, numbering: numbering, relationships: relationships,
+            for child in txbx.children {
+                let childBlocks = parseBodyChild(
+                    child, styleInfo: styleInfo, numbering: numbering, relationships: relationships,
                     notes: notes, comments: comments, listState: listState)
-                blocks.append(contentsOf: paragraphBlocks.filter { !isEmptyTextBlock($0) })
+                blocks.append(contentsOf: childBlocks.filter { !isEmptyTextBlock($0) })
             }
         }
         return blocks
@@ -2130,10 +2379,18 @@ enum DocxReader: OfficeDocumentReader {
         // this precedence would drop every clause heading in such a document out of the outline
         // sidebar — silently, since parsing still "succeeds". `outlineLvl 9` is still not a
         // heading (see `headingLevel`), so that case correctly falls through to `.listItem` below.
-        // A heading's own numPr counter is deliberately NOT advanced here — this reader doesn't
-        // render a heading's list-derived number into its text at all, so touching `listState`
-        // for it would only make an unrelated LATER list item at the same numId/level skip a
-        // value it never visibly used.
+        // A heading's own numbering IS now rendered into its text (reversing an earlier decision
+        // recorded at this exact spot: "a heading's own numPr counter is deliberately NOT
+        // advanced"). Word attaches a heading's clause numbering to its STYLE — `w:pPr/w:numPr` on
+        // the `HeadingN` style definition itself, not repeated per paragraph — which is why
+        // "1. 서비스 사용" / "1.1. 서비스 신규 신청" used to render with no leading number at all:
+        // the numbering was there, just never looked up past the paragraph's own (usually absent)
+        // `w:numPr`. `resolvedNumPr`, below, is what reaches it, walking the SAME `w:basedOn` chain
+        // every other per-style property here climbs. The counter `numberedListInfo` advances for
+        // a numbered heading is the exact same `listState` a LATER plain `.listItem` at that
+        // numId/level continues from — correct, because Word's multilevel counters belong to the
+        // numId, not to whether the paragraph carrying them happens to be a heading or an ordinary
+        // list item (see `ListNumberingState`'s own doc).
         let pStyleId = pPr?.child("w:pStyle")?.attributes["w:val"]
         // The P2 cascade (docDefaults → style chain → this paragraph's own direct `w:pPr`) —
         // resolved once per paragraph and reused for whichever of heading/listItem/paragraph this
@@ -2142,8 +2399,32 @@ enum DocxReader: OfficeDocumentReader {
         let textBlock: OfficeBlock?
         let skipEmptyText = spans.isEmpty && (!drawingBlocks.isEmpty || !formulaBlocks.isEmpty)
         if let level = headingLevel(pPr: pPr, pStyleId: pStyleId, styleInfo: styleInfo) {
+            var headingSpans = spans
+            // Prepend the heading's own numbering marker — resolved through `resolvedNumPr`
+            // (paragraph's own `w:numPr` first, else the style chain) and formatted by the SAME
+            // `numberedListInfo` a plain list item uses, so `1.`/`1.1.`/`가.` count identically
+            // either way. Guarded exactly like every other "unspecified → unchanged" cascade in
+            // this reader (invariant 37): an empty heading (`skipEmptyText`'s own case) gets no
+            // marker span to attach to; a `numId` that doesn't resolve, or resolves to `bullet`/
+            // `none`/no `w:lvlText`, yields `nil`/`""` from `numberedListInfo` exactly as it does
+            // for a `.listItem`, and produces no marker either — a document with no numbering
+            // anywhere renders byte-identical to before this sprint. The marker span COPIES
+            // `headingSpans[0]` and only replaces its text, so a numbered heading's "1." renders in
+            // that heading's own font/size/weight/colour, never a reader-invented default; its
+            // trailing separator is the level's own `w:suff` (space/nothing/tab), never a
+            // hardcoded one.
+            if !headingSpans.isEmpty,
+               let (numId, ilvl) = resolvedNumPr(pPr: pPr, pStyleId: pStyleId, styleInfo: styleInfo),
+               let numId,
+               let info = numberedListInfo(numId: numId, ilvl: ilvl, info: numbering, state: listState),
+               let marker = info.marker, !marker.isEmpty {
+                let suff = resolvedLevel(numId: numId, ilvl: ilvl, info: numbering)?.suff ?? "\t"
+                var markerSpan = headingSpans[0]
+                markerSpan.text = marker + suff
+                headingSpans.insert(markerSpan, at: 0)
+            }
             textBlock = skipEmptyText ? nil
-                : .heading(level: level, spans: spans, rtl: rtl, alignment: alignment, tabStops: tabStops, format: format)
+                : .heading(level: level, spans: headingSpans, rtl: rtl, alignment: alignment, tabStops: tabStops, format: format)
         } else if let numPr = pPr?.child("w:numPr") {
             let ilvl = Int(numPr.child("w:ilvl")?.attributes["w:val"] ?? "") ?? 0
             let numId = numPr.child("w:numId")?.attributes["w:val"]
@@ -2695,6 +2976,17 @@ enum DocxReader: OfficeDocumentReader {
         // document, no hyperlink ever targets it, and recording it would force every span right
         // after one — text a user never asked to navigate to — out of the ordinary run-merging path.
         var pendingBookmarks: [String] = []
+        // A COMPOUND field (`w:fldChar`/`w:instrText`, header-footer-design.md §5) is a state
+        // machine spread across SIBLING runs, never nested inside one: `begin` opens it, one or
+        // more `w:instrText` runs spell the instruction ("PAGE   \* MERGEFORMAT"), `separate`
+        // closes the instruction and opens the cached RESULT text, `end` closes the whole field.
+        // Some fields (`STYLEREF` in this reader's own reference document) never reach `separate`
+        // at all — no cached result exists to mark, and `.none` after `end` reflects that exactly.
+        // `.simple` state deliberately doesn't exist: a `w:fldSimple` is self-contained (its own
+        // `w:instr` attribute, no separate/end pair) and is handled inline where it's found, not
+        // through this machine.
+        enum FieldState: Equatable { case none, collectingInstr(String), inResult(kind: PageNumberField?) }
+        var fieldState: FieldState = .none
         func appendMerging(_ span: Span) {
             var span = span
             if !pendingBookmarks.isEmpty {
@@ -2708,7 +3000,13 @@ enum DocxReader: OfficeDocumentReader {
             if !comments.activeIds.isEmpty {
                 span.commentIds += comments.activeIds
             }
-            guard span.bookmarks.isEmpty, span.commentIds.isEmpty else { spans.append(span); return }
+            // A span carrying a page-number field marker is never merged either — same reasoning as
+            // bookmarks/commentIds right below: merging would smear the substitutable cached text
+            // into the literal characters around it (the dashes framing a page number), losing the
+            // exact boundary a later live-substitution pass needs. See `Span.pageNumberField`'s own
+            // doc.
+            guard span.bookmarks.isEmpty, span.commentIds.isEmpty, span.pageNumberField == nil
+            else { spans.append(span); return }
             // A bookmarked/commented span is also never EXTENDED by whatever comes right after it —
             // merging trailing text into it would grow the marker's rendered span past its real
             // target/range, the same boundary-smearing `Span.bookmarks`'/`Span.commentIds`' doc
@@ -2722,15 +3020,16 @@ enum DocxReader: OfficeDocumentReader {
             // long), so two runs differing only in colour merged and the SECOND run's colour was
             // gone. Per-slot fonts make adjacent runs differ in family constantly
             // (`docs/per-script-font-design.md` §5.1), which would have flattened that feature run
-            // by run. Two fields are deliberately absent: `bookmarks`/`commentIds` are handled by
-            // the `isEmpty` guards above (never merged at all, in either direction), and
-            // `resolvedFontDescriptor` is still `nil` for every span here — it is written by
-            // `resolvingFontSubstitution()`, which runs at the dispatch point AFTER this reader has
-            // returned (`DocumentTypes.readOffice`), and that pass does its own splitting rather
-            // than re-entering this one. Anything ADDED to `Span` that a `w:r` can express belongs
-            // in this list; `DocxReaderTests.testEveryRunPropertyADocxCanCarryKeepsAdjacentRunsApart`
+            // by run. Three fields are deliberately absent: `bookmarks`/`commentIds`/`pageNumberField`
+            // are handled by the `isEmpty`/`== nil` guards above (never merged at all, in either
+            // direction), and `resolvedFontDescriptor` is still `nil` for every span here — it is
+            // written by `resolvingFontSubstitution()`, which runs at the dispatch point AFTER this
+            // reader has returned (`DocumentTypes.readOffice`), and that pass does its own splitting
+            // rather than re-entering this one. Anything ADDED to `Span` that a `w:r` can express
+            // belongs in this list; `DocxReaderTests.testEveryRunPropertyADocxCanCarryKeepsAdjacentRunsApart`
             // is the guard that says so out loud.
             if let last = spans.last, last.bookmarks.isEmpty, last.commentIds.isEmpty,
+               last.pageNumberField == nil,
                last.bold == span.bold, last.italic == span.italic,
                last.underline == span.underline, last.underlineStyle == span.underlineStyle,
                last.caps == span.caps, last.smallCaps == span.smallCaps,
@@ -2804,6 +3103,20 @@ enum DocxReader: OfficeDocumentReader {
                 case "m:oMath":
                     let text = OmmlTranslator.flattenText(child)
                     if !text.isEmpty { appendMerging(Span(text: text, link: link)) }
+                // The OTHER field encoding (header-footer-design.md §5): `w:fldSimple` is
+                // SELF-CONTAINED — its own `w:instr` attribute plus an ordinary `w:r` cached-result
+                // child, no `begin`/`separate`/`end` pair at all. Mark every span this content walk
+                // produces with the SAME field kind, after the fact (the walk that builds them is
+                // the same ordinary recursion every other wrapper gets — `w:r` inside it needs no
+                // special case of its own).
+                case "w:fldSimple":
+                    let kind = child.attributes["w:instr"].flatMap(pageNumberFieldKind)
+                    let startIndex = spans.count
+                    walk(child, link: link)
+                    if let kind {
+                        for i in startIndex..<spans.count { spans[i].pageNumberField = kind }
+                    }
+                    continue
                 case "w:hyperlink":
                     // A hyperlink whose target can't be resolved (no `r:id`/`w:anchor`, or a
                     // relationship id absent from `document.xml.rels`) still keeps its text — only
@@ -2835,13 +3148,51 @@ enum DocxReader: OfficeDocumentReader {
                             if let id = refChild.attributes["w:id"], let number = notes.endnote[id] {
                                 appendMerging(Span(text: "\(number)", link: link, superscript: true))
                             }
+                        // The COMPOUND field state machine (see `fieldState`'s own doc above) — each
+                        // control element sits alone in its OWN run, a sibling of the run(s) it
+                        // brackets, never nested inside the text run it's marking.
+                        case "w:fldChar":
+                            switch refChild.attributes["w:fldCharType"] {
+                            case "begin":
+                                fieldState = .collectingInstr("")
+                            case "separate":
+                                // The common case: an instruction was actually collected. A
+                                // `separate` with nothing collected (malformed, or this walk started
+                                // mid-field) opens a result region with no known kind — no marker,
+                                // exactly as if the field weren't recognized at all.
+                                if case .collectingInstr(let instr) = fieldState {
+                                    fieldState = .inResult(kind: pageNumberFieldKind(instr))
+                                } else {
+                                    fieldState = .inResult(kind: nil)
+                                }
+                            case "end":
+                                // Closes the field whether or not it ever reached `separate` — the
+                                // `STYLEREF` case in this reader's own reference document goes
+                                // straight from `begin`+`instrText` to `end` with no result at all.
+                                fieldState = .none
+                            default:
+                                break
+                            }
+                        case "w:instrText":
+                            if case .collectingInstr(let instr) = fieldState {
+                                fieldState = .collectingInstr(instr + refChild.text)
+                            }
                         default:
                             continue
                         }
                     }
+                    // Only a run sitting BETWEEN `separate` and `end` — the cached RESULT text — is
+                    // ever marked; a `begin`/`instrText`/`separate`/`end` run itself has no `w:t` of
+                    // its own (`buildSpan` finds nothing to build), so this never mislabels the
+                    // control runs themselves.
+                    let fieldKind: PageNumberField? = {
+                        if case .inResult(let kind) = fieldState { return kind }
+                        return nil
+                    }()
                     for var span in buildSpans(from: child, styleInfo: styleInfo,
                                                pStyleId: pStyleId, neighbourFamily: spans.last?.fontName) {
                         span.link = link
+                        span.pageNumberField = fieldKind
                         appendMerging(span)
                     }
                 default:
@@ -2851,6 +3202,23 @@ enum DocxReader: OfficeDocumentReader {
         }
         walk(node, link: nil)
         return spans
+    }
+
+    /// Reads a field instruction string (`w:instrText`'s concatenated text, or `w:fldSimple`'s
+    /// `w:instr` attribute) down to which page-number field it names, tolerating the switches Word
+    /// always appends (`\* MERGEFORMAT`, …) and leading/trailing whitespace. `nil` for every other
+    /// field (`STYLEREF`, `DATE`, …) — those keep their cached text with no marker, exactly as
+    /// before this existed (header-footer-design.md §7: no live value is planned for `STYLEREF`).
+    private static func pageNumberFieldKind(_ instr: String) -> PageNumberField? {
+        let trimmed = instr.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The field NAME is the first whitespace-separated token — instructions read like
+        // `PAGE   \* MERGEFORMAT` or ` NUMPAGES  \* MERGEFORMAT `.
+        guard let name = trimmed.split(separator: " ", maxSplits: 1).first else { return nil }
+        switch name.uppercased() {
+        case "PAGE": return .page
+        case "NUMPAGES": return .numPages
+        default: return nil
+        }
     }
 
     /// `r:id` resolves through the SAME relationship plumbing an embedded image's `r:embed` uses
