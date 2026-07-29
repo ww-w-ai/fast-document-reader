@@ -30,6 +30,10 @@ struct PageBandContent {
     /// is the behaviour every existing test was written against and the right answer for a caller
     /// (or a test) that drives the painter without a layout pass.
     var openedBoundaries: Set<Int>?
+    /// WHERE each opened band is (`PageBandLayoutDelegate.openedBands`) — the position layout actually
+    /// put the gap at, which is NOT `page × pitch + pageContentHeight` whenever a table overran its
+    /// page. Consulted in preference to the arithmetic; absent for a page falls back to it.
+    var openedBands: [Int: (top: CGFloat, height: CGFloat)] = [:]
 }
 
 /// Paints the running header/footer INTO the band `PageBandLayoutDelegate` already reserved between
@@ -162,36 +166,41 @@ enum PageBandPainter {
             // row. Both BETWEEN-page arms below are gated on it; the two OUTER edges are not, because
             // they are reserved by different mechanisms that a table cannot block.
             let boundaryIsOpen = bandExists(after: page, in: content)
-            // THE PAGE BREAK ITSELF — drawn before the header/footer that sit inside it, so the two
-            // land on top of the gap rather than under it. Only where layout actually opened the
-            // band: filling a boundary that was never opened would put a grey stripe across a table.
+            // WHERE the band actually is. Layout's own answer when it has one, the page grid only
+            // as a fallback: a table cannot be shifted, so it overruns its page and the gap then
+            // starts BELOW `page × pitch + pageContentHeight`. Trusting the grid printed "- 4 -"
+            // across the last rows of an overrunning table — reported, and the reason this exists.
+            let gridTop = CGFloat(page) * pitch + pageContentHeight + leading
+            let gap = content.openedBands[page].map { (top: $0.top + origin.y, height: $0.height) }
+                ?? (top: gridTop + origin.y, height: band)
+
+            // THE PAGE BREAK ITSELF — one line across the reading column, in the middle of the gap,
+            // between the footer above it and the header below it. Drawn first so those two land on
+            // top of it.
             //
-            // Why it exists: the band is the document's own two margins (invariant 57e), which on A4
-            // is ~170pt of white. With nothing marking it, a reader sees a long blank stretch with a
-            // header floating in the middle and no way to tell a page ended from a rendering fault —
-            // reported as exactly that. Word shows the same break as a gap between two sheets; this
-            // is that gap, one shade off the paper, closed by a hairline at each edge.
-            if boundaryIsOpen, page < total - 1 {
-                let gapTop = CGFloat(page) * pitch + pageContentHeight + leading + origin.y
-                let rect = NSRect(x: origin.x, y: gapTop, width: content.columnWidth, height: band)
-                if rect.intersects(visibleRect) {
-                    Palette.pageGapBg.setFill()
-                    rect.fill()
+            // It began as a FILLED band, one shade off the paper, and the owner read that as "헤더와
+            // 푸터 부분에 일부러 영역을 그린건가? 디바이더는 없고 영역 박스만 크게 있네" — on A4 the
+            // gap is ~170pt, so a fill is a large grey box that describes the header/footer AREA
+            // rather than the page ending. A divider is a line. The gap keeps the paper's own colour.
+            if boundaryIsOpen, page < total - 1, gap.height > 0 {
+                let rule = NSRect(x: origin.x, y: gap.top + (gap.height / 2).rounded(),
+                                  width: content.columnWidth, height: 1)
+                if rule.intersects(visibleRect) {
                     Palette.pageGapEdge.setFill()
-                    // A whole DEVICE pixel, so the line is crisp at any magnification rather than a
-                    // blurred two-pixel smear — the same reason invariant 42 keeps table rules integral.
-                    let hair = 1 / max(1, NSScreen.main?.backingScaleFactor ?? 2)
-                    NSRect(x: rect.minX, y: rect.minY, width: rect.width, height: hair).fill()
-                    NSRect(x: rect.minX, y: rect.maxY - hair, width: rect.width, height: hair).fill()
+                    rule.fill()
                 }
             }
             // Footer of THIS page draws in the band that FOLLOWS it — never for the last page, which
             // has no following BETWEEN-PAGE band; its own trailing footer is the dedicated arm below.
             if boundaryIsOpen, page < total - 1, content.footerHeight > 0,
                let entry = applicableEntry(content.footers, pageIndex: page), !entry.blocks.isEmpty {
-                let top = CGFloat(page) * pitch + pageContentHeight + leading
+                // Centred in the UPPER half of the gap — that half is page N's own bottom margin, and
+                // a footer sits inside it rather than jammed against the last line of text. Placing it
+                // flush at the top of the gap read as the number belonging to the paragraph above it.
+                let half = gap.height / 2
+                let inset = max(0, (half - content.footerHeight) / 2)
                 paint(entry, pageIndex: page, totalPages: total, content: content,
-                     top: top, height: content.footerHeight, origin: origin)
+                     top: gap.top - origin.y + inset, height: content.footerHeight, origin: origin)
             }
             // Header of THIS page draws in the band that PRECEDES it — never for page 0, whose own
             // leading header is the dedicated arm below (a different reservation mechanism entirely).
@@ -199,9 +208,16 @@ enum PageBandPainter {
             if bandExists(after: page - 1, in: content),
                page > 0, content.headerHeight > 0,
                let entry = applicableEntry(content.headers, pageIndex: page), !entry.blocks.isEmpty {
-                let top = CGFloat(page) * pitch - content.headerHeight + leading
+                // At the BOTTOM of the gap that PRECEDES this page — directly above its first line.
+                // Centred in the LOWER half of the gap that PRECEDES this page — that half is this
+                // page's own top margin, which is where its running header lives.
+                let previous = content.openedBands[page - 1].map { (top: $0.top, height: $0.height) }
+                    ?? (top: CGFloat(page) * pitch - band + leading, height: band)
+                let half = previous.height / 2
+                let inset = max(0, (half - content.headerHeight) / 2)
                 paint(entry, pageIndex: page, totalPages: total, content: content,
-                     top: top, height: content.headerHeight, origin: origin)
+                     top: previous.top + half + inset,
+                     height: content.headerHeight, origin: origin)
             }
             // The two OUTER edges the between-page arms above structurally cannot reach: page 0's own
             // LEADING header, and the LAST page's own TRAILING footer. Reserved by two entirely

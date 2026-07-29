@@ -53,6 +53,7 @@ final class ReaderTextView: NSTextView {
             // Read LIVE, not from the snapshot `configurePageBand` built: which boundaries layout
             // managed to open is only known once layout has run, and it changes with every reflow.
             content.openedBoundaries = wc.pageBandDelegate.openedBoundaries
+            content.openedBands = wc.pageBandDelegate.openedBands
             PageBandPainter.draw(content, pageContentHeight: wc.pageBandDelegate.pageContentHeight,
                                  band: wc.pageBandDelegate.band,
                                  documentHeight: lm.usedRect(for: tc).height,

@@ -68,9 +68,21 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// stale entry would paint into space the new layout did not make.
     private(set) var openedBoundaries: Set<Int> = []
 
+    /// WHERE each opened band actually is: page `n` → the vertical span of the empty gap that was
+    /// made after it, in text-container coordinates.
+    ///
+    /// The arithmetic position (`page × pitch + pageContentHeight`) is NOT this, and the difference is
+    /// a reported defect rather than a nicety: a table cannot be shifted, so it overruns its page, and
+    /// the gap then begins BELOW where the page grid says it should. Painting the footer at the
+    /// arithmetic position printed "- 4 -" across the last rows of a table that had overrun. The gap
+    /// is exactly `[the line's own proposed top, where it was moved to]` — everything above the
+    /// proposed top is the previous page's last line, everything below the target is the next page.
+    private(set) var openedBands: [Int: (top: CGFloat, height: CGFloat)] = [:]
+
     /// Called when the storage is about to be laid out afresh — see `openedBoundaries`.
     func resetOpenedBoundaries() {
         openedBoundaries = []
+        openedBands = [:]
         shiftCount = 0
     }
 
@@ -110,7 +122,14 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         // Page 0's own first line falls out of the same formula as `page == -1` (see above), and a
         // negative index is not a between-page boundary at all — the leading band is its own
         // mechanism — so it is deliberately not recorded.
-        if page >= 0 { openedBoundaries.insert(Int(page)) }
+        if page >= 0 {
+            openedBoundaries.insert(Int(page))
+            // The gap is what the shift OPENED: from where this line was GOING to start to where it
+            // now does. `rect` is the local copy taken before the mutation, so it still holds the
+            // proposed position — which is also the bottom of the previous page's last line, however
+            // far that page overran.
+            openedBands[Int(page)] = (top: rect.minY, height: shift)
+        }
         return true
     }
 
