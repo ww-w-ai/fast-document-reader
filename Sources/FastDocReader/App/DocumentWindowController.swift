@@ -12,8 +12,19 @@ import UniformTypeIdentifiers
 final class PageCenteringClipView: NSClipView {
     override func constrainBoundsRect(_ proposedBounds: NSRect) -> NSRect {
         var rect = super.constrainBoundsRect(proposedBounds)
-        guard let doc = documentView, doc.frame.width < rect.width else { return rect }
-        rect.origin.x = (doc.frame.width - rect.width) / 2
+        guard let doc = documentView else { return rect }
+        // The PAPER's width when the document has one, and only the view's frame otherwise.
+        //
+        // Reading the frame alone was the bug the owner reported twice ("문서의 width 가 창보다 작으면
+        // 센터 정렬되어야지", then "정렬이 가운데가 아니네 — 텍스트 정렬이 아니라 문서의 정렬"): AppKit
+        // keeps widening a text view's frame back to its clip view — through `sizeToFit`, and again on
+        // a window resize — and a frame that equals the clip can never satisfy `frame < clip`, so the
+        // test silently stopped firing and the page hugged the left edge. Measured at 727.2pt of frame
+        // around a 595.3pt sheet. The paper is a constant of the DOCUMENT, so asking for it directly
+        // cannot go stale that way.
+        let contentWidth = (doc as? ReaderTextView)?.pagedPaperWidth ?? doc.frame.width
+        guard contentWidth < rect.width else { return rect }
+        rect.origin.x = (contentWidth - rect.width) / 2
         return rect
     }
 }
@@ -230,7 +241,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // why opening the sidebar (narrower) drifted while closing it (wider) did not.
             if let lm = self.textView.layoutManager, let tc = self.textView.textContainer {
                 lm.ensureLayout(for: tc)
-                self.textView.sizeToFit()
+                self.sizeTextViewToFit()
             }
             self.restore(anchor)
             self.placeCopyButtons()
@@ -427,7 +438,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let width = trailing > 0 ? tc.size.width : 0
         let rect = NSRect(x: 0, y: baseline, width: width, height: trailing)
         lm.setExtraLineFragmentRect(rect, usedRect: rect, textContainer: tc)
-        textView.sizeToFit()
+        sizeTextViewToFit()
     }
 
     override init(window: NSWindow?) {
@@ -523,9 +534,30 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // arriving through the back door. `PageCenteringClipView` puts the spare width in the
             // margins instead.
             textView.autoresizingMask = []
+            // …and `sizeToFit` must respect that too, which needs BOTH of these. With
+            // `isHorizontallyResizable == false` AppKit takes "this view's width is its clip view's"
+            // literally: every `sizeToFit()` — `applyTrailingFooterBand`'s, and the reading-anchor
+            // restore's — silently widened the frame back to the CLIP, so the page stopped being a
+            // page. Measured on the reference report: frame 888.2pt against a 595.3pt sheet.
+            //
+            // Two visible consequences, both reported by the owner the moment sheets were drawn:
+            // the sheet was painted at the FRAME's width, so the paper ran the full width of the
+            // window with no edges and no desk beside it; and `PageCenteringClipView` compares
+            // `doc.frame.width < clip.bounds.width`, which a frame that always equals the clip can
+            // never satisfy — so the page hugged the left. It looked right until the first ⌘+,
+            // because the opening settle set the frame correctly and the first `sizeToFit` after a
+            // zoom undid it ("초기에는 여백이 보이는데, 거기에서 확대/축소하면 사라지고").
+            //
+            // `true` + the container's `widthTracksTextView = false` (set in `init`) is AppKit's own
+            // fixed-width text view: `sizeToFit` then derives the width from the CONTAINER plus its
+            // insets, which is exactly the paper. Non-paged keeps `false` and keeps tracking the clip.
+            textView.isHorizontallyResizable = true
             var f = textView.frame
             f.size.width = leftMargin + page + rightMargin
             textView.frame = f
+            textView.pagedPaperWidth = f.size.width
+            syncDeskBackground()
+            recentrePage()
             // First paged settle: open at `defaultPageZoom`, and bring the window to the page rather
             // than the page to the window.
             //
@@ -563,6 +595,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             return page
         }
         textView.autoresizingMask = [.width]
+        // Stated rather than inherited, for the paged branch's reason above: markdown and plain text
+        // WANT the frame to follow the clip, and a document opened after a paged one shares this view.
+        textView.isHorizontallyResizable = false
+        textView.pagedPaperWidth = nil       // markdown/plain text: the frame IS the content
+        syncDeskBackground()
         // The ONE place `lastClipWidth` is written. Every caller — this init/setup path,
         // `reflow(keeping:)`, `display(_:)`, `windowDidResize`, `viewportChanged` — funnels through
         // here, so the value can never disagree with the layout that actually just ran, regardless
@@ -725,6 +762,26 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         scrollView.hasHorizontalScroller = d * scrollView.magnification > scrollView.contentSize.width + 0.5
     }
 
+    /// Zoom OUT just far enough that the page still fits the reading area — never in, and never
+    /// further than it has to.
+    ///
+    /// Requested for the sidebar: *"목록을 열면 화면 크기가 작아지니 그만큼 문서가 축소되면 좋겠음"*, with
+    /// the bound stated straight after — *"무리하게 줄이진 말고, 창이 우측으로 삐져나가지 않도록 축소해서
+    /// 맞추라는 뜻"*. So this is shrink-to-fit, one-directional:
+    ///   • the page overflows the reading area → scale it down until it fits, side margins kept
+    ///   • it already fits → do nothing at all, including when there is room to spare
+    ///
+    /// The second half is what keeps this from being the "zoom follows the window" rule that was
+    /// deliberately removed (see `settleReadingColumn`): a manual resize still just reveals more desk,
+    /// and the reader's own zoom choice is never enlarged behind their back. Only a panel taking room
+    /// AWAY calls this — the app shrinking the reading area is the app's problem to absorb.
+    func shrinkPageZoomToFit() {
+        guard isPaged, let d = pagedDocumentWidth, d > 0 else { return }
+        let available = scrollView.contentSize.width - 2 * Self.pageWindowSideMargin
+        guard available > 1, d * scrollView.magnification > available + 0.5 else { return }
+        applyMagnification(clampPageZoom(available / d))
+    }
+
     /// The ONLY thing a zoom is allowed to touch. It must never reach `settleReadingColumn` or
     /// `updateTextInset`: invariant 56b's 65,853 ms freeze is AppKit filling layout holes inside
     /// `NSTextTable`, and magnification creates none — but changing the container width by even a
@@ -741,6 +798,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let visible = scrollView.contentView.documentVisibleRect
         scrollView.setMagnification(target, centeredAt: NSPoint(x: visible.midX, y: visible.midY))
         pageZoomChangeCount += 1
+        pinPagedFrameWidth()   // a magnification change moves the clip's bounds, which widens the frame
+        recentrePage()
         syncHorizontalScroller()
         return true
     }
@@ -946,6 +1005,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         isOutlineVisible = !sidebarItem.isCollapsed
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self else { return }
+            // The panel just took width away from the page — give it back by scaling, not by
+            // letting the sheet run off the right edge. Before the reflow, so the column and the
+            // sheets are solved once, at the zoom they will actually be read at.
+            self.shrinkPageZoomToFit()
             self.reflow(keeping: anchor)          // the line you were reading stays put
             self.reloadOutline()
         }
@@ -1014,6 +1077,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         textView.commentsVisible = isCommentsVisible
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             guard let self else { return }
+            self.shrinkPageZoomToFit()   // the inspector takes width too — same rule as the sidebar
             self.reflow(keeping: anchor)
             self.reloadCommentPanel()
         }
@@ -1405,7 +1469,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // Whichever walk gets to the end applies a pending anchor — see `pendingAnchor`.
             if let anchor = pendingAnchor {
                 pendingAnchor = nil
-                textView.sizeToFit()
+                sizeTextViewToFit()
                 restore(anchor)
                 textView.needsDisplay = true
             }
@@ -1533,7 +1597,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         if y <= textView.textContainerInset.height + pageBandDelegate.leadingBand { y = 0 }
         let clip = scrollView.contentView
         let maxY = max(0, textView.bounds.height - clip.bounds.height)
-        clip.scroll(to: NSPoint(x: 0, y: min(max(0, y), maxY)))
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: min(max(0, y), maxY)))   // see `scrollCharToTop`
         scrollView.reflectScrolledClipView(clip)
     }
 
@@ -1565,7 +1629,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         if targetY <= textView.textContainerInset.height + pageBandDelegate.leadingBand { targetY = 0 }
         let clip = scrollView.contentView
         let maxY = max(0, textView.bounds.height - clip.bounds.height)
-        clip.scroll(to: NSPoint(x: 0, y: min(max(0, targetY), maxY)))
+        // KEEP the horizontal origin. These two functions mean "scroll VERTICALLY to here"; forcing
+        // x to 0 undid `PageCenteringClipView`'s centring, so a paged page snapped to the left edge on
+        // every path that ends in a scroll — which is every reflow, i.e. opening AND closing the table
+        // of contents ("목차 열 때, 그리고 오히려 닫을 때에도 다시 좌측으로 정렬됨").
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: min(max(0, targetY), maxY)))
         scrollView.reflectScrolledClipView(clip)
         placeCopyButtons()
     }
@@ -2157,7 +2225,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             let clip = scrollView.contentView
             let y = max(0, rect.minY - clip.bounds.height / 4)
             if rect.height < clip.bounds.height {
-                clip.scroll(to: NSPoint(x: 0, y: min(y, max(0, textView.bounds.height - clip.bounds.height))))
+                clip.scroll(to: NSPoint(x: clip.bounds.origin.x,   // keep the centring (see `restore`)
+                                        y: min(y, max(0, textView.bounds.height - clip.bounds.height))))
                 scrollView.reflectScrolledClipView(clip)
             }
         }
@@ -2382,6 +2451,69 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         precomputeLayout()
     }
 
+    /// `NSTextView.sizeToFit()` — plus, for a PAGED document, putting the width back.
+    ///
+    /// **THE ONE WAY THIS VIEW'S WIDTH MAY BE CHANGED.** Every `sizeToFit` in this controller goes
+    /// through here, because AppKit's own answer for the width is wrong for a page and it is wrong in
+    /// a way that FEEDS BACK. Measured on the reference report after one ⌘+: the frame grew to the
+    /// clip's bounds (1297.8pt against a 595.3pt sheet), and the magnification then settled at
+    /// `clipFrame ÷ frame` = 0.8876 — a zoom-IN press that zoomed OUT, because the two were solving
+    /// for each other. Pinning the width breaks the loop at its only entry point.
+    ///
+    /// `isHorizontallyResizable = true` (set by `settleReadingColumn`'s paged branch) is the flag that
+    /// is SUPPOSED to do this, and it is still set because it is correct — but it was measured not to
+    /// hold on its own here, so the width is restored explicitly rather than trusted. A deterministic
+    /// assignment beats a flag whose exact interaction with `sizeToFit` we would have to keep
+    /// re-deriving.
+    private func sizeTextViewToFit() {
+        textView.sizeToFit()
+        pinPagedFrameWidth()
+    }
+
+    /// Re-apply the page's horizontal CENTRING after the reading area changed width.
+    ///
+    /// `PageCenteringClipView.constrainBoundsRect` is AppKit's hook for this, and AppKit calls it when
+    /// the bounds ORIGIN is being changed — a scroll, a zoom — but not when the clip's FRAME changes
+    /// underneath it. Opening the table of contents does exactly that: the reading area narrows from
+    /// 1309pt to 1069pt, the old origin stays, and the page snaps to the left edge. Reported twice
+    /// ("헐! 목차 여니 왜 갑자기 또 좌측 정렬임?"). So the constraint is asked for explicitly rather than
+    /// waited for.
+    private func recentrePage() {
+        let clip = scrollView.contentView
+        let wanted = clip.constrainBoundsRect(clip.bounds).origin.x
+        guard abs(wanted - clip.bounds.origin.x) > 0.5 else { return }
+        clip.setBoundsOrigin(NSPoint(x: wanted, y: clip.bounds.origin.y))
+        scrollView.reflectScrolledClipView(clip)
+    }
+
+    /// Put the text view's width back to the PAPER's, whatever just widened it.
+    ///
+    /// Called after every `sizeToFit` and after every magnification change — the two paths measured to
+    /// widen it. AppKit keeps resizing a text view to its clip view, and a magnification change moves
+    /// the clip's BOUNDS, so a zoom press alone took the frame from 595.3pt to 909.0pt on the reference
+    /// report. Centring no longer depends on this (`ReaderTextView.pagedPaperWidth` is what
+    /// `PageCenteringClipView` reads), but the frame is the SCROLLABLE area: left wrong, a reader can
+    /// scroll sideways into empty desk that has no page in it.
+    private func pinPagedFrameWidth() {
+        guard let paper = pagedDocumentWidth, abs(textView.frame.width - paper) > 0.5 else { return }
+        var f = textView.frame
+        f.size.width = paper
+        textView.frame = f
+    }
+
+    /// The desk BESIDE the page is the scroll view's own background, not something the text view can
+    /// paint: a sheet narrower than the window leaves bare clip view either side of it, and
+    /// `drawPageSheets` cannot reach outside its own bounds. Without this the space beside the paper
+    /// stayed the same white as the paper, so a centred page read as no page at all — reported as
+    /// "좌우는 문서 끝이 없고 여백도 없어".
+    ///
+    /// Only while the outline is on, and only for a paged document; everything else keeps AppKit's
+    /// default so markdown and plain text are untouched.
+    private func syncDeskBackground() {
+        let showsDesk = isPaged && PageViewOptionsStore.current.outline
+        scrollView.backgroundColor = showsDesk ? Palette.pageDesk : .textBackgroundColor
+    }
+
     /// How much of the band is DESK rather than paper — `RenderTheme.pageDeskGap` while the outline
     /// is on, zero otherwise. Read from the same preference `applyPageBand` measured the band with,
     /// so the two can only disagree if a toggle skipped `reapplyPageBand`, which nothing does
@@ -2398,13 +2530,18 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
               let width = pagedDocumentWidth else { return [] }
         let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
                                          band: pageBandDelegate.band)
-        return PagePagination.sheets(count: printPageCount, width: width,
-                                     textOriginY: textView.textContainerOrigin.y,
-                                     leadingBand: pageBandDelegate.leadingBand,
-                                     pitch: pitch,
-                                     topMargin: PagePagination.topMargin(declared: pagedMarginTop,
-                                                                          band: pageBandDelegate.band - pageDeskGap),
-                                     deskGap: pageDeskGap)
+        // Joined across any boundary layout could not open, so a page break is never drawn through a
+        // table (`PagePagination.joiningUnopenedBoundaries`). Screen only — `printSheets` above keeps
+        // the paper-sized grid, because paper cannot stretch.
+        return PagePagination.joiningUnopenedBoundaries(
+            PagePagination.sheets(count: printPageCount, width: width,
+                                  textOriginY: textView.textContainerOrigin.y,
+                                  leadingBand: pageBandDelegate.leadingBand,
+                                  pitch: pitch,
+                                  topMargin: PagePagination.topMargin(declared: pagedMarginTop,
+                                                                       band: pageBandDelegate.band - pageDeskGap),
+                                  deskGap: pageDeskGap),
+            openedBoundaries: pageBandDelegate.openedBoundaries)
     }
 
     // MARK: - Print (⌘P)

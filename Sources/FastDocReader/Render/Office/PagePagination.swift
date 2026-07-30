@@ -60,6 +60,37 @@ enum PagePagination {
     /// width, which for a paged document is already the paper's (`DocumentWindowController.
     /// pagedDocumentWidth` = left margin + body + right margin), so the horizontal side needs no
     /// arithmetic at all.
+    /// Join sheets across a boundary LAYOUT NEVER OPENED, so the page break is never drawn through a
+    /// table.
+    ///
+    /// A line inside an `NSTextTableBlock` cannot be shifted (`PageBandLayoutDelegate.isInsideTable`,
+    /// invariant 55/58's known edge), so a table crossing a page boundary simply overruns it and no
+    /// band is opened there. The painter already knows to skip a header and footer in that case — but
+    /// a SHEET drawn on the arithmetic grid does not care, so the sheet's edge and the desk behind it
+    /// landed in the middle of a table, which the owner reported on sight. Two things then read as
+    /// broken at once: the page appears to end mid-table, and the table draws straight over the desk.
+    ///
+    /// Joining them says the true thing instead — this page ran longer than its paper, because the
+    /// reader cannot split the table. `openedBoundaries` is layout's own record; `nil` means nobody
+    /// asked layout (a test, or the print path), and then every boundary stands.
+    ///
+    /// SCREEN ONLY. Paper cannot stretch, so `rectForPage` keeps the paper-sized grid — the divergence
+    /// is the medium's, not a disagreement between two implementations.
+    static func joiningUnopenedBoundaries(_ sheets: [CGRect],
+                                          openedBoundaries: Set<Int>?) -> [CGRect] {
+        guard let openedBoundaries, sheets.count > 1 else { return sheets }
+        var out: [CGRect] = []
+        for (page, sheet) in sheets.enumerated() {
+            // Boundary `page - 1` is the one between the previous sheet and this one.
+            if page > 0, !openedBoundaries.contains(page - 1), let last = out.popLast() {
+                out.append(last.union(sheet))
+            } else {
+                out.append(sheet)
+            }
+        }
+        return out
+    }
+
     /// `deskGap` is the space the band reserved for the DESK between two drawn sheets
     /// (`RenderTheme.pageDeskGap`, non-zero only while the page outline is on). A sheet is therefore
     /// `pitch - deskGap` tall — the document's own paper — and the pages no longer TILE: the gap

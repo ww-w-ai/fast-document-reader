@@ -270,6 +270,73 @@ final class PageViewOptionsTests: XCTestCase {
                        Self.marginTop + Self.bodyHeight + Self.marginBottom, accuracy: 0.01)
     }
 
+    // MARK: - (7) Where the page sits, and what happens where a table crosses a boundary
+
+    /// A page break must never be drawn THROUGH a table. A line inside a table cannot be shifted
+    /// (invariant 55/58), so a table crossing a boundary overruns it and layout opens no band there —
+    /// and a sheet drawn on the arithmetic grid put its edge, and the desk behind it, in the middle of
+    /// the table. Joining the two sheets says the true thing: this page ran longer than its paper.
+    func testSheetsJoinAcrossABoundaryLayoutCouldNotOpen() {
+        let sheets = PagePagination.sheets(count: 4, width: 500, textOriginY: 0, leadingBand: 0,
+                                           pitch: 200, topMargin: 20, deskGap: 10)
+        // Every boundary opened — nothing joins.
+        XCTAssertEqual(PagePagination.joiningUnopenedBoundaries(sheets, openedBoundaries: [0, 1, 2]),
+                       sheets)
+        // Boundary 1 blocked by a table: sheets 1 and 2 become one, and the join swallows the desk
+        // between them so no gap is drawn inside the table either.
+        let joined = PagePagination.joiningUnopenedBoundaries(sheets, openedBoundaries: [0, 2])
+        XCTAssertEqual(joined.count, 3)
+        XCTAssertEqual(joined[1].minY, sheets[1].minY, accuracy: 0.01)
+        XCTAssertEqual(joined[1].maxY, sheets[2].maxY, accuracy: 0.01)
+        XCTAssertEqual(joined[1].height, sheets[1].height + 10 + sheets[2].height, accuracy: 0.01)
+        // No information (a test, or the print path) leaves every boundary standing.
+        XCTAssertEqual(PagePagination.joiningUnopenedBoundaries(sheets, openedBoundaries: nil), sheets)
+    }
+
+    /// The page is centred on the PAPER's width, not the text view's frame — AppKit keeps widening
+    /// that frame back to the clip view, and a frame equal to the clip can never satisfy
+    /// `frame < clip`, which is how the page ended up hugging the left edge after a zoom or a sidebar
+    /// toggle.
+    func testTheClipViewCentresOnThePaperNotTheFrame() {
+        let clip = PageCenteringClipView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
+        let tv = ReaderTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 2000))
+        clip.documentView = tv
+
+        // A frame AppKit has widened to the clip, around a 600pt sheet: still centred.
+        tv.pagedPaperWidth = 600
+        let paged = clip.constrainBoundsRect(NSRect(x: 0, y: 0, width: 800, height: 600))
+        XCTAssertEqual(paged.origin.x, (600 - 800) / 2, accuracy: 0.01)
+
+        // Markdown states no paper, so the frame is the content and nothing is centred.
+        tv.pagedPaperWidth = nil
+        let flowing = clip.constrainBoundsRect(NSRect(x: 0, y: 0, width: 800, height: 600))
+        XCTAssertEqual(flowing.origin.x, 0, accuracy: 0.01)
+    }
+
+    /// A panel taking width away shrinks the page to fit — and NEVER enlarges it, which is what keeps
+    /// this from being the "zoom follows the window" rule that was deliberately removed. The owner
+    /// stated the bound: *"무리하게 줄이진 말고, 창이 우측으로 삐져나가지 않도록 축소해서 맞추라는 뜻"*.
+    func testThePageShrinksToFitTheReadingAreaAndNeverGrows() throws {
+        let (_, wc) = try openPaged()
+        let opening = wc.pageZoom
+        XCTAssertGreaterThan(opening, 0)
+
+        // Plenty of room: nothing moves, however much desk there is.
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 2400, height: 900), display: false)
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        wc.shrinkPageZoomToFit()
+        XCTAssertEqual(wc.pageZoom, opening, accuracy: 0.0001,
+                       "a wider reading area must not enlarge the reader's own zoom")
+
+        // Now squeeze it until the page cannot fit, and it scales down rather than running off.
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 420, height: 900), display: false)
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        wc.shrinkPageZoomToFit()
+        XCTAssertLessThan(wc.pageZoom, opening, "…and shrinks when it does not")
+        let paper = try XCTUnwrap(wc.pagedDocumentWidth)
+        XCTAssertLessThanOrEqual(paper * wc.pageZoom, 420, "the page must now fit the reading area")
+    }
+
     // MARK: - Fixture
 
     private static let bodyWidth: CGFloat = 400

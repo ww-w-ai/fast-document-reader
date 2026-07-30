@@ -65,15 +65,20 @@ enum Palette {
                                                      dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.70))
     static let tableHeaderBg   = NSColor(rgb: 0x878378, alpha: 0.10)   // warm neutral, both modes
     /// The DESK a paged document's sheets lie on — drawn only where the page outline is on
-    /// (`PageViewOptions`), in the `RenderTheme.pageDeskGap` between one sheet and the next. Darker
-    /// than the paper in light mode and lighter in dark, so the paper always reads as the sheet and
-    /// the space between as what is behind it.
+    /// (`PageViewOptions`), in the `RenderTheme.pageDeskGap` between one sheet and the next AND, as
+    /// `NSScrollView.backgroundColor`, in the space beside a page narrower than the window.
     ///
-    /// Retuned from 0.045 after the first screenshot of the outline: at that tint the space between
-    /// two sheets was almost indistinguishable from the paper, so the pages read as one continuous
-    /// run with a hairline in it rather than as separate sheets.
-    static let pageGapBg       = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.11),
-                                                dark: NSColor(rgb: 0x000000, alpha: 0.32))
+    /// **OPAQUE on purpose.** It began as a translucent tint of the text colour, which composites
+    /// correctly inside the text view (over paper) and WRONGLY beside it (over the window), so the two
+    /// halves of the same desk were visibly different greys. These are the composited values —
+    /// `0x37352F` at 11% over white, and black at 32% over the dark paper — stated once so both
+    /// surfaces are literally the same colour rather than two that ought to match.
+    ///
+    /// Retuned from 4.5% before that: at that tint the space between two sheets was almost
+    /// indistinguishable from the paper, so the pages read as one continuous run with a hairline in it
+    /// rather than as separate sheets.
+    static let pageDesk        = NSColor.dynamic(light: NSColor(rgb: 0xE9E9E8),
+                                                dark: NSColor(rgb: 0x141414))
     /// The sheet's own edge — and, when the outline is OFF but a band still exists, the page-break
     /// hairline that closes it. Without one of the two the band reads as a hole in the document
     /// rather than as a page ending: the reader sees a long blank stretch and a header floating in

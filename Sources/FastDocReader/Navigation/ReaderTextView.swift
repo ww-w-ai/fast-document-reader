@@ -25,6 +25,15 @@ final class ReaderTextView: NSTextView {
         didSet { if oldValue != commentsVisible { setNeedsDisplay(visibleRect) } }
     }
 
+    /// The PAPER's width for a paged document (`DocumentWindowController.pagedDocumentWidth`), or
+    /// `nil` for markdown, plain text, and an office document whose reader found no page.
+    ///
+    /// Held on the view rather than looked up through the window controller because its one consumer
+    /// is `PageCenteringClipView`, which AppKit calls during scrolling and zooming — a path that must
+    /// not depend on a controller being reachable. Set by `settleReadingColumn`, the same pass that
+    /// pins the text container, so the two can never describe different pages.
+    var pagedPaperWidth: CGFloat?
+
     /// Draw block decorations (code cards, inline-code chips, rules, quote bars) in the view's
     /// BACKGROUND pass so they sit beneath the selection highlight and glyphs — otherwise an
     /// opaque code card painted by the layout manager hides the selection inside it.
@@ -101,22 +110,22 @@ final class ReaderTextView: NSTextView {
         // The desk, over the whole visible area first: the text view's background is the PAPER's
         // colour, so without this the gaps between sheets would stay paper-coloured and nothing
         // would read as separated.
-        Palette.pageGapBg.setFill()
+        Palette.pageDesk.setFill()
         visible.fill()
         // The paper is whatever `super.drawBackground` just painted the whole view — read from the
         // view rather than named again as a token, so the sheet can never be a different white from
         // the one behind it in light mode or a different grey in dark.
+        // The SHEET's own width, never the view's. They are the same number only while nothing has
+        // widened the frame past the paper — which `sizeToFit` used to do on every zoom, and which
+        // drew the paper across the whole window with no edges (see `settleReadingColumn`'s paged
+        // branch). Taking the width from the sheet makes that impossible rather than merely fixed.
         backgroundColor.setFill()
-        for sheet in sheets where sheet.intersects(visible) {
-            let paper = NSRect(x: 0, y: sheet.minY, width: bounds.width, height: sheet.height)
-            paper.fill()
-        }
+        for sheet in sheets where sheet.intersects(visible) { sheet.fill() }
         Palette.pageGapEdge.setStroke()
         for sheet in sheets where sheet.intersects(visible) {
             // Inset by half a point so the 1pt stroke lands ON the sheet's edge rather than
             // straddling it, which would leave a half-pixel of desk inside the paper.
-            let edge = NSRect(x: 0.5, y: sheet.minY + 0.5, width: bounds.width - 1, height: sheet.height - 1)
-            NSBezierPath(rect: edge).stroke()
+            NSBezierPath(rect: sheet.insetBy(dx: 0.5, dy: 0.5)).stroke()
         }
     }
 
