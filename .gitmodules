@@ -1,0 +1,4 @@
+[submodule "Vendor/rhwp-src"]
+	path = Vendor/rhwp-src
+	url = https://github.com/ww-w-ai/rhwp.git
+	branch = fastdocreader/charshape-export

@@ -1,13 +1,21 @@
 # Our patches to rhwp — the HWP parser vendored into this app
 
-`Vendor/RhwpNative.xcframework` is a prebuilt static library. Its Rust source is a **fork of
-[edwardkim/rhwp](https://github.com/edwardkim/rhwp) (MIT)** that lives in a separate checkout with no
-git relationship to this repo — no submodule, no shared history. So the four commits below, which are
-the only part of that parser we wrote, existed **on one laptop** while the binary they produce is
-published here permanently. These patches are that gap closed: 86 KB, in the repo that already ships
-the binary.
+**The source of truth is now the submodule `Vendor/rhwp-src` → `ww-w-ai/rhwp` (private), pinned to the
+exact commit `Vendor/RHWP-SOURCE.txt` names.** Git records that pin, so "the shipped `.a` and its source
+must be committed together" is a rule the tooling keeps rather than a rule a person has to remember.
 
-`Vendor/RHWP-SOURCE.txt` names the exact commit the CURRENT binary was built from.
+These patches remain as the READABLE record of what we changed — 86 KB against upstream, which is far
+easier to review than a diff of two 6,000-commit trees — and as a second recovery route if the fork
+repository is ever lost. They are no longer the only copy of the source.
+
+Restoring the parser source now:
+
+```bash
+git submodule update --init Vendor/rhwp-src     # our fork, at the pinned commit
+```
+
+The fork's remotes are already `origin` = `ww-w-ai/rhwp` (ours) and `upstream` = `edwardkim/rhwp`, so
+following upstream is ordinary git: `git fetch upstream`, then cherry-pick or rebase.
 
 ## What they are
 
