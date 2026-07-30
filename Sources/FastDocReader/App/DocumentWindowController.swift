@@ -1261,6 +1261,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             item.title = isCommentsVisible ? "Hide Comments" : "Comments"
             return canShowComments
         }
+        // ⌘1…⌘9 — greyed out for a tab that isn't open, so ⌘5 with three documents open does
+        // nothing visible rather than silently jumping to the third.
+        if item.action == #selector(goToTab(_:)) {
+            let count = tabbedWindows.count
+            guard count > 1 else { return false }          // a lone window has nothing to jump to
+            return item.tag == 9 ? true : item.tag <= count
+        }
         // The three page options. Enabled only for a document that HAS paper — markdown, plain text
         // and an office document whose reader found no page width have nothing to show or hide, and
         // the gate is `isPaged`, never `kind == .office` (invariant 57). Checked rather than retitled:
@@ -2277,6 +2284,40 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
+    // MARK: - Tabs (⌘1…⌘9)
+
+    /// The documents open as tabs in THIS window's tab group, in the order they appear in the tab
+    /// bar — which is the order a reader counts them in, and is NOT the order
+    /// `NSDocumentController.documents` or `NSApp.windows` reports.
+    ///
+    /// `tabGroup` is nil for a window that is not tabbed at all (one document open, or the reader
+    /// has tabs switched off in System Settings), and then the only tab is this window itself.
+    var tabbedWindows: [NSWindow] {
+        guard let window else { return [] }
+        return window.tabGroup?.windows ?? [window]
+    }
+
+    /// Jump to a tab by number. `tag` 1–8 select that tab; **9 is the LAST tab, not the ninth** —
+    /// the convention every browser uses, and the one that makes ⌘9 useful to a reader with four
+    /// documents open rather than a key that does nothing.
+    @objc func goToTab(_ sender: Any?) {
+        guard let index = tabIndex(for: sender), let window else { return }
+        let windows = tabbedWindows
+        guard windows.indices.contains(index) else { return }
+        // `selectedWindow` rather than `makeKeyAndOrderFront`: the second brings the window forward
+        // without telling the tab group, which on a tabbed window leaves the tab bar highlighting
+        // one tab while another is showing.
+        window.tabGroup?.selectedWindow = windows[index]
+        windows[index].makeKeyAndOrderFront(nil)
+    }
+
+    /// The 0-based tab a menu item asks for, or `nil` if it is not one of ours. Pure enough to test
+    /// without a window, which is the point: the 9-is-last rule is the part worth pinning.
+    func tabIndex(for sender: Any?) -> Int? {
+        guard let tag = (sender as? NSMenuItem)?.tag, (1...9).contains(tag) else { return nil }
+        return tag == 9 ? max(0, tabbedWindows.count - 1) : tag - 1
+    }
+
     // MARK: - Page view options (View menu: page outline / header / footer)
 
     @objc func togglePageOutline(_ sender: Any?) { flipPageOption { $0.outline.toggle() } }
@@ -2556,7 +2597,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         section("Zoom (text)")
         row("⌘+ / ⌘−", "Increase / decrease font size");  row("⌘0", "Actual size")
         section("Window")
-        row("⌘M", "Minimize");  row("⌃⇥ / ⌃⇧⇥", "Next / previous tab")
+        row("⌘M", "Minimize")
+        row("⌥⌘← / ⌥⌘→", "Previous / next tab  (⌃⇥ / ⌃⇧⇥ also work)")
+        row("⌘1 … ⌘8", "Jump straight to that tab");  row("⌘9", "The last tab")
+        section("Page view (Word / ODT / HWP)")
+        row("⌥⌘P", "Show each page as a sheet — off, the document runs continuously")
+        row("View menu", "Header and Footer can be hidden the same way")
         section("Mouse")
         row("Click link / path", "Open a URL, file, or folder")
         row("⌘-Click selection", "Open the selected text as a link / path / file")

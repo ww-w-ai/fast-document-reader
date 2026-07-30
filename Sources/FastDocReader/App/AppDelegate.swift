@@ -186,6 +186,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let windowMenu = NSMenu(title: "Window"); windowItem.submenu = windowMenu
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(.separator())
+        // Tab navigation. ⌃⇥ / ⌃⇧⇥ already work — AppKit binds them to the tab group itself — but
+        // they are the SYSTEM's cycle order and there is no way to reach a specific tab with them.
+        // `NSWindow.selectNextTab(_:)`/`selectPreviousTab(_:)` are AppKit's own responder actions, so
+        // these two items need no code of ours; only the numbered jumps do.
+        let nextTab = windowMenu.addItem(withTitle: "Show Next Tab",
+                                         action: #selector(NSWindow.selectNextTab(_:)), keyEquivalent: "\u{2192}")
+        nextTab.keyEquivalentModifierMask = [.command, .option]
+        let prevTab = windowMenu.addItem(withTitle: "Show Previous Tab",
+                                         action: #selector(NSWindow.selectPreviousTab(_:)), keyEquivalent: "\u{2190}")
+        prevTab.keyEquivalentModifierMask = [.command, .option]
+        // ⌘1…⌘9. In a code-built menu a key equivalent only exists if a menu item carries it, so
+        // these are real items rather than key handling in the text view — which also makes them
+        // discoverable and lets `validateMenuItem` grey out a tab that isn't open. Kept in a submenu
+        // so nine entries don't bury Minimize and Zoom. ⌘9 is the LAST tab, not the ninth, which is
+        // what every browser does and what a reader with four tabs open expects.
+        let goToItem = windowMenu.addItem(withTitle: "Go to Tab", action: nil, keyEquivalent: "")
+        let goToMenu = NSMenu(title: "Go to Tab")
+        for n in 1...9 {
+            let item = goToMenu.addItem(withTitle: n == 9 ? "Last Tab" : "Tab \(n)",
+                                        action: Selector(("goToTab:")), keyEquivalent: "\(n)")
+            item.keyEquivalentModifierMask = [.command]
+            item.tag = n
+        }
+        goToItem.submenu = goToMenu
         NSApp.windowsMenu = windowMenu
 
         // Help menu — Keyboard Shortcuts guide (also opens with the "?" key in the reader).
