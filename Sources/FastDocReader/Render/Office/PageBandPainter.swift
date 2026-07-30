@@ -45,6 +45,11 @@ struct PageBandContent {
     var pageMarginBottom: CGFloat?
     var headerDistance: CGFloat?
     var footerDistance: CGFloat?
+    /// Draw the page-break hairline at each boundary. `false` when the reader is showing each SHEET
+    /// instead (`PageViewOptions.drawsDivider`): a real paper edge already says where the page ends,
+    /// and a rule across the column on top of it reads as a second, contradictory boundary. Defaults
+    /// to `true`, which is what every call site meant before the view options existed.
+    var drawsDivider: Bool = true
 }
 
 /// Paints the running header/footer INTO the band `PageBandLayoutDelegate` already reserved between
@@ -261,7 +266,7 @@ enum PageBandPainter {
             // 푸터 부분에 일부러 영역을 그린건가? 디바이더는 없고 영역 박스만 크게 있네" — on A4 the
             // gap is ~170pt, so a fill is a large grey box that describes the header/footer AREA
             // rather than the page ending. A divider is a line. The gap keeps the paper's own colour.
-            if boundaryIsOpen, page < total - 1, gap.height > 0 {
+            if content.drawsDivider, boundaryIsOpen, page < total - 1, gap.height > 0 {
                 // At the SHEET's own edge when the document said where that is; otherwise the middle
                 // of the gap, which is the best guess available without the margins.
                 let breakY = (sheetEdge ?? (gap.top + gap.height / 2)).rounded()
@@ -321,14 +326,25 @@ enum PageBandPainter {
             // arm only adds WHERE to paint once it says there is something to paint.
             if page == 0, leading > 0,
                let entry = applicableEntry(content.headers, pageIndex: 0), !entry.blocks.isEmpty {
+                // Its own declared distance below the sheet's top edge — which, for page 0, is where
+                // the leading reservation begins. Reduces to 0 (the original behaviour) whenever the
+                // reservation is only as tall as the header itself, i.e. whenever the reader is NOT
+                // drawing sheets: there is no room to be a distance INTO.
+                let top = max(0, min(content.headerDistance ?? 0, leading - content.headerHeight))
                 paint(entry, pageIndex: 0, totalPages: total, content: content,
-                     top: 0, height: leading, origin: origin)
+                     top: top, height: content.headerHeight > 0 ? content.headerHeight : leading,
+                     origin: origin)
             }
             if page == total - 1, trailing > 0,
                let entry = applicableEntry(content.footers, pageIndex: total - 1), !entry.blocks.isEmpty {
-                let top = CGFloat(page) * pitch + pageContentHeight + leading
+                // The same, from the other end: its own distance ABOVE the last sheet's bottom edge,
+                // clamped so it never rides up over the document's own last line. Also reduces to 0
+                // when the reservation is exactly the footer's height.
+                let base = CGFloat(page) * pitch + pageContentHeight + leading
+                let inset = max(0, trailing - (content.footerDistance ?? 0) - content.footerHeight)
                 paint(entry, pageIndex: total - 1, totalPages: total, content: content,
-                     top: top, height: trailing, origin: origin)
+                     top: base + inset,
+                     height: content.footerHeight > 0 ? content.footerHeight : trailing, origin: origin)
             }
         }
     }

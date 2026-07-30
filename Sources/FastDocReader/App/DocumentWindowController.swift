@@ -335,7 +335,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                             headers: [OfficeHeaderFooter] = [], footers: [OfficeHeaderFooter] = [],
                             theme: RenderTheme = .current(size: 11), columnWidth: CGFloat = 0,
                             documentDefaultFontSize: CGFloat = 11, pageContentWidth: CGFloat? = nil,
-                            headerHeight: CGFloat = 0, footerHeight: CGFloat = 0) {
+                            headerHeight: CGFloat = 0, footerHeight: CGFloat = 0,
+                            drawsDivider: Bool = true, separatesPages: Bool = false) {
         pageBandDelegate.pageContentHeight = pageContentHeight ?? 0
         pageBandDelegate.band = band
         // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
@@ -352,9 +353,23 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // reached with non-zero values — so this never reserves anything for that far more common
         // case either).
         let firstPageHeader = PageBandPainter.applicableEntry(headers, pageIndex: 0)
-        let leading: CGFloat = (firstPageHeader != nil && !(firstPageHeader?.blocks.isEmpty ?? true))
+        var leading: CGFloat = (firstPageHeader != nil && !(firstPageHeader?.blocks.isEmpty ?? true))
             ? headerHeight : 0
-        let trailing: CGFloat = footerHeight > 0 ? footerHeight : 0
+        var trailing: CGFloat = footerHeight > 0 ? footerHeight : 0
+        // WHEN THE READER IS DRAWING SHEETS, the first and last pages get their FULL margins — the
+        // page's own top margin above the first line and its bottom margin below the last, not just
+        // as much room as the header and footer happen to need.
+        //
+        // Without this the outline's first sheet has no top edge at all: the sheet begins one top
+        // margin above the first line, which with only a header's worth of leading room is ABOVE the
+        // view, so page 1 draws with no top border and a visibly shorter margin than every page after
+        // it. Seen immediately on the first real screenshot of the feature. The two `max`es keep the
+        // existing rule as the floor, so a document whose header is TALLER than its own margin still
+        // gets the room it needs to draw (invariant 57e's own `max`, one level up).
+        if separatesPages {
+            leading = max(leading, pagedMarginTop ?? 0)
+            trailing = max(trailing, pagedMarginBottom ?? 0)
+        }
         pageBandDelegate.leadingBand = leading
         pageBandDelegate.trailingBand = trailing
         // A new render re-decides every boundary, so the previous pass's answers must not survive
@@ -366,7 +381,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                               headerHeight: headerHeight, footerHeight: footerHeight,
                               leadingBand: leading, trailingBand: trailing,
                               pageMarginTop: pagedMarginTop, pageMarginBottom: pagedMarginBottom,
-                              headerDistance: pagedHeaderDistance, footerDistance: pagedFooterDistance)
+                              headerDistance: pagedHeaderDistance, footerDistance: pagedFooterDistance,
+                              drawsDivider: drawsDivider)
             : nil
     }
 
@@ -1245,6 +1261,19 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             item.title = isCommentsVisible ? "Hide Comments" : "Comments"
             return canShowComments
         }
+        // The three page options. Enabled only for a document that HAS paper — markdown, plain text
+        // and an office document whose reader found no page width have nothing to show or hide, and
+        // the gate is `isPaged`, never `kind == .office` (invariant 57). Checked rather than retitled:
+        // these are three independent states a reader wants to SEE at a glance, which a "Hide …"
+        // title cannot express for three items at once.
+        let options = PageViewOptionsStore.current
+        for (selector, on) in [(#selector(togglePageOutline(_:)), options.outline),
+                               (#selector(togglePageHeader(_:)), options.header),
+                               (#selector(togglePageFooter(_:)), options.footer)]
+        where item.action == selector {
+            item.state = on ? .on : .off
+            return isPaged
+        }
         return true
     }
 
@@ -1332,6 +1361,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// deterministic — rather than by a stopwatch.
     private(set) var layoutStepCount = 0
 
+    /// A reading position waiting for the document to be FULLY laid out again — set by
+    /// `reapplyPageBand`, applied by whichever `precomputeLayout` walk reaches the end.
+    ///
+    /// Not a completion closure, and that is the point. `precomputeLayout` cancels an in-flight walk
+    /// whenever a NEW one starts (`layoutToken`), and a cancelled walk's completion never runs — so a
+    /// toggle whose walk was superseded by the render's own opening tail silently lost the reader's
+    /// place, landing them at character 0 from 75% down. Measured exactly that way while building
+    /// this. Parking the anchor here instead means the LATER, more authoritative walk applies it, so
+    /// supersession stops being a lost restore and becomes simply a later one.
+    private var pendingAnchor: ReadingAnchor?
+
     /// Lay out the ENTIRE document up front (media are placeholders, so this is cheap — no images
     /// are rasterized) so the scroll bar reflects the full length immediately: the reader sees how
     /// much content there is without scrolling. Done in small chunks across run-loop turns to keep
@@ -1355,6 +1395,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let total = storage.length
         func finishWalk() {
             applyTrailingFooterBand()
+            // Whichever walk gets to the end applies a pending anchor — see `pendingAnchor`.
+            if let anchor = pendingAnchor {
+                pendingAnchor = nil
+                textView.sizeToFit()
+                restore(anchor)
+                textView.needsDisplay = true
+            }
             then?()
         }
         if total == 0 { finishWalk(); return }
@@ -2230,6 +2277,95 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
     }
 
+    // MARK: - Page view options (View menu: page outline / header / footer)
+
+    @objc func togglePageOutline(_ sender: Any?) { flipPageOption { $0.outline.toggle() } }
+    @objc func togglePageHeader(_ sender: Any?) { flipPageOption { $0.header.toggle() } }
+    @objc func togglePageFooter(_ sender: Any?) { flipPageOption { $0.footer.toggle() } }
+
+    /// Counts how many times a page option was actually applied — the same shape as
+    /// `pageZoomChangeCount`/`textInsetUpdateCount`, so a test can assert a toggle DID something
+    /// without a stopwatch and without hand-deriving line positions.
+    private(set) var pageOptionChangeCount = 0
+
+    private func flipPageOption(_ change: (inout PageViewOptions) -> Void) {
+        guard isPaged else { return }          // no paper, nothing to show or hide
+        var options = PageViewOptionsStore.current
+        change(&options)
+        PageViewOptionsStore.current = options
+        // THIS window first, and unconditionally — never through the shared document controller's
+        // list. A document that is not registered with `NSDocumentController` (a test builds one
+        // directly; so does any future programmatic open) would otherwise find NOTHING to update,
+        // including itself, and the toggle would silently do nothing.
+        reapplyPageBand()
+        // Then every OTHER open paged window: the preference is global (see `PageViewOptions`), so
+        // leaving the rest showing the old furniture until they happen to re-render would make the
+        // setting look per-window without being it.
+        for case let wc as DocumentWindowController in NSDocumentController.shared.documents
+            .flatMap({ $0.windowControllers }) where wc !== self && wc.isPaged {
+            wc.reapplyPageBand()
+        }
+    }
+
+    /// Re-solve the page band for the CURRENT view options and lay the document out again.
+    ///
+    /// **This is a layout change, not a visibility flag, and that is the whole trap.** The comments
+    /// panel can set a bool and repaint (invariant 38) because its marks sit on top of glyphs that do
+    /// not move. Turning the page furniture off must make the document FLOW CONTINUOUSLY, which means
+    /// the band must not be RESERVED — and the reservation is `PageBandLayoutDelegate`, i.e. layout.
+    ///
+    /// What it must not do is REBUILD (invariant 57): `MarkdownDocument.render` is never reached, so
+    /// the string, its tables, and every graphic's frozen size are untouched, and `renderGeneration`
+    /// does not move. Only where the lines sit changes.
+    ///
+    /// The order is invariant 56's, learned the expensive way. The document's height changes by
+    /// `band × pageCount` — over 3,000pt on a 19-page A4 report — so:
+    ///   1. scroll to the top FIRST. Invalidating layout with the clip parked deep makes the next
+    ///      DRAW fill every hole between 0 and the scroll offset in one uninterruptible call; the
+    ///      same shape measured 87,638 ms against 937.9 ms after scrolling to zero (invariant 56a).
+    ///   2. re-solve the band, then invalidate.
+    ///   3. restore the reading position FROM `precomputeLayout`'s completion, never before it —
+    ///      restoring first clamps the scroll to a frame height that does not exist yet, which put a
+    ///      reader 75% down at character 298 (invariant 55a, invariant 24).
+    func reapplyPageBand() {
+        guard let doc = document as? MarkdownDocument, let lm = textView.layoutManager,
+              let storage = textView.textStorage else { return }
+        pageOptionChangeCount += 1
+        let anchor = readingAnchor()
+        scrollView.contentView.scroll(to: NSPoint(x: scrollView.contentView.bounds.origin.x, y: 0))
+        doc.applyPageBand(to: self)
+        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
+                            actualCharacterRange: nil)
+        textView.needsDisplay = true
+        pendingAnchor = anchor
+        precomputeLayout()
+    }
+
+    /// How much of the band is DESK rather than paper — `RenderTheme.pageDeskGap` while the outline
+    /// is on, zero otherwise. Read from the same preference `applyPageBand` measured the band with,
+    /// so the two can only disagree if a toggle skipped `reapplyPageBand`, which nothing does
+    /// (`PageViewOptionsTests` asserts the sheets tile with exactly this much between them).
+    private var pageDeskGap: CGFloat {
+        PageViewOptionsStore.current.outline ? RenderTheme.pageDeskGap : 0
+    }
+
+    /// The sheets to DRAW on screen — the same rectangles printing puts on paper, from the same
+    /// function, so the page a reader sees and the page that comes out of the printer can never be
+    /// two different things. Empty unless the outline is on and the reader actually paginated.
+    var pageSheets: [CGRect] {
+        guard PageViewOptionsStore.current.outline, pageBandDelegate.isActive,
+              let width = pagedDocumentWidth else { return [] }
+        let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                         band: pageBandDelegate.band)
+        return PagePagination.sheets(count: printPageCount, width: width,
+                                     textOriginY: textView.textContainerOrigin.y,
+                                     leadingBand: pageBandDelegate.leadingBand,
+                                     pitch: pitch,
+                                     topMargin: PagePagination.topMargin(declared: pagedMarginTop,
+                                                                          band: pageBandDelegate.band - pageDeskGap),
+                                     deskGap: pageDeskGap)
+    }
+
     // MARK: - Print (⌘P)
 
     private var printRestore: [(NSView, Bool)] = []
@@ -2254,7 +2390,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                                      leadingBand: pageBandDelegate.leadingBand,
                                      pitch: pitch,
                                      topMargin: PagePagination.topMargin(declared: pagedMarginTop,
-                                                                          band: pageBandDelegate.band))
+                                                                          band: pageBandDelegate.band - pageDeskGap),
+                                     deskGap: pageDeskGap)
     }
 
     /// How many pages the reader itself thinks this document has — the SAME number
@@ -2301,10 +2438,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     func makePrintOperation() -> NSPrintOperation {
         let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo()
         info.scalingFactor = 1
-        if !printSheets.isEmpty, let width = pagedDocumentWidth {
-            let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
-                                             band: pageBandDelegate.band)
-            info.paperSize = NSSize(width: width, height: pitch)
+        if let first = printSheets.first, let width = pagedDocumentWidth {
+            // The SHEET's height, not the pitch: while the page outline is on, the band also carries
+            // the desk between two drawn sheets, and desk is not paper. Taken from the sheet itself
+            // so the paper can never be a different size from the rectangle `rectForPage` hands back.
+            info.paperSize = NSSize(width: width, height: first.height)
             info.topMargin = 0; info.bottomMargin = 0; info.leftMargin = 0; info.rightMargin = 0
             info.horizontalPagination = .clip
             info.verticalPagination = .clip

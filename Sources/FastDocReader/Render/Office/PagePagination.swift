@@ -60,14 +60,25 @@ enum PagePagination {
     /// width, which for a paged document is already the paper's (`DocumentWindowController.
     /// pagedDocumentWidth` = left margin + body + right margin), so the horizontal side needs no
     /// arithmetic at all.
+    /// `deskGap` is the space the band reserved for the DESK between two drawn sheets
+    /// (`RenderTheme.pageDeskGap`, non-zero only while the page outline is on). A sheet is therefore
+    /// `pitch - deskGap` tall — the document's own paper — and the pages no longer TILE: the gap
+    /// between sheet `k`'s bottom and sheet `k+1`'s top is exactly `deskGap`, which is what makes
+    /// them read as separate pieces of paper rather than as one continuous roll.
+    ///
+    /// This mattered more than it looks: the first version had no desk at all, so the sheets tiled
+    /// edge to edge, the desk fill was completely covered by the very sheets it sat behind, and the
+    /// feature drew as a hairline — indistinguishable from the page-break rule it was supposed to
+    /// replace. It looked like nothing had happened.
     static func sheets(count: Int, width: CGFloat, textOriginY: CGFloat, leadingBand: CGFloat,
-                       pitch: CGFloat, topMargin: CGFloat) -> [CGRect] {
+                       pitch: CGFloat, topMargin: CGFloat, deskGap: CGFloat = 0) -> [CGRect] {
         guard count > 0, pitch > 0, width > 0 else { return [] }
+        let paperHeight = max(1, pitch - deskGap)
         return (0..<count).map { page in
             CGRect(x: 0,
                    y: sheetTop(page: page, textOriginY: textOriginY, leadingBand: leadingBand,
                                pitch: pitch, topMargin: topMargin),
-                   width: width, height: pitch)
+                   width: width, height: paperHeight)
         }
     }
 }

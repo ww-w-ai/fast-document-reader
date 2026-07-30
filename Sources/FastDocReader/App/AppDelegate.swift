@@ -168,6 +168,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         action: Selector(("toggleComments:")), keyEquivalent: "c")
         comments.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(.separator())
+        // Page furniture for a PAGED document (docx/odt/hwp with a declared page) — three independent
+        // toggles, checked rather than retitled so all three states read at a glance. Greyed out
+        // (`DocumentWindowController.validateMenuItem`) for markdown, plain text, and any office
+        // document whose reader found no page width: those have no paper to show or hide. Global, not
+        // per window — see `PageViewOptions`.
+        let pageOutline = viewMenu.addItem(withTitle: "Page Outline",
+                                           action: Selector(("togglePageOutline:")), keyEquivalent: "p")
+        pageOutline.keyEquivalentModifierMask = [.command, .option]   // ⌘P is Print
+        viewMenu.addItem(withTitle: "Header", action: Selector(("togglePageHeader:")), keyEquivalent: "")
+        viewMenu.addItem(withTitle: "Footer", action: Selector(("togglePageFooter:")), keyEquivalent: "")
+        viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Reload", action: Selector(("reloadDocument:")), keyEquivalent: "r")
 
         // Window menu (minimize, zoom, native tabs)

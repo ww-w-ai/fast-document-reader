@@ -19,6 +19,26 @@ import AppKit
 final class PageBandReservationTests: XCTestCase {
     private let theme = RenderTheme.current(size: 11)
 
+    /// This file measures the BAND MECHANISM — what a running header and footer reserve — and every
+    /// number in it predates the View menu's page options. Those options can add to the band (the
+    /// outline reserves the document's own margins plus a desk between sheets even with nothing
+    /// drawn in them), so without pinning them here the file's numbers would depend on a stored
+    /// preference: the suite would read differently for a developer who had switched the outline off,
+    /// and the shipped default alone would move nine of these assertions.
+    ///
+    /// Pinned to the shape this file was written against — no sheets, header and footer on — so it
+    /// keeps guarding exactly the property it always did. The outline's own effects are
+    /// `PageViewOptionsTests`' subject.
+    override func setUp() {
+        super.setUp()
+        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
+    }
+
+    override func tearDown() {
+        PageViewOptionsStore.reset()
+        super.tearDown()
+    }
+
     // MARK: - 1. PageBandGeometry (measurement)
 
     func testBandHeightIsZeroWithNoHeaderAndNoFooter() {

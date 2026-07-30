@@ -46,6 +46,10 @@ final class ReaderTextView: NSTextView {
         // partial cards (super erased the strip, we redrew only a sliver). Drawing all visible
         // decorations — clipped to the dirty rect by the graphics context — keeps them whole.
         let onScreen = isDrawingToScreen
+        // Under EVERYTHING, including the reading line: this is the paper the rest is printed on.
+        // Screen only — on paper the sheet IS the sheet, and drawing an outline of it would print a
+        // rectangle a millimetre inside the page edge.
+        if onScreen { drawPageSheets() }
         if onScreen {
             drawReadingLine(lm, tc)   // under the decorations and glyphs — ambient, not a highlight
         }
@@ -73,6 +77,46 @@ final class ReaderTextView: NSTextView {
                                  band: wc.pageBandDelegate.band,
                                  documentHeight: lm.usedRect(for: tc).height,
                                  visibleRect: visibleRect, origin: textContainerOrigin)
+        }
+    }
+
+    /// Draw each page as a SHEET: the desk behind, the paper in front, a hairline round it
+    /// (`paged-view-options-design.md`). Draw-time only, like every other decoration in this file —
+    /// nothing here touches layout, because the space between two sheets was already reserved by the
+    /// band (`DocumentWindowController.reapplyPageBand`, which is the layout half of the same toggle).
+    ///
+    /// The sheet's horizontal extent is the PAPER — the text view's own frame, which for a paged
+    /// document is `left margin + body + right margin` — and NOT the text container. Drawing round
+    /// the container would put a box around the body text, which reads as a giant table rather than
+    /// as a page.
+    ///
+    /// The rectangles come from `PagePagination`, the same function that supplies `rectForPage` when
+    /// printing (invariant 59), so what a reader sees separated on screen and what comes out of the
+    /// printer are the same pages by construction rather than by two agreeing implementations.
+    private func drawPageSheets() {
+        guard let wc = window?.windowController as? DocumentWindowController else { return }
+        let sheets = wc.pageSheets
+        guard !sheets.isEmpty else { return }
+        let visible = visibleRect
+        // The desk, over the whole visible area first: the text view's background is the PAPER's
+        // colour, so without this the gaps between sheets would stay paper-coloured and nothing
+        // would read as separated.
+        Palette.pageGapBg.setFill()
+        visible.fill()
+        // The paper is whatever `super.drawBackground` just painted the whole view — read from the
+        // view rather than named again as a token, so the sheet can never be a different white from
+        // the one behind it in light mode or a different grey in dark.
+        backgroundColor.setFill()
+        for sheet in sheets where sheet.intersects(visible) {
+            let paper = NSRect(x: 0, y: sheet.minY, width: bounds.width, height: sheet.height)
+            paper.fill()
+        }
+        Palette.pageGapEdge.setStroke()
+        for sheet in sheets where sheet.intersects(visible) {
+            // Inset by half a point so the 1pt stroke lands ON the sheet's edge rather than
+            // straddling it, which would leave a half-pixel of desk inside the paper.
+            let edge = NSRect(x: 0.5, y: sheet.minY + 0.5, width: bounds.width - 1, height: sheet.height - 1)
+            NSBezierPath(rect: edge).stroke()
         }
     }
 

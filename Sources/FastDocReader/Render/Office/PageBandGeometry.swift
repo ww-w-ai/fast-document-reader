@@ -66,22 +66,35 @@ enum PageBandGeometry {
         var band: CGFloat
     }
 
+    /// `separatesPages` — the reader is drawing each sheet as its own page
+    /// (`PageViewOptions.outline`), so the space BETWEEN two sheets has to exist even when there is
+    /// no header or footer to put in it. Without this a document with page furniture switched off but
+    /// the outline on would draw its sheets edge to edge with no desk between them, which is not a
+    /// stack of pages. Defaults to `false`, which is exactly the rule this function had before the
+    /// toggles existed: no header and no footer means no band at all.
     static func measure(headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter],
                         theme: RenderTheme, columnWidth: CGFloat,
                         documentDefaultFontSize: CGFloat, pageContentWidth: CGFloat?,
-                        pageMarginTop: CGFloat? = nil, pageMarginBottom: CGFloat? = nil) -> Sides {
+                        pageMarginTop: CGFloat? = nil, pageMarginBottom: CGFloat? = nil,
+                        separatesPages: Bool = false) -> Sides {
         let h = measuredHeight(of: headers, theme: theme, columnWidth: columnWidth,
                                documentDefaultFontSize: documentDefaultFontSize,
                                pageContentWidth: pageContentWidth)
         let f = measuredHeight(of: footers, theme: theme, columnWidth: columnWidth,
                                documentDefaultFontSize: documentDefaultFontSize,
                                pageContentWidth: pageContentWidth)
-        guard h > 0 || f > 0 else { return Sides(header: h, footer: f, band: 0) }
+        guard h > 0 || f > 0 || separatesPages else { return Sides(header: h, footer: f, band: 0) }
         // The document's own two margins when it stated them, and what this reader must draw when
         // that is taller — the max, not a sum, because the header and footer are drawn INSIDE those
         // margins rather than added to them. A document that never stated a margin falls back to the
         // drawn height alone, which is the honest minimum and what the two sides need.
+        // …plus, when the reader is drawing SHEETS, the desk you can see between two of them. Two
+        // stacked pieces of paper touch, so this is the one number in the band no document declares
+        // and the reader has to (see `RenderTheme.pageDeskGap`, which explains why that is not
+        // invariant 57(e)'s invented constant returning). It is NOT printed: `PagePagination` takes
+        // it back off, so the paper is exactly the document's own sheet.
         let band = max(declaredBand(marginTop: pageMarginTop, marginBottom: pageMarginBottom), h + f)
+            + (separatesPages ? RenderTheme.pageDeskGap : 0)
         return Sides(header: h, footer: f, band: band)
     }
 

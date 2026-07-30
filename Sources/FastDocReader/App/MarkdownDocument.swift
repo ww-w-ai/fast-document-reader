@@ -1111,6 +1111,55 @@ final class MarkdownDocument: NSDocument {
     /// later as a stray character in someone else's tool.
     var lineEnding: String { text.contains("\r\n") ? "\r\n" : "\n" }
 
+    /// Measures this document's running header/footer and wires BOTH halves of the page band — the
+    /// reservation (`PageBandLayoutDelegate`) and the painting (`PageBandContent`) — for whatever the
+    /// View menu's page options currently say.
+    ///
+    /// Called from two places that must never disagree: the render above, and
+    /// `DocumentWindowController.reapplyPageBand()` when a toggle changes. Factored out for exactly
+    /// that reason (invariant 29's single-dispatch discipline) — a toggle that re-derived the band
+    /// with its own copy of this arithmetic would drift from the render's the first time either was
+    /// touched.
+    ///
+    /// A hidden header or footer is passed through as NO ENTRIES rather than as a flag, which is what
+    /// makes "hidden" mean the same thing to every consumer at once: it is not measured, so the band
+    /// shrinks; it is not painted, because the painter has nothing to paint. `separatesPages` is the
+    /// one thing the toggles add that entries alone cannot express — with the outline on, the space
+    /// between two sheets exists even when nothing is drawn in it.
+    ///
+    /// `readingColumn` is only a FALLBACK: a paged document builds its band at the page's own body
+    /// width (invariant 59d), which is a constant of the file and not of the window.
+    func applyPageBand(to wc: DocumentWindowController, theme: RenderTheme? = nil,
+                       readingColumn: CGFloat? = nil) {
+        // The render passes both, because it has already computed them and they must be the SAME
+        // values the body was built with. A toggle passes neither and they are re-derived here from
+        // the identical expressions — a paged document's theme is pinned to its own default body size
+        // (invariant 57), so this is not a guess about what the render did.
+        let theme = theme ?? RenderTheme.current(
+            size: officePageContentWidth != nil ? officeDefaultBodyFontSize : readingSize)
+        let readingColumn = readingColumn ?? wc.textView.textContainer?.size.width ?? 800
+        let options = PageViewOptionsStore.current
+        let headers = options.header ? officeHeaders : []
+        let footers = options.footer ? officeFooters : []
+        let bandColumn = officePageContentWidth ?? readingColumn
+        let sides = officePageContentHeight != nil
+            ? PageBandGeometry.measure(headers: headers, footers: footers,
+                                       theme: theme, columnWidth: bandColumn,
+                                       documentDefaultFontSize: officeDefaultBodyFontSize,
+                                       pageContentWidth: officePageContentWidth,
+                                       pageMarginTop: officePageMarginTop,
+                                       pageMarginBottom: officePageMarginBottom,
+                                       separatesPages: options.separatesPages)
+            : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
+        wc.configurePageBand(pageContentHeight: officePageContentHeight, band: sides.band,
+                             headers: headers, footers: footers, theme: theme,
+                             columnWidth: bandColumn, documentDefaultFontSize: officeDefaultBodyFontSize,
+                             pageContentWidth: officePageContentWidth,
+                             headerHeight: sides.header, footerHeight: sides.footer,
+                             drawsDivider: options.drawsDivider,
+                             separatesPages: options.separatesPages)
+    }
+
     private func render(into wc: DocumentWindowController) {
         // THIS document is the single owner of the size it renders at — never a shared global.
         //
@@ -1199,35 +1248,7 @@ final class MarkdownDocument: NSDocument {
             // `PageBandGeometry.measure` (not the older `bandHeight` this replaced) measures the
             // header and footer heights ONCE and hands step 5's painter the SAME two numbers step 4's
             // reservation is built from, rather than measuring them a second time at draw time.
-            //
-            // THE COLUMN A HEADER IS AUTHORED AGAINST IS THE PAGE'S OWN BODY, NOT THE READING COLUMN.
-            // `colW` above is the live text container, which for a PAGED document eventually equals
-            // the page body — but only once the window has been laid out, and this render can run
-            // before that (`settleReadingColumn` returns nil while the clip has no width, leaving the
-            // container at its 600pt starting size). Nothing re-runs this afterwards, so the band kept
-            // whichever width happened to be current at the FIRST render, forever.
-            //
-            // Measured on the reference report, whose running header is `w:jc="right"`: the header was
-            // built into a 600pt box laid at the page's own left margin, so its right-aligned text
-            // ended at x=656 on a 595.3pt sheet — off the paper entirely, which is why the printout
-            // carried no running header at all while Word's shows 42. Taking the width from the
-            // DOCUMENT (`officePageContentWidth`) makes it a constant of the file rather than of the
-            // window, which is invariant 57's rule and also removes the timing dependence. A non-paged
-            // office document has no page width and is unchanged.
-            let bandColumn = officePageContentWidth ?? colW
-            let sides = officePageContentHeight != nil
-                ? PageBandGeometry.measure(headers: officeHeaders, footers: officeFooters,
-                                           theme: theme, columnWidth: bandColumn,
-                                           documentDefaultFontSize: officeDefaultBodyFontSize,
-                                           pageContentWidth: officePageContentWidth,
-                                           pageMarginTop: officePageMarginTop,
-                                           pageMarginBottom: officePageMarginBottom)
-                : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
-            wc.configurePageBand(pageContentHeight: officePageContentHeight, band: sides.band,
-                                 headers: officeHeaders, footers: officeFooters, theme: theme,
-                                 columnWidth: bandColumn, documentDefaultFontSize: officeDefaultBodyFontSize,
-                                 pageContentWidth: officePageContentWidth,
-                                 headerHeight: sides.header, footerHeight: sides.footer)
+            applyPageBand(to: wc, theme: theme, readingColumn: colW)
         }
         wc.display(attr)
         wc.window?.title = displayName ?? "fast-md-reader"

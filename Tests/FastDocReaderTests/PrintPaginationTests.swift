@@ -19,10 +19,14 @@ final class PrintPaginationTests: XCTestCase {
         try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
         FontSizeStore.startingSize = FontSizeStore.defaultSize
         NSWindow.removeFrame(usingName: "FastMDReaderDoc")
+        // The page view options are a stored GLOBAL preference, so without this every case here
+        // would depend on whatever the developer running the suite last chose in the View menu.
+        PageViewOptionsStore.reset()
     }
 
     override func tearDownWithError() throws {
         FontSizeStore.startingSize = FontSizeStore.defaultSize
+        PageViewOptionsStore.reset()
         try? FileManager.default.removeItem(at: temp)
     }
 
@@ -42,6 +46,21 @@ final class PrintPaginationTests: XCTestCase {
                                "sheet \(i) starts exactly where sheet \(i - 1) ended")
             }
         }
+    }
+
+    /// A desk gap makes the sheets stop touching WITHOUT moving any of them: each page still begins
+    /// exactly one pitch after the last, and the paper is simply shorter by the desk. The first
+    /// version had no gap at all, the sheets tiled, the desk fill was covered by the very sheets it
+    /// sat behind, and the whole feature drew as a hairline.
+    func testADeskGapSeparatesTheSheetsWithoutMovingThem() {
+        let tiled = PagePagination.sheets(count: 3, width: 500, textOriginY: 28, leadingBand: 0,
+                                          pitch: 800, topMargin: 90)
+        let spaced = PagePagination.sheets(count: 3, width: 500, textOriginY: 28, leadingBand: 0,
+                                           pitch: 800, topMargin: 90, deskGap: 12)
+        XCTAssertEqual(spaced.map(\.minY), tiled.map(\.minY), "no sheet moved")
+        XCTAssertEqual(spaced[0].height, 788, accuracy: 0.001, "the paper is shorter by the desk")
+        XCTAssertEqual(spaced[1].minY - spaced[0].maxY, 12, accuracy: 0.001,
+                       "…and that is exactly what shows between them")
     }
 
     /// Page 0's sheet reaches ABOVE the view, and that is the correct answer rather than a bug to
@@ -147,13 +166,16 @@ final class PrintPaginationTests: XCTestCase {
         XCTAssertGreaterThan(pdf.numberOfPages, 1, "a long markdown file still paginates and prints")
     }
 
-    /// The third branch, and the one with no natural fixture in this repo: a document that declares a
-    /// page but has NO running header or footer. It reserves no band (invariant 58's `band == 0`
-    /// path), so its text runs continuously and cutting it on the page grid would slice a line in
-    /// half — it takes the PAPER from the document and leaves the breaking to `NSTextView`'s own
-    /// line-aware pagination. Real and common: the first `.hwp` reached for while building this had
-    /// exactly this shape (a page height of 657.64pt and no header at all).
-    func testAPagedDocumentWithNoHeaderOrFooterKeepsAppKitsPaginationOnItsOwnPaper() throws {
+    /// The third branch: a document that reserves NO band, so its text runs continuously and cutting
+    /// it on the page grid would slice a line in half — it takes the PAPER from the document and
+    /// leaves the breaking to `NSTextView`'s own line-aware pagination.
+    ///
+    /// Reaching it needs BOTH halves now: no running header or footer (real and common — the first
+    /// `.hwp` reached for while building this had a page height of 657.64pt and no header at all)
+    /// AND the page outline switched off, since the outline reserves the document's own margins
+    /// between sheets whether or not anything is drawn in them (`PageViewOptions.separatesPages`).
+    func testADocumentThatReservesNoBandKeepsAppKitsPaginationOnItsOwnPaper() throws {
+        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
         let (_, wc) = try openPaged(headerAndFooter: false)
         XCTAssertTrue(wc.isPaged, "precondition: it still declares a page")
         XCTAssertFalse(wc.pageBandDelegate.isActive, "…but reserves no band, so it did not paginate")

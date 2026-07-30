@@ -64,13 +64,20 @@ enum Palette {
     static let tableBorderAuthored = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.85),
                                                      dark:  NSColor(rgb: 0xFFFFFF, alpha: 0.70))
     static let tableHeaderBg   = NSColor(rgb: 0x878378, alpha: 0.10)   // warm neutral, both modes
-    /// The gap between two pages of a paged document, and the hairline that closes it — the
-    /// page-break divider. Without one the band reads as a hole in the document rather than as a
-    /// page ending: the reader sees a long blank stretch and a header floating in it, with
-    /// nothing saying why. Darker than the paper in light mode and lighter in dark mode, so the
-    /// paper always reads as the sheet and the gap as the desk behind it.
-    static let pageGapBg       = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.045),
-                                                dark: NSColor(rgb: 0x000000, alpha: 0.22))
+    /// The DESK a paged document's sheets lie on — drawn only where the page outline is on
+    /// (`PageViewOptions`), in the `RenderTheme.pageDeskGap` between one sheet and the next. Darker
+    /// than the paper in light mode and lighter in dark, so the paper always reads as the sheet and
+    /// the space between as what is behind it.
+    ///
+    /// Retuned from 0.045 after the first screenshot of the outline: at that tint the space between
+    /// two sheets was almost indistinguishable from the paper, so the pages read as one continuous
+    /// run with a hairline in it rather than as separate sheets.
+    static let pageGapBg       = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.11),
+                                                dark: NSColor(rgb: 0x000000, alpha: 0.32))
+    /// The sheet's own edge — and, when the outline is OFF but a band still exists, the page-break
+    /// hairline that closes it. Without one of the two the band reads as a hole in the document
+    /// rather than as a page ending: the reader sees a long blank stretch and a header floating in
+    /// it, with nothing saying why.
     static let pageGapEdge     = NSColor.dynamic(light: NSColor(rgb: 0x37352F, alpha: 0.14),
                                                 dark: NSColor(rgb: 0xFFFFFF, alpha: 0.10))
     // P6b: comment highlight — a faint amber wash behind a commented span (only drawn while the
@@ -149,6 +156,18 @@ extension RenderTheme {
     /// the document, its table style, nor the table's own default states a width. Deliberately an INTEGER — a cell's
     /// content width subtracts its left and right rules from an integer column edge, so a fractional
     /// rule puts the boundary back on a fractional pixel, which is the drift invariant 42 records.
+    /// The space BETWEEN two drawn sheets — the desk you can see between two pieces of paper lying on
+    /// it. Reserved in layout only while the page outline is on, and NEVER printed.
+    ///
+    /// **This is not invariant 57(e)'s invented gap coming back, and the difference is the whole
+    /// point.** That constant claimed to be the document's own inter-page space, which the document
+    /// had actually stated (bottom margin + next top margin) and which the reader was overriding. This
+    /// one is the opposite kind of number: two stacked sheets of paper TOUCH, so no document anywhere
+    /// declares how far apart to draw them — it is a property of the desk, not of the page, and there
+    /// is nothing to read it from. Word makes the same decision and lets you collapse it. Turn the
+    /// outline off and it is not reserved at all.
+    static let pageDeskGap: CGFloat = 12
+
     static let tableBorderWidth: CGFloat = 1
 }
 
