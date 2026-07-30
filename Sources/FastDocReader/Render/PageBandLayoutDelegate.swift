@@ -44,6 +44,16 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// fact, set once, by whoever reserved the space.
     var deskGap: CGFloat = 0
 
+    /// Tables that must be moved WHOLE to the next page rather than allowed to run into the margin,
+    /// keyed by the character location of their first line — `DocumentWindowController.
+    /// settlePagedTables` measures these from a completed layout and puts them here, and the rule
+    /// below re-derives the actual shift from each incoming rect.
+    ///
+    /// Empty for every document that needs nothing moved, which is the overwhelming majority: on the
+    /// reference report 4 of 16 tables overrun, and on a document whose tables all fit this stays
+    /// empty and the layout is bit-for-bit what it was before this existed.
+    var pushedTables: [Int: PagePagination.TableMetrics] = [:]
+
     init(pageContentHeight: CGFloat = 0, band: CGFloat = 0, leadingBand: CGFloat = 0, trailingBand: CGFloat = 0) {
         self.pageContentHeight = pageContentHeight
         self.band = band
@@ -102,14 +112,16 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
                         in textContainer: NSTextContainer,
                         forGlyphRange glyphRange: NSRange) -> Bool {
         guard isActive else { return false }
-        // KNOWN HARD EDGE (header-footer-design.md §4/§7), deliberately NOT solved in this step: a
-        // line inside an NSTextTableBlock owns its own geometry through the table (invariants
-        // 39/50) and must not be shifted. A long table is allowed to overrun its page; the boundary
-        // is taken at the next line after it, exactly as the design records.
-        if isInsideTable(layoutManager, glyphRange) { return false }
+        // A line inside an `NSTextTableBlock` owns its geometry through the table (invariants 39/50)
+        // and is never shifted where it stands — SPLITTING a table at a page boundary was measured and
+        // is not available to us; see `pushWholeTable`, which moves the table instead.
         let pitch = pageContentHeight + band
         guard pitch > 0 else { return false }
         let rect = lineFragmentRect.pointee
+        if isInsideTable(layoutManager, glyphRange) {
+            return pushWholeTable(layoutManager, glyphRange, rect, pitch,
+                                  lineFragmentRect, lineFragmentUsedRect)
+        }
         // Both derived in the exact coordinate system the between-page rule already proved correct —
         // just translated by `leadingBand` and back again. Page 0's own first line (proposed at its
         // NATURAL, never-yet-shifted `rect.minY == 0`) falls out of this identical "crossing" check
@@ -138,6 +150,56 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
             // proposed position — which is also the bottom of the previous page's last line, however
             // far that page overran.
             openedBands[Int(page)] = (top: rect.minY, height: shift)
+        }
+        return true
+    }
+
+    /// A table that would run off the bottom of its page is moved WHOLE to the top of the next one —
+    /// the whole rule, and it needs to touch exactly ONE line to do it.
+    ///
+    /// **Why moving beats splitting, measured rather than assumed.** Letting the ordinary between-page
+    /// rule shift table lines DOES produce a real Word-like split, and on a table of single-line cells
+    /// it is flawless: rows stay whole, each page's segment keeps its own border box, the running
+    /// header and footer land in the gap. On a REAL report it tears. A vertically merged cell spans
+    /// the boundary, so the half of the row that moved leaves the merged cell stretched across the gap
+    /// — with this reader's own header and page number painted inside the table — and the row's two
+    /// halves end up a page apart. Splitting honestly needs `NSTextTableBlock` geometry we do not own
+    /// (invariants 39/42 spent a night establishing that we should not), so the table moves instead.
+    ///
+    /// **Why one line is enough.** The typesetter positions each line after the previous one, so
+    /// shifting the table's first line carries every later line with it — the same property the
+    /// between-page rule above already relies on. Verified on the reference report: pushing table #0's
+    /// first line left its height identical to the hundredth (438.45 both ways) and landed its visual
+    /// top exactly on the target, merged-cell inset and all.
+    ///
+    /// **What it refuses to do.** A table TALLER than the page body can never fit, so moving it only
+    /// wastes the page it left; it stays where it is and overruns, which is the honest best and what
+    /// `PagePagination.joiningUnopenedBoundaries` already draws truthfully. That case is real — a
+    /// 25-row fixture on a 220pt page, and every giant table of invariant 55.
+    private func pushWholeTable(_ layoutManager: NSLayoutManager, _ glyphRange: NSRange,
+                                 _ rect: NSRect, _ pitch: CGFloat,
+                                 _ lineFragmentRect: UnsafeMutablePointer<NSRect>,
+                                 _ lineFragmentUsedRect: UnsafeMutablePointer<NSRect>) -> Bool {
+        guard !pushedTables.isEmpty else { return false }
+        let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        guard let metrics = pushedTables[charRange.location] else { return false }
+        // The table's own top edge, which is what has to clear the page — not this line's, which a
+        // merged cell can push down by an arbitrary amount.
+        let visualTop = rect.minY - metrics.topInset
+        let page = ((visualTop - leadingBand) / pitch).rounded(.down)
+        let textBottom = page * pitch + pageContentHeight
+        // Already fits where it stands: nothing to do, and this is what makes the rule idempotent —
+        // a table that was moved once lands at a page top and then declines to move again.
+        guard (visualTop - leadingBand + metrics.height) > textBottom else { return false }
+        let target = (page + 1) * pitch + leadingBand
+        let shift = target - visualTop
+        guard shift > 0 else { return false }
+        lineFragmentRect.pointee.origin.y += shift
+        lineFragmentUsedRect.pointee.origin.y += shift
+        shiftCount += 1
+        if page >= 0 {
+            openedBoundaries.insert(Int(page))
+            openedBands[Int(page)] = (top: visualTop, height: shift)
         }
         return true
     }

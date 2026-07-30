@@ -387,6 +387,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // A new render re-decides every boundary, so the previous pass's answers must not survive
         // into it — a stale entry would paint into a band this layout never made.
         pageBandDelegate.resetOpenedBoundaries()
+        // The moved-table record goes with them, and for a stronger reason: it is keyed by CHARACTER
+        // LOCATION, so carrying it into a different string would move whatever happens to start at
+        // that offset. It is also band-dependent — the page outline changes the pitch, so which tables
+        // overrun changes with it. `settlePagedTables` rebuilds it from the new layout.
+        pageBandDelegate.pushedTables = [:]
+        pagedTableSettles = 0
         pageBandContent = band > 0
             ? PageBandContent(headers: headers, footers: footers, theme: theme, columnWidth: columnWidth,
                               documentDefaultFontSize: documentDefaultFontSize, pageContentWidth: pageContentWidth,
@@ -1460,6 +1466,16 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard let lm = textView.layoutManager, let storage = textView.textStorage else { return }
         let total = storage.length
         func finishWalk() {
+            // The document is now fully laid out, which is the ONLY moment its tables can be measured
+            // — so this is where "no table may print in the margin" is decided. If one has to move,
+            // the whole walk runs again with that recorded; `settlePagedTables`' own doc explains why
+            // it cannot be decided while the first pass is still typesetting.
+            if pagedTableSettles < maxPagedTableSettles, settlePagedTables() {
+                pagedTableSettles += 1
+                precomputeLayout(then: then)
+                return
+            }
+            pagedTableSettles = 0
             applyTrailingFooterBand()
             // Whichever walk gets to the end applies a pending anchor — see `pendingAnchor`.
             if let anchor = pendingAnchor {
@@ -1508,6 +1524,96 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         DispatchQueue.main.async { step(0) }
     }
+
+    /// Every table in the CURRENT layout, as `PagePagination.tablesToPush` needs to see it.
+    ///
+    /// Walked from the line fragments rather than from the text blocks, because what decides this is
+    /// where the rows actually LANDED. Contiguous lines sharing one `NSTextTable` are one table: the
+    /// cells of a table are contiguous in text order (`TableBlockBuilder` writes them that way), so a
+    /// change of table identity is a change of table. `visualTop` is the smallest line top in the run
+    /// and NOT the first line's, which a vertically merged cell can push down (see `LaidOutTable`).
+    private func laidOutTables() -> [PagePagination.LaidOutTable] {
+        guard let lm = textView.layoutManager, let tc = textView.textContainer,
+              let storage = textView.textStorage, storage.length > 0 else { return [] }
+        var out: [PagePagination.LaidOutTable] = []
+        var current: ObjectIdentifier?
+        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, glyphRange, _ in
+            let cr = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            var table: ObjectIdentifier?
+            if cr.location >= 0, cr.location < storage.length,
+               let style = storage.attribute(.paragraphStyle, at: cr.location,
+                                             effectiveRange: nil) as? NSParagraphStyle,
+               let block = style.textBlocks.first as? NSTextTableBlock {
+                table = ObjectIdentifier(block.table)
+            }
+            guard let table else { current = nil; return }
+            if current == table, var last = out.last {
+                last.visualTop = min(last.visualTop, rect.minY)
+                last.bottom = max(last.bottom, rect.maxY)
+                out[out.count - 1] = last
+            } else {
+                current = table
+                out.append(PagePagination.LaidOutTable(firstChar: cr.location, visualTop: rect.minY,
+                                                       bottom: rect.maxY, firstLineTop: rect.minY))
+            }
+        }
+        return out
+    }
+
+    /// ONE round of "no table may print in the margin": measure the tables this layout produced, and
+    /// if any of them has to move, record it and invalidate so the next layout puts it on the next
+    /// page. Returns whether anything changed — i.e. whether the document must be laid out again.
+    ///
+    /// **Why this needs a completed layout at all.** The rule that moves a table needs the table's
+    /// HEIGHT, and at the moment the typesetter asks about its first line nothing has measured it yet.
+    /// So the reader lays out, looks at what it got, and re-solves — measure, then place. The cost is
+    /// one extra pass through `precomputeLayout`'s own chunked walk, paid only by a document that
+    /// actually has a table to move (the reference report: 4 of 16 tables; a full re-layout of it
+    /// measured 38ms, and it is chunked, so no single turn grows).
+    ///
+    /// **Why the whole document is invalidated rather than the tail from the moved table.** Moving a
+    /// table changes which page boundaries LAYOUT opened, and `openedBoundaries` is what the painter
+    /// and the page outline read. Keeping the earlier half of that record while re-deriving the rest
+    /// would leave the two halves describing different layouts; re-deriving all of it is one honest
+    /// pass, and the measurement above says it is affordable.
+    @discardableResult
+    func settlePagedTables() -> Bool {
+        guard pageBandDelegate.isActive, let lm = textView.layoutManager,
+              let storage = textView.textStorage, storage.length > 0 else { return false }
+        let tables = laidOutTables()
+        guard !tables.isEmpty else { return false }
+        let next = PagePagination.tablesToPush(tables,
+                                               pageContentHeight: pageBandDelegate.pageContentHeight,
+                                               band: pageBandDelegate.band,
+                                               leadingBand: pageBandDelegate.leadingBand,
+                                               alreadyPushed: pageBandDelegate.pushedTables)
+        guard next.count > pageBandDelegate.pushedTables.count else { return false }
+        pageBandDelegate.pushedTables = next
+        pageBandDelegate.resetOpenedBoundaries()
+        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
+                            actualCharacterRange: nil)
+        return true
+    }
+
+    /// The SYNCHRONOUS twin, for a caller that cannot wait for `precomputeLayout`'s chunked walk —
+    /// printing, which must not put a table row in a margin just because the asynchronous settle had
+    /// not finished yet. Bounded for the same reason the asynchronous one is (see `pagedTableSettles`).
+    func settlePagedTablesFully() {
+        guard pageBandDelegate.isActive, let lm = textView.layoutManager,
+              let tc = textView.textContainer else { return }
+        for _ in 0..<maxPagedTableSettles {
+            lm.ensureLayout(for: tc)
+            if !settlePagedTables() { return }
+        }
+        lm.ensureLayout(for: tc)
+    }
+
+    /// How many times ONE render may re-solve its tables. Each round moves at least one table and a
+    /// table is only ever moved once (the rule that moves it declines to move it again once it sits at
+    /// a page top), so this terminates on its own — the cap is a backstop against a future change
+    /// breaking that, not the mechanism.
+    private let maxPagedTableSettles = 8
+    private var pagedTableSettles = 0
 
     /// Visible character range grown by `margin` screenfuls above and below — the region whose
     /// images/diagrams should stay loaded. (Also lays that region out, which smooths scrolling.)
@@ -2630,6 +2736,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// pins that, so a future zoom implementation that DID move the view's own geometry is caught here
     /// rather than on paper.
     func makePrintOperation() -> NSPrintOperation {
+        // ⌘P can arrive before the asynchronous settle has finished — on a document just opened, or
+        // straight after a re-render. Paper cannot show an overrun honestly the way the screen can
+        // (`PagePagination.joiningUnopenedBoundaries`), so the tables are settled here first.
+        settlePagedTablesFully()
         let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo()
         info.scalingFactor = 1
         if let first = printSheets.first, let width = pagedDocumentWidth {

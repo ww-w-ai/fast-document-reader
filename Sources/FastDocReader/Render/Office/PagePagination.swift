@@ -91,6 +91,68 @@ enum PagePagination {
         return out
     }
 
+    /// One table as a COMPLETED layout shows it — the only four numbers `tablesToPush` needs, so the
+    /// decision can be judged arithmetically instead of by looking at a printout.
+    ///
+    /// `visualTop` is the table's real top edge (the smallest line top in it), which is NOT
+    /// `firstLineTop`: the first line the typesetter reaches belongs to whichever cell comes first in
+    /// TEXT order, and a vertically merged cell is centred in its own span, so that line can sit well
+    /// below the table's top edge.
+    struct LaidOutTable {
+        var firstChar: Int
+        var visualTop: CGFloat
+        var bottom: CGFloat
+        var firstLineTop: CGFloat
+
+        init(firstChar: Int, visualTop: CGFloat, bottom: CGFloat, firstLineTop: CGFloat) {
+            self.firstChar = firstChar
+            self.visualTop = visualTop
+            self.bottom = bottom
+            self.firstLineTop = firstLineTop
+        }
+    }
+
+    /// How tall a table is, and how far its first line in text order sits below its own top — the two
+    /// position-INDEPENDENT facts the layout rule needs to move it. Position-independent because a
+    /// paged document's reading column never changes (invariant 57), so measuring them once is enough
+    /// for the whole render.
+    struct TableMetrics: Equatable {
+        var height: CGFloat
+        var topInset: CGFloat
+    }
+
+    /// Which tables must be moved WHOLE to the next page rather than allowed to run into the margin.
+    ///
+    /// A table qualifies when it does BOTH:
+    ///  - overruns its own page's text bottom (its rows would print in the margin, and the reader
+    ///    cannot split it — `PageBandLayoutDelegate.pushWholeTable` records why), and
+    ///  - would FIT on a page of its own. A taller one gains nothing by moving: it would overrun the
+    ///    next page just as far, having wasted the rest of the page it left. Measured on a 25-row
+    ///    fixture whose 660pt table lives on a 220pt page — moving it adds a near-empty page and
+    ///    changes nothing else.
+    ///
+    /// `alreadyPushed` is what a previous round decided. Its entries are kept verbatim: the rule that
+    /// consumes them is idempotent (a table sitting at a page top declines to move again), and
+    /// dropping one because it now fits would make it fit, then not fit, then fit — the settle loop
+    /// would never converge.
+    static func tablesToPush(_ tables: [LaidOutTable],
+                             pageContentHeight: CGFloat, band: CGFloat, leadingBand: CGFloat,
+                             alreadyPushed: [Int: TableMetrics] = [:]) -> [Int: TableMetrics] {
+        let pitch = pageContentHeight + band
+        guard pitch > 0, pageContentHeight > 0 else { return alreadyPushed }
+        var out = alreadyPushed
+        for t in tables where out[t.firstChar] == nil {
+            let height = t.bottom - t.visualTop
+            guard height <= pageContentHeight else { continue }
+            let page = ((t.visualTop - leadingBand) / pitch).rounded(.down)
+            let textBottom = page * pitch + pageContentHeight
+            guard (t.bottom - leadingBand) > textBottom else { continue }
+            out[t.firstChar] = TableMetrics(height: height,
+                                            topInset: t.firstLineTop - t.visualTop)
+        }
+        return out
+    }
+
     /// `deskGap` is the space the band reserved for the DESK between two drawn sheets
     /// (`RenderTheme.pageDeskGap`, non-zero only while the page outline is on). A sheet is therefore
     /// `pitch - deskGap` tall — the document's own paper — and the pages no longer TILE: the gap
