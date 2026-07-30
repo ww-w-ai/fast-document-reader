@@ -52,10 +52,9 @@ the same treatment tables already had. A picture inside a table is measured agai
 width instead and stays in its cell. Figures sit left, centred or right where the document says so
 (`w:jc`, ODT's `fo:text-align`, HWP's own object alignment) — before this they all rendered left.
 Table borders are read **edge by edge, in three states**: drawn, explicitly turned off, or never
-mentioned at all. A table that drew a box but left some of its perimeter undescribed gets a faint
-1 pt stand-in on those edges; an edge the author switched off draws nothing; and a table that
-declared nothing at all is byte-identical to before — still the reader's own default rule, which is
-every Markdown, HWP and ODT table.
+mentioned at all. A table that described its own grid and left an edge out draws nothing there — it
+already said what it wanted; an edge the author switched off draws nothing; and a table that declared
+nothing at all keeps the reader's own default rule, which is every Markdown, HWP and ODT table.
 
 It reads **Korea's HWP (`.hwp`, `.hwpx`) files** the same way — read-only and native, given the same
 first-class treatment as Word and ODT. HWP is the dominant document format in Korean offices, schools
@@ -88,8 +87,10 @@ whose spacing was being thrown away).
 | Math | **KaTeX bundled** — `$$…$$` and ```` ```math ```` render offline, vector, cached the same way |
 | Images | Off-screen pixels freed, exact height kept — **no reflow, no scrollbar jitter** |
 | Office graphics | Sized by the **document's own page width**, not your font size — ⌘+/⌘− move text alone, and a figure tracks the window. Left/centre/right honoured as authored |
-| Table borders | Read **per edge, three-state** — drawn, switched off, or never mentioned. A half-described box gets a faint stand-in; a table that declared nothing is unchanged |
-| Navigation | **T** opens a table of contents built from the document's own headings — click to jump. Hidden outright when a document has none |
+| Table borders | Read **per edge, three-state** — drawn, switched off, or never mentioned. A table that described its own grid is taken at its word; one that declared nothing is unchanged |
+| Pages | Word/ODT/HWP shown as **real sheets** at the paper's own size, with the running header and footer where the document puts them. **⌥⌘P** collapses them into one continuous flow |
+| Printing | **⌘P** prints the same pages you are reading, on the document's own paper — and the print dialog's "Save as PDF" is therefore the PDF export |
+| Navigation | **T** opens a table of contents built from the document's own headings — click to jump. **⌘1…⌘9** and **⌥⌘←/→** move between tabs. Hidden outright when a document has none |
 | Code | **34 languages** highlighted natively — one-pass scanner, no JS, per-block **Copy** and **Wrap** |
 | Editing | Reader first — **E** edit · **I** add below · **U/J** move · **D** delete, held in memory until ⌘S |
 
