@@ -337,6 +337,56 @@ final class PageViewOptionsTests: XCTestCase {
         XCTAssertLessThanOrEqual(paper * wc.pageZoom, 420, "the page must now fit the reading area")
     }
 
+    // MARK: - (8) Every path applies the WHOLE paged view state, not a subset
+
+    /// The structural fault behind the centring bugs: five rules describe a paged view, and five
+    /// different paths each applied a different subset — the View-menu toggle applied NONE. So the
+    /// desk colour survived switching the outline off, and each fix landed in one path while another
+    /// undid it.
+    ///
+    /// Asserted on the two rules a toggle actually changes and that nothing else in this file covers:
+    /// the paper registered for centring, and the desk colour beside the page.
+    func testTogglingTheOutlineReappliesTheWholeViewStateNotPartOfIt() throws {
+        let (_, wc) = try openPaged()
+        let paper = try XCTUnwrap(wc.pagedDocumentWidth)
+        XCTAssertEqual(wc.textView.pagedPaperWidth, paper,
+                       "precondition: the page is registered for centring")
+        XCTAssertEqual(wc.deskBackgroundColorForTesting, Palette.pageDesk,
+                       "precondition: with sheets drawn, the space beside them is desk")
+
+        // IMMEDIATELY — no run-loop turn. This is what makes the test bite: the layout walk the toggle
+        // kicks off ends in `sizeTextViewToFit`, which applies the same state, so waiting for the async
+        // tail passes whether or not the TOGGLE itself did it. Mutation-checked both ways.
+        wc.togglePageOutline(nil)          // outline OFF — the document flows continuously
+        XCTAssertEqual(wc.deskBackgroundColorForTesting, NSColor.textBackgroundColor,
+                       "no sheets, so no desk — and not one frame later, which is what a reader sees")
+
+        wc.togglePageOutline(nil)          // and back ON
+        XCTAssertEqual(wc.deskBackgroundColorForTesting, Palette.pageDesk)
+        XCTAssertEqual(wc.textView.pagedPaperWidth, paper, "…and the page is still centred on its paper")
+        // The async tail must not undo any of it either.
+        waitForAsyncTail()
+        XCTAssertEqual(wc.deskBackgroundColorForTesting, Palette.pageDesk)
+    }
+
+    /// The desk gap is ONE fact, owned by the layout that reserved it — never re-read from the
+    /// preference at draw time. Between a toggle writing the preference and the band being re-solved
+    /// there is a window where the two would disagree and every sheet would mis-tile by 12pt.
+    func testTheDeskGapComesFromTheLayoutThatReservedItNotThePreference() throws {
+        let (_, wc) = try openPaged()
+        XCTAssertEqual(wc.pageBandDelegate.deskGap, RenderTheme.pageDeskGap, accuracy: 0.01)
+
+        // Write the preference WITHOUT re-solving the band — the racy window, made explicit.
+        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
+        XCTAssertEqual(wc.pageBandDelegate.deskGap, RenderTheme.pageDeskGap, accuracy: 0.01,
+                       "still what layout reserved, because nothing has re-solved it yet")
+        let sheets = wc.printSheets
+        if sheets.count > 1 {
+            XCTAssertEqual(sheets[1].minY - sheets[0].maxY, RenderTheme.pageDeskGap, accuracy: 0.01,
+                           "so the sheets still tile against the band that actually exists")
+        }
+    }
+
     // MARK: - Fixture
 
     private static let bodyWidth: CGFloat = 400

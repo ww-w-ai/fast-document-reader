@@ -383,6 +383,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         pageBandDelegate.leadingBand = leading
         pageBandDelegate.trailingBand = trailing
+        pageBandDelegate.deskGap = separatesPages ? RenderTheme.pageDeskGap : 0
         // A new render re-decides every boundary, so the previous pass's answers must not survive
         // into it — a stale entry would paint into a band this layout never made.
         pageBandDelegate.resetOpenedBoundaries()
@@ -555,9 +556,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             var f = textView.frame
             f.size.width = leftMargin + page + rightMargin
             textView.frame = f
-            textView.pagedPaperWidth = f.size.width
-            syncDeskBackground()
-            recentrePage()
+            applyPagedViewState()
             // First paged settle: open at `defaultPageZoom`, and bring the window to the page rather
             // than the page to the window.
             //
@@ -591,15 +590,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                 applyMagnification(Self.defaultPageZoom)
                 DispatchQueue.main.async { [weak self] in self?.fitWindowToPage() }
             }
-            syncHorizontalScroller()
             return page
         }
         textView.autoresizingMask = [.width]
         // Stated rather than inherited, for the paged branch's reason above: markdown and plain text
         // WANT the frame to follow the clip, and a document opened after a paged one shares this view.
         textView.isHorizontallyResizable = false
-        textView.pagedPaperWidth = nil       // markdown/plain text: the frame IS the content
-        syncDeskBackground()
+        applyPagedViewState()                // clears the paper, restores the default background
         // The ONE place `lastClipWidth` is written. Every caller — this init/setup path,
         // `reflow(keeping:)`, `display(_:)`, `windowDidResize`, `viewportChanged` — funnels through
         // here, so the value can never disagree with the layout that actually just ran, regardless
@@ -758,7 +755,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// shrinking. The horizontal scroller consumes HEIGHT, never width, so toggling it cannot move
     /// `contentSize.width` and cannot disturb either resize gate.
     private func syncHorizontalScroller() {
-        guard let d = pagedDocumentWidth else { return }
+        guard let d = pagedDocumentWidth else { scrollView.hasHorizontalScroller = false; return }
         scrollView.hasHorizontalScroller = d * scrollView.magnification > scrollView.contentSize.width + 0.5
     }
 
@@ -798,9 +795,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let visible = scrollView.contentView.documentVisibleRect
         scrollView.setMagnification(target, centeredAt: NSPoint(x: visible.midX, y: visible.midY))
         pageZoomChangeCount += 1
-        pinPagedFrameWidth()   // a magnification change moves the clip's bounds, which widens the frame
-        recentrePage()
-        syncHorizontalScroller()
+        applyPagedViewState()   // a magnification change moves the clip's bounds, which widens the frame
         return true
     }
 
@@ -2444,6 +2439,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let anchor = readingAnchor()
         scrollView.contentView.scroll(to: NSPoint(x: scrollView.contentView.bounds.origin.x, y: 0))
         doc.applyPageBand(to: self)
+        // The toggle changed what the page IS — desk colour, sheet width, centring, scroller. Applied
+        // through the one function every other path uses; doing none of this is what left the desk
+        // colour behind after switching the outline off.
+        applyPagedViewState()
         lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
                             actualCharacterRange: nil)
         textView.needsDisplay = true
@@ -2467,7 +2466,36 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// re-deriving.
     private func sizeTextViewToFit() {
         textView.sizeToFit()
+        applyPagedViewState()
+    }
+
+    /// Test seam: the desk colour beside the page. `scrollView` is private on purpose (invariant 57's
+    /// "the zoom is the only thing that touches it"), and this is the one property a test needs to
+    /// prove the View-menu toggle re-applies the whole view state rather than part of it.
+    var deskBackgroundColorForTesting: NSColor { scrollView.backgroundColor }
+
+    /// THE one place that puts this window into the state a PAGED document needs — and the answer to
+    /// why centring kept coming back wrong.
+    ///
+    /// Five rules describe a paged view: which width is the paper, how wide the scrollable frame is,
+    /// what colour the space beside the page is, whether the page is centred, and whether a sideways
+    /// scroller is needed. They were applied by FIVE different paths, each handling a different subset
+    /// — audited: the reading-column settle did all five, a magnification change did three, `sizeToFit`
+    /// did one, and the View-menu page toggle did NONE. So turning the page outline off left the desk
+    /// colour behind, turning it on left the paper's white beside the sheet, and every fix landed in one
+    /// path while another quietly undid it. That is a structural fault rather than five bugs, and it is
+    /// the owner's own diagnosis: *"불필요하게 여러번 그리거나, 그리는 부분이 여러군데인데 일부에서만
+    /// 처리하는지"*.
+    ///
+    /// Safe to call unconditionally: every part below is a no-op for a document with no page, so the
+    /// non-paged branch calls it too and markdown gets its defaults back through the SAME function
+    /// rather than through a second, divergent one.
+    func applyPagedViewState() {
+        textView.pagedPaperWidth = pagedDocumentWidth   // nil for markdown, plain text, no-page office
         pinPagedFrameWidth()
+        syncDeskBackground()
+        syncHorizontalScroller()
+        recentrePage()
     }
 
     /// Re-apply the page's horizontal CENTRING after the reading area changed width.
@@ -2514,34 +2542,22 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         scrollView.backgroundColor = showsDesk ? Palette.pageDesk : .textBackgroundColor
     }
 
-    /// How much of the band is DESK rather than paper — `RenderTheme.pageDeskGap` while the outline
-    /// is on, zero otherwise. Read from the same preference `applyPageBand` measured the band with,
-    /// so the two can only disagree if a toggle skipped `reapplyPageBand`, which nothing does
-    /// (`PageViewOptionsTests` asserts the sheets tile with exactly this much between them).
-    private var pageDeskGap: CGFloat {
-        PageViewOptionsStore.current.outline ? RenderTheme.pageDeskGap : 0
-    }
+    /// How much of the band is DESK rather than paper. Read from the LAYOUT that reserved it
+    /// (`PageBandLayoutDelegate.deskGap`), never from the preference again — see that property for why
+    /// the two are not equivalent.
+    private var pageDeskGap: CGFloat { pageBandDelegate.deskGap }
 
     /// The sheets to DRAW on screen — the same rectangles printing puts on paper, from the same
     /// function, so the page a reader sees and the page that comes out of the printer can never be
     /// two different things. Empty unless the outline is on and the reader actually paginated.
     var pageSheets: [CGRect] {
-        guard PageViewOptionsStore.current.outline, pageBandDelegate.isActive,
-              let width = pagedDocumentWidth else { return [] }
-        let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
-                                         band: pageBandDelegate.band)
-        // Joined across any boundary layout could not open, so a page break is never drawn through a
-        // table (`PagePagination.joiningUnopenedBoundaries`). Screen only — `printSheets` above keeps
-        // the paper-sized grid, because paper cannot stretch.
-        return PagePagination.joiningUnopenedBoundaries(
-            PagePagination.sheets(count: printPageCount, width: width,
-                                  textOriginY: textView.textContainerOrigin.y,
-                                  leadingBand: pageBandDelegate.leadingBand,
-                                  pitch: pitch,
-                                  topMargin: PagePagination.topMargin(declared: pagedMarginTop,
-                                                                       band: pageBandDelegate.band - pageDeskGap),
-                                  deskGap: pageDeskGap),
-            openedBoundaries: pageBandDelegate.openedBoundaries)
+        guard PageViewOptionsStore.current.outline else { return [] }
+        // The PRINTED sheets, joined across any boundary layout could not open, so a page break is
+        // never drawn through a table. Derived from `printSheets` rather than computed again: two
+        // copies of this arithmetic is exactly how the screen and the paper would come to disagree
+        // about where a page is, and the whole promise of the paged view is that they cannot.
+        return PagePagination.joiningUnopenedBoundaries(printSheets,
+                                                        openedBoundaries: pageBandDelegate.openedBoundaries)
     }
 
     // MARK: - Print (⌘P)

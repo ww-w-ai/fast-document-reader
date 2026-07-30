@@ -34,6 +34,15 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// is what actually reserves it — see that method's own doc for why it needs a completely
     /// different mechanism (`NSLayoutManager`'s "extra line fragment") than either edge above.
     var trailingBand: CGFloat
+    /// How much of `band` is the DESK between two drawn sheets rather than the document's own margins
+    /// (`RenderTheme.pageDeskGap`, non-zero only while the page outline is on).
+    ///
+    /// Held HERE, beside the band it is part of, because the drawing side has to subtract exactly what
+    /// the layout side added. Reading the preference again at draw time looked equivalent and is not:
+    /// between a toggle writing the preference and the band being re-solved there is a window in which
+    /// a paint would take the new answer against the old band and mis-tile every sheet by 12pt. One
+    /// fact, set once, by whoever reserved the space.
+    var deskGap: CGFloat = 0
 
     init(pageContentHeight: CGFloat = 0, band: CGFloat = 0, leadingBand: CGFloat = 0, trailingBand: CGFloat = 0) {
         self.pageContentHeight = pageContentHeight
