@@ -364,7 +364,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             ? PageBandContent(headers: headers, footers: footers, theme: theme, columnWidth: columnWidth,
                               documentDefaultFontSize: documentDefaultFontSize, pageContentWidth: pageContentWidth,
                               headerHeight: headerHeight, footerHeight: footerHeight,
-                              leadingBand: leading, trailingBand: trailing)
+                              leadingBand: leading, trailingBand: trailing,
+                              pageMarginTop: pagedMarginTop, pageMarginBottom: pagedMarginBottom,
+                              headerDistance: pagedHeaderDistance, footerDistance: pagedFooterDistance)
             : nil
     }
 
@@ -660,6 +662,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// `pagedMarginLeft`/`pagedMarginRight`. Same non-consumption caveat as `pagedHeight`.
     private var pagedMarginTop: CGFloat? { (document as? MarkdownDocument)?.officePageMarginTop }
     private var pagedMarginBottom: CGFloat? { (document as? MarkdownDocument)?.officePageMarginBottom }
+    /// The running header's/footer's own distance from the SHEET edge — see
+    /// `OfficeReadResult.pageHeaderDistance`. Nil for a format that does not state it.
+    private var pagedHeaderDistance: CGFloat? { (document as? MarkdownDocument)?.officePageHeaderDistance }
+    private var pagedFooterDistance: CGFloat? { (document as? MarkdownDocument)?.officePageFooterDistance }
 
     /// The live magnification. Read-only to the outside; `scrollView` is private on purpose.
     var pageZoom: CGFloat { scrollView.magnification }

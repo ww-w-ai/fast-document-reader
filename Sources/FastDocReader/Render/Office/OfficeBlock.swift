@@ -836,6 +836,22 @@ struct OfficeReadResult: Equatable {
     /// consumer reproducing the sheet needs to know which is which.
     var pageMarginTop: CGFloat? = nil
     var pageMarginBottom: CGFloat? = nil
+    /// How far a running HEADER sits from the paper's own TOP edge, and the FOOTER from its BOTTOM
+    /// edge, in points — docx `w:pgMar/@w:header` and `@w:footer`. NOT the same as the body margins
+    /// above: the header lives INSIDE the top margin, at its own distance from the sheet's edge.
+    ///
+    /// Why it matters, measured: without them the reader centred each band's header and footer in
+    /// half the gap, and the gap is not constant — it is the body margin PLUS whatever room the last
+    /// line of the previous page left unused, which varies with paragraph spacing, headings and
+    /// tables. So the header drifted a few points page to page and the owner read it as "홀수쪽,
+    /// 짝수쪽의 여백이 다름". Anchored to the sheet edge instead, the spacing is identical on every
+    /// page and the leftover shows where it truly is: as white space above the footer, exactly as a
+    /// short page looks in Word.
+    ///
+    /// `nil` = the format did not say (every ODT and HWP document today), and the band falls back to
+    /// the halves it used before these existed.
+    var pageHeaderDistance: CGFloat? = nil
+    var pageFooterDistance: CGFloat? = nil
 
     /// Running headers/footers this document declares (header-footer-design.md step 2) — read-only
     /// vocabulary, nothing paints these yet (steps 4/5 of that design). Empty for every document

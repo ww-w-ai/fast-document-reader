@@ -34,6 +34,17 @@ struct PageBandContent {
     /// put the gap at, which is NOT `page × pitch + pageContentHeight` whenever a table overran its
     /// page. Consulted in preference to the arithmetic; absent for a page falls back to it.
     var openedBands: [Int: (top: CGFloat, height: CGFloat)] = [:]
+    /// The document's own body margins and the running header's/footer's distance from the SHEET's
+    /// edge (`OfficeReadResult.pageMarginTop`/`pageMarginBottom`/`pageHeaderDistance`/
+    /// `pageFooterDistance`). When all four are known the band is laid out on the PAPER: the sheet
+    /// boundary is a grid position, the footer sits its own distance above it and the header its own
+    /// distance below, so the spacing is identical on every page. Absent, the band falls back to
+    /// centring each side in half the gap — which drifts, because the gap is the margin PLUS whatever
+    /// room the previous page's last line left over.
+    var pageMarginTop: CGFloat?
+    var pageMarginBottom: CGFloat?
+    var headerDistance: CGFloat?
+    var footerDistance: CGFloat?
 }
 
 /// Paints the running header/footer INTO the band `PageBandLayoutDelegate` already reserved between
@@ -63,6 +74,46 @@ enum PageBandPainter {
     /// even/odd DIFFERENCE is deferred past v1, but a document that provides one anyway should not
     /// be ignored). Returns `nil` when even `.defaultPages` is absent — a document with no header/
     /// footer at all, or one whose only entries are for a page class this page doesn't belong to.
+    /// Where a page's own sheet EDGE is — the boundary between this page's paper and the next's.
+    ///
+    /// A grid position (`gridTop`, where the text region ends, plus the document's own bottom margin),
+    /// NOT a fraction of the gap, and that is the whole point: the gap layout opens is the margin PLUS
+    /// whatever room the previous page's last line left unused, which varies with paragraph spacing,
+    /// headings and tables. Anchoring to the grid makes the header and footer land identically on
+    /// every page; anchoring to the gap made them drift, which the owner read as odd and even pages
+    /// having different margins. Clamped into the gap that layout really opened, so a page whose last
+    /// line overran (a table) still cannot be painted over.
+    ///
+    /// `nil` when the document never stated a bottom margin — callers then fall back to the gap's own
+    /// midpoint, the best available guess.
+    static func sheetEdge(gridTop: CGFloat, gap: (top: CGFloat, height: CGFloat),
+                          bottomMargin: CGFloat?) -> CGFloat? {
+        bottomMargin.map { min(max(gridTop + $0, gap.top), gap.top + gap.height) }
+    }
+
+    /// The top of the FOOTER: its own declared distance above the sheet's edge (docx
+    /// `w:pgMar/@w:footer`), the same number Word measures it by. Falls back to centring it in the
+    /// upper half of the gap — this page's bottom margin — when the distance is unknown.
+    static func footerTop(gap: (top: CGFloat, height: CGFloat), sheetEdge: CGFloat?,
+                          distance: CGFloat?, footerHeight: CGFloat) -> CGFloat {
+        guard let sheetEdge, let distance else {
+            return gap.top + max(0, (gap.height / 2 - footerHeight) / 2)
+        }
+        return max(gap.top, sheetEdge - distance - footerHeight)
+    }
+
+    /// The top of the HEADER: its own declared distance BELOW the sheet edge that precedes its page
+    /// (docx `w:pgMar/@w:header`). Never allowed past the end of that gap, or it would sit on the
+    /// first line of the page it belongs to.
+    static func headerTop(gap: (top: CGFloat, height: CGFloat), sheetEdge: CGFloat?,
+                          distance: CGFloat?, headerHeight: CGFloat) -> CGFloat {
+        guard let sheetEdge, let distance else {
+            let half = gap.height / 2
+            return gap.top + half + max(0, (half - headerHeight) / 2)
+        }
+        return min(sheetEdge + distance, gap.top + gap.height - headerHeight)
+    }
+
     /// Is there real, empty space in the band AFTER `page` — i.e. did layout manage to open that
     /// boundary? THE one gate both between-page arms of `draw` go through, so a header and the footer
     /// facing it across the same band can never disagree about whether that band exists.
@@ -173,6 +224,12 @@ enum PageBandPainter {
             let gridTop = CGFloat(page) * pitch + pageContentHeight + leading
             let gap = content.openedBands[page].map { (top: $0.top + origin.y, height: $0.height) }
                 ?? (top: gridTop + origin.y, height: band)
+            // WHERE THE SHEET ENDS. A grid position, not a fraction of the gap: `gridTop` is where
+            // this page's text region ends and the document's own bottom margin begins, so the paper's
+            // edge is exactly one bottom margin further down. Clamped into the gap that layout really
+            // opened, because a page whose last line overran (a table) has a gap that starts lower.
+            let sheetEdge = Self.sheetEdge(gridTop: gridTop + origin.y, gap: gap,
+                                           bottomMargin: content.pageMarginBottom)
 
             // THE PAGE BREAK ITSELF — one line across the reading column, in the middle of the gap,
             // between the footer above it and the header below it. Drawn first so those two land on
@@ -183,8 +240,10 @@ enum PageBandPainter {
             // gap is ~170pt, so a fill is a large grey box that describes the header/footer AREA
             // rather than the page ending. A divider is a line. The gap keeps the paper's own colour.
             if boundaryIsOpen, page < total - 1, gap.height > 0 {
-                let rule = NSRect(x: origin.x, y: gap.top + (gap.height / 2).rounded(),
-                                  width: content.columnWidth, height: 1)
+                // At the SHEET's own edge when the document said where that is; otherwise the middle
+                // of the gap, which is the best guess available without the margins.
+                let breakY = (sheetEdge ?? (gap.top + gap.height / 2)).rounded()
+                let rule = NSRect(x: origin.x, y: breakY, width: content.columnWidth, height: 1)
                 if rule.intersects(visibleRect) {
                     Palette.pageGapEdge.setFill()
                     rule.fill()
@@ -194,13 +253,16 @@ enum PageBandPainter {
             // has no following BETWEEN-PAGE band; its own trailing footer is the dedicated arm below.
             if boundaryIsOpen, page < total - 1, content.footerHeight > 0,
                let entry = applicableEntry(content.footers, pageIndex: page), !entry.blocks.isEmpty {
-                // Centred in the UPPER half of the gap — that half is page N's own bottom margin, and
-                // a footer sits inside it rather than jammed against the last line of text. Placing it
-                // flush at the top of the gap read as the number belonging to the paragraph above it.
-                let half = gap.height / 2
-                let inset = max(0, (half - content.footerHeight) / 2)
+                // ITS OWN DISTANCE above the sheet's bottom edge (docx `w:pgMar/@w:footer`) — the
+                // same number Word measures it by, so the footer lands identically on every page.
+                // Without it, centred in the upper half of the gap: still inside this page's bottom
+                // margin, but drifting with the gap, which is what read as odd and even pages having
+                // different margins.
+                let footerTop = Self.footerTop(gap: gap, sheetEdge: sheetEdge,
+                                               distance: content.footerDistance,
+                                               footerHeight: content.footerHeight)
                 paint(entry, pageIndex: page, totalPages: total, content: content,
-                     top: gap.top - origin.y + inset, height: content.footerHeight, origin: origin)
+                     top: footerTop - origin.y, height: content.footerHeight, origin: origin)
             }
             // Header of THIS page draws in the band that PRECEDES it — never for page 0, whose own
             // leading header is the dedicated arm below (a different reservation mechanism entirely).
@@ -209,15 +271,18 @@ enum PageBandPainter {
                page > 0, content.headerHeight > 0,
                let entry = applicableEntry(content.headers, pageIndex: page), !entry.blocks.isEmpty {
                 // At the BOTTOM of the gap that PRECEDES this page — directly above its first line.
-                // Centred in the LOWER half of the gap that PRECEDES this page — that half is this
-                // page's own top margin, which is where its running header lives.
+                // ITS OWN DISTANCE below the sheet's TOP edge, which is the boundary that precedes
+                // this page (docx `w:pgMar/@w:header`). Same reasoning as the footer above.
                 let previous = content.openedBands[page - 1].map { (top: $0.top, height: $0.height) }
                     ?? (top: CGFloat(page) * pitch - band + leading, height: band)
-                let half = previous.height / 2
-                let inset = max(0, (half - content.headerHeight) / 2)
+                let previousGridTop = CGFloat(page - 1) * pitch + pageContentHeight + leading
+                let previousEdge = Self.sheetEdge(gridTop: previousGridTop, gap: previous,
+                                                  bottomMargin: content.pageMarginBottom)
+                let headerTop = Self.headerTop(gap: previous, sheetEdge: previousEdge,
+                                               distance: content.headerDistance,
+                                               headerHeight: content.headerHeight)
                 paint(entry, pageIndex: page, totalPages: total, content: content,
-                     top: previous.top + half + inset,
-                     height: content.headerHeight, origin: origin)
+                     top: headerTop, height: content.headerHeight, origin: origin)
             }
             // The two OUTER edges the between-page arms above structurally cannot reach: page 0's own
             // LEADING header, and the LAST page's own TRAILING footer. Reserved by two entirely

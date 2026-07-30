@@ -84,6 +84,10 @@ final class MarkdownDocument: NSDocument {
     /// `pageMarginBottom`, the vertical twins of `officePageMarginLeft`/`officePageMarginRight`.
     private(set) var officePageMarginTop: CGFloat?
     private(set) var officePageMarginBottom: CGFloat?
+    /// How far the running header/footer sits from the SHEET's own top/bottom edge — see
+    /// `OfficeReadResult.pageHeaderDistance`. `nil` for a format that does not say.
+    private(set) var officePageHeaderDistance: CGFloat?
+    private(set) var officePageFooterDistance: CGFloat?
 
     /// The archive `officeBlocks` was parsed from, kept so an `.image` block's id (an archive entry
     /// path, e.g. `"word/media/image1.png"`) can be pulled on demand when it scrolls into view — the
@@ -217,6 +221,8 @@ final class MarkdownDocument: NSDocument {
                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
                 pageContentHeight: result.pageContentHeight,
                 pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
+                pageHeaderDistance: result.pageHeaderDistance,
+                pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
                 lineGridPitch: result.lineGridPitch)
             return
@@ -231,6 +237,8 @@ final class MarkdownDocument: NSDocument {
                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
                 pageContentHeight: result.pageContentHeight,
                 pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
+                pageHeaderDistance: result.pageHeaderDistance,
+                pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
                 lineGridPitch: result.lineGridPitch)
     }
@@ -247,6 +255,7 @@ final class MarkdownDocument: NSDocument {
         pageMarginLeft: CGFloat? = nil, pageMarginRight: CGFloat? = nil,
         pageContentHeight: CGFloat? = nil,
         pageMarginTop: CGFloat? = nil, pageMarginBottom: CGFloat? = nil,
+        pageHeaderDistance: CGFloat? = nil, pageFooterDistance: CGFloat? = nil,
         headers: [OfficeHeaderFooter] = [], footers: [OfficeHeaderFooter] = [],
         lineGridPitch: CGFloat? = nil
     ) {
@@ -261,6 +270,8 @@ final class MarkdownDocument: NSDocument {
         self.officePageContentHeight = pageContentHeight
         self.officePageMarginTop = pageMarginTop
         self.officePageMarginBottom = pageMarginBottom
+        self.officePageHeaderDistance = pageHeaderDistance
+        self.officePageFooterDistance = pageFooterDistance
         self.officeHeaders = headers
         self.officeFooters = footers
         self.officeLineGridPitch = lineGridPitch
@@ -292,7 +303,7 @@ final class MarkdownDocument: NSDocument {
     /// failing meant the function silently did nothing, which looks identical to a successful no-op
     /// reload and hides a real problem (deleted file, permissions, a corrupted archive) from the user.
     enum ReloadOutcome {
-        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?, pageMarginLeft: CGFloat?, pageMarginRight: CGFloat?, pageContentHeight: CGFloat?, pageMarginTop: CGFloat?, pageMarginBottom: CGFloat?, headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter], lineGridPitch: CGFloat?)
+        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?, pageMarginLeft: CGFloat?, pageMarginRight: CGFloat?, pageContentHeight: CGFloat?, pageMarginTop: CGFloat?, pageMarginBottom: CGFloat?, pageHeaderDistance: CGFloat?, pageFooterDistance: CGFloat?, headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter], lineGridPitch: CGFloat?)
         case text(TextFile)
         case failure(String)
     }
@@ -327,6 +338,8 @@ final class MarkdownDocument: NSDocument {
                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
                 pageContentHeight: result.pageContentHeight,
                 pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
+                pageHeaderDistance: result.pageHeaderDistance,
+                pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
                 lineGridPitch: result.lineGridPitch)
             }
@@ -340,6 +353,8 @@ final class MarkdownDocument: NSDocument {
                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
                 pageContentHeight: result.pageContentHeight,
                 pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
+                pageHeaderDistance: result.pageHeaderDistance,
+                pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
                 lineGridPitch: result.lineGridPitch)
         } catch {
@@ -365,7 +380,7 @@ final class MarkdownDocument: NSDocument {
         if let url = fileURL {
             let ext = url.pathExtension.isEmpty ? (untitledExtension ?? "") : url.pathExtension
             switch Self.reloadOutcome(url: url, kind: kind, extension: ext) {
-            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth, let pageMarginLeft, let pageMarginRight, let pageContentHeight, let pageMarginTop, let pageMarginBottom, let headers, let footers, let lineGridPitch):
+            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth, let pageMarginLeft, let pageMarginRight, let pageContentHeight, let pageMarginTop, let pageMarginBottom, let pageHeaderDistance, let pageFooterDistance, let headers, let footers, let lineGridPitch):
                 // Re-parse the archive, same as the initial read — never through the text-decode
                 // path (invariant: an office document's bytes are never handed to
                 // `TextEncodingDetector`). `defaultBodyFontSize` is carried through too, so a

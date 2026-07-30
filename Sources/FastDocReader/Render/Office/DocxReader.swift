@@ -85,6 +85,8 @@ enum DocxReader: OfficeDocumentReader {
                                 pageMarginLeft: page?.left, pageMarginRight: page?.right,
                                 pageContentHeight: page?.height,
                                 pageMarginTop: page?.top, pageMarginBottom: page?.bottom,
+                                pageHeaderDistance: page?.headerDistance,
+                                pageFooterDistance: page?.footerDistance,
                                 headers: headers, footers: footers,
                                 lineGridPitch: lineGridPitch(body: body))
     }
@@ -130,7 +132,7 @@ enum DocxReader: OfficeDocumentReader {
     /// WIDTH, which the width guard already protects on its own without needing `w:pgMar` to exist at
     /// all — so a bad/missing height clamps only `height`/`top`/`bottom` to nil, never the whole
     /// return value.
-    private static func pageGeometry(body: XMLNode) -> (content: CGFloat, left: CGFloat, right: CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?)? {
+    private static func pageGeometry(body: XMLNode) -> (content: CGFloat, left: CGFloat, right: CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?, headerDistance: CGFloat?, footerDistance: CGFloat?)? {
         guard let sectPr = body.children.last(where: { $0.name == "w:sectPr" }),
               let pgSz = sectPr.child("w:pgSz"),
               let wStr = pgSz.attributes["w:w"], let w = Double(wStr) else { return nil }
@@ -154,7 +156,25 @@ enum DocxReader: OfficeDocumentReader {
                 bottom = CGFloat(max(0, b) / 20)
             }
         }
-        return (CGFloat(content), CGFloat(max(0, left) / 20), CGFloat(max(0, right) / 20), height, top, bottom)
+        // The running header's/footer's own distance from the SHEET's edge (`w:pgMar/@w:header`,
+        // `@w:footer`) — a different quantity from the body margins above, and the one that makes the
+        // band's spacing identical on every page. Only meaningful alongside a real page height, and
+        // only when it actually fits inside its own margin: a header distance past the top margin
+        // would place the header inside the body text, which no document means.
+        var headerDistance: CGFloat?
+        var footerDistance: CGFloat?
+        if height != nil {
+            if let raw = Double(mar?.attributes["w:header"] ?? ""), raw >= 0 {
+                let d = CGFloat(raw / 20)
+                if d < (top ?? 0) { headerDistance = d }
+            }
+            if let raw = Double(mar?.attributes["w:footer"] ?? ""), raw >= 0 {
+                let d = CGFloat(raw / 20)
+                if d < (bottom ?? 0) { footerDistance = d }
+            }
+        }
+        return (CGFloat(content), CGFloat(max(0, left) / 20), CGFloat(max(0, right) / 20), height, top, bottom,
+                headerDistance, footerDistance)
     }
 
     /// The source document's own default BODY run size, in points — `word/styles.xml`'s

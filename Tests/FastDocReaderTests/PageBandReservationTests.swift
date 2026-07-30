@@ -332,6 +332,74 @@ final class PageBandReservationTests: XCTestCase {
                           "a 24-paragraph document at this pitch crosses far more boundaries than the prose half alone")
     }
 
+    /// THE REPORTED SYMPTOM: "현재 홀수쪽, 짝수쪽의 여백이 다름". The gap layout opens is the
+    /// document's own margin PLUS whatever room the previous page's last line left unused, and that
+    /// leftover varies with paragraph spacing, headings and tables. Centring the header and footer in
+    /// halves of that gap therefore moved them a few points page to page. Anchored to the SHEET's own
+    /// edge, using the distances the document states (`w:pgMar/@w:header`/`@w:footer`), the placement
+    /// is identical on every page — and the leftover shows where it truly is, as white space above the
+    /// footer, which is what a short page looks like in Word.
+    func testHeaderAndFooterSitAtTheirDeclaredDistanceFromTheSheetEdgeOnEveryPage() {
+        let content: CGFloat = 600, marginTop: CGFloat = 40, marginBottom: CGFloat = 30
+        let band = marginTop + marginBottom
+        let pitch = content + band
+        let headerDistance: CGFloat = 12, footerDistance: CGFloat = 10
+        let headerHeight: CGFloat = 14, footerHeight: CGFloat = 14
+
+        /// Page `n`'s boundary, with `leftover` points of its own page left unused by its last line —
+        /// the thing that used to move the header and footer.
+        func offsets(page: Int, leftover: CGFloat) -> (footerAboveEdge: CGFloat, headerBelowEdge: CGFloat) {
+            let gridTop = CGFloat(page) * pitch + content
+            let gap = (top: gridTop - leftover, height: band + leftover)
+            let edge = try! XCTUnwrap(PageBandPainter.sheetEdge(gridTop: gridTop, gap: gap,
+                                                               bottomMargin: marginBottom))
+            let footer = PageBandPainter.footerTop(gap: gap, sheetEdge: edge,
+                                                  distance: footerDistance, footerHeight: footerHeight)
+            let header = PageBandPainter.headerTop(gap: gap, sheetEdge: edge,
+                                                   distance: headerDistance, headerHeight: headerHeight)
+            return (edge - (footer + footerHeight), header - edge)
+        }
+
+        // Three pages, each leaving a DIFFERENT amount of its own page unused — which is the real
+        // shape of a document, and what made this drift.
+        let a = offsets(page: 0, leftover: 0)
+        let b = offsets(page: 1, leftover: 7.5)
+        let c = offsets(page: 2, leftover: 17)
+        for (label, o) in [("page 0", a), ("page 1", b), ("page 2", c)] {
+            XCTAssertEqual(o.footerAboveEdge, footerDistance, accuracy: 0.01,
+                           "\(label): the footer sits its own declared distance above the sheet edge")
+            XCTAssertEqual(o.headerBelowEdge, headerDistance, accuracy: 0.01,
+                           "\(label): and the header its own distance below it")
+        }
+    }
+
+    /// A document that states no distances keeps the halves it used before they were parsed — every
+    /// ODT and HWP document today (invariant 37's "the document said nothing → unchanged").
+    func testAnUndeclaredDistanceFallsBackToTheHalvesOfTheGap() {
+        let gap = (top: 100 as CGFloat, height: 80 as CGFloat)
+        XCTAssertNil(PageBandPainter.sheetEdge(gridTop: 100, gap: gap, bottomMargin: nil))
+        XCTAssertEqual(PageBandPainter.footerTop(gap: gap, sheetEdge: nil, distance: nil, footerHeight: 20),
+                       110, accuracy: 0.01, "centred in the upper half")
+        XCTAssertEqual(PageBandPainter.headerTop(gap: gap, sheetEdge: nil, distance: nil, headerHeight: 20),
+                       150, accuracy: 0.01, "centred in the lower half")
+    }
+
+    /// Neither side may ever be painted outside the gap layout actually opened — the clamp that keeps
+    /// a page whose last line overran (a table) from being drawn over.
+    func testPlacementIsClampedInsideTheOpenedGap() {
+        let gap = (top: 100 as CGFloat, height: 40 as CGFloat)
+        // A footer distance larger than the gap itself would place it above the previous page's text.
+        XCTAssertEqual(PageBandPainter.footerTop(gap: gap, sheetEdge: 120, distance: 500, footerHeight: 14),
+                       gap.top, accuracy: 0.01)
+        // A header distance larger than the gap would place it on its own page's first line.
+        XCTAssertEqual(PageBandPainter.headerTop(gap: gap, sheetEdge: 120, distance: 500, headerHeight: 14),
+                       gap.top + gap.height - 14, accuracy: 0.01)
+        // And the sheet edge itself never leaves the gap.
+        XCTAssertEqual(PageBandPainter.sheetEdge(gridTop: 0, gap: gap, bottomMargin: 0), gap.top)
+        XCTAssertEqual(PageBandPainter.sheetEdge(gridTop: 1000, gap: gap, bottomMargin: 0),
+                       gap.top + gap.height)
+    }
+
     /// The painter's own half of the gate — `PageBandPainter.bandExists(after:in:)`, the SAME function
     /// both between-page arms of `draw` call, not a re-implementation of its condition here. (An
     /// earlier version of this test did re-implement it and passed with the gate removed from the
