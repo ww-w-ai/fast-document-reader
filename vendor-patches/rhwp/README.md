@@ -91,7 +91,19 @@ kevin9327 ×2, lpaiu-cs ×1). What we added is not app-specific glue — a struc
 per-char-shape font-slot table, full page geometry, the page-number control — so it is useful to any
 consumer, which is why it is worth offering.
 
-Two things block it, and both are structural rather than a matter of willingness:
+A second, easier PR to offer alongside it: rhwp declares `svg2pdf`, `usvg` and `pdf-writer` as
+NON-optional dependencies (Cargo.toml 52–55, under a "PDF 내보내기" comment), while `resvg`/`skia-safe`
+beside them are already optional behind `native-skia`. Every embedder that does not export PDF links a
+PDF writer for nothing — we certainly do, since macOS's print dialog gives "Save as PDF" for free.
+
+Verified that this is safe for us rather than assumed: `usvg` is used in only two files,
+`src/renderer/pdf.rs` and `src/renderer/skia/image_conv.rs` (the latter via `resvg`, already gated by
+`native-skia`), so with Skia off the PDF path is the only thing in our build touching it. We consume the
+PARSE FFI alone and draw with AppKit — even equations arrive as LaTeX for the app's KaTeX engine, which
+is what patch 0001's emitter exists for. A `pdf-export` feature mirroring `native-skia` is small,
+self-contained, and a gentler first contribution than the FFI itself.
+
+Two things block the FFI PR, and both are structural rather than a matter of willingness:
 
 1. **A PR must come from a GitHub FORK of the target, and GitHub does not allow a private fork of a
    public repo.** `ww-w-ai/rhwp` is a plain private repository (`fork: false`), so it cannot open a PR.

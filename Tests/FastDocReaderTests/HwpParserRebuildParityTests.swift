@@ -4,7 +4,7 @@ import AppKit
 
 /// The instrument that makes a REBUILD of the vendored rhwp parser verifiable on its own.
 ///
-/// Adding data to rhwp's JSON means replacing `Vendor/RhwpNative.xcframework` — a 59 MB binary this
+/// Adding data to rhwp's JSON means replacing `Vendor/RhwpNative.xcframework` — a prebuilt binary this
 /// repo cannot diff, cannot review, and (invariant 45) SwiftPM will happily NOT relink. So the first
 /// step of the per-slot font work (`docs/per-script-font-design.md` §6) is deliberately additive:
 /// the new fields appear, the existing `font` field and every run boundary stay exactly as they were,

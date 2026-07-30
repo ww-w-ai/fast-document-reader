@@ -240,7 +240,7 @@ enum HwpReader {
     /// What rhwp's per-script font export looks like once THIS file's own decoder has read it.
     ///
     /// The per-slot font work (`docs/per-script-font-design.md`) lands in two steps so the risky
-    /// half — replacing a 59 MB parser binary — can be verified before anything depends on it. Step
+    /// half — replacing the prebuilt parser binary — can be verified before anything depends on it. Step
     /// one adds `csId`/`charShapes` to the JSON and changes nothing else, so the rendered document
     /// must be bit-identical; step two reads this table and splits a run where the resolved family
     /// changes. This accessor exists for step one's proof and has no caller on the render path: it

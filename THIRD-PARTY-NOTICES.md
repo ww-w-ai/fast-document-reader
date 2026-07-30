@@ -58,10 +58,10 @@ Pulled in transitively by swift-markdown. Multi-licensed, with several named hol
   copyleft** (audited against the `aarch64-apple-darwin` default-feature closure; `native-skia` is
   off). rhwp's own crate notices ship alongside at
   [`licenses/rhwp-THIRD_PARTY_LICENSES.md`](licenses/rhwp-THIRD_PARTY_LICENSES.md). Because the app
-  statically links and DEAD-STRIPS the library (the shipped binary is ~3.3 MB, not 56 MB — most crates
-  incl. the svg2pdf/resvg/tiny-skia PDF path are stripped as uncalled), a precise per-crate notice for
-  exactly the surviving symbols is generated with `cargo-about` before store submission (tracked in
-  the sprint's deferred decisions). BSD/Zlib crates that do survive require their copyright lines
+  statically links and DEAD-STRIPS the library, most of those crates — including the
+  svg2pdf/resvg/tiny-skia PDF path — are stripped as uncalled and never ship at all. A precise
+  per-crate notice for exactly the surviving symbols is generated with `cargo-about` before store
+  submission (tracked in the sprint's deferred decisions). BSD/Zlib crates that do survive require their copyright lines
   preserved — that is what the generated notice will carry.
 
 ### mermaid v10.9.6 — MIT
