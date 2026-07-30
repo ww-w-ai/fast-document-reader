@@ -328,6 +328,19 @@ final class PagedZoomTests: XCTestCase {
 
     // MARK: - Fixtures
 
+    /// A WINDOW CAN OUTLIVE ITS DOCUMENT, and `pagedWidth` is asked from the DRAW path — see
+    /// `DocumentWindowController.mdDocument`. **There is deliberately no unit test here**, for
+    /// invariant 56's reason: every shape tried passed with the fix removed. Nil-ing the local
+    /// reference does not release the document (the window keeps it alive), and `removeWindowController`
+    /// clears the controller's own pointer, which makes the UNFIXED code answer nil too — fake green
+    /// either way. It is verified by measurement instead, and reproducibly: with `pagedWidth` reading
+    /// `document as? MarkdownDocument`, the whole suite dies with SIGSEGV inside
+    /// `ReaderTextView.drawBackground` → `drawPageSheets` → `printSheets` → `pagedWidth`; with the weak
+    /// mirror it runs to exit 0. Run the bundle directly to see it — `swift test` swallows the signal:
+    ///
+    ///     swift build --build-tests
+    ///     $DEVELOPER_DIR/usr/bin/xctest .build/arm64-apple-macosx/debug/FastDocReaderPackageTests.xctest
+    ///
     /// An office document driven through `setOfficeContent`, the one seam that can declare a page
     /// width without building XML: essentially no XML-built office fixture in this suite declares
     /// one, which is why every untouched office test lands on the unpaged arm. Shape copied from

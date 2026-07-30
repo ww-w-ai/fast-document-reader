@@ -363,9 +363,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // gates `PageBandGeometry.measure` on `officePageContentHeight != nil` before this is ever
         // reached with non-zero values — so this never reserves anything for that far more common
         // case either).
+        // "The entry has blocks" was the gate here and it is the wrong question: an entry can be
+        // present, carry blocks, and BUILD to nothing — 26 of the 94 real HWP/HWPX documents that
+        // declare a header or footer at all declare one made of nothing but empty paragraphs, and the
+        // reference report's own `.odt` declares exactly such a first-page header. Every one of them
+        // reserved a band above the first line and drew nothing in it. Asked of what it BUILDS, through
+        // the one function that owns that judgement.
         let firstPageHeader = PageBandPainter.applicableEntry(headers, pageIndex: 0)
-        var leading: CGFloat = (firstPageHeader != nil && !(firstPageHeader?.blocks.isEmpty ?? true))
-            ? headerHeight : 0
+        var leading: CGFloat = PageBandGeometry.entryDraws(
+            firstPageHeader, theme: theme, columnWidth: columnWidth,
+            documentDefaultFontSize: documentDefaultFontSize,
+            pageContentWidth: pageContentWidth) ? headerHeight : 0
         var trailing: CGFloat = footerHeight > 0 ? footerHeight : 0
         // WHEN THE READER IS DRAWING SHEETS, the first and last pages get their FULL margins — the
         // page's own top margin above the first line and its bottom margin below the last, not just
@@ -697,8 +705,29 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// `kind == .office` is NOT it — an office document whose reader found no page width (a real,
     /// tested state in all three formats) keeps the fill-the-window model, and five existing tests
     /// go red the moment that distinction is lost.
+    /// The document this controller is showing — and the ONLY safe way to ask for it.
+    ///
+    /// `NSWindowController.document` is imported as `unowned(unsafe)`, so once the document has been
+    /// released, merely reading it is a use-after-free: the cast takes a `+1` reference and
+    /// `objc_retain` walks freed memory. That is not theoretical. It crashes the test suite from the
+    /// DRAW path — `ReaderTextView.drawBackground` → `drawPageSheets` → `pageSheets` → `printSheets` →
+    /// `pagedDocumentWidth` → here — because a window can outlive its document by a run-loop turn, and
+    /// CoreAnimation commits the next draw inside that turn. Two crash reports a day apart show the
+    /// identical frame, both reached by a test that pumps the run loop.
+    ///
+    /// A `weak` mirror, kept in step by overriding the setter, answers `nil` instead. Every read in
+    /// this class goes through it; a bare `mdDocument` anywhere is the bug coming
+    /// back.
+    private weak var weakDocument: MarkdownDocument?
+
+    override var document: AnyObject? {
+        didSet { weakDocument = document as? MarkdownDocument }
+    }
+
+    var mdDocument: MarkdownDocument? { weakDocument }
+
     var pagedWidth: CGFloat? {
-        guard let doc = document as? MarkdownDocument, let w = doc.officePageContentWidth, w > 0 else { return nil }
+        guard let doc = mdDocument, let w = doc.officePageContentWidth, w > 0 else { return nil }
         return w
     }
 
@@ -710,18 +739,18 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// showing where a page ends), and wiring it into `settleReadingColumn`'s vertical inset is a
     /// separate, measured change — see that function's hardcoded `verticalInset`.
     var pagedHeight: CGFloat? {
-        guard let doc = document as? MarkdownDocument, let h = doc.officePageContentHeight, h > 0 else { return nil }
+        guard let doc = mdDocument, let h = doc.officePageContentHeight, h > 0 else { return nil }
         return h
     }
 
     /// The page's own top/bottom margins, when its reader found them — the vertical twins of
     /// `pagedMarginLeft`/`pagedMarginRight`. Same non-consumption caveat as `pagedHeight`.
-    private var pagedMarginTop: CGFloat? { (document as? MarkdownDocument)?.officePageMarginTop }
-    private var pagedMarginBottom: CGFloat? { (document as? MarkdownDocument)?.officePageMarginBottom }
+    private var pagedMarginTop: CGFloat? { (mdDocument)?.officePageMarginTop }
+    private var pagedMarginBottom: CGFloat? { (mdDocument)?.officePageMarginBottom }
     /// The running header's/footer's own distance from the SHEET edge — see
     /// `OfficeReadResult.pageHeaderDistance`. Nil for a format that does not state it.
-    private var pagedHeaderDistance: CGFloat? { (document as? MarkdownDocument)?.officePageHeaderDistance }
-    private var pagedFooterDistance: CGFloat? { (document as? MarkdownDocument)?.officePageFooterDistance }
+    private var pagedHeaderDistance: CGFloat? { (mdDocument)?.officePageHeaderDistance }
+    private var pagedFooterDistance: CGFloat? { (mdDocument)?.officePageFooterDistance }
 
     /// The live magnification. Read-only to the outside; `scrollView` is private on purpose.
     var pageZoom: CGFloat { scrollView.magnification }
@@ -739,8 +768,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// zoom-follows-window rule must skip it exactly once. See the settle that consumes it.
 
     /// The page's own left/right margins, when its reader found them. `nil` → the app's own inset.
-    private var pagedMarginLeft: CGFloat? { (document as? MarkdownDocument)?.officePageMarginLeft }
-    private var pagedMarginRight: CGFloat? { (document as? MarkdownDocument)?.officePageMarginRight }
+    private var pagedMarginLeft: CGFloat? { (mdDocument)?.officePageMarginLeft }
+    private var pagedMarginRight: CGFloat? { (mdDocument)?.officePageMarginRight }
 
     /// The document view's full width in document points — the PAPER: the author's own left margin,
     /// their body column, and their own right margin. This is the number the zoom multiplies and the
@@ -938,7 +967,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// chart/SmartArt frame is redrawn because it IS its own pixels (invariant 31).
     private func resizeOfficeGraphics(toColumn column: CGFloat) {
         guard let storage = textView.textStorage, storage.length > 0,
-              let doc = document as? MarkdownDocument, doc.kind == .office, column > 0 else { return }
+              let doc = mdDocument, doc.kind == .office, column > 0 else { return }
         // Collect first — mutating attributes while enumerating them is undefined.
         var work: [(NSRange, NSTextAttachment, OfficeGraphicInfo, CGSize)] = []
         let whole = NSRange(location: 0, length: storage.length)
@@ -1065,7 +1094,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// `toggleTableOfContents` gives for an empty outline (a panel taking a fifth of the window that
     /// teaches the reader the feature is broken).
     @objc func toggleComments(_ sender: Any?) {
-        guard let doc = document as? MarkdownDocument else { return }
+        guard let doc = mdDocument else { return }
         reloadCommentPanel()
         guard !doc.officeComments.isEmpty || isCommentsVisible else { NSSound.beep(); return }
         // Same freeze-during-slide treatment the outline toggle uses (see its own comment): the
@@ -1088,7 +1117,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// (both `display(_:)` and the splice-edit path), the same "both render paths" discipline
     /// `reloadOutline()` follows (invariant 23), so the panel never shows a stale list.
     func reloadCommentPanel() {
-        guard let doc = document as? MarkdownDocument else { commentPanel.reload(from: []); return }
+        guard let doc = mdDocument else { commentPanel.reload(from: []); return }
         commentPanel.reload(from: doc.officeComments)
     }
 
@@ -1216,7 +1245,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Called from every render pass (`display(_:)`), same as `reloadOutline()` — the badge/button
     /// must reflect the CURRENT document, not whatever was open when the window was built.
     private func updateOfficeAccessory() {
-        guard let doc = document as? MarkdownDocument, doc.kind == .office else {
+        guard let doc = mdDocument, doc.kind == .office else {
             officeAccessoryHost.isHidden = true
             return
         }
@@ -1249,7 +1278,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private func officeDocumentContext() -> (MarkdownDocument, String)? {
-        guard let doc = document as? MarkdownDocument, doc.kind == .office,
+        guard let doc = mdDocument, doc.kind == .office,
               let url = doc.fileURL else { return nil }
         return (doc, url.pathExtension.lowercased())
     }
@@ -1354,13 +1383,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// posture `guard !doc.officeComments.isEmpty || isCommentsVisible` already takes in the toggle
     /// itself, so the menu and the action never disagree about whether closing is allowed.)
     var canShowComments: Bool {
-        guard let doc = document as? MarkdownDocument else { return false }
+        guard let doc = mdDocument else { return false }
         return !doc.officeComments.isEmpty || isCommentsVisible
     }
 
     /// Enabled only where a table of contents means something: markdown, with headings in it.
     var canShowTableOfContents: Bool {
-        guard let doc = document as? MarkdownDocument, !doc.isPlainText,
+        guard let doc = mdDocument, !doc.isPlainText,
               let storage = textView.textStorage else { return false }
         var any = false
         storage.enumerateAttribute(MDAttr.heading, in: NSRange(location: 0, length: storage.length)) { v, _, stop in
@@ -1796,7 +1825,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             self.placeCopyButtons()
             // Free off-screen images/diagrams and reload near-screen ones (memory bounded to the
             // viewport on long docs).
-            (self.document as? MarkdownDocument)?.reconcileMedia(in: self)
+            (self.mdDocument)?.reconcileMedia(in: self)
             // Scroll has settled: repaint the whole visible area once so any card/quote background
             // torn by copy-on-scroll blitting is drawn clean (mid-scroll tearing is acceptable).
             self.textView.setNeedsDisplay(self.textView.visibleRect)
@@ -1831,7 +1860,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // font size comes from THIS window's own document — a stale/shared key here would mean an
         // overlay placed for one document's size silently surviving a font-size change made through
         // a DIFFERENT window (the exact bug `MarkdownDocument.readingSize` exists to fix).
-        let readingSize = (document as? MarkdownDocument)?.readingSize ?? FontSizeStore.defaultSize
+        let readingSize = (mdDocument)?.readingSize ?? FontSizeStore.defaultSize
         var sig = "\(Int(container.size.width))|\(readingSize)"
         storage.enumerateAttribute(MDAttr.codeBlock, in: visibleChars) { value, visRange, _ in
             guard let code = value as? String else { return }
@@ -1985,7 +2014,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // This window's own document decides its overlay's font size — never a shared global (see
         // `placeCopyButtons`'s cache-signature comment above for why a stale/shared key here would
         // be exactly the bug `MarkdownDocument.readingSize` exists to fix).
-        let readingSize = (document as? MarkdownDocument)?.readingSize ?? FontSizeStore.defaultSize
+        let readingSize = (mdDocument)?.readingSize ?? FontSizeStore.defaultSize
         let overlayTheme = RenderTheme.current(size: readingSize)
         let hl = NSMutableAttributedString(attributedString:
             CodeHighlighter.highlight(code, language: lang.isEmpty ? nil : lang, theme: overlayTheme))
@@ -2121,7 +2150,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard let doc = (document as? NSDocument)?.fileURL else { return }
         FolderAccess.requestAccess(to: FolderAccess.suggestedFolder(for: doc), in: window) { [weak self] granted in
             guard granted else { return }
-            (self?.document as? MarkdownDocument)?.reloadDocument(nil)
+            (self?.mdDocument)?.reloadDocument(nil)
         }
     }
 
@@ -2154,7 +2183,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Right-click → Edit: open the markdown SOURCE of the block(s) the selection touches in a
     /// popup; on save, replace just that source span and re-render (Notion-style block editing).
     func editSelectedSource(atChar: Int? = nil) {
-        guard let storage = textView.textStorage, let doc = document as? MarkdownDocument else { return }
+        guard let storage = textView.textStorage, let doc = mdDocument else { return }
         // An office document has no editable source (see `isOfficeDocument`/CLAUDE.md invariant
         // 22) — refuse explicitly rather than rely on the srcRange scan below coming up empty.
         guard doc.kind != .office else { NSSound.beep(); return }
@@ -2186,7 +2215,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     /// The block spans of the current document plus the index of the one at `char`.
     private func blockContext(atChar char: Int?) -> (doc: MarkdownDocument, spans: [NSRange], index: Int)? {
-        guard let storage = textView.textStorage, let doc = document as? MarkdownDocument,
+        guard let storage = textView.textStorage, let doc = mdDocument,
               storage.length > 0 else { return nil }
         let anchor = min(max(0, char ?? textView.selectedRange().location), storage.length - 1)
         guard let value = storage.attribute(MDAttr.srcRange, at: anchor, effectiveRange: nil) as? NSValue
@@ -2200,7 +2229,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// clicked block, reusing that document's own separator (blank line in markdown, single
     /// newline in a plain text file).
     func addBlockBelow(atChar char: Int?) {
-        guard let doc = document as? MarkdownDocument else { NSSound.beep(); return }
+        guard let doc = mdDocument else { NSSound.beep(); return }
         // An office document has no editable source (see `isOfficeDocument`/CLAUDE.md invariant
         // 22). This guard must come BEFORE the "empty document" branch below: an office document's
         // `text` is always "" and carries no `srcRange`, so `blockContext` is always nil for it —
@@ -2344,7 +2373,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// there the moved block happens to end up first.) Landing the cursor on the moved block walks
     /// it as far as you keep pressing.
     func moveBlockUnderCaret(by delta: Int) {
-        guard let storage = textView.textStorage, let doc = document as? MarkdownDocument,
+        guard let storage = textView.textStorage, let doc = mdDocument,
               let ctx = blockContext(atChar: textView.selectedRange().location) else { NSSound.beep(); return }
         let spans = BlockEdit.spans(in: storage)
         let first = delta < 0 ? ctx.index - 1 : ctx.index
@@ -2539,7 +2568,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     ///      restoring first clamps the scroll to a frame height that does not exist yet, which put a
     ///      reader 75% down at character 298 (invariant 55a, invariant 24).
     func reapplyPageBand() {
-        guard let doc = document as? MarkdownDocument, let lm = textView.layoutManager,
+        guard let doc = mdDocument, let lm = textView.layoutManager,
               let storage = textView.textStorage else { return }
         pageOptionChangeCount += 1
         let anchor = readingAnchor()

@@ -111,7 +111,7 @@ enum PageBandGeometry {
                                            columnWidth: columnWidth,
                                            documentDefaultFontSize: documentDefaultFontSize,
                                            pageContentWidth: pageContentWidth)
-        guard attr.length > 0 else { return 0 }
+        guard attr.length > 0, drawsSomething(entry.blocks, built: attr) else { return 0 }
         let storage = NSTextStorage(attributedString: attr)
         let layout = NSLayoutManager()
         layout.allowsNonContiguousLayout = false
@@ -122,5 +122,43 @@ enum PageBandGeometry {
         layout.addTextContainer(container)
         layout.ensureLayout(for: container)
         return layout.usedRect(for: container).height
+    }
+
+    /// Does this ONE entry have anything for the reader to put in a band — the question every gate
+    /// that used to ask `blocks.isEmpty` should be asking instead. Built through the same
+    /// `OfficeTextBuilder` as everything else, so a format whose header parses into blocks that build
+    /// to nothing is judged on what it BUILDS rather than on what it parsed.
+    static func entryDraws(_ entry: OfficeHeaderFooter?, theme: RenderTheme, columnWidth: CGFloat,
+                           documentDefaultFontSize: CGFloat, pageContentWidth: CGFloat?) -> Bool {
+        guard let entry, !entry.blocks.isEmpty, columnWidth.isFinite, columnWidth > 0 else { return false }
+        let built = OfficeTextBuilder.build(entry.blocks, theme: theme, columnWidth: columnWidth,
+                                            documentDefaultFontSize: documentDefaultFontSize,
+                                            pageContentWidth: pageContentWidth)
+        return drawsSomething(entry.blocks, built: built)
+    }
+
+    /// Is there anything in this entry for the reader to PUT in the band it is about to reserve?
+    ///
+    /// "The entry has blocks" is not that question, and the difference is common rather than exotic:
+    /// **26 of the 94 real HWP/HWPX documents that declare a header or footer at all — 28% — declare
+    /// one made of nothing but empty paragraphs.** Such an entry measured a full line height, so the
+    /// reader opened a band on every page and drew nothing in it. That is invariant 47's three-state
+    /// lesson one level deeper than `w:titlePg`'s blank entry (which arrives with NO blocks and was
+    /// already handled): present, present-but-empty, and absent are three different answers.
+    ///
+    /// A picture-only header must still reserve, so the text test is for any NON-WHITESPACE character
+    /// — an attachment is `U+FFFC`, which is not whitespace — and a paragraph that draws only a RULE
+    /// or a shaded band carries no glyph at all, so the blocks are asked directly for those. Anything
+    /// that is not a paragraph (a table, an image, a formula) is content by construction.
+    static func drawsSomething(_ blocks: [OfficeBlock], built: NSAttributedString) -> Bool {
+        if built.string.contains(where: { !$0.isWhitespace }) { return true }
+        return blocks.contains { block in
+            switch block {
+            case .paragraph(_, _, _, _, let format), .heading(_, _, _, _, _, let format):
+                return format.shading != nil || !format.borderEdges.isEmpty
+            default:
+                return true
+            }
+        }
     }
 }

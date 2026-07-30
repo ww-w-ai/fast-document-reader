@@ -58,6 +58,58 @@ final class PageBandReservationTests: XCTestCase {
         XCTAssertEqual(band, 0, "a present-but-blank header/footer must still reserve nothing")
     }
 
+    /// PRESENT, PRESENT-BUT-EMPTY, ABSENT — three answers, and only the first reserves anything.
+    /// `w:titlePg`'s deliberately blank entry arrives with NO blocks and was always handled; this is
+    /// the same thing one level deeper, and it is not exotic: **26 of the 94 real HWP/HWPX documents
+    /// that declare a header or footer at all — 28% — declare one made of nothing but empty
+    /// paragraphs**, and the reference report's own `.odt` declares exactly such a first-page header.
+    /// Each of them opened a band on every page and drew nothing in it.
+    func testAnEntryOfNothingButEmptyParagraphsReservesNothing() {
+        let blank = OfficeHeaderFooter(appliesTo: .defaultPages,
+                                       blocks: [.paragraph(spans: []), .paragraph(spans: [])])
+        let band = PageBandGeometry.bandHeight(headers: [blank], footers: [], theme: theme,
+                                               columnWidth: 400, documentDefaultFontSize: 11,
+                                               pageContentWidth: 400)
+        XCTAssertEqual(band, 0, "a header that builds to nothing must not reserve a band to put it in")
+    }
+
+    /// The counterweight, and why the test is on what it BUILDS rather than on whether there is text:
+    /// a header that is only a logo draws no glyph at all and must still reserve. An attachment is
+    /// `U+FFFC`, which is not whitespace.
+    func testAPictureOnlyHeaderStillReserves() {
+        let logo = OfficeHeaderFooter(appliesTo: .defaultPages,
+                                      blocks: [.image(id: "logo", size: CGSize(width: 60, height: 20))])
+        XCTAssertGreaterThan(
+            PageBandGeometry.bandHeight(headers: [logo], footers: [], theme: theme, columnWidth: 400,
+                                        documentDefaultFontSize: 11, pageContentWidth: 400), 0)
+    }
+
+    /// The other thing that draws without a glyph: a paragraph whose whole content is a RULE or a
+    /// shaded band. The blocks are asked directly for those, because nothing reaches the built string.
+    func testAHeaderThatIsOnlyARuleStillReserves() {
+        let rule = OfficeHeaderFooter(
+            appliesTo: .defaultPages,
+            blocks: [.paragraph(spans: [], format: ParagraphFormat(borderWidth: 1, borderEdges: .bottom))])
+        XCTAssertGreaterThan(
+            PageBandGeometry.bandHeight(headers: [rule], footers: [], theme: theme, columnWidth: 400,
+                                        documentDefaultFontSize: 11, pageContentWidth: 400), 0)
+    }
+
+    /// The single-source predicate the leading-band gate and this measurement now share, so the two
+    /// cannot drift into disagreeing about whether a document has a header.
+    func testEntryDrawsAnswersTheSameQuestionForAllThreeStates() {
+        func draws(_ e: OfficeHeaderFooter?) -> Bool {
+            PageBandGeometry.entryDraws(e, theme: theme, columnWidth: 400,
+                                        documentDefaultFontSize: 11, pageContentWidth: 400)
+        }
+        XCTAssertFalse(draws(nil), "absent")
+        XCTAssertFalse(draws(OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [])), "blank entry")
+        XCTAssertFalse(draws(OfficeHeaderFooter(appliesTo: .defaultPages,
+                                                blocks: [.paragraph(spans: [])])), "empty paragraphs")
+        XCTAssertTrue(draws(OfficeHeaderFooter(appliesTo: .defaultPages,
+                                               blocks: [.paragraph(spans: [Span(text: "Title")])])))
+    }
+
     /// With no margins declared, the band is exactly what this reader must DRAW — the two sides,
     /// nothing added. Checked algebraically rather than against a hardcoded point value (brittle to
     /// font metrics): `both == headerOnly + footerOnly`.

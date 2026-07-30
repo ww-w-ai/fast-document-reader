@@ -14,6 +14,24 @@ import AppKit
 /// whichever it is given and dispatches exactly as the app does: it is the only thing that can say a
 /// non-docx header reaches the screen, which a reader unit test cannot (invariant 29).
 final class HeaderFooterRealFileProbeTests: XCTestCase {
+    /// Pinned to the shape this probe's assertions were written against — the BAND mechanism, with no
+    /// page outline. Not cosmetic: with the outline on (the shipped default) the first and last pages
+    /// reserve their FULL margins rather than just the header's (invariant 60d), so `leadingBand` is
+    /// `max(header, marginTop)` and the "a document whose cover has no header reserves nothing above
+    /// it" arm below cannot hold. Found by running this probe on a real `.hwpx` whose only header is
+    /// `evenPages`: it reserved 138.9pt where the assertion demanded 0, which is invariant 60d working
+    /// correctly against an assertion that predates it. `PageBandReservationTests` pins the same shape
+    /// for the same reason.
+    override func setUp() {
+        super.setUp()
+        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
+    }
+
+    override func tearDown() {
+        PageViewOptionsStore.reset()
+        super.tearDown()
+    }
+
     func testRealDocumentReservesBothOuterEdges() throws {
         guard let path = ProcessInfo.processInfo.environment["FMD_HEADER_FOOTER_PROBE"] else {
             throw XCTSkip("set FMD_HEADER_FOOTER_PROBE=<office file with a header/footer> to run this")
@@ -40,8 +58,17 @@ final class HeaderFooterRealFileProbeTests: XCTestCase {
         guard parsed.pageContentHeight != nil else {
             throw XCTSkip("fixture has no declared page height — not a paged document, nothing to reserve")
         }
-        let hasRealHeader = parsed.headers.contains { !$0.blocks.isEmpty }
-        let hasRealFooter = parsed.footers.contains { !$0.blocks.isEmpty }
+        // "Has blocks" is NOT "has something to draw", and 26 of the 94 real HWP/HWPX documents that
+        // declare a header or footer at all declare one made of nothing but empty paragraphs. Asking
+        // the same question `PageBandGeometry` asks keeps this probe measuring the reader rather than
+        // demanding a band the document never had anything to put in.
+        func draws(_ e: OfficeHeaderFooter) -> Bool {
+            PageBandGeometry.entryDraws(e, theme: RenderTheme.current(size: 11), columnWidth: 400,
+                                        documentDefaultFontSize: parsed.defaultBodyFontSize,
+                                        pageContentWidth: parsed.pageContentWidth)
+        }
+        let hasRealHeader = parsed.headers.contains(where: draws)
+        let hasRealFooter = parsed.footers.contains(where: draws)
         guard hasRealHeader || hasRealFooter else {
             throw XCTSkip("fixture declares no non-empty header/footer — nothing for this probe to prove")
         }
@@ -76,7 +103,7 @@ final class HeaderFooterRealFileProbeTests: XCTestCase {
             // applies) and empty (a deliberately blank cover, w:titlePg / style:header-first) are the
             // same answer to the reader: reserve nothing.
             let firstPageHeader = PageBandPainter.applicableEntry(parsed.headers, pageIndex: 0)
-            let coverDrawsNothing = firstPageHeader?.blocks.isEmpty ?? true
+            let coverDrawsNothing = !(firstPageHeader.map(draws) ?? false)
             if coverDrawsNothing {
                 XCTAssertEqual(wc.pageBandDelegate.leadingBand, 0,
                                "no header reaches page 0 (absent or blank) — must reserve nothing above it")
@@ -102,7 +129,7 @@ final class HeaderFooterRealFileProbeTests: XCTestCase {
         // unit test cannot reach: an .odt or .hwp header can parse into blocks that the builder then
         // turns into nothing at all, and the band would sit there empty with every test still green.
         for (label, entries) in [("header", parsed.headers), ("footer", parsed.footers)] {
-            guard entries.contains(where: { !$0.blocks.isEmpty }) else { continue }
+            guard entries.contains(where: draws) else { continue }
             // The first three pages, not just the first: page 1 is exactly where a document puts its
             // DELIBERATELY blank cover band, so stopping there would report "draws nothing" for a
             // file whose real running header starts on page 2 — which is every .odt with a
@@ -110,7 +137,7 @@ final class HeaderFooterRealFileProbeTests: XCTestCase {
             var drewSomething = false
             for pageIndex in 0..<3 {
                 guard let entry = PageBandPainter.applicableEntry(entries, pageIndex: pageIndex),
-                      !entry.blocks.isEmpty else { continue }
+                      draws(entry) else { continue }
                 let built = OfficeTextBuilder.build(entry.blocks, theme: RenderTheme.current(size: 11),
                                                     columnWidth: 400,
                                                     documentDefaultFontSize: parsed.defaultBodyFontSize,

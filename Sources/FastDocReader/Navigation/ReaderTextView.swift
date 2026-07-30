@@ -458,14 +458,14 @@ final class ReaderTextView: NSTextView {
     /// in a .txt or .csv the renderer makes it exactly one line — so the menu says whichever is
     /// true here rather than teaching the reader a word for something they aren't looking at.
     private var unitNoun: String {
-        let doc = (window?.windowController as? DocumentWindowController)?.document as? MarkdownDocument
+        let doc = (window?.windowController as? DocumentWindowController)?.mdDocument
         return (doc?.isPlainText ?? false) ? "Line" : "Block"
     }
 
     /// An office document (`.docx`, …) has no editable source — see CLAUDE.md invariant 22 and the
     /// S4 audit in `docs/plans/2026-07-21-office-reader-roadmap.md`. Every edit door checks this.
     private var isOfficeDocument: Bool {
-        let doc = (window?.windowController as? DocumentWindowController)?.document as? MarkdownDocument
+        let doc = (window?.windowController as? DocumentWindowController)?.mdDocument
         return doc?.kind == .office
     }
 
