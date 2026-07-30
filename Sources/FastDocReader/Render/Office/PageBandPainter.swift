@@ -102,6 +102,28 @@ enum PageBandPainter {
         return max(gap.top, sheetEdge - distance - footerHeight)
     }
 
+    /// Does a footer placed at `top` still end ABOVE its own page's paper edge?
+    ///
+    /// `sheetEdge` above is CLAMPED into the gap layout actually opened, so that a page whose last
+    /// line overran is not painted over — and when the overrun passes the paper edge, that clamp
+    /// pushes the footer past it, onto the NEXT SHEET. Invisible on screen, where a sheet is notional;
+    /// on paper it is page 5's number printed at the top of page 6, measured on the reference report,
+    /// where a table overran by 1.12pt and moved `- 5 -` a whole sheet. (Task 2's page outline would
+    /// make the same fault visible on screen, so this is not a print-only correction.)
+    ///
+    /// `paperEdge` is the UNCLAMPED grid position — `gridTop + bottomMargin` — which is exact: the
+    /// delegate always shifts a page's first line to precisely `page × pitch + leadingBand`, so page
+    /// boundaries never drift even when the gaps between them do. `nil` (the document stated no bottom
+    /// margin) means there is no sheet to fall off, and everything is allowed.
+    ///
+    /// When this is false the footer is SKIPPED rather than moved, which is the same judgement
+    /// `bandExists` already encodes: a missing page number reads as a short page, a page number in the
+    /// wrong place reads as a corrupt document.
+    static func footerFitsOnItsSheet(top: CGFloat, footerHeight: CGFloat, paperEdge: CGFloat?) -> Bool {
+        guard let paperEdge else { return true }
+        return top + footerHeight <= paperEdge + 0.01   // 0.01: the reading column is fractional
+    }
+
     /// The top of the HEADER: its own declared distance BELOW the sheet edge that precedes its page
     /// (docx `w:pgMar/@w:header`). Never allowed past the end of that gap, or it would sit on the
     /// first line of the page it belongs to.
@@ -261,8 +283,13 @@ enum PageBandPainter {
                 let footerTop = Self.footerTop(gap: gap, sheetEdge: sheetEdge,
                                                distance: content.footerDistance,
                                                footerHeight: content.footerHeight)
-                paint(entry, pageIndex: page, totalPages: total, content: content,
-                     top: footerTop - origin.y, height: content.footerHeight, origin: origin)
+                // …but never onto the NEXT sheet. See `footerFitsOnItsSheet`.
+                let paperEdge = content.pageMarginBottom.map { gridTop + origin.y + $0 }
+                if Self.footerFitsOnItsSheet(top: footerTop, footerHeight: content.footerHeight,
+                                             paperEdge: paperEdge) {
+                    paint(entry, pageIndex: page, totalPages: total, content: content,
+                         top: footerTop - origin.y, height: content.footerHeight, origin: origin)
+                }
             }
             // Header of THIS page draws in the band that PRECEDES it — never for page 0, whose own
             // leading header is the dedicated arm below (a different reservation mechanism entirely).

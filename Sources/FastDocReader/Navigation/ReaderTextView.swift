@@ -28,6 +28,15 @@ final class ReaderTextView: NSTextView {
     /// Draw block decorations (code cards, inline-code chips, rules, quote bars) in the view's
     /// BACKGROUND pass so they sit beneath the selection highlight and glyphs — otherwise an
     /// opaque code card painted by the layout manager hides the selection inside it.
+    /// Is this draw pass going to PAPER (or to the print panel's PDF) rather than to the screen?
+    /// `NSGraphicsContext.currentContextDrawingToScreen()` is AppKit's own documented answer, and it
+    /// is what keeps the two purely on-screen affordances — the reading-line band and the comment
+    /// marks — out of a printout. Both are "where you are looking" furniture; a reader who prints a
+    /// page does not want a grey stripe across whichever line the caret happened to be on.
+    ///
+    /// The running header/footer is deliberately NOT gated on it: that IS the document.
+    private var isDrawingToScreen: Bool { NSGraphicsContext.currentContextDrawingToScreen() }
+
     override func drawBackground(in rect: NSRect) {
         super.drawBackground(in: rect)
         guard let lm = layoutManager, let tc = textContainer, let storage = textStorage,
@@ -36,13 +45,19 @@ final class ReaderTextView: NSTextView {
         // live selection drag AppKit only invalidates a thin strip; keying off that strip drew
         // partial cards (super erased the strip, we redrew only a sliver). Drawing all visible
         // decorations — clipped to the dirty rect by the graphics context — keeps them whole.
-        drawReadingLine(lm, tc)   // under the decorations and glyphs — it's ambient, not a highlight
+        let onScreen = isDrawingToScreen
+        if onScreen {
+            drawReadingLine(lm, tc)   // under the decorations and glyphs — ambient, not a highlight
+        }
+        // Printing hands this view one SHEET at a time, and `visibleRect` is then that sheet — the
+        // same "what is on screen right now" question, answered for paper. Decorations therefore need
+        // no print-specific range of their own.
         let glyphRange = lm.glyphRange(forBoundingRect: visibleRect, in: tc)
         drawMDDecorations(lm, storage, tc, glyphsToShow: glyphRange, at: textContainerOrigin)
         // Comment highlight + number badges — ONLY while the panel is open. Closed, this function
         // isn't even called, so a comment-bearing document with the panel shut costs nothing beyond
         // the (already-set, harmless) MDAttr.commentMark attribute sitting unread in the storage.
-        if commentsVisible {
+        if commentsVisible, onScreen {
             drawCommentMarks(lm, storage, tc, glyphsToShow: glyphRange, at: textContainerOrigin)
         }
         // header-footer-design.md build step 5: paint the running header/footer into the band step 4
@@ -59,6 +74,41 @@ final class ReaderTextView: NSTextView {
                                  documentHeight: lm.usedRect(for: tc).height,
                                  visibleRect: visibleRect, origin: textContainerOrigin)
         }
+    }
+
+    // MARK: - Printing a paged document on its OWN page grid
+
+    /// Take pagination over from AppKit for a document the READER already paginated.
+    ///
+    /// `NSTextView` paginates by filling the printable height with lines, which is the right answer
+    /// for markdown and the wrong one for a paged document: this reader has already decided where
+    /// every page ends (`PageBandLayoutDelegate` shifted each page's first line down to make the
+    /// band), so letting AppKit re-decide would put the reader's page 3 across two sheets and print
+    /// the running header somewhere in the middle of one. Returning the sheets
+    /// `DocumentWindowController.printSheets` computed makes the printout the SAME pages the reader
+    /// shows — which is the whole promise of a paged view.
+    ///
+    /// `false` (and so AppKit's own pagination) for every other document, including a paged one with
+    /// no running header or footer — see `printSheets` for why that case must not use the grid.
+    override func knowsPageRange(_ range: NSRangePointer) -> Bool {
+        let sheets = printSheetsForThisJob
+        guard !sheets.isEmpty else { return super.knowsPageRange(range) }
+        range.pointee = NSRange(location: 1, length: sheets.count)
+        return true
+    }
+
+    override func rectForPage(_ page: Int) -> NSRect {
+        let sheets = printSheetsForThisJob
+        guard page >= 1, page <= sheets.count else { return super.rectForPage(page) }
+        return sheets[page - 1]
+    }
+
+    /// Recomputed per call rather than cached for the job's duration, deliberately: a cache would
+    /// need invalidating from every reflow path in the controller, and the computation is a handful
+    /// of arithmetic over numbers layout already holds. AppKit asks for this a few times per page,
+    /// not per glyph.
+    private var printSheetsForThisJob: [CGRect] {
+        (window?.windowController as? DocumentWindowController)?.printSheets ?? []
     }
 
     /// A faint band across the line the reading cursor sits on, so a glance finds your place after a

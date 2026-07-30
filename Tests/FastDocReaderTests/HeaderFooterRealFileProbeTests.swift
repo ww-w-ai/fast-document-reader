@@ -136,5 +136,31 @@ final class HeaderFooterRealFileProbeTests: XCTestCase {
             XCTAssertGreaterThan(wc.pageBandDelegate.trailingBand, 0,
                                  "a real footer must reserve room below the last line")
         }
+
+        // ⌘P on this same real document. Printing goes through the SAME window controller a reader
+        // uses, so a format whose page geometry parses differently (ODF measures its top margin to
+        // the HEADER, not to the body) is caught here rather than on paper. Run to a FILE — no print
+        // panel, no printer — so the page count and the paper are ordinary assertions.
+        let layout = try XCTUnwrap(wc.textView.layoutManager)
+        let container = try XCTUnwrap(wc.textView.textContainer)
+        layout.ensureLayout(for: container)
+        wc.applyTrailingFooterBand()
+        let out = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("fmd-probe-print-\(UUID().uuidString).pdf")
+        let op = wc.makePrintOperation()
+        op.showsPrintPanel = false
+        op.showsProgressPanel = false
+        op.printInfo.jobDisposition = .save
+        op.printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = out
+        print("PROBE print pages=\(wc.printPageCount) paper=\(op.printInfo.paperSize) " +
+              "sheet0=\(wc.printSheets.first.map { "\($0)" } ?? "none")")
+        XCTAssertTrue(op.run(), "⌘P must produce a job for this real document")
+        defer { try? FileManager.default.removeItem(at: out) }
+        let provider = try XCTUnwrap(CGDataProvider(data: try Data(contentsOf: out) as CFData))
+        let pdf = try XCTUnwrap(CGPDFDocument(provider))
+        print("PROBE print pdfPages=\(pdf.numberOfPages) " +
+              "box=\(try XCTUnwrap(pdf.page(at: 1)).getBoxRect(CGPDFBox.mediaBox))")
+        XCTAssertEqual(pdf.numberOfPages, wc.printPageCount,
+                       "the printout must have the same page count the reader itself reports")
     }
 }

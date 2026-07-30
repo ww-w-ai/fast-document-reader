@@ -2234,17 +2234,109 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private var printRestore: [(NSView, Bool)] = []
 
+    /// The sheets this document prints as, in the text view's own coordinates — EMPTY whenever
+    /// AppKit should paginate instead (see the three cases in `makePrintOperation`). Read by
+    /// `ReaderTextView.knowsPageRange`/`rectForPage`, which is the only way a view can take
+    /// pagination over from AppKit.
+    ///
+    /// Non-empty only when the reader ITSELF paginated — `pageBandDelegate.isActive`, i.e. the
+    /// document declared a page height AND has a running header or footer, so layout actually opened
+    /// a gap between pages. A paged document with neither reserves no band (invariant 58's `band ==
+    /// 0` path) and its text runs continuously, so cutting it on the page grid would slice a line in
+    /// half; that case keeps AppKit's own line-aware pagination and only takes the paper size from
+    /// the document.
+    var printSheets: [CGRect] {
+        guard pageBandDelegate.isActive, let width = pagedDocumentWidth else { return [] }
+        let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                         band: pageBandDelegate.band)
+        return PagePagination.sheets(count: printPageCount, width: width,
+                                     textOriginY: textView.textContainerOrigin.y,
+                                     leadingBand: pageBandDelegate.leadingBand,
+                                     pitch: pitch,
+                                     topMargin: PagePagination.topMargin(declared: pagedMarginTop,
+                                                                          band: pageBandDelegate.band))
+    }
+
+    /// How many pages the reader itself thinks this document has — the SAME number
+    /// `PageBandPainter.draw` judges "is this the last page" by, deliberately through the same
+    /// function rather than a second copy of the formula: a printout whose page count disagreed with
+    /// the painter's would put the trailing footer on the wrong sheet.
+    var printPageCount: Int {
+        guard let lm = textView.layoutManager, let tc = textView.textContainer else { return 1 }
+        let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                         band: pageBandDelegate.band)
+        let body = max(0, lm.usedRect(for: tc).height
+                          - pageBandDelegate.leadingBand - pageBandDelegate.trailingBand)
+        return PageBandPainter.totalPages(documentHeight: body, pitch: pitch)
+    }
+
+    /// Builds the operation ⌘P runs — factored out of `printDocument` so a test can drive it to a
+    /// PDF file and COUNT the pages, which is the only deterministic way to prove pagination without
+    /// a print dialog or a screenshot.
+    ///
+    /// Three cases, and the first rule is shared by all of them: the print settings are a COPY of
+    /// `NSPrintInfo.shared`, never the shared object itself. Mutating the shared one leaks a paged
+    /// document's A4-with-no-margins into the NEXT document printed, which for a markdown file is a
+    /// page with no margins at all.
+    ///
+    /// 1. **The reader paginated it** (`printSheets` non-empty) — the paper IS the document's own
+    ///    sheet and the margins are ZERO, because the document's margins are already inside the laid
+    ///    out text: the left/right ones as `textContainerInset` and the top/bottom ones as the band
+    ///    between pages (invariant 57e). Adding printer margins on top would inset the page twice.
+    ///    Scaling is 1 and both paginations are `.clip`, so nothing AppKit does can resize the view —
+    ///    `.fit` would scale the sheet to the printer's imageable width and silently change every
+    ///    measurement the paged work exists to preserve.
+    /// 2. **Paged, but the reader did not paginate** (no header or footer, so no band) — take the
+    ///    paper and the two vertical margins from the document and let `NSTextView`'s own line-aware
+    ///    pagination break the text. The horizontal margins stay 0 for case 1's reason.
+    /// 3. **Not paged** (markdown, plain text, an office document with no page width) — unchanged
+    ///    from before printing knew what a page was.
+    ///
+    /// The magnification does NOT need undoing here, which was worth measuring rather than assuming:
+    /// `scrollView.magnification` is a transform on the CLIP view's bounds, and the text view's own
+    /// `bounds`/`frame` are identical at 1.0 and at 1.8 (measured on the reference report, both
+    /// 595.3 × 6493.9). Printing the text view therefore prints it at actual size. `PrintPaginationTests`
+    /// pins that, so a future zoom implementation that DID move the view's own geometry is caught here
+    /// rather than on paper.
+    func makePrintOperation() -> NSPrintOperation {
+        let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo()
+        info.scalingFactor = 1
+        if !printSheets.isEmpty, let width = pagedDocumentWidth {
+            let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                             band: pageBandDelegate.band)
+            info.paperSize = NSSize(width: width, height: pitch)
+            info.topMargin = 0; info.bottomMargin = 0; info.leftMargin = 0; info.rightMargin = 0
+            info.horizontalPagination = .clip
+            info.verticalPagination = .clip
+        } else if let width = pagedDocumentWidth, let body = pagedHeight {
+            let top = pagedMarginTop ?? 0
+            let bottom = pagedMarginBottom ?? 0
+            info.paperSize = NSSize(width: width, height: top + body + bottom)
+            info.topMargin = top; info.bottomMargin = bottom
+            info.leftMargin = 0; info.rightMargin = 0
+            info.horizontalPagination = .clip
+            info.verticalPagination = .automatic
+        } else {
+            info.horizontalPagination = .fit
+            info.verticalPagination = .automatic
+        }
+        let op = NSPrintOperation(view: textView, printInfo: info)
+        op.jobTitle = (document as? NSDocument)?.fileURL?.lastPathComponent ?? "Document"
+        return op
+    }
+
     @objc func printDocument(_ sender: Any?) {
         guard let window = window else { return }
         // Code-block overlays (Copy/Wrap buttons, no-wrap scrollers, dividers) are live subviews;
         // hide them so the printout shows clean code cards, then restore after the panel closes.
         printRestore = codeOverlays.map { ($0, $0.isHidden) }
         codeOverlays.forEach { $0.isHidden = true }
-        let info = NSPrintInfo.shared
-        info.horizontalPagination = .fit
-        info.verticalPagination = .automatic
-        let op = NSPrintOperation(view: textView, printInfo: info)
-        op.jobTitle = (document as? NSDocument)?.fileURL?.lastPathComponent ?? "Document"
+        // The whole document has to be laid out before its last page can be located — asking for the
+        // last glyph mid-walk is invariant 49's freeze. `precomputeLayout` normally has this done
+        // long before a reader reaches ⌘P; this is the one call that must not depend on that.
+        textView.layoutManager?.ensureLayout(for: textView.textContainer!)
+        applyTrailingFooterBand()
+        let op = makePrintOperation()
         op.runModal(for: window, delegate: self,
                     didRun: #selector(printDidRun(_:success:contextInfo:)), contextInfo: nil)
     }
