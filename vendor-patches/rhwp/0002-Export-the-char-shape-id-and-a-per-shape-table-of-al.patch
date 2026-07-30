@@ -1,0 +1,177 @@
+From 17e67ee2e9155abae3befb7a532d9ddbaf7a7ef1 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 28 Jul 2026 08:32:16 +0900
+Subject: [PATCH 2/4] Export the char shape id and a per-shape table of all
+ seven font slots
+
+FastDocReader needs per-script fonts, and HWP stores seven font ids per char
+shape (0 Hangul, 1 Latin, 2 Hanja, 3 Japanese, 4 Other, 5 Symbol, 6 User) while
+this exporter only ever read slot 0. Rather than split runs here, emit the raw
+material and let the consumer classify: additive only, so the existing font
+field and every run boundary are untouched and the rendered output cannot move.
+---
+ src/document_core/queries/document_json.rs | 103 +++++++++++++++++++++
+ 1 file changed, 103 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 28e6c112..e3cd3272 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -39,9 +39,37 @@ struct DocumentJson {
+     /// 창폭 채움으로 폴백. docx `w:sectPr`(pgSz−pgMar), odt page-layout 과 같은 역할.
+     #[serde(rename = "pageContentWidth")]
+     page_content_width: Option<f64>,
++    /// char_shape 별 **7개 언어 슬롯의 해소된 글꼴 이름** (0 한글, 1 라틴, 2 한자, 3 일본어,
++    /// 4 기타, 5 기호, 6 사용자 — `CharShape.font_ids` 와 같은 고정 순서). 행 번호 = span 의
++    /// `csId`, 즉 `doc_info.char_shapes` 의 인덱스 그대로다.
++    ///
++    /// 왜 문서 수준 테이블인가: 슬롯 7개를 span 마다 인라인하면 참조 문서(~17,900 spans)에서
++    /// 문자열 ~125,000 개가 더 생긴다. char_shape 은 문서당 수십 개뿐이라 테이블 쪽이
++    /// 두 자릿수 싸다. 왜 이미 해소된 **이름**인가: `lookup_font_name` 은 `pub(crate)` 이고
++    /// FFI 는 `DocInfo` 를 내보내지 않으므로, 뷰어가 font_id 를 받아도 이름으로 바꿀 방법이 없다.
++    #[serde(rename = "charShapes")]
++    char_shapes: Vec<[String; 7]>,
+     blocks: Vec<Block>,
+ }
+ 
++/// `CharShape` 마다 7개 슬롯의 글꼴 이름을 해소해 문서 수준 테이블로 만든다.
++///
++/// 인덱스는 `doc_info.char_shapes` 의 인덱스를 그대로 쓴다(중복 제거하지 않는다) — span 이
++/// 이미 가지고 있는 `char_shape_id` 가 곧 행 번호가 되어 재매핑 테이블이 필요 없고, 뷰어가
++/// 신뢰해야 할 간접 단계가 하나 줄어든다. 같은 7개 이름을 내는 char_shape 이 여럿일 수는
++/// 있지만(굵기·크기만 다른 경우), 그것은 중복 행이 아니라 서로 다른 글자 모양이다.
++///
++/// `lookup_font_name` 은 범위를 벗어난 lang_index/font_id 에 대해 빈 문자열을 돌려주므로
++/// (`style_resolver.rs`), 폰트 테이블이 짧은 문서도 패닉 없이 빈 슬롯으로 표현된다. 빈 문자열
++/// = "이 슬롯에 해당하는 항목이 문서의 글꼴 테이블에 없다" 이며, 소비자는 폴백해야 한다.
++fn build_char_shapes(doc_info: &DocInfo) -> Vec<[String; 7]> {
++    doc_info
++        .char_shapes
++        .iter()
++        .map(|cs| std::array::from_fn(|slot| lookup_font_name(doc_info, slot, cs.font_ids[slot])))
++        .collect()
++}
++
+ /// 문서의 기본 본문 글자 크기(pt)를 구한다.
+ ///
+ /// rhwp 렌더러는 크기를 `doc_info.styles` 에서 구하지 않는다(스타일 레코드 파싱이 어긋나면
+@@ -153,6 +181,17 @@ struct Span {
+     font: String,
+     link: Option<String>,
+     bookmark: Option<String>,
++    /// 이 런이 쓰는 char_shape 의 인덱스 = 문서 수준 `charShapes` 테이블의 행 번호.
++    ///
++    /// 자기 char_shape 이 없는 합성 span(책갈피 앵커·각주 참조 마커)과, id 가 범위를 벗어나
++    /// `char_shapes` 에서 찾지 못한 런에서는 **생략된다**. 그래서 "존재하는 `csId` 는 반드시
++    /// 테이블 범위 안" 이 구조적으로 성립한다 — 소비자가 범위 검사를 다시 할 필요가 없다.
++    ///
++    /// `font` 필드는 이 필드가 생겨도 **그대로**다. 슬롯 선택은 뷰어(Swift) 쪽에서 하고,
++    /// 이 빌드는 데이터만 실어 나른다 — 렌더 결과가 비트 단위로 같아야 리빌드 자체를
++    /// 독립적으로 검증할 수 있기 때문이다(`docs/per-script-font-design.md` §6).
++    #[serde(rename = "csId", skip_serializing_if = "Option::is_none")]
++    cs_id: Option<u32>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -377,6 +416,7 @@ fn anchor_span(bookmark: Option<String>) -> Span {
+         font: String::new(),
+         link: None,
+         bookmark,
++        cs_id: None,
+     }
+ }
+ 
+@@ -415,6 +455,8 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+                 font,
+                 link,
+                 bookmark: None,
++                // `char_shapes.get()` 이 Some 이었으므로 이 id 는 `charShapes` 범위 안이다.
++                cs_id: Some(char_shape_id),
+             }
+         }
+         None => Span {
+@@ -430,6 +472,8 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+             font: String::new(),
+             link,
+             bookmark: None,
++            // id 가 `char_shapes` 범위 밖 → `charShapes` 에 대응 행이 없으므로 내보내지 않는다.
++            cs_id: None,
+         },
+     }
+ }
+@@ -719,6 +763,7 @@ impl DocumentCore {
+             v: 1,
+             default_font_size_pt: default_body_font_size_pt(&self.document),
+             page_content_width: page_content_width_pt(&self.document),
++            char_shapes: build_char_shapes(&self.document.doc_info),
+             blocks,
+         };
+         serde_json::to_string(&dto).map_err(|error| {
+@@ -820,6 +865,64 @@ mod tests {
+         );
+     }
+ 
++    /// `charShapes` 테이블 + span 의 `csId` 가 실제 문서에서 어떤 값을 내는지 **관찰**한다.
++    ///
++    /// 관찰 테스트인 이유: `lookup_font_name` 은 이름을 돌려주기 전에 rhwp 자신의 웹 지향 폰트
++    /// 치환을 적용하고, 그 치환은 `lang_index` 에 민감하다(`resolve_legacy_latin_font` 는
++    /// `lang_index == 1` 이 아니면 즉시 None). 지금까지 이 익스포터는 슬롯 0·1 만 불렀으므로
++    /// 슬롯 2~6 은 한 번도 지나간 적이 없는 규칙을 건드린다. 그래서 "합리적일 것" 이라고
++    /// 가정하지 않고 실제 문서로 찍어 본다. 불변식은 두 가지만 단언한다 — 모든 행이 7칸이고,
++    /// 내보낸 모든 `csId` 가 테이블 범위 안이라는 것.
++    #[test]
++    fn char_shape_font_slots_are_exported_and_in_range() {
++        let json = export("samples/2025 행정업무운영 편람(최종).hwp");
++        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
++        let table = v["charShapes"].as_array().expect("charShapes array");
++        assert!(!table.is_empty(), "a real document must declare char shapes");
++        for (i, row) in table.iter().enumerate() {
++            let row = row.as_array().unwrap_or_else(|| panic!("row {i} is not an array"));
++            assert_eq!(row.len(), 7, "row {i} must carry all seven slots");
++        }
++
++        // 모든 csId 가 테이블 범위 안인지 — 문자열 스캔이면 중첩 구조를 따라갈 필요가 없다.
++        let mut ids: Vec<usize> = Vec::new();
++        let mut rest = json.as_str();
++        while let Some(at) = rest.find("\"csId\":") {
++            rest = &rest[at + 7..];
++            let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
++            ids.push(rest[..end].parse().expect("csId is a number"));
++        }
++        assert!(!ids.is_empty(), "text spans must carry csId");
++        let max = ids.iter().copied().max().unwrap();
++        assert!(
++            max < table.len(),
++            "csId {max} is outside the {}-row charShapes table",
++            table.len()
++        );
++
++        let distinct: std::collections::BTreeSet<usize> = ids.iter().copied().collect();
++        let rows: std::collections::BTreeSet<String> =
++            table.iter().map(|r| r.to_string()).collect();
++        // 새 필드가 봉투를 얼마나 키우는지 — span 마다 7개를 인라인하는 안(기각됨)과 비교할 수
++        // 있게 실제 바이트로 남긴다.
++        let table_bytes = serde_json::to_string(&v["charShapes"]).unwrap().len();
++        let cs_id_bytes: usize = ids.iter().map(|i| 8 + i.to_string().len()).sum();
++        println!(
++            "charShapes: {} rows, {} distinct rows; spans with csId: {} ({} distinct ids, max {max}); \
++             json {} bytes, charShapes {} bytes, csId keys ~{} bytes",
++            table.len(),
++            rows.len(),
++            ids.len(),
++            distinct.len(),
++            json.len(),
++            table_bytes,
++            cs_id_bytes
++        );
++        for id in distinct.iter().take(12) {
++            println!("  charShapes[{id}] = {}", table[*id]);
++        }
++    }
++
+     /// 익스포트 봉투에 문서 기본 본문 글자 크기 필드가 실린다 — 첫 본문 문단의 char_shape
+     /// (없으면 char_shape 0) base_size 에서 계산된 pt 값이 `defaultFontSizePt` 로 나온다.
+     /// 본문이 있는 문서는 실제 숫자(null 아님)를 내야 한다.
+-- 
+2.50.1 (Apple Git-155)
+

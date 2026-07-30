@@ -1,0 +1,1541 @@
+From dccf2f39a0e7c203730b1d6cc05dcd143d4055f4 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Mon, 27 Jul 2026 02:50:33 +0900
+Subject: [PATCH 1/4] feat(ffi): structured JSON export + LaTeX equation
+ emitter for FastDocReader
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+FastDocReader consumes HWP through this fork's C FFI, so anything the
+reader needs to render must cross that boundary as data. Upstream's
+export dropped four facts the reader cannot recover on its own:
+paragraph style names (Korean HWP files carry headings as user-named
+styles, not outline levels — without them a document renders flat with
+no table of contents), image alignment, and the image width criterion
+that says what a relative width is a percentage OF.
+
+Equations are emitted as LaTeX so the reader can hand them to its
+existing formula engine instead of growing a second one.
+
+Committing this locally because the working tree was the only copy —
+a rebuild of the vendored static library would otherwise have silently
+reverted the reader to upstream's narrower export.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ bindings/Native/Cargo.toml                    |   1 +
+ bindings/Native/src/lib.rs                    |  77 +-
+ .../Sources/CRhwpNative/rhwp_native_ffi.h     |   9 +
+ src/document_core/queries/document_json.rs    | 863 ++++++++++++++++++
+ src/document_core/queries/mod.rs              |   1 +
+ src/renderer/equation/latex.rs                | 451 +++++++++
+ src/renderer/equation/mod.rs                  |   1 +
+ src/renderer/style_resolver.rs                |   2 +-
+ 8 files changed, 1401 insertions(+), 4 deletions(-)
+ create mode 100644 src/document_core/queries/document_json.rs
+ create mode 100644 src/renderer/equation/latex.rs
+
+diff --git a/bindings/Native/Cargo.toml b/bindings/Native/Cargo.toml
+index 977a7f03..81957e18 100644
+--- a/bindings/Native/Cargo.toml
++++ b/bindings/Native/Cargo.toml
+@@ -10,3 +10,4 @@ crate-type = ["cdylib", "staticlib"]
+ 
+ [dependencies]
+ rhwp_core = { package = "rhwp", path = "../.." }
++base64 = "0.22"
+diff --git a/bindings/Native/src/lib.rs b/bindings/Native/src/lib.rs
+index 8d02ef26..8f67d044 100644
+--- a/bindings/Native/src/lib.rs
++++ b/bindings/Native/src/lib.rs
+@@ -6,13 +6,84 @@
+ 
+ use std::ffi::{CStr, CString};
+ use std::fs;
+-use std::os::raw::c_char;
++use std::os::raw::{c_char, c_void};
+ use std::path::{Path, PathBuf};
+ 
++use base64::Engine;
+ use rhwp_core::wasm_api::HwpDocument;
+ 
+ const ALL_PAGES: i32 = -1;
+ 
++// === Handle-based structured export (parse once, query many, free once) ===
++//
++// `rhwp_open` parses bytes into a boxed `HwpDocument` and returns an opaque
++// handle. `rhwp_document_json` walks the whole document as a continuous
++// section→paragraph flow and returns style-resolved JSON (see
++// `document_core::queries::document_json`). `rhwp_image_base64` returns the
++// base64 of an image's bytes by 1-based bin_data_id. `rhwp_close` frees it.
++// Every returned string must be freed with `rhwp_string_free`.
++
++/// Parse `bytes[0..len]` into a document handle. Returns null on parse error
++/// (or null/zero input). Free with `rhwp_close`.
++#[no_mangle]
++pub extern "C" fn rhwp_open(bytes: *const u8, len: usize) -> *mut c_void {
++    if bytes.is_null() || len == 0 {
++        return std::ptr::null_mut();
++    }
++    let slice = unsafe { std::slice::from_raw_parts(bytes, len) };
++    match std::panic::catch_unwind(|| HwpDocument::from_bytes(slice)) {
++        Ok(Ok(doc)) => Box::into_raw(Box::new(doc)) as *mut c_void,
++        _ => std::ptr::null_mut(),
++    }
++}
++
++/// Structured document JSON (`{"v":1,"blocks":[...]}`). Returns an error-JSON
++/// string on failure, or null if the handle is null. Free with `rhwp_string_free`.
++#[no_mangle]
++pub extern "C" fn rhwp_document_json(handle: *mut c_void) -> *mut c_char {
++    if handle.is_null() {
++        return std::ptr::null_mut();
++    }
++    let doc = unsafe { &*(handle as *const HwpDocument) };
++    let json = match doc.export_document_json() {
++        Ok(json) => json,
++        Err(error) => error_json(&format!("구조화 JSON 익스포트 실패: {error:?}")),
++    };
++    CString::new(json)
++        .unwrap_or_else(|_| {
++            CString::new(error_json("결과 문자열에 NUL 문자가 포함되었습니다.")).unwrap()
++        })
++        .into_raw()
++}
++
++/// Base64 of the image bytes for `bin_data_id` (1-based). Empty string ("") if
++/// none/unresolvable. Returns null if the handle is null. Free with `rhwp_string_free`.
++#[no_mangle]
++pub extern "C" fn rhwp_image_base64(handle: *mut c_void, bin_data_id: u16) -> *mut c_char {
++    if handle.is_null() {
++        return std::ptr::null_mut();
++    }
++    let doc = unsafe { &*(handle as *const HwpDocument) };
++    let b64 = match doc.get_bin_data_image_data_native(bin_data_id) {
++        Ok(bytes) => base64::engine::general_purpose::STANDARD.encode(bytes),
++        Err(_) => String::new(),
++    };
++    CString::new(b64)
++        .unwrap_or_else(|_| CString::new("").unwrap())
++        .into_raw()
++}
++
++/// Free a document handle returned by `rhwp_open`.
++#[no_mangle]
++pub extern "C" fn rhwp_close(handle: *mut c_void) {
++    if handle.is_null() {
++        return;
++    }
++    unsafe {
++        drop(Box::from_raw(handle as *mut HwpDocument));
++    }
++}
++
+ #[no_mangle]
+ pub extern "C" fn rhwp_export_text(
+     input_path: *const c_char,
+@@ -213,8 +284,8 @@ fn extract_image_data(
+ ) -> Result<Option<(String, Vec<u8>)>, String> {
+     if let (Some(si), Some(pi), Some(ci)) = (sec_idx, para_idx, control_idx) {
+         if let (Ok(mime), Ok(data)) = (
+-            doc.get_control_image_mime_native(si, pi, ci),
+-            doc.get_control_image_data_native(si, pi, ci),
++            doc.get_control_image_mime_native(si, pi, &[], ci),
++            doc.get_control_image_data_native(si, pi, &[], ci),
+         ) {
+             return Ok(Some((mime, data)));
+         }
+diff --git a/bindings/swift/Sources/CRhwpNative/rhwp_native_ffi.h b/bindings/swift/Sources/CRhwpNative/rhwp_native_ffi.h
+index 2e63c9b5..0d8afb7b 100644
+--- a/bindings/swift/Sources/CRhwpNative/rhwp_native_ffi.h
++++ b/bindings/swift/Sources/CRhwpNative/rhwp_native_ffi.h
+@@ -1,6 +1,8 @@
+ #ifndef RHWP_NATIVE_FFI_H
+ #define RHWP_NATIVE_FFI_H
+ 
++#include <stddef.h>
++
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+@@ -10,6 +12,13 @@ char *rhwp_export_markdown(const char *input_path, const char *output_dir, int p
+ char *rhwp_read_text(const char *input_path, int page);
+ void rhwp_string_free(char *value);
+ 
++/* Handle-based structured export (parse once, query many, free once).
++   Every returned char* must be freed with rhwp_string_free. */
++void *rhwp_open(const unsigned char *bytes, size_t len);
++char *rhwp_document_json(void *handle);
++char *rhwp_image_base64(void *handle, unsigned short bin_data_id);
++void rhwp_close(void *handle);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+new file mode 100644
+index 00000000..28e6c112
+--- /dev/null
++++ b/src/document_core/queries/document_json.rs
+@@ -0,0 +1,863 @@
++//! 뷰어 브리지용 구조화 JSON 익스포트 (Task: structured-export FFI).
++//!
++//! 파싱된 HWP/HWPX 문서를 **페이지 분할 없이** 구역→문단 연속 흐름으로 순회해,
++//! 스타일이 해소된(style-resolved) 평탄한 JSON 블록 배열로 내보낸다. Swift 뷰어가
++//! 소비한다. `structure.rs` 패턴을 그대로 따라, 익스포터 소유의
++//! `#[derive(serde::Serialize)]` DTO 를 이 파일에 정의하고 채운다 —
++//! `model/` 타입에는 serde 를 붙이지 않는다.
++//!
++//! 파서/렌더 무변경의 읽기 전용 질의.
++
++use serde::Serialize;
++
++use crate::document_core::DocumentCore;
++use crate::error::HwpError;
++use crate::model::control::{Control, FieldType};
++use crate::model::document::{DocInfo, Document};
++use crate::model::page::PageAreas;
++use crate::model::paragraph::Paragraph;
++use crate::model::style::{Alignment, HeadType, LineSpacingType, UnderlineType};
++use crate::model::table::{Cell, Table, VerticalAlign};
++use crate::renderer::equation::latex::to_latex;
++use crate::renderer::equation::parser::EqParser;
++use crate::renderer::equation::tokenizer::tokenize;
++use crate::renderer::style_resolver::lookup_font_name;
++
++/// 최상위 결과.
++#[derive(Serialize)]
++struct DocumentJson {
++    v: u32,
++    /// 문서의 기본 본문 글자 크기(pt). 첫 본문 문단의 char_shape(없으면 char_shape 0)의
++    /// base_size(HWPUNIT) ÷ 100 — 렌더러의 char_shape 해소 경로를 그대로 따른다. char_shapes 가
++    /// 진짜로 비어 있을 때만 null → Swift 뷰어가 11pt 로 폴백. docx `w:docDefaults/…/w:sz`,
++    /// odt 기본 텍스트 스타일과 같은 역할.
++    #[serde(rename = "defaultFontSizePt")]
++    default_font_size_pt: Option<f64>,
++    /// 첫 구역의 페이지 본문폭(pt) — 용지폭 − 좌우여백, 방향(landscape)·제본·gutter 반영.
++    /// 렌더러가 실제 쓰는 `PageAreas::from_page_def().body_area` 폭이라 A4 폴백·여백과대
++    /// 방어까지 동일하게 적용된다. 구역이 없거나 폭이 0 이하일 때만 null → Swift 뷰어가
++    /// 창폭 채움으로 폴백. docx `w:sectPr`(pgSz−pgMar), odt page-layout 과 같은 역할.
++    #[serde(rename = "pageContentWidth")]
++    page_content_width: Option<f64>,
++    blocks: Vec<Block>,
++}
++
++/// 문서의 기본 본문 글자 크기(pt)를 구한다.
++///
++/// rhwp 렌더러는 크기를 `doc_info.styles` 에서 구하지 않는다(스타일 레코드 파싱이 어긋나면
++/// 엉뚱한 char_shape_id 를 줘서 out-of-range → None 이 되는 취약한 경로다). 렌더러는 문단
++/// 자신의 `CharShapeRef` 에서 char_shape_id 를 해소하고, 없으면 char_shape 0 으로 폴백한다
++/// (`composer.rs` `find_active_char_shape` → `unwrap_or(0)`). 그 동작을 그대로 반영한다:
++///
++/// 1. 첫 본문 문단(구역 순회)의 첫 `CharShapeRef` 의 char_shape_id 를 취한다.
++/// 2. 그런 참조가 없거나 그 id 가 범위를 벗어나면 char_shape 0 으로 폴백(렌더러의 `unwrap_or(0)`).
++/// 3. `base_size`(HWPUNIT) ÷ 100 = pt. `base_size` 는 짧은 레코드 읽기 시 1000(10pt)으로 기본값이
++///    잡히므로 정상 문서는 실제 숫자를 낸다. `char_shapes` 가 진짜로 비어 있을 때만 None(뷰어 폴백).
++fn default_body_font_size_pt(document: &Document) -> Option<f64> {
++    let char_shape_id = document
++        .sections
++        .iter()
++        .flat_map(|section| section.paragraphs.iter())
++        .find_map(|para| para.char_shapes.first())
++        .map(|cs_ref| cs_ref.char_shape_id as usize)
++        .unwrap_or(0);
++    let char_shapes = &document.doc_info.char_shapes;
++    let cs = char_shapes.get(char_shape_id).or_else(|| char_shapes.first())?;
++    Some(cs.base_size as f64 / 100.0)
++}
++
++/// 문서의 페이지 본문폭(pt)을 구한다.
++///
++/// 첫 구역의 `PageDef` 에서 렌더러와 동일한 `PageAreas::from_page_def` 로 본문 영역을 계산해
++/// 그 폭(HWPUNIT)을 ÷100 하여 pt 로 낸다. 이 경로는 landscape(가로) width/height 교환, 제본
++/// (gutter)·양면 여백, 그리고 손상/과대여백 방어(A4 폴백)를 이미 처리한다 — Swift 뷰어가 오피스
++/// 문서 읽기 컬럼을 이 폭에 고정(min(폭, 창폭))하는 데 쓴다. 구역이 없거나 폭이 0 이하이면 None.
++fn page_content_width_pt(document: &Document) -> Option<f64> {
++    let section = document.sections.first()?;
++    let areas = PageAreas::from_page_def(&section.section_def.page_def);
++    let width = areas.body_area.width();
++    if width <= 0 {
++        return None;
++    }
++    Some(width as f64 / 100.0)
++}
++
++/// 블록 종류. `t` 태그로 판별. para/heading 은 한 종류(`para`), heading 필드로 구분.
++#[derive(Serialize)]
++#[serde(tag = "t", rename_all = "lowercase")]
++enum Block {
++    Para(ParaBlock),
++    Table(TableBlock),
++    Image(ImageBlock),
++    Equation(EquationBlock),
++    Unsupported(UnsupportedBlock),
++}
++
++#[derive(Serialize)]
++struct ParaBlock {
++    /// null = 본문 문단, 그 외 = 제목 수준(1-based).
++    heading: Option<i32>,
++    /// 문단이 참조하는 스타일의 영문 이름(예: "Outline 1", "Title"). 로케일에 무관하게
++    /// 안정적이라 호스트가 제목 스타일을 판정하는 기준으로 쓴다. 스타일 없음/미해결 시 null.
++    #[serde(rename = "styleName", skip_serializing_if = "Option::is_none")]
++    style_name: Option<String>,
++    /// 스타일의 한글 이름(예: "개요 1", "제목"). 영문 이름이 비어 있는 문서를 위한 보조 신호.
++    #[serde(rename = "styleLocalName", skip_serializing_if = "Option::is_none")]
++    style_local_name: Option<String>,
++    spans: Vec<Span>,
++    align: &'static str,
++    #[serde(rename = "indentStart")]
++    indent_start: i32,
++    #[serde(rename = "indentEnd")]
++    indent_end: i32,
++    #[serde(rename = "indentFirst")]
++    indent_first: i32,
++    #[serde(rename = "spaceBefore")]
++    space_before: i32,
++    #[serde(rename = "spaceAfter")]
++    space_after: i32,
++    #[serde(rename = "lineHeight")]
++    line_height: LineHeight,
++    list: Option<ListInfo>,
++}
++
++#[derive(Serialize)]
++struct LineHeight {
++    #[serde(rename = "type")]
++    kind: &'static str,
++    value: i32,
++}
++
++#[derive(Serialize)]
++struct ListInfo {
++    level: i32,
++    ordered: bool,
++    marker: Option<String>,
++}
++
++#[derive(Serialize)]
++struct Span {
++    text: String,
++    bold: bool,
++    italic: bool,
++    /// none|single|double|dotted|dashed|wavy (v1: none|single 만 구분).
++    underline: &'static str,
++    strike: bool,
++    #[serde(rename = "super")]
++    superscript: bool,
++    sub: bool,
++    /// "RRGGBB" 또는 null.
++    color: Option<String>,
++    /// base_size (HWPUNIT).
++    size: i32,
++    font: String,
++    link: Option<String>,
++    bookmark: Option<String>,
++}
++
++#[derive(Serialize)]
++struct TableBlock {
++    cols: i32,
++    #[serde(rename = "colWidths")]
++    col_widths: Vec<i32>,
++    #[serde(rename = "borderFillId")]
++    border_fill_id: i32,
++    rows: Vec<Vec<CellDto>>,
++}
++
++#[derive(Serialize)]
++struct CellDto {
++    #[serde(rename = "colSpan")]
++    col_span: i32,
++    #[serde(rename = "rowSpan")]
++    row_span: i32,
++    #[serde(rename = "vAlign")]
++    v_align: &'static str,
++    #[serde(rename = "borderFillId")]
++    border_fill_id: i32,
++    blocks: Vec<Block>,
++}
++
++#[derive(Serialize)]
++struct ImageBlock {
++    #[serde(rename = "binDataId")]
++    bin_data_id: i32,
++    w: i32,
++    h: i32,
++    mime: String,
++    /// 개체의 가로 정렬(left/center/right/inside/outside) — HWP 개체가 스스로 들고 있는 값.
++    align: &'static str,
++    /// 너비 기준: absolute(절대 HWPUNIT) | paper | page | column | para. absolute 외에는
++    /// `w` 가 만분율(1/10000)이므로 호스트가 해당 기준 폭에 곱해야 한다.
++    #[serde(rename = "widthCriterion")]
++    width_criterion: &'static str,
++}
++
++#[derive(Serialize)]
++struct EquationBlock {
++    /// HWP 수식 스크립트에서 변환한 LaTeX (뷰어가 KaTeX 로 렌더).
++    latex: String,
++    /// 원본 HWP 수식 스크립트 (뷰어 폴백용).
++    script: String,
++    w: i32,
++    h: i32,
++}
++
++#[derive(Serialize)]
++struct UnsupportedBlock {
++    label: String,
++    w: i32,
++    h: i32,
++}
++
++fn alignment_str(a: Alignment) -> &'static str {
++    match a {
++        Alignment::Justify => "justify",
++        Alignment::Left => "left",
++        Alignment::Right => "right",
++        Alignment::Center => "center",
++        Alignment::Distribute => "distribute",
++        Alignment::Split => "distribute",
++    }
++}
++
++fn line_spacing_kind(t: LineSpacingType) -> &'static str {
++    match t {
++        LineSpacingType::Percent => "percent",
++        LineSpacingType::Fixed => "fixed",
++        LineSpacingType::SpaceOnly => "space_only",
++        LineSpacingType::Minimum => "at_least",
++    }
++}
++
++fn vertical_align_str(v: VerticalAlign) -> &'static str {
++    match v {
++        VerticalAlign::Top => "top",
++        VerticalAlign::Center => "center",
++        VerticalAlign::Bottom => "bottom",
++    }
++}
++
++/// ColorRef(0x00BBGGRR) → "RRGGBB".
++fn color_hex(c: u32) -> String {
++    let r = c & 0xFF;
++    let g = (c >> 8) & 0xFF;
++    let b = (c >> 16) & 0xFF;
++    format!("{:02X}{:02X}{:02X}", r, g, b)
++}
++
++/// 하이퍼링크 URL 을 정규화한다. hancom command 형식 = `URL;flag;...` 이고
++/// URL 안의 특수문자(`: ; # \`)는 `\` 로 이스케이프되어 있다. 첫 번째 **비-이스케이프**
++/// `;` 까지를 URL 로 보고, 이스케이프를 풀어 깨끗한 URL 을 만든다.
++fn hyperlink_url(command: &str) -> String {
++    let mut url = String::new();
++    let mut escaped = false;
++    for ch in command.chars() {
++        if escaped {
++            url.push(ch);
++            escaped = false;
++            continue;
++        }
++        match ch {
++            '\\' => escaped = true,
++            ';' => break,
++            _ => url.push(ch),
++        }
++    }
++    url.trim().to_string()
++}
++
++/// 문단 하나의 spans 를 char_shapes 경계로 분할해 구축한다.
++///
++/// 텍스트 런 외에 세 종류의 인라인 마커를 문자 순서대로 끼워 넣는다:
++/// - 하이퍼링크: `FieldRange` 가 `Field(Hyperlink)` 를 가리키면 그 문자 범위의
++///   런에 `span.link` 를 채운다.
++/// - 책갈피: `Control::Bookmark` 위치에 폭 0 앵커 span(`span.bookmark`)을 넣는다.
++/// - 각주/미주: `Control::Footnote`/`Endnote` 위치(참조 마커)에 번호 텍스트 +
++///   `superscript=true` span 을 넣는다. 본문은 구역 뒤에 별도 블록으로 붙는다.
++fn build_spans(doc_info: &DocInfo, para: &Paragraph) -> Vec<Span> {
++    let chars: Vec<char> = para.text.chars().collect();
++
++    // 하이퍼링크 문자 범위: (start_char_idx, end_char_idx, url).
++    let mut link_ranges: Vec<(usize, usize, String)> = Vec::new();
++    for fr in &para.field_ranges {
++        if let Some(Control::Field(f)) = para.controls.get(fr.control_idx) {
++            if f.field_type == FieldType::Hyperlink {
++                link_ranges.push((
++                    fr.start_char_idx,
++                    fr.end_char_idx,
++                    hyperlink_url(&f.command),
++                ));
++            }
++        }
++    }
++
++    // 책갈피/각주/미주 마커: (문자 위치, Span). 위치는 컨트롤의 텍스트 흐름 인덱스.
++    let ctrl_positions = para.control_text_positions();
++    let mut markers: Vec<(usize, Span)> = Vec::new();
++    for (ci, ctrl) in para.controls.iter().enumerate() {
++        let pos = ctrl_positions.get(ci).copied().unwrap_or(chars.len());
++        match ctrl {
++            Control::Bookmark(bm) => {
++                markers.push((pos, anchor_span(Some(bm.name.clone()))));
++            }
++            Control::Footnote(fnote) => {
++                markers.push((pos, note_marker_span(fnote.number)));
++            }
++            Control::Endnote(en) => {
++                markers.push((pos, note_marker_span(en.number)));
++            }
++            _ => {}
++        }
++    }
++
++    // 텍스트 런: (문자 시작 인덱스, Span). 제어 문자(0x00~0x1F)는 표시에서 제외.
++    let mut ordered: Vec<(usize, u8, Span)> = Vec::new();
++    if !chars.is_empty() {
++        let mut cur_id: Option<u32> = None;
++        let mut cur_text = String::new();
++        let mut cur_start = 0usize;
++        for (i, &ch) in chars.iter().enumerate() {
++            let id = para.char_shape_id_at(i).unwrap_or(0);
++            if cur_id != Some(id) {
++                if let Some(pid) = cur_id {
++                    if !cur_text.is_empty() {
++                        let link = link_at(&link_ranges, cur_start);
++                        ordered.push((
++                            cur_start,
++                            1,
++                            build_span(doc_info, pid, std::mem::take(&mut cur_text), link),
++                        ));
++                    }
++                }
++                cur_id = Some(id);
++                cur_text.clear();
++                cur_start = i;
++            }
++            if (ch as u32) >= 0x20 {
++                cur_text.push(ch);
++            }
++        }
++        if let Some(pid) = cur_id {
++            if !cur_text.is_empty() {
++                let link = link_at(&link_ranges, cur_start);
++                ordered.push((cur_start, 1, build_span(doc_info, pid, cur_text, link)));
++            }
++        }
++    }
++
++    // 마커는 sub-order 0 → 동일 위치의 런보다 앞에 온다(참조 앞 앵커 등).
++    for (pos, span) in markers {
++        ordered.push((pos, 0, span));
++    }
++    ordered.sort_by_key(|(pos, ord, _)| (*pos, *ord));
++    ordered.into_iter().map(|(_, _, span)| span).collect()
++}
++
++/// 링크 범위 목록에서 주어진 런 시작 위치를 포함하는 URL 을 찾는다.
++fn link_at(ranges: &[(usize, usize, String)], run_start: usize) -> Option<String> {
++    ranges
++        .iter()
++        .find(|(s, e, _)| run_start >= *s && run_start < *e)
++        .map(|(_, _, url)| url.clone())
++}
++
++/// 폭 0 앵커 span(책갈피/빈 마커). 표시 텍스트 없음.
++fn anchor_span(bookmark: Option<String>) -> Span {
++    Span {
++        text: String::new(),
++        bold: false,
++        italic: false,
++        underline: "none",
++        strike: false,
++        superscript: false,
++        sub: false,
++        color: None,
++        size: 0,
++        font: String::new(),
++        link: None,
++        bookmark,
++    }
++}
++
++/// 각주/미주 참조 마커 span (위첨자 번호).
++fn note_marker_span(number: u16) -> Span {
++    let mut span = anchor_span(None);
++    span.text = number.to_string();
++    span.superscript = true;
++    span
++}
++
++fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option<String>) -> Span {
++    let cs = doc_info.char_shapes.get(char_shape_id as usize);
++    match cs {
++        Some(cs) => {
++            // KO(0) 를 주 폰트로, 비면 Latin(1) 폴백.
++            let mut font = lookup_font_name(doc_info, 0, cs.font_ids[0]);
++            if font.is_empty() {
++                font = lookup_font_name(doc_info, 1, cs.font_ids[1]);
++            }
++            let underline = if cs.underline_type == UnderlineType::None {
++                "none"
++            } else {
++                "single"
++            };
++            Span {
++                text,
++                bold: cs.bold,
++                italic: cs.italic,
++                underline,
++                strike: cs.strikethrough,
++                superscript: cs.superscript,
++                sub: cs.subscript,
++                color: Some(color_hex(cs.text_color)),
++                size: cs.base_size,
++                font,
++                link,
++                bookmark: None,
++            }
++        }
++        None => Span {
++            text,
++            bold: false,
++            italic: false,
++            underline: "none",
++            strike: false,
++            superscript: false,
++            sub: false,
++            color: None,
++            size: 0,
++            font: String::new(),
++            link,
++            bookmark: None,
++        },
++    }
++}
++
++fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
++    let doc_info = &doc.doc_info;
++    let ps = doc_info.para_shapes.get(para.para_shape_id as usize);
++    // 스타일 이름 — 호스트가 "개요/제목 스타일" 을 제목으로 승격할 수 있게 그대로 넘긴다.
++    // head_type 만으로는 실무 문서 대부분의 제목을 놓친다(스타일로만 제목을 만든 문서가 흔함).
++    let style = doc_info.styles.get(para.style_id as usize);
++    let style_name = style
++        .map(|s| s.english_name.trim().to_string())
++        .filter(|s| !s.is_empty());
++    let style_local_name = style
++        .map(|s| s.local_name.trim().to_string())
++        .filter(|s| !s.is_empty());
++
++    let (heading, list) = match ps.map(|p| (p.head_type, p.para_level)) {
++        Some((HeadType::Outline, level)) => (Some(level as i32 + 1), None),
++        Some((HeadType::Number, level)) => (
++            None,
++            Some(ListInfo {
++                level: level as i32,
++                ordered: true,
++                marker: None,
++            }),
++        ),
++        Some((HeadType::Bullet, level)) => (
++            None,
++            Some(ListInfo {
++                level: level as i32,
++                ordered: false,
++                marker: None,
++            }),
++        ),
++        _ => (None, None),
++    };
++
++    let (align, indent_start, indent_end, indent_first, space_before, space_after, line_height) =
++        match ps {
++            Some(ps) => (
++                alignment_str(ps.alignment),
++                ps.margin_left,
++                ps.margin_right,
++                ps.indent,
++                ps.spacing_before,
++                ps.spacing_after,
++                LineHeight {
++                    kind: line_spacing_kind(ps.line_spacing_type),
++                    value: ps.line_spacing,
++                },
++            ),
++            None => (
++                "left",
++                0,
++                0,
++                0,
++                0,
++                0,
++                LineHeight {
++                    kind: "percent",
++                    value: 0,
++                },
++            ),
++        };
++
++    ParaBlock {
++        heading,
++        style_name,
++        style_local_name,
++        spans: build_spans(doc_info, para),
++        align,
++        indent_start,
++        indent_end,
++        indent_first,
++        space_before,
++        space_after,
++        line_height,
++        list,
++    }
++}
++
++fn build_table_block(doc: &Document, table: &Table) -> Block {
++    let col_widths: Vec<i32> = table.get_column_widths().iter().map(|w| *w as i32).collect();
++    let mut rows: Vec<Vec<CellDto>> = Vec::new();
++    for r in 0..table.row_count {
++        // 앵커 셀만: table.cells 는 앵커 셀(행 우선)만 담는다.
++        let mut row_cells: Vec<&Cell> = table.cells.iter().filter(|c| c.row == r).collect();
++        row_cells.sort_by_key(|c| c.col);
++        let cells: Vec<CellDto> = row_cells
++            .into_iter()
++            .map(|cell| CellDto {
++                col_span: cell.col_span as i32,
++                row_span: cell.row_span as i32,
++                v_align: vertical_align_str(cell.vertical_align),
++                border_fill_id: cell.border_fill_id as i32,
++                blocks: build_blocks(doc, &cell.paragraphs),
++            })
++            .collect();
++        rows.push(cells);
++    }
++    Block::Table(TableBlock {
++        cols: table.col_count as i32,
++        col_widths,
++        border_fill_id: table.border_fill_id as i32,
++        rows,
++    })
++}
++
++fn build_image_block(doc: &Document, pic: &crate::model::image::Picture) -> Block {
++    let bin_data_id = pic.image_attr.bin_data_id;
++    Block::Image(ImageBlock {
++        bin_data_id: bin_data_id as i32,
++        w: pic.common.width as i32,
++        h: pic.common.height as i32,
++        mime: image_mime(doc, bin_data_id),
++        align: horz_align_str(pic.common.horz_align),
++        width_criterion: size_criterion_str(pic.common.width_criterion),
++    })
++}
++
++fn horz_align_str(a: crate::model::shape::HorzAlign) -> &'static str {
++    use crate::model::shape::HorzAlign;
++    match a {
++        HorzAlign::Left => "left",
++        HorzAlign::Center => "center",
++        HorzAlign::Right => "right",
++        HorzAlign::Inside => "inside",
++        HorzAlign::Outside => "outside",
++    }
++}
++
++fn size_criterion_str(c: crate::model::shape::SizeCriterion) -> &'static str {
++    use crate::model::shape::SizeCriterion;
++    match c {
++        SizeCriterion::Absolute => "absolute",
++        SizeCriterion::Paper => "paper",
++        SizeCriterion::Page => "page",
++        SizeCriterion::Column => "column",
++        SizeCriterion::Para => "para",
++    }
++}
++
++/// 수식 컨트롤을 `Block::Equation` 으로 변환한다. 스크립트를 tokenize→parse→to_latex
++/// 로 LaTeX 화하고, 파싱이 빈 결과이면 `Unsupported` 로 정직하게 폴백한다.
++fn build_equation_block(e: &crate::model::control::Equation) -> Block {
++    let w = e.common.width as i32;
++    let h = e.common.height as i32;
++    let script = e.script.trim();
++    if !script.is_empty() {
++        let ast = EqParser::new(tokenize(script)).parse();
++        let latex = to_latex(&ast);
++        if !latex.trim().is_empty() {
++            return Block::Equation(EquationBlock {
++                latex,
++                script: e.script.clone(),
++                w,
++                h,
++            });
++        }
++    }
++    Block::Unsupported(UnsupportedBlock {
++        label: "equation".to_string(),
++        w,
++        h,
++    })
++}
++
++/// bin_data_content(1-based) 에서 MIME 감지. 없으면 빈 문자열.
++fn image_mime(doc: &Document, bin_data_id: u16) -> String {
++    if bin_data_id == 0 {
++        return String::new();
++    }
++    match doc.bin_data_content.get((bin_data_id - 1) as usize) {
++        Some(bdc) => {
++            crate::document_core::helpers::detect_clipboard_image_mime(&bdc.data.load()).to_string()
++        }
++        None => String::new(),
++    }
++}
++
++/// 컨트롤에서 표/그림/미지원 블록을 추출해 문단 spans 뒤에 붙인다 (v1: anchor 위치 무시, append).
++fn append_control_blocks(doc: &Document, para: &Paragraph, out: &mut Vec<Block>) {
++    for ctrl in &para.controls {
++        match ctrl {
++            Control::Table(t) => out.push(build_table_block(doc, t)),
++            Control::Picture(p) => out.push(build_image_block(doc, p)),
++            Control::Equation(e) => out.push(build_equation_block(e)),
++            Control::Shape(_) => out.push(Block::Unsupported(UnsupportedBlock {
++                label: "shape".to_string(),
++                w: 0,
++                h: 0,
++            })),
++            _ => {}
++        }
++    }
++}
++
++/// 문단 목록을 블록 배열로 변환한다 (셀 재귀에도 사용).
++fn build_blocks(doc: &Document, paragraphs: &[Paragraph]) -> Vec<Block> {
++    let mut out = Vec::new();
++    for para in paragraphs {
++        out.push(Block::Para(build_para_block(doc, para)));
++        append_control_blocks(doc, para, &mut out);
++    }
++    out
++}
++
++/// 문단 목록(및 표 셀 안)에서 각주/미주 컨트롤을 문서 순서대로 수집한다.
++fn collect_notes<'a>(paragraphs: &'a [Paragraph], out: &mut Vec<&'a Control>) {
++    for para in paragraphs {
++        for ctrl in &para.controls {
++            match ctrl {
++                Control::Footnote(_) | Control::Endnote(_) => out.push(ctrl),
++                Control::Table(t) => {
++                    for cell in &t.cells {
++                        collect_notes(&cell.paragraphs, out);
++                    }
++                }
++                _ => {}
++            }
++        }
++    }
++}
++
++/// 각주/미주 본문을 블록으로 변환하고, 첫 문단에 번호 접두 span 을 붙여
++/// 리더가 노트를 구분할 수 있게 한다.
++fn build_note_blocks(doc: &Document, note: &Control) -> Vec<Block> {
++    let (paragraphs, number, is_endnote) = match note {
++        Control::Footnote(f) => (&f.paragraphs, f.number, false),
++        Control::Endnote(e) => (&e.paragraphs, e.number, true),
++        _ => return Vec::new(),
++    };
++    let mut blocks = build_blocks(doc, paragraphs);
++
++    // 번호 접두 span (예: "1) ") 을 첫 Para 블록 앞에 삽입.
++    let mut prefix = note_marker_span(number);
++    prefix.text = format!("{}) ", number);
++    prefix.superscript = false;
++    if let Some(Block::Para(pb)) = blocks.iter_mut().find(|b| matches!(b, Block::Para(_))) {
++        pb.spans.insert(0, prefix);
++    } else {
++        // 문단이 없으면(빈 노트) 번호만 담은 최소 문단을 만든다.
++        blocks.insert(0, Block::Para(minimal_note_para(prefix)));
++    }
++    let _ = is_endnote;
++    blocks
++}
++
++/// 번호 span 하나만 담은 최소 문단 블록(빈 노트 폴백용).
++fn minimal_note_para(span: Span) -> ParaBlock {
++    ParaBlock {
++        heading: None,
++        style_name: None,
++        style_local_name: None,
++        spans: vec![span],
++        align: "left",
++        indent_start: 0,
++        indent_end: 0,
++        indent_first: 0,
++        space_before: 0,
++        space_after: 0,
++        line_height: LineHeight {
++            kind: "percent",
++            value: 0,
++        },
++        list: None,
++    }
++}
++
++impl DocumentCore {
++    /// 문서를 페이지 분할 없는 연속 흐름의 구조화 JSON 으로 내보낸다.
++    ///
++    /// 파서/렌더 무변경의 읽기 전용 질의. Swift 뷰어 브리지가 소비한다.
++    pub fn export_document_json(&self) -> Result<String, HwpError> {
++        let mut blocks = Vec::new();
++        for section in &self.document.sections {
++            blocks.extend(build_blocks(&self.document, &section.paragraphs));
++            // 각주/미주 본문을 구역 본문 뒤에 붙인다 (참조 마커는 본문 내 super span).
++            let mut notes = Vec::new();
++            collect_notes(&section.paragraphs, &mut notes);
++            for note in notes {
++                blocks.extend(build_note_blocks(&self.document, note));
++            }
++        }
++        let dto = DocumentJson {
++            v: 1,
++            default_font_size_pt: default_body_font_size_pt(&self.document),
++            page_content_width: page_content_width_pt(&self.document),
++            blocks,
++        };
++        serde_json::to_string(&dto).map_err(|error| {
++            HwpError::RenderError(format!("문서 구조화 JSON 직렬화에 실패했습니다: {error}"))
++        })
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn export(path: &str) -> String {
++        let data = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
++        let core = DocumentCore::from_bytes(&data)
++            .unwrap_or_else(|e| panic!("parse {path}: {e:?}"));
++        core.export_document_json().expect("export json")
++    }
++
++    /// s5 산출물: 실제 문서로 hyperlink / footnote-super / equation-latex 를 각각 증명한다.
++    /// (샘플 코퍼스에 세 기능을 모두 담은 단일 문서가 없어 기능별 문서를 쓴다.)
++    #[test]
++    fn export_s5_feature_samples() {
++        const OUT_DIR: &str = "/private/tmp/claude-501/-Users-taehyoungkim-Documents-DEV-ww-w-ai-fast-md-reader/2aecaee2-00c6-4b1b-85a9-52bc6aa6327f/scratchpad";
++
++        // 각주(HWP5): super 참조 마커 + 구역 뒤 노트 본문 블록.
++        let jf = export("samples/footnote-01.hwp");
++        let _ = std::fs::write(format!("{OUT_DIR}/s5-sample.json"), &jf);
++        // 하이퍼링크(HWPX): http URL 로 span.link 채움.
++        let jl = export("samples/hwpx_sample2.hwpx");
++        let _ = std::fs::write(format!("{OUT_DIR}/s5-links.json"), &jl);
++        // 수식(HWP5): t:equation + 비어있지 않은 latex.
++        let je = export("samples/eq-01.hwp");
++        let _ = std::fs::write(format!("{OUT_DIR}/s5-equation.json"), &je);
++
++        // footnote super markers
++        assert!(
++            jf.contains("\"super\":true"),
++            "expected superscript note markers in footnote sample"
++        );
++        // http link with cleaned URL (no leftover backslash-escapes)
++        assert!(
++            jl.contains("\"link\":\"https://"),
++            "expected a cleaned http span.link in links sample"
++        );
++        assert!(
++            !jl.contains("\"link\":\"https\\\\"),
++            "URL should be unescaped (no backslash before colon)"
++        );
++        // equation block with non-empty latex
++        assert!(
++            je.contains("\"t\":\"equation\""),
++            "expected a t:equation block in equation sample"
++        );
++        assert!(
++            je.contains("\"latex\":\"") && !je.contains("\"latex\":\"\""),
++            "expected non-empty latex in equation sample"
++        );
++
++        let links = jl.matches("\"link\":\"https://").count();
++        let supers = jf.matches("\"super\":true").count();
++        let eqs = je.matches("\"t\":\"equation\"").count();
++        // show a real latex value
++        let latex_sample: String = {
++            let i = je.find("\"latex\":\"").unwrap() + 9;
++            let rest = &je[i..];
++            let end = rest.find('"').unwrap_or(0);
++            rest[..end].chars().take(80).collect()
++        };
++        println!(
++            "s5 evidence: http_links={links} footnote_super_markers={supers} equations={eqs}  first_latex={latex_sample:?}"
++        );
++    }
++
++    /// build_spans 가 Control::Bookmark 를 span.bookmark 앵커로 내보내는지 — 코퍼스에
++    /// Control::Bookmark 를 담은 샘플이 없으므로 구성된 문단으로 그 분기가 REACHED 임을 증명.
++    #[test]
++    fn bookmark_control_becomes_anchor_span() {
++        use crate::model::control::{Bookmark, Control};
++        use crate::model::paragraph::Paragraph;
++
++        let mut para = Paragraph::default();
++        para.text = "AB".to_string();
++        para.char_offsets = vec![0, 1];
++        para.char_shapes = vec![crate::model::paragraph::CharShapeRef {
++            start_pos: 0,
++            char_shape_id: 0,
++        }];
++        para.controls = vec![Control::Bookmark(Bookmark {
++            name: "mark1".to_string(),
++        })];
++
++        let doc_info = DocInfo::default();
++        let spans = build_spans(&doc_info, &para);
++        assert!(
++            spans.iter().any(|s| s.bookmark.as_deref() == Some("mark1")),
++            "expected a bookmark anchor span, got: {:?}",
++            spans.iter().map(|s| (&s.text, &s.bookmark)).collect::<Vec<_>>()
++        );
++    }
++
++    /// 익스포트 봉투에 문서 기본 본문 글자 크기 필드가 실린다 — 첫 본문 문단의 char_shape
++    /// (없으면 char_shape 0) base_size 에서 계산된 pt 값이 `defaultFontSizePt` 로 나온다.
++    /// 본문이 있는 문서는 실제 숫자(null 아님)를 내야 한다.
++    #[test]
++    fn export_carries_default_font_size() {
++        let json = export("samples/para-001.hwp");
++        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
++        let f = &v["defaultFontSizePt"];
++        let pt = f
++            .as_f64()
++            .unwrap_or_else(|| panic!("defaultFontSizePt must be a real number, got: {f}"));
++        assert!(pt > 0.0, "defaultFontSizePt must be positive, got: {pt}");
++        assert_eq!(pt, 10.0, "para-001.hwp default body font size is 10pt");
++        println!("para-001.hwp defaultFontSizePt = {pt}");
++    }
++
++    #[test]
++    fn export_document_json_smoke() {
++        const OUT_DIR: &str = "/private/tmp/claude-501/-Users-taehyoungkim-Documents-DEV-ww-w-ai-fast-md-reader/2aecaee2-00c6-4b1b-85a9-52bc6aa6327f/scratchpad";
++        let cases = [
++            (
++                "samples/2010-01-06.hwp",
++                format!("{OUT_DIR}/s1-sample-hwp.json"),
++            ),
++            (
++                "samples/누름틀-2024.hwpx",
++                format!("{OUT_DIR}/s1-sample-hwpx.json"),
++            ),
++        ];
++        for (path, out) in cases {
++            let json = export(path);
++            // 잘 형성된 JSON 인지 + v==1 확인.
++            let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
++            assert_eq!(v["v"], 1);
++            assert!(v["blocks"].is_array(), "blocks must be array");
++            let _ = std::fs::write(&out, &json);
++            let head: String = json.chars().take(800).collect();
++            println!("=== {path} ({} bytes) ===\n{head}\n", json.len());
++        }
++    }
++}
+diff --git a/src/document_core/queries/mod.rs b/src/document_core/queries/mod.rs
+index 679f82d7..05d19767 100644
+--- a/src/document_core/queries/mod.rs
++++ b/src/document_core/queries/mod.rs
+@@ -2,6 +2,7 @@ mod bookmark_query;
+ mod cursor_nav;
+ mod cursor_rect;
+ pub(crate) mod doc_tree_nav;
++pub mod document_json;
+ pub(crate) mod field_query;
+ mod form_query;
+ pub mod rendering;
+diff --git a/src/renderer/equation/latex.rs b/src/renderer/equation/latex.rs
+new file mode 100644
+index 00000000..866bd29b
+--- /dev/null
++++ b/src/renderer/equation/latex.rs
+@@ -0,0 +1,451 @@
++//! 수식 AST(EqNode) → LaTeX 문자열 변환기 (structured-export 용).
++//!
++//! `to_latex` 는 파서가 만든 `EqNode` 트리를 LaTeX 로 직렬화한다. 뷰어(Swift)가
++//! KaTeX 로 렌더링할 수 있게 하기 위한 것으로, SVG 렌더러와 독립적이다.
++//!
++//! 설계 원칙 — **정직한 저하(honest degrade)**: 매핑되지 않는 이색적인 변형
++//! (EqAlign/Color/희귀 장식/미지 기호)은 깨진 LaTeX 대신 원본 텍스트/유니코드를
++//! 그대로 내보낸다. 목표 커버리지 80~90%, 이색적 꼬리는 저하로 처리한다.
++
++use super::ast::{EqNode, MatrixStyle, PileAlign, SpaceKind};
++use super::symbols::{DecoKind, FontStyleKind};
++
++/// EqNode 트리를 LaTeX 문자열로 변환한다.
++pub fn to_latex(node: &EqNode) -> String {
++    match node {
++        EqNode::Row(children) => children
++            .iter()
++            .map(to_latex)
++            .filter(|s| !s.is_empty())
++            .collect::<Vec<_>>()
++            .join(" "),
++
++        EqNode::Text(s) => escape_text(s),
++        EqNode::Number(s) => s.clone(),
++        EqNode::Symbol(s) => escape_symbol(s),
++        EqNode::MathSymbol(s) => math_symbol_to_latex(s),
++        EqNode::Function(f) => function_to_latex(f),
++
++        EqNode::Fraction { numer, denom } => {
++            format!("\\frac{{{}}}{{{}}}", to_latex(numer), to_latex(denom))
++        }
++        EqNode::Atop { top, bottom } => {
++            format!("{{{} \\atop {}}}", to_latex(top), to_latex(bottom))
++        }
++
++        EqNode::Sqrt { index, body } => match index {
++            Some(idx) => format!("\\sqrt[{}]{{{}}}", to_latex(idx), to_latex(body)),
++            None => format!("\\sqrt{{{}}}", to_latex(body)),
++        },
++
++        EqNode::Superscript { base, sup } => {
++            format!("{}^{{{}}}", to_latex(base), to_latex(sup))
++        }
++        EqNode::Subscript { base, sub } => {
++            format!("{}_{{{}}}", to_latex(base), to_latex(sub))
++        }
++        EqNode::SubSup { base, sub, sup } => {
++            format!("{}_{{{}}}^{{{}}}", to_latex(base), to_latex(sub), to_latex(sup))
++        }
++
++        EqNode::BigOp { symbol, sub, sup } => {
++            let mut out = math_symbol_to_latex(symbol);
++            if let Some(sub) = sub {
++                out.push_str(&format!("_{{{}}}", to_latex(sub)));
++            }
++            if let Some(sup) = sup {
++                out.push_str(&format!("^{{{}}}", to_latex(sup)));
++            }
++            out
++        }
++
++        EqNode::Limit { is_upper, sub } => {
++            let base = if *is_upper { "\\varlimsup" } else { "\\lim" };
++            match sub {
++                Some(sub) => format!("{}_{{{}}}", base, to_latex(sub)),
++                None => base.to_string(),
++            }
++        }
++
++        EqNode::Matrix { rows, style } => {
++            let env = match style {
++                MatrixStyle::Plain => "matrix",
++                MatrixStyle::Paren => "pmatrix",
++                MatrixStyle::Bracket => "bmatrix",
++                MatrixStyle::Vert => "vmatrix",
++            };
++            let body = rows
++                .iter()
++                .map(|row| {
++                    row.iter()
++                        .map(to_latex)
++                        .collect::<Vec<_>>()
++                        .join(" & ")
++                })
++                .collect::<Vec<_>>()
++                .join(" \\\\ ");
++            format!("\\begin{{{env}}} {body} \\end{{{env}}}")
++        }
++
++        EqNode::Cases { rows } => {
++            let body = rows
++                .iter()
++                .map(to_latex)
++                .collect::<Vec<_>>()
++                .join(" \\\\ ");
++            format!("\\begin{{cases}} {body} \\end{{cases}}")
++        }
++
++        EqNode::Pile { rows, align } => {
++            // 단일 열 세로 쌓기 → matrix 로 저하(정렬은 무시).
++            let _ = align;
++            let body = rows
++                .iter()
++                .map(to_latex)
++                .collect::<Vec<_>>()
++                .join(" \\\\ ");
++            format!("\\begin{{matrix}} {body} \\end{{matrix}}")
++        }
++
++        EqNode::EqAlign { rows } => {
++            // aligned 환경으로 근사(정렬 & 유지). 저하 허용 범위.
++            let body = rows
++                .iter()
++                .map(|(l, r)| format!("{} & {}", to_latex(l), to_latex(r)))
++                .collect::<Vec<_>>()
++                .join(" \\\\ ");
++            format!("\\begin{{aligned}} {body} \\end{{aligned}}")
++        }
++
++        EqNode::Rel { arrow, over, under } => {
++            // 화살표 위/아래 배치 → overset/underset 근사.
++            let arrow_tex = math_symbol_to_latex(arrow);
++            match under {
++                Some(under) => format!(
++                    "\\underset{{{}}}{{\\overset{{{}}}{{{}}}}}",
++                    to_latex(under),
++                    to_latex(over),
++                    arrow_tex
++                ),
++                None => format!("\\overset{{{}}}{{{}}}", to_latex(over), arrow_tex),
++            }
++        }
++
++        EqNode::Paren { left, right, body } => {
++            format!(
++                "\\left{} {} \\right{}",
++                bracket_to_latex(left),
++                to_latex(body),
++                bracket_to_latex(right)
++            )
++        }
++
++        EqNode::Decoration { kind, body } => {
++            format!("{}{{{}}}", deco_to_latex(*kind), to_latex(body))
++        }
++
++        EqNode::FontStyle { style, body } => {
++            format!("{}{{{}}}", font_style_to_latex(*style), to_latex(body))
++        }
++
++        // 색상은 저하: 본문만 내보낸다.
++        EqNode::Color { body, .. } => to_latex(body),
++
++        EqNode::Space(kind) => match kind {
++            SpaceKind::Normal => "\\ ".to_string(),
++            SpaceKind::Thin => "\\,".to_string(),
++            SpaceKind::Tab => "\\quad ".to_string(),
++        },
++
++        EqNode::Newline => "\\\\ ".to_string(),
++        EqNode::Quoted(s) => format!("\\text{{{}}}", escape_text(s)),
++        EqNode::Empty => String::new(),
++    }
++}
++
++/// LaTeX 특수문자를 최소한으로 escape (텍스트 노드용).
++fn escape_text(s: &str) -> String {
++    let mut out = String::with_capacity(s.len());
++    for ch in s.chars() {
++        match ch {
++            '{' => out.push_str("\\{"),
++            '}' => out.push_str("\\}"),
++            '\\' => out.push_str("\\backslash "),
++            '$' => out.push_str("\\$"),
++            '%' => out.push_str("\\%"),
++            '#' => out.push_str("\\#"),
++            '&' => out.push_str("\\&"),
++            '_' => out.push_str("\\_"),
++            _ => out.push(ch),
++        }
++    }
++    out
++}
++
++/// 단일 연산/구두점 기호 escape.
++fn escape_symbol(s: &str) -> String {
++    match s {
++        "{" => "\\{".to_string(),
++        "}" => "\\}".to_string(),
++        "%" => "\\%".to_string(),
++        "#" => "\\#".to_string(),
++        "&" => "\\&".to_string(),
++        "_" => "\\_".to_string(),
++        "$" => "\\$".to_string(),
++        _ => s.to_string(),
++    }
++}
++
++/// 함수 이름을 LaTeX 명령으로. 표준 함수는 `\sin` 등, 그 외는 `\operatorname`.
++fn function_to_latex(f: &str) -> String {
++    const STD: &[&str] = &[
++        "sin", "cos", "tan", "cot", "sec", "csc", "arcsin", "arccos", "arctan", "sinh", "cosh",
++        "tanh", "coth", "log", "ln", "lg", "exp", "det", "dim", "ker", "hom", "arg", "deg", "gcd",
++        "max", "min", "sup", "inf", "lim", "Pr",
++    ];
++    if STD.contains(&f) {
++        format!("\\{f}")
++    } else {
++        format!("\\operatorname{{{f}}}")
++    }
++}
++
++/// 자동 크기 괄호 문자를 `\left`/`\right` 뒤에 올 LaTeX 로.
++fn bracket_to_latex(b: &str) -> String {
++    match b {
++        "" => ".".to_string(),
++        "{" => "\\{".to_string(),
++        "}" => "\\}".to_string(),
++        "‖" => "\\|".to_string(),
++        "⟨" => "\\langle".to_string(),
++        "⟩" => "\\rangle".to_string(),
++        "⌈" => "\\lceil".to_string(),
++        "⌉" => "\\rceil".to_string(),
++        "⌊" => "\\lfloor".to_string(),
++        "⌋" => "\\rfloor".to_string(),
++        other => other.to_string(), // ( ) [ ] | . 등은 그대로
++    }
++}
++
++/// 글자 장식 → LaTeX 명령.
++fn deco_to_latex(kind: DecoKind) -> &'static str {
++    match kind {
++        DecoKind::Hat => "\\hat",
++        DecoKind::Check => "\\check",
++        DecoKind::Tilde => "\\tilde",
++        DecoKind::Acute => "\\acute",
++        DecoKind::Grave => "\\grave",
++        DecoKind::Dot => "\\dot",
++        DecoKind::DDot => "\\ddot",
++        DecoKind::Bar => "\\bar",
++        DecoKind::Vec => "\\vec",
++        DecoKind::Dyad => "\\overleftrightarrow",
++        DecoKind::Under => "\\underbrace",
++        DecoKind::Arch => "\\overparen",
++        DecoKind::Underline => "\\underline",
++        DecoKind::Overline => "\\overline",
++        DecoKind::StrikeThrough => "\\cancel",
++    }
++}
++
++/// 글꼴 스타일 → LaTeX 명령.
++fn font_style_to_latex(style: FontStyleKind) -> &'static str {
++    match style {
++        FontStyleKind::Roman => "\\mathrm",
++        FontStyleKind::Italic => "\\mathit",
++        FontStyleKind::Bold => "\\mathbf",
++        FontStyleKind::Blackboard => "\\mathbb",
++        FontStyleKind::Calligraphy => "\\mathcal",
++        FontStyleKind::Fraktur => "\\mathfrak",
++        FontStyleKind::SansSerif => "\\mathsf",
++        FontStyleKind::Monospace => "\\mathtt",
++    }
++}
++
++/// 유니코드 수학 기호 → LaTeX 명령. 매핑 없으면 유니코드 그대로(정직한 저하).
++fn math_symbol_to_latex(s: &str) -> String {
++    let mapped = match s {
++        // 큰 연산자 / 적분
++        "∫" => "\\int",
++        "∬" => "\\iint",
++        "∭" => "\\iiint",
++        "∮" => "\\oint",
++        "∑" => "\\sum",
++        "∏" => "\\prod",
++        "∐" => "\\coprod",
++        "⋀" => "\\bigwedge",
++        "⋁" => "\\bigvee",
++        "⊕" => "\\oplus",
++        "⊗" => "\\otimes",
++        "⊙" => "\\odot",
++        "⊔" => "\\sqcup",
++        "⊓" => "\\sqcap",
++        "⊎" => "\\uplus",
++        // 관계 / 산술
++        "∞" => "\\infty",
++        "×" => "\\times",
++        "÷" => "\\div",
++        "±" => "\\pm",
++        "∓" => "\\mp",
++        "·" => "\\cdot",
++        "∘" => "\\circ",
++        "•" => "\\bullet",
++        "∗" => "\\ast",
++        "≤" => "\\leq",
++        "≥" => "\\geq",
++        "≠" => "\\neq",
++        "≈" => "\\approx",
++        "≡" => "\\equiv",
++        "≅" => "\\cong",
++        "∼" => "\\sim",
++        "≃" => "\\simeq",
++        "≪" => "\\ll",
++        "≫" => "\\gg",
++        "∝" => "\\propto",
++        "≐" => "\\doteq",
++        // 화살표
++        "→" => "\\rightarrow",
++        "←" => "\\leftarrow",
++        "↔" => "\\leftrightarrow",
++        "⇒" => "\\Rightarrow",
++        "⇐" => "\\Leftarrow",
++        "⇔" => "\\Leftrightarrow",
++        "↑" => "\\uparrow",
++        "↓" => "\\downarrow",
++        "↦" => "\\mapsto",
++        "⟶" => "\\longrightarrow",
++        "⟵" => "\\longleftarrow",
++        // 집합 / 논리
++        "∈" => "\\in",
++        "∉" => "\\notin",
++        "∋" => "\\ni",
++        "⊂" => "\\subset",
++        "⊃" => "\\supset",
++        "⊆" => "\\subseteq",
++        "⊇" => "\\supseteq",
++        "∪" => "\\cup",
++        "∩" => "\\cap",
++        "∀" => "\\forall",
++        "∃" => "\\exists",
++        "∄" => "\\nexists",
++        "∅" => "\\emptyset",
++        "∧" => "\\wedge",
++        "∨" => "\\vee",
++        "¬" => "\\neg",
++        "∂" => "\\partial",
++        "∇" => "\\nabla",
++        "∴" => "\\therefore",
++        "∵" => "\\because",
++        "⊢" => "\\vdash",
++        "⊨" => "\\models",
++        "⊥" => "\\perp",
++        "†" => "\\dagger",
++        "‡" => "\\ddagger",
++        "★" => "\\star",
++        "⋯" => "\\cdots",
++        "…" => "\\ldots",
++        "⋮" => "\\vdots",
++        "⋱" => "\\ddots",
++        "ℵ" => "\\aleph",
++        "ℏ" => "\\hbar",
++        "ℓ" => "\\ell",
++        "℘" => "\\wp",
++        "ℑ" => "\\Im",
++        "ℜ" => "\\Re",
++        "∠" => "\\angle",
++        "°" => "\\degree",
++        "′" => "\\prime",
++        "‖" => "\\|",
++        // 그리스 소문자
++        "α" => "\\alpha",
++        "β" => "\\beta",
++        "γ" => "\\gamma",
++        "δ" => "\\delta",
++        "ε" => "\\epsilon",
++        "ζ" => "\\zeta",
++        "η" => "\\eta",
++        "θ" => "\\theta",
++        "ϑ" => "\\vartheta",
++        "ι" => "\\iota",
++        "κ" => "\\kappa",
++        "λ" => "\\lambda",
++        "μ" => "\\mu",
++        "ν" => "\\nu",
++        "ξ" => "\\xi",
++        "ο" => "o",
++        "π" => "\\pi",
++        "ϖ" => "\\varpi",
++        "ρ" => "\\rho",
++        "σ" => "\\sigma",
++        "ς" => "\\varsigma",
++        "τ" => "\\tau",
++        "υ" => "\\upsilon",
++        "φ" => "\\phi",
++        "χ" => "\\chi",
++        "ψ" => "\\psi",
++        "ω" => "\\omega",
++        // 그리스 대문자
++        "Γ" => "\\Gamma",
++        "Δ" => "\\Delta",
++        "Θ" => "\\Theta",
++        "Λ" => "\\Lambda",
++        "Ξ" => "\\Xi",
++        "Π" => "\\Pi",
++        "Σ" => "\\Sigma",
++        "Υ" => "\\Upsilon",
++        "Φ" => "\\Phi",
++        "Ψ" => "\\Psi",
++        "Ω" => "\\Omega",
++        _ => "",
++    };
++    if mapped.is_empty() {
++        // 정직한 저하: 매핑 없으면 유니코드 문자 그대로.
++        s.to_string()
++    } else {
++        // 명령 뒤에 공백을 붙여 뒤 토큰과 붙지 않게 한다(`\pi x`).
++        format!("{mapped} ")
++            .trim_end()
++            .to_string()
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::renderer::equation::parser::EqParser;
++    use crate::renderer::equation::tokenizer::tokenize;
++
++    fn latex(script: &str) -> String {
++        let tokens = tokenize(script);
++        let ast = EqParser::new(tokens).parse();
++        to_latex(&ast)
++    }
++
++    #[test]
++    fn fraction_over() {
++        let out = latex("a over b");
++        assert!(out.contains("\\frac"), "expected \\frac in: {out}");
++    }
++
++    #[test]
++    fn left_right_fraction_super() {
++        let out = latex("LEFT ( {1} over {6} RIGHT )^4");
++        assert!(out.contains("\\left("), "expected \\left( in: {out}");
++        assert!(out.contains("\\frac"), "expected \\frac in: {out}");
++    }
++
++    #[test]
++    fn integral_with_limits() {
++        let out = latex("int _{0} ^{pi} x dx");
++        assert!(out.contains("\\int"), "expected \\int in: {out}");
++        assert!(out.contains("\\pi"), "expected \\pi in: {out}");
++    }
++
++    #[test]
++    fn sqrt_and_sum() {
++        let sq = latex("sqrt {x+1}");
++        assert!(sq.contains("\\sqrt"), "expected \\sqrt in: {sq}");
++        let sm = latex("sum _{i=1} ^{n} i");
++        assert!(sm.contains("\\sum"), "expected \\sum in: {sm}");
++    }
++}
+diff --git a/src/renderer/equation/mod.rs b/src/renderer/equation/mod.rs
+index 7e3a269b..54ad1eab 100644
+--- a/src/renderer/equation/mod.rs
++++ b/src/renderer/equation/mod.rs
+@@ -6,6 +6,7 @@
+ pub mod ast;
+ #[cfg(target_arch = "wasm32")]
+ pub mod canvas_render;
++pub mod latex;
+ pub mod layout;
+ pub mod parser;
+ pub mod svg_render;
+diff --git a/src/renderer/style_resolver.rs b/src/renderer/style_resolver.rs
+index f4f5d1bf..3ab11f02 100644
+--- a/src/renderer/style_resolver.rs
++++ b/src/renderer/style_resolver.rs
+@@ -450,7 +450,7 @@ pub fn detect_lang_category(ch: char) -> usize {
+ ///
+ /// HWP 문서의 폰트 이름을 웹/SVG에서 렌더링 가능한 폰트로 치환한다.
+ /// webhwp의 g_SubstFonts 치환 체인을 평탄화(flatten)한 테이블을 사용한다.
+-fn lookup_font_name(doc_info: &DocInfo, lang_index: usize, font_id: u16) -> String {
++pub(crate) fn lookup_font_name(doc_info: &DocInfo, lang_index: usize, font_id: u16) -> String {
+     if lang_index < doc_info.font_faces.len() {
+         let lang_fonts = &doc_info.font_faces[lang_index];
+         if (font_id as usize) < lang_fonts.len() {
+-- 
+2.50.1 (Apple Git-155)
+

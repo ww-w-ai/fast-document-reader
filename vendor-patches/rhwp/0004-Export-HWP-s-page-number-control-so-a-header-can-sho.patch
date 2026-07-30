@@ -1,0 +1,99 @@
+From d7c3f6f20ca1cd98bf173e45410a33558def6e5e Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Thu, 30 Jul 2026 03:34:11 +0900
+Subject: [PATCH 4/4] Export HWP's page-number control so a header can show the
+ page it is on
+
+HWP writes a page number as an AutoNumber(Page) control rather than characters,
+so a footer reading "- 3 -" reached a consumer as "-   -" with the number
+missing entirely. The number this parse computed now rides along as the run's
+text, carrying the marker a viewer needs to replace it with the page actually
+being drawn.
+
+The run takes the char shape at its own position rather than the styleless
+shape a synthetic anchor gets, so the number matches the text around it.
+AutoNumber also carries figure, table and footnote numbering, which already
+reach the text by other means; only Page is exported here.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 28 +++++++++++++++++++++-
+ 1 file changed, 27 insertions(+), 1 deletion(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 02907030..bdddcfe0 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -12,7 +12,7 @@ use serde::Serialize;
+ 
+ use crate::document_core::DocumentCore;
+ use crate::error::HwpError;
+-use crate::model::control::{Control, FieldType};
++use crate::model::control::{AutoNumberType, Control, FieldType};
+ use crate::model::document::{DocInfo, Document};
+ use crate::model::header_footer::HeaderFooterApply;
+ use crate::model::page::PageAreas;
+@@ -261,6 +261,14 @@ struct Span {
+     /// 독립적으로 검증할 수 있기 때문이다(`docs/per-script-font-design.md` §6).
+     #[serde(rename = "csId", skip_serializing_if = "Option::is_none")]
+     cs_id: Option<u32>,
++    /// 이 런이 살아있는 쪽번호 필드를 대신한다는 표시 — 현재 `"page"` 하나.
++    ///
++    /// HWP 는 쪽번호를 글자가 아니라 `Control::AutoNumber(Page)` 컨트롤로 넣는다. 그 컨트롤은
++    /// 본문 문자열에서 제어문자 한 칸일 뿐이라, 내보내지 않으면 머리말이 `- -` 처럼 숫자만
++    /// 빠진 채 나온다. 그래서 파싱 시점의 번호를 텍스트로 싣되 이 표시를 함께 달아, 뷰어가
++    /// 실제로 그리는 쪽의 번호로 바꿔 넣을 수 있게 한다(docx `PAGE` 필드와 같은 계약).
++    #[serde(rename = "pageNumberField", skip_serializing_if = "Option::is_none")]
++    page_number_field: Option<&'static str>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -415,6 +423,21 @@ fn build_spans(doc_info: &DocInfo, para: &Paragraph) -> Vec<Span> {
+             Control::Endnote(en) => {
+                 markers.push((pos, note_marker_span(en.number)));
+             }
++            // 쪽번호. `AutoNumber` 는 각주·그림·표 번호에도 쓰이므로 `Page` 만 골라낸다 —
++            // 나머지는 이미 위 두 갈래가 처리하거나 본문에 글자로 들어가 있어, 여기서 또 넣으면
++            // 두 번 찍힌다. 스타일은 그 자리의 char_shape 을 그대로 써서 만든다: 앵커 span 처럼
++            // size 0 으로 만들면 주변 글자와 크기·폰트가 어긋난 쪽번호가 나온다.
++            Control::AutoNumber(an) if an.number_type == AutoNumberType::Page => {
++                let shape = para.char_shape_id_at(pos).unwrap_or(0);
++                let shown = if an.assigned_number > 0 {
++                    an.assigned_number
++                } else {
++                    an.number
++                };
++                let mut span = build_span(doc_info, shape, shown.to_string(), None);
++                span.page_number_field = Some("page");
++                markers.push((pos, span));
++            }
+             _ => {}
+         }
+     }
+@@ -486,6 +509,7 @@ fn anchor_span(bookmark: Option<String>) -> Span {
+         link: None,
+         bookmark,
+         cs_id: None,
++        page_number_field: None,
+     }
+ }
+ 
+@@ -526,6 +550,7 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+                 bookmark: None,
+                 // `char_shapes.get()` 이 Some 이었으므로 이 id 는 `charShapes` 범위 안이다.
+                 cs_id: Some(char_shape_id),
++                page_number_field: None,
+             }
+         }
+         None => Span {
+@@ -543,6 +568,7 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+             bookmark: None,
+             // id 가 `char_shapes` 범위 밖 → `charShapes` 에 대응 행이 없으므로 내보내지 않는다.
+             cs_id: None,
++            page_number_field: None,
+         },
+     }
+ }
+-- 
+2.50.1 (Apple Git-155)
+
