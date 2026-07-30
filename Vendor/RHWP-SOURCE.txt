@@ -1,0 +1,12 @@
+# Provenance of Vendor/RhwpNative.xcframework — written by Scripts/record-rhwp-source.sh
+#
+# The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
+# relationship, so this file is the only record of it. Regenerate on every rebuild.
+
+rhwp commit   : d7c3f6f20ca1cd98bf173e45410a33558def6e5e
+rhwp branch   : fastdocreader/charshape-export
+rhwp subject  : Export HWP's page-number control so a header can show the page it is on
+rhwp origin   : https://github.com/edwardkim/rhwp.git
+uncommitted   : 0 file(s) in the rhwp checkout at build time
+library bytes : 58851136
+library sha256: 9ad326ecd8b563b05e4b3cc30e0f9e42a5b2d91648ab66277f181101899c01ef
