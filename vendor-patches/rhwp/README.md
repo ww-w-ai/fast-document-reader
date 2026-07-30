@@ -82,6 +82,24 @@ Known candidates as of this writing:
 A cherry-pick can fail if the fix depends on later refactors. That is cheap to find out and still far
 cheaper than the alternative.
 
+### Upstreaming our FFI (the exit from maintaining a fork at all) — BLOCKED ON THE REBASE
+
+Upstream welcomes contributions and it is not a formality: `CONTRIBUTING.md` opens with *"모두의 한글은
+이름 그대로 모두의 참여로 완성됩니다 … 어떤 형태든 환영합니다"*, there is a `CODE_OF_CONDUCT.md`, 651
+forks, 74 open issues, and recently merged PRs come from outside the owner (postmelee ×3, planet6897 ×2,
+kevin9327 ×2, lpaiu-cs ×1). What we added is not app-specific glue — a structured JSON export, a
+per-char-shape font-slot table, full page geometry, the page-number control — so it is useful to any
+consumer, which is why it is worth offering.
+
+Two things block it, and both are structural rather than a matter of willingness:
+
+1. **A PR must come from a GitHub FORK of the target, and GitHub does not allow a private fork of a
+   public repo.** `ww-w-ai/rhwp` is a plain private repository (`fork: false`), so it cannot open a PR.
+   Sending one needs a second, PUBLIC fork — a decision for the owner, not a step to take quietly.
+2. **Our four commits sit on 0.7.19 and would not apply to today's `main`** (45,014 changed source lines
+   since). Any reviewer would ask for a rebase, and that rebase IS the work described below. So the PR
+   comes AFTER it, not before.
+
 ### When to revisit the pin
 
 The owner's own condition: **once 0.8 has settled, take it as a TEST and try applying it.** Concretely,
