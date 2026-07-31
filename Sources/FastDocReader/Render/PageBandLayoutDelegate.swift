@@ -44,8 +44,10 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// fact, set once, by whoever reserved the space.
     var deskGap: CGFloat = 0
 
-    /// Tables that must be moved WHOLE to the next page rather than allowed to run into the margin,
-    /// keyed by the character location of their first line — `DocumentWindowController.
+    /// Pieces that must be moved WHOLE to the next page rather than allowed to run into the margin,
+    /// keyed by the character location of the first line of each. A piece is a whole TABLE when the
+    /// reader keeps tables together, and an unbreakable run of ROWS when it breaks them (invariant 64)
+    /// — the rule below is the same either way, which is why there is one record and not two — `DocumentWindowController.
     /// settlePagedTables` measures these from a completed layout and puts them here, and the rule
     /// below re-derives the actual shift from each incoming rect.
     ///
@@ -172,10 +174,11 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// first line left its height identical to the hundredth (438.45 both ways) and landed its visual
     /// top exactly on the target, merged-cell inset and all.
     ///
-    /// **What it refuses to do.** A table TALLER than the page body can never fit, so moving it only
-    /// wastes the page it left; it stays where it is and overruns, which is the honest best and what
-    /// `PagePagination.joiningUnopenedBoundaries` already draws truthfully. That case is real — a
-    /// 25-row fixture on a 220pt page, and every giant table of invariant 55.
+    /// **What it refuses to do.** A table TALLER than the page body can never fit, so CARRYING it only
+    /// wastes the page it left — it is broken into unbreakable pieces instead (invariant 64), and the
+    /// pieces arrive here through the same record. A piece that is itself taller than the page still
+    /// stays where it is and overruns, which is the honest best and what
+    /// `PagePagination.joiningUnopenedBoundaries` draws truthfully.
     private func pushWholeTable(_ layoutManager: NSLayoutManager, _ glyphRange: NSRange,
                                  _ rect: NSRect, _ pitch: CGFloat,
                                  _ lineFragmentRect: UnsafeMutablePointer<NSRect>,
@@ -186,7 +189,7 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         // The table's own top edge, which is what has to clear the page — not this line's, which a
         // merged cell can push down by an arbitrary amount.
         let visualTop = rect.minY - metrics.topInset
-        let page = ((visualTop - leadingBand) / pitch).rounded(.down)
+        let page = PageBandLayoutDelegate.page(of: visualTop, leadingBand: leadingBand, pitch: pitch)
         let textBottom = page * pitch + pageContentHeight
         // Already fits where it stands: nothing to do, and this is what makes the rule idempotent —
         // a table that was moved once lands at a page top and then declines to move again.
@@ -202,6 +205,16 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
             openedBands[Int(page)] = (top: visualTop, height: shift)
         }
         return true
+    }
+
+    /// Which page a point sits on — with a hair of tolerance, which is load-bearing rather than
+    /// tidy. A piece moved to a page top lands at EXACTLY `page × pitch + leadingBand`, and that
+    /// number does not survive the division: measured, a line placed at page 6's top came back as
+    /// `5051.279999999` against a pitch product of `5051.28`, so a bare `floor` called it page 5 and
+    /// the rule then judged it against page 5's bottom — a piece that had just been moved correctly
+    /// read as still overrunning, and the settle could not converge.
+    static func page(of y: CGFloat, leadingBand: CGFloat, pitch: CGFloat) -> CGFloat {
+        (((y - leadingBand) / pitch) + 1e-6).rounded(.down)
     }
 
     /// A paragraph built inside a table cell carries its `NSTextTableBlock` on `paragraphStyle.

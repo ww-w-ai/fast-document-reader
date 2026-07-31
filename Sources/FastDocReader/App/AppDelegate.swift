@@ -178,6 +178,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pageOutline.keyEquivalentModifierMask = [.command, .option]   // ⌘P is Print
         viewMenu.addItem(withTitle: "Header", action: Selector(("togglePageHeader:")), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Footer", action: Selector(("togglePageFooter:")), keyEquivalent: "")
+        // What happens to a table that will not finish on its page: break it where it stands, or carry
+        // it whole to the next one. A table TALLER than the page is always broken whatever this says —
+        // there is no whole page to carry it to (invariant 64).
+        viewMenu.addItem(withTitle: "Split Tables Across Pages",
+                         action: Selector(("toggleSplitTables:")), keyEquivalent: "")
         viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Reload", action: Selector(("reloadDocument:")), keyEquivalent: "r")
 

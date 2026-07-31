@@ -21,7 +21,23 @@ struct PageViewOptions: Equatable {
     /// The running footer, same rule.
     var footer: Bool
 
-    static let `default` = PageViewOptions(outline: true, header: true, footer: true)
+    /// What to do with a table that will not finish on the page it starts on: BREAK it at a row
+    /// boundary and carry the rest onto the next page (what Word does by default), or keep it whole
+    /// and move the whole thing down.
+    ///
+    /// **This choice never applies to a table taller than the page**, which has no whole page to be
+    /// moved to and is always broken — the owner's rule: *"표가 한장이 넘을때가 있거든. 이런 경우는
+    /// 무조건 쪼개야 해"*.
+    ///
+    /// Off by default. Breaking is only ever done where no vertically merged cell crosses the
+    /// boundary, and a Korean report form is merged almost everywhere, so on the documents this reader
+    /// is used for "keep it whole" is the choice that reliably produces a clean page. One click either
+    /// way.
+    /// Defaulted in the memberwise init on purpose: every existing caller that names the three
+    /// furniture toggles means "the shape before tables could be broken", which is exactly `false`.
+    var splitTables: Bool = false
+
+    static let `default` = PageViewOptions(outline: true, header: true, footer: true, splitTables: false)
 
     /// With all three off a paged document reserves NO band at all
     /// (`PageBandLayoutDelegate.isActive`), which is the code path this reader had before any of the
@@ -40,6 +56,7 @@ enum PageViewOptionsStore {
     private static let outlineKey = "pageOutlineVisible"
     private static let headerKey = "pageHeaderVisible"
     private static let footerKey = "pageFooterVisible"
+    private static let splitTablesKey = "pageSplitTables"
 
     /// `UserDefaults.bool(forKey:)` returns `false` for a key that was never written, which would make
     /// every default OFF — the opposite of what is wanted. Each flag is therefore read through
@@ -52,13 +69,15 @@ enum PageViewOptionsStore {
             }
             return PageViewOptions(outline: flag(outlineKey, PageViewOptions.default.outline),
                                    header: flag(headerKey, PageViewOptions.default.header),
-                                   footer: flag(footerKey, PageViewOptions.default.footer))
+                                   footer: flag(footerKey, PageViewOptions.default.footer),
+                                   splitTables: flag(splitTablesKey, PageViewOptions.default.splitTables))
         }
         set {
             let d = UserDefaults.standard
             d.set(newValue.outline, forKey: outlineKey)
             d.set(newValue.header, forKey: headerKey)
             d.set(newValue.footer, forKey: footerKey)
+            d.set(newValue.splitTables, forKey: splitTablesKey)
         }
     }
 
@@ -66,6 +85,6 @@ enum PageViewOptionsStore {
     /// defaults rather than from whatever an earlier case chose.
     static func reset() {
         let d = UserDefaults.standard
-        [outlineKey, headerKey, footerKey].forEach { d.removeObject(forKey: $0) }
+        [outlineKey, headerKey, footerKey, splitTablesKey].forEach { d.removeObject(forKey: $0) }
     }
 }

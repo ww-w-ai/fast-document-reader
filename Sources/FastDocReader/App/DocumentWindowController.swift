@@ -1370,7 +1370,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let options = PageViewOptionsStore.current
         for (selector, on) in [(#selector(togglePageOutline(_:)), options.outline),
                                (#selector(togglePageHeader(_:)), options.header),
-                               (#selector(togglePageFooter(_:)), options.footer)]
+                               (#selector(togglePageFooter(_:)), options.footer),
+                               (#selector(toggleSplitTables(_:)), options.splitTables)]
         where item.action == selector {
             item.state = on ? .on : .off
             return isPaged
@@ -1564,28 +1565,63 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     private func laidOutTables() -> [PagePagination.LaidOutTable] {
         guard let lm = textView.layoutManager, let tc = textView.textContainer,
               let storage = textView.textStorage, storage.length > 0 else { return [] }
+        // Per table, per ROW: where its lines landed, and which rows a page may start on. Kept as
+        // running state while the one line-fragment walk goes past, because the walk is the only place
+        // where "where did this land" and "which cell is it" are both cheap to know.
+        struct Row { var firstChar: Int; var top: CGFloat; var bottom: CGFloat; var firstLineTop: CGFloat }
+        var rows: [Int: Row] = [:]              // startingRow → geometry
+        var spans: [(start: Int, end: Int)] = []  // every merged cell's row range, half-open
         var out: [PagePagination.LaidOutTable] = []
         var current: ObjectIdentifier?
+
+        func flushRows() {
+            guard !out.isEmpty, !rows.isEmpty else { rows = [:]; spans = []; return }
+            out[out.count - 1].rows = rows.keys.sorted().map { r in
+                let row = rows[r]!
+                // Safe unless some cell that STARTED above this row is still open across it.
+                let crossed = spans.contains { $0.start < r && $0.end > r }
+                return PagePagination.LaidOutRow(firstChar: row.firstChar, top: row.top,
+                                                 bottom: row.bottom, firstLineTop: row.firstLineTop,
+                                                 canBreakAbove: !crossed)
+            }
+            rows = [:]; spans = []
+        }
+
         lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, glyphRange, _ in
             let cr = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-            var table: ObjectIdentifier?
+            var block: NSTextTableBlock?
             if cr.location >= 0, cr.location < storage.length,
                let style = storage.attribute(.paragraphStyle, at: cr.location,
-                                             effectiveRange: nil) as? NSParagraphStyle,
-               let block = style.textBlocks.first as? NSTextTableBlock {
-                table = ObjectIdentifier(block.table)
+                                             effectiveRange: nil) as? NSParagraphStyle {
+                block = style.textBlocks.first as? NSTextTableBlock
             }
-            guard let table else { current = nil; return }
-            if current == table, var last = out.last {
-                last.visualTop = min(last.visualTop, rect.minY)
-                last.bottom = max(last.bottom, rect.maxY)
-                out[out.count - 1] = last
-            } else {
+            guard let block else { flushRows(); current = nil; return }
+            let table = ObjectIdentifier(block.table)
+            if current != table {
+                flushRows()
                 current = table
                 out.append(PagePagination.LaidOutTable(firstChar: cr.location, visualTop: rect.minY,
                                                        bottom: rect.maxY, firstLineTop: rect.minY))
+            } else {
+                out[out.count - 1].visualTop = min(out[out.count - 1].visualTop, rect.minY)
+                out[out.count - 1].bottom = max(out[out.count - 1].bottom, rect.maxY)
+            }
+            if block.rowSpan > 1 {
+                spans.append((block.startingRow, block.startingRow + block.rowSpan))
+            }
+            let r = block.startingRow
+            if var existing = rows[r] {
+                existing.top = min(existing.top, rect.minY)
+                existing.bottom = max(existing.bottom, rect.maxY)
+                existing.firstChar = min(existing.firstChar, cr.location)
+                if cr.location <= existing.firstChar { existing.firstLineTop = rect.minY }
+                rows[r] = existing
+            } else {
+                rows[r] = Row(firstChar: cr.location, top: rect.minY, bottom: rect.maxY,
+                              firstLineTop: rect.minY)
             }
         }
+        flushRows()
         return out
     }
 
@@ -1615,8 +1651,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                                                pageContentHeight: pageBandDelegate.pageContentHeight,
                                                band: pageBandDelegate.band,
                                                leadingBand: pageBandDelegate.leadingBand,
+                                               splitTables: PageViewOptionsStore.current.splitTables,
                                                alreadyPushed: pageBandDelegate.pushedTables)
-        guard next.count > pageBandDelegate.pushedTables.count else { return false }
+        guard next != pageBandDelegate.pushedTables else { return false }
         pageBandDelegate.pushedTables = next
         pageBandDelegate.resetOpenedBoundaries()
         lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
@@ -2522,6 +2559,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     @objc func togglePageOutline(_ sender: Any?) { flipPageOption { $0.outline.toggle() } }
     @objc func togglePageHeader(_ sender: Any?) { flipPageOption { $0.header.toggle() } }
     @objc func togglePageFooter(_ sender: Any?) { flipPageOption { $0.footer.toggle() } }
+    /// Break a table across a page boundary rather than carrying it whole to the next page. Goes
+    /// through the SAME `flipPageOption` as the three furniture toggles — it changes how the document
+    /// paginates, so it needs the same re-layout, the same reading-position restore and the same
+    /// every-open-window sweep, and a second path that re-derived any of that would drift from this
+    /// one the first time either was touched (invariant 60f).
+    @objc func toggleSplitTables(_ sender: Any?) { flipPageOption { $0.splitTables.toggle() } }
 
     /// Counts how many times a page option was actually applied — the same shape as
     /// `pageZoomChangeCount`/`textInsetUpdateCount`, so a test can assert a toggle DID something

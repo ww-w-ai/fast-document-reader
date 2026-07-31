@@ -35,12 +35,12 @@ final class PagedTableOverrunTests: XCTestCase {
     /// Page 0's text runs 0…100, page 1's 120…220 (band 20).
     private let geometry = (pageContentHeight: CGFloat(100), band: CGFloat(20), leadingBand: CGFloat(0))
 
-    private func decide(_ tables: [PagePagination.LaidOutTable],
+    private func decide(_ tables: [PagePagination.LaidOutTable], splitTables: Bool = false,
                         alreadyPushed: [Int: PagePagination.TableMetrics] = [:])
         -> [Int: PagePagination.TableMetrics] {
         PagePagination.tablesToPush(tables, pageContentHeight: geometry.pageContentHeight,
                                     band: geometry.band, leadingBand: geometry.leadingBand,
-                                    alreadyPushed: alreadyPushed)
+                                    splitTables: splitTables, alreadyPushed: alreadyPushed)
     }
 
     func testATableThatEndsInsideItsOwnPageIsLeftAlone() {
@@ -56,13 +56,75 @@ final class PagedTableOverrunTests: XCTestCase {
         XCTAssertEqual(out.count, 1)
     }
 
-    /// A table taller than the page body gains nothing by moving — it would overrun the next page just
-    /// as far, having emptied the one it left. Real: a 25-row fixture's 660pt table on a 220pt page,
-    /// and every giant table of invariant 55.
-    func testATableTallerThanThePageIsNeverMoved() {
+    /// A table taller than the page body has nowhere whole to be moved to, so moving it is not an
+    /// option at all — and with no rows known it cannot be broken either, which leaves it where it is.
+    /// What happens when its rows ARE known is the next section's subject.
+    func testATableTallerThanThePageIsNeverMerelyMoved() {
         let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 20, bottom: 200, firstLineTop: 20)
         XCTAssertTrue(decide([t]).isEmpty,
-                      "a table that cannot fit on any page must stay where it is and overrun honestly")
+                      "a table that cannot fit on any page must never be carried to another one")
+    }
+
+    // MARK: - 1b. Breaking a table
+
+    /// Rows 20pt apart, breakable unless named in `welded` — a row welded to the one above it is one
+    /// a vertically merged cell spans.
+    private func rows(_ n: Int, from top: CGFloat = 20, height: CGFloat = 20,
+                      welded: Set<Int> = []) -> [PagePagination.LaidOutRow] {
+        (0..<n).map { i in
+            let y = top + CGFloat(i) * height
+            return PagePagination.LaidOutRow(firstChar: 100 + i, top: y, bottom: y + height,
+                                             firstLineTop: y, canBreakAbove: !welded.contains(i))
+        }
+    }
+
+    /// THE OWNER'S RULE: *"표가 한장이 넘을때... 이런 경우는 무조건 쪼개야 해"*. The setting is off here,
+    /// and the table is broken anyway, because keeping it whole could only mean leaving rows in a
+    /// margin.
+    func testATableTallerThanThePageIsBrokenEvenWithBreakingTurnedOff() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 20, bottom: 220,
+                                            firstLineTop: 20, rows: rows(10))
+        let out = decide([t])
+        XCTAssertEqual(out.count, 10, "every row may start a page, so every row is a piece")
+        XCTAssertEqual(out[100], PagePagination.TableMetrics(height: 20, topInset: 0))
+    }
+
+    /// With breaking OFF, a table that would fit on a page of its own is carried down whole — one
+    /// move, at the table's own start, and no row-level pieces at all.
+    func testWithBreakingOffAFittingTableIsCarriedWholeInsteadOfBroken() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 60, bottom: 130,
+                                            firstLineTop: 60, rows: rows(4, from: 60, height: 17.5))
+        XCTAssertEqual(decide([t]), [10: PagePagination.TableMetrics(height: 70, topInset: 0)])
+    }
+
+    /// With breaking ON, the same table is broken where it stands instead.
+    func testWithBreakingOnTheSameTableIsBrokenWhereItStands() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 60, bottom: 130,
+                                            firstLineTop: 60, rows: rows(4, from: 60, height: 17.5))
+        let out = decide([t], splitTables: true)
+        XCTAssertNil(out[10], "the table itself is not carried anywhere")
+        XCTAssertEqual(out.count, 4)
+    }
+
+    /// THE PIECE THAT MOVES IS NOT A ROW — it is the run of rows between two boundaries no merged cell
+    /// crosses. Registering rows instead was measured on the reference report, which is merged nearly
+    /// everywhere: the safe rows moved, the merged stretches between them did not, and twenty lines
+    /// still landed in margins.
+    func testAMergedStretchMovesAsOnePiece() {
+        let welded = PagePagination.unbreakableGroups(rows(6, welded: [2, 3]))
+        XCTAssertEqual(welded.count, 4, "rows 1,2-3-4,5,6 — the merge welds three of them together")
+        XCTAssertEqual(welded[1].height, 60, "the welded run is as tall as its three rows")
+        XCTAssertEqual(welded.map(\.firstChar), [100, 101, 104, 105])
+    }
+
+    /// A form whose left column is merged from top to bottom cannot be broken anywhere. Better whole
+    /// on the next page than half in a margin — so it falls back to being carried, even with breaking
+    /// turned on.
+    func testATableNothingCanBreakInsideIsCarriedWholeEvenWithBreakingOn() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 60, bottom: 130, firstLineTop: 60,
+                                            rows: rows(4, from: 60, height: 17.5, welded: [1, 2, 3]))
+        XCTAssertEqual(decide([t], splitTables: true),
+                       [10: PagePagination.TableMetrics(height: 70, topInset: 0)])
     }
 
     /// Exactly at the page's last point is still inside it — the boundary case that decides whether a
@@ -254,9 +316,11 @@ final class PagedTableOverrunTests: XCTestCase {
         return wc
     }
 
-    /// How far each table runs past the text bottom of the page it starts on. Positive = rows in the
-    /// margin, which is the defect.
-    private func overruns(_ wc: DocumentWindowController) throws -> [CGFloat] {
+    /// How far each LINE inside a table falls past the bottom of the page it sits on. Non-empty means
+    /// table content is being drawn in a margin, which is the defect — and measured per line rather
+    /// than per table on purpose, because once a table may be BROKEN across pages its own extent
+    /// legitimately spans several of them while none of its rows may.
+    private func linesInMargins(_ wc: DocumentWindowController) throws -> [CGFloat] {
         let layout = try XCTUnwrap(wc.textView.layoutManager)
         let container = try XCTUnwrap(wc.textView.textContainer)
         let storage = try XCTUnwrap(wc.textView.textStorage)
@@ -264,32 +328,18 @@ final class PagedTableOverrunTests: XCTestCase {
         let d = wc.pageBandDelegate
         let pitch = d.pageContentHeight + d.band
         guard pitch > 0 else { return [] }
-        var runs: [(top: CGFloat, bottom: CGFloat)] = []
-        var current: ObjectIdentifier?
+        var out: [CGFloat] = []
         layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { rect, _, _, gr, _ in
             let cr = layout.characterRange(forGlyphRange: gr, actualGlyphRange: nil)
-            var table: ObjectIdentifier?
-            if cr.location < storage.length,
-               let style = storage.attribute(.paragraphStyle, at: cr.location,
-                                             effectiveRange: nil) as? NSParagraphStyle,
-               let block = style.textBlocks.first as? NSTextTableBlock {
-                table = ObjectIdentifier(block.table)
-            }
-            guard let table else { current = nil; return }
-            if current == table, var last = runs.last {
-                last.top = min(last.top, rect.minY)
-                last.bottom = max(last.bottom, rect.maxY)
-                runs[runs.count - 1] = last
-            } else {
-                current = table
-                runs.append((rect.minY, rect.maxY))
-            }
+            guard cr.location < storage.length,
+                  let style = storage.attribute(.paragraphStyle, at: cr.location,
+                                                effectiveRange: nil) as? NSParagraphStyle,
+                  style.textBlocks.first is NSTextTableBlock else { return }
+            let page = ((rect.minY - d.leadingBand) / pitch).rounded(.down)
+            let over = (rect.maxY - d.leadingBand) - (page * pitch + d.pageContentHeight)
+            if over > 0.01 { out.append(over) }
         }
-        return runs.compactMap { r in
-            let page = ((r.top - d.leadingBand) / pitch).rounded(.down)
-            let over = (r.bottom - d.leadingBand) - (page * pitch + d.pageContentHeight)
-            return over > 0.01 ? over : nil
-        }
+        return out
     }
 
     /// THE REPORTED DEFECT, on the document it was reported on: four of this report's sixteen tables
@@ -298,10 +348,10 @@ final class PagedTableOverrunTests: XCTestCase {
     func testTheReferenceReportEndsWithNoTableRowInAMargin() throws {
         let wc = try openPaged("docs/fixtures/office/bus-headings.docx")
         XCTAssertTrue(wc.pageBandDelegate.isActive, "this fixture must actually paginate")
-        XCTAssertFalse(try overruns(wc).isEmpty,
+        XCTAssertFalse(try linesInMargins(wc).isEmpty,
                        "the fixture must start out with rows in the margin, or this proves nothing")
         wc.settlePagedTablesFully()
-        XCTAssertEqual(try overruns(wc), [], "no table may end inside a margin once the pages settle")
+        XCTAssertEqual(try linesInMargins(wc), [], "no table row may sit in a margin once the pages settle")
         XCTAssertFalse(wc.pageBandDelegate.pushedTables.isEmpty)
     }
 
@@ -312,20 +362,54 @@ final class PagedTableOverrunTests: XCTestCase {
         let wc = try openPaged("docs/fixtures/office/bus-headings.odt")
         XCTAssertTrue(wc.pageBandDelegate.isActive)
         wc.settlePagedTablesFully()
-        XCTAssertEqual(try overruns(wc), [])
+        XCTAssertEqual(try linesInMargins(wc), [])
     }
 
-    /// The honest limit, kept visible: a table taller than its own page cannot be moved anywhere that
-    /// helps, so it still overruns — and `PagePagination.joiningUnopenedBoundaries` is what draws that
-    /// truthfully on screen. A future change that "fixed" this by moving it anyway would add an empty
-    /// page and change nothing else.
-    func testATableTallerThanItsPageStillOverrunsAfterSettling() throws {
+    /// A table TALLER than its own page is always BROKEN, whatever the menu says — there is no whole
+    /// page to move it to, so keeping it whole could only ever mean leaving rows in a margin. The
+    /// fixture is a 25-row table of 660pt on a 220pt page, and the setting is deliberately left at its
+    /// default (keep tables whole) to prove the rule overrides it.
+    func testATableTallerThanItsPageIsBrokenEvenWhenTablesAreKeptWhole() throws {
+        XCTAssertFalse(PageViewOptionsStore.current.splitTables, "precondition: the setting says whole")
         let wc = try openPaged("docs/fixtures/office/paged-visual/tablepage.docx")
         XCTAssertTrue(wc.pageBandDelegate.isActive)
+        XCTAssertFalse(try linesInMargins(wc).isEmpty, "precondition: it starts out overrunning")
         wc.settlePagedTablesFully()
-        XCTAssertTrue(wc.pageBandDelegate.pushedTables.isEmpty,
-                      "a table that cannot fit on any page must not be moved")
-        XCTAssertFalse(try overruns(wc).isEmpty)
+        XCTAssertFalse(wc.pageBandDelegate.pushedTables.isEmpty,
+                       "a table with no page to move to must be broken instead")
+        XCTAssertEqual(try linesInMargins(wc), [], "and then no row of it may sit in a margin")
+    }
+
+    /// The menu's own effect, on a table that COULD be kept whole: with breaking on it is broken where
+    /// it stands instead of being carried down. Judged by where the reference report's first
+    /// overrunning table ends up — one page earlier when it is allowed to break.
+    func testTheSettingDecidesBetweenBreakingATableAndCarryingItDown() throws {
+        func firstTableTop(_ split: Bool) throws -> CGFloat {
+            PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true,
+                                                           splitTables: split)
+            let wc = try openPaged("docs/fixtures/office/bus-headings.docx")
+            wc.settlePagedTablesFully()
+            XCTAssertEqual(try linesInMargins(wc), [], "either way, nothing may end in a margin")
+            let layout = try XCTUnwrap(wc.textView.layoutManager)
+            let container = try XCTUnwrap(wc.textView.textContainer)
+            let storage = try XCTUnwrap(wc.textView.textStorage)
+            var top = CGFloat.greatestFiniteMagnitude
+            layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { rect, _, _, gr, stop in
+                let cr = layout.characterRange(forGlyphRange: gr, actualGlyphRange: nil)
+                guard cr.location < storage.length,
+                      let style = storage.attribute(.paragraphStyle, at: cr.location,
+                                                    effectiveRange: nil) as? NSParagraphStyle,
+                      style.textBlocks.first is NSTextTableBlock else { return }
+                top = min(top, rect.minY)
+                stop.pointee = true
+            }
+            return top
+        }
+        let whole = try firstTableTop(false)
+        let split = try firstTableTop(true)
+        XCTAssertLessThan(split, whole,
+                          "breaking leaves the table where it started; keeping it whole carries it "
+                          + "down to the next page, so its top is lower")
     }
 
     /// Printing must not depend on the ASYNCHRONOUS settle having finished: ⌘P straight after opening
@@ -339,7 +423,7 @@ final class PagedTableOverrunTests: XCTestCase {
         let op = wc.makePrintOperation()
         XCTAssertFalse(wc.pageBandDelegate.pushedTables.isEmpty,
                        "⌘P must settle the pages before deciding what goes on each sheet")
-        XCTAssertEqual(try overruns(wc), [])
+        XCTAssertEqual(try linesInMargins(wc), [])
 
         // And the printout itself, which is where the defect was reported: run headlessly to a file so
         // the paper and the page count are ordinary assertions rather than something judged by looking
@@ -374,14 +458,45 @@ final class PagedTableOverrunTests: XCTestCase {
         // wait that stops at "something was recorded" catches the document mid-repagination (measured:
         // three tables still in the margin at that instant).
         let deadline = Date().addingTimeInterval(20)
-        while Date() < deadline && !((try? overruns(wc))?.isEmpty ?? false) {
+        while Date() < deadline && !((try? linesInMargins(wc))?.isEmpty ?? false) {
             RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         }
         XCTAssertFalse(wc.pageBandDelegate.pushedTables.isEmpty,
                        "the walk that lays a paged document out must settle its tables — nothing else "
                        + "in this file can see that wiring")
-        XCTAssertEqual(try overruns(wc), [],
+        XCTAssertEqual(try linesInMargins(wc), [],
                        "opening the document must be enough; no reader calls settlePagedTables itself")
+    }
+
+    /// The View menu item, through the real action — that it flips the stored preference, that the
+    /// open document re-paginates on the spot, and that neither answer leaves a row in a margin.
+    func testTheMenuItemRepaginatesTheOpenDocument() throws {
+        let wc = try openPaged("docs/fixtures/office/bus-headings.docx")
+        wc.settlePagedTablesFully()
+        let whole = wc.printPageCount
+        XCTAssertEqual(try linesInMargins(wc), [])
+
+        wc.toggleSplitTables(nil)
+        XCTAssertTrue(PageViewOptionsStore.current.splitTables, "the menu item must store the choice")
+        wc.settlePagedTablesFully()
+        XCTAssertLessThan(wc.printPageCount, whole,
+                          "breaking tables fits the same document into fewer pages than carrying them")
+        XCTAssertEqual(try linesInMargins(wc), [])
+    }
+
+    /// It is checked to match the stored choice and disabled where there is no paper — the same two
+    /// rules the three furniture toggles follow, and the gate is `isPaged` rather than `kind ==
+    /// .office` (invariant 57).
+    func testTheMenuItemIsCheckedAndIsDisabledWithoutPaper() throws {
+        let item = NSMenuItem(title: "Split Tables Across Pages",
+                              action: #selector(DocumentWindowController.toggleSplitTables(_:)),
+                              keyEquivalent: "")
+        let wc = try openPaged("docs/fixtures/office/bus-headings.docx")
+        XCTAssertTrue(wc.validateMenuItem(item), "a paged document can choose")
+        XCTAssertEqual(item.state, .off, "…and starts on the shipped default")
+        wc.toggleSplitTables(nil)
+        XCTAssertTrue(wc.validateMenuItem(item))
+        XCTAssertEqual(item.state, .on)
     }
 
     /// Invariant 57(d), from this feature's direction: a document with no page is not this rule's

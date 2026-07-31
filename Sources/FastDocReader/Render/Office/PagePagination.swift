@@ -98,17 +98,49 @@ enum PagePagination {
     /// `firstLineTop`: the first line the typesetter reaches belongs to whichever cell comes first in
     /// TEXT order, and a vertically merged cell is centred in its own span, so that line can sit well
     /// below the table's top edge.
+    /// One ROW of a table, as a completed layout shows it — what a page BREAK inside a table is
+    /// allowed to move.
+    ///
+    /// `canBreakAbove` is the whole safety question and it is not about this row's own content: a
+    /// break above row `R` is safe only when NO cell spans across that boundary, i.e. no block with
+    /// `startingRow < R < startingRow + rowSpan`. Breaking where one does leaves the merged cell
+    /// stretched across the gap between two pages — with the reader's own running header painted
+    /// inside it, and the row's two halves a page apart. That was built, rendered and looked at before
+    /// this rule existed; see `PageBandLayoutDelegate.pushWholeTable`.
+    ///
+    /// A row whose every column is covered by a merge from above has no text of its own, so it never
+    /// becomes a `LaidOutRow` at all — which is the same answer, reached earlier.
+    struct LaidOutRow {
+        var firstChar: Int
+        var top: CGFloat
+        var bottom: CGFloat
+        var firstLineTop: CGFloat
+        var canBreakAbove: Bool
+
+        init(firstChar: Int, top: CGFloat, bottom: CGFloat, firstLineTop: CGFloat, canBreakAbove: Bool) {
+            self.firstChar = firstChar
+            self.top = top
+            self.bottom = bottom
+            self.firstLineTop = firstLineTop
+            self.canBreakAbove = canBreakAbove
+        }
+    }
+
     struct LaidOutTable {
         var firstChar: Int
         var visualTop: CGFloat
         var bottom: CGFloat
         var firstLineTop: CGFloat
+        /// In document order. Empty for a caller that only cares whether the whole table fits.
+        var rows: [LaidOutRow]
 
-        init(firstChar: Int, visualTop: CGFloat, bottom: CGFloat, firstLineTop: CGFloat) {
+        init(firstChar: Int, visualTop: CGFloat, bottom: CGFloat, firstLineTop: CGFloat,
+             rows: [LaidOutRow] = []) {
             self.firstChar = firstChar
             self.visualTop = visualTop
             self.bottom = bottom
             self.firstLineTop = firstLineTop
+            self.rows = rows
         }
     }
 
@@ -119,6 +151,14 @@ enum PagePagination {
     struct TableMetrics: Equatable {
         var height: CGFloat
         var topInset: CGFloat
+
+        /// Rounded to a hundredth of a point on the way in, which is what lets the settle loop stop:
+        /// it re-measures every round and compares the whole record, so a piece whose height came back
+        /// as `161.70000000000002` one round and `161.7` the next would read as a change for ever.
+        init(height: CGFloat, topInset: CGFloat) {
+            self.height = (height * 100).rounded() / 100
+            self.topInset = (topInset * 100).rounded() / 100
+        }
     }
 
     /// Which tables must be moved WHOLE to the next page rather than allowed to run into the margin.
@@ -137,19 +177,81 @@ enum PagePagination {
     /// would never converge.
     static func tablesToPush(_ tables: [LaidOutTable],
                              pageContentHeight: CGFloat, band: CGFloat, leadingBand: CGFloat,
+                             splitTables: Bool = false,
                              alreadyPushed: [Int: TableMetrics] = [:]) -> [Int: TableMetrics] {
         let pitch = pageContentHeight + band
         guard pitch > 0, pageContentHeight > 0 else { return alreadyPushed }
         var out = alreadyPushed
-        for t in tables where out[t.firstChar] == nil {
-            let height = t.bottom - t.visualTop
-            guard height <= pageContentHeight else { continue }
-            let page = ((t.visualTop - leadingBand) / pitch).rounded(.down)
-            let textBottom = page * pitch + pageContentHeight
-            guard (t.bottom - leadingBand) > textBottom else { continue }
-            out[t.firstChar] = TableMetrics(height: height,
-                                            topInset: t.firstLineTop - t.visualTop)
+
+        /// Does this span, sitting here, run past the bottom of the page it starts on?
+        func overruns(top: CGFloat, bottom: CGFloat) -> Bool {
+            // Same tolerance as the layout rule, and for the same measured reason — see
+            // `PageBandLayoutDelegate.page(of:leadingBand:pitch:)`. The two must agree exactly or the
+            // decision keeps asking for a move the rule has already made.
+            let page = (((top - leadingBand) / pitch) + 1e-6).rounded(.down)
+            return (bottom - leadingBand) > page * pitch + pageContentHeight + 0.01
         }
+
+        for t in tables {
+            let height = t.bottom - t.visualTop
+            guard overruns(top: t.visualTop, bottom: t.bottom) else { continue }
+            let fitsOnAPage = height <= pageContentHeight
+            // BREAK IT — always when it is taller than a page (there is no whole page to move it to,
+            // and the owner's rule is that such a table must be split), and by preference when the
+            // reader has asked for breaking. Every row that may safely start a page is registered;
+            // the layout rule then moves whichever of them actually crosses, and the ones that do not
+            // cost nothing.
+            if !fitsOnAPage || splitTables {
+                // The unit that moves is not a ROW but an UNBREAKABLE GROUP: the run of rows between
+                // two boundaries a merged cell does not cross. Registering rows instead was tried and
+                // measured on the reference report, which is merged nearly everywhere — the safe rows
+                // moved, the merged stretches between them did not, and twenty lines still landed in
+                // margins. A group is exactly what may start a page.
+                let groups = unbreakableGroups(t.rows)
+                if groups.count > 1 {
+                    for g in groups where g.height <= pageContentHeight {
+                        out[g.firstChar] = TableMetrics(height: g.height, topInset: g.topInset)
+                    }
+                    continue
+                }
+                // Nothing inside it can be broken — every boundary is crossed by a merged cell, which
+                // is one real table in a Korean report form. Better whole on the next page than half in
+                // a margin, so it falls through to the other arm rather than being left where it is.
+            }
+            guard fitsOnAPage else { continue }
+            out[t.firstChar] = TableMetrics(height: height, topInset: t.firstLineTop - t.visualTop)
+        }
+        return out
+    }
+
+    /// The pieces a table may be broken into: each run of rows from one breakable boundary up to the
+    /// next. A row whose `canBreakAbove` is false is welded to the row above it, so the two share a
+    /// group and move together.
+    ///
+    /// One group means the table cannot be broken at all (its very first row is the only boundary),
+    /// which is the answer for a form whose left column is merged from top to bottom.
+    static func unbreakableGroups(_ rows: [LaidOutRow])
+        -> [(firstChar: Int, height: CGFloat, topInset: CGFloat)] {
+        var out: [(firstChar: Int, height: CGFloat, topInset: CGFloat)] = []
+        var start: LaidOutRow?
+        var top = CGFloat.greatestFiniteMagnitude
+        var bottom = -CGFloat.greatestFiniteMagnitude
+        func close() {
+            guard let s = start else { return }
+            out.append((firstChar: s.firstChar, height: bottom - top, topInset: s.firstLineTop - top))
+        }
+        for row in rows {
+            if row.canBreakAbove || start == nil {
+                close()
+                start = row
+                top = row.top
+                bottom = row.bottom
+            } else {
+                top = min(top, row.top)
+                bottom = max(bottom, row.bottom)
+            }
+        }
+        close()
         return out
     }
 
