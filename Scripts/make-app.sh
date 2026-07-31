@@ -44,8 +44,8 @@ echo "    build:      ${BUILD_INFO}"
 # Distribution MUST keep the real identifier: notarize.sh and appstore.sh set DIST_IDENTITY=1, and
 # both verify afterwards that it survived — a default that only holds when every future caller
 # remembers to opt out is not a default worth having.
+PB=/usr/libexec/PlistBuddy
 if [[ -z "${DIST_IDENTITY:-}" ]]; then
-  PB=/usr/libexec/PlistBuddy
   REAL_ID="$($PB -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
   $PB -c "Set :CFBundleIdentifier ${REAL_ID}.dev" "$APP/Contents/Info.plist"
   $PB -c "Set :CFBundleName FastDoc (Dev)" "$APP/Contents/Info.plist"
@@ -57,7 +57,36 @@ fi
 # bundle runtime resources (mermaid.min.js added in Task 5, etc.) — everything in Resources/ except
 # build inputs that must not ship inside the bundle (Info.plist is placed above; entitlements are a
 # signing input).
-find Resources -type f ! -name 'Info.plist' ! -name '*.entitlements' -exec cp {} "$APP/Contents/Resources/" \;
+find Resources -type f ! -name 'Info.plist' ! -name '*-Info.plist' ! -name '*.entitlements' \
+  -exec cp {} "$APP/Contents/Resources/" \;
+
+# ---- Quick Look preview extension ---------------------------------------------------------------
+# The Finder's space-bar preview, drawn by this reader's own engine. The extension's executable is a
+# COPY of the app's: `main.swift` sees it is running inside an `.appex` and hands off to
+# NSExtensionMain, so the preview shares 100% of the reader with no module split. Full reasoning and
+# the rejected alternatives: docs/02-planned/quick-look-extension-design.md.
+#
+# SKIP_QUICKLOOK=1 leaves it out. The App Store needs a SEPARATE App ID and provisioning profile for
+# an extension (Scripts/appstore.sh says so and refuses without it), so this is the switch that lets
+# a store build go out before that portal work is done.
+if [[ -z "${SKIP_QUICKLOOK:-}" ]]; then
+PLUGIN="$APP/Contents/PlugIns/QuickLookPreview.appex"
+mkdir -p "$PLUGIN/Contents/MacOS"
+cp "$BIN" "$PLUGIN/Contents/MacOS/FastDocReader"
+cp Resources/QuickLookPreview-Info.plist "$PLUGIN/Contents/Info.plist"
+# Both of these are DERIVED from the app rather than typed twice, because both are load-bearing and
+# neither is checked by a compiler: the store rejects an extension whose version differs from its
+# host, and an extension's identifier must be prefixed by its host's — which the dev build above
+# rewrites to `…dev`.
+APP_ID="$($PB -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
+$PB -c "Set :CFBundleIdentifier ${APP_ID}.quicklook" "$PLUGIN/Contents/Info.plist"
+for KEY in CFBundleShortVersionString CFBundleVersion; do
+  $PB -c "Set :${KEY} $($PB -c "Print :${KEY}" "$APP/Contents/Info.plist")" "$PLUGIN/Contents/Info.plist"
+done
+# Nested code is signed FIRST; signing the app afterwards seals it. An app extension is always
+# sandboxed, whatever shape its host takes — hence its own entitlements either way.
+codesign --force --sign - --entitlements Resources/QuickLookPreview.entitlements "$PLUGIN"
+fi
 # The KaTeX fonts ride inside katex-inlined.min.css, and the OFL requires its text to travel WITH
 # the fonts — so the notices ship in the bundle, not just in the repo.
 cp THIRD-PARTY-NOTICES.md "$APP/Contents/Resources/"

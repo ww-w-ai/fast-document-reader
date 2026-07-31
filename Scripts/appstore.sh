@@ -64,8 +64,30 @@ cp "$PROFILE" "$APP/Contents/embedded.provisionprofile"
 xattr -cr "$APP"
 
 echo "==> Signing with Apple Distribution (App Store entitlements)"
-# Hardened runtime is not required for the store (the sandbox is), and --deep is deprecated —
-# the bundle is a single binary anyway.
+# Hardened runtime is not required for the store (the sandbox is), and --deep is deprecated. Nested
+# code is signed INSIDE-OUT instead: the Quick Look extension first, the app after, so the app's
+# signature seals an already-signed extension.
+#
+# The extension is its own app as far as provisioning is concerned — a separate App ID
+# (`…fast-md-reader.quicklook`) and a separate Mac App Store profile, embedded in the .appex. Both
+# have to exist in the developer portal before this can ship, so a missing profile stops the build
+# HERE with the reason, rather than being rejected during ingest hours later.
+QL_APPEX="$APP/Contents/PlugIns/QuickLookPreview.appex"
+if [[ -d "$QL_APPEX" ]]; then
+  if [[ -z "${QUICKLOOK_PROVISION_PROFILE:-}" ]]; then
+    echo "REFUSING TO SUBMIT: the bundle carries QuickLookPreview.appex but" >&2
+    echo "  QUICKLOOK_PROVISION_PROFILE is unset. Register the App ID" >&2
+    echo "  ai.ww-w.fast-md-reader.quicklook in the developer portal, download its Mac App Store" >&2
+    echo "  .provisionprofile, and set that path — or build with SKIP_QUICKLOOK=1 to ship this" >&2
+    echo "  version without the Finder preview." >&2
+    exit 1
+  fi
+  cp "$QUICKLOOK_PROVISION_PROFILE" "$QL_APPEX/Contents/embedded.provisionprofile"
+  xattr -cr "$QL_APPEX"
+  codesign --force --timestamp --keychain "$KEYCHAIN" \
+    --entitlements Resources/QuickLookPreview-mas.entitlements \
+    --sign "$APP_IDENTITY" "$QL_APPEX"
+fi
 codesign --force --timestamp --keychain "$KEYCHAIN" \
   --entitlements Resources/FastDocReader-mas.entitlements \
   --sign "$APP_IDENTITY" "$APP"

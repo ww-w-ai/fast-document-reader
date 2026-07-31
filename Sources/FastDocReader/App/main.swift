@@ -1,5 +1,24 @@
 import AppKit
 
+/// Foundation's own entry point for an app extension. Xcode's extension templates get here by
+/// linking with `-e _NSExtensionMain`; this app has ONE binary serving three shapes (the reader, the
+/// two headless flags, and the Quick Look extension), so it calls the symbol itself instead.
+///
+/// It is a `main`, so it takes `argc`/`argv` — and it really reads them: declared with no
+/// parameters it inherits whatever is in those registers and dies in `strlen` on the first argument
+/// (`EXC_BAD_ACCESS` inside `EXExtensionMain`, measured before this signature was right).
+@_silgen_name("NSExtensionMain")
+func NSExtensionMain(_ argc: Int32, _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> Int32
+
+// The SAME executable is copied into `Contents/PlugIns/QuickLookPreview.appex`, so the Finder's
+// preview runs this reader's own engine with no second render path and no module split (see
+// docs/02-planned/quick-look-extension-design.md). Nothing below this line may run in that shape —
+// an extension has no Dock icon, no menu bar and no document controller — so it goes FIRST and
+// never returns.
+if Bundle.main.bundlePath.hasSuffix(".appex") {
+    exit(NSExtensionMain(CommandLine.argc, CommandLine.unsafeArgv))
+}
+
 // Re-open every folder the user has already granted, before ANY entry point reads a file. The GUI
 // wants it live by the time a document's media resolve; the two headless flags below need it to work
 // at all, because the sandbox attaches no access to a path handed in on the command line — a granted

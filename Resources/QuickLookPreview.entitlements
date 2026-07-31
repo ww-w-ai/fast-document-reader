@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- An app extension is ALWAYS sandboxed, whichever shape its host takes: the Developer ID build
+	     of the app is unsandboxed and this still is. Quick Look hands the extension access to the one
+	     file it was asked to preview, so no folder grant (FolderAccess) is involved here. -->
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+
+	<!-- The document itself arrives through Quick Look; this is what lets the extension read it. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+
+	<!-- Same reason as the app's (invariant 8): a sandboxed WKWebView runs out-of-process and renders
+	     nothing at all without it. The preview only reaches WebKit for an uncached mermaid diagram or
+	     formula; it still makes no network requests. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

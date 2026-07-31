@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mac App Store shape of the Quick Look extension: the same sandbox as
+	     QuickLookPreview.entitlements PLUS the two identifiers the store requires. They must match
+	     the extension's OWN provisioning profile, which is a SEPARATE App ID from the app's —
+	     Apple treats every extension as its own app for provisioning. Registering
+	     `ai.ww-w.fast-md-reader.quicklook` in the developer portal and downloading a Mac App Store
+	     profile for it is a prerequisite of shipping the preview through the store; Scripts/
+	     appstore.sh refuses to submit without it rather than failing later during ingest. -->
+	<key>com.apple.application-identifier</key>
+	<string>GTX7V638TX.ai.ww-w.fast-md-reader.quicklook</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>GTX7V638TX</string>
+
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+
+	<!-- Quick Look hands the extension the one file it was asked to preview. -->
+	<key>com.apple.security.files.user-selected.read-only</key>
+	<true/>
+
+	<!-- Invariant 8: a sandboxed WKWebView renders nothing at all without this, and the preview
+	     reaches WebKit for an uncached mermaid diagram or formula. Still no network requests. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+</dict>
+</plist>

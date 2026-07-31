@@ -38,8 +38,16 @@ fi
 echo "    shipping identifier: $BUILT_ID"
 
 echo "==> Signing with Developer ID + hardened runtime (NO sandbox — see below)"
-# No --deep: the bundle is a single binary with no embedded frameworks or dylibs,
-# and Apple deprecated --deep for distribution signing.
+# Nested code is signed FIRST and the app afterwards — inside-out, which is what Apple requires and
+# what `--deep` (deprecated for distribution) used to paper over. The bundle stopped being a single
+# binary when the Quick Look extension arrived: `Contents/PlugIns/QuickLookPreview.appex` is separate
+# code with its own identity, and signing only the app leaves it unsigned by this identity, which
+# notarization rejects. An app extension is ALWAYS sandboxed, even inside this unsandboxed app.
+if [[ -d "$APP/Contents/PlugIns/QuickLookPreview.appex" ]]; then
+  codesign --force --options runtime --timestamp \
+    --entitlements Resources/QuickLookPreview.entitlements \
+    --sign "$IDENTITY" "$APP/Contents/PlugIns/QuickLookPreview.appex"
+fi
 #
 # Deliberately NOT sandboxed, unlike the App Store build. The sandbox grants access only to the file
 # the user opened, so a document's own `![](diagram.png)` sibling is unreadable — verified: every

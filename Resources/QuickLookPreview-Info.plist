@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The Quick Look preview extension. Scripts/make-app.sh assembles this into
+     FastDocReader.app/Contents/PlugIns/QuickLookPreview.appex with a COPY of the app's own
+     executable (see docs/02-planned/quick-look-extension-design.md), and rewrites three things
+     there so they cannot drift from the app: the version pair (the store rejects an extension whose
+     version differs from its host) and the bundle identifier (a local build's app becomes
+     `…fast-md-reader.dev`, and an extension's identifier MUST be prefixed by its host's).
+
+     QLSupportedContentTypes deliberately does NOT include public.plain-text / csv / tsv / log:
+     macOS already previews those as text perfectly well, and claiming them would take over every
+     plain-text preview on the machine for no gain. What is claimed is what this reader actually
+     draws better — Markdown rendered rather than shown as source, Word/ODT/HWP laid out at all. -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>FastDocReader</string>
+	<key>CFBundleIdentifier</key>
+	<string>ai.ww-w.fast-md-reader.quicklook</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Fast Document Reader Preview</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.1</string>
+	<key>CFBundleVersion</key>
+	<string>8</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>QLSupportedContentTypes</key>
+			<array>
+				<string>net.daringfireball.markdown</string>
+				<string>public.markdown</string>
+				<string>ai.ww-w.fast-md-reader.config-text</string>
+				<string>org.openxmlformats.wordprocessingml.document</string>
+				<string>org.openxmlformats.wordprocessingml.document.macroenabled</string>
+				<string>org.openxmlformats.wordprocessingml.template</string>
+				<string>org.openxmlformats.wordprocessingml.template.macroenabled</string>
+				<string>org.oasis-open.opendocument.text</string>
+				<string>com.hancom.hwp</string>
+				<string>com.haansoft.hancomofficeviewer.mac.hwp</string>
+				<string>com.hancom.hwpx</string>
+				<string>com.haansoft.hancomofficeviewer.mac.hwpx</string>
+			</array>
+			<key>QLSupportsSearchableItems</key>
+			<false/>
+		</dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.quicklook.preview</string>
+		<!-- Module-qualified, for the same reason NSDocumentClass is (invariant 6): this is a
+		     SwiftPM executable, so a bare class name is not found at runtime. -->
+		<key>NSExtensionPrincipalClass</key>
+		<string>FastDocReader.QuickLookPreviewController</string>
+	</dict>
+</dict>
+</plist>
