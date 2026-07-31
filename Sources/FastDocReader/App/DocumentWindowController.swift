@@ -2839,6 +2839,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             info.horizontalPagination = .fit
             info.verticalPagination = .automatic
         }
+        // A document starts at the top of the page, always. `NSPrintInfo` centres BOTH ways by
+        // default, which nothing here ever turned off — so a file whose text did not fill a sheet
+        // printed floating in the middle of it, which reads as a layout accident rather than a
+        // document. Set on every branch, not just the unpaged one: a paged document's rects are
+        // exactly paper-sized so centring is a no-op for it today, and leaving the flags at AppKit's
+        // default would make that a silent dependency on rects never being smaller than the sheet.
+        info.isVerticallyCentered = false
+        info.isHorizontallyCentered = false
         let op = NSPrintOperation(view: textView, printInfo: info)
         op.jobTitle = (document as? NSDocument)?.fileURL?.lastPathComponent ?? "Document"
         return op
