@@ -17,6 +17,7 @@
 			<array>
 				<string>net.daringfireball.markdown</string>
 				<string>public.markdown</string>
+				<string>ai.ww-w.fast-md-reader.markdown-alias</string>
 			</array>
 			<key>NSDocumentClass</key>
 			<string>FastDocReader.MarkdownDocument</string>
@@ -34,6 +35,14 @@
 				<string>public.comma-separated-values-text</string>
 				<string>public.tab-separated-values-text</string>
 				<string>public.log</string>
+				<!-- What macOS ACTUALLY types these files as, measured with UTType rather than
+				     assumed: `.log` is com.apple.log (not public.log), `.cfg` is public.toml and
+				     `.ini` is com.microsoft.ini — all three owned by someone else, so our own
+				     config-text declaration never gets those extensions. Claiming the real types is
+				     how the app becomes selectable for them at all. -->
+				<string>com.apple.log</string>
+				<string>public.toml</string>
+				<string>com.microsoft.ini</string>
 				<string>ai.ww-w.fast-md-reader.config-text</string>
 			</array>
 			<key>NSDocumentClass</key>
@@ -231,6 +240,33 @@
 	     mirror the tail of `DocumentTypes.plainTextExtensions`. -->
 	<key>UTExportedTypeDeclarations</key>
 	<array>
+		<!-- The markdown aliases nobody declares. `.md`/`.markdown` resolve to
+		     net.daringfireball.markdown because other apps export it, but `.mdown`, `.mkd` and
+		     `.mdtext` resolve to a throwaway `dyn.…` (measured with UTType) — the same hole the
+		     config files were in, so macOS refuses to bind any app to them. Adding the tags to our
+		     IMPORTED markdown declaration does not help: an imported declaration loses to the
+		     exporter's tag list. This one is ours and conforms to markdown, so a .mkd behaves like
+		     every other Markdown file. -->
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>net.daringfireball.markdown</string>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Markdown Document</string>
+			<key>UTTypeIdentifier</key>
+			<string>ai.ww-w.fast-md-reader.markdown-alias</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>mdown</string>
+					<string>mkd</string>
+					<string>mdtext</string>
+				</array>
+			</dict>
+		</dict>
 		<dict>
 			<key>UTTypeConformsTo</key>
 			<array>

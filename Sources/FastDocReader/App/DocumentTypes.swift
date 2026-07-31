@@ -30,7 +30,7 @@ enum DocumentTypes {
     /// dotfile whose whole name is that — so it stays outside this list's reach; `foo.env` and
     /// `.dev.vars` are what these entries answer.
     static let plainTextExtensions = ["txt", "text", "csv", "tsv", "log",
-                                      "conf", "cfg", "ini", "env", "vars"]
+                                      "conf", "cfg", "ini", "env", "vars", "toml"]
 
     /// Office formats, read-only (see invariants 22 and CLAUDE.md S4). `.rtf` was surveyed and
     /// dropped (see the roadmap's Revision 2 — AppKit's RTF reader loses structure and images

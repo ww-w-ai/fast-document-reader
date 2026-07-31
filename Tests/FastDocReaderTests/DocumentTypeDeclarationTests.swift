@@ -21,7 +21,10 @@ final class DocumentTypeDeclarationTests: XCTestCase {
         "txt": "public.plain-text", "text": "public.plain-text",
         "csv": "public.comma-separated-values-text",
         "tsv": "public.tab-separated-values-text",
-        "log": "public.log",
+        // Measured with UTType, not assumed: a `.log` is com.apple.log, and `.cfg`/`.toml` are
+        // public.toml — the app claims those real types as well as the public ones it used to guess.
+        "log": "com.apple.log",
+        "toml": "public.toml",
         "docx": "org.openxmlformats.wordprocessingml.document",
         "docm": "org.openxmlformats.wordprocessingml.document.macroenabled",
         "dotx": "org.openxmlformats.wordprocessingml.template",
