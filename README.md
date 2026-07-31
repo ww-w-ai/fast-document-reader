@@ -10,9 +10,10 @@ part of that. Markdown first; the `.docx` a collaborator sends opens right besid
 plain text too.
 
 Most Markdown apps are a web browser wearing a costume, which is why they take a beat to open and
-why memory climbs the longer you leave them running. This one is pure Swift/AppKit/TextKit:
-**0% idle CPU**, **~127 MB held flat across 9 large documents opened back to back**, and **~52 MB
-reclaimed** when they close. No timers, no polling, no background web process.
+why memory climbs the longer you leave them running. This one is pure Swift/AppKit/TextKit: it
+launches at **15 MB**, a 20 MB document brings it to about **161 MB**, and closing hands back
+**34–97 MB** rather than holding the peak forever. Left running for **44 hours**, it used **2
+minutes 41 seconds of CPU** in total. No timers, no polling, no background web process.
 
 It is the only native Mac Markdown viewer that renders **mermaid diagrams and TeX formulas with both
 engines bundled in the app** — offline, each one cached once as a vector PDF and never re-rendered
@@ -74,14 +75,15 @@ whose spacing was being thrown away).
 | | Fast Document Reader |
 |---|---|
 | Engine | 100% native AppKit + TextKit — **no web runtime for text** |
-| Idle CPU | **0%** — no timers, no polling, no background web process |
-| Memory | **flat under use** — ~127 MB across 9 large docs, ~52 MB reclaimed on close |
+| Idle CPU | **0%** — 44 hours running used **2 min 41 s of CPU** in total; no timers, no polling, no background web process |
+| Memory | **15 MB at launch**, ~161 MB with a 20 MB document open, **34–97 MB reclaimed** on close |
 | Long docs | The whole document is laid out up front, so the **scrollbar is honest from the first frame** — a 4,000-paragraph file opens instantly and never resizes under you |
 | Editing long docs | Only the edited block is re-rendered — **9 ms on 64k characters, 29 ms on 1.2 MB** |
 | Plain text | `.txt` · `.csv` · `.log` shown **verbatim**, one block per line — nothing reinterpreted as Markdown |
 | Word / OpenDocument | `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt` — **read-only**, formatting, tables, equations, charts and RTL text shown as authored |
 | HWP (Korean) | `.hwp`/`.hwpx` — **read-only**, Korea's dominant document format, rendered natively through the same office engine as Word/ODT, headings and all |
 | Extract for an AI | `--extract` turns a `.docx`/`.odt`/`.hwp` into **clean Markdown on stdout** — headless, so an AI reads it without spending tokens parsing the file |
+| Print to PDF | `--pdf` renders any document to a **PDF file with no window** — the same pages the reader shows and ⌘P prints |
 | Encodings | CP949 · UTF-16 · Latin-1 detected, not assumed — **saved back in the same encoding**, CRLF kept |
 | Diagrams | **mermaid bundled** — renders offline, cached as vector PDF, never re-rendered |
 | Math | **KaTeX bundled** — `$$…$$` and ```` ```math ```` render offline, vector, cached the same way |
@@ -111,6 +113,21 @@ a cell) is dumped as literal text inside a `<raw>…</raw>` marker rather than a
 would read as correct, and a one-line note at the top explains the marker. It reads the Word family
 (`.docx` `.docm` `.dotx` `.dotm`), `.odt` and Korean HWP (`.hwp`/`.hwpx`), plus `.md`/`.txt`
 verbatim, and exits non-zero on anything it can't read so a script can trust the output.
+
+## A PDF, from the command line, no window
+
+`⌘P` already prints exactly what you're reading — real pages, on the document's own paper, running
+header and footer included. The same path runs headless, so a script can get that PDF without ever
+opening a window:
+
+```sh
+FastDocReader.app/Contents/MacOS/FastDocReader --pdf report.docx
+```
+
+That writes `report.pdf` next to the input; `-o out.pdf` picks the path, and `-f` overwrites one
+that's already there. It reads the same formats `--extract` does — the Word family, `.odt`, Korean
+HWP (`.hwp`/`.hwpx`) and plain text/Markdown — one document per run. Tested against a 490-page HWP,
+an 11-page `.docx`, a 9-page `.odt` and a 423-page Markdown file.
 
 ## Diagrams render offline, once
 
