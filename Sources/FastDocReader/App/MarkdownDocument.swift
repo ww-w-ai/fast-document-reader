@@ -151,6 +151,30 @@ final class MarkdownDocument: NSDocument {
     override class var autosavesInPlace: Bool { false }
     override func canAsynchronouslyWrite(to url: URL, ofType typeName: String, for saveOperation: NSDocument.SaveOperationType) -> Bool { false }
 
+    /// Closing the last document is the one moment this app holds a document's worth of memory with
+    /// nothing to show for it: `applicationShouldTerminateAfterLastWindowClosed` is false, so it
+    /// deliberately stays running with no window at all (invariant 43's menu-bar state). See
+    /// `purgeImageCaches` for what is dropped and the measurements behind it.
+    ///
+    /// Hooked HERE rather than on `NSWindow.willCloseNotification` because the count has to be read
+    /// after the document is gone from `NSDocumentController`, and `super.close()` is what removes it
+    /// — asking at window-close time would always see this document still registered and never fire.
+    ///
+    /// Asking the ALLOCATOR to hand pages back as well (`malloc_zone_pressure_relief`) was built,
+    /// measured and removed — and it was measured in BOTH orders, which matters, because the first
+    /// result invites the wrong conclusion. Called BEFORE the purge it returned 0 MB immediately and
+    /// 0 MB again three seconds later, which is correct behaviour rather than a broken API: the
+    /// memory was still referenced by the caches above, so there was nothing free to return. Called
+    /// AFTER the purge, with 97 MB demonstrably given back on that same close, it still returned
+    /// 0 MB. So dropping the references is the entire fix on this OS, and a call that provably
+    /// returns nothing in either order is not worth shipping.
+    override func close() {
+        super.close()
+        DispatchQueue.main.async {
+            if NSDocumentController.shared.documents.isEmpty { Self.purgeImageCaches() }
+        }
+    }
+
     /// Saving is ⌘S, not every edit. Writing on each keystroke-sized change meant rewriting the
     /// whole file for one moved line — and, worse, it left no way back: the file on disk had
     /// already changed before the reader decided they liked it. Edits now live in memory, the
@@ -1458,6 +1482,31 @@ final class MarkdownDocument: NSDocument {
     /// avoids having to prove they can never collide.
     private static let officeImageCache = NSCache<NSString, NSImage>()
 
+    /// Decoded pixels outlive the document that needed them, and that is what a reader sees as the app
+    /// never giving memory back. Both caches are keyed so nothing COLLIDES across documents (the
+    /// office one carries the file path, see above) — but neither is scoped to a document's LIFETIME,
+    /// so closing a 20 MB report leaves every image it decoded sitting here for a session that will
+    /// never ask for them again. Measured 2026-07-31: open that report, close it, and the process
+    /// still held 165 MB against 15 MB freshly launched, with `heap` reporting 1,374 live 160 KB
+    /// blocks — decoded images — and `leaks` reporting only 14 KB, i.e. nothing was leaked and
+    /// everything was still legitimately referenced from right here.
+    ///
+    /// Purged only when the LAST document closes, never per document: while anything is open these
+    /// entries are what makes scrolling back to a picture instant, and `NSCache` already evicts them
+    /// under real memory pressure. `NSCache` offers no way to enumerate or drop one document's keys,
+    /// which is the other reason the boundary is "nothing open" rather than "this document closed".
+    /// Test-visible, in the shape of `textInsetUpdateCount`: `NSCache` exposes no count, so what the
+    /// purge DID can only be judged by measuring the process (above). WHEN it fires can be tested,
+    /// and that is the half a future edit can break silently — moving the guard, or hooking a
+    /// notification that fires before `NSDocumentController` has let go of the document.
+    private(set) static var imageCachePurgeCount = 0
+
+    static func purgeImageCaches() {
+        imageCache.removeAllObjects()
+        officeImageCache.removeAllObjects()
+        imageCachePurgeCount += 1
+    }
+
     /// How far a mermaid diagram is allowed to grow past its own natural size when reaching for the
     /// column width. A cap on the target WIDTH (e.g. "floor at half the column") either undershoots
     /// diagrams already close to the column, or — raised enough to fix that — blows a deliberately
@@ -1575,11 +1624,19 @@ final class MarkdownDocument: NSDocument {
     /// viewport drop them (bounds stay, so no reflow); reload from cache when they come back near.
     /// Text is left alone — it's tiny and non-contiguous layout already purges its off-screen glyphs.
     /// Called after render and on every scroll-settle. All work here is main-thread.
-    func reconcileMedia(in wc: DocumentWindowController) {
+    ///
+    /// `loadingEverything` is for PAPER, which has no viewport. The lazy scheme is right for reading
+    /// and wrong for printing: measured on a 14.4 MB report carrying 28 pictures, printing it while
+    /// only the top of the document had ever been on screen produced a 50-page PDF containing ONE
+    /// image — every picture the reader had not scrolled past printed as blank reserved space, with
+    /// nothing to say so. That is a silent loss in a file someone sends on, so both print paths ask
+    /// for the whole document instead (`DocumentWindowController.makePrintOperation`). Nothing is
+    /// purged in that mode either, since every range counts as on-screen.
+    func reconcileMedia(in wc: DocumentWindowController, loadingEverything: Bool = false) {
         guard let storage = wc.textStorageRef else { return }
-        let keep = wc.visibleCharRange(margin: 1.5)   // ±1.5 screens stay loaded
-        guard keep.length > 0 else { return }
         let whole = NSRange(location: 0, length: storage.length)
+        let keep = loadingEverything ? whole : wc.visibleCharRange(margin: 1.5)   // else ±1.5 screens
+        guard keep.length > 0 else { return }
         let baseDir = fileURL?.deletingLastPathComponent()
         let maxWidth = wc.textView.textContainer?.size.width ?? 800
         let gen = renderGeneration
@@ -1740,6 +1797,15 @@ final class MarkdownDocument: NSDocument {
             let cacheKey = "\(fileURL?.path ?? "")|\(id)" as NSString
             if let c = MarkdownDocument.officeImageCache.object(forKey: cacheKey) {
                 loadOfficePixels(c, nil, r)
+            } else if loadingEverything {
+                // Printing cannot wait for a callback: the print operation is built and run on this
+                // same turn, so an asynchronous decode lands after the PDF has already been written.
+                // Measured before this branch existed — a 28-picture report printed with ONE image in
+                // it, the single one the opening viewport had already cached. Reading the archive
+                // entry and decoding it here costs the same work on this thread instead of another.
+                let (img, bytes) = MarkdownDocument.loadOfficeImageSync(archive: officeArchive, id: id)
+                if let img { MarkdownDocument.officeImageCache.setObject(img, forKey: cacheKey) }
+                loadOfficePixels(img, bytes, r)
             } else {
                 MarkdownDocument.loadOfficeImage(archive: officeArchive, id: id) { [weak wc] img, bytes in
                     if let img { MarkdownDocument.officeImageCache.setObject(img, forKey: cacheKey) }
@@ -1910,6 +1976,17 @@ final class MarkdownDocument: NSDocument {
     /// Hands back the BYTES alongside the image: when the decode fails they are the only evidence
     /// of what the picture actually was, and naming that format is the difference between a reader
     /// concluding "this document is corrupt" and "this is a chart in a format my Mac can't draw".
+    /// The same read and decode as `loadOfficeImage`, on the CALLING thread. Exists only for printing,
+    /// which has no later turn to receive a callback in (see `reconcileMedia(in:loadingEverything:)`);
+    /// the guard clause is deliberately identical, so the two cannot disagree about which ids resolve.
+    private static func loadOfficeImageSync(archive: ZipArchive?, id: String) -> (NSImage?, Data?) {
+        guard let archive, !id.hasPrefix("docx-unresolvable:"), !id.hasPrefix(officeExternalLinkPrefix) else {
+            return (nil, nil)
+        }
+        let bytes = try? archive.data(for: id)
+        return (bytes.flatMap { NSImage(data: $0) }, bytes)
+    }
+
     private static func loadOfficeImage(archive: ZipArchive?, id: String,
                                         completion: @escaping (NSImage?, Data?) -> Void) {
         // A linked image never reaches this function — `reconcileMedia` routes

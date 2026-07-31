@@ -2812,6 +2812,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // straight after a re-render. Paper cannot show an overrun honestly the way the screen can
         // (`PagePagination.joiningUnopenedBoundaries`), so the tables are settled here first.
         settlePagedTablesFully()
+        // Paper has no viewport. Pixels are held only for what is near the reader (invariant 1's lazy
+        // scheme), so a document printed without ever having been scrolled through prints blank space
+        // where its pictures are — measured as ONE image in a 50-page PDF of a report carrying 28.
+        // Both print paths come through here, so ⌘P and `--pdf` are fixed by the same call.
+        mdDocument?.reconcileMedia(in: self, loadingEverything: true)
         let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo()
         info.scalingFactor = 1
         if let first = printSheets.first, let width = pagedDocumentWidth {
