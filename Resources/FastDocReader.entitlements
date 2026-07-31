@@ -24,6 +24,14 @@
 	<!-- Required for WKWebView even though mermaid loads ONLY a bundled local JS file and the app
 	     makes no network requests: a sandboxed WKWebView runs out-of-process and fails to load
 	     anything at all without this. Not a sign the app talks to the network — it doesn't. -->
+	<!-- Printing is a sandbox capability of its own, and this app grew one in 1.1 build 8: without
+	     this key AppKit greys the Print menu item out entirely, so a sandboxed build ships with
+	     Command-P dead while the unsandboxed Developer ID build prints perfectly. Caught by opening
+	     the File menu in a SANDBOX=1 build and reading the item's enabled state — nothing in a test
+	     or an unsandboxed run can see it. -->
+	<key>com.apple.security.print</key>
+	<true/>
+
 	<key>com.apple.security.network.client</key>
 	<true/>
 </dict>
