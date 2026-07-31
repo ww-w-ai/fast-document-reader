@@ -7,7 +7,7 @@ import AppKit
 /// point of carrying this instead of just keeping the original `TabStop`). Carried as
 /// `MDAttr.fillMarginTab`'s attribute value, so it rides along in the text storage from build
 /// time through every later reflow.
-struct FillMarginTabInfo: Equatable {
+struct FillMarginTabInfo: Hashable {
     var marginAlignment: TabAlignment
     var marginLeader: TabLeader
     var otherTabs: [TabStop]
@@ -23,7 +23,7 @@ struct FillMarginTabInfo: Equatable {
 /// while the pictures stayed exactly as large as they were built — the document visibly came apart.
 /// `placeholderLabel` is non-nil only for the chart/SmartArt frame, whose pixels are DRAWN at a
 /// size (invariant 31) and so must be redrawn rather than merely re-bounded.
-struct OfficeGraphicInfo: Equatable {
+struct OfficeGraphicInfo: Hashable {
     var authored: CGSize
     var placeholderLabel: String?
     /// The DENOMINATOR this graphic's scale is measured against, in points: the source page's body

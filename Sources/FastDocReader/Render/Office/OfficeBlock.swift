@@ -460,7 +460,7 @@ enum LineHeight: Equatable {
 /// and every markdown/office call site that never authored a real alignment), `.right` ends text
 /// AT `position`, `.center` centers it ON `position`, and `.decimal` aligns the decimal point (or,
 /// for non-numeric text, the whole run) ON `position`.
-enum TabAlignment: Equatable {
+enum TabAlignment: Hashable {
     case left, center, right, decimal
 }
 
@@ -471,7 +471,7 @@ enum TabAlignment: Equatable {
 /// real (measured-later) rendering cost this sprint doesn't take on. A tab with a leader still
 /// renders as an ordinary aligned tab, just without the fill; `OfficeTextBuilder`'s `NSTextTab`
 /// construction reads `position`/`alignment` only, and comments why `leader` is inert.
-enum TabLeader: Equatable {
+enum TabLeader: Hashable {
     case none, dot, hyphen, underscore
 }
 
@@ -486,7 +486,7 @@ enum TabLeader: Equatable {
 /// added token — `alignment`/`leader` default to `.left`/`.none`, which is EXACTLY what a bare
 /// `CGFloat` position meant before this type existed, so a call site that only ever cared about
 /// position renders byte-identical after the one-token change.
-struct TabStop: Equatable {
+struct TabStop: Hashable {
     var position: CGFloat
     var alignment: TabAlignment
     var leader: TabLeader
