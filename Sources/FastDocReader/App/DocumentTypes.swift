@@ -18,7 +18,11 @@ protocol OfficeDocumentReader {
 /// read this type; Info.plist can't, so any change here must be mirrored there in the same commit.
 enum DocumentTypes {
     /// Markdown, rendered.
-    static let markdownExtensions = ["md", "markdown", "mdown", "mkd", "mdtext"]
+    /// `.mdown`/`.mkd`/`.mdtext` are deliberately absent: nobody declares those extensions, so macOS
+    /// types them as a throwaway `dyn.…` and could never route one here anyway (invariant 69), and
+    /// inventing a type of our own to claim three aliases almost nothing writes is not worth the
+    /// declaration it would cost.
+    static let markdownExtensions = ["md", "markdown"]
 
     /// Text we display verbatim (see PlainTextRenderer). Deliberately a fixed list rather than
     /// "anything that decodes as UTF-8": offering to open a .swift or .json is a promise this app

@@ -17,7 +17,6 @@
 			<array>
 				<string>net.daringfireball.markdown</string>
 				<string>public.markdown</string>
-				<string>ai.ww-w.fast-md-reader.markdown-alias</string>
 			</array>
 			<key>NSDocumentClass</key>
 			<string>FastDocReader.MarkdownDocument</string>
@@ -190,9 +189,6 @@
 				<array>
 					<string>md</string>
 					<string>markdown</string>
-					<string>mdown</string>
-					<string>mkd</string>
-					<string>mdtext</string>
 				</array>
 			</dict>
 		</dict>
@@ -240,33 +236,6 @@
 	     mirror the tail of `DocumentTypes.plainTextExtensions`. -->
 	<key>UTExportedTypeDeclarations</key>
 	<array>
-		<!-- The markdown aliases nobody declares. `.md`/`.markdown` resolve to
-		     net.daringfireball.markdown because other apps export it, but `.mdown`, `.mkd` and
-		     `.mdtext` resolve to a throwaway `dyn.…` (measured with UTType) — the same hole the
-		     config files were in, so macOS refuses to bind any app to them. Adding the tags to our
-		     IMPORTED markdown declaration does not help: an imported declaration loses to the
-		     exporter's tag list. This one is ours and conforms to markdown, so a .mkd behaves like
-		     every other Markdown file. -->
-		<dict>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>net.daringfireball.markdown</string>
-				<string>public.plain-text</string>
-			</array>
-			<key>UTTypeDescription</key>
-			<string>Markdown Document</string>
-			<key>UTTypeIdentifier</key>
-			<string>ai.ww-w.fast-md-reader.markdown-alias</string>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>mdown</string>
-					<string>mkd</string>
-					<string>mdtext</string>
-				</array>
-			</dict>
-		</dict>
 		<dict>
 			<key>UTTypeConformsTo</key>
 			<array>

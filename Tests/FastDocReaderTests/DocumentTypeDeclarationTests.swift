@@ -7,7 +7,7 @@ import XCTest
 /// to the app by the Finder at all, because with NO declaration anywhere macOS types the file as a
 /// throwaway `dyn.…` and refuses to bind any handler to it (`duti -s` → error -50). That is exactly
 /// what shipped: the code opened `.conf`/`.cfg`/`.ini`/`.env` while Info.plist named no extension
-/// for them, and the markdown declaration was missing `.mkd`/`.mdtext`.
+/// for them.
 ///
 /// This is the check CONVENTION §3 asks for, made mechanical. It reads the REAL Info.plist rather
 /// than a copy, so a change to either side has to face it.
