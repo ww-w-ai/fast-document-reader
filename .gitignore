@@ -22,3 +22,6 @@ docs
 # committed; its 1.3 MB of input is not, because the generator re-fetches it on demand and the
 # version it was built from is stamped into the output.
 .ucd-cache/
+
+# Personal test-document collection — real files, some with sensitive content. Local only.
+/testdocs/
