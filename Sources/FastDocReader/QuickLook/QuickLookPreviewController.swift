@@ -28,8 +28,51 @@ final class QuickLookPreviewController: NSViewController, QLPreviewingController
         view = NSView(frame: NSRect(x: 0, y: 0, width: 820, height: 640))
     }
 
+    /// How much SOURCE a preview renders. The reader lays a document out in full so its scrollbar is
+    /// honest from the first frame (invariant 49) — right for reading, wrong for a glance, and the
+    /// difference is not small: on a real 523 KB / 292,868-character Markdown file the whole document
+    /// cost **3,022 ms** to build before anything could be seen.
+    ///
+    /// The bound is measured, not guessed. Same file, same run, cut to each length:
+    /// **1,000 → 79 ms · 10,000 → 170 · 20,000 → 168 · 40,000 → 288 · 80,000 → 814**. So 79 ms is the
+    /// floor (building a window controller at all), 20,000 characters costs the same as 10,000, and
+    /// the price starts climbing after that. A screenful is roughly two thousand characters, so this
+    /// is still about ten screens of scrolling before the note at the end.
+    static let previewSourceLimit = 20_000
+
+    /// The head of a Markdown/plain-text document, cut where a reader would not notice, plus an
+    /// honest note that it IS a head. Pure, so the cutting rules are testable without a window.
+    ///
+    /// Two rules earn their place: cut back to a blank line so a paragraph is not sliced mid-sentence,
+    /// and close a code fence the cut landed inside — otherwise every remaining line renders as code,
+    /// which looks like a corrupt document rather than a shortened one.
+    static func previewSource(_ text: String, limit: Int = previewSourceLimit) -> String {
+        guard text.count > limit else { return text }
+        var head = String(text.prefix(limit))
+        if let blank = head.range(of: "\n\n", options: .backwards) {
+            head = String(head[..<blank.lowerBound])
+        }
+        if head.components(separatedBy: "```").count % 2 == 0 { head += "\n```" }
+        return head + "\n\n---\n\n*" + shortenedNote + "*\n"
+    }
+
+    /// Said once, in both halves (text is cut by source, an office document by blocks), so a
+    /// shortened preview never differs in how it admits to being shortened.
+    static let shortenedNote = "Preview shows the beginning of this document — open it to read the rest."
+
     func preparePreviewOfFile(at url: URL) async throws {
-        let data = try Data(contentsOf: url)
+        var data = try Data(contentsOf: url)
+
+        // Only text kinds can be cut by their own bytes; an office document's structure lives in a
+        // zip/binary container, so it is handed over whole (its cost is measured separately).
+        switch DocumentTypes.kind(forExtension: url.pathExtension.lowercased()) {
+        case .markdown, .plainText:
+            let decoded = TextEncodingDetector.decode(data)
+            let head = Self.previewSource(decoded.text)
+            if head.utf8.count != data.count { data = Data(head.utf8) }
+        case .office:
+            break   // its bytes are a container; it is cut after reading, below
+        }
 
         // The one door every other reader of these bytes uses (invariant 29): `read(from:ofType:)`
         // dispatches on `fileURL`'s extension and `ofType` is unused by that override, exactly as
@@ -37,6 +80,10 @@ final class QuickLookPreviewController: NSViewController, QLPreviewingController
         let doc = MarkdownDocument()
         doc.fileURL = url
         try doc.read(from: data, ofType: "public.data")
+        // Content only: a preview panel is small, and reproducing the author's paper would spend most
+        // of it on margins. Must precede makeWindowControllers().
+        doc.flattenPagesForPreview()
+        doc.truncateOfficeBlocksForPreview(characterBudget: Self.previewSourceLimit, note: Self.shortenedNote)
         doc.makeWindowControllers()
 
         guard let wc = doc.windowControllers.first as? DocumentWindowController,

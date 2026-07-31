@@ -89,6 +89,64 @@ final class MarkdownDocument: NSDocument {
     private(set) var officePageHeaderDistance: CGFloat?
     private(set) var officePageFooterDistance: CGFloat?
 
+    /// Throw away the page model so a Quick Look preview shows CONTENT ONLY — no paper, no side
+    /// margins, no running header or footer, the text filling the preview's width the way a
+    /// window-fitting document does. The owner's instruction, and the right one for that surface: a
+    /// preview is a glance at what is inside a file, and reproducing the author's paper spends most
+    /// of a small panel on white space. Tables reflow to the preview's width instead of the page's,
+    /// which can look a little rougher than the reader does — accepted deliberately.
+    ///
+    /// Keep only the head of an office document, so a preview lays out a screenful rather than the
+    /// whole file. Measured on a 20 MB HWPX: parsing it costs 1,220 ms and BUILDING it 1,998 ms, so
+    /// the typography — not the parser — is what a glance was paying for. The parse cannot be cut
+    /// (rhwp and the zip readers hand back a whole document or nothing), this can.
+    ///
+    /// Budgeted in characters, counted the same way the text is built, so a table full of one-word
+    /// cells costs what it actually renders. A table is kept WHOLE or dropped whole — half a grid is
+    /// worse than none. When something IS left out, `note` is appended as a last paragraph so the
+    /// shortening is visible — a preview that silently ends early reads as a broken document.
+    @discardableResult
+    func truncateOfficeBlocksForPreview(characterBudget: Int, note: String) -> Bool {
+        func length(_ block: OfficeBlock) -> Int {
+            switch block {
+            case .heading(_, let spans, _, _, _, _), .paragraph(let spans, _, _, _, _):
+                return spans.reduce(0) { $0 + $1.text.count }
+            case .listItem(_, _, let spans, _, _, _, _, _):
+                return spans.reduce(0) { $0 + $1.text.count }
+            case .table(let rows, _, _, _):
+                return rows.reduce(0) { $0 + $1.reduce(0) { $0 + $1.blocks.reduce(0) { $0 + length($1) } } }
+            default:
+                return 0
+            }
+        }
+        var kept: [OfficeBlock] = []
+        var used = 0
+        for block in officeBlocks {
+            if used >= characterBudget { break }
+            kept.append(block)
+            used += length(block)
+        }
+        guard kept.count < officeBlocks.count else { return false }
+        kept.append(.paragraph(spans: [Span(text: note, italic: true)]))
+        officeBlocks = kept
+        return true
+    }
+
+    /// Must be called BEFORE `makeWindowControllers()`; afterwards the geometry is already built in.
+    /// Nothing else calls this: the reader and `--pdf` reproduce the page (invariants 57 and 59).
+    func flattenPagesForPreview() {
+        officePageContentWidth = nil
+        officePageContentHeight = nil
+        officePageMarginLeft = nil
+        officePageMarginRight = nil
+        officePageMarginTop = nil
+        officePageMarginBottom = nil
+        officePageHeaderDistance = nil
+        officePageFooterDistance = nil
+        officeHeaders = []
+        officeFooters = []
+    }
+
     /// The archive `officeBlocks` was parsed from, kept so an `.image` block's id (an archive entry
     /// path, e.g. `"word/media/image1.png"`) can be pulled on demand when it scrolls into view — the
     /// same lazy-pixels discipline `reconcileMedia` already gives markdown images, not a second
