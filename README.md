@@ -4,16 +4,25 @@
 
 [**Free on the Mac App Store**](https://apps.apple.com/app/id6791603562) · Apple silicon · macOS 13+
 
-**AI writes it. You're the one reading it.** Plans, specs, summaries, transcripts — it all lands as
-Markdown now, and reading it has quietly become most of the job. Your reader shouldn't be the slow
-part of that. Markdown first; the `.docx` a collaborator sends opens right beside it, read-only, and
-plain text too.
+**AI writes it. You read it — and so does your AI.** That splits the work in two, and this app is
+built for both halves.
 
-Most Markdown apps are a web browser wearing a costume, which is why they take a beat to open and
-why memory climbs the longer you leave them running. This one is pure Swift/AppKit/TextKit: it
-launches at **15 MB**, a 20 MB document brings it to about **161 MB**, and closing hands back
-**34–97 MB** rather than holding the peak forever. Left running for **44 hours**, it used **2
-minutes 41 seconds of CPU** in total. No timers, no polling, no background web process.
+**For you — reading, not writing.** Plans, specs, summaries, transcripts, the `.docx` a collaborator
+sends: it arrives faster than anyone can read it, and your reader shouldn't be the slow part. Most
+Markdown apps are a web browser wearing a costume, which is why they take a beat to open and why
+memory climbs the longer you leave them running. This one is pure Swift/AppKit/TextKit: it launches
+at **15 MB**, a 20 MB document brings it to about **161 MB**, and closing hands back **34–97 MB**
+rather than holding the peak forever. Left running for **44 hours**, it used **2 minutes 41 seconds
+of CPU** in total. No timers, no polling, no background web process.
+
+**For your AI — fewer tokens.** Two headless commands, no window, no GUI at all:
+
+- **`--extract`** hands any Word/ODT/HWP file over as clean Markdown on stdout. A 14 MB Word report
+  is **3.2 MB of XML** if the model parses the file itself; through here it is **94 KB** — **34×
+  less to read**, already resolved into headings, tables and text. A `.hwp` isn't even a zip, so
+  without this there is nothing for a model to parse at all.
+- **`--pdf`** goes the other way: any document to a page-faithful PDF, using the same pages the
+  reader shows and ⌘P prints — so a script produces the file instead of asking a person to press ⌘P.
 
 It is the only native Mac Markdown viewer that renders **mermaid diagrams and TeX formulas with both
 engines bundled in the app** — offline, each one cached once as a vector PDF and never re-rendered
