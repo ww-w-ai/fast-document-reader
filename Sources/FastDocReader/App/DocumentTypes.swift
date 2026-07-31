@@ -23,7 +23,14 @@ enum DocumentTypes {
     /// Text we display verbatim (see PlainTextRenderer). Deliberately a fixed list rather than
     /// "anything that decodes as UTF-8": offering to open a .swift or .json is a promise this app
     /// doesn't keep — it has no syntax view for them, and the file's real editor is a better answer.
-    static let plainTextExtensions = ["txt", "text", "csv", "tsv", "log", "conf", "cfg", "ini", "env"]
+    /// The configuration-file group at the end is what `UTExportedTypeDeclarations` in Info.plist
+    /// declares as `ai.ww-w.fast-md-reader.config-text`: nobody else registers those extensions, so
+    /// without OUR declaration macOS types them `dyn.…` and refuses to bind the app to them at all
+    /// (a `duti -s` fails with -50). Note a file named exactly `.env` has no EXTENSION — it is a
+    /// dotfile whose whole name is that — so it stays outside this list's reach; `foo.env` and
+    /// `.dev.vars` are what these entries answer.
+    static let plainTextExtensions = ["txt", "text", "csv", "tsv", "log",
+                                      "conf", "cfg", "ini", "env", "vars"]
 
     /// Office formats, read-only (see invariants 22 and CLAUDE.md S4). `.rtf` was surveyed and
     /// dropped (see the roadmap's Revision 2 — AppKit's RTF reader loses structure and images
