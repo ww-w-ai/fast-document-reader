@@ -2185,7 +2185,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// every image can now be measured for real, so a full re-render is both simplest and correct.
     private func grantFolder() {
         guard let doc = (document as? NSDocument)?.fileURL else { return }
-        FolderAccess.requestAccess(to: FolderAccess.suggestedFolder(for: doc), in: window) { [weak self] granted in
+        // "files", not "images": reached from the File menu, this grant is also what lets the
+        // headless flags read anything in a sandboxed build (see FolderAccess.headlessDenialHint).
+        FolderAccess.requestAccess(to: FolderAccess.suggestedFolder(for: doc), in: window,
+                                   what: "files") { [weak self] granted in
             guard granted else { return }
             (self?.mdDocument)?.reloadDocument(nil)
         }

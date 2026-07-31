@@ -43,7 +43,13 @@ enum HeadlessPDF {
 
         let data: Data
         do { data = try Data(contentsOf: inputURL) }
-        catch { err("cannot read \(inputURL.lastPathComponent): \(error.localizedDescription)"); return 1 }
+        catch {
+            // Sandboxed, a command-line path carries no access and the denial looks like an
+            // ordinary file error — FolderAccess says what would actually fix it.
+            err(FolderAccess.annotatingHeadlessDenial(
+                "cannot read \(inputURL.lastPathComponent): \(error.localizedDescription)"))
+            return 1
+        }
 
         // Same door invariant 29 requires for every other reader of these bytes: `MarkdownDocument`'s
         // own `read(from:ofType:)`, which dispatches on `fileURL`'s extension — `ofType` itself is
@@ -85,7 +91,10 @@ enum HeadlessPDF {
         op.printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = outputURL
 
         guard op.run() else {
-            err("printing \(inputURL.lastPathComponent) to PDF failed")
+            // Reading the input can succeed while WRITING the output is denied — a granted folder
+            // covers what is inside it, and `-o` can point anywhere else.
+            err(FolderAccess.annotatingHeadlessDenial(
+                "printing \(inputURL.lastPathComponent) to PDF failed (could not write \(outputURL.path))"))
             return 1
         }
 

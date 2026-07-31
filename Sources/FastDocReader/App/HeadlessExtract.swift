@@ -29,7 +29,13 @@ enum HeadlessExtract {
 
         let data: Data
         do { data = try Data(contentsOf: url) }
-        catch { err("cannot read \(url.lastPathComponent): \(error.localizedDescription)"); return 1 }
+        catch {
+            // A sandboxed build is denied a path handed in on the command line, and the denial
+            // reads as an ordinary file error — so say what actually has to happen (FolderAccess).
+            err(FolderAccess.annotatingHeadlessDenial(
+                "cannot read \(url.lastPathComponent): \(error.localizedDescription)"))
+            return 1
+        }
 
         switch DocumentTypes.kind(forExtension: ext) {
         case .markdown, .plainText:

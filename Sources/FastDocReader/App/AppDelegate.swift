@@ -36,9 +36,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool { false }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Re-open previously granted folders BEFORE any document loads, so restored access is live
-        // by the time media resolve (sandboxed build only; a no-op otherwise).
-        FolderAccess.restoreGrants()
         buildMenu()
         // A regular macOS app MUST present an interactive window on launch — App Store review rejects
         // a launch that shows only the menu bar (2.1 App Completeness: "No interactive window
@@ -118,7 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the user grants the folder. Clicking a blocked image does the same thing; this is the
         // discoverable route when none is on screen.
         if FolderAccess.isNeeded {
-            fileMenu.addItem(withTitle: "Allow Images in This Folder…",
+            fileMenu.addItem(withTitle: FolderAccess.grantMenuTitle,
                              action: #selector(DocumentWindowController.grantFolderAccess(_:)), keyEquivalent: "")
         }
         fileMenu.addItem(withTitle: "Print…", action: #selector(NSDocument.printDocument(_:)), keyEquivalent: "p")

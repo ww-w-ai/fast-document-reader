@@ -1,5 +1,12 @@
 import AppKit
 
+// Re-open every folder the user has already granted, before ANY entry point reads a file. The GUI
+// wants it live by the time a document's media resolve; the two headless flags below need it to work
+// at all, because the sandbox attaches no access to a path handed in on the command line — a granted
+// folder is the only way `--extract`/`--pdf` can read anything in the App Store build. One call here
+// serves all three entry points (a no-op when the build is not sandboxed).
+FolderAccess.restoreGrants()
+
 // Headless text extraction: `FastDocReader --extract <file>` prints Markdown and exits BEFORE any
 // GUI setup — no NSApplication, no window, no Dock icon. This must run first so an AI agent can pipe
 // a .docx/.odt straight to Markdown without paying to parse the zip/XML itself (see HeadlessExtract).

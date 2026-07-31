@@ -28,8 +28,9 @@ enum FolderAccess {
 
     // MARK: - Restore
 
-    /// Re-open every folder the user has already granted. Call once at launch, BEFORE any document
-    /// opens, so restored access is live by the time media load.
+    /// Re-open every folder the user has already granted. Called once from `main.swift`, before any
+    /// entry point reads a file, so restored access is live by the time media load — and so the
+    /// headless flags get it too (they never install `AppDelegate`, which is where this used to be).
     static func restoreGrants() {
         guard isNeeded else { return }
         for (path, data) in stored() {
@@ -56,6 +57,30 @@ enum FolderAccess {
     /// True when a grant would plausibly help: sandboxed, a local file, and currently unreadable.
     static func needsGrant(for url: URL) -> Bool {
         isNeeded && url.isFileURL && !canRead(url)
+    }
+
+    /// What a headless run (`--extract`/`--pdf`) should add to a "cannot read/write" error when the
+    /// sandbox is what refused. A command-line path carries no access of its own, and the sandbox
+    /// denies before anything can be asked, so the file reads as simply absent — which makes the
+    /// bare system message ("no such file", "you don't have permission") point the caller at the
+    /// wrong problem. `nil` for the unsandboxed build, where the refusal really is about the file.
+    /// The parameter exists so the message is testable without a sandboxed process.
+    static func headlessDenialHint(sandboxed: Bool = isNeeded) -> String? {
+        guard sandboxed else { return nil }
+        return "This build is sandboxed (App Store), so it can only reach files inside a folder you "
+             + "have granted. Open one document from that folder in the app, then choose "
+             + "File ▸ “\(grantMenuTitle)”. The grant is remembered, including for later headless runs."
+    }
+
+    /// The File-menu item that makes the grant. Named here rather than at the menu so the headless
+    /// hint above cannot come to name a menu item that no longer exists.
+    static let grantMenuTitle = "Allow Access to This Folder…"
+
+    /// `message` with that hint appended when it applies — the ONE place `--extract` and `--pdf`
+    /// compose it, so the two CLIs cannot come to explain the same refusal differently.
+    static func annotatingHeadlessDenial(_ message: String, sandboxed: Bool = isNeeded) -> String {
+        guard let hint = headlessDenialHint(sandboxed: sandboxed) else { return message }
+        return message + "\n  " + hint
     }
 
     /// What to pre-select in the panel: the top-level home folder the target lives in (Documents,
@@ -89,7 +114,7 @@ enum FolderAccess {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.directoryURL = folder
-        panel.message = "Allow Fast Markdown Reader to read \(what) in “\(folder.lastPathComponent)”. "
+        panel.message = "Allow Fast Document Reader to read \(what) in “\(folder.lastPathComponent)”. "
                       + "This covers everything inside it — pick a narrower folder if you'd rather."
         panel.prompt = "Allow"
         let handle: (NSApplication.ModalResponse) -> Void = { resp in
