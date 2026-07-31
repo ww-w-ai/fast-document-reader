@@ -42,7 +42,12 @@ press ⌘S, and only the block you touched is redrawn — **9 ms on a 64,000-cha
 next keystroke acts on that section. Press **⌘N** for a new file: Markdown starts with a small
 outline you can immediately edit, plain text starts empty.
 
-It opens **plain text too** — `.txt`, `.csv`, `.log` — shown verbatim in a fixed-width font, one
+**The Finder previews with this engine too.** Press space on a `.md` or a `.hwp` and the preview is
+drawn by the reader itself, not by a second, simpler renderer — so what you glance at is what you
+open. On a Mac without Hangul installed a `.hwp` has **no preview at all** otherwise.
+
+It opens **plain text too** — `.txt`, `.csv`, `.log`, and the config files a developer opens all day
+(`.conf`, `.cfg`, `.ini`, `.env`, `.vars`) — shown verbatim in a fixed-width font, one
 block per line, with `#` and `*` left as the characters they are. Files written on Windows or Linux
 arrive intact: CP949, UTF-16, Latin-1 and friends are detected rather than assumed, and a file is
 **saved back in the encoding it came in**, CRLF and all.
@@ -88,7 +93,8 @@ whose spacing was being thrown away).
 | Memory | **15 MB at launch**, ~161 MB with a 20 MB document open, **34–97 MB reclaimed** on close |
 | Long docs | The whole document is laid out up front, so the **scrollbar is honest from the first frame** — a 4,000-paragraph file opens instantly and never resizes under you |
 | Editing long docs | Only the edited block is re-rendered — **9 ms on 64k characters, 29 ms on 1.2 MB** |
-| Plain text | `.txt` · `.csv` · `.log` shown **verbatim**, one block per line — nothing reinterpreted as Markdown |
+| Plain text | `.txt` · `.csv` · `.log` · `.conf` · `.cfg` · `.ini` · `.env` · `.vars` shown **verbatim**, one block per line — nothing reinterpreted as Markdown |
+| Finder preview | Space-bar Quick Look for `.md` and `.hwp` drawn by **this reader's own engine** — the preview and the opened document are the same thing |
 | Word / OpenDocument | `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt` — **read-only**, formatting, tables, equations, charts and RTL text shown as authored |
 | HWP (Korean) | `.hwp`/`.hwpx` — **read-only**, Korea's dominant document format, rendered natively through the same office engine as Word/ODT, headings and all |
 | Extract for an AI | `--extract` turns a `.docx`/`.odt`/`.hwp` into **clean Markdown on stdout** — headless, so an AI reads it without spending tokens parsing the file |
@@ -213,7 +219,9 @@ file, which should open the instant you double-click it.
 **[Mac App Store](https://apps.apple.com/app/id6791603562)** — free, one click, updates itself. That
 build is sandboxed, which is the store's price: it can read the file you opened but not the images
 sitting beside it until you grant that folder once (see [Two builds, one
-difference](#two-builds-one-difference)).
+difference](#two-builds-one-difference)). The same grant is what the two headless commands need
+there — a path handed in on the command line carries no permission of its own, so `--extract` and
+`--pdf` work on **folders you have granted** and say so plainly when they meet one you haven't.
 
 Or download the notarized zip, unzip it, drag `FastDocReader.app` to `/Applications`, double-click.
 No Gatekeeper prompt and no `xattr` step — the app is signed with a Developer ID and stapled, and it
