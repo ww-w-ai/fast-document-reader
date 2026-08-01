@@ -84,7 +84,9 @@ its outline *numbering*, and of 14 real files measured here, 13 produced no head
 style name as well, which took that corpus from 1 file with an outline to 5, so **T** works on a
 Korean report the way it already did on Markdown. Line spacing an author set as a percentage is
 honoured too (160% reads as neutral, anything else is applied — one measured file had 772 paragraphs
-whose spacing was being thrown away).
+whose spacing was being thrown away). Table cell margins are read from the document instead of a
+guessed default, so a real 행정업무운영편람 paginates at **455 pages** here against Hancom's own
+viewer at **429** — close, and honestly not identical.
 
 | | Fast Document Reader |
 |---|---|
@@ -105,7 +107,8 @@ whose spacing was being thrown away).
 | Images | Off-screen pixels freed, exact height kept — **no reflow, no scrollbar jitter** |
 | Office graphics | Sized by the **document's own page width**, not your font size — ⌘+/⌘− move text alone, and a figure tracks the window. Left/centre/right honoured as authored |
 | Table borders | Read **per edge, three-state** — drawn, switched off, or never mentioned. A table that described its own grid is taken at its word; one that declared nothing is unchanged |
-| Pages | Word/ODT/HWP shown as **real sheets** at the paper's own size, with the running header and footer where the document puts them. **⌥⌘P** collapses them into one continuous flow |
+| Pages | Word/ODT/HWP shown as **real sheets** at the paper's own size, with the running header and footer in the page's own margins. **⌥⌘P** is the one switch — off collapses everything into continuous flow with no page edges, header, footer or break rule |
+| Margin numbers | View ▸ Line Numbers — retitled **Page Numbers** for a paged document with the page outline on. Numbers the document's own line or page, painted beside the text, never moving it |
 | Printing | **⌘P** prints the same pages you are reading, on the document's own paper — and the print dialog's "Save as PDF" is therefore the PDF export |
 | Navigation | **T** opens a table of contents built from the document's own headings — click to jump. **⌘1…⌘9** and **⌥⌘←/→** move between tabs. Hidden outright when a document has none |
 | Code | **34 languages** highlighted natively — one-pass scanner, no JS, per-block **Copy** and **Wrap** |
@@ -284,6 +287,8 @@ what you just crossed.
 | **Space / ⇧Space** | Page down / up |
 | **⌘F** | Find in document |
 | **⌘+ / ⌘− / ⌘0** | Font size (persists to the next launch) / actual size |
+| **Type a number, then Return** | Jumps to that line — or that page, once the page outline is on. Esc, backspacing past the first digit, or ~2 seconds of silence forgets it |
+| **⌘L** | Same jump, asked for in a dialog ("Go to Line…" / "Go to Page…") |
 
 Mouse:
 
@@ -293,6 +298,7 @@ Mouse:
 | **Click a diagram, formula or image** | Opens it enlarged in a zoomable window (pinch or `⌘+`/`⌘−`, `⌘0` to fit, `esc` to close) |
 | **Select text, then ⌘-click it** | Opens it — a file path, a URL, or a bare domain |
 | **Drag** | Ordinary text selection, as anywhere on the Mac |
+| **Pinch** | A paged document (Word/ODT/HWP) zooms like a real viewer. Markdown and plain text preview the pinch live and commit one re-layout at the size your fingers chose — the same font-size model ⌘+/⌘− use |
 
 The page holds still and the cursor moves inside it — the view scrolls only when the cursor would
 leave the screen, and then by the least it can.

@@ -25,3 +25,4 @@ docs
 
 # Personal test-document collection — real files, some with sensitive content. Local only.
 /testdocs/
+docs/.doc-sync-state.json
