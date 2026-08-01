@@ -176,6 +176,81 @@ final class MarginNumberTests: XCTestCase {
         XCTAssertEqual(wc.textView.visibleRect.minY, 0, accuracy: 0.5)
     }
 
+    /// Typing the number is the whole command — no sheet, because a reader who can see "12" in the
+    /// margin should not have to open a dialog to say 12. Driven through `keyDown`, which is the only
+    /// place that can prove the digits are actually reaching the reader.
+    func testTypingANumberAndPressingReturnJumps() throws {
+        PageViewOptionsStore.current = PageViewOptions(outline: true, splitTables: false)
+        let wc = try openPagedFixture()
+        defer { wc.document.map { ($0 as? MarkdownDocument)?.close() } }
+        let sheets = wc.pageSheets
+        try XCTSkipUnless(sheets.count >= 3)
+
+        wc.textView.keyDown(with: key("3"))
+        XCTAssertEqual(wc.jumpBuffer, "3", "the digit must reach the reader, not be swallowed")
+        wc.textView.keyDown(with: key("\r", code: 36))
+        XCTAssertEqual(wc.jumpBuffer, "", "Return spends the number")
+        XCTAssertEqual(wc.textView.visibleRect.minY, sheets[2].minY, accuracy: 0.5)
+    }
+
+    /// Escape forgets it, and — the load-bearing half — nothing a reader types can change the
+    /// document. Typing is how a decoration would do the most damage, so the storage is asserted
+    /// byte-for-byte around it.
+    func testTypedDigitsNeverReachTheDocument() throws {
+        PageViewOptionsStore.current = PageViewOptions(outline: true, splitTables: false)
+        let wc = try openPagedFixture()
+        defer { wc.document.map { ($0 as? MarkdownDocument)?.close() } }
+        let before = wc.textView.textStorage?.string
+        wc.textView.keyDown(with: key("1"))
+        wc.textView.keyDown(with: key("2"))
+        XCTAssertEqual(wc.jumpBuffer, "12")
+        wc.textView.keyDown(with: key("\u{1b}", code: 53))
+        XCTAssertEqual(wc.jumpBuffer, "", "Escape forgets the number")
+        XCTAssertEqual(wc.textView.textStorage?.string, before, "typing changed the document")
+    }
+
+    /// The desk is what is left of the window after the paper, and at the reading zoom there is often
+    /// none of it — so the number scales into whatever room there is and, failing that, moves just
+    /// inside the paper's own left margin rather than silently not being drawn ("좌우 여백이 아주
+    /// 크지 않으면 안 보임").
+    func testTheDeskNumberFindsRoomOrMovesOntoThePaper() throws {
+        let view = PageNumberDeskView(frame: NSRect(x: 0, y: 0, width: 1000, height: 800))
+        let wide = try XCTUnwrap(view.placement(number: 7, deskWidth: 300))
+        XCTAssertLessThan(wide.x + wide.text.size().width, 300, "clear of the paper's edge")
+        XCTAssertEqual((wide.text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, 72)
+
+        let tight = try XCTUnwrap(view.placement(number: 7, deskWidth: 40))
+        XCTAssertLessThanOrEqual(tight.x + tight.text.size().width, 40, "must not spill onto the paper")
+        let tightSize = try XCTUnwrap((tight.text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize)
+        XCTAssertLessThan(tightSize, 72, "scaled down to the room there is")
+
+        let none = try XCTUnwrap(view.placement(number: 7, deskWidth: 0))
+        XCTAssertGreaterThan(none.x, 0, "with no desk at all it goes inside the paper's margin")
+    }
+
+    private func key(_ chars: String, code: UInt16 = 0) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                         windowNumber: 0, context: nil, characters: chars,
+                         charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code)!
+    }
+
+    private func openPagedFixture() throws -> DocumentWindowController {
+        let url = repoRoot().appendingPathComponent("docs/fixtures/office/bus-headings.docx")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: url.path),
+                          "docs/ is local-only in this checkout")
+        let doc = MarkdownDocument()
+        doc.fileURL = url
+        try doc.read(from: try Data(contentsOf: url), ofType: "public.data")
+        NSWindow.removeFrame(usingName: "FastMDReaderDoc")
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 900, height: 700), display: false)
+        wc.window?.contentView?.layoutSubtreeIfNeeded()
+        wc.updateTextInset()
+        wc.settlePagedTablesFully()
+        return wc
+    }
+
     private func repoRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()

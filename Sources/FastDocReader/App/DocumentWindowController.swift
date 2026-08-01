@@ -396,6 +396,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         pageBandDelegate.leadingBand = leading
         pageBandDelegate.trailingBand = trailing
         pageBandDelegate.deskGap = separatesPages ? RenderTheme.pageDeskGap : 0
+        applyVerticalInset()   // the leading band only becomes ROOM through the inset — see that function
         // A new render re-decides every boundary, so the previous pass's answers must not survive
         // into it — a stale entry would paint into a band this layout never made.
         pageBandDelegate.resetOpenedBoundaries()
@@ -489,6 +490,31 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let minSideInset: CGFloat = 32
     private let verticalInset: CGFloat = 28
 
+    /// The app's own padding PLUS the room page 1 needs above its first line.
+    ///
+    /// A LINE SHIFT CANNOT MAKE ROOM AT THE TOP OF THE VIEW, which is the opposite of what the band
+    /// delegate looks like it does. `NSTextView.textContainerOrigin` is derived from where the laid-out
+    /// content STARTS: measured on two real documents it is exactly `inset − ⌈usedRect.minY⌉`, so
+    /// pushing the first line down by a 138.90pt band moved the origin to −111.00 and the first line
+    /// landed back at the inset with the band cancelled. Page 1's own sheet then began 111pt ABOVE the
+    /// view's origin — unreachable, because a reader cannot scroll past y=0 and the text view cannot
+    /// draw outside its bounds. That is the owner's "1페이지에서 가장 아래로 내려도 위가 안 보임"; every
+    /// other page was fine, since their bands sit BETWEEN lines where nothing compensates.
+    ///
+    /// Printing never saw it (a print rect may reach outside the view — invariant 59a), which is why a
+    /// paginated PDF was correct while the screen was not.
+    ///
+    /// So the room comes from the inset, which AppKit does not cancel. It is symmetric, so the same
+    /// amount also appears BELOW the last page — desk, not paper, and the trailing band still supplies
+    /// that page's own bottom margin. Zero for markdown, plain text and any document with no band, so
+    /// those reduce exactly to `verticalInset`.
+    var verticalInsetHeight: CGFloat { verticalInset + pageBandDelegate.leadingBand }
+
+    private func applyVerticalInset() {
+        guard abs(textView.textContainerInset.height - verticalInsetHeight) > 0.01 else { return }
+        textView.textContainerInset.height = verticalInsetHeight
+    }
+
     /// Set while the sidebar animates: width changes are ignored until it settles (see the toggle).
     private var suspendReflow = false
     private var pageNumberDesk: PageNumberDeskView?
@@ -529,7 +555,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // margins falls back to the app's own inset, unchanged.
             let leftMargin = pagedMarginLeft ?? minSideInset
             let rightMargin = pagedMarginRight ?? minSideInset
-            textView.textContainerInset = NSSize(width: leftMargin, height: verticalInset)
+            textView.textContainerInset = NSSize(width: leftMargin, height: verticalInsetHeight)
             textView.textContainer?.containerSize = NSSize(width: page, height: CGFloat.greatestFiniteMagnitude)
             // ZERO, not AppKit's default 5 — the last place the app was quietly narrowing the page.
             // `containerSize.width` is the body width the DOCUMENT declared, and a padding of 5 takes
@@ -625,7 +651,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         lastClipWidth = clipWidth
         textInsetUpdateCount += 1
         let column = max(200, clipWidth - 2 * minSideInset)   // fill the window minus margins
-        textView.textContainerInset = NSSize(width: minSideInset, height: verticalInset)
+        textView.textContainerInset = NSSize(width: minSideInset, height: verticalInsetHeight)
         textView.textContainer?.containerSize = NSSize(width: column, height: CGFloat.greatestFiniteMagnitude)
         // Stated rather than inherited: the paged branch above sets this to 0, and every
         // `?? 5` fallback in the table-width arithmetic assumes this path is the 5pt one. Assigning
@@ -2650,6 +2676,77 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         if let w = window { alert.beginSheetModal(for: w, completionHandler: apply) }
         else { apply(alert.runModal()) }
+    }
+
+    // MARK: - Type a number, press Return
+
+    /// The digits typed so far. A reader jumps by typing the number they can SEE and pressing Return
+    /// — no dialog, because the request is one keystroke long and a sheet would take the page away
+    /// from them to ask for it.
+    private(set) var jumpBuffer = ""
+    private var jumpTimer: Timer?
+    private var jumpIndicator: JumpIndicatorView?
+
+    /// Digits are capped at FOUR: a real 490-page report exists in this project's own test set, so
+    /// three would make its last pages unreachable by typing.
+    private static let maxJumpDigits = 4
+
+    /// The reader typed a digit. Returns false when there is nothing to jump to, so the key falls
+    /// through to whatever else wants it rather than being swallowed by a dead feature.
+    @discardableResult
+    func appendJumpDigit(_ digit: Character) -> Bool {
+        guard jumpUnit == .lines || !pageSheets.isEmpty else { return false }
+        guard jumpBuffer.count < Self.maxJumpDigits else { return true }
+        jumpBuffer.append(digit)
+        showJump()
+        return true
+    }
+
+    /// Return: go, and forget. Returns false when nothing was typed, so Return keeps its old meaning.
+    @discardableResult
+    func commitJump() -> Bool {
+        guard let number = Int(jumpBuffer) else { return false }
+        cancelJump()
+        goTo(number: number)
+        return true
+    }
+
+    /// Escape, a second of silence, or a backspace past the first digit.
+    func cancelJump() {
+        guard !jumpBuffer.isEmpty else { return }
+        jumpBuffer = ""
+        showJump()
+    }
+
+    @discardableResult
+    func backspaceJump() -> Bool {
+        guard !jumpBuffer.isEmpty else { return false }
+        jumpBuffer.removeLast()
+        showJump()
+        return true
+    }
+
+    /// Draw the echo and re-arm the forget timer. One place, so the buffer and what the reader sees
+    /// can never disagree.
+    private func showJump() {
+        jumpTimer?.invalidate()
+        jumpTimer = nil
+        guard !jumpBuffer.isEmpty else { jumpIndicator?.text = ""; return }
+        let indicator = jumpIndicator ?? {
+            let v = JumpIndicatorView(frame: scrollView.bounds)
+            v.autoresizingMask = [.width, .height]
+            jumpIndicator = v
+            return v
+        }()
+        if indicator.superview !== scrollView { scrollView.addSubview(indicator) }
+        indicator.frame = scrollView.bounds
+        let total = jumpUnit == .pages ? " / \(pageSheets.count)" : ""
+        indicator.text = (jumpUnit == .pages ? "Page " : "Line ") + jumpBuffer + total + "  ⏎"
+        // Long enough to finish a three-digit number without hurrying, short enough that a stray
+        // keystroke does not sit on screen (ax-lecture's own 1.8s, which reads right in use).
+        jumpTimer = Timer.scheduledTimer(withTimeInterval: 1.8, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.cancelJump() }
+        }
     }
 
     /// Resolve and scroll. Separate from the panel so the whole rule is reachable without a sheet.

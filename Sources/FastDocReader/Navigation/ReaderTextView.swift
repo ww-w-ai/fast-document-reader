@@ -351,6 +351,22 @@ final class ReaderTextView: NSTextView {
             default: break
             }
         }
+        // Type a number, press Return, land there — the request IS the keystrokes, so it needs no
+        // dialog (⌘L's sheet is the same jump for a reader who prefers to be asked). Digits are free
+        // for the same reason the bare letters above are: the view accepts no typing. Return and
+        // Escape are only taken when something HAS been typed, so both keep their old meaning
+        // otherwise, and a document with nowhere to jump to declines the digit rather than eating it.
+        if event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+           let wc = window?.windowController as? DocumentWindowController {
+            if let ch = event.charactersIgnoringModifiers?.first, ch.isASCII, ch.isNumber,
+               wc.appendJumpDigit(ch) { return }
+            switch event.keyCode {
+            case 36, 76: if wc.commitJump() { return }                    // Return / Enter
+            case 53: if !wc.jumpBuffer.isEmpty { wc.cancelJump(); return } // Escape
+            case 51: if wc.backspaceJump() { return }                     // Delete
+            default: break
+            }
+        }
         let mods = event.modifierFlags.intersection([.command, .option, .shift, .control])
         // Space / ⇧Space page WITHOUT selecting (here Shift means "page up", not "extend").
         if event.keyCode == 49, mods == [] { page(down: true, extend: false); return }

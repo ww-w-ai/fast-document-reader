@@ -140,8 +140,15 @@ final class PrintPaginationTests: XCTestCase {
 
     /// The reader's page grid, not AppKit's. `NSTextView` paginates by filling the printable height
     /// with lines, which would put the reader's page 3 across two sheets; this asserts the sheets
-    /// really are the ones `printSheets` computed, by checking the one number AppKit could not have
-    /// arrived at on its own — a first sheet that starts ABOVE the view.
+    /// really are the ones `printSheets` computed, by the two numbers AppKit could not have arrived at
+    /// on its own — every sheet is the DOCUMENT's own paper height, and consecutive sheets are exactly
+    /// one page PITCH apart whatever the lines on them do.
+    ///
+    /// The old witness was that page 1's sheet started ABOVE the view (a negative `minY`), which was
+    /// true while the leading band was the only thing above the first line — and a line shift makes no
+    /// room at the top of a text view, because `textContainerOrigin` is derived from where the content
+    /// starts and cancels it. The room is now in the inset (`applyVerticalInset`), so page 1's sheet is
+    /// on screen like every other one, and a negative number is no longer evidence of anything.
     func testTheViewTakesPaginationOverFromAppKit() throws {
         let (_, wc) = try openPaged()
         var range = NSRange()
@@ -150,8 +157,24 @@ final class PrintPaginationTests: XCTestCase {
         XCTAssertEqual(range.location, 1)
         XCTAssertEqual(range.length, wc.printPageCount)
         XCTAssertEqual(wc.textView.rectForPage(1), wc.printSheets[0])
-        XCTAssertLessThan(wc.textView.rectForPage(1).minY, 0,
-                          "page 1's sheet reaches above the view by its missing top margin")
+        let pitch = PagePagination.pitch(pageContentHeight: wc.pageBandDelegate.pageContentHeight,
+                                         band: wc.pageBandDelegate.band)
+        XCTAssertEqual(wc.textView.rectForPage(1).height, Self.paperHeight, accuracy: 1.0,
+                       "a sheet is the document's own paper, not what a printer's margins left over")
+        XCTAssertEqual(wc.textView.rectForPage(2).minY - wc.textView.rectForPage(1).minY, pitch,
+                       accuracy: 0.01, "sheets tile at the document's own pitch")
+    }
+
+    /// Page 1's sheet is REACHABLE — its whole outline, including the top margin, is inside the view a
+    /// reader can scroll to. The band delegate cannot give that room: measured on this fixture, a
+    /// 99.25pt leading band left `textContainerOrigin.y` at −72 and put the sheet's top edge 72pt above
+    /// the document's own origin, where nothing can draw and no scroll can reach ("1페이지에서 가장
+    /// 아래로 내려도 위가 안 보임"). Mutation-checked against `applyVerticalInset`.
+    func testTheFirstSheetIsFullyInsideTheView() throws {
+        let (_, wc) = try openPaged()
+        XCTAssertGreaterThanOrEqual(wc.pageSheets.first?.minY ?? -1, 0,
+                                    "page 1's paper begins above the view — its top margin cannot be seen")
+        XCTAssertGreaterThan(wc.pageBandDelegate.leadingBand, 0, "precondition: this page reserves a band")
     }
 
     /// Markdown has no paper, so it must keep AppKit's own line-aware pagination — and must still
