@@ -11,11 +11,17 @@
 #     ./Scripts/record-rhwp-source.sh [path-to-rhwp-checkout]
 set -euo pipefail
 
-RHWP="${1:-$HOME/Documents/DEV/refs/rhwp}"
+# Default to the SUBMODULE, which is the pinned source this repo actually records (BUILD-RHWP.md).
+# The other working checkout (~/Documents/DEV/refs/rhwp) is the same repository and may be at a
+# different commit — defaulting to it is how a build from the submodule got attributed to the wrong
+# one, silently, because the guard below rejected the submodule and the default took over.
+RHWP="${1:-Vendor/rhwp-src}"
 LIB="Vendor/RhwpNative.xcframework/macos-arm64/librhwp_native_ffi.a"
 OUT="Vendor/RHWP-SOURCE.txt"
 
-[ -d "$RHWP/.git" ] || { echo "not an rhwp checkout: $RHWP" >&2; exit 1; }
+# `.git` is a DIRECTORY in a plain clone and a FILE in a submodule — test for either, or the
+# submodule (this repo's own pinned source) is rejected as "not an rhwp checkout".
+[ -e "$RHWP/.git" ] || { echo "not an rhwp checkout: $RHWP" >&2; exit 1; }
 [ -f "$LIB" ]       || { echo "no vendored library at $LIB" >&2; exit 1; }
 
 commit=$(git -C "$RHWP" rev-parse HEAD)

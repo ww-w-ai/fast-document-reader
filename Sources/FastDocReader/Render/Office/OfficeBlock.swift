@@ -267,7 +267,8 @@ struct Cell: Equatable {
 
     init(blocks: [OfficeBlock], rowSpan: Int = 1, colSpan: Int = 1,
          backgroundColor: NSColor? = nil, borderColor: NSColor? = nil, borderWidth: CGFloat? = nil,
-         width: CGFloat? = nil, verticalAlignment: CellVAlign? = nil, padding: CGFloat? = nil) {
+         width: CGFloat? = nil, verticalAlignment: CellVAlign? = nil, padding: CGFloat? = nil,
+         edgePadding: EdgePadding? = nil) {
         self.blocks = blocks
         self.rowSpan = rowSpan
         self.colSpan = colSpan
@@ -277,6 +278,7 @@ struct Cell: Equatable {
         self.width = width
         self.verticalAlignment = verticalAlignment
         self.padding = padding
+        self.edgePadding = edgePadding
     }
 }
 

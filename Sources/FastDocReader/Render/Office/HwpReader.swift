@@ -722,7 +722,26 @@ enum HwpReader {
         case "bottom": vAlign = .bottom
         default: vAlign = nil               // "top" / null / unknown → unspecified default
         }
-        return Cell(blocks: blocks, rowSpan: c.rowSpan, colSpan: c.colSpan, verticalAlignment: vAlign)
+        // The cell's own four-edge inner margin, ALREADY resolved by rhwp's
+        // `Cell::effective_padding` (the `aim` flag, the table-wide fallback and the preserved-pad
+        // hygiene limit, all measured against Hancom's own PDFs) — so the rule lives in ONE place and
+        // this reader does not invent a second one. Before this existed HWP declared no padding at
+        // all and every cell fell to `TableBlockBuilder.defaultCellPadding` (7pt on all four edges):
+        // measured on a real 490-page 편람, that invented number alone made the document 66 pages
+        // longer than the official viewer's 429. Invariant 57(a)'s failure, in a fourth place.
+        //
+        // A parser predating this field decodes as nil and behaves exactly as before.
+        let edges: EdgePadding?
+        if c.padLeft != nil || c.padRight != nil || c.padTop != nil || c.padBottom != nil {
+            edges = EdgePadding(top: c.padTop.map { CGFloat($0) },
+                                left: c.padLeft.map { CGFloat($0) },
+                                bottom: c.padBottom.map { CGFloat($0) },
+                                right: c.padRight.map { CGFloat($0) })
+        } else {
+            edges = nil
+        }
+        return Cell(blocks: blocks, rowSpan: c.rowSpan, colSpan: c.colSpan, verticalAlignment: vAlign,
+                    edgePadding: edges)
     }
 }
 
@@ -891,6 +910,14 @@ private struct HwpCell: Decodable {
     var rowSpan: Int
     var vAlign: String?
     var borderFillId: Int?
+    /// The cell's resolved inner margin in POINTS, per edge (rhwp `Cell::effective_padding` ÷100).
+    /// Absent against a parser built before this existed — which is exactly the state that made every
+    /// HWP table fall to the reader's own invented default, so a rebuild that loses these fields
+    /// silently inflates every table again rather than failing.
+    var padLeft: Double?
+    var padRight: Double?
+    var padTop: Double?
+    var padBottom: Double?
     var blocks: [HwpBlock]
 }
 
