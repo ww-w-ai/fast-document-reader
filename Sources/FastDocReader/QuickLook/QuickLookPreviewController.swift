@@ -40,6 +40,14 @@ final class QuickLookPreviewController: NSViewController, QLPreviewingController
     /// is still about ten screens of scrolling before the note at the end.
     static let previewSourceLimit = 20_000
 
+    /// An OFFICE document is cut shorter than a text one, on the owner's instruction ("앞에 5장 정도만
+    /// 보여주고 뒤에 더 있다고"). Kept in CHARACTERS rather than pages because "a page" is not a
+    /// constant a budget can be written in: measured through `--pdf` on this repo's own fixtures, a
+    /// table-heavy `.docx` holds **233 characters per page** while Korean prose runs well over a
+    /// thousand — a five-page rule would cut one document at 1,200 characters and another at 9,000.
+    /// This is roughly five pages of ordinary prose and rather more of a form.
+    static let previewOfficeCharacterBudget = 8_000
+
     /// The head of a Markdown/plain-text document, cut where a reader would not notice, plus an
     /// honest note that it IS a head. Pure, so the cutting rules are testable without a window.
     ///
@@ -58,7 +66,7 @@ final class QuickLookPreviewController: NSViewController, QLPreviewingController
 
     /// Said once, in both halves (text is cut by source, an office document by blocks), so a
     /// shortened preview never differs in how it admits to being shortened.
-    static let shortenedNote = "Preview shows the beginning of this document — open it to read the rest."
+    static let shortenedNote = "[ ... more in the full document ]"
 
     func preparePreviewOfFile(at url: URL) async throws {
         var data = try Data(contentsOf: url)
@@ -69,7 +77,7 @@ final class QuickLookPreviewController: NSViewController, QLPreviewingController
         case .markdown, .plainText:
             let decoded = TextEncodingDetector.decode(data)
             let head = Self.previewSource(decoded.text)
-            if head.utf8.count != data.count { data = Data(head.utf8) }
+            if head.count != decoded.text.count { data = Data(head.utf8) }
         case .office:
             break   // its bytes are a container; it is cut after reading, below
         }
@@ -83,7 +91,8 @@ final class QuickLookPreviewController: NSViewController, QLPreviewingController
         // Content only: a preview panel is small, and reproducing the author's paper would spend most
         // of it on margins. Must precede makeWindowControllers().
         doc.flattenPagesForPreview()
-        doc.truncateOfficeBlocksForPreview(characterBudget: Self.previewSourceLimit, note: Self.shortenedNote)
+        doc.truncateOfficeBlocksForPreview(characterBudget: Self.previewOfficeCharacterBudget,
+                                           note: Self.shortenedNote)
         doc.makeWindowControllers()
 
         guard let wc = doc.windowControllers.first as? DocumentWindowController,
@@ -91,6 +100,10 @@ final class QuickLookPreviewController: NSViewController, QLPreviewingController
               let content = window.contentView else {
             throw CocoaError(.fileReadUnknown)
         }
+
+        // A preview is a glance, not a read — there is no place to keep, so the reading-line band
+        // would read as a highlight the document does not have.
+        wc.textView.showsReadingCursor = false
 
         // Lay the document out at the size we are about to be shown at, THEN move the content view
         // across. Sizing afterwards would re-wrap every line a second time (invariant 48's rule:
@@ -100,6 +113,10 @@ final class QuickLookPreviewController: NSViewController, QLPreviewingController
         content.frame = bounds
         content.autoresizingMask = [.width, .height]
         view.addSubview(content)
+        // Last, so it sits above the document: which app drew this preview, answerable at a glance.
+        // That the document was CUT is said in the content itself (`shortenedNote`), not here — a
+        // mark pinned over the panel stays put while the reader scrolls and reads as chrome.
+        PreviewBadgeView.install(PreviewBadgeView.title, in: view)
 
         document = doc
         windowController = wc

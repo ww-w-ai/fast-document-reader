@@ -1,16 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- The Quick Look preview extension. Scripts/make-app.sh assembles this into
-     FastDocReader.app/Contents/PlugIns/QuickLookPreview.appex with a COPY of the app's own
-     executable (see docs/02-planned/quick-look-extension-design.md), and rewrites three things
-     there so they cannot drift from the app: the version pair (the store rejects an extension whose
-     version differs from its host) and the bundle identifier (a local build's app becomes
-     `…fast-md-reader.dev`, and an extension's identifier MUST be prefixed by its host's).
-
-     QLSupportedContentTypes deliberately does NOT include public.plain-text / csv / tsv / log:
-     macOS already previews those as text perfectly well, and claiming them would take over every
-     plain-text preview on the machine for no gain. What is claimed is what this reader actually
-     draws better — Markdown rendered rather than shown as source, Word/ODT/HWP laid out at all. -->
 <plist version="1.0">
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
@@ -49,14 +38,14 @@
 				<string>com.haansoft.hancomofficeviewer.mac.hwp</string>
 				<string>com.hancom.hwpx</string>
 				<string>com.haansoft.hancomofficeviewer.mac.hwpx</string>
+				<string>public.toml</string>
+				<string>com.microsoft.ini</string>
 			</array>
 			<key>QLSupportsSearchableItems</key>
 			<false/>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.quicklook.preview</string>
-		<!-- Module-qualified, for the same reason NSDocumentClass is (invariant 6): this is a
-		     SwiftPM executable, so a bare class name is not found at runtime. -->
 		<key>NSExtensionPrincipalClass</key>
 		<string>FastDocReader.QuickLookPreviewController</string>
 	</dict>
