@@ -45,11 +45,6 @@ struct PageBandContent {
     var pageMarginBottom: CGFloat?
     var headerDistance: CGFloat?
     var footerDistance: CGFloat?
-    /// Draw the page-break hairline at each boundary. `false` when the reader is showing each SHEET
-    /// instead (`PageViewOptions.drawsDivider`): a real paper edge already says where the page ends,
-    /// and a rule across the column on top of it reads as a second, contradictory boundary. Defaults
-    /// to `true`, which is what every call site meant before the view options existed.
-    var drawsDivider: Bool = true
 }
 
 /// Paints the running header/footer INTO the band `PageBandLayoutDelegate` already reserved between
@@ -266,16 +261,6 @@ enum PageBandPainter {
             // 푸터 부분에 일부러 영역을 그린건가? 디바이더는 없고 영역 박스만 크게 있네" — on A4 the
             // gap is ~170pt, so a fill is a large grey box that describes the header/footer AREA
             // rather than the page ending. A divider is a line. The gap keeps the paper's own colour.
-            if content.drawsDivider, boundaryIsOpen, page < total - 1, gap.height > 0 {
-                // At the SHEET's own edge when the document said where that is; otherwise the middle
-                // of the gap, which is the best guess available without the margins.
-                let breakY = (sheetEdge ?? (gap.top + gap.height / 2)).rounded()
-                let rule = NSRect(x: origin.x, y: breakY, width: content.columnWidth, height: 1)
-                if rule.intersects(visibleRect) {
-                    Palette.pageGapEdge.setFill()
-                    rule.fill()
-                }
-            }
             // Footer of THIS page draws in the band that FOLLOWS it — never for the last page, which
             // has no following BETWEEN-PAGE band; its own trailing footer is the dedicated arm below.
             if boundaryIsOpen, page < total - 1, content.footerHeight > 0,

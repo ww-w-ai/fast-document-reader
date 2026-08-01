@@ -25,6 +25,22 @@ final class ReaderTextView: NSTextView {
         didSet { if oldValue != commentsVisible { setNeedsDisplay(visibleRect) } }
     }
 
+    /// Whether the reading cursor's own furniture — the reading-line band — is drawn at all. The
+    /// Finder's preview sets it false: a preview is a glance, not a read, so there is no place to
+    /// keep and a stripe across whichever line the caret happened to land on reads as a highlight
+    /// the document does not have. Same judgement `isDrawingToScreen` already makes for paper, made
+    /// for the other medium that is not the reader.
+    var showsReadingCursor = true
+
+    /// Which number to draw in the left margin, or `nil` for none. Set by the window controller from
+    /// `MarginNumberStore.unit(paged:drawingPages:)` — decided there so the menu and the painter can
+    /// never disagree about whether this document shows lines or pages. Setting it repaints and NEVER
+    /// reflows: the numbers live in the margin `textContainerInset` already reserves, so no glyph
+    /// moves (the comments panel's discipline, invariant 38, reused).
+    var marginNumbers: MarginNumberUnit? {
+        didSet { if oldValue != marginNumbers { setNeedsDisplay(visibleRect) } }
+    }
+
     /// The PAPER's width for a paged document (`DocumentWindowController.pagedDocumentWidth`), or
     /// `nil` for markdown, plain text, and an office document whose reader found no page.
     ///
@@ -66,6 +82,10 @@ final class ReaderTextView: NSTextView {
         // same "what is on screen right now" question, answered for paper. Decorations therefore need
         // no print-specific range of their own.
         let glyphRange = lm.glyphRange(forBoundingRect: visibleRect, in: tc)
+        // AFTER the range above and reusing it: asking `glyphRange(forBoundingRect:)` a second time
+        // from inside a draw pass FORCES layout mid-draw, which on a large document can cascade
+        // (draw → layout → size-to-fit → invalidate → draw). One question, asked once.
+        if onScreen { drawMarginNumbers(lm, storage, glyphsToShow: glyphRange) }
         drawMDDecorations(lm, storage, tc, glyphsToShow: glyphRange, at: textContainerOrigin)
         // Comment highlight + number badges — ONLY while the panel is open. Closed, this function
         // isn't even called, so a comment-bearing document with the panel shut costs nothing beyond
@@ -168,7 +188,7 @@ final class ReaderTextView: NSTextView {
     /// scroll — the "you are here" the app promises. Only when there's no selection: an active
     /// selection is its own, stronger highlight, and painting a band under it would muddy it.
     private func drawReadingLine(_ lm: NSLayoutManager, _ tc: NSTextContainer) {
-        guard selectedRange().length == 0, length > 0 else { return }
+        guard showsReadingCursor, selectedRange().length == 0, length > 0 else { return }
         let caret = min(selectedRange().location, length)
         // A caret at the very end has no glyph of its own; anchor on the last one.
         let glyph = min(lm.glyphIndexForCharacter(at: caret), max(0, lm.numberOfGlyphs - 1))
@@ -181,6 +201,75 @@ final class ReaderTextView: NSTextView {
         line.size.width = tc.size.width
         Palette.readingLine.setFill()
         NSBezierPath(rect: line).fill()
+    }
+
+    /// Line or page numbers in the left margin — drawn, never inserted. In the text storage they
+    /// would be found by ⌘F, copied out with a selection, and counted by `--extract`; painted here
+    /// they are furniture, exactly like the reading-line band above them.
+    ///
+    /// READ-ONLY WITH RESPECT TO LAYOUT, structurally. Numbers are information ABOUT the document,
+    /// so they must not be able to change it — and the way a decoration changes a document is not by
+    /// writing to the storage (this never does) but by ASKING a question that MAKES layout:
+    /// `glyphRange(forBoundingRect:)`, `ensureLayout` and `usedRect` all generate what they report,
+    /// and from inside a draw pass that cascades (draw → layout → size-to-fit → invalidate → draw).
+    /// So the line path is confined to glyphs already laid out (`firstUnlaidGlyphIndex`) and the page
+    /// path asks nothing at all — it reads the grid the band delegate already reserved.
+    private func drawMarginNumbers(_ lm: NSLayoutManager, _ storage: NSTextStorage,
+                                   glyphsToShow: NSRange) {
+        guard let unit = marginNumbers else { return }
+        // The gutter is the inset the reading column already sits inside; nothing is reserved for
+        // this feature, so a number that would not FIT is not drawn at all rather than clipped.
+        guard textContainerOrigin.x > 12 else { return }
+        // PAGES are drawn by `PageNumberDeskView`, on the desk OUTSIDE the paper — a page number
+        // inside the sheet competes with the document's own header/footer and reads as content the
+        // file does not have. Only line numbers belong in this margin.
+        guard unit == .lines else { return }
+        drawLineNumbers(lm, storage, glyphsToShow: glyphsToShow)
+    }
+
+    /// One number per BLOCK, at that block's first line — the DOCUMENT's own line, not the wrapped
+    /// screen line, so narrowing the window does not renumber the file underneath the reader. A line
+    /// inside a TABLE is skipped: a cell is a grid position, not a line of prose, and numbering the
+    /// 10,021 table lines of a real report drowns the 4,524 that are actually its text.
+    private func drawLineNumbers(_ lm: NSLayoutManager, _ storage: NSTextStorage,
+                                 glyphsToShow: NSRange) {
+        let origin = textContainerOrigin
+        let numberFont = NSFont.monospacedDigitSystemFont(
+            ofSize: max(8, min(11, font?.pointSize ?? 11) * 0.8), weight: .regular)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: numberFont, .foregroundColor: Palette.secondary.withAlphaComponent(0.55)
+        ]
+        let laid = lm.firstUnlaidGlyphIndex()
+        let range = NSRange(location: glyphsToShow.location,
+                            length: max(0, min(NSMaxRange(glyphsToShow), laid) - glyphsToShow.location))
+        guard range.length > 0 else { return }
+        var seenBlock: Int?
+        lm.enumerateLineFragments(forGlyphRange: range) { rect, _, _, glyphRange, _ in
+            let cr = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            guard cr.location < storage.length else { return }
+            let style = storage.attribute(.paragraphStyle, at: cr.location,
+                                          effectiveRange: nil) as? NSParagraphStyle
+            guard !(style?.textBlocks.first is NSTextTableBlock) else { return }
+            guard let id = storage.attribute(MDAttr.blockId, at: cr.location,
+                                             effectiveRange: nil) as? Int,
+                  id != seenBlock else { return }
+            seenBlock = id
+
+            let text = NSAttributedString(string: String(id + 1), attributes: attrs)
+            let w = text.size().width
+            guard w + 6 <= origin.x else { return }   // no room — draw nothing, never a clipped digit
+            // Top-aligned with the TEXT, not with the line box and not with the baseline. A line
+            // fragment includes the leading above the glyphs, so aligning to `rect.minY` floats the
+            // number above the words it labels — visibly so on a heading, whose box is far taller
+            // than its digits. The number's own CAP top is put on the line's cap top, which is the
+            // edge a reader actually sees as "the top of this paragraph".
+            let lineFont = storage.attribute(.font, at: cr.location, effectiveRange: nil) as? NSFont
+            let baseline = rect.minY + origin.y + lm.location(forGlyphAt: glyphRange.location).y
+            let capTop = baseline - (lineFont?.capHeight ?? numberFont.capHeight)
+            let top = capTop - (numberFont.ascender - numberFont.capHeight)
+            // Right-aligned against the text column, so the digits form a straight edge.
+            text.draw(at: NSPoint(x: origin.x - w - 6, y: top))
+        }
     }
 
     private var length: Int { textStorage?.length ?? 0 }

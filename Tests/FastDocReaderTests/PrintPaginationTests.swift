@@ -175,7 +175,7 @@ final class PrintPaginationTests: XCTestCase {
     /// AND the page outline switched off, since the outline reserves the document's own margins
     /// between sheets whether or not anything is drawn in them (`PageViewOptions.separatesPages`).
     func testADocumentThatReservesNoBandKeepsAppKitsPaginationOnItsOwnPaper() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
         let (_, wc) = try openPaged(headerAndFooter: false)
         XCTAssertTrue(wc.isPaged, "precondition: it still declares a page")
         XCTAssertFalse(wc.pageBandDelegate.isActive, "…but reserves no band, so it did not paginate")

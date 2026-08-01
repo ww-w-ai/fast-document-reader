@@ -1063,6 +1063,10 @@ final class MarkdownDocument: NSDocument {
         return wc
     }
 
+    /// The pinch gesture's commit point (`ReaderScrollView`): the same single rebuild ⌘+/⌘− costs,
+    /// applied to a size the gesture chose rather than to a step.
+    func applyReadingSize(_ v: CGFloat) { setReadingSize(FontSizeStore.clamped(v)) }
+
     private func setReadingSize(_ v: CGFloat) {
         readingSize = v
         FontSizeStore.startingSize = v
@@ -1238,7 +1242,6 @@ final class MarkdownDocument: NSDocument {
                              columnWidth: bandColumn, documentDefaultFontSize: officeDefaultBodyFontSize,
                              pageContentWidth: officePageContentWidth,
                              headerHeight: sides.header, footerHeight: sides.footer,
-                             drawsDivider: options.drawsDivider,
                              separatesPages: options.separatesPages)
     }
 

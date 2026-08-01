@@ -20,9 +20,11 @@ final class PagedTableOverrunTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        // The page outline adds a desk to the band and so moves the pitch; every number below is
-        // about tables, not about that, so it is pinned exactly as `PageBandReservationTests` pins it.
-        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
+        // Pinned exactly as `PageBandReservationTests` pins it. The outline is the MASTER, so a
+        // header and footer only exist alongside it — the old "band, no sheets" shape is gone, and
+        // the desk it adds moves the pitch, which every number below is solved against rather than
+        // being about.
+        PageViewOptionsStore.current = PageViewOptions(outline: true)
     }
 
     override func tearDown() {
@@ -385,8 +387,7 @@ final class PagedTableOverrunTests: XCTestCase {
     /// overrunning table ends up — one page earlier when it is allowed to break.
     func testTheSettingDecidesBetweenBreakingATableAndCarryingItDown() throws {
         func firstTableTop(_ split: Bool) throws -> CGFloat {
-            PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true,
-                                                           splitTables: split)
+            PageViewOptionsStore.current = PageViewOptions(outline: true, splitTables: split)
             let wc = try openPaged("docs/fixtures/office/bus-headings.docx")
             wc.settlePagedTablesFully()
             XCTAssertEqual(try linesInMargins(wc), [], "either way, nothing may end in a margin")

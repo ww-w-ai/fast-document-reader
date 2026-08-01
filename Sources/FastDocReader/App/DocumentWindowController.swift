@@ -35,7 +35,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     // guarantees the classic NSLayoutManager path instead of silently falling back
     // to TextKit 2 compatibility mode when layoutManager is later accessed.
     let textView: ReaderTextView
-    private let scrollView = NSScrollView()
+    private let scrollView = ReaderScrollView()
     private let outline = OutlinePanel(frame: NSRect(x: 0, y: 0, width: OutlinePanel.defaultWidth, height: 400))
     // P6b: the right-side comments panel — an INSPECTOR split item (trailing), distinct from the
     // outline's SIDEBAR item (leading). Both live on the same `splitVC`; `NSSplitViewController`
@@ -124,6 +124,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // the reader's ⌘+/⌘− becomes a view transform over a column that never moves. Turning this
         // on costs markdown nothing: `magnification` stays 1 unless `setPageZoom` is called, and
         // only a paged document ever calls it. Bounds mirror `DiagramZoomWindow`'s.
+        // Opens BOTH the paged ⌘+/⌘− transform and the trackpad pinch. `ReaderScrollView` is what
+        // decides what a pinch means per document — a view zoom on paper, a reading-size change in
+        // text — because the flag alone cannot tell those apart.
+        scrollView.owner = self
         scrollView.allowsMagnification = true
         scrollView.minMagnification = Self.minPageZoom
         scrollView.maxMagnification = Self.maxPageZoom
@@ -347,7 +351,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                             theme: RenderTheme = .current(size: 11), columnWidth: CGFloat = 0,
                             documentDefaultFontSize: CGFloat = 11, pageContentWidth: CGFloat? = nil,
                             headerHeight: CGFloat = 0, footerHeight: CGFloat = 0,
-                            drawsDivider: Bool = true, separatesPages: Bool = false) {
+                            separatesPages: Bool = false) {
         pageBandDelegate.pageContentHeight = pageContentHeight ?? 0
         pageBandDelegate.band = band
         // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
@@ -407,8 +411,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                               headerHeight: headerHeight, footerHeight: footerHeight,
                               leadingBand: leading, trailingBand: trailing,
                               pageMarginTop: pagedMarginTop, pageMarginBottom: pagedMarginBottom,
-                              headerDistance: pagedHeaderDistance, footerDistance: pagedFooterDistance,
-                              drawsDivider: drawsDivider)
+                              headerDistance: pagedHeaderDistance, footerDistance: pagedFooterDistance)
             : nil
     }
 
@@ -488,6 +491,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     /// Set while the sidebar animates: width changes are ignored until it settles (see the toggle).
     private var suspendReflow = false
+    private var pageNumberDesk: PageNumberDeskView?
 
     /// Not private: `MarkdownDocument.render(into:)` calls this right before it reads the reading
     /// column, which it uses BOTH as `OfficeTextBuilder.build`'s `columnWidth` and as the numerator of
@@ -1367,14 +1371,34 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // the gate is `isPaged`, never `kind == .office` (invariant 57). Checked rather than retitled:
         // these are three independent states a reader wants to SEE at a glance, which a "Hide …"
         // title cannot express for three items at once.
-        let options = PageViewOptionsStore.current
-        for (selector, on) in [(#selector(togglePageOutline(_:)), options.outline),
-                               (#selector(togglePageHeader(_:)), options.header),
-                               (#selector(togglePageFooter(_:)), options.footer),
-                               (#selector(toggleSplitTables(_:)), options.splitTables)]
+        //
+        // The OUTLINE is the master (`PageViewOptions.underOutlineRule`): a header and footer live in
+        // a page's own margins and a table is only broken at a page boundary, so with the outline off
+        // the other three are greyed out rather than left tickable with nothing to act on. Their ticks
+        // come from the stored INTENT, so switching the outline back on restores what was chosen.
+        if item.action == #selector(toggleMarginNumbers(_:)) {
+            item.state = MarginNumberStore.isOn ? .on : .off
+            // Retitled per document because the UNIT is the document's, not the reader's: "Line
+            // Numbers" on a file with no pages would be a lie the moment it drew page numbers, and
+            // two separate toggles could be set to disagree with each other.
+            let showsPages = MarginNumberStore.unit(isOn: true, paged: isPaged,
+                                                    drawingPages: PageViewOptionsStore.current.outline)
+            item.title = showsPages == .pages ? "Page Numbers" : "Line Numbers"
+            return true
+        }
+        // The jump is retitled by the SAME rule, and stays enabled with the numbers switched off —
+        // a reader who hid them can still ask to go to page 40.
+        if item.action == #selector(goToNumber(_:)) {
+            item.title = jumpUnit == .pages ? "Go to Page…" : "Go to Line…"
+            return true
+        }
+        let intent = PageViewOptionsStore.intent
+        for (selector, on, needsOutline) in
+                [(#selector(togglePageOutline(_:)), intent.outline, false),
+                 (#selector(toggleSplitTables(_:)), intent.splitTables, true)]
         where item.action == selector {
             item.state = on ? .on : .off
-            return isPaged
+            return isPaged && (!needsOutline || intent.outline)
         }
         return true
     }
@@ -1408,6 +1432,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func display(_ attributed: NSAttributedString) {
+        // Once per RENDER, not per reflow: the unit only changes when the document does (a new file,
+        // a re-render) or when the reader toggles something — never when a column is re-solved. It
+        // was briefly called from `settleReadingColumn`, which is the hot path every resize and every
+        // zoom press runs through, and writing a property that repaints from inside a layout settle
+        // is how a redraw storm starts on a large document.
+        applyMarginNumbers()
         // Geometry only: the storage is replaced on the very next line, so the full pass here would
         // re-solve the outgoing document's tabs and tables for nothing (see `settleReadingColumn`).
         // The async `updateTextInset()` below runs the real one, against the string just installed.
@@ -1850,6 +1880,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     private(set) var resizeGateReflowCount = 0
 
     @objc private func viewportChanged() {
+        // The desk numbers are NOT part of the scrolled content, so a scroll moves the sheets out
+        // from under them; one repaint over the visible sheets is the whole cost.
+        refreshPageNumberDesk()
         // Recompute the centered column only when the width actually changed (a window resize),
         // not on every scroll — avoids reflow churn while scrolling. `updateTextInset` itself is
         // what records the width it solved at (`lastClipWidth` — see its doc), so this check and
@@ -2560,14 +2593,103 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     // MARK: - Page view options (View menu: page outline / header / footer)
 
     @objc func togglePageOutline(_ sender: Any?) { flipPageOption { $0.outline.toggle() } }
-    @objc func togglePageHeader(_ sender: Any?) { flipPageOption { $0.header.toggle() } }
-    @objc func togglePageFooter(_ sender: Any?) { flipPageOption { $0.footer.toggle() } }
     /// Break a table across a page boundary rather than carrying it whole to the next page. Goes
     /// through the SAME `flipPageOption` as the three furniture toggles — it changes how the document
     /// paginates, so it needs the same re-layout, the same reading-position restore and the same
     /// every-open-window sweep, and a second path that re-derived any of that would drift from this
     /// one the first time either was touched (invariant 60f).
     @objc func toggleSplitTables(_ sender: Any?) { flipPageOption { $0.splitTables.toggle() } }
+
+    /// Line (or page) numbers in the left margin. NOT a `flipPageOption`: nothing is re-solved and no
+    /// line moves — the numbers are painted into the margin the reading column already sits inside —
+    /// so this is the comments panel's shape (invariant 38), a flag plus a repaint, applied to every
+    /// open window because the preference is global.
+    @objc func toggleMarginNumbers(_ sender: Any?) {
+        MarginNumberStore.isOn.toggle()
+        for case let wc as DocumentWindowController in
+            NSDocumentController.shared.documents.flatMap({ $0.windowControllers }) {
+            wc.applyMarginNumbers()
+        }
+        applyMarginNumbers()
+    }
+
+    /// The text view, for the desk overlay's coordinate conversion only — it needs a view to convert
+    /// FROM, and `textView` itself is `let` and already internal; this name says why it is being read.
+    var textViewForDesk: NSView { textView }
+
+    /// The unit a jump is asked in — the DOCUMENT's own, exactly what the margin draws, and read
+    /// independently of whether the numbers are switched on (`MarginNumberStore.jumpUnit`): a reader
+    /// who hid the numbers can still ask for page 40.
+    var jumpUnit: MarginNumberUnit {
+        MarginNumberStore.jumpUnit(paged: isPaged, drawingPages: PageViewOptionsStore.current.outline)
+    }
+
+    /// Type a number, press Return, land there. One item rather than two, for the same reason the
+    /// numbers themselves are one toggle: the unit belongs to the document, so "Go to Line…" and
+    /// "Go to Page…" are the same request retitled, and they can never be set to disagree.
+    @objc func goToNumber(_ sender: Any?) {
+        let unit = jumpUnit
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        field.placeholderString = unit == .pages ? "Page number" : "Line number"
+        let alert = NSAlert()
+        alert.messageText = unit == .pages ? "Go to Page" : "Go to Line"
+        alert.informativeText = unit == .pages
+            ? "Page 1 to \(max(1, pageSheets.count))."
+            : "The number shown in the margin. Out-of-range numbers go to the nearest line."
+        alert.addButton(withTitle: "Go")          // the DEFAULT button, so Return alone submits
+        alert.addButton(withTitle: "Cancel")
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        // Re-read at CONFIRM time, never at open time: the sheet is asynchronous, and a reload or an
+        // undo underneath it moves every offset and every sheet (`confirmDeleteBlock`'s discipline).
+        let apply: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self,
+                  let number = Int(field.stringValue.trimmingCharacters(in: .whitespaces))
+            else { return }
+            self.goTo(number: number)
+        }
+        if let w = window { alert.beginSheetModal(for: w, completionHandler: apply) }
+        else { apply(alert.runModal()) }
+    }
+
+    /// Resolve and scroll. Separate from the panel so the whole rule is reachable without a sheet.
+    func goTo(number: Int) {
+        switch jumpUnit {
+        case .pages:
+            guard let index = MarginNumberNavigator.sheetIndex(forPage: number,
+                                                               sheetCount: pageSheets.count) else { return }
+            scrollSheetToTop(index)
+        case .lines:
+            guard let storage = textView.textStorage,
+                  let char = MarginNumberNavigator.characterIndex(forLine: number, in: storage) else { return }
+            scrollCharToTop(char)
+        }
+    }
+
+    /// Put sheet `index` at the top of the viewport. Not `scrollCharToTop`: a page boundary is a
+    /// property of the page GRID, not of any character — the first character of a page sits one
+    /// leading band below the paper's edge, so jumping by character would cut the top margin (and the
+    /// header living in it) off every page.
+    func scrollSheetToTop(_ index: Int) {
+        let sheets = pageSheets
+        guard sheets.indices.contains(index) else { return }
+        var y = sheets[index].minY
+        // Page 1's own top margin is above its first line with nothing needing the room, so go to the
+        // very top rather than scrolling that margin out of sight (`scrollCharToTop`'s same guard).
+        if y <= textView.textContainerInset.height { y = 0 }
+        let clip = scrollView.contentView
+        let maxY = max(0, textView.bounds.height - clip.bounds.height)
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: min(max(0, y), maxY)))
+        scrollView.reflectScrolledClipView(clip)
+        placeCopyButtons()
+    }
+
+    /// The ONE place the unit is resolved for this window, so the menu's title, the painter and any
+    /// test read the same answer. Called from the toggle and from every render.
+    func applyMarginNumbers() {
+        textView.marginNumbers = MarginNumberStore.unit(paged: isPaged,
+                                                        drawingPages: PageViewOptionsStore.current.outline)
+    }
 
     /// Counts how many times a page option was actually applied — the same shape as
     /// `pageZoomChangeCount`/`textInsetUpdateCount`, so a test can assert a toggle DID something
@@ -2576,7 +2698,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     private func flipPageOption(_ change: (inout PageViewOptions) -> Void) {
         guard isPaged else { return }          // no paper, nothing to show or hide
-        var options = PageViewOptionsStore.current
+        // The INTENT, never the effective value: with the outline off, `current` reports the other
+        // three as false, so reading it here would write those falses back and turning the outline on
+        // again would come up bare instead of restoring what the reader had chosen.
+        var options = PageViewOptionsStore.intent
         change(&options)
         PageViewOptionsStore.current = options
         // THIS window first, and unconditionally — never through the shared document controller's
@@ -2614,6 +2739,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     ///      restoring first clamps the scroll to a frame height that does not exist yet, which put a
     ///      reader 75% down at character 298 (invariant 55a, invariant 24).
     func reapplyPageBand() {
+        applyMarginNumbers()   // the outline decides lines-vs-pages (`MarginNumberStore.unit`)
         guard let doc = mdDocument, let lm = textView.layoutManager,
               let storage = textView.textStorage else { return }
         pageOptionChangeCount += 1
@@ -2677,7 +2803,36 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         syncDeskBackground()
         syncHorizontalScroller()
         recentrePage()
+        syncPageNumberDesk()
     }
+
+    /// The page number written on the DESK beside each sheet. A separate view laid over the scroll
+    /// view rather than anything the text view draws, because a paged document's text view is pinned
+    /// to the PAPER's width and physically cannot paint outside the sheet — and because furniture
+    /// that cannot reach the layout manager cannot move the document (the rule this whole feature
+    /// lives under). Present only while there is something to number.
+    private func syncPageNumberDesk() {
+        let wants = MarginNumberStore.unit(paged: isPaged,
+                                           drawingPages: PageViewOptionsStore.current.outline) == .pages
+        if wants {
+            let desk = pageNumberDesk ?? {
+                let v = PageNumberDeskView(frame: scrollView.bounds)
+                v.controller = self
+                v.autoresizingMask = [.width, .height]
+                pageNumberDesk = v
+                return v
+            }()
+            if desk.superview !== scrollView { scrollView.addSubview(desk) }
+            desk.frame = scrollView.bounds
+            desk.needsDisplay = true
+        } else {
+            pageNumberDesk?.removeFromSuperview()
+        }
+    }
+
+    /// Repaint the desk numbers — scrolling and zooming move the sheets under a view that is NOT part
+    /// of the scrolled content, so it has to be told. Cheap: one `draw` over the visible sheets.
+    func refreshPageNumberDesk() { pageNumberDesk?.needsDisplay = true }
 
     /// Re-apply the page's horizontal CENTRING after the reading area changed width.
     ///

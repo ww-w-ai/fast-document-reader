@@ -173,13 +173,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pageOutline = viewMenu.addItem(withTitle: "Page Outline",
                                            action: Selector(("togglePageOutline:")), keyEquivalent: "p")
         pageOutline.keyEquivalentModifierMask = [.command, .option]   // ⌘P is Print
-        viewMenu.addItem(withTitle: "Header", action: Selector(("togglePageHeader:")), keyEquivalent: "")
-        viewMenu.addItem(withTitle: "Footer", action: Selector(("togglePageFooter:")), keyEquivalent: "")
         // What happens to a table that will not finish on its page: break it where it stands, or carry
         // it whole to the next one. A table TALLER than the page is always broken whatever this says —
         // there is no whole page to carry it to (invariant 64).
         viewMenu.addItem(withTitle: "Split Tables Across Pages",
                          action: Selector(("toggleSplitTables:")), keyEquivalent: "")
+        viewMenu.addItem(.separator())
+        // Where am I — the document's own line, or the page it sits on. ONE item: the unit is a
+        // property of the document (`MarginNumberStore.unit`), not a second choice, so the title is
+        // retitled per document rather than split into two toggles that could disagree.
+        viewMenu.addItem(withTitle: "Line Numbers",
+                         action: Selector(("toggleMarginNumbers:")), keyEquivalent: "")
+        // Jump to one of those numbers. Retitled from the same rule the toggle above is, so the two
+        // always name the same unit.
+        viewMenu.addItem(withTitle: "Go to Line…",
+                         action: Selector(("goToNumber:")), keyEquivalent: "l")
         viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Reload", action: Selector(("reloadDocument:")), keyEquivalent: "r")
 

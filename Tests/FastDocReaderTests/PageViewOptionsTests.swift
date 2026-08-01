@@ -34,16 +34,25 @@ final class PageViewOptionsTests: XCTestCase {
     /// whether the band exists at all when nothing is drawn in it, and whether the page-break
     /// hairline is drawn.
     func testTheDerivedRules() {
-        XCTAssertTrue(PageViewOptions(outline: true, header: false, footer: false).separatesPages,
+        XCTAssertTrue(PageViewOptions(outline: true).separatesPages,
                       "the outline needs the space between sheets even with nothing in it")
-        XCTAssertFalse(PageViewOptions(outline: false, header: true, footer: true).separatesPages)
+        XCTAssertFalse(PageViewOptions(outline: false).separatesPages)
+    }
 
-        XCTAssertFalse(PageViewOptions(outline: true, header: true, footer: true).drawsDivider,
-                       "a real sheet edge says it better than a rule across the column")
-        XCTAssertTrue(PageViewOptions(outline: false, header: true, footer: false).drawsDivider,
-                      "band but no sheet — the hairline is the only thing marking the page ending")
-        XCTAssertFalse(PageViewOptions(outline: false, header: false, footer: false).drawsDivider,
-                       "nothing to mark")
+    /// The outline is the master: with no page drawn there is nothing for a header, a footer or a
+    /// table break to be about, so the store reports all three off while KEEPING what was chosen.
+    func testTheOutlineIsTheMasterSwitch() {
+        let chosen = PageViewOptions(outline: false, splitTables: true)
+        XCTAssertEqual(chosen.underOutlineRule,
+                       PageViewOptions(outline: false, splitTables: false))
+        let withPages = PageViewOptions(outline: true, splitTables: true)
+        XCTAssertEqual(withPages.underOutlineRule, withPages, "with a page, nothing is derived away")
+
+        PageViewOptionsStore.reset()
+        defer { PageViewOptionsStore.reset() }
+        PageViewOptionsStore.current = chosen
+        XCTAssertEqual(PageViewOptionsStore.current.header, false, "the reader shows no header")
+        XCTAssertEqual(PageViewOptionsStore.intent.splitTables, true, "the split choice is remembered")
     }
 
     /// Defaults are all on, and a never-written preference must read that way rather than as the
@@ -51,7 +60,7 @@ final class PageViewOptionsTests: XCTestCase {
     func testAFreshMachineGetsTheDefaultsNotFalse() {
         PageViewOptionsStore.reset()
         XCTAssertEqual(PageViewOptionsStore.current, PageViewOptions.default)
-        XCTAssertEqual(PageViewOptions.default, PageViewOptions(outline: true, header: true, footer: true))
+        XCTAssertEqual(PageViewOptions.default, PageViewOptions(outline: true))
     }
 
     // MARK: - (2) All three off IS the pre-paged code path
@@ -60,7 +69,7 @@ final class PageViewOptionsTests: XCTestCase {
     /// one whose reader found no header or footer at all — same height, and no line shifted. Asserted
     /// against a SECOND document that genuinely has none, rather than against a remembered number.
     func testWithEverythingOffTheDocumentLaysOutLikeOneWithNoHeaderOrFooter() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: false, header: false, footer: false)
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
         let (_, withFurniture) = try openPaged()
         let (_, without) = try openPaged(headerAndFooter: false)
 
@@ -74,7 +83,7 @@ final class PageViewOptionsTests: XCTestCase {
     /// The outline alone reserves the document's own two margins between sheets, even with nothing
     /// drawn in them — otherwise the sheets would sit edge to edge and read as one long page.
     func testTheOutlineAloneStillSeparatesTheSheets() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: true, header: false, footer: false)
+        PageViewOptionsStore.current = PageViewOptions(outline: true)
         let (_, wc) = try openPaged()
         XCTAssertTrue(wc.pageBandDelegate.isActive)
         XCTAssertEqual(wc.pageBandDelegate.band,
@@ -86,54 +95,56 @@ final class PageViewOptionsTests: XCTestCase {
 
     // MARK: - (3) The three act independently
 
-    func testHidingTheHeaderRemovesItFromBothHalvesOfTheBand() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: true, header: false, footer: true)
-        let (_, wc) = try openPaged()
-        let content = try XCTUnwrap(wc.pageBandContent)
-        XCTAssertTrue(content.headers.isEmpty, "nothing to paint")
-        XCTAssertEqual(content.headerHeight, 0, accuracy: 0.01, "and nothing measured for it either")
-        XCTAssertFalse(content.footers.isEmpty, "the footer is untouched")
+    /// Header and footer are the PAGE's, not two toggles of their own — they live in its two margins,
+    /// so hiding the page hides them and there is no configuration in which one is drawn without the
+    /// other. (Two separate menu items existed for a while and were REMOVED at the owner's
+    /// instruction: *"아웃라인 보이면 같이 보이는거고, 아니면 함께 안 보이는 것임"*.)
+    func testTheOutlineCarriesBothHeaderAndFooter() throws {
+        PageViewOptionsStore.current = PageViewOptions(outline: true)
+        let (_, on) = try openPaged()
+        let content = try XCTUnwrap(on.pageBandContent)
+        XCTAssertFalse(content.headers.isEmpty, "a page draws its own header")
+        XCTAssertFalse(content.footers.isEmpty, "and its own footer")
+        XCTAssertGreaterThan(content.headerHeight, 0)
         XCTAssertGreaterThan(content.footerHeight, 0)
+
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
+        let (_, off) = try openPaged()
+        XCTAssertNil(off.pageBandContent, "no page, no band — and so neither of the two")
+        XCTAssertFalse(off.pageBandDelegate.isActive, "…and nothing reserved for them")
     }
 
-    func testHidingTheFooterRemovesItFromBothHalvesOfTheBand() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: true, header: true, footer: false)
-        let (_, wc) = try openPaged()
-        let content = try XCTUnwrap(wc.pageBandContent)
-        XCTAssertTrue(content.footers.isEmpty)
-        XCTAssertEqual(content.footerHeight, 0, accuracy: 0.01)
-        XCTAssertFalse(content.headers.isEmpty)
-        // The room below the last line is still reserved, and that is the SHEET's, not the footer's:
-        // with the outline on the last page keeps its own bottom margin whether or not anything is
-        // printed in it, exactly as the first page keeps its top one.
-        XCTAssertEqual(wc.pageBandDelegate.trailingBand, Self.marginBottom, accuracy: 0.01)
-    }
 
     /// The outer margins are the SHEET's. With no sheet drawn, the only reason to reserve room above
     /// the first line or below the last is a header or footer that needs it — so hiding them takes
     /// the room with them, which is what "쭉 연결되어" has to mean at the document's two ends.
     func testWithNoOutlineTheOuterMarginsBelongToTheHeaderAndFooterAlone() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: false, header: false, footer: false)
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
         let (_, wc) = try openPaged()
         XCTAssertEqual(wc.pageBandDelegate.leadingBand, 0, accuracy: 0.01)
         XCTAssertEqual(wc.pageBandDelegate.trailingBand, 0, accuracy: 0.01)
 
-        PageViewOptionsStore.current = PageViewOptions(outline: true, header: false, footer: false)
+        PageViewOptionsStore.current = PageViewOptions(outline: true)
         let (_, sheets) = try openPaged()
         XCTAssertEqual(sheets.pageBandDelegate.leadingBand, Self.marginTop, accuracy: 0.01,
                        "…and with a sheet drawn, page 1 gets its own full top margin")
         XCTAssertEqual(sheets.pageBandDelegate.trailingBand, Self.marginBottom, accuracy: 0.01)
     }
 
-    /// The outline replaces the page-break hairline rather than joining it.
-    func testTheDividerYieldsToTheSheetEdge() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: true, header: true, footer: true)
+    /// Turning the outline off leaves NO band at all — the header and footer go with it, so there is
+    /// nothing left to paint and nothing left to mark a boundary with. (The page-break hairline this
+    /// case used to check no longer exists: it only ever drew in the band-without-sheets state, which
+    /// the outline's master rule removed.)
+    func testWithNoOutlineThereIsNoBandToPaint() throws {
+        PageViewOptionsStore.current = PageViewOptions(outline: true)
         let (_, on) = try openPaged()
-        XCTAssertFalse(try XCTUnwrap(on.pageBandContent).drawsDivider)
+        XCTAssertNotNil(on.pageBandContent)
+        XCTAssertTrue(on.pageBandDelegate.isActive)
 
-        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
         let (_, off) = try openPaged()
-        XCTAssertTrue(try XCTUnwrap(off.pageBandContent).drawsDivider)
+        XCTAssertNil(off.pageBandContent, "a header the outline turned off must not be painted")
+        XCTAssertFalse(off.pageBandDelegate.isActive, "…and must not reserve space either")
     }
 
     // MARK: - (4) A toggle must not rebuild, and must not lose the reader's place
@@ -200,12 +211,12 @@ final class PageViewOptionsTests: XCTestCase {
         XCTAssertTrue(first.pageBandDelegate.isActive)
         XCTAssertTrue(second.pageBandDelegate.isActive)
 
-        first.togglePageOutline(nil)   // outline off; header and footer still on, so the band stays
+        first.togglePageOutline(nil)   // outline off — header and footer follow it (master switch)
         waitForAsyncTail()
         XCTAssertEqual(second.pageOptionChangeCount, 1,
                        "the other window re-solved its own band from the same preference")
-        XCTAssertTrue(try XCTUnwrap(second.pageBandContent).drawsDivider,
-                      "…and now shows the hairline, because it no longer shows a sheet")
+        XCTAssertNil(second.pageBandContent,
+                     "…and has no band left, because the outline took the header and footer with it")
     }
 
     /// Markdown, plain text and an office document with no page width have no paper. The menu greys
@@ -226,7 +237,7 @@ final class PageViewOptionsTests: XCTestCase {
 
     /// The menu shows all three states at once — checked, not retitled.
     func testTheMenuReportsEachToggleAsACheckmark() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: true, header: false, footer: true)
+        PageViewOptionsStore.current = PageViewOptions(outline: true)
         let (_, wc) = try openPaged()
         func state(_ selector: Selector) -> NSControl.StateValue {
             let item = NSMenuItem(title: "", action: selector, keyEquivalent: "")
@@ -234,8 +245,7 @@ final class PageViewOptionsTests: XCTestCase {
             return item.state
         }
         XCTAssertEqual(state(#selector(DocumentWindowController.togglePageOutline(_:))), .on)
-        XCTAssertEqual(state(#selector(DocumentWindowController.togglePageHeader(_:))), .off)
-        XCTAssertEqual(state(#selector(DocumentWindowController.togglePageFooter(_:))), .on)
+        // Header and Footer are no longer separate items — they ARE the outline (`PageViewOptions`).
     }
 
     // MARK: - (6) What is drawn is what is printed
@@ -247,11 +257,21 @@ final class PageViewOptionsTests: XCTestCase {
         XCTAssertFalse(wc.pageSheets.isEmpty)
         XCTAssertEqual(wc.pageSheets, wc.printSheets)
 
-        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
+        // With the outline off the reader draws no sheets and reserves no band, so there are no
+        // sheet rectangles to hand the printer — but PAPER DOES NOT HAVE A TOGGLE. The promise that
+        // survives is the one that matters: the printer still gets the DOCUMENT's own paper size,
+        // margins and all, and pages it (`makePrintOperation`'s second branch), rather than printing
+        // a continuous view onto whatever paper happens to be selected.
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
         let (_, noOutline) = try openPaged()
         XCTAssertTrue(noOutline.pageSheets.isEmpty, "no outline, nothing to draw")
-        XCTAssertFalse(noOutline.printSheets.isEmpty,
-                       "…but printing still puts it on its own pages: paper does not have a toggle")
+        XCTAssertTrue(noOutline.printSheets.isEmpty, "…and no reserved band to cut them at")
+        let info = noOutline.makePrintOperation().printInfo
+        XCTAssertEqual(info.paperSize.width, try XCTUnwrap(noOutline.pagedDocumentWidth), accuracy: 0.5,
+                       "paper is still the document's own page")
+        XCTAssertGreaterThan(info.paperSize.height, 0)
+        XCTAssertGreaterThan(info.topMargin, 0,
+                             "…with its own margins, which the reader stopped reserving on screen")
     }
 
     /// The drawn sheets must NOT touch — the desk between them is the whole reason they read as
@@ -377,7 +397,7 @@ final class PageViewOptionsTests: XCTestCase {
         XCTAssertEqual(wc.pageBandDelegate.deskGap, RenderTheme.pageDeskGap, accuracy: 0.01)
 
         // Write the preference WITHOUT re-solving the band — the racy window, made explicit.
-        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
         XCTAssertEqual(wc.pageBandDelegate.deskGap, RenderTheme.pageDeskGap, accuracy: 0.01,
                        "still what layout reserved, because nothing has re-solved it yet")
         let sheets = wc.printSheets

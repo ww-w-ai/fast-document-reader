@@ -31,7 +31,9 @@ final class PageBandReservationTests: XCTestCase {
     /// `PageViewOptionsTests`' subject.
     override func setUp() {
         super.setUp()
-        PageViewOptionsStore.current = PageViewOptions(outline: false, header: true, footer: true)
+        // The outline is the MASTER: a header and footer only exist alongside it, so "band, no
+        // sheets" — the shape this suite used to pin — is no longer a configuration the reader has.
+        PageViewOptionsStore.current = PageViewOptions(outline: true)
     }
 
     override func tearDown() {
@@ -602,6 +604,9 @@ final class PageBandReservationTests: XCTestCase {
     /// snap to a zero-gap page grid the moment any straddled a boundary, producing a jump even
     /// though nothing should have moved.
     func testARealDocumentWithNoHeaderOrFooterIsLaidOutExactlyAsBefore() throws {
+        // Nothing to reserve means the OUTLINE is off too — with it on, the desk between
+        // sheets is reserved whether or not there is a header (invariant 60c).
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
         let (_, wc) = try openPagedOffice(headers: [], footers: [], pageContentHeight: 150)
 
         XCTAssertTrue(wc.isPaged, "precondition: this document is still paged (page WIDTH is what makes it so)")
@@ -740,8 +745,9 @@ final class PageBandReservationTests: XCTestCase {
         // (This fixture declares no page margins, so the band IS the two drawn heights — see
         // `testBandTakesTheDocumentsOwnMarginsWhenItDeclaredThem` for the case where the paper's own
         // margins are roomier and win instead.)
-        XCTAssertEqual(content.headerHeight + content.footerHeight,
-                       wc.pageBandDelegate.band, accuracy: 0.01)
+        XCTAssertEqual(content.headerHeight + content.footerHeight + RenderTheme.pageDeskGap,
+                       wc.pageBandDelegate.band, accuracy: 0.01,
+                       "the band is the two drawn heights plus the desk the outline reserves")
     }
 
     /// "A document with no header/footer is unchanged" — step 5's own half of that claim:
@@ -752,6 +758,9 @@ final class PageBandReservationTests: XCTestCase {
     /// ternary — replacing the `nil` branch with an always-populated (but empty) `PageBandContent`
     /// would still cost an allocation and a needless per-draw iteration.
     func testARealDocumentWithNoHeaderOrFooterHasNoPaintContentEither() throws {
+        // Nothing to reserve means the OUTLINE is off too — with it on, the desk between
+        // sheets is reserved whether or not there is a header (invariant 60c).
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
         let (_, wc) = try openPagedOffice(headers: [], footers: [], pageContentHeight: 150)
         XCTAssertNil(wc.pageBandContent)
     }
@@ -922,6 +931,9 @@ final class PageBandReservationTests: XCTestCase {
     /// on every document by `precomputeLayout`'s completion, header/footer or not — must be a true
     /// no-op rather than merely "small".
     func testNeitherEdgeIsReservedWithNoHeaderOrFooter() throws {
+        // Nothing to reserve means the OUTLINE is off too — with it on, the desk between
+        // sheets is reserved whether or not there is a header (invariant 60c).
+        PageViewOptionsStore.current = PageViewOptions(outline: false)
         let (_, wc) = try openPagedOffice(headers: [], footers: [], pageContentHeight: 150)
         XCTAssertEqual(wc.pageBandDelegate.leadingBand, 0)
         XCTAssertEqual(wc.pageBandDelegate.trailingBand, 0)
