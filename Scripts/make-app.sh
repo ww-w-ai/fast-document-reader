@@ -72,7 +72,10 @@ find Resources -type f ! -name 'Info.plist' ! -name '*-Info.plist' ! -name '*.en
 if [[ -z "${SKIP_QUICKLOOK:-}" ]]; then
 PLUGIN="$APP/Contents/PlugIns/QuickLookPreview.appex"
 mkdir -p "$PLUGIN/Contents/MacOS"
-cp "$BIN" "$PLUGIN/Contents/MacOS/FastDocReader"
+# NAMED for the bundle, not for the app it is a copy of: the store rejects an extension whose
+# CFBundleExecutable is not the bundle directory's own name (90362), and the name is the only
+# thing that has to differ — `main.swift` routes on the .appex path, not on the executable.
+cp "$BIN" "$PLUGIN/Contents/MacOS/QuickLookPreview"
 cp Resources/QuickLookPreview-Info.plist "$PLUGIN/Contents/Info.plist"
 # Both of these are DERIVED from the app rather than typed twice, because both are load-bearing and
 # neither is checked by a compiler: the store rejects an extension whose version differs from its

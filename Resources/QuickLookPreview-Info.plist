@@ -4,8 +4,10 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Fast Document Reader Preview</string>
 	<key>CFBundleExecutable</key>
-	<string>FastDocReader</string>
+	<string>QuickLookPreview</string>
 	<key>CFBundleIdentifier</key>
 	<string>ai.ww-w.fast-md-reader.quicklook</string>
 	<key>CFBundleInfoDictionaryVersion</key>
