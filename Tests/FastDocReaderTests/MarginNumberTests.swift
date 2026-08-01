@@ -217,12 +217,13 @@ final class MarginNumberTests: XCTestCase {
         let view = PageNumberDeskView(frame: NSRect(x: 0, y: 0, width: 1000, height: 800))
         let wide = try XCTUnwrap(view.placement(number: 7, deskWidth: 300))
         XCTAssertLessThan(wide.x + wide.text.size().width, 300, "clear of the paper's edge")
-        XCTAssertEqual((wide.text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, 72)
+        XCTAssertEqual((wide.text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize, 44,
+                       "44pt is the ceiling the owner set by looking at it")
 
         let tight = try XCTUnwrap(view.placement(number: 7, deskWidth: 40))
         XCTAssertLessThanOrEqual(tight.x + tight.text.size().width, 40, "must not spill onto the paper")
         let tightSize = try XCTUnwrap((tight.text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize)
-        XCTAssertLessThan(tightSize, 72, "scaled down to the room there is")
+        XCTAssertLessThan(tightSize, 44, "stepped down to the room there is")
 
         let none = try XCTUnwrap(view.placement(number: 7, deskWidth: 0))
         XCTAssertGreaterThan(none.x, 0, "with no desk at all it goes inside the paper's margin")

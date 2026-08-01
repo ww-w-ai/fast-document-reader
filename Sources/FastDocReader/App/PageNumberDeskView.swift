@@ -52,8 +52,8 @@ final class PageNumberDeskView: NSView {
     /// ("좌우 여백이 아주 크지 않으면 안 보임").
     ///
     /// 1. Room on the desk → full size, clear of the paper's edge.
-    /// 2. Some desk, not enough → scaled down to what there is, to a floor of 24pt (below that it is
-    ///    no longer the landmark it exists to be).
+    /// 2. Some desk, not enough → the next size down, to a floor of 24pt (below that it is no longer
+    ///    the landmark it exists to be).
     /// 3. No usable desk → just INSIDE the paper's own left margin, fainter. This is white margin the
     ///    author left blank, not the header/footer band that made an in-page number compete with the
     ///    document's own (which is why THAT one was removed and this is not the same decision).
@@ -61,21 +61,23 @@ final class PageNumberDeskView: NSView {
         func label(_ size: CGFloat, _ alpha: CGFloat) -> NSAttributedString {
             NSAttributedString(string: String(number), attributes: [
                 // Large on purpose: one landmark per PAGE on an empty desk, not a per-line marker,
-                // and the only thing out here to read (the owner's own call, "4배 정도 더 크게").
+                // and the only thing out here to read. 44pt is the owner's own ceiling, set by looking
+                // at it — 72 and 56 were tried on screen first and read as too big.
                 .font: NSFont.monospacedDigitSystemFont(ofSize: size, weight: .semibold),
                 .foregroundColor: Palette.secondary.withAlphaComponent(alpha)
             ])
         }
         // Stepped rather than scaled by a ratio: the width of a numeral is not proportional to its
         // point size, so a ratio has to be re-measured anyway — and a fixed ladder makes the sizes
-        // consistent from page to page instead of drifting with the digit count.
+        // consistent from page to page instead of drifting with the digit count. Three rungs, the
+        // first tried twice: once with a generous margin from the paper, then flush against the gutter.
         let gutter: CGFloat = 12
-        for (size, margin) in [(72.0, 36.0), (72.0, gutter), (56.0, gutter), (44.0, gutter), (32.0, gutter), (24.0, gutter)] {
+        for (size, margin) in [(44.0, 36.0), (44.0, gutter), (32.0, gutter), (24.0, gutter)] {
             let text = label(size, 0.45)
             let x = deskWidth - text.size().width - margin
             if x > 2 { return (text, x) }
         }
         guard deskWidth > -1 else { return nil }   // the page's left edge is off screen entirely
-        return (label(40, 0.22), deskWidth + gutter)
+        return (label(32, 0.22), deskWidth + gutter)
     }
 }
