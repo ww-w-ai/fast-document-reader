@@ -1652,28 +1652,39 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                 block = style.textBlocks.first as? NSTextTableBlock
             }
             guard let block else { flushRows(); current = nil; return }
+            // A LINE FRAGMENT IS NOT THE CELL. Its own padding and border are drawn OUTSIDE the
+            // glyphs, so measuring a row by its lines alone under-reports every row by the amount the
+            // cell adds around them — measured on a real report at 3.48pt per cell, which is ~70pt
+            // across a twenty-row group and is exactly why a piece the arithmetic said would fit
+            // still ended in a margin. Applied to every line rather than only the first and last:
+            // an interior line's inset value loses to the `min`/`max` anyway, so this needs no
+            // separate "is this the block's first line" bookkeeping to be right.
+            let top = rect.minY - block.width(for: .padding, edge: .minY)
+                - block.width(for: .border, edge: .minY)
+            let bottom = rect.maxY + block.width(for: .padding, edge: .maxY)
+                + block.width(for: .border, edge: .maxY)
             let table = ObjectIdentifier(block.table)
             if current != table {
                 flushRows()
                 current = table
-                out.append(PagePagination.LaidOutTable(firstChar: cr.location, visualTop: rect.minY,
-                                                       bottom: rect.maxY, firstLineTop: rect.minY))
+                out.append(PagePagination.LaidOutTable(firstChar: cr.location, visualTop: top,
+                                                       bottom: bottom, firstLineTop: rect.minY))
             } else {
-                out[out.count - 1].visualTop = min(out[out.count - 1].visualTop, rect.minY)
-                out[out.count - 1].bottom = max(out[out.count - 1].bottom, rect.maxY)
+                out[out.count - 1].visualTop = min(out[out.count - 1].visualTop, top)
+                out[out.count - 1].bottom = max(out[out.count - 1].bottom, bottom)
             }
             if block.rowSpan > 1 {
                 spans.append((block.startingRow, block.startingRow + block.rowSpan))
             }
             let r = block.startingRow
             if var existing = rows[r] {
-                existing.top = min(existing.top, rect.minY)
-                existing.bottom = max(existing.bottom, rect.maxY)
+                existing.top = min(existing.top, top)
+                existing.bottom = max(existing.bottom, bottom)
                 existing.firstChar = min(existing.firstChar, cr.location)
                 if cr.location <= existing.firstChar { existing.firstLineTop = rect.minY }
                 rows[r] = existing
             } else {
-                rows[r] = Row(firstChar: cr.location, top: rect.minY, bottom: rect.maxY,
+                rows[r] = Row(firstChar: cr.location, top: top, bottom: bottom,
                               firstLineTop: rect.minY)
             }
         }

@@ -322,6 +322,59 @@ final class PagedTableOverrunTests: XCTestCase {
     /// table content is being drawn in a margin, which is the defect — and measured per line rather
     /// than per table on purpose, because once a table may be BROKEN across pages its own extent
     /// legitimately spans several of them while none of its rows may.
+    /// A LINE FRAGMENT IS NOT THE CELL: a cell draws its own padding and border OUTSIDE its glyphs, so
+    /// a ledger built from line rects alone under-reports every row. Measured at 3.48pt per cell on a
+    /// real report — ~70pt across a twenty-row group, which is how a piece the arithmetic said would
+    /// fit still ended in a margin. Asserted where it can be seen: what the settle RECORDED for a
+    /// moved table must cover its own cells' padded extent, not just the glyphs.
+    func testARecordedTableHeightIncludesItsCellsOwnPadding() throws {
+        let wc = try openPaged("docs/fixtures/office/bus-headings.docx")
+        wc.settlePagedTablesFully()
+        let recorded = wc.pageBandDelegate.pushedTables
+        try XCTSkipIf(recorded.isEmpty, "this fixture moved no table, so there is nothing to check")
+
+        let layout = try XCTUnwrap(wc.textView.layoutManager)
+        let container = try XCTUnwrap(wc.textView.textContainer)
+        let storage = try XCTUnwrap(wc.textView.textStorage)
+        layout.ensureLayout(for: container)
+
+        // The padded extent of the ONE table each recorded piece starts in, measured independently of
+        // the code under test: every line of that table, grown by its own cell's padding and border.
+        var checked = 0
+        for (firstChar, metrics) in recorded {
+            guard firstChar < storage.length,
+                  let style = storage.attribute(.paragraphStyle, at: firstChar,
+                                                effectiveRange: nil) as? NSParagraphStyle,
+                  let startBlock = style.textBlocks.first as? NSTextTableBlock else { continue }
+            var top = CGFloat.greatestFiniteMagnitude, bottom = -CGFloat.greatestFiniteMagnitude
+            var glyphTop = CGFloat.greatestFiniteMagnitude, glyphBottom = -CGFloat.greatestFiniteMagnitude
+            layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { rect, _, _, gr, _ in
+                let cr = layout.characterRange(forGlyphRange: gr, actualGlyphRange: nil)
+                guard cr.location >= firstChar, cr.location < storage.length,
+                      let s = storage.attribute(.paragraphStyle, at: cr.location,
+                                                effectiveRange: nil) as? NSParagraphStyle,
+                      let b = s.textBlocks.first as? NSTextTableBlock,
+                      b.table === startBlock.table else { return }
+                glyphTop = min(glyphTop, rect.minY); glyphBottom = max(glyphBottom, rect.maxY)
+                top = min(top, rect.minY - b.width(for: .padding, edge: .minY)
+                          - b.width(for: .border, edge: .minY))
+                bottom = max(bottom, rect.maxY + b.width(for: .padding, edge: .maxY)
+                             + b.width(for: .border, edge: .maxY))
+            }
+            guard bottom > top else { continue }
+            checked += 1
+            // The recorded piece may be a PART of the table, so its HEIGHT cannot be compared to the
+            // whole. `topInset` can: it is the distance from the piece's own top edge down to its
+            // first line, which is that cell's top padding plus border and is therefore never zero
+            // for a table that pads its cells. A ledger built from line rects alone reports 0 here.
+            XCTAssertGreaterThan(bottom - top, glyphBottom - glyphTop,
+                                 "precondition: this table's cells really do add padding")
+            XCTAssertGreaterThan(metrics.topInset, 0,
+                                 "the piece's first line sits below its own top edge by that cell's padding")
+        }
+        XCTAssertGreaterThan(checked, 0, "nothing was actually compared")
+    }
+
     private func linesInMargins(_ wc: DocumentWindowController) throws -> [CGFloat] {
         let layout = try XCTUnwrap(wc.textView.layoutManager)
         let container = try XCTUnwrap(wc.textView.textContainer)
