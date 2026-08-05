@@ -54,15 +54,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // The launch Open panel above (not this hook) is what satisfies "show a window on launch".
     func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
 
+    /// The name to show the user, read from the BUNDLE so a dev build reads "FastDoc (Dev)" and a
+    /// rename never has to be chased through string literals. Both places that once held a literal
+    /// went stale and showed a retired name — the menu bar, and the default-app panel.
+    static var appDisplayName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? "FastDoc"
+    }
+
     // A SwiftPM executable has no MainMenu.nib, so build the menu bar in code. Without it,
     // standard shortcuts (⌘Q/⌘O/⌘W/⌘C/⌘F/⌘±) and the native Window/tabs menu don't work.
     private func buildMenu() {
-        // The user-facing name comes from the bundle (so a dev build reads "FastDoc (Dev)"), NOT a
-        // hardcoded literal — the literal here was once a retired name, showing it in the very
-        // first menu item.
-        let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
-            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
-            ?? "FastDoc"
+        let appName = Self.appDisplayName
         let mainMenu = NSMenu()
 
         // App menu
@@ -292,15 +296,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Markdown starts ticked because that is what this app is for. The text kinds start clear:
     /// they are a capability, not the reason someone installed a Markdown reader, and quietly
     /// taking over every .csv on someone's Mac is not a favour.
-    private static let claimable: [(name: String, id: String, onByDefault: Bool)] = [
-        ("Markdown  (.md, .markdown)", "net.daringfireball.markdown", true),
-        ("Word document  (.docx)", "org.openxmlformats.wordprocessingml.document", false),
-        ("OpenDocument text  (.odt)", "org.oasis-open.opendocument.text", false),
-        ("Plain text  (.txt)", "public.plain-text", false),
-        ("Comma-separated values  (.csv)", "public.comma-separated-values-text", false),
-        ("Tab-separated values  (.tsv)", "public.tab-separated-values-text", false),
-        ("Log files  (.log)", "com.apple.log", false),
+    private static let claimable: [(name: String, id: String, ext: String, onByDefault: Bool)] = [
+        ("Markdown  (.md, .markdown)", "net.daringfireball.markdown", "md", true),
+        ("Word document  (.docx)", "org.openxmlformats.wordprocessingml.document", "docx", false),
+        ("OpenDocument text  (.odt)", "org.oasis-open.opendocument.text", "odt", false),
+        ("Hangul document  (.hwp)", "com.hancom.hwp", "hwp", false),
+        ("Hangul document  (.hwpx)", "com.hancom.hwpx", "hwpx", false),
+        ("Plain text  (.txt)", "public.plain-text", "txt", false),
+        ("Comma-separated values  (.csv)", "public.comma-separated-values-text", "csv", false),
+        ("Tab-separated values  (.tsv)", "public.tab-separated-values-text", "tsv", false),
+        ("Log files  (.log)", "com.apple.log", "log", false),
     ]
+
+    /// The type a file of this kind ACTUALLY gets on THIS machine, which is not always the
+    /// identifier we declare. HWP is why this exists: `.hwp` is Hancom's type, so a Mac with their
+    /// suite installed reports `com.haansoft.hancomofficeviewer.mac.hwp` while one without it falls
+    /// to the `com.hancom.hwp` this app declares itself — and claiming the hardcoded one would make
+    /// this app the default for a type no file on that machine is, which looks like nothing
+    /// happening. `.docx` never showed the fault because its identifier is the same everywhere.
+    /// The declared id is the fallback for the case the extension resolves to nothing at all.
+    private static func resolvedType(ext: String, id: String) -> UTType? {
+        UTType(filenameExtension: ext) ?? UTType(id)
+    }
 
     /// The standard About panel, but with the build's git provenance in the version line. Marketing
     /// version (`CFBundleShortVersionString`) and build number (`CFBundleVersion`) are the
@@ -333,7 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                        height: rowHeight * CGFloat(Self.claimable.count)))
         var boxes: [(NSButton, String)] = []
         for (i, kind) in Self.claimable.enumerated() {
-            let already = isDefaultApp(for: kind.id)
+            let already = isDefaultApp(ext: kind.ext, id: kind.id)
             let button = NSButton(checkboxWithTitle: already ? kind.name + "  — already set" : kind.name,
                                   target: nil, action: nil)
             button.state = (already || kind.onByDefault) ? .on : .off
@@ -342,11 +359,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.frame = NSRect(x: 0, y: CGFloat(Self.claimable.count - 1 - i) * rowHeight,
                                   width: 340, height: rowHeight - 4)
             box.addSubview(button)
-            if !already { boxes.append((button, kind.id)) }
+            if !already { boxes.append((button, kind.ext)) }
         }
 
         let alert = NSAlert()
-        alert.messageText = "Set fast-md-reader as the default app"
+        alert.messageText = "Set \(Self.appDisplayName) as the default app"
         alert.informativeText = "Double-clicking a ticked kind of file in the Finder will open it here. "
             + "To undo this later, select a file in the Finder, press ⌘I, and pick another app under “Open with”."
         alert.accessoryView = box
@@ -356,17 +373,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let chosen = boxes.filter { $0.0.state == .on }.map { $0.1 }
         guard !chosen.isEmpty else { return }        // everything unticked = nothing to do
-        applyDefaults(for: chosen)
+        applyDefaults(forExtensions: chosen)
     }
 
-    /// Whether this app is already what macOS opens the given kind with.
-    private func isDefaultApp(for identifier: String) -> Bool {
-        guard let type = UTType(identifier),
+    /// Whether this app is already what macOS opens the given kind with. Asked of the type the
+    /// extension really resolves to, which is also what gets claimed — the two must agree or a
+    /// claim that took would still read back as "not set".
+    private func isDefaultApp(ext: String, id: String) -> Bool {
+        guard let type = Self.resolvedType(ext: ext, id: id),
               let current = NSWorkspace.shared.urlForApplication(toOpen: type) else { return false }
         return current.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL
     }
 
-    private func applyDefaults(for identifiers: [String]) {
+    private func applyDefaults(forExtensions extensions: [String]) {
         let appURL = Bundle.main.bundleURL
         let bundleID = Bundle.main.bundleIdentifier ?? ""
         // The completion handlers come back on whatever queue AppKit chooses, so the tally is
@@ -375,20 +394,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var failures: [String] = []
         func note(_ name: String) { lock.lock(); failures.append(name); lock.unlock() }
         let group = DispatchGroup()
-        for identifier in identifiers {
-            let name = Self.claimable.first { $0.id == identifier }?.name ?? identifier
-            guard let type = UTType(identifier) else { note(name); continue }
+        for ext in extensions {
+            guard let kind = Self.claimable.first(where: { $0.ext == ext }) else { continue }
+            guard let type = Self.resolvedType(ext: kind.ext, id: kind.id) else { note(kind.name); continue }
             group.enter()
-            if #available(macOS 14.0, *) {
-                NSWorkspace.shared.setDefaultApplication(at: appURL, toOpen: type) { error in
-                    if error != nil { note(name) }
-                    group.leave()
-                }
-            } else {
-                let status = LSSetDefaultRoleHandlerForContentType(
-                    identifier as CFString, .all, bundleID as CFString)
-                if status != noErr { note(name) }
+            // Report SUCCESS only after reading the association back. macOS can answer noErr and
+            // change nothing when another installed app owns the type — measured on .hwp against
+            // Hancom's suite — so trusting the return value would tell the user it worked while the
+            // Finder still opens the file elsewhere.
+            func settle() {
+                if !self.isDefaultApp(ext: kind.ext, id: kind.id) { note(kind.name) }
                 group.leave()
+            }
+            if #available(macOS 14.0, *) {
+                NSWorkspace.shared.setDefaultApplication(at: appURL, toOpen: type) { _ in settle() }
+            } else {
+                _ = LSSetDefaultRoleHandlerForContentType(
+                    type.identifier as CFString, .all, bundleID as CFString)
+                settle()
             }
         }
         group.notify(queue: .main) {
@@ -397,7 +420,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let done = NSAlert()
             done.messageText = failures.isEmpty ? "Done" : "Partly done"
             done.informativeText = failures.isEmpty
-                ? "Those files now open in fast-md-reader."
+                ? "Those files now open in \(Self.appDisplayName)."
                 : "macOS declined to change:\n\n\(failures.map { "•  " + $0 }.joined(separator: "\n"))\n\nYou can set these per file with ⌘I in the Finder."
             done.addButton(withTitle: "OK")
             done.runModal()
