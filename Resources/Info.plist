@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>FastDoc Reader</string>
+	<string>FastDoc</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
@@ -155,7 +155,7 @@
 	<key>CFBundleIdentifier</key>
 	<string>ai.ww-w.fast-md-reader</string>
 	<key>CFBundleName</key>
-	<string>FastDoc Reader</string>
+	<string>FastDoc</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

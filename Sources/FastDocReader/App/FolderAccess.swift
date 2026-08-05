@@ -114,7 +114,7 @@ enum FolderAccess {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.directoryURL = folder
-        panel.message = "Allow FastDoc Reader to read \(what) in “\(folder.lastPathComponent)”. "
+        panel.message = "Allow FastDoc to read \(what) in “\(folder.lastPathComponent)”. "
                       + "This covers everything inside it — pick a narrower folder if you'd rather."
         panel.prompt = "Allow"
         let handle: (NSApplication.ModalResponse) -> Void = { resp in

@@ -1,6 +1,6 @@
 # Demo documents
 
-Open these in FastDoc Reader. Each one exists to show a claim the app makes, and most of them
+Open these in FastDoc. Each one exists to show a claim the app makes, and most of them
 are the exact cases that make other readers stumble.
 
 | Document | What to look at |

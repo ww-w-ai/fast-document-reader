@@ -17,8 +17,8 @@ final class ExternalEditorTests: XCTestCase {
         url: URL(fileURLWithPath: "/Applications/Pages.app"))
     private let ourApp = ExternalEditor.AppCandidate(
         bundleIdentifier: "ai.ww-w.fast-md-reader",
-        displayName: "FastDoc Reader",
-        url: URL(fileURLWithPath: "/Applications/FastDoc Reader.app"))
+        displayName: "FastDoc",
+        url: URL(fileURLWithPath: "/Applications/FastDoc.app"))
 
     // MARK: - S7-3: exclude our own app from the candidate list
 

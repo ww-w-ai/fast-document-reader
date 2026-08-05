@@ -57,12 +57,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // A SwiftPM executable has no MainMenu.nib, so build the menu bar in code. Without it,
     // standard shortcuts (⌘Q/⌘O/⌘W/⌘C/⌘F/⌘±) and the native Window/tabs menu don't work.
     private func buildMenu() {
-        // The user-facing name comes from the bundle (so a dev build reads "FastDoc Reader
-        // (Dev)"), NOT a hardcoded literal — the literal here was the pre-rename "fast-md-reader",
-        // showing the retired name in the very first menu item.
+        // The user-facing name comes from the bundle (so a dev build reads "FastDoc (Dev)"), NOT a
+        // hardcoded literal — the literal here was once a retired name, showing it in the very
+        // first menu item.
         let appName = (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
             ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
-            ?? "FastDoc Reader"
+            ?? "FastDoc"
         let mainMenu = NSMenu()
 
         // App menu

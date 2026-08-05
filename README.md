@@ -1,4 +1,4 @@
-# FastDoc Reader
+# FastDoc
 
 > **.md .docx .hwp .odt reader, built for the AI era**
 
@@ -88,7 +88,7 @@ whose spacing was being thrown away). Table cell margins are read from the docum
 guessed default, so a real 행정업무운영편람 paginates at **455 pages** here against Hancom's own
 viewer at **429** — close, and honestly not identical.
 
-| | FastDoc Reader |
+| | FastDoc |
 |---|---|
 | Engine | 100% native AppKit + TextKit — **no web runtime for text** |
 | Idle CPU | **0%** — 44 hours running used **2 min 41 s of CPU** in total; no timers, no polling, no background web process |
@@ -230,7 +230,7 @@ Or download the notarized zip, unzip it, drag `FastDocReader.app` to `/Applicati
 No Gatekeeper prompt and no `xattr` step — the app is signed with a Developer ID and stapled, and it
 is **not** sandboxed, so sibling images just load.
 
-To open files here by default: **FastDoc Reader → Set as Default App…**, which lists the kinds it
+To open files here by default: **FastDoc → Set as Default App…**, which lists the kinds it
 can claim with a checkbox each — Markdown ticked, text formats yours to choose. Per file, the Finder
 route still works: right-click → **Get Info** → **Open with** → **Change All…**.
 

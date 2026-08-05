@@ -49,7 +49,7 @@ if [[ -z "${DIST_IDENTITY:-}" ]]; then
   REAL_ID="$($PB -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")"
   $PB -c "Set :CFBundleIdentifier ${REAL_ID}.dev" "$APP/Contents/Info.plist"
   $PB -c "Set :CFBundleName FastDoc (Dev)" "$APP/Contents/Info.plist"
-  $PB -c "Set :CFBundleDisplayName FastDoc Reader (Dev)" "$APP/Contents/Info.plist"
+  $PB -c "Set :CFBundleDisplayName FastDoc (Dev)" "$APP/Contents/Info.plist"
   echo "    identifier: ${REAL_ID}.dev  (local build — separate from any installed release)"
 else
   echo "    identifier: $(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")  (DISTRIBUTION)"
