@@ -28,7 +28,7 @@ enum HeadlessPDF {
         let inputURL = URL(fileURLWithPath: (parsed.input as NSString).expandingTildeInPath)
         let ext = inputURL.pathExtension.lowercased()
         guard DocumentTypes.opensInApp(ext) else {
-            err("unsupported file type \".\(ext)\": Fast Document Reader reads .docx/.docm/.dotx/.dotm, " +
+            err("unsupported file type \".\(ext)\": FastDoc Reader reads .docx/.docm/.dotx/.dotm, " +
                 ".odt, .hwp/.hwpx, and plain text/Markdown. Legacy binary .doc and .rtf are not supported.")
             return 1
         }
