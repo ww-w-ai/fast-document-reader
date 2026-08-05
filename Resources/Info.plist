@@ -34,11 +34,6 @@
 				<string>public.comma-separated-values-text</string>
 				<string>public.tab-separated-values-text</string>
 				<string>public.log</string>
-				<!-- What macOS ACTUALLY types these files as, measured with UTType rather than
-				     assumed: `.log` is com.apple.log (not public.log), `.cfg` is public.toml and
-				     `.ini` is com.microsoft.ini — all three owned by someone else, so our own
-				     config-text declaration never gets those extensions. Claiming the real types is
-				     how the app becomes selectable for them at all. -->
 				<string>com.apple.log</string>
 				<string>public.toml</string>
 				<string>com.microsoft.ini</string>
@@ -159,9 +154,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.1</string>
+	<string>1.2</string>
 	<key>CFBundleVersion</key>
-	<string>8</string>
+	<string>9</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationCategoryType</key>
@@ -172,6 +167,30 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Configuration File</string>
+			<key>UTTypeIdentifier</key>
+			<string>ai.ww-w.fast-md-reader.config-text</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>conf</string>
+					<string>cfg</string>
+					<string>ini</string>
+					<string>env</string>
+					<string>vars</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
 		<dict>
@@ -223,37 +242,6 @@
 				<key>public.filename-extension</key>
 				<array>
 					<string>hwpx</string>
-				</array>
-			</dict>
-		</dict>
-	</array>
-	<!-- EXPORTED, not imported: this identifier is ours, in our own reverse-DNS namespace, and
-	     nothing else on the system declares these extensions. That absence is the whole problem —
-	     with no declaration anywhere, macOS types a `.vars`/`.env` file as a throwaway `dyn.…` and
-	     REFUSES to bind any app to it (`duti -s` fails with -50), so the app could open the file
-	     from its own panel while the Finder insisted nothing could. `.txt`/`.csv`/`.log` escape
-	     that only because other apps already register them as public types. Extensions here must
-	     mirror the tail of `DocumentTypes.plainTextExtensions`. -->
-	<key>UTExportedTypeDeclarations</key>
-	<array>
-		<dict>
-			<key>UTTypeConformsTo</key>
-			<array>
-				<string>public.plain-text</string>
-			</array>
-			<key>UTTypeDescription</key>
-			<string>Configuration File</string>
-			<key>UTTypeIdentifier</key>
-			<string>ai.ww-w.fast-md-reader.config-text</string>
-			<key>UTTypeTagSpecification</key>
-			<dict>
-				<key>public.filename-extension</key>
-				<array>
-					<string>conf</string>
-					<string>cfg</string>
-					<string>ini</string>
-					<string>env</string>
-					<string>vars</string>
 				</array>
 			</dict>
 		</dict>
