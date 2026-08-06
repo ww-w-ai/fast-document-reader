@@ -351,7 +351,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                             theme: RenderTheme = .current(size: 11), columnWidth: CGFloat = 0,
                             documentDefaultFontSize: CGFloat = 11, pageContentWidth: CGFloat? = nil,
                             headerHeight: CGFloat = 0, footerHeight: CGFloat = 0,
-                            separatesPages: Bool = false) {
+                            separatesPages: Bool = false, deskGap: CGFloat? = nil) {
         pageBandDelegate.pageContentHeight = pageContentHeight ?? 0
         pageBandDelegate.band = band
         // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
@@ -395,7 +395,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         pageBandDelegate.leadingBand = leading
         pageBandDelegate.trailingBand = trailing
-        pageBandDelegate.deskGap = separatesPages ? RenderTheme.pageDeskGap : 0
+        pageBandDelegate.deskGap = deskGap ?? (separatesPages ? RenderTheme.pageDeskGap : 0)
         applyVerticalInset()   // the leading band only becomes ROOM through the inset — see that function
         // A new render re-decides every boundary, so the previous pass's answers must not survive
         // into it — a stale entry would paint into a band this layout never made.
@@ -3087,11 +3087,56 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// 595.3 × 6493.9). Printing the text view therefore prints it at actual size. `PrintPaginationTests`
     /// pins that, so a future zoom implementation that DID move the view's own geometry is caught here
     /// rather than on paper.
+    /// Whether the document is currently laid out for PAPER rather than for the window.
+    private var printLayoutApplied = false
+
+    /// Lay the document out the way paper needs it, whatever the View menu currently says.
+    ///
+    /// **A paged document has pages even when the reader has switched the outline off** — the page
+    /// breaks are the FILE's, not a viewing preference — so a printout taken while the outline is off
+    /// would otherwise come out as one continuous run with no header, no footer and no page margins.
+    /// Printing therefore always applies the paged shape (`applyPageBand(forPrinting:)`), which also
+    /// drops the desk gap: see that function for the measured text loss it causes on paper.
+    ///
+    /// Restored by `endPrintLayout` once the job is over. Idempotent — a second call does nothing, so
+    /// a caller that prepares and a caller that also prints cannot re-lay the document twice.
+    func beginPrintLayout() {
+        guard !printLayoutApplied, let doc = mdDocument, doc.officePageContentWidth != nil,
+              let lm = textView.layoutManager, let storage = textView.textStorage else { return }
+        printLayoutApplied = true
+        doc.applyPageBand(to: self, forPrinting: true)
+        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
+                            actualCharacterRange: nil)
+        if let tc = textView.textContainer { lm.ensureLayout(for: tc) }
+    }
+
+    /// Put the window's own layout back after a print job — the reader must not be left holding the
+    /// paper shape when its View menu says otherwise.
+    func endPrintLayout() {
+        guard printLayoutApplied, let doc = mdDocument,
+              let lm = textView.layoutManager, let storage = textView.textStorage else { return }
+        printLayoutApplied = false
+        let anchor = readingAnchor()
+        doc.applyPageBand(to: self)
+        applyPagedViewState()
+        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
+                            actualCharacterRange: nil)
+        if let tc = textView.textContainer { lm.ensureLayout(for: tc) }
+        applyTrailingFooterBand()
+        settlePagedTablesFully()
+        restore(anchor)
+        textView.needsDisplay = true
+    }
+
     func makePrintOperation() -> NSPrintOperation {
+        // Paper has pages whether or not the reader is drawing them, so the paged shape goes on
+        // FIRST — before the settle, which depends on the band it produces.
+        beginPrintLayout()
         // ⌘P can arrive before the asynchronous settle has finished — on a document just opened, or
         // straight after a re-render. Paper cannot show an overrun honestly the way the screen can
         // (`PagePagination.joiningUnopenedBoundaries`), so the tables are settled here first.
         settlePagedTablesFully()
+        applyTrailingFooterBand()
         // Paper has no viewport. Pixels are held only for what is near the reader (invariant 1's lazy
         // scheme), so a document printed without ever having been scrolled through prints blank space
         // where its pictures are — measured as ONE image in a 50-page PDF of a report carrying 28.
@@ -3151,6 +3196,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     @objc private func printDidRun(_ op: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?) {
         printRestore.forEach { $0.0.isHidden = $0.1 }
         printRestore = []
+        endPrintLayout()   // the window goes back to whatever the View menu asked for
     }
 
     // MARK: - Shortcut guide (?, Help menu)

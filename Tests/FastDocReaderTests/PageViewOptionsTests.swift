@@ -257,21 +257,46 @@ final class PageViewOptionsTests: XCTestCase {
         XCTAssertFalse(wc.pageSheets.isEmpty)
         XCTAssertEqual(wc.pageSheets, wc.printSheets)
 
-        // With the outline off the reader draws no sheets and reserves no band, so there are no
-        // sheet rectangles to hand the printer — but PAPER DOES NOT HAVE A TOGGLE. The promise that
-        // survives is the one that matters: the printer still gets the DOCUMENT's own paper size,
-        // margins and all, and pages it (`makePrintOperation`'s second branch), rather than printing
-        // a continuous view onto whatever paper happens to be selected.
+        // PAPER DOES NOT HAVE A TOGGLE, and the page breaks belong to the FILE rather than to the
+        // View menu — so printing applies the paged shape itself (`beginPrintLayout`) no matter what
+        // the reader is currently showing. Before that, a printout taken with the outline off came
+        // out as one continuous run with no header, no footer and no page margins.
         PageViewOptionsStore.current = PageViewOptions(outline: false)
         let (_, noOutline) = try openPaged()
-        XCTAssertTrue(noOutline.pageSheets.isEmpty, "no outline, nothing to draw")
-        XCTAssertTrue(noOutline.printSheets.isEmpty, "…and no reserved band to cut them at")
+        XCTAssertTrue(noOutline.pageSheets.isEmpty, "no outline, nothing to DRAW on screen")
         let info = noOutline.makePrintOperation().printInfo
+        XCTAssertFalse(noOutline.printSheets.isEmpty, "printing puts the pages back regardless")
         XCTAssertEqual(info.paperSize.width, try XCTUnwrap(noOutline.pagedDocumentWidth), accuracy: 0.5,
                        "paper is still the document's own page")
         XCTAssertGreaterThan(info.paperSize.height, 0)
-        XCTAssertGreaterThan(info.topMargin, 0,
-                             "…with its own margins, which the reader stopped reserving on screen")
+    }
+
+    /// **The printed sheets must TILE — no strip may belong to no page.** On screen the band also
+    /// carries `RenderTheme.pageDeskGap`, which is desk rather than paper; leaving it in the print
+    /// grid makes each sheet 12pt shorter than the grid advances, so anything laid out in that strip
+    /// is drawn into the PDF and lands on no sheet at all. Measured on a real 147-page report: a line
+    /// overrunning its page by more than the bottom margin vanished from the printout while
+    /// `pdftotext` still found its text in the file, and the next line printed half-cut at the top of
+    /// the following page. `applyPageBand(forPrinting:)` drops the gap, which is what makes the
+    /// sheets meet exactly.
+    func testPrintedSheetsTileWithNoGapBetweenThem() throws {
+        let (_, wc) = try openPaged()
+        wc.beginPrintLayout()
+        let sheets = wc.printSheets
+        try XCTSkipIf(sheets.count < 2, "needs a document that paginates")
+        for i in 1..<sheets.count {
+            XCTAssertEqual(sheets[i].minY, sheets[i - 1].maxY, accuracy: 0.01,
+                           "sheet \(i) must begin exactly where sheet \(i - 1) ended")
+        }
+        // Tiling alone is satisfied by a sheet as tall as the grid, so the SIZE is asserted too:
+        // dropping the gap from the delegate but leaving it in the band tiles perfectly onto paper
+        // 12pt taller than the document's own page. Both halves have to be right, and each is a
+        // separate line of code — mutating either one must turn this red.
+        let doc = try XCTUnwrap(wc.mdDocument)
+        let paper = try XCTUnwrap(doc.officePageContentHeight)
+                  + (doc.officePageMarginTop ?? 0) + (doc.officePageMarginBottom ?? 0)
+        XCTAssertEqual(sheets[0].height, paper, accuracy: 0.5,
+                       "the sheet is the DOCUMENT's own page, never the page plus the screen's desk")
     }
 
     /// The drawn sheets must NOT touch — the desk between them is the whole reason they read as

@@ -1215,8 +1215,18 @@ final class MarkdownDocument: NSDocument {
     ///
     /// `readingColumn` is only a FALLBACK: a paged document builds its band at the page's own body
     /// width (invariant 59d), which is a constant of the file and not of the window.
+    /// `forPrinting` forces the PAGED shape on regardless of the View menu: paper HAS pages whether
+    /// or not the reader is currently drawing them, so ⌘P and `--pdf` always lay the document out
+    /// with its page separation, header and footer — the owner's rule, and the only way a printout
+    /// can look like the document. It also drops `RenderTheme.pageDeskGap`, which is desk rather than
+    /// paper: leaving it in makes the print grid advance 12pt further than the sheet is tall, so the
+    /// strip between two sheets belongs to no page and anything in it is DROPPED FROM THE PRINTOUT.
+    /// Measured on a real 147-page report: an overrun of more than the bottom margin (76.52pt here)
+    /// fell into that strip and the line vanished, with the next line printing half-cut at the top of
+    /// the following page — text that `pdftotext` still finds in the file because it was drawn, just
+    /// onto no sheet.
     func applyPageBand(to wc: DocumentWindowController, theme: RenderTheme? = nil,
-                       readingColumn: CGFloat? = nil) {
+                       readingColumn: CGFloat? = nil, forPrinting: Bool = false) {
         // The render passes both, because it has already computed them and they must be the SAME
         // values the body was built with. A toggle passes neither and they are re-derived here from
         // the identical expressions — a paged document's theme is pinned to its own default body size
@@ -1224,7 +1234,8 @@ final class MarkdownDocument: NSDocument {
         let theme = theme ?? RenderTheme.current(
             size: officePageContentWidth != nil ? officeDefaultBodyFontSize : readingSize)
         let readingColumn = readingColumn ?? wc.textView.textContainer?.size.width ?? 800
-        let options = PageViewOptionsStore.current
+        let stored = PageViewOptionsStore.current
+        let options = forPrinting ? PageViewOptions(outline: true, splitTables: stored.splitTables) : stored
         let headers = options.header ? officeHeaders : []
         let footers = options.footer ? officeFooters : []
         let bandColumn = officePageContentWidth ?? readingColumn
@@ -1235,14 +1246,16 @@ final class MarkdownDocument: NSDocument {
                                        pageContentWidth: officePageContentWidth,
                                        pageMarginTop: officePageMarginTop,
                                        pageMarginBottom: officePageMarginBottom,
-                                       separatesPages: options.separatesPages)
+                                       separatesPages: options.separatesPages,
+                                       deskGap: forPrinting ? 0 : nil)
             : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
         wc.configurePageBand(pageContentHeight: officePageContentHeight, band: sides.band,
                              headers: headers, footers: footers, theme: theme,
                              columnWidth: bandColumn, documentDefaultFontSize: officeDefaultBodyFontSize,
                              pageContentWidth: officePageContentWidth,
                              headerHeight: sides.header, footerHeight: sides.footer,
-                             separatesPages: options.separatesPages)
+                             separatesPages: options.separatesPages,
+                             deskGap: forPrinting ? 0 : nil)
     }
 
     private func render(into wc: DocumentWindowController) {

@@ -58,6 +58,14 @@ final class LineHeightProbeTests: XCTestCase {
         print("[print] 인쇄 전 : bandActive=\(wc.pageBandDelegate.isActive) printPageCount=\(wc.printPageCount) printSheets=\(wc.printSheets.count) pageSheets=\(wc.pageSheets.count) opts=outline:\(PageViewOptionsStore.current.outline),split:\(PageViewOptionsStore.current.splitTables) pushed=\(wc.pageBandDelegate.pushedTables.count) opened=\(wc.pageBandDelegate.openedBoundaries.count)")
 
         print("[margin] \(marginReport(wc))")
+        do {   // 종이가 빈틈없이 이어지는가 — 사이에 빈 띠가 있으면 그 안의 글자는 어느 장에도 안 실린다
+            wc.beginPrintLayout()
+            let sh = wc.printSheets
+            var worstGap: CGFloat = 0
+            for i in 1..<max(1, sh.count) { worstGap = max(worstGap, sh[i].minY - sh[i-1].maxY) }
+            print("[tile] 인쇄용 시트 \(sh.count)장, 장 사이 최대 빈틈 \(String(format: "%.2f", worstGap))pt, 용지 높이 \(String(format: "%.2f", sh.first?.height ?? 0))")
+            print("[tile] \(marginReport(wc))")
+        }
 
         // (b): does settling FROM SCRATCH reach a canonical answer, or a third one?
         if let lm = wc.textView.layoutManager, let tc = wc.textView.textContainer,

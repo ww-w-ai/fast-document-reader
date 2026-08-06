@@ -202,6 +202,25 @@ Code highlighting is native (34 languages, single-pass scanner), no JS.
 
     **(e) A footer belongs to its own sheet, and when it cannot fit there it is SKIPPED, not moved.** `sheetEdge` clamps into the gap layout actually opened so an overrunning table is not painted over — and when the overrun passes the paper's edge that clamp pushes the footer onto the NEXT sheet. Measured: a table overran by **1.12pt** and printed `- 5 -` at the top of page 6. `PageBandPainter.footerFitsOnItsSheet` judges it against the UNCLAMPED grid position, which is exact — the delegate always shifts a page's first line to precisely `page × pitch + leadingBand`, verified on all 8 pages of the reference (841.90, 1683.80, 2525.70, … to the hundredth), so page boundaries never drift even though the gaps between them do. Skipping follows `bandExists`'s existing judgement: a missing page number reads as a short page, a misplaced one reads as a corrupt document. Task 2's page outline would surface the same fault on screen, so this is not a print-only correction.
 
+    **(f) PAPER HAS NO TOGGLE, and the desk gap must never reach the print grid — it DROPPED TEXT.**
+    Two rules, one call (`DocumentWindowController.beginPrintLayout` → `applyPageBand(forPrinting:)`,
+    undone by `endPrintLayout` when the job ends). First: printing applies the paged shape whatever
+    the View menu says, because the page breaks belong to the FILE — with the outline switched off a
+    printout used to come out as one continuous run with no header, no footer and no page margins.
+    Second, and this is the one that lost content: while the outline is on the band also carries
+    `RenderTheme.pageDeskGap`, which is desk rather than paper, so the print grid ADVANCED 12pt
+    further than each sheet was tall and that strip belonged to no page at all. Anything laid out in
+    it was drawn into the PDF and printed nowhere. Measured on a real 147-page HWPX: a sheet covers
+    the body plus its bottom margin (76.52pt here), so a line overrunning by MORE than that fell into
+    the strip — page 34's `a.` item vanished and the next line printed half-cut at the top of the
+    following page, while `pdftotext` still found both in the file, which is why a text-level check
+    called it "no content lost" and was wrong. The gap is dropped in BOTH places it lives — the
+    delegate's own `deskGap` (which sizes the sheet) and `PageBandGeometry`'s band (which sizes the
+    grid) — and `testPrintedSheetsTileWithNoGapBetweenThem` asserts the sheets meet exactly AND that
+    a sheet is the document's own page height, because mutating either half alone still tiles.
+    Overruns still print (into the next sheet's top), which is the point: an ugly page beats a missing
+    line.
+
     **PDF export is FREE and must not be built** — macOS's print panel has "Save as PDF", so the moment ⌘P works, so does PDF export. An "Export as PDF…" item would be a second, worse path to the same file. (It is also what makes this testable: the operation runs headless to a file, so page count and paper size are ordinary assertions rather than something judged by looking at a printout.)
 
     **THE LIMIT, measured, and NOT a print defect: the reader paginates the reference report to 8 pages where Word makes 19.** Ruled out by measurement, so nobody re-derives them: content is complete (7,314 characters in `word/document.xml` against 7,321 in the storage — an earlier "193,094" was a regex that let `<w:t[^>]*>` match `<w:tbl>`), the line count is right (689 line fragments), the 18pt `w:docGrid` line pitch is parsed and applied, images are not it (2 attachments, 202pt, none zero-height), deferred giant tables are not it (storage identical after the splice), and explicit page breaks are not it (ONE `w:br w:type="page"`, zero `w:pageBreakBefore` in the document AND in `styles.xml`). What remains is concentrated in Word's own front matter — its pages 1–6 hold 51 lines between them — plus tables that this reader cannot split across a page (invariant 55/58's known edge), which is why 3 of our 8 printed pages carry table rows inside the margins. That is a paged-fidelity item (`docs/06-research/2026-07-29-paged-fidelity/`), not something printing can fix.

@@ -76,7 +76,7 @@ enum PageBandGeometry {
                         theme: RenderTheme, columnWidth: CGFloat,
                         documentDefaultFontSize: CGFloat, pageContentWidth: CGFloat?,
                         pageMarginTop: CGFloat? = nil, pageMarginBottom: CGFloat? = nil,
-                        separatesPages: Bool = false) -> Sides {
+                        separatesPages: Bool = false, deskGap: CGFloat? = nil) -> Sides {
         let h = measuredHeight(of: headers, theme: theme, columnWidth: columnWidth,
                                documentDefaultFontSize: documentDefaultFontSize,
                                pageContentWidth: pageContentWidth)
@@ -94,7 +94,7 @@ enum PageBandGeometry {
         // invariant 57(e)'s invented constant returning). It is NOT printed: `PagePagination` takes
         // it back off, so the paper is exactly the document's own sheet.
         let band = max(declaredBand(marginTop: pageMarginTop, marginBottom: pageMarginBottom), h + f)
-            + (separatesPages ? RenderTheme.pageDeskGap : 0)
+            + (deskGap ?? (separatesPages ? RenderTheme.pageDeskGap : 0))
         return Sides(header: h, footer: f, band: band)
     }
 
