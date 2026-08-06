@@ -84,22 +84,29 @@ enum HeadlessPDF {
         wc.textView.layoutManager?.ensureLayout(for: container)
         wc.applyTrailingFooterBand()
 
-        let op = wc.makePrintOperation()
-        op.showsPrintPanel = false
-        op.showsProgressPanel = false
-        op.printInfo.jobDisposition = .save
-        op.printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = outputURL
-
-        guard op.run() else {
-            // Reading the input can succeed while WRITING the output is denied — a granted folder
-            // covers what is inside it, and `-o` can point anywhere else.
-            err(FolderAccess.annotatingHeadlessDenial(
-                "printing \(inputURL.lastPathComponent) to PDF failed (could not write \(outputURL.path))"))
+        let pdfData: Data
+        do { pdfData = try writePDF(from: wc, to: outputURL, force: parsed.force) }
+        catch let failure as PDFWriteFailure {
+            switch failure {
+            case .stagingUnavailable(let reason):
+                err("printing \(inputURL.lastPathComponent) to PDF failed: \(reason)")
+            case .printFailed:
+                // NOT a grant problem: the print subsystem writes into this app's own container
+                // (see `writePDF`), so a failure here is the print stack itself.
+                err("printing \(inputURL.lastPathComponent) to PDF failed")
+            case .notAPDF:
+                err("the PDF was written but could not be read back")
+            case .couldNotPlace(let reason):
+                // THIS is where a sandbox grant is the fix — the app itself is writing, so the
+                // refusal really is about reaching `outputURL`.
+                err(FolderAccess.annotatingHeadlessDenial(
+                    "could not write \(outputURL.path): \(reason)"))
+            }
             return 1
         }
+        catch { err("printing \(inputURL.lastPathComponent) to PDF failed: \(error.localizedDescription)"); return 1 }
 
-        guard let pdfData = try? Data(contentsOf: outputURL),
-              let provider = CGDataProvider(data: pdfData as CFData),
+        guard let provider = CGDataProvider(data: pdfData as CFData),
               let pdf = CGPDFDocument(provider) else {
             err("the PDF was written but could not be read back")
             return 1
@@ -112,6 +119,73 @@ enum HeadlessPDF {
         out("paper: \(pointString(box.width)) x \(pointString(box.height)) pt")
         out("size: \(pdfData.count) bytes")
         return 0
+    }
+
+    // MARK: - Printing to a file
+
+    /// Why a headless PDF cannot be printed straight to where the caller asked for it.
+    /// `printFailed` and `couldNotPlace` are deliberately DIFFERENT answers: only the second one is
+    /// ever a sandbox-grant problem, and conflating them is what made the App Store build blame the
+    /// user's folder permissions for a failure that had nothing to do with them.
+    enum PDFWriteFailure: Error, Equatable {
+        case stagingUnavailable(String)
+        case printFailed
+        case notAPDF
+        case couldNotPlace(String)
+    }
+
+    /// Print the laid-out document to `destination`, returning the PDF's own bytes.
+    ///
+    /// **The file is printed into this app's own temporary directory first and MOVED afterwards, and
+    /// that indirection is the whole point — do not "simplify" it back to a direct
+    /// `jobSavingURL = destination`.** `jobSavingURL` is honoured by the PRINT SUBSYSTEM, which is
+    /// not this process, so the security-scoped access `FolderAccess` holds does not reach it: in the
+    /// sandboxed App Store build every destination outside the container failed with
+    /// `PMSessionBeginCGDocumentNoDialog() returned -61` **even for a folder the user had already
+    /// granted**, while the identical print into the container succeeded (measured on the shipped 1.2
+    /// build, three destinations). `NSTemporaryDirectory()` resolves inside the container when
+    /// sandboxed and is ordinary temp otherwise, so this is ONE path for both builds rather than a
+    /// branch that only one of them ever exercises. The move is done by the app itself, which is
+    /// exactly what the grant covers — the same reason reading the input already worked.
+    ///
+    /// The unsandboxed test suite cannot see that property (`FolderAccess.isNeeded` is false there);
+    /// what it CAN see, and `HeadlessPDFTests` asserts, is that a destination the print subsystem
+    /// could not have written to still yields a real PDF and fails only at `couldNotPlace`.
+    static func writePDF(from wc: DocumentWindowController, to destination: URL,
+                         force: Bool) throws -> Data {
+        let fm = FileManager.default
+        let stagingDir = URL(fileURLWithPath: NSTemporaryDirectory())
+        guard fm.isWritableFile(atPath: stagingDir.path) else {
+            // The only trigger for a print failure left in our own hands — checked BEFORE running
+            // the operation, because AppKit answers a failed print with a modal alert that a
+            // headless process (no event loop, `.prohibited` activation) never dismisses: the
+            // shipped build logged `No NSAlertAction found for modalResponse: 0` and then hung
+            // until it was killed.
+            throw PDFWriteFailure.stagingUnavailable("\(stagingDir.path) is not writable")
+        }
+        let staging = stagingDir.appendingPathComponent("fastdoc-pdf-\(UUID().uuidString).pdf")
+        defer { try? fm.removeItem(at: staging) }
+
+        let op = wc.makePrintOperation()
+        op.showsPrintPanel = false
+        op.showsProgressPanel = false
+        op.printInfo.jobDisposition = .save
+        op.printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = staging
+
+        guard op.run() else { throw PDFWriteFailure.printFailed }
+        guard let data = try? Data(contentsOf: staging), data.starts(with: Array("%PDF".utf8)) else {
+            throw PDFWriteFailure.notAPDF
+        }
+
+        do {
+            // `-f` was already checked against the destination before any work was done; removing
+            // it here is what lets the move land, since `moveItem` refuses an occupied path.
+            if force, fm.fileExists(atPath: destination.path) { try fm.removeItem(at: destination) }
+            try fm.moveItem(at: staging, to: destination)
+        } catch {
+            throw PDFWriteFailure.couldNotPlace(error.localizedDescription)
+        }
+        return data
     }
 
     // MARK: - Settling the async render pipeline

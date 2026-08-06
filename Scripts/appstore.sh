@@ -33,6 +33,13 @@ PKG="FastDocReader.pkg"
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 cd "$(dirname "$0")/.."
 
+# A store-signed bundle cannot be launched here (RBS 163 — those identifiers need store
+# installation), so the sandbox-only behaviour of the headless flags has to be exercised against the
+# local sandbox shape instead, and nothing in this script can do it for you:
+#     SANDBOX=1 ./Scripts/make-app.sh release && ./Scripts/smoke-headless-pdf.sh
+# 1.2 shipped `--pdf` broken in exactly that gap (CLAUDE.md invariant 70).
+echo "==> Reminder: run ./Scripts/smoke-headless-pdf.sh against a SANDBOX=1 build before shipping"
+
 echo "==> Unlocking the signing keychain"
 KC_PW="$(security find-generic-password -a ww-w-signing -s ww-w-signing-keychain -w)"
 security unlock-keychain -p "$KC_PW" "$KEYCHAIN"

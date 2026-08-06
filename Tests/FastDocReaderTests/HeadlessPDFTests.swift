@@ -76,6 +76,55 @@ final class HeadlessPDFTests: XCTestCase {
                      "the file must now be a real PDF")
     }
 
+    // MARK: - The PDF is printed into our own temp dir and MOVED to the destination
+
+    /// The sandbox defect in one assertion, in the one form an UNSANDBOXED suite can see it: a
+    /// destination folder that cannot be written to must still produce a real PDF and fail only at
+    /// the placing step. Printing straight to `jobSavingURL = destination` — which is what the
+    /// shipped 1.2 build did — cannot reach `.couldNotPlace` at all, because the print subsystem
+    /// fails first and the answer is `.printFailed`.
+    ///
+    /// It does NOT prove the sandbox property itself (the suite runs unsandboxed, so
+    /// `FolderAccess.isNeeded` is false); that one is verified against a signed App Store build.
+    ///
+    /// **Mutation-checked, and the failure is a HANG, not a red X** — putting `destination` back in
+    /// `jobSavingURL` makes this test never return, because the failed print raises AppKit's own
+    /// modal error alert and an `xctest` process has no one to dismiss it. That is the field
+    /// symptom (`No NSAlertAction found for modalResponse: 0`, then nothing) reproduced without a
+    /// sandbox, so a run of this test that sits forever means the staging step is gone, not that
+    /// the machine is busy.
+    func testAPDFIsStagedInTempAndOnlyTheMoveCanFailOnAnUnwritableDestination() throws {
+        let input = try writeMarkdownFixture()
+        let locked = temp.appendingPathComponent("locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: locked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                       ofItemAtPath: locked.path) }
+
+        let wc = try openHeadless(input)
+        let before = try stagedPDFsInTemp()
+        XCTAssertThrowsError(try HeadlessPDF.writePDF(from: wc, to: locked.appendingPathComponent("x.pdf"),
+                                                      force: false)) { error in
+            XCTAssertEqual(self.failureKind(error), "couldNotPlace",
+                           "the PDF must have been produced — only putting it in place may fail")
+        }
+        XCTAssertEqual(try stagedPDFsInTemp(), before,
+                       "the staging file must be removed whether the move succeeded or not")
+    }
+
+    /// The success half of the same contract: nothing is left behind in the temp directory.
+    func testASuccessfulRunLeavesNoStagingFileBehind() throws {
+        let input = try writeMarkdownFixture()
+        let wc = try openHeadless(input)
+        let before = try stagedPDFsInTemp()
+
+        let data = try HeadlessPDF.writePDF(from: wc, to: temp.appendingPathComponent("out.pdf"),
+                                            force: false)
+        XCTAssertTrue(data.starts(with: Array("%PDF".utf8)))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: temp.appendingPathComponent("out.pdf").path))
+        XCTAssertEqual(try stagedPDFsInTemp(), before)
+    }
+
     // MARK: - Default output path
 
     /// No `-o`: the output lands beside the input, same basename, `.pdf` in place of the original
@@ -96,6 +145,37 @@ final class HeadlessPDFTests: XCTestCase {
     private func repoRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    }
+
+    /// The same three steps `HeadlessPDF.run` takes before it prints, so a test measures the state a
+    /// real headless run is in rather than a hand-built one.
+    private func openHeadless(_ url: URL) throws -> DocumentWindowController {
+        let doc = MarkdownDocument()
+        doc.fileURL = url
+        try doc.read(from: try Data(contentsOf: url), ofType: "public.data")
+        NSWindow.removeFrame(usingName: "FastMDReaderDoc")
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 820, height: 640), display: false)
+        HeadlessPDF.waitForRenderToSettle(doc: doc, wc: wc)
+        if let tc = wc.textView.textContainer { wc.textView.layoutManager?.ensureLayout(for: tc) }
+        wc.applyTrailingFooterBand()
+        return wc
+    }
+
+    private func stagedPDFsInTemp() throws -> Int {
+        try FileManager.default.contentsOfDirectory(atPath: NSTemporaryDirectory())
+            .filter { $0.hasPrefix("fastdoc-pdf-") }.count
+    }
+
+    private func failureKind(_ error: Error) -> String {
+        switch error as? HeadlessPDF.PDFWriteFailure {
+        case .stagingUnavailable: return "stagingUnavailable"
+        case .printFailed: return "printFailed"
+        case .notAPDF: return "notAPDF"
+        case .couldNotPlace: return "couldNotPlace"
+        case nil: return "other(\(error))"
+        }
     }
 
     private func writeMarkdownFixture(_ name: String = "sample.md") throws -> URL {
