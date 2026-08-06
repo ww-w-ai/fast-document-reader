@@ -3040,8 +3040,22 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard let lm = textView.layoutManager, let tc = textView.textContainer else { return 1 }
         let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
                                          band: pageBandDelegate.band)
-        let body = max(0, lm.usedRect(for: tc).height
-                          - pageBandDelegate.leadingBand - pageBandDelegate.trailingBand)
+        // Measured from the LAST LINE, never from `usedRect` minus the trailing band. `usedRect`
+        // includes the EXTRA LINE FRAGMENT, and that rect is not ours to rely on: AppKit recomputes
+        // it whenever it re-lays the end of the text — putting the caret past the last character
+        // (which is exactly what clicking the empty space below the final page does) replaces the
+        // band `applyTrailingFooterBand` reserved with its own empty-line height. Measured on a real
+        // report: the reservation came back 11.0pt tall and `usedRect` fell 643.85 → 612.35, so the
+        // subtraction below then removed a band that was no longer there, the page count dropped by
+        // one, and the last sheet — the PAPER behind the final page — stopped being drawn while the
+        // text stayed on the desk. The last line's own rect is the same number
+        // `applyTrailingFooterBand` derives its reservation from, and nothing outside layout can
+        // move it.
+        let lastGlyph = lm.numberOfGlyphs - 1
+        let contentBottom = lastGlyph >= 0
+            ? lm.lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil).maxY
+            : 0
+        let body = max(0, contentBottom - pageBandDelegate.leadingBand)
         return PageBandPainter.totalPages(documentHeight: body, pitch: pitch)
     }
 

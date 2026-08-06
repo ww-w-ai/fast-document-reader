@@ -287,7 +287,33 @@ enum OfficeTextBuilder {
             }
             tagBlock(from: start)
         }
+        unifyParagraphTerminators(in: result)
         return result
+    }
+
+    /// Give every paragraph's terminating `"\n"` the attributes of the paragraph it ENDS.
+    ///
+    /// **A separator with no font is not a neutral character — AppKit gives it Helvetica 12pt**, the
+    /// app's own default, so a font the document never mentions sits inside the document. Measured on
+    /// a real 9pt Korean report: each of the bare `NSAttributedString(string: "\n")` appends above
+    /// produced a `Helvetica@12` run. Laid-out height and page count are IDENTICAL either way
+    /// (verified against a `--pdf` render before and after, and by measuring the document's used
+    /// height with this pass removed) — this is hygiene and one fewer attribute run per paragraph,
+    /// not a spacing change.
+    ///
+    /// This is invariant 51 at the TOP level. `TableBlockBuilder` unified the newline that ends a
+    /// cell and `cellContent` the ones between a cell's own paragraphs; the document's own paragraph
+    /// separators were the third case and were never covered. Same function, same ALLOW-list, so a
+    /// separator next to an attachment/link/underline still falls back to exactly what it had.
+    private static func unifyParagraphTerminators(in result: NSMutableAttributedString) {
+        guard result.length > 0 else { return }
+        let ns = result.string as NSString
+        var paragraphs: [NSRange] = []
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: result.length), options: .byParagraphs) {
+            _, _, enclosing, _ in
+            if enclosing.length > 0 { paragraphs.append(enclosing) }
+        }
+        for range in paragraphs { unifyTerminator(of: range, in: result, string: ns) }
     }
 
     /// The `format` carried by a heading/paragraph/list-item block — `nil` for every other case

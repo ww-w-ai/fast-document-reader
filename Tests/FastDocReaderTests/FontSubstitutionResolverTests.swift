@@ -48,7 +48,14 @@ final class FontSubstitutionResolverTests: XCTestCase {
         lm.ensureLayout(for: container)
         var out: [String] = []
         out.reserveCapacity(storage.length)
+        let text = storage.string as NSString
         for i in 0..<storage.length {
+            // A paragraph SEPARATOR draws no glyph, and it now carries the font of the paragraph it
+            // ends (`OfficeTextBuilder.unifyParagraphTerminators`) — which is the resolved substitute
+            // on one side of these comparisons and the declared font on the other, i.e. it differs
+            // for exactly the reason the comparison exists rather than because a character came out
+            // in a different face. The census is about DRAWN glyphs, so it asks only about them.
+            if CharacterSet.newlines.contains(UnicodeScalar(text.character(at: i))!) { continue }
             let f = storage.attribute(.font, at: i, effectiveRange: nil) as? NSFont
             out.append(f?.fontName ?? "<none>")
         }
