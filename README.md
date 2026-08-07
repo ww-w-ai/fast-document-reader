@@ -46,8 +46,8 @@ outline you can immediately edit, plain text starts empty.
 drawn by the reader itself, not by a second, simpler renderer — so what you glance at is what you
 open. On a Mac without Hangul installed a `.hwp` has **no preview at all** otherwise.
 
-It opens **plain text too** — `.txt`, `.csv`, `.log`, and the config files a developer opens all day
-(`.conf`, `.cfg`, `.ini`, `.env`, `.vars`) — shown verbatim in a fixed-width font, one
+It opens **plain text too** — `.txt`, `.csv`, `.log`, subtitles (`.srt`, `.vtt`, `.smi`, …), and the config
+files a developer opens all day (`.conf`, `.cfg`, `.ini`, `.env`, `.vars`, `.yaml`, `.json`, `.xml`, `.tf`, `.graphql`) — shown verbatim in a fixed-width font, one
 block per line, with `#` and `*` left as the characters they are. Files written on Windows or Linux
 arrive intact: CP949, UTF-16, Latin-1 and friends are detected rather than assumed, and a file is
 **saved back in the encoding it came in**, CRLF and all.
@@ -95,7 +95,10 @@ viewer at **429** — close, and honestly not identical.
 | Memory | **15 MB at launch**, ~161 MB with a 20 MB document open, **34–97 MB reclaimed** on close |
 | Long docs | The whole document is laid out up front, so the **scrollbar is honest from the first frame** — a 4,000-paragraph file opens instantly and never resizes under you |
 | Editing long docs | Only the edited block is re-rendered — **9 ms on 64k characters, 29 ms on 1.2 MB** |
-| Plain text | `.txt` · `.csv` · `.log` · `.conf` · `.cfg` · `.ini` · `.env` · `.vars` shown **verbatim**, one block per line — nothing reinterpreted as Markdown |
+| Plain text | `.txt` · `.csv` · `.tsv` · `.log` shown **verbatim**, one block per line — nothing reinterpreted as Markdown |
+| Config & data | `.conf` · `.cfg` · `.ini` · `.env` · `.vars` · `.toml` · `.yaml` · `.json` · `.jsonl` · `.xml` · `.sql` · `.tf` · `.hcl` · `.graphql` · `.properties` · `.diff` and more — the files a developer opens to read, not to compile |
+| Subtitles | `.srt` · `.vtt` · `.smi` · `.ass` · `.ssa` · `.sub` · `.lrc` — cues read as what they are, timestamp line and text |
+| Markup | `.rst` · `.adoc` · `.org` · `.tex` · `.textile` — prose formats that are not Markdown, shown as written |
 | Finder preview | Space-bar Quick Look for `.md` and `.hwp` drawn by **this reader's own engine** — the preview and the opened document are the same thing |
 | Word / OpenDocument | `.docx`/`.docm`/`.dotx`/`.dotm`/`.odt` — **read-only**, formatting, tables, equations, charts and RTL text shown as authored |
 | HWP (Korean) | `.hwp`/`.hwpx` — **read-only**, Korea's dominant document format, rendered natively through the same office engine as Word/ODT, headings and all |

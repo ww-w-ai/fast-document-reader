@@ -37,7 +37,22 @@
 				<string>com.apple.log</string>
 				<string>public.toml</string>
 				<string>com.microsoft.ini</string>
+				<string>public.yaml</string>
+				<string>public.json</string>
+				<string>public.xml</string>
+				<string>public.ndjson</string>
+				<string>public.patch-file</string>
+				<string>public.protobuf-source</string>
+				<string>public.make-source</string>
+				<string>org.iso.sql</string>
+				<string>com.apple.crashreport</string>
+				<string>com.apple.ips</string>
+				<string>com.apple.xcode.strings-text</string>
+				<string>org.w3.webvtt</string>
 				<string>ai.ww-w.fast-md-reader.config-text</string>
+				<string>ai.ww-w.fast-md-reader.dev-text</string>
+				<string>ai.ww-w.fast-md-reader.markup-text</string>
+				<string>ai.ww-w.fast-md-reader.subtitle-text</string>
 			</array>
 			<key>NSDocumentClass</key>
 			<string>FastDocReader.MarkdownDocument</string>
@@ -156,7 +171,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.3.0</string>
 	<key>CFBundleVersion</key>
-	<string>13</string>
+	<string>14</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSApplicationCategoryType</key>
@@ -187,6 +202,90 @@
 					<string>ini</string>
 					<string>env</string>
 					<string>vars</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Developer Text File</string>
+			<key>UTTypeIdentifier</key>
+			<string>ai.ww-w.fast-md-reader.dev-text</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>tf</string>
+					<string>tfvars</string>
+					<string>hcl</string>
+					<string>sls</string>
+					<string>cnf</string>
+					<string>lock</string>
+					<string>jsonl</string>
+					<string>properties</string>
+					<string>graphql</string>
+					<string>gql</string>
+					<string>thrift</string>
+					<string>avsc</string>
+					<string>xsd</string>
+					<string>wsdl</string>
+					<string>dtd</string>
+					<string>resx</string>
+					<string>po</string>
+					<string>har</string>
+					<string>http</string>
+					<string>rest</string>
+					<string>gradle</string>
+					<string>cmake</string>
+					<string>bzl</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Markup Document</string>
+			<key>UTTypeIdentifier</key>
+			<string>ai.ww-w.fast-md-reader.markup-text</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>rst</string>
+					<string>adoc</string>
+					<string>asciidoc</string>
+					<string>org</string>
+					<string>tex</string>
+					<string>textile</string>
+					<string>nfo</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>Subtitle File</string>
+			<key>UTTypeIdentifier</key>
+			<string>ai.ww-w.fast-md-reader.subtitle-text</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>srt</string>
+					<string>smi</string>
+					<string>ass</string>
+					<string>ssa</string>
+					<string>sub</string>
+					<string>lrc</string>
 				</array>
 			</dict>
 		</dict>

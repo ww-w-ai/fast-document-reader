@@ -25,6 +25,20 @@ final class DocumentTypeDeclarationTests: XCTestCase {
         // public.toml — the app claims those real types as well as the public ones it used to guess.
         "log": "com.apple.log",
         "toml": "public.toml",
+        // These hang off `public.text` rather than `public.plain-text`, so claiming the plain-text
+        // types does NOT cover them and each has to be claimed by name.
+        "vtt": "org.w3.webvtt",
+        "yaml": "public.yaml", "yml": "public.yaml",
+        "json": "public.json",
+        "xml": "public.xml",
+        "ndjson": "public.ndjson",
+        "sql": "org.iso.sql",
+        "diff": "public.patch-file", "patch": "public.patch-file",
+        "proto": "public.protobuf-source",
+        "mk": "public.make-source",
+        "crash": "com.apple.crashreport",
+        "ips": "com.apple.ips",
+        "strings": "com.apple.xcode.strings-text",
         "docx": "org.openxmlformats.wordprocessingml.document",
         "docm": "org.openxmlformats.wordprocessingml.document.macroenabled",
         "dotx": "org.openxmlformats.wordprocessingml.template",
@@ -66,18 +80,25 @@ final class DocumentTypeDeclarationTests: XCTestCase {
         }
     }
 
-    /// Our own exported type has to be claimed too — declaring a type only says it EXISTS; the
-    /// document-type entry is what says we open it.
-    func testOurOwnConfigTypeIsBothDeclaredAndClaimed() throws {
+    /// Our own types have to be claimed too — declaring a type only says it EXISTS; the
+    /// document-type entry is what says we open it. Both exist because nobody else declares those
+    /// extensions: with no declaration anywhere macOS types the file `dyn.…` and the app cannot even
+    /// be offered in the Finder's Open With.
+    func testOurOwnTypesAreBothDeclaredAndClaimed() throws {
         let plist = try infoPlist()
-        let identifier = "ai.ww-w.fast-md-reader.config-text"
         let exported = (plist["UTExportedTypeDeclarations"] as? [[String: Any]]) ?? []
-        XCTAssertTrue(exported.contains { $0["UTTypeIdentifier"] as? String == identifier },
-                      "the configuration-file type must be EXPORTED (it is ours, in our namespace)")
         let claimed = Set(((plist["CFBundleDocumentTypes"] as? [[String: Any]]) ?? [])
             .flatMap { ($0["LSItemContentTypes"] as? [String]) ?? [] })
-        XCTAssertTrue(claimed.contains(identifier),
-                      "declared but unclaimed: macOS would know the type exists and not that we open it")
+        for identifier in ["ai.ww-w.fast-md-reader.config-text",
+                           "ai.ww-w.fast-md-reader.dev-text",
+                           "ai.ww-w.fast-md-reader.markup-text",
+                           "ai.ww-w.fast-md-reader.subtitle-text"] {
+            XCTAssertTrue(exported.contains { $0["UTTypeIdentifier"] as? String == identifier },
+                          "`\(identifier)` must be EXPORTED (it is ours, in our namespace)")
+            XCTAssertTrue(claimed.contains(identifier),
+                          "`\(identifier)` is declared but unclaimed: macOS would know the type "
+                        + "exists and not that we open it")
+        }
     }
 
     // MARK: - Reading the real Info.plist
