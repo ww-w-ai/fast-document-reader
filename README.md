@@ -147,6 +147,32 @@ that's already there. It reads the same formats `--extract` does — the Word fa
 HWP (`.hwp`/`.hwpx`) and plain text/Markdown — one document per run. Tested against a 490-page HWP,
 an 11-page `.docx`, a 9-page `.odt` and a 423-page Markdown file.
 
+## Tell your AI to use it
+
+Both commands only help if your assistant knows they exist. Save this as a standing rule — Claude
+Code's `CLAUDE.md`, a Cursor rule, a memory, whatever your tool calls it:
+
+> When you need to read a `.docx`, `.docm`, `.dotx`, `.dotm`, `.odt`, `.hwp` or `.hwpx`, do not
+> unzip or parse it yourself. Run
+> `/Applications/FastDocReader.app/Contents/MacOS/FastDocReader --extract <file>` and read the
+> Markdown it prints. To turn a document into a PDF, run the same binary with `--pdf <file>`
+> (`-o out.pdf` to choose the path, `-f` to overwrite). Both exit non-zero on failure and say why on
+> stderr. If it refuses with a folder-permission message, stop and ask me to grant that folder —
+> you cannot do it yourself.
+
+That last line is there for the **App Store build**, which is sandboxed. A path handed in on the
+command line carries no permission of its own, so the first run against a new folder is refused —
+and the refusal names its own fix rather than reading as "no such file". Granting is a human action
+by design: macOS creates that permission only when a person picks the folder in an open panel, so an
+assistant can ask for it and can never perform it.
+
+**One-time setup, App Store build only.** Open any document from the folder your work lives in, then
+choose **File ▸ "Allow Access to This Folder…"** and pick a top level — granting `~/Documents` covers
+everything beneath it, so one grant usually answers every project you have. It is remembered across
+launches, including for later headless runs, so your assistant only ever hits this once. The
+[direct download](#two-builds-one-difference) is not sandboxed and needs none of it: it reads and
+writes wherever you can.
+
 ## Diagrams render offline, once
 
 The mermaid engine ships inside the app — no CDN, no network, nothing to load. A diagram is
