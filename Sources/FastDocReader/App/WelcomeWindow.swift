@@ -153,10 +153,10 @@ final class WelcomeWindowController: NSWindowController {
 
     private func fill(_ stack: NSStackView, forStepTwo _: Void) {
         stack.addArrangedSubview(Self.wrappingLabel(
-            "Set \(AppDelegate.appDisplayName) as the default app", size: 15, weight: .semibold))
+            "Set \(AppDelegate.appDisplayName) as the default app", size: 18, weight: .semibold))
         stack.addArrangedSubview(Self.wrappingLabel(DefaultAppPicker.explanation,
                                                     size: 12, secondary: true))
-        picker = DefaultAppPicker()
+        picker = DefaultAppPicker(width: Self.textWidth)
         picker.translatesAutoresizingMaskIntoConstraints = false
         picker.heightAnchor.constraint(equalToConstant: picker.frame.height).isActive = true
         picker.widthAnchor.constraint(equalToConstant: picker.frame.width).isActive = true

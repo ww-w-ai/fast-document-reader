@@ -145,16 +145,19 @@ final class DefaultAppPicker: NSView {
         + "To undo this later, select a file in the Finder, press ⌘I, and pick another app "
         + "under “Open with”."
 
-    private static let rowHeight: CGFloat = 24
-    private static let width: CGFloat = 420
+    private static let rowHeight: CGFloat = 26
+    /// The alert sizes its accessory from this; the first-run guide passes its own content width so
+    /// the list fills the window instead of leaving a ragged empty column beside it.
+    static let alertWidth: CGFloat = 420
 
     private var boxes: [(button: NSButton, group: DefaultAppClaim.Group)] = []
 
     /// Families the reader has ticked and that are not already fully ours.
     var chosen: [DefaultAppClaim.Group] { boxes.filter { $0.button.state == .on }.map(\.group) }
 
-    init(isDefault: @escaping (String, String) -> Bool = DefaultAppClaim.isDefault) {
-        super.init(frame: NSRect(x: 0, y: 0, width: Self.width,
+    init(width: CGFloat = DefaultAppPicker.alertWidth,
+         isDefault: @escaping (String, String) -> Bool = DefaultAppClaim.isDefault) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width,
                                  height: Self.rowHeight * CGFloat(DefaultAppClaim.groups.count)))
         for (i, group) in DefaultAppClaim.groups.enumerated() {
             let state = DefaultAppClaim.state(of: group, isDefault: isDefault)
@@ -173,7 +176,7 @@ final class DefaultAppPicker: NSView {
             // Top-down reading order in a bottom-up coordinate system.
             button.frame = NSRect(x: 0,
                                   y: CGFloat(DefaultAppClaim.groups.count - 1 - i) * Self.rowHeight,
-                                  width: Self.width, height: Self.rowHeight - 4)
+                                  width: width, height: Self.rowHeight - 4)
             addSubview(button)
             if state != .claimed { boxes.append((button, group)) }
         }

@@ -120,6 +120,9 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 - **Synthetic scroll is blocked by accessibility** — CGEvent scroll doesn't reach the window. You cannot drive scrolling programmatically; **the user reproduces, you read logs.** Log total height / frame height / scrollY per reconcile and read them.
 - Temporary instrumentation goes to `/tmp/fmd-*.log`. **Remove all of it (delete `DebugLog.swift`, strip log calls) before committing** and clean `/tmp/fmd-*`.
 - Verify visual/pixel behavior with a screenshot only when the judgment is truly visual; deterministic size assertions are proven by the logs/code, not screenshots.
+- **Capture ONE window by its id, not the screen.** A full-screen `screencapture` races the terminal for focus and keeps returning a picture of the terminal — activating the app and sleeping first is unreliable, because whatever is producing output raises itself again. Ask Quartz for the window number and grab that window alone, which needs no focus at all and yields a tight, cheap image:
+  `python3 -c "import Quartz; [print(w['kCGWindowNumber']) for w in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly, Quartz.kCGNullWindowID) if '<title>' in (w.get('kCGWindowName') or '')]"` then `screencapture -x -o -l <id> out.png`.
+- **Driving the UI: `click button "X" of window 1` via System Events works; `keystroke` does not.** A synthesized keystroke goes to whatever is frontmost and was swallowed by the terminal every time, while an accessibility click reaches the named button whether or not the app has focus. (Scrolling is still not drivable at all — that is the CGEvent limit above.)
 
 ## Commit / distribution
 
