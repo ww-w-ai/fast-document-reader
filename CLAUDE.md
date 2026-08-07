@@ -63,6 +63,8 @@ there before changing its behaviour.
 - `App/PageViewOptions.swift` — the View menu's page toggles + the global preference behind them.
 - `App/MarginNumbers.swift` / `PageNumberDeskView.swift` / `JumpIndicatorView.swift` — line/page numbers and the jump overlay.
 - `App/ReaderScrollView.swift` — the pinch gesture. `App/DocumentTypes.swift` — the single list of openable extensions.
+- `App/DefaultAppClaim.swift` — becoming the Finder's handler: the four claimable FAMILIES, the read-back check, and the shared tick list. Opened ≠ claimed, deliberately (each claim costs a macOS confirmation dialog).
+- `App/WelcomeWindow.swift` — the first-run guide, two steps in order (what it is → default app). The "don't show again" tick lives on step 2, so leaving at step 1 does not count as seen.
 - `App/TextEncodingDetector.swift` — what a file's bytes actually are, and the bytes to write back.
 - `App/HeadlessExtract.swift` / `App/HeadlessPDF.swift` / `App/main.swift` — the `--extract` and `--pdf` CLIs and their gating.
 - `Navigation/` — `ReaderTextView` (key handling, gutter select, reading-line band), `TextNavigator` (pure boundary math), `AnchorResolver` (internal links).

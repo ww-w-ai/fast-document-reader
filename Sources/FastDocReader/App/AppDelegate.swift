@@ -45,10 +45,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // file passed AT launch opens its own window first and suppresses the panel.
         DispatchQueue.main.async { [weak self] in
             guard NSDocumentController.shared.documents.isEmpty,
-                  !NSApp.windows.contains(where: { $0.isVisible }) else { return }
-            self?.openDocumentPanel(nil)
+                  !NSApp.windows.contains(where: { $0.isVisible }) else {
+                // Launched by opening a file, so the panel above never appears — but a first-time
+                // reader arriving that way needs the guide just as much, so it hangs off the
+                // launch itself rather than off the panel.
+                self?.showWelcomeIfDue()
+                return
+            }
+            self?.presentOpenPanel { self?.showWelcomeIfDue() }
         }
     }
+
+    /// The first-run guide, shown once the launch has settled one way or the other — a document
+    /// opened, or the Open panel dismissed with nothing. Deferred a turn so the document's own
+    /// window is on screen first: a guide that covers the thing it is describing reads as a
+    /// pop-up, and the reader dismisses it before looking at either.
+    private func showWelcomeIfDue() {
+        guard WelcomeStore.showsOnLaunch else { return }
+        DispatchQueue.main.async { WelcomeWindowController.present() }
+    }
+
+    @objc func showWelcomeWindow(_ sender: Any?) { WelcomeWindowController.present() }
 
     // No untitled ("new blank") documents — this is a read-only viewer, there is nothing to create.
     // The launch Open panel above (not this hook) is what satisfies "show a window on launch".
@@ -65,7 +82,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // A SwiftPM executable has no MainMenu.nib, so build the menu bar in code. Without it,
     // standard shortcuts (⌘Q/⌘O/⌘W/⌘C/⌘F/⌘±) and the native Window/tabs menu don't work.
-    private func buildMenu() {
+    // Internal rather than private so a test can prove a menu item EXISTS and is wired — a store
+    // that works while nothing reaches it is invariant 29's failure mode, and the menu bar is
+    // exactly that kind of seam (no compiler sees it).
+    func buildMenu() {
         let appName = Self.appDisplayName
         let mainMenu = NSMenu()
 
@@ -231,6 +251,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let helpItem = NSMenuItem(); mainMenu.addItem(helpItem)
         let helpMenu = NSMenu(title: "Help"); helpItem.submenu = helpMenu
         helpMenu.addItem(withTitle: "Keyboard Shortcuts", action: Selector(("showShortcutGuide:")), keyEquivalent: "?")
+        // The first-run guide, reachable forever after — the reader who ticked "don't show again"
+        // on day one is exactly the one who later wants to find the default-app setting again.
+        // In the Help menu because that is where macOS keeps a "Welcome to <App>" (Xcode's is here
+        // too); this app has no Settings window to put it in.
+        let welcome = helpMenu.addItem(withTitle: "Welcome to \(appName)",
+                                       action: #selector(showWelcomeWindow(_:)), keyEquivalent: "")
+        welcome.target = self
         NSApp.helpMenu = helpMenu
 
         NSApp.mainMenu = mainMenu
@@ -296,29 +323,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Markdown starts ticked because that is what this app is for. The text kinds start clear:
     /// they are a capability, not the reason someone installed a Markdown reader, and quietly
     /// taking over every .csv on someone's Mac is not a favour.
-    private static let claimable: [(name: String, id: String, ext: String, onByDefault: Bool)] = [
-        ("Markdown  (.md, .markdown)", "net.daringfireball.markdown", "md", true),
-        ("Word document  (.docx)", "org.openxmlformats.wordprocessingml.document", "docx", false),
-        ("OpenDocument text  (.odt)", "org.oasis-open.opendocument.text", "odt", false),
-        ("Hangul document  (.hwp)", "com.hancom.hwp", "hwp", false),
-        ("Hangul document  (.hwpx)", "com.hancom.hwpx", "hwpx", false),
-        ("Plain text  (.txt)", "public.plain-text", "txt", false),
-        ("Comma-separated values  (.csv)", "public.comma-separated-values-text", "csv", false),
-        ("Tab-separated values  (.tsv)", "public.tab-separated-values-text", "tsv", false),
-        ("Log files  (.log)", "com.apple.log", "log", false),
-    ]
-
-    /// The type a file of this kind ACTUALLY gets on THIS machine, which is not always the
-    /// identifier we declare. HWP is why this exists: `.hwp` is Hancom's type, so a Mac with their
-    /// suite installed reports `com.haansoft.hancomofficeviewer.mac.hwp` while one without it falls
-    /// to the `com.hancom.hwp` this app declares itself — and claiming the hardcoded one would make
-    /// this app the default for a type no file on that machine is, which looks like nothing
-    /// happening. `.docx` never showed the fault because its identifier is the same everywhere.
-    /// The declared id is the fallback for the case the extension resolves to nothing at all.
-    private static func resolvedType(ext: String, id: String) -> UTType? {
-        UTType(filenameExtension: ext) ?? UTType(id)
-    }
-
     /// The standard About panel, but with the build's git provenance in the version line. Marketing
     /// version (`CFBundleShortVersionString`) and build number (`CFBundleVersion`) are the
     /// same across a release and every local rebuild, so they can't answer "is the installed app the
@@ -341,87 +345,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func offerToBecomeDefault(_ sender: Any?) {
-        // A checkbox per kind, so the choice is the user's rather than a take-it-or-leave-it lump.
-        // A kind this app ALREADY handles is shown ticked and disabled: unticking couldn't undo it
-        // (macOS has no "no default app" — some other app has to claim it), and a control that
-        // looks like it undoes something but doesn't is worse than no control.
-        let rowHeight: CGFloat = 24
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: 340,
-                                       height: rowHeight * CGFloat(Self.claimable.count)))
-        var boxes: [(NSButton, String)] = []
-        for (i, kind) in Self.claimable.enumerated() {
-            let already = isDefaultApp(ext: kind.ext, id: kind.id)
-            let button = NSButton(checkboxWithTitle: already ? kind.name + "  — already set" : kind.name,
-                                  target: nil, action: nil)
-            button.state = (already || kind.onByDefault) ? .on : .off
-            button.isEnabled = !already
-            // Top-down reading order in a bottom-up coordinate system.
-            button.frame = NSRect(x: 0, y: CGFloat(Self.claimable.count - 1 - i) * rowHeight,
-                                  width: 340, height: rowHeight - 4)
-            box.addSubview(button)
-            if !already { boxes.append((button, kind.ext)) }
-        }
-
+        // The App menu's door into the claim. Step 2 of the first-run guide is the other one, and
+        // both go through `DefaultAppClaim` — the family list and the read-back check live there
+        // once, or the two doors would drift about what "already set" means.
+        let picker = DefaultAppPicker()
         let alert = NSAlert()
         alert.messageText = "Set \(Self.appDisplayName) as the default app"
-        alert.informativeText = "Double-clicking a ticked kind of file in the Finder will open it here. "
-            + "To undo this later, select a file in the Finder, press ⌘I, and pick another app under “Open with”."
-        alert.accessoryView = box
+        alert.informativeText = DefaultAppPicker.explanation
+        alert.accessoryView = picker
         alert.addButton(withTitle: "Set as Default")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        let chosen = boxes.filter { $0.0.state == .on }.map { $0.1 }
+        let chosen = picker.chosen
         guard !chosen.isEmpty else { return }        // everything unticked = nothing to do
-        applyDefaults(forExtensions: chosen)
-    }
-
-    /// Whether this app is already what macOS opens the given kind with. Asked of the type the
-    /// extension really resolves to, which is also what gets claimed — the two must agree or a
-    /// claim that took would still read back as "not set".
-    private func isDefaultApp(ext: String, id: String) -> Bool {
-        guard let type = Self.resolvedType(ext: ext, id: id),
-              let current = NSWorkspace.shared.urlForApplication(toOpen: type) else { return false }
-        return current.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL
-    }
-
-    private func applyDefaults(forExtensions extensions: [String]) {
-        let appURL = Bundle.main.bundleURL
-        let bundleID = Bundle.main.bundleIdentifier ?? ""
-        // The completion handlers come back on whatever queue AppKit chooses, so the tally is
-        // guarded — several of them landing at once would otherwise corrupt the array.
-        let lock = NSLock()
-        var failures: [String] = []
-        func note(_ name: String) { lock.lock(); failures.append(name); lock.unlock() }
-        let group = DispatchGroup()
-        for ext in extensions {
-            guard let kind = Self.claimable.first(where: { $0.ext == ext }) else { continue }
-            guard let type = Self.resolvedType(ext: kind.ext, id: kind.id) else { note(kind.name); continue }
-            group.enter()
-            // Report SUCCESS only after reading the association back. macOS can answer noErr and
-            // change nothing when another installed app owns the type — measured on .hwp against
-            // Hancom's suite — so trusting the return value would tell the user it worked while the
-            // Finder still opens the file elsewhere.
-            func settle() {
-                if !self.isDefaultApp(ext: kind.ext, id: kind.id) { note(kind.name) }
-                group.leave()
-            }
-            if #available(macOS 14.0, *) {
-                NSWorkspace.shared.setDefaultApplication(at: appURL, toOpen: type) { _ in settle() }
-            } else {
-                _ = LSSetDefaultRoleHandlerForContentType(
-                    type.identifier as CFString, .all, bundleID as CFString)
-                settle()
-            }
-        }
-        group.notify(queue: .main) {
-            // Report the outcome either way. A settings change with no visible result leaves the
-            // user unsure whether it took — and macOS can refuse one (a managed Mac, say).
+        DefaultAppClaim.apply(chosen) { failures in
+            let outcome = DefaultAppClaim.outcomeMessage(failures: failures, appName: Self.appDisplayName)
             let done = NSAlert()
-            done.messageText = failures.isEmpty ? "Done" : "Partly done"
-            done.informativeText = failures.isEmpty
-                ? "Those files now open in \(Self.appDisplayName)."
-                : "macOS declined to change:\n\n\(failures.map { "•  " + $0 }.joined(separator: "\n"))\n\nYou can set these per file with ⌘I in the Finder."
+            done.messageText = outcome.title
+            done.informativeText = outcome.body
             done.addButton(withTitle: "OK")
             done.runModal()
         }
@@ -429,7 +371,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Open… (own panel → known-good open path)
 
-    @objc func openDocumentPanel(_ sender: Any?) {
+    @objc func openDocumentPanel(_ sender: Any?) { presentOpenPanel(then: nil) }
+
+    /// The panel itself, with a hook for what happens once the reader has answered it either way.
+    /// The launch path needs that hook (it shows the first-run guide next); the File menu does not.
+    private func presentOpenPanel(then finished: (() -> Void)?) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -438,6 +384,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.allowedContentTypes = DocumentTypes.openPanelTypes
         panel.allowsOtherFileTypes = true
         panel.begin { response in
+            // Runs whichever way the panel was answered — the guide is due after a cancel too.
+            defer { finished?() }
             guard response == .OK else { return }
             for url in panel.urls {
                 NSDocumentController.shared.openDocument(withContentsOf: url, display: true) { _, _, _ in }
