@@ -167,8 +167,9 @@ by design: macOS creates that permission only when a person picks the folder in 
 assistant can ask for it and can never perform it.
 
 **One-time setup, App Store build only.** Open any document from the folder your work lives in, then
-choose **File ▸ "Allow Access to This Folder…"** and pick a top level — granting `~/Documents` covers
-everything beneath it, so one grant usually answers every project you have. It is remembered across
+choose **File ▸ "Allow Access to This Folder…"**. A grant covers everything beneath the folder you
+pick, so choosing a parent rather than the document's own folder is usually what you want — pick
+`~/Documents`, say, and every project under it is answered by that one grant. It is remembered across
 launches, including for later headless runs, so your assistant only ever hits this once. The
 [direct download](#two-builds-one-difference) is not sandboxed and needs none of it: it reads and
 writes wherever you can.
