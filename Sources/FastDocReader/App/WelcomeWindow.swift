@@ -58,7 +58,7 @@ final class WelcomeWindowController: NSWindowController {
     }
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 100),
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.windowWidth, height: 100),
                               styleMask: [.titled, .closable],
                               backing: .buffered,
                               defer: false)
@@ -77,26 +77,28 @@ final class WelcomeWindowController: NSWindowController {
     // MARK: - Step 1 content
 
     private struct Point {
+        let symbol: String
         let heading: String
         let body: String
     }
 
     /// Written for someone who has just installed this and has no idea why it differs from the
-    /// reader they already had. Each point is a thing the app DOES, not an adjective.
+    /// reader they already had. Each point is a thing the app DOES, not an adjective — and each is
+    /// ONE line of body at this width, because four three-line paragraphs of the same size and
+    /// colour is what made the first version read as a grey wall rather than four points.
     private static let points: [Point] = [
-        Point(heading: "It opens what other readers hand off",
-              body: "Markdown, Word (.docx), OpenDocument (.odt), Hangul (.hwp, .hwpx), plain text, "
-                  + "CSV and source code — in one window, laid out from each document's own styles "
-                  + "rather than a look of ours."),
-        Point(heading: "Word, ODT and HWP keep their pages",
-              body: "Page size, margins, running headers and page numbers come from the file, so "
-                  + "what you read is what the author set. ⌘P prints exactly those pages."),
-        Point(heading: "Everything is real text",
-              body: "⌘F finds words inside table cells, and you can select and copy straight out of "
-                  + "a table. Nothing here is a picture of a document."),
-        Point(heading: "It stays out of the way",
-              body: "No conversion step, no web view, no sign-in. Every keyboard shortcut is under "
-                  + "Help ▸ Keyboard Shortcuts."),
+        Point(symbol: "doc.on.doc",
+              heading: "Opens what other readers hand off",
+              body: "Markdown, Word, OpenDocument, Hangul, plain text and code — in one window."),
+        Point(symbol: "doc.richtext",
+              heading: "Keeps the author's pages",
+              body: "Margins, headers and page numbers come from the file. ⌘P prints those pages."),
+        Point(symbol: "text.magnifyingglass",
+              heading: "Everything is real text",
+              body: "⌘F reaches inside table cells, and you can copy straight out of one."),
+        Point(symbol: "bolt",
+              heading: "Stays out of the way",
+              body: "No conversion, no web view, no sign-in. Shortcuts: Help ▸ Keyboard Shortcuts."),
     ]
 
     // MARK: - Assembling a step
@@ -128,16 +130,18 @@ final class WelcomeWindowController: NSWindowController {
             stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
         if container.constraints.first(where: { $0.firstAttribute == .width }) == nil {
-            container.widthAnchor.constraint(equalToConstant: 560).isActive = true
+            container.widthAnchor.constraint(equalToConstant: Self.windowWidth).isActive = true
         }
         container.layoutSubtreeIfNeeded()
         window?.setContentSize(container.fittingSize)
     }
 
     private func fill(_ stack: NSStackView, forStepOne _: Void) {
-        stack.addArrangedSubview(Self.wrappingLabel(
-            "A native reader for the documents you actually get — no conversion step, no web view.",
-            size: 13, secondary: true))
+        // A masthead — the app's own icon beside a real headline. Without it the window opened on a
+        // small grey sentence with the only title up in the chrome, so there was nothing for the eye
+        // to land on and the four points below read as one block.
+        stack.addArrangedSubview(Self.masthead())
+        stack.addArrangedSubview(NSBox.horizontalRule())
         for point in Self.points { stack.addArrangedSubview(Self.makePoint(point)) }
         stack.addArrangedSubview(NSBox.horizontalRule())
 
@@ -172,24 +176,90 @@ final class WelcomeWindowController: NSWindowController {
 
     // MARK: - Small view builders
 
+    /// `width` is the measure this label wraps at. It is a parameter rather than a constant because
+    /// the point rows are indented past an icon column and the masthead is not — one shared 500pt
+    /// max ran every line to the window edge, which is the ~90-character measure that made this
+    /// hard to scan.
     private static func wrappingLabel(_ text: String, size: CGFloat,
                                       weight: NSFont.Weight = .regular,
-                                      secondary: Bool = false) -> NSTextField {
+                                      secondary: Bool = false,
+                                      width: CGFloat = WelcomeWindowController.textWidth,
+                                      lineSpacing: CGFloat = 0) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: size, weight: weight)
         if secondary { label.textColor = .secondaryLabelColor }
         label.lineBreakMode = .byWordWrapping
-        label.preferredMaxLayoutWidth = 500
+        label.preferredMaxLayoutWidth = width
+        if lineSpacing > 0 {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = lineSpacing
+            paragraph.lineBreakMode = .byWordWrapping
+            label.attributedStringValue = NSAttributedString(
+                string: text,
+                attributes: [.font: label.font!,
+                             .foregroundColor: label.textColor ?? NSColor.labelColor,
+                             .paragraphStyle: paragraph])
+        }
         return label
     }
 
+    // Sized so every point's body is exactly ONE line. Four one-liners can be counted at a
+    // glance; two of them wrapping made the list read as five or six things of uneven weight.
+    private static let windowWidth: CGFloat = 600
+    private static let textWidth: CGFloat = 540
+    /// Icon column plus its gap, subtracted from the measure so a point's body wraps under its own
+    /// heading rather than under the icon.
+    private static let iconColumn: CGFloat = 30
+
+    private static func masthead() -> NSView {
+        let icon = NSImageView(image: NSApp.applicationIconImage)
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 56).isActive = true
+
+        let title = wrappingLabel("Welcome to \(AppDelegate.appDisplayName)",
+                                  size: 22, weight: .bold, width: 400)
+        let tagline = wrappingLabel(
+            "A native reader for the documents you actually get.",
+            size: 13, secondary: true, width: 400)
+        let words = NSStackView(views: [title, tagline])
+        words.orientation = .vertical
+        words.alignment = .leading
+        words.spacing = 2
+
+        let row = NSStackView(views: [icon, words])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 14
+        return row
+    }
+
     private static func makePoint(_ point: Point) -> NSView {
-        let stack = NSStackView(views: [wrappingLabel(point.heading, size: 13, weight: .semibold),
-                                        wrappingLabel(point.body, size: 12, secondary: true)])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 3
-        return stack
+        // A symbol per point, in its own fixed column: four headings of the same size and colour in
+        // a flat list gave the eye nothing to count by, and the rows now read as four things.
+        let glyph = NSImageView(image: NSImage(systemSymbolName: point.symbol,
+                                               accessibilityDescription: nil)
+            ?? NSImage(size: NSSize(width: 1, height: 1)))
+        glyph.contentTintColor = .secondaryLabelColor
+        glyph.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        glyph.translatesAutoresizingMaskIntoConstraints = false
+        glyph.widthAnchor.constraint(equalToConstant: 20).isActive = true
+
+        let body = textWidth - iconColumn
+        let words = NSStackView(views: [wrappingLabel(point.heading, size: 13, weight: .semibold,
+                                                      width: body),
+                                        wrappingLabel(point.body, size: 12, secondary: true,
+                                                      width: body, lineSpacing: 2)])
+        words.orientation = .vertical
+        words.alignment = .leading
+        words.spacing = 1
+
+        let row = NSStackView(views: [glyph, words])
+        row.orientation = .horizontal
+        row.alignment = .top
+        row.spacing = 10
+        return row
     }
 
     /// Adds the row and only THEN pins its width to the stack. Constraining before insertion throws
