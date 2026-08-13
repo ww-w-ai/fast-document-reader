@@ -105,23 +105,30 @@ enum PageBandGeometry {
                                         columnWidth: CGFloat, documentDefaultFontSize: CGFloat,
                                         pageContentWidth: CGFloat?) -> CGFloat {
         guard columnWidth.isFinite, columnWidth > 0 else { return 0 }
-        guard let entry = entries.first(where: { $0.appliesTo == .defaultPages }) ?? entries.first,
-              !entry.blocks.isEmpty else { return 0 }
-        let attr = OfficeTextBuilder.build(entry.blocks, theme: theme,
-                                           columnWidth: columnWidth,
-                                           documentDefaultFontSize: documentDefaultFontSize,
-                                           pageContentWidth: pageContentWidth)
-        guard attr.length > 0, drawsSomething(entry.blocks, built: attr) else { return 0 }
-        let storage = NSTextStorage(attributedString: attr)
-        let layout = NSLayoutManager()
-        layout.allowsNonContiguousLayout = false
-        storage.addLayoutManager(layout)
-        let container = NSTextContainer(size: NSSize(width: columnWidth, height: .greatestFiniteMagnitude))
-        container.widthTracksTextView = false
-        container.lineFragmentPadding = 0
-        layout.addTextContainer(container)
-        layout.ensureLayout(for: container)
-        return layout.usedRect(for: container).height
+        // The TALLEST of them, not the first. Once a document's entries come from several sections
+        // (a page takes its own section's — invariant 78), any of them can be the one painted on a
+        // given page, and a band measured against a shorter one would let a taller one overlap the
+        // body text. Reduces to exactly the old number for the overwhelmingly common document whose
+        // entries are one section's.
+        var tallest: CGFloat = 0
+        for entry in entries where !entry.blocks.isEmpty {
+            let attr = OfficeTextBuilder.build(entry.blocks, theme: theme,
+                                               columnWidth: columnWidth,
+                                               documentDefaultFontSize: documentDefaultFontSize,
+                                               pageContentWidth: pageContentWidth)
+            guard attr.length > 0, drawsSomething(entry.blocks, built: attr) else { continue }
+            let storage = NSTextStorage(attributedString: attr)
+            let layout = NSLayoutManager()
+            layout.allowsNonContiguousLayout = false
+            storage.addLayoutManager(layout)
+            let container = NSTextContainer(size: NSSize(width: columnWidth, height: .greatestFiniteMagnitude))
+            container.widthTracksTextView = false
+            container.lineFragmentPadding = 0
+            layout.addTextContainer(container)
+            layout.ensureLayout(for: container)
+            tallest = max(tallest, layout.usedRect(for: container).height)
+        }
+        return tallest
     }
 
     /// Does this ONE entry have anything for the reader to put in a band — the question every gate

@@ -186,3 +186,40 @@ final class MasterPageTests: XCTestCase {
         XCTAssertEqual(MasterPagePainter.applicablePage([body], pageIndex: 0, section: nil), body)
     }
 }
+
+/// The running head's half of the same per-section rule (invariant 78): entries are kept for every
+/// section and chosen by the page's own, and the band furniture is anchored to the PAPER rather than
+/// to the gap layout happened to open.
+final class SectionRunningHeadTests: XCTestCase {
+
+    func testAnEntryFromAnotherSectionIsNotPaintedOnThisPage() {
+        let appendix = OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [], section: 12)
+        let body = OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [], section: 2)
+        XCTAssertEqual(PageBandPainter.applicableEntry([appendix, body], pageIndex: 4, section: 2), body)
+        XCTAssertEqual(PageBandPainter.applicableEntry([appendix, body], pageIndex: 4, section: 12), appendix)
+    }
+
+    func testAnEntryThatNamesNoSectionStillApplies() {
+        // docx and odt never say which section a header came from, and must keep behaving as before.
+        let anySection = OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [])
+        XCTAssertEqual(PageBandPainter.applicableEntry([anySection], pageIndex: 0, section: 7), anySection)
+    }
+
+    func testTheFooterSitsAtThePAPERBottomEvenWhenTheGapOpensMidPage() {
+        // Measured on a real manual's appendix: a page whose last line ended early opens a gap that
+        // begins in the middle of the sheet, and dividing THAT gap printed the page number at y≈451
+        // of 754 — across the middle of the page.
+        let gap = (top: CGFloat(300), height: CGFloat(400))
+        let sheetEdge = PageBandPainter.sheetEdge(gridTop: 600, gap: gap, bottomMargin: 60)
+        XCTAssertEqual(sheetEdge, 660)
+        let top = PageBandPainter.footerTop(gap: gap, sheetEdge: sheetEdge, distance: nil, footerHeight: 20)
+        XCTAssertEqual(top, 640, "the footer belongs just above the paper's edge, not in the middle of the gap")
+    }
+
+    func testTheHeaderSitsBelowTheSheetEdgeRatherThanOnThePreviousPage() {
+        // The same fallback put the NEXT page's number at the bottom of the PREVIOUS page's paper.
+        let gap = (top: CGFloat(300), height: CGFloat(400))
+        let top = PageBandPainter.headerTop(gap: gap, sheetEdge: 660, distance: nil, headerHeight: 20)
+        XCTAssertEqual(top, 660)
+    }
+}

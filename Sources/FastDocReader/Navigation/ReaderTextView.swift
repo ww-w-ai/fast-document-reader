@@ -109,7 +109,8 @@ final class ReaderTextView: NSTextView {
             PageBandPainter.draw(content, pageContentHeight: wc.pageBandDelegate.pageContentHeight,
                                  band: wc.pageBandDelegate.band,
                                  documentHeight: lm.usedRect(for: tc).height,
-                                 visibleRect: visibleRect, origin: textContainerOrigin)
+                                 visibleRect: visibleRect, origin: textContainerOrigin,
+                                 sectionOfPage: { wc.sectionOfPage($0) })
         }
     }
 

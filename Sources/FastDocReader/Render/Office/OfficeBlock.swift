@@ -783,6 +783,12 @@ enum HeaderFooterApplicability: Equatable {
 struct OfficeHeaderFooter: Equatable {
     var appliesTo: HeaderFooterApplicability
     var blocks: [OfficeBlock]
+    /// WHICH SECTION declared it, for a format that says (HWP). A running head belongs to its own
+    /// section — invariant 77 measured what applying one document-wide does — and now that a page
+    /// can be placed in a section (`OfficeReadResult.sectionStartBlocks`) the entries are all kept
+    /// and chosen per page instead of filtered down to one section's. `nil` = the format did not
+    /// say (docx, odt), and the entry then applies wherever its parity does, exactly as before.
+    var section: Int? = nil
 }
 
 /// One object of a 바탕쪽 (master page), already resolved into something drawable and positioned on

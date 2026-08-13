@@ -251,16 +251,23 @@ enum HwpReader {
         // describes that section's pages, not this reading column's. A parser predating
         // `bodySection`/`section` leaves both nil and every entry is kept, exactly as before.
         let bodySection = envelope.bodySection
+        let sectionStarts = envelope.sectionStarts ?? []
+        result.sectionStartBlocks = sectionStarts
         func inBodySection(_ entry: HwpHeaderFooterEntry) -> Bool {
             guard let bodySection, let section = entry.section else { return true }
             return section == bodySection
         }
-        result.headers = (envelope.headers ?? []).filter(inBodySection).map {
+        // Every section's entries are kept when the parser said where sections start — the painter
+        // picks per page, the same way it picks a master page. Without `sectionStarts` a page cannot
+        // be placed in a section at all, and then the body section's are the only honest answer
+        // (invariant 77: applying another section's put a page number on 400 pages that never had one).
+        let keepEveryHeadSection = !sectionStarts.isEmpty
+        result.headers = (envelope.headers ?? []).filter { keepEveryHeadSection || inBodySection($0) }.map {
             mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
                                  slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
                                  paged: pageWidth != nil)
         }
-        result.footers = (envelope.footers ?? []).filter(inBodySection).map {
+        result.footers = (envelope.footers ?? []).filter { keepEveryHeadSection || inBodySection($0) }.map {
             mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
                                  slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
                                  paged: pageWidth != nil)
@@ -270,8 +277,6 @@ enum HwpReader {
         // section's chapter title on the cover, on the table of contents and on every other
         // chapter's pages, which is the same defect one level up. Without `sectionStarts` no page
         // can be placed in a section at all, and then the body section's is the honest single answer.
-        let sectionStarts = envelope.sectionStarts ?? []
-        result.sectionStartBlocks = sectionStarts
         result.masterPages = (envelope.masterPages ?? [])
             .filter { !sectionStarts.isEmpty || bodySection == nil || $0.section == bodySection }
             .compactMap {
@@ -351,7 +356,8 @@ enum HwpReader {
             blocks: entry.blocks.map {
                 mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
                          borderFills: borderFills, shapes: shapes, paged: paged)
-            })
+            },
+            section: entry.section)
     }
 
     /// rhwp's `apply_to` (`"both"`/`"even"`/`"odd"`) → `HeaderFooterApplicability` — see that enum's

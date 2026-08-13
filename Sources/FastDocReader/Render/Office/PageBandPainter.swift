@@ -96,10 +96,16 @@ enum PageBandPainter {
     /// upper half of the gap — this page's bottom margin — when the distance is unknown.
     static func footerTop(gap: (top: CGFloat, height: CGFloat), sheetEdge: CGFloat?,
                           distance: CGFloat?, footerHeight: CGFloat) -> CGFloat {
-        guard let sheetEdge, let distance else {
+        // The PAPER's own bottom whenever it is known, even when the document never declared how far
+        // above it the footer sits: the fallback below divides the GAP, and a gap is not a margin —
+        // a page whose last line ended early opens a gap that begins in the middle of the sheet, and
+        // dividing that put a page number across the middle of the page (measured on a real manual's
+        // appendix: the number at y≈451 of 754 instead of y≈726). With the sheet edge known, a
+        // missing distance means "as low as the paper allows", which is where every reader puts it.
+        guard let sheetEdge else {
             return gap.top + max(0, (gap.height / 2 - footerHeight) / 2)
         }
-        return max(gap.top, sheetEdge - distance - footerHeight)
+        return max(gap.top, sheetEdge - (distance ?? 0) - footerHeight)
     }
 
     /// Does a footer placed at `top` still end ABOVE its own page's paper edge?
@@ -129,11 +135,14 @@ enum PageBandPainter {
     /// first line of the page it belongs to.
     static func headerTop(gap: (top: CGFloat, height: CGFloat), sheetEdge: CGFloat?,
                           distance: CGFloat?, headerHeight: CGFloat) -> CGFloat {
-        guard let sheetEdge, let distance else {
+        // BELOW the sheet edge whenever it is known — a header belongs to the page it heads, and the
+        // half-of-the-gap fallback put it on the PREVIOUS sheet whenever the gap was large (measured:
+        // page 372's number printed at the bottom of page 371's paper).
+        guard let sheetEdge else {
             let half = gap.height / 2
             return gap.top + half + max(0, (half - headerHeight) / 2)
         }
-        return min(sheetEdge + distance, gap.top + gap.height - headerHeight)
+        return min(sheetEdge + (distance ?? 0), gap.top + gap.height - headerHeight)
     }
 
     /// Is there real, empty space in the band AFTER `page` — i.e. did layout manage to open that
@@ -152,7 +161,16 @@ enum PageBandPainter {
         return opened.contains(page)
     }
 
-    static func applicableEntry(_ entries: [OfficeHeaderFooter], pageIndex: Int) -> OfficeHeaderFooter? {
+    static func applicableEntry(_ entries: [OfficeHeaderFooter], pageIndex: Int,
+                                section: Int? = nil) -> OfficeHeaderFooter? {
+        // THE SECTION FIRST, when both the page and the entry know theirs — a running head belongs
+        // to its own section (invariant 77) and a page belongs to one section (invariant 78). An
+        // entry that names no section (docx, odt) applies wherever its parity does, as it always has.
+        var entries = entries
+        if let section {
+            let own = entries.filter { $0.section == nil || $0.section == section }
+            entries = own
+        }
         if pageIndex == 0, let first = entries.first(where: { $0.appliesTo == .firstPage }) {
             return first
         }
@@ -203,8 +221,12 @@ enum PageBandPainter {
     /// use it against container-local geometry (see those functions' own comments) — this file
     /// follows that existing convention rather than introducing a stricter one just for this feature.
     /// `origin` is `textContainerOrigin`, exactly as every other decoration in this file receives it.
+    /// `sectionOfPage` answers which section a page is typeset on, so an entry declared by another
+    /// section is not painted here — see `DocumentWindowController.sectionOfPage`. `nil` means the
+    /// document never said, and every entry then applies by parity alone, as it did before.
     static func draw(_ content: PageBandContent, pageContentHeight: CGFloat, band: CGFloat,
-                     documentHeight: CGFloat, visibleRect: NSRect, origin: NSPoint) {
+                     documentHeight: CGFloat, visibleRect: NSRect, origin: NSPoint,
+                     sectionOfPage: (Int) -> Int? = { _ in nil }) {
         guard pageContentHeight > 0, band > 0 else { return }
         let pitch = pageContentHeight + band
         // `Int(_: CGFloat)` traps on NaN/infinite — guard defensively the same way
@@ -264,7 +286,8 @@ enum PageBandPainter {
             // Footer of THIS page draws in the band that FOLLOWS it — never for the last page, which
             // has no following BETWEEN-PAGE band; its own trailing footer is the dedicated arm below.
             if boundaryIsOpen, page < total - 1, content.footerHeight > 0,
-               let entry = applicableEntry(content.footers, pageIndex: page), !entry.blocks.isEmpty {
+               let entry = applicableEntry(content.footers, pageIndex: page, section: sectionOfPage(page)),
+               !entry.blocks.isEmpty {
                 // ITS OWN DISTANCE above the sheet's bottom edge (docx `w:pgMar/@w:footer`) — the
                 // same number Word measures it by, so the footer lands identically on every page.
                 // Without it, centred in the upper half of the gap: still inside this page's bottom
@@ -286,7 +309,8 @@ enum PageBandPainter {
             // Gated on the boundary BEFORE this page — the one whose band this header sits in.
             if bandExists(after: page - 1, in: content),
                page > 0, content.headerHeight > 0,
-               let entry = applicableEntry(content.headers, pageIndex: page), !entry.blocks.isEmpty {
+               let entry = applicableEntry(content.headers, pageIndex: page, section: sectionOfPage(page)),
+               !entry.blocks.isEmpty {
                 // At the BOTTOM of the gap that PRECEDES this page — directly above its first line.
                 // ITS OWN DISTANCE below the sheet's TOP edge, which is the boundary that precedes
                 // this page (docx `w:pgMar/@w:header`). Same reasoning as the footer above.
@@ -310,7 +334,8 @@ enum PageBandPainter {
             // must keep producing nothing — `applicableEntry` already encodes that selection; this
             // arm only adds WHERE to paint once it says there is something to paint.
             if page == 0, leading > 0,
-               let entry = applicableEntry(content.headers, pageIndex: 0), !entry.blocks.isEmpty {
+               let entry = applicableEntry(content.headers, pageIndex: 0, section: sectionOfPage(0)),
+               !entry.blocks.isEmpty {
                 // Its own declared distance below the sheet's top edge — which, for page 0, is where
                 // the leading reservation begins. Reduces to 0 (the original behaviour) whenever the
                 // reservation is only as tall as the header itself, i.e. whenever the reader is NOT
@@ -321,7 +346,8 @@ enum PageBandPainter {
                      origin: origin)
             }
             if page == total - 1, trailing > 0,
-               let entry = applicableEntry(content.footers, pageIndex: total - 1), !entry.blocks.isEmpty {
+               let entry = applicableEntry(content.footers, pageIndex: total - 1, section: sectionOfPage(total - 1)),
+               !entry.blocks.isEmpty {
                 // The same, from the other end: its own distance ABOVE the last sheet's bottom edge,
                 // clamped so it never rides up over the document's own last line. Also reduces to 0
                 // when the reservation is exactly the footer's height.
