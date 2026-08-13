@@ -247,12 +247,20 @@ enum HwpReader {
         // header-footer-design.md step 2/3 — read ONLY, nothing renders these yet. `nil` (a parser
         // built before this field existed) behaves exactly like `[]`: no running header/footer
         // captured, same as every other reader that finds none.
-        result.headers = (envelope.headers ?? []).map {
+        // Running heads from the BODY section only — a header declared by some other section
+        // describes that section's pages, not this reading column's. A parser predating
+        // `bodySection`/`section` leaves both nil and every entry is kept, exactly as before.
+        let bodySection = envelope.bodySection
+        func inBodySection(_ entry: HwpHeaderFooterEntry) -> Bool {
+            guard let bodySection, let section = entry.section else { return true }
+            return section == bodySection
+        }
+        result.headers = (envelope.headers ?? []).filter(inBodySection).map {
             mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
                                  slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
                                  paged: pageWidth != nil)
         }
-        result.footers = (envelope.footers ?? []).map {
+        result.footers = (envelope.footers ?? []).filter(inBodySection).map {
             mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
                                  slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
                                  paged: pageWidth != nil)
@@ -981,6 +989,12 @@ private struct HwpEnvelope: Decodable {
     /// unchanged from before this field existed (invariant 37's contract, restated for HWP).
     let headers: [HwpHeaderFooterEntry]?
     let footers: [HwpHeaderFooterEntry]?
+    /// The section this document is typeset on (the one holding the most paragraphs, the same choice
+    /// `pageContentWidth` comes from). Running heads are kept ONLY from this section: measured on a
+    /// real manual, exactly one of 14 sections declares any — a five-paragraph landscape insert —
+    /// and applying it document-wide printed a page number at the top of every even page and the
+    /// bottom of every odd one, for 400 pages, while rhwp itself draws neither (invariant 78).
+    let bodySection: Int?
 }
 
 /// One running header or footer entry, decoded straight off rhwp's own export shape
@@ -989,6 +1003,9 @@ private struct HwpEnvelope: Decodable {
 /// blocks are.
 private struct HwpHeaderFooterEntry: Decodable {
     var applyTo: String
+    /// Which section declared it. A running head belongs to its own section — see the envelope's
+    /// `bodySection` for why a reader that lays the whole document on one page must filter by it.
+    var section: Int?
     var blocks: [HwpBlock]
 }
 

@@ -1,0 +1,130 @@
+From 34af3c03d45b334c775cd302ed4650a481985853 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Fri, 14 Aug 2026 00:50:39 +0900
+Subject: [PATCH 12/12] Say which section a running head came from, and which
+ section the document is typeset on
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A header belongs to its own section. This document has fourteen and exactly one
+of them declares any — a five-paragraph landscape insert — so a host that
+flattens the flow painted that insert's header and footer on all four hundred
+pages: a number at the top of every even page and the bottom of every odd one.
+rhwp draws neither; the number a reader sees comes from the 바탕쪽.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 46 +++++++++++++++++++---
+ 1 file changed, 40 insertions(+), 6 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index b9f2f540..ed5e958f 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -88,6 +88,12 @@ struct DocumentJson {
+     /// 내보내는 `charShapes` 와 같은 이유·같은 모양(문서 수준 테이블 + 행 번호 참조)이다.
+     #[serde(rename = "borderFills")]
+     border_fills: Vec<BorderFillDto>,
++    /// The section whose page this document is typeset on — the one holding the most paragraphs (see
++    /// `page_geometry_pt`). A host that lays the whole document out on ONE page must take its running
++    /// heads from the SAME section, or it applies a five-paragraph insert's header to four hundred
++    /// pages (invariant 78).
++    #[serde(rename = "bodySection")]
++    body_section: usize,
+     /// 문서 전 구역에서 수집한 머리말('head' 컨트롤), 문서 순서대로.
+     /// 각 항목은 자신의 `applyTo`(양쪽/짝수/홀수)와, 본문과 동일한 `build_blocks`로 만든
+     /// `blocks`를 담는다 — 호스트가 새 블록 어휘를 배울 필요가 없다.
+@@ -105,6 +111,13 @@ struct DocumentJson {
+ struct HeaderFooterEntry {
+     #[serde(rename = "applyTo")]
+     apply_to: &'static str,
++    /// WHICH SECTION declared it. A running head belongs to its own section and to no other, and a
++    /// host that flattens the document into one flow has no other way to know that. Measured on
++    /// `2025_행정업무운영편람_최종.hwp`: exactly one of its 14 sections declares any — section 11, a
++    /// five-paragraph landscape insert — and applying that one document-wide put a page number at
++    /// the TOP of every even page and the BOTTOM of every odd one, for 400 pages. rhwp itself draws
++    /// neither: on a body page both bands are empty and the number comes from the 바탕쪽.
++    section: usize,
+     blocks: Vec<Block>,
+ }
+ 
+@@ -301,6 +314,18 @@ struct PageGeometry {
+ ///
+ /// 구역이 없거나 본문 폭 또는 높이가 0 이하이면 None → 여섯 필드 전부 미기재, Swift 뷰어가
+ /// 창폭 채움/기본 여백으로 폴백. docx `w:sectPr`(pgSz−pgMar), odt page-layout 과 같은 역할.
++/// The section the document is mostly made of — the one whose page defines the reading column and
++/// whose running heads belong to that column. Ties go to the earlier section (document order).
++fn body_section_index(document: &Document) -> usize {
++    document
++        .sections
++        .iter()
++        .enumerate()
++        .max_by_key(|(index, section)| (section.paragraphs.len(), std::cmp::Reverse(*index)))
++        .map(|(index, _)| index)
++        .unwrap_or(0)
++}
++
+ fn page_geometry_pt(document: &Document) -> Option<PageGeometry> {
+     // `max_by_key` 는 동수일 때 **마지막** 원소를 돌려주므로, 인덱스를 역순 키로 함께 실어
+     // 동수에서 먼저 나오는 구역이 이기게 한다(문서 순서 = 앞 구역 우선).
+@@ -1343,16 +1368,21 @@ fn header_footer_apply_str(a: HeaderFooterApply) -> &'static str {
+ 
+ /// 수집된 머리말/꼬리말 컨트롤 참조를 `HeaderFooterEntry`로 변환한다 — 본문과 SAME
+ /// `build_blocks`를 재사용하므로 호스트가 배울 블록 어휘가 늘지 않는다.
+-fn build_header_footer_entries(doc: &Document, ctrls: &[&Control]) -> Vec<HeaderFooterEntry> {
++fn build_header_footer_entries(
++    doc: &Document,
++    ctrls: &[(usize, &Control)],
++) -> Vec<HeaderFooterEntry> {
+     ctrls
+         .iter()
+-        .map(|ctrl| match ctrl {
++        .map(|(section, ctrl)| match ctrl {
+             Control::Header(h) => HeaderFooterEntry {
+                 apply_to: header_footer_apply_str(h.apply_to),
++                section: *section,
+                 blocks: build_blocks(doc, &h.paragraphs),
+             },
+             Control::Footer(f) => HeaderFooterEntry {
+                 apply_to: header_footer_apply_str(f.apply_to),
++                section: *section,
+                 blocks: build_blocks(doc, &f.paragraphs),
+             },
+             _ => unreachable!("collect_headers_footers only ever pushes Header/Footer controls"),
+@@ -1411,9 +1441,9 @@ impl DocumentCore {
+     /// 파서/렌더 무변경의 읽기 전용 질의. Swift 뷰어 브리지가 소비한다.
+     pub fn export_document_json(&self) -> Result<String, HwpError> {
+         let mut blocks = Vec::new();
+-        let mut header_ctrls: Vec<&Control> = Vec::new();
+-        let mut footer_ctrls: Vec<&Control> = Vec::new();
+-        for section in &self.document.sections {
++        let mut header_ctrls: Vec<(usize, &Control)> = Vec::new();
++        let mut footer_ctrls: Vec<(usize, &Control)> = Vec::new();
++        for (section_index, section) in self.document.sections.iter().enumerate() {
+             blocks.extend(build_blocks(&self.document, &section.paragraphs));
+             // 각주/미주 본문을 구역 본문 뒤에 붙인다 (참조 마커는 본문 내 super span).
+             let mut notes = Vec::new();
+@@ -1422,7 +1452,10 @@ impl DocumentCore {
+                 blocks.extend(build_note_blocks(&self.document, note));
+             }
+             // 머리말/꼬리말은 본문 흐름에 섞지 않고 문서 수준 배열로 따로 모은다.
+-            collect_headers_footers(&section.paragraphs, &mut header_ctrls, &mut footer_ctrls);
++            let (mut heads, mut foots) = (Vec::new(), Vec::new());
++            collect_headers_footers(&section.paragraphs, &mut heads, &mut foots);
++            header_ctrls.extend(heads.into_iter().map(|c| (section_index, c)));
++            footer_ctrls.extend(foots.into_iter().map(|c| (section_index, c)));
+         }
+         // 페이지 지오메트리는 한 번만 계산해 폭/높이/네 여백이 서로 드리프트하지 않게 한다.
+         let geometry = page_geometry_pt(&self.document);
+@@ -1437,6 +1470,7 @@ impl DocumentCore {
+             page_margin_bottom: geometry.as_ref().map(|g| g.margin_bottom),
+             char_shapes: build_char_shapes(&self.document.doc_info),
+             border_fills: build_border_fills(&self.document.doc_info),
++            body_section: body_section_index(&self.document),
+             headers: build_header_footer_entries(&self.document, &header_ctrls),
+             footers: build_header_footer_entries(&self.document, &footer_ctrls),
+             blocks,
+-- 
+2.50.1 (Apple Git-155)
+

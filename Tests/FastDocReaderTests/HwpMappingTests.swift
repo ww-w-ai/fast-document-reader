@@ -563,6 +563,32 @@ final class HwpMappingTests: XCTestCase {
                        NSColor(srgbRed: 0x11/255, green: 0x22/255, blue: 0x33/255, alpha: 1))
     }
 
+    /// A running head belongs to ITS OWN section. Measured on a real manual: exactly one of its 14
+    /// sections declares any — a five-paragraph landscape insert — and applying that document-wide
+    /// printed a page number at the top of every even page and the bottom of every odd one, for 400
+    /// pages, while rhwp draws neither (its number comes from the 바탕쪽). A reader that lays the
+    /// whole document on ONE page must take its running heads from the section that page came from.
+    func testRunningHeadsAreKeptOnlyFromTheBodySection() throws {
+        let json = """
+        {"v":1,"bodySection":2,
+         "headers":[{"applyTo":"even","section":11,"blocks":[]}],
+         "footers":[{"applyTo":"odd","section":2,"blocks":[]},
+                    {"applyTo":"both","section":11,"blocks":[]}],
+         "blocks":[]}
+        """
+        let r = try HwpReader.mapJSON(json)
+        XCTAssertTrue(r.headers.isEmpty, "a header from another section describes that section's pages")
+        XCTAssertEqual(r.footers.count, 1)
+
+        // A parser predating the two fields leaves them nil, and every entry is kept — unchanged.
+        let old = try HwpReader.mapJSON("""
+        {"v":1,"headers":[{"applyTo":"even","blocks":[]}],
+         "footers":[{"applyTo":"odd","blocks":[]}],"blocks":[]}
+        """)
+        XCTAssertEqual(old.headers.count, 1)
+        XCTAssertEqual(old.footers.count, 1)
+    }
+
     // MARK: image + unsupported (size reserved, nothing dropped)
 
     func testImageReservesSize() throws {
