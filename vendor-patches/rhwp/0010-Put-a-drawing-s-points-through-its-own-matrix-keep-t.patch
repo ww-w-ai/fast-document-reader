@@ -1,0 +1,234 @@
+From cce992a1e7a2a4fa0ff21a409e475c039ada02dc Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Fri, 14 Aug 2026 00:05:11 +0900
+Subject: [PATCH 10/10] Put a drawing's points through its own matrix, keep the
+ picture inside it, and stop filling a line
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Three defects in the shape export, each measured on the same manual.
+
+A drawing's points are stored in the object's original space and the shape's six
+render coefficients are what place them — the renderer applies them and this
+export did not, so a pair of real arrows came out as "M 0,0 L 100,100", 1pt
+specks that carried none of their extent.
+
+A shape that CONTAINS pictures is a screenshot in a frame: exporting the frame
+and dropping the picture left three consecutive pages as an empty red rectangle.
+The picture is the content, so it is what ships, and the frame's box no longer
+reserves a second empty one below it.
+
+And a line record still carries a fill — white, in these files — so filling any
+path painted white bars over the text; a table's own column label disappeared
+under one. Only a path that closes is filled now.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 116 ++++++++++++++++++---
+ 1 file changed, 100 insertions(+), 16 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 076271c2..6a3ada7d 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -505,6 +505,18 @@ struct ShapeBlock {
+     /// its 78 shapes are the size of the whole page (555×752pt), so inlining them all cost 29 pages.
+     #[serde(rename = "asChar")]
+     as_char: bool,
++    /// For an ANCHORED object: what its position is measured against (`paper`/`page`/`para` for the
++    /// vertical axis, `paper`/`page`/`column`/`para` for the horizontal) and the two offsets, in
++    /// HWPUNIT. A host with a floating layer places the object with these; one without them can only
++    /// tell that it is not in the text.
++    #[serde(rename = "vertRelTo")]
++    vert_rel_to: &'static str,
++    #[serde(rename = "horzRelTo")]
++    horz_rel_to: &'static str,
++    #[serde(rename = "offsetX")]
++    offset_x: i32,
++    #[serde(rename = "offsetY")]
++    offset_y: i32,
+     paths: Vec<ShapePath>,
+ }
+ 
+@@ -1004,6 +1016,21 @@ fn append_control_blocks(doc: &Document, para: &Paragraph, out: &mut Vec<Block>)
+ /// they survive a host that cannot draw the frame, in the SAME vocabulary the body already uses.
+ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>) {
+     let common = shape.common();
++    // A drawing object that CONTAINS PICTURES is a picture with a frame around it — a screenshot in
++    // a box, which is how a Korean manual illustrates a procedure. The picture is the content and
++    // the frame is decoration, so the picture is what ships: emitting both would stack them, since
++    // this reader places an object inline rather than at coordinates, and the frame would then
++    // reserve a second box the size of the image below it. Measured before this: three consecutive
++    // pages of a real manual rendered as an empty red rectangle and nothing else, because the box
++    // was drawn and the screenshot inside it was dropped.
++    let mut pictures = Vec::new();
++    collect_shape_pictures(shape, &mut pictures);
++    if !pictures.is_empty() {
++        for picture in pictures {
++            out.push(build_image_block(doc, picture));
++        }
++        return;
++    }
+     let mut paths = Vec::new();
+     collect_shape_paths(shape, 0, 0, &mut paths);
+     if !paths.is_empty() {
+@@ -1012,6 +1039,19 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+             h: common.height as i32,
+             align: horz_align_str(common.horz_align),
+             as_char: common.treat_as_char,
++            vert_rel_to: match common.vert_rel_to {
++                crate::model::shape::VertRelTo::Paper => "paper",
++                crate::model::shape::VertRelTo::Page => "page",
++                crate::model::shape::VertRelTo::Para => "para",
++            },
++            horz_rel_to: match common.horz_rel_to {
++                crate::model::shape::HorzRelTo::Paper => "paper",
++                crate::model::shape::HorzRelTo::Page => "page",
++                crate::model::shape::HorzRelTo::Column => "column",
++                crate::model::shape::HorzRelTo::Para => "para",
++            },
++            offset_x: common.horizontal_offset as i32,
++            offset_y: common.vertical_offset as i32,
+             paths,
+         }));
+     }
+@@ -1020,6 +1060,19 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+     }
+ }
+ 
++/// Every picture inside a drawing object, including through group nesting.
++fn collect_shape_pictures<'a>(shape: &'a ShapeObject, out: &mut Vec<&'a crate::model::image::Picture>) {
++    match shape {
++        ShapeObject::Picture(picture) => out.push(picture),
++        ShapeObject::Group(group) => {
++            for child in &group.children {
++                collect_shape_pictures(child, out);
++            }
++        }
++        _ => {}
++    }
++}
++
+ fn shape_text_box(shape: &ShapeObject) -> Option<&crate::model::shape::TextBox> {
+     shape_drawing(shape).and_then(|d| d.text_box.as_ref())
+ }
+@@ -1044,15 +1097,34 @@ fn pt_cmd(op: &'static str, coords: &[i32]) -> Vec<serde_json::Value> {
+ 
+ /// One shape's own path(s), in the object box's coordinates, offset by any group nesting.
+ fn collect_shape_paths(shape: &ShapeObject, dx: i32, dy: i32, out: &mut Vec<ShapePath>) {
++    // EVERY point goes through the shape's own affine matrix first. The record stores a line's
++    // endpoints, a polygon's vertices and a curve's controls in the object's ORIGINAL space, and
++    // `ShapeComponentAttr`'s six render coefficients are what rhwp's renderer uses to put them where
++    // they are actually drawn (`layout/shape_layout.rs`'s `transform_pt`). Skipping it does not
++    // merely misplace a shape: measured, a pair of real arrows came out as `M 0,0 L 100,100` —
++    // 1pt specks — because the matrix carried all of their extent.
++    let sa = shape.shape_attr();
++    let (a, b, tx) = (sa.render_sx, sa.render_b, sa.render_tx);
++    let (c, dd, ty) = (sa.render_c, sa.render_sy, sa.render_ty);
++    let tp = |x: i32, y: i32| -> (i32, i32) {
++        let (x, y) = (x as f64, y as f64);
++        (
++            (a * x + b * y + tx).round() as i32 + dx,
++            (c * x + dd * y + ty).round() as i32 + dy,
++        )
++    };
+     let mut d: Vec<Vec<serde_json::Value>> = Vec::new();
+     match shape {
+         ShapeObject::Line(line) => {
+-            d.push(pt_cmd("M", &[line.start.x + dx, line.start.y + dy]));
+-            d.push(pt_cmd("L", &[line.end.x + dx, line.end.y + dy]));
++            let (sx, sy) = tp(line.start.x, line.start.y);
++            let (ex, ey) = tp(line.end.x, line.end.y);
++            d.push(pt_cmd("M", &[sx, sy]));
++            d.push(pt_cmd("L", &[ex, ey]));
+         }
+         ShapeObject::Rectangle(rect) => {
+             for (i, (x, y)) in rect.x_coords.iter().zip(rect.y_coords.iter()).enumerate() {
+-                d.push(pt_cmd(if i == 0 { "M" } else { "L" }, &[*x + dx, *y + dy]));
++                let (px, py) = tp(*x, *y);
++                d.push(pt_cmd(if i == 0 { "M" } else { "L" }, &[px, py]));
+             }
+             d.push(pt_cmd("Z", &[]));
+         }
+@@ -1060,9 +1132,11 @@ fn collect_shape_paths(shape: &ShapeObject, dx: i32, dy: i32, out: &mut Vec<Shap
+             // A circle/ellipse as four cubic arcs — the standard 0.5523 magic ratio, computed from
+             // the centre and the two axis endpoints the record stores, so a rotated ellipse keeps
+             // its axes instead of being straightened into a bounding box.
+-            let (cx, cy) = (el.center.x + dx, el.center.y + dy);
+-            let (ax, ay) = (el.axis1.x - el.center.x, el.axis1.y - el.center.y);
+-            let (bx, by) = (el.axis2.x - el.center.x, el.axis2.y - el.center.y);
++            let (cx, cy) = tp(el.center.x, el.center.y);
++            let (a1x, a1y) = tp(el.axis1.x, el.axis1.y);
++            let (a2x, a2y) = tp(el.axis2.x, el.axis2.y);
++            let (ax, ay) = (a1x - cx, a1y - cy);
++            let (bx, by) = (a2x - cx, a2y - cy);
+             let k = 0.552_284_75_f64;
+             let p = |sx: f64, sy: f64| -> (i32, i32) {
+                 (
+@@ -1086,13 +1160,15 @@ fn collect_shape_paths(shape: &ShapeObject, dx: i32, dy: i32, out: &mut Vec<Shap
+             // honest and coarse. Drawing the true sweep needs the ellipse's own parametrisation,
+             // which the record states only indirectly; a straight join is visibly wrong only on a
+             // wide sweep, and the alternative (dropping it) is invisible everywhere.
+-            d.push(pt_cmd("M", &[arc.center.x + dx, arc.center.y + dy]));
+-            d.push(pt_cmd("L", &[arc.axis1.x + dx, arc.axis1.y + dy]));
+-            d.push(pt_cmd("L", &[arc.axis2.x + dx, arc.axis2.y + dy]));
++            for (i, p) in [arc.center, arc.axis1, arc.axis2].iter().enumerate() {
++                let (px, py) = tp(p.x, p.y);
++                d.push(pt_cmd(if i == 0 { "M" } else { "L" }, &[px, py]));
++            }
+         }
+         ShapeObject::Polygon(poly) => {
+             for (i, pt) in poly.points.iter().enumerate() {
+-                d.push(pt_cmd(if i == 0 { "M" } else { "L" }, &[pt.x + dx, pt.y + dy]));
++                let (px, py) = tp(pt.x, pt.y);
++                d.push(pt_cmd(if i == 0 { "M" } else { "L" }, &[px, py]));
+             }
+             if poly.points.len() > 2 {
+                 d.push(pt_cmd("Z", &[]));
+@@ -1100,17 +1176,21 @@ fn collect_shape_paths(shape: &ShapeObject, dx: i32, dy: i32, out: &mut Vec<Shap
+         }
+         ShapeObject::Curve(curve) => {
+             if let Some(first) = curve.points.first() {
+-                d.push(pt_cmd("M", &[first.x + dx, first.y + dy]));
++                let (fx, fy) = tp(first.x, first.y);
++                d.push(pt_cmd("M", &[fx, fy]));
+                 let mut i = 1;
+                 while i + 2 < curve.points.len() {
+-                    let (a, b, c) = (&curve.points[i], &curve.points[i + 1], &curve.points[i + 2]);
+-                    d.push(pt_cmd("C", &[a.x + dx, a.y + dy, b.x + dx, b.y + dy, c.x + dx, c.y + dy]));
++                    let (p1, p2, p3) = (&curve.points[i], &curve.points[i + 1], &curve.points[i + 2]);
++                    let (x1, y1) = tp(p1.x, p1.y);
++                    let (x2, y2) = tp(p2.x, p2.y);
++                    let (x3, y3) = tp(p3.x, p3.y);
++                    d.push(pt_cmd("C", &[x1, y1, x2, y2, x3, y3]));
+                     i += 3;
+                 }
+                 // A trailing segment shorter than a cubic is joined straight rather than dropped.
+                 while i < curve.points.len() {
+-                    let pt = &curve.points[i];
+-                    d.push(pt_cmd("L", &[pt.x + dx, pt.y + dy]));
++                    let (px, py) = tp(curve.points[i].x, curve.points[i].y);
++                    d.push(pt_cmd("L", &[px, py]));
+                     i += 1;
+                 }
+             }
+@@ -1133,10 +1213,14 @@ fn collect_shape_paths(shape: &ShapeObject, dx: i32, dy: i32, out: &mut Vec<Shap
+         Some(drawing) => shape_stroke(drawing),
+         None => (None, false, false),
+     };
++    // A FILL belongs to a closed figure. A line record still carries a fill colour — white, in real
++    // documents — and painting it turns a connector into a white bar that erases the text under it
++    // (measured: it wiped a table's own column label). Only a path that closes is filled.
++    let closed = d.iter().any(|cmd| cmd.first().and_then(|v| v.as_str()) == Some("Z"));
+     out.push(ShapePath {
+         d,
+         stroke,
+-        fill: drawing.and_then(shape_fill_hex),
++        fill: if closed { drawing.and_then(shape_fill_hex) } else { None },
+         arrow_start,
+         arrow_end,
+     });
+-- 
+2.50.1 (Apple Git-155)
+

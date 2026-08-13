@@ -760,14 +760,13 @@ enum HwpReader {
             return .image(id: "\(hwpImagePrefix)\(im.binDataId)", size: size,
                           alignment: imageAlignment(im.align))
         case .shape(let sh):
-            // ONLY an AS-CHARACTER object is drawn. HWP anchors most drawings by coordinates —
-            // over the text, beside it, or across a whole page — and this reader has no floating
-            // layer (invariant 31: built, measured, deliberately not shipped). Drawing an anchored
-            // object inline does not put it where the document put it; it INSERTS it, pushing the
-            // page apart. Measured on `2025_행정업무운영편람_최종.hwp`: several of its 78 shapes are
-            // the size of the whole page, and inlining them all took the document from 423 pages to
-            // 452. A drawing skipped here is the same nothing this reader showed before it could
-            // draw shapes at all; a drawing inserted here would be a wrong page for every reader.
+            // ONLY an AS-CHARACTER object is drawn. HWP anchors most drawings by coordinates, and
+            // placing one needs more than the offsets: `vert_align`/`horz_align` decide what the
+            // offset is measured FROM, and this reader has no floating layer to put the result on
+            // (invariant 31/75). A float layer was built and measured: paragraph-anchored objects
+            // painted over the text they were meant to sit beside — a decorative rule 431pt wide
+            // covered a table's own column label — so it is not shipped, and an anchored drawing is
+            // the same nothing it was before shapes could be drawn at all.
             let paths = sh.paths.compactMap { shapePath($0) }
             var size = CGSize(width: points(sh.w), height: points(sh.h))
             if size.width < 1 || size.height < 1, let extent = pathsExtent(paths) { size = extent }
@@ -1166,6 +1165,13 @@ private struct HwpShape: Decodable {
     /// TRUE when the document places the object AS A CHARACTER — in the text flow, where drawing it
     /// inline moves nothing. FALSE = anchored by coordinates, over or beside the text.
     var asChar: Bool?
+    /// What an anchored object's position is measured against (`paper`/`page`/`para`) and the two
+    /// offsets in HWPUNIT. Only `para` is placeable by this reader: its anchor is a paragraph this
+    /// layout knows the position of, while `paper`/`page` presuppose the document's own pagination.
+    var vertRelTo: String?
+    var horzRelTo: String?
+    var offsetX: Int?
+    var offsetY: Int?
     var paths: [HwpShapePath]
 }
 

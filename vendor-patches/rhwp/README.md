@@ -33,6 +33,7 @@ Applied on top of upstream **`8d3bfa4b92174b16bac587fe1409975cf34ba566`** (just 
 | 0007 | A text run broken where a control sits, so an inline marker lands inside it |
 | 0008 | The border-fill table (`borderFills`), and page geometry from the section holding the most paragraphs rather than the first |
 | 0009 | Drawing objects as flattened PATHS (+ `asChar`), and picture/gradient fills on a border fill |
+| 0010 | A drawing's own affine matrix applied to its points, pictures inside a shape kept, and no fill on an open path |
 
 The set is regenerated wholesale — `git format-patch <base>..HEAD -o vendor-patches/rhwp/` from the
 fork — so it never drifts behind the submodule again (it had: 0005–0007 existed only as commits).

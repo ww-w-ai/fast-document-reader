@@ -1,8 +1,8 @@
 From 9417eb8c8e106fd01483d5e4a96255f2720b5077 Mon Sep 17 00:00:00 2001
 From: Taehyoung Kim <taekim@ww-w.ai>
 Date: Sat, 1 Aug 2026 14:05:31 +0900
-Subject: [PATCH 5/9] Export each cell's resolved inner margin so a host stops
- inventing one
+Subject: [PATCH 05/10] Export each cell's resolved inner margin so a host
+ stops inventing one
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
