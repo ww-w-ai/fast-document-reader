@@ -1,7 +1,7 @@
 From 34af3c03d45b334c775cd302ed4650a481985853 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 00:50:39 +0900
-Subject: [PATCH 12/12] Say which section a running head came from, and which
+Subject: [PATCH 12/14] Say which section a running head came from, and which
  section the document is typeset on
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

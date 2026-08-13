@@ -78,13 +78,14 @@ there before changing its behaviour.
 - `Render/Office/OfficeMarkdownSerializer.swift` — the `--extract` serializer (pure, view-free).
 - `Render/Office/PageBandGeometry.swift` / `PageBandLayoutDelegate.swift` / `PageBandPainter.swift` — the running header/footer in its three halves.
 - `Render/Office/PagePagination.swift` — where each SHEET is: the same rectangles for screen and paper.
+- `Render/Office/MasterPagePainter.swift` — the 바탕쪽: the title, tab, artwork and PAGE NUMBER a Korean document pins to the sheet itself (invariant 78).
 - `QuickLook/QuickLookPreviewController.swift` — the Finder's space-bar preview, through the same door `--pdf` uses.
 - `Cache/MermaidCache.swift` — content-addressed disk cache for both web engines.
 - `Resources/` — `mermaid.min.js`, `katex.min.js`, `katex-inlined.min.css` (regenerate with `Scripts/build-katex-css.sh`), `Info.plist`. `Scripts/make-app.sh` — build + bundle + ad-hoc sign.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 77 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 78 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -102,13 +103,13 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | keyboard navigation, reading cursor, margin numbers, jump | 14, 15, 71 |
 | editing, save, text encoding, splice render | 16, 17, 18, 19, 20 |
 | reflow, resize, `precomputeLayout`, first-paint cost | 24, 25, 32, 48, 49, 55, 56 |
-| office readers (docx / odt / hwp), dispatch, rhwp, headings | 29, 33, 44, 45, 73, 75 |
+| office readers (docx / odt / hwp), dispatch, rhwp, headings | 29, 33, 44, 45, 73, 75, 78 |
 | tests, corpus probes, "is this check actually reached" | 5, 29, 30, 34, 35, 41 |
 | `RenderTheme` tokens, `OfficeTextBuilder`, style resolution | 36, 37 |
 | tables — build, widths, borders, merges, attribute cost | 39, 42, 47, 50, 51, 72, 74, 76 |
 | fonts, per-script slots, substitution | 52, 53 |
 | the comments panel | 38 |
-| paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62, 77 |
+| paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62, 77, 78 |
 | printing, `--pdf`, `--extract`, anything headless | 40, 59, 66, 70 |
 | a table that crosses a page boundary | 61, 64, 72 |
 | memory, image caches, document lifetime, crashes | 63, 65 |

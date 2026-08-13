@@ -1,0 +1,188 @@
+From e985f537b37483bd7e64507dd9d0ce34800c2c57 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Fri, 14 Aug 2026 01:53:58 +0900
+Subject: [PATCH 14/14] Draw a shape's border only when the document says it
+ has one
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+HWP states the LINE TYPE and the width separately, and type 0 is "선
+없음" — the export asked only whether the width was positive, so the
+running-title box and the page-number box of a real manual, both type 0
+with a width of 33, arrived with a border rhwp's own render does not
+draw. The other half of the same rule follows: a declared line with no
+width still draws, at Hancom's 0.12 mm minimum, and a dashed one is
+never thinner than a pixel.
+
+A master page's objects also carry the two halves of the renderer's own
+paper sort key, so a host draws the full-page artwork behind the title
+rather than over it.
+---
+ src/document_core/queries/document_json.rs | 71 +++++++++++++++++++---
+ src/renderer/layout.rs                     |  2 +-
+ src/renderer/layout/shape_layout.rs        |  2 +-
+ 3 files changed, 63 insertions(+), 12 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index e06789ba..2aeced8a 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -16,7 +16,7 @@ use crate::model::control::{AutoNumberType, Control, FieldType};
+ use crate::model::document::{DocInfo, Document};
+ use crate::model::header_footer::HeaderFooterApply;
+ use crate::model::page::PageAreas;
+-use crate::model::shape::{DrawingObjAttr, ShapeObject};
++use crate::model::shape::{DrawingObjAttr, ShapeObject, TextWrap};
+ use crate::model::paragraph::Paragraph;
+ use crate::model::style::{
+     Alignment, BorderLine, BorderLineType, FillType, HeadType, LineSpacingType, UnderlineType,
+@@ -136,6 +136,13 @@ struct MasterObjectDto {
+     h: i32,
+     /// `image` (with `binDataId`), `shape` (with `paths`), or `text` (with `blocks`).
+     kind: &'static str,
++    /// The two halves of rhwp's OWN paper-plane sort key (`Layout::paper_node_sort_key`), exported
++    /// so a host draws these in the order the renderer does rather than in the order they happen to
++    /// be stored. `plane` is the text-wrap band (1 behind text, 2 ordinary, 3 in front) and `z` is
++    /// the object's z-order within it; the two are compared in that priority, then by array order.
++    /// Without them a full-page background picture stored FIRST draws over the running title.
++    plane: u8,
++    z: i32,
+     #[serde(rename = "binDataId", skip_serializing_if = "Option::is_none")]
+     bin_data_id: Option<i32>,
+     #[serde(skip_serializing_if = "Vec::is_empty")]
+@@ -1307,7 +1314,17 @@ fn collect_shape_paths(shape: &ShapeObject, dx: i32, dy: i32, out: &mut Vec<Shap
+ fn shape_stroke(drawing: &DrawingObjAttr) -> (Option<ShapeStrokeDto>, bool, bool) {
+     let border = &drawing.border_line;
+     let attr = border.attr;
+-    let kind = match attr & 0x3F {
++    let arrows = ((attr >> 10) & 0x3F != 0, (attr >> 16) & 0x3F != 0);
++    // A flattened group child's thin black SOLID text-box outline is a CONSTRUCTION line Hancom
++    // itself does not print, and the renderer suppresses it — the same judgement, called rather than
++    // restated, so an exported shape and a rendered one cannot disagree about whether it has a
++    // border.
++    if crate::renderer::layout::shape_layout::should_suppress_group_child_construction_stroke(drawing)
++    {
++        return (None, arrows.0, arrows.1);
++    }
++    let line_type = attr & 0x3F;
++    let kind = match line_type {
+         2 | 6 => "dash",
+         3 | 7 => "dot",
+         4 => "dashDot",
+@@ -1315,16 +1332,33 @@ fn shape_stroke(drawing: &DrawingObjAttr) -> (Option<ShapeStrokeDto>, bool, bool
+         8..=11 => "double",
+         _ => "solid",
+     };
+-    let stroke = if border.width > 0 {
+-        Some(ShapeStrokeDto {
+-            color: color_hex(border.color),
+-            width_pt: border.width as f64 / 100.0,
+-            kind,
+-        })
++    // THE LINE TYPE DECIDES WHETHER THERE IS A BORDER AT ALL, and the width only decides how thick
++    // one is — the rule `renderer/layout/utils.rs`'s `drawing_to_shape_style` applies and this used
++    // to get backwards, asking `width > 0` alone. Type 0 is HWP's "선 없음": measured on
++    // `2025_행정업무운영편람_최종.hwp`, the running-title box and the page-number box each declare
++    // type 0 with a width of 33, so every page arrived with a rectangle round both that rhwp's own
++    // render does not draw. The other half of the same rule: a declared line with NO width still
++    // draws, at Hancom's own 0.12 mm minimum.
++    if line_type == 0 {
++        return (None, arrows.0, arrows.1);
++    }
++    // Points rather than pixels (÷100 is HWPUNIT→pt), so the clamps are the renderer's 0.5 px and
++    // 38 px expressed at 96 dpi, and a dashed line's 1 px visibility floor with them.
++    let mut width_pt = if border.width > 0 {
++        (border.width as f64 / 100.0).min(28.5)
+     } else {
+-        None
++        0.375
+     };
+-    (stroke, (attr >> 10) & 0x3F != 0, (attr >> 16) & 0x3F != 0)
++    width_pt = width_pt.max(0.375);
++    if (2..=7).contains(&line_type) {
++        width_pt = width_pt.max(0.75);
++    }
++    let stroke = Some(ShapeStrokeDto {
++        color: color_hex(border.color),
++        width_pt,
++        kind,
++    });
++    (stroke, arrows.0, arrows.1)
+ }
+ 
+ /// A drawing object's SOLID fill, by the same rule the renderer applies to a border fill: a pattern
+@@ -1343,6 +1377,17 @@ fn shape_fill_hex(drawing: &DrawingObjAttr) -> Option<String> {
+ }
+ 
+ 
++/// The text-wrap band an object draws in — the same three-way split
++/// `renderer::layout::Layout::render_layer_plane` sorts paper-relative nodes by, restated here
++/// rather than reached for through a private renderer function.
++fn master_plane(text_wrap: TextWrap) -> u8 {
++    match text_wrap {
++        TextWrap::BehindText => 1,
++        TextWrap::InFrontOfText => 3,
++        _ => 2,
++    }
++}
++
+ /// Every section's master pages, as positioned objects. Only PAPER/PAGE-relative objects are
+ /// exported: a master page's whole point is that it sits at a fixed place on the sheet, and an
+ /// object anchored to a paragraph inside one has no paragraph a host could find.
+@@ -1369,6 +1414,8 @@ fn build_master_pages(document: &Document) -> Vec<MasterPageDto> {
+                                     w: common.width as i32,
+                                     h: common.height as i32,
+                                     kind: "image",
++                                    plane: master_plane(common.text_wrap),
++                                    z: common.z_order,
+                                     bin_data_id: Some(picture.image_attr.bin_data_id as i32),
+                                     paths: Vec::new(),
+                                     blocks: Vec::new(),
+@@ -1386,6 +1433,8 @@ fn build_master_pages(document: &Document) -> Vec<MasterPageDto> {
+                                 w: common.width as i32,
+                                 h: common.height as i32,
+                                 kind: if blocks.is_empty() { "shape" } else { "text" },
++                                plane: master_plane(common.text_wrap),
++                                z: common.z_order,
+                                 bin_data_id: None,
+                                 paths,
+                                 blocks,
+@@ -1399,6 +1448,8 @@ fn build_master_pages(document: &Document) -> Vec<MasterPageDto> {
+                                 w: common.width as i32,
+                                 h: common.height as i32,
+                                 kind: "image",
++                                plane: master_plane(common.text_wrap),
++                                z: common.z_order,
+                                 bin_data_id: Some(picture.image_attr.bin_data_id as i32),
+                                 paths: Vec::new(),
+                                 blocks: Vec::new(),
+diff --git a/src/renderer/layout.rs b/src/renderer/layout.rs
+index 1c33b1d9..12b331dd 100644
+--- a/src/renderer/layout.rs
++++ b/src/renderer/layout.rs
+@@ -1357,7 +1357,7 @@ pub struct LayoutEngine {
+ mod border_rendering;
+ mod paragraph_layout;
+ mod picture_footnote;
+-mod shape_layout;
++pub(crate) mod shape_layout;
+ mod table_cell_content;
+ mod table_layout;
+ mod table_partial;
+diff --git a/src/renderer/layout/shape_layout.rs b/src/renderer/layout/shape_layout.rs
+index ac142f89..1313e7ba 100644
+--- a/src/renderer/layout/shape_layout.rs
++++ b/src/renderer/layout/shape_layout.rs
+@@ -83,7 +83,7 @@ fn textbox_vpos_px(vertical_pos: i32, origin_hu: Option<i32>, dpi: f64) -> f64 {
+ /// 오탐 방지를 위해 매우 좁게 한정: 그룹 자식(group_level>0) + 회전/전단 없음 + 검정
+ /// (color==0) 얇은(0<width<=40 HWPUNIT) SOLID(line_type==1) 테두리 + 캡션 없음 +
+ /// (a) 채우기 없는 텍스트 전용 글상자 또는 (b) 흰색 단색 마스크 박스.
+-fn should_suppress_group_child_construction_stroke(drawing: &DrawingObjAttr) -> bool {
++pub(crate) fn should_suppress_group_child_construction_stroke(drawing: &DrawingObjAttr) -> bool {
+     if drawing.caption.is_some() {
+         return false;
+     }
+-- 
+2.50.1 (Apple Git-155)
+

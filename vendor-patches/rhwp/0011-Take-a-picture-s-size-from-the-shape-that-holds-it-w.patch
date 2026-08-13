@@ -1,7 +1,7 @@
 From 65fa5b21f441b3ac53c125474be6dca1bc031edd Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 00:28:19 +0900
-Subject: [PATCH 11/12] Take a picture's size from the shape that holds it when
+Subject: [PATCH 11/14] Take a picture's size from the shape that holds it when
  it states none of its own
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

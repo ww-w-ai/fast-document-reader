@@ -416,6 +416,23 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             : nil
     }
 
+    /// What `MasterPagePainter.draw` needs — derived from `pageBandContent` rather than plumbed
+    /// through `configurePageBand` a second time, because every number it wants (the theme, the
+    /// document's default body size, its page width) is already in there and derived once is one
+    /// fewer way for the two to disagree.
+    ///
+    /// `nil` unless the document HAS a master page and the reader is drawing pages at all — the
+    /// second condition falls out of `pageBandContent` being nil when `band == 0`, which under the
+    /// owner's master-switch rule (`PageViewOptions.underOutlineRule`) is exactly "the page outline
+    /// is off, so there is no page for anything to be about".
+    var masterPageContent: MasterPageContent? {
+        guard let pages = mdDocument?.officeMasterPages, !pages.isEmpty,
+              let band = pageBandContent else { return nil }
+        return MasterPageContent(pages: pages, theme: band.theme,
+                                 documentDefaultFontSize: band.documentDefaultFontSize,
+                                 pageContentWidth: band.pageContentWidth)
+    }
+
     /// Reserves the TRAILING footer band — the space below the very LAST line of a paged document,
     /// the other edge of header-footer-design.md's own recorded gap (`PageBandLayoutDelegate.
     /// leadingBand`, wired from `configurePageBand`, fixes the LEADING one). The between-page

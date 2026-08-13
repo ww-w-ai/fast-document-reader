@@ -1,0 +1,175 @@
+From 81e97ce575ecdb1d94eb460b4291cca99a6e5ac7 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Fri, 14 Aug 2026 01:11:17 +0900
+Subject: [PATCH 13/14] Export the template a Korean document repeats behind
+ every page
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A 바탕쪽 is where this manual's page number, side tab and full-page
+decoration actually live — the header and footer bands measured empty
+on a body page (invariant 77), so a host that reads only those bands
+draws none of it. Its objects sit at paper coordinates, so they are
+exported positioned rather than as a flow, and only paper-relative
+ones are exported: an object anchored to a paragraph inside a template
+has no paragraph a host could resolve.
+---
+ src/document_core/queries/document_json.rs | 120 +++++++++++++++++++++
+ 1 file changed, 120 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index ed5e958f..e06789ba 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -94,6 +94,10 @@ struct DocumentJson {
+     /// pages (invariant 78).
+     #[serde(rename = "bodySection")]
+     body_section: usize,
++    /// The document's 바탕쪽 templates. Empty for a document that declares none (every docx/odt
++    /// equivalent, and plenty of HWP files).
++    #[serde(rename = "masterPages")]
++    master_pages: Vec<MasterPageDto>,
+     /// 문서 전 구역에서 수집한 머리말('head' 컨트롤), 문서 순서대로.
+     /// 각 항목은 자신의 `applyTo`(양쪽/짝수/홀수)와, 본문과 동일한 `build_blocks`로 만든
+     /// `blocks`를 담는다 — 호스트가 새 블록 어휘를 배울 필요가 없다.
+@@ -106,6 +110,42 @@ struct DocumentJson {
+     blocks: Vec<Block>,
+ }
+ 
++/// A 바탕쪽 (master page) — the template a Korean document repeats behind EVERY page: the running
++/// title, the side tab, the ruled decoration and, in real files, the page number itself. It is a
++/// different mechanism from a header/footer (invariant 77 measured that on this same manual: both
++/// bands are empty on a body page and the number a reader sees comes from here), and its content is
++/// not a flow but a set of objects at PAPER coordinates, which is why they are exported positioned.
++#[derive(Serialize)]
++struct MasterPageDto {
++    /// The section that declares it — the same scoping a running head needs.
++    section: usize,
++    /// `both` / `odd` / `even`, the same vocabulary a header carries.
++    #[serde(rename = "applyTo")]
++    apply_to: &'static str,
++    objects: Vec<MasterObjectDto>,
++}
++
++/// One positioned object of a master page. `x`/`y`/`w`/`h` are HWPUNIT from the PAPER's top-left —
++/// no anchor to resolve and no text flow to consult, which is what makes a master page drawable
++/// where an ordinary anchored object is not (invariant 75).
++#[derive(Serialize)]
++struct MasterObjectDto {
++    x: i32,
++    y: i32,
++    w: i32,
++    h: i32,
++    /// `image` (with `binDataId`), `shape` (with `paths`), or `text` (with `blocks`).
++    kind: &'static str,
++    #[serde(rename = "binDataId", skip_serializing_if = "Option::is_none")]
++    bin_data_id: Option<i32>,
++    #[serde(skip_serializing_if = "Vec::is_empty")]
++    paths: Vec<ShapePath>,
++    /// A text box's own paragraphs, in the body's block vocabulary — including the page-number
++    /// control, which arrives as a span the host substitutes the live page for.
++    #[serde(skip_serializing_if = "Vec::is_empty")]
++    blocks: Vec<Block>,
++}
++
+ /// 머리말/꼬리말 한 항목 — 적용 범위 + 본문과 동일한 어휘의 블록.
+ #[derive(Serialize)]
+ struct HeaderFooterEntry {
+@@ -1302,6 +1342,85 @@ fn shape_fill_hex(drawing: &DrawingObjAttr) -> Option<String> {
+     })
+ }
+ 
++
++/// Every section's master pages, as positioned objects. Only PAPER/PAGE-relative objects are
++/// exported: a master page's whole point is that it sits at a fixed place on the sheet, and an
++/// object anchored to a paragraph inside one has no paragraph a host could find.
++fn build_master_pages(document: &Document) -> Vec<MasterPageDto> {
++    let mut out = Vec::new();
++    for (section_index, section) in document.sections.iter().enumerate() {
++        for master in &section.section_def.master_pages {
++            let mut objects = Vec::new();
++            for para in &master.paragraphs {
++                for ctrl in &para.controls {
++                    match ctrl {
++                        Control::Shape(shape) => {
++                            let common = shape.common();
++                            let mut paths = Vec::new();
++                            collect_shape_paths(shape, 0, 0, &mut paths);
++                            let mut pictures = Vec::new();
++                            collect_shape_pictures(shape, &mut pictures);
++                            // A picture inside a master-page shape is the sheet's own artwork —
++                            // the full-page decoration this manual draws behind every page.
++                            for picture in pictures {
++                                objects.push(MasterObjectDto {
++                                    x: common.horizontal_offset as i32,
++                                    y: common.vertical_offset as i32,
++                                    w: common.width as i32,
++                                    h: common.height as i32,
++                                    kind: "image",
++                                    bin_data_id: Some(picture.image_attr.bin_data_id as i32),
++                                    paths: Vec::new(),
++                                    blocks: Vec::new(),
++                                });
++                            }
++                            let blocks = shape_text_box(shape)
++                                .map(|text| build_blocks(document, &text.paragraphs))
++                                .unwrap_or_default();
++                            if paths.is_empty() && blocks.is_empty() {
++                                continue;
++                            }
++                            objects.push(MasterObjectDto {
++                                x: common.horizontal_offset as i32,
++                                y: common.vertical_offset as i32,
++                                w: common.width as i32,
++                                h: common.height as i32,
++                                kind: if blocks.is_empty() { "shape" } else { "text" },
++                                bin_data_id: None,
++                                paths,
++                                blocks,
++                            });
++                        }
++                        Control::Picture(picture) => {
++                            let common = &picture.common;
++                            objects.push(MasterObjectDto {
++                                x: common.horizontal_offset as i32,
++                                y: common.vertical_offset as i32,
++                                w: common.width as i32,
++                                h: common.height as i32,
++                                kind: "image",
++                                bin_data_id: Some(picture.image_attr.bin_data_id as i32),
++                                paths: Vec::new(),
++                                blocks: Vec::new(),
++                            });
++                        }
++                        _ => {}
++                    }
++                }
++            }
++            if objects.is_empty() {
++                continue;
++            }
++            out.push(MasterPageDto {
++                section: section_index,
++                apply_to: header_footer_apply_str(master.apply_to),
++                objects,
++            });
++        }
++    }
++    out
++}
++
+ /// 문단 목록을 블록 배열로 변환한다 (셀 재귀에도 사용).
+ fn build_blocks(doc: &Document, paragraphs: &[Paragraph]) -> Vec<Block> {
+     let mut out = Vec::new();
+@@ -1471,6 +1590,7 @@ impl DocumentCore {
+             char_shapes: build_char_shapes(&self.document.doc_info),
+             border_fills: build_border_fills(&self.document.doc_info),
+             body_section: body_section_index(&self.document),
++            master_pages: build_master_pages(&self.document),
+             headers: build_header_footer_entries(&self.document, &header_ctrls),
+             footers: build_header_footer_entries(&self.document, &footer_ctrls),
+             blocks,
+-- 
+2.50.1 (Apple Git-155)
+

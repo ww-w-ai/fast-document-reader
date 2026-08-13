@@ -265,7 +265,73 @@ enum HwpReader {
                                  slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
                                  paged: pageWidth != nil)
         }
+        // The 바탕쪽 of the BODY section only, for the reason invariant 77 measured on running heads
+        // and which applies here with more force: a master page is paper furniture, so one belonging
+        // to the cover section would stamp the cover's artwork onto four hundred body pages. A parser
+        // predating the export leaves this nil = no master page at all.
+        result.masterPages = (envelope.masterPages ?? [])
+            .filter { bodySection == nil || $0.section == bodySection }
+            .compactMap {
+                mapMasterPage($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
+                              slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
+                              paged: pageWidth != nil)
+            }
         return result
+    }
+
+    /// One 바탕쪽 → the format-neutral `OfficeMasterPage`, or nil when nothing in it can be drawn.
+    ///
+    /// Every object is resolved HERE, at read time, into bytes or blocks — the same choice
+    /// `HwpShapeRenderer` already forced for inline drawings (invariant 75): the picture provider and
+    /// the live parse handle exist during the read and are gone by the time anything paints.
+    private static func mapMasterPage(
+        _ page: HwpMasterPage, pageWidth: CGFloat?, defaultBodySize: CGFloat,
+        slotFonts: [HwpSlotFonts], borderFills: [HwpBorderFill], shapes: MediaContext, paged: Bool
+    ) -> OfficeMasterPage? {
+        var objects: [OfficeMasterObject] = []
+        // rhwp's own order, not the storage order: measured on the 편람, the full-page background
+        // picture is stored FIRST and the running title SECOND, so drawing them as stored painted
+        // the artwork over the title. Sorted by the SAME key the renderer sorts paper-relative nodes
+        // by — text-wrap band, then z-order, then stable position — with a stable sort so an object
+        // that declares neither keeps its place.
+        let ordered = page.objects.enumerated()
+            .sorted { a, b in
+                let ka = (a.element.plane ?? 2, a.element.z ?? 0, a.offset)
+                let kb = (b.element.plane ?? 2, b.element.z ?? 0, b.offset)
+                return ka < kb
+            }
+            .map(\.element)
+        for object in ordered {
+            let frame = CGRect(x: points(object.x), y: points(object.y),
+                               width: points(object.w), height: points(object.h))
+            // A picture first, because an object that HAS one is that picture: the paths beside it
+            // are the frame the document drew round it, and rhwp already exports the two separately.
+            if let binDataId = object.binDataId, let image = shapes.fillImage(binDataId) {
+                objects.append(OfficeMasterObject(frame: frame, content: .image(image)))
+                continue
+            }
+            // A drawing is rendered to the SAME vector PDF an inline shape becomes, so the tab down
+            // the page edge is drawn by the code that already draws the arrows in the body.
+            let paths = (object.paths ?? []).compactMap(shapePath)
+            if !paths.isEmpty, frame.width > 0.5, frame.height > 0.5,
+               let pdf = HwpShapeRenderer.pdf(paths: paths, size: frame.size) {
+                objects.append(OfficeMasterObject(frame: frame, content: .drawing(pdf)))
+            }
+            let blocks = (object.blocks ?? []).map {
+                mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
+                         slotFonts: slotFonts, borderFills: borderFills, shapes: shapes, paged: paged)
+            }
+            // A DEGENERATE box is dropped rather than given a width this reader invents. Measured on
+            // the 편람, one master text box states a width of zero (a rotated tab label on the cover
+            // section) — laying text into a box the document sized at nothing means choosing the
+            // width ourselves, which is invariant 57's mistake. The body section's own four objects
+            // all state real boxes.
+            if !blocks.isEmpty, frame.width > 0.5, frame.height > 0.5 {
+                objects.append(OfficeMasterObject(frame: frame, content: .text(blocks)))
+            }
+        }
+        guard !objects.isEmpty else { return nil }
+        return OfficeMasterPage(appliesTo: mapHeaderFooterApplyTo(page.applyTo), objects: objects)
     }
 
     /// One rhwp header/footer entry (`{"applyTo":"both"|"even"|"odd","blocks":[…]}`) → the SAME
@@ -993,8 +1059,42 @@ private struct HwpEnvelope: Decodable {
     /// `pageContentWidth` comes from). Running heads are kept ONLY from this section: measured on a
     /// real manual, exactly one of 14 sections declares any — a five-paragraph landscape insert —
     /// and applying it document-wide printed a page number at the top of every even page and the
-    /// bottom of every odd one, for 400 pages, while rhwp itself draws neither (invariant 78).
+    /// bottom of every odd one, for 400 pages, while rhwp itself draws neither (invariant 77).
     let bodySection: Int?
+    /// The document's 바탕쪽 templates, each with the section that declares it and its objects at
+    /// PAPER coordinates (HWPUNIT from the sheet's top-left). `nil` for a parser predating the
+    /// export — treated exactly like `[]`, i.e. no master page, which is how this reader behaved
+    /// before the feature existed.
+    let masterPages: [HwpMasterPage]?
+}
+
+/// One 바탕쪽 as rhwp exports it. `section` is filtered against the envelope's `bodySection` for the
+/// same reason a running head is (invariant 77).
+private struct HwpMasterPage: Decodable {
+    var section: Int
+    var applyTo: String
+    var objects: [HwpMasterObject]
+}
+
+/// One positioned object of a master page. `kind` says which of the three payloads is the real one:
+/// `image` carries `binDataId`, `shape` carries `paths`, `text` carries `blocks` — AND, in real
+/// files, its own `paths` too (a Korean number box is a rounded rectangle with a number in it), so
+/// the two are not alternatives to each other.
+private struct HwpMasterObject: Decodable {
+    var x: Int
+    var y: Int
+    var w: Int
+    var h: Int
+    var kind: String
+    /// The two halves of rhwp's OWN paper-plane sort key (`Layout::paper_node_sort_key`): the
+    /// text-wrap band (1 behind text, 2 ordinary, 3 in front) and the z-order within it. A parser
+    /// predating them decodes as nil, and the objects then keep their stored order — which is what
+    /// this reader did until the 편람 showed why that is not the same thing.
+    var plane: Int?
+    var z: Int?
+    var binDataId: Int?
+    var paths: [HwpShapePath]?
+    var blocks: [HwpBlock]?
 }
 
 /// One running header or footer entry, decoded straight off rhwp's own export shape

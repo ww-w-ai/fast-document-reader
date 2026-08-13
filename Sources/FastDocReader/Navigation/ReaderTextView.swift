@@ -75,6 +75,10 @@ final class ReaderTextView: NSTextView {
         // Screen only — on paper the sheet IS the sheet, and drawing an outline of it would print a
         // rectangle a millimetre inside the page edge.
         if onScreen { drawPageSheets() }
+        // The 바탕쪽 — on the paper, under everything the document itself puts on the page, and NOT
+        // gated on drawing to screen: the page number, the tab and the artwork are the document's own
+        // furniture, so a printout without them is missing part of the document (invariant 77).
+        drawMasterPages()
         if onScreen {
             drawReadingLine(lm, tc)   // under the decorations and glyphs — ambient, not a highlight
         }
@@ -147,6 +151,21 @@ final class ReaderTextView: NSTextView {
             // straddling it, which would leave a half-pixel of desk inside the paper.
             NSBezierPath(rect: sheet.insetBy(dx: 0.5, dy: 0.5)).stroke()
         }
+    }
+
+    /// Draw each sheet's master-page template, on the PAPER grid (`printSheets`) rather than on the
+    /// joined one `drawPageSheets` uses. Two reasons: the joined grid merges two sheets into one
+    /// rectangle wherever layout could not open a boundary, so its indices are no longer page
+    /// numbers — and the number in a master page's box has to be the page's own. Where a table
+    /// overruns its page (invariants 61/64) the furniture therefore lands at the paper position the
+    /// printer will use, which is the same answer `rectForPage` gives.
+    private func drawMasterPages() {
+        guard let wc = window?.windowController as? DocumentWindowController,
+              let content = wc.masterPageContent else { return }
+        let sheets = wc.printSheets
+        guard !sheets.isEmpty else { return }
+        MasterPagePainter.draw(content, sheets: sheets, totalPages: sheets.count,
+                               visibleRect: visibleRect)
     }
 
     // MARK: - Printing a paged document on its OWN page grid

@@ -785,6 +785,43 @@ struct OfficeHeaderFooter: Equatable {
     var blocks: [OfficeBlock]
 }
 
+/// One object of a 바탕쪽 (master page), already resolved into something drawable and positioned on
+/// the PAPER — `frame` is in points from the sheet's top-left corner, not from the reading column.
+///
+/// A master page is not a header/footer with different coordinates. A running head is a FLOW laid
+/// into a band the reader reserved; these are a set of pieces the document pins to the sheet itself
+/// — the full-page artwork behind the text, the tab down the outer edge, the ruled title line and,
+/// in a real Korean document, the page number (invariant 77 measured exactly that: both bands empty
+/// on a body page, the number coming from here). So there is nothing to lay out and nothing to
+/// reserve: each piece is drawn where the paper says.
+struct OfficeMasterObject: Equatable {
+    var frame: CGRect
+    var content: Content
+
+    /// A picture arrives DECODED because HWP has no archive to resolve one from later
+    /// (`OfficeReadResult.images`' own reason), a drawing arrives as the vector PDF
+    /// `HwpShapeRenderer` already produces for an inline shape — the same bytes, drawn by the same
+    /// code, so a shape on a master page cannot render differently from the identical shape in the
+    /// body — and a text box arrives as ordinary blocks, so the page number inside it is the SAME
+    /// `MDAttr.pageNumberField` span a running header carries and `PageBandPainter.
+    /// substitutingPageFields` already knows how to fill in.
+    enum Content: Equatable {
+        case image(NSImage)
+        case drawing(Data)
+        case text([OfficeBlock])
+    }
+}
+
+/// One 바탕쪽 — the template a document repeats behind every page of a section.
+///
+/// `appliesTo` reuses the header/footer vocabulary because HWP states it with the same three words
+/// (`both`/`odd`/`even`) and means the same thing by them; see `HeaderFooterApplicability` for what
+/// that folding does and does not preserve.
+struct OfficeMasterPage: Equatable {
+    var appliesTo: HeaderFooterApplicability
+    var objects: [OfficeMasterObject]
+}
+
 /// What `OfficeDocumentReader.read` and `DocumentTypes.readOffice` return — the block vocabulary an
 /// office document's BODY becomes, plus every reviewer comment the source declares (P6a; see
 /// `OfficeComment`). Bundled into one result, rather than two independent return values, so the
@@ -895,6 +932,13 @@ struct OfficeReadResult: Equatable {
     /// always meant: no running header/footer captured.
     var headers: [OfficeHeaderFooter] = []
     var footers: [OfficeHeaderFooter] = []
+
+    /// The 바탕쪽 templates that apply to the section this reading column is typeset on — already
+    /// filtered to that section by the reader, for the same reason a running head is (invariant 77):
+    /// one column shows one section's pages, so another section's template describes paper that is
+    /// not on screen. Empty for docx and odt, which have no equivalent mechanism, and for every HWP
+    /// that declares none. See `OfficeMasterPage`.
+    var masterPages: [OfficeMasterPage] = []
 
     /// The section's LINE GRID pitch in points — Word's `w:sectPr/w:docGrid` with
     /// `@w:type="lines"`/`"linesAndChars"`, whose `@w:linePitch` is in twips.
