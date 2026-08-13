@@ -135,4 +135,13 @@ enum MDAttr {
     /// document's main storage) never carries it either, because only a header/footer entry's
     /// blocks are ever built through the live-substitution path.
     static let pageNumberField = NSAttributedString.Key("mdPageNumberField")
+
+    /// WHICH SECTION of the source document this run belongs to (an `Int`), set on the first block
+    /// of each section and nowhere else — the marker that lets a PAGE be placed in a section.
+    ///
+    /// The reader lays every section into ONE column (invariant 57), so nothing else in the built
+    /// text says where one section ends and the next begins. A 바탕쪽 is declared per section
+    /// (invariant 78), so without this the reader would have to pick one template for the whole
+    /// document, which puts one chapter's running title on every other chapter's pages.
+    static let sectionIndex = NSAttributedString.Key("mdSectionIndex")
 }

@@ -818,6 +818,12 @@ struct OfficeMasterObject: Equatable {
 /// (`both`/`odd`/`even`) and means the same thing by them; see `HeaderFooterApplicability` for what
 /// that folding does and does not preserve.
 struct OfficeMasterPage: Equatable {
+    /// WHICH SECTION declares it. A master page belongs to its own section the way a running head
+    /// does (invariant 77), and unlike a running head this reader keeps them ALL: the flattened
+    /// column runs through every section, so a page's template is chosen per page rather than once
+    /// per document. Applying one section's everywhere put its chapter title on the cover, the
+    /// table of contents and 400 pages of other chapters.
+    var section: Int
     var appliesTo: HeaderFooterApplicability
     var objects: [OfficeMasterObject]
 }
@@ -933,12 +939,16 @@ struct OfficeReadResult: Equatable {
     var headers: [OfficeHeaderFooter] = []
     var footers: [OfficeHeaderFooter] = []
 
-    /// The 바탕쪽 templates that apply to the section this reading column is typeset on — already
-    /// filtered to that section by the reader, for the same reason a running head is (invariant 77):
-    /// one column shows one section's pages, so another section's template describes paper that is
-    /// not on screen. Empty for docx and odt, which have no equivalent mechanism, and for every HWP
-    /// that declares none. See `OfficeMasterPage`.
+    /// Every 바탕쪽 the document declares, each naming its own section — the reader picks per PAGE,
+    /// through `sectionStartBlocks`. Empty for docx and odt, which have no equivalent mechanism, and
+    /// for every HWP that declares none. See `OfficeMasterPage`.
     var masterPages: [OfficeMasterPage] = []
+
+    /// Where each section begins in `blocks` — `sectionStartBlocks[i]` is the index of section `i`'s
+    /// first block. The document is ONE continuous column here (invariant 57), so this is the only
+    /// thing that says which stretch of it belongs to which section, and therefore which master page
+    /// covers a given page. Empty for a format or a parser that does not say.
+    var sectionStartBlocks: [Int] = []
 
     /// The section's LINE GRID pitch in points — Word's `w:sectPr/w:docGrid` with
     /// `@w:type="lines"`/`"linesAndChars"`, whose `@w:linePitch` is in twips.

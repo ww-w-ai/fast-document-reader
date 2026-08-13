@@ -29,23 +29,36 @@ enum MasterPagePainter {
     /// (page index 1, 3, … — the human's page 2, 4, …), and everything else is covered by the
     /// default one. A document with only an even template leaves the odd pages bare, which is what
     /// it asked for.
-    static func applicablePage(_ pages: [OfficeMasterPage], pageIndex: Int) -> OfficeMasterPage? {
+    static func applicablePage(_ pages: [OfficeMasterPage], pageIndex: Int,
+                               section: Int? = nil) -> OfficeMasterPage? {
+        // THE SECTION FIRST. A master page belongs to its own section, and a document that flattens
+        // every section into one column still shows each section's own pages — so a page is matched
+        // to its section's templates and only then to the parity among them. `nil` (a parser that
+        // never said where a section starts) falls back to every template there is, which is the
+        // single-answer behaviour this had before per-page selection.
+        let candidates = section.map { s in pages.filter { $0.section == s } } ?? pages
+        guard !candidates.isEmpty else { return nil }
         let isEvenPageNumber = (pageIndex + 1) % 2 == 0
-        if isEvenPageNumber, let even = pages.first(where: { $0.appliesTo == .evenPages }) {
+        if isEvenPageNumber, let even = candidates.first(where: { $0.appliesTo == .evenPages }) {
             return even
         }
-        return pages.first { $0.appliesTo == .defaultPages } ?? pages.first
+        return candidates.first { $0.appliesTo == .defaultPages } ?? candidates.first
     }
 
     /// Draw every visible sheet's template. `sheets` are in the text view's own flipped coordinates
     /// (`DocumentWindowController.printSheets`), which run the same way a master object's own
     /// coordinates do — down from the paper's top-left — so placing one is an addition and nothing
     /// else. `totalPages` is only needed for a `NUMPAGES` field.
+    /// `sectionOfPage` answers which section a given page (0-based) is typeset on — see
+    /// `DocumentWindowController.sectionOfPage`, which resolves it from where the section markers
+    /// landed in the laid-out text. Returning `nil` for a page means "unknown", and that page falls
+    /// back to every template rather than to none.
     static func draw(_ content: MasterPageContent, sheets: [CGRect], totalPages: Int,
-                     visibleRect: NSRect) {
+                     visibleRect: NSRect, sectionOfPage: (Int) -> Int? = { _ in nil }) {
         guard !content.pages.isEmpty, !sheets.isEmpty else { return }
         for (index, sheet) in sheets.enumerated() where sheet.intersects(visibleRect) {
-            guard let page = applicablePage(content.pages, pageIndex: index) else { continue }
+            guard let page = applicablePage(content.pages, pageIndex: index,
+                                            section: sectionOfPage(index)) else { continue }
             for object in page.objects {
                 let rect = NSRect(x: sheet.minX + object.frame.minX, y: sheet.minY + object.frame.minY,
                                   width: object.frame.width, height: object.frame.height)

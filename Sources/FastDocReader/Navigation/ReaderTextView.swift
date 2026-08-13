@@ -165,7 +165,8 @@ final class ReaderTextView: NSTextView {
         let sheets = wc.printSheets
         guard !sheets.isEmpty else { return }
         MasterPagePainter.draw(content, sheets: sheets, totalPages: sheets.count,
-                               visibleRect: visibleRect)
+                               visibleRect: visibleRect,
+                               sectionOfPage: { wc.sectionOfPage($0) })
     }
 
     // MARK: - Printing a paged document on its OWN page grid

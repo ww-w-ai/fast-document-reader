@@ -1,0 +1,58 @@
+From 6e09a6b273471141f5c1e4abb8716524dca61c3c Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Fri, 14 Aug 2026 02:23:41 +0900
+Subject: [PATCH 15/15] Say where each section begins in the flat block stream
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The export is one continuous flow with no page breaks in it, so a host
+that reads it cannot tell which stretch of text belongs to which
+section — and a 바탕쪽 is declared per section. Without this the reader
+had to pick one template for the whole document, which put one
+chapter's running title on the cover, on the table of contents and on
+every other chapter's pages.
+---
+ src/document_core/queries/document_json.rs | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 2aeced8a..805d432c 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -98,6 +98,12 @@ struct DocumentJson {
+     /// equivalent, and plenty of HWP files).
+     #[serde(rename = "masterPages")]
+     master_pages: Vec<MasterPageDto>,
++    /// Where each SECTION begins in the flat `blocks` array — `sectionStarts[i]` is the index of
++    /// section `i`'s first block. The export is one continuous flow (there are no page breaks in
++    /// it), so without this a host cannot tell which part of the text belongs to which section, and
++    /// therefore cannot pick the master page or running head that applies there.
++    #[serde(rename = "sectionStarts")]
++    section_starts: Vec<usize>,
+     /// 문서 전 구역에서 수집한 머리말('head' 컨트롤), 문서 순서대로.
+     /// 각 항목은 자신의 `applyTo`(양쪽/짝수/홀수)와, 본문과 동일한 `build_blocks`로 만든
+     /// `blocks`를 담는다 — 호스트가 새 블록 어휘를 배울 필요가 없다.
+@@ -1611,9 +1617,11 @@ impl DocumentCore {
+     /// 파서/렌더 무변경의 읽기 전용 질의. Swift 뷰어 브리지가 소비한다.
+     pub fn export_document_json(&self) -> Result<String, HwpError> {
+         let mut blocks = Vec::new();
++        let mut section_starts = Vec::new();
+         let mut header_ctrls: Vec<(usize, &Control)> = Vec::new();
+         let mut footer_ctrls: Vec<(usize, &Control)> = Vec::new();
+         for (section_index, section) in self.document.sections.iter().enumerate() {
++            section_starts.push(blocks.len());
+             blocks.extend(build_blocks(&self.document, &section.paragraphs));
+             // 각주/미주 본문을 구역 본문 뒤에 붙인다 (참조 마커는 본문 내 super span).
+             let mut notes = Vec::new();
+@@ -1642,6 +1650,7 @@ impl DocumentCore {
+             border_fills: build_border_fills(&self.document.doc_info),
+             body_section: body_section_index(&self.document),
+             master_pages: build_master_pages(&self.document),
++            section_starts,
+             headers: build_header_footer_entries(&self.document, &header_ctrls),
+             footers: build_header_footer_entries(&self.document, &footer_ctrls),
+             blocks,
+-- 
+2.50.1 (Apple Git-155)
+

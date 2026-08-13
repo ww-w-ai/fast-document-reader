@@ -354,6 +354,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                             separatesPages: Bool = false, deskGap: CGFloat? = nil) {
         pageBandDelegate.pageContentHeight = pageContentHeight ?? 0
         pageBandDelegate.band = band
+        // This render replaces the storage, so where the section markers sit is about to change.
+        cachedSectionStarts = nil
         // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
         // edges the between-page reservation cannot reach on its own (header-footer-design.md's own
         // recorded gap). LEADING is gated on page 0's OWN applicable header actually carrying
@@ -431,6 +433,53 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         return MasterPageContent(pages: pages, theme: band.theme,
                                  documentDefaultFontSize: band.documentDefaultFontSize,
                                  pageContentWidth: band.pageContentWidth)
+    }
+
+    /// Where each section BEGINS in the laid-out text, as `(character, section)` in document order.
+    ///
+    /// Read from the markers `OfficeTextBuilder` put on each section's first block
+    /// (`MDAttr.sectionIndex`) rather than from the block indices themselves, because a block index
+    /// is not a character offset — a block that builds to nothing occupies none. Scanned ONCE per
+    /// render (one pass over the storage) and cached: `configurePageBand` clears it, which is the
+    /// same "every render, before the storage is replaced" hook the band itself hangs on.
+    private var cachedSectionStarts: [(character: Int, section: Int)]?
+
+    private var sectionStarts: [(character: Int, section: Int)] {
+        if let cached = cachedSectionStarts { return cached }
+        var out: [(character: Int, section: Int)] = []
+        if let storage = textView.textStorage, storage.length > 0 {
+            storage.enumerateAttribute(MDAttr.sectionIndex,
+                                       in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                if let section = value as? Int { out.append((range.location, section)) }
+            }
+        }
+        cachedSectionStarts = out
+        return out
+    }
+
+    /// Which section page `page` (0-based) is typeset on, or `nil` when the document never said.
+    ///
+    /// Answered from the page's FIRST CHARACTER — the glyph the typesetter put at the top of that
+    /// page's text — and then the last section that starts at or before it. A page that begins
+    /// mid-section carries no marker of its own, which is exactly why the answer is the last one
+    /// before it rather than one found on the page.
+    func sectionOfPage(_ page: Int) -> Int? {
+        let starts = sectionStarts
+        guard !starts.isEmpty, let lm = textView.layoutManager, let tc = textView.textContainer,
+              pageBandDelegate.isActive else { return nil }
+        let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                         band: pageBandDelegate.band)
+        guard pitch > 0 else { return nil }
+        // One point INTO the page's text area, in container coordinates — the same arithmetic the
+        // band and the sheets use, so all three agree about where a page's text begins.
+        let y = pageBandDelegate.leadingBand + CGFloat(page) * pitch + 0.5
+        let glyph = lm.glyphIndex(for: NSPoint(x: 1, y: y), in: tc)
+        let character = lm.characterIndexForGlyph(at: glyph)
+        var answer: Int?
+        for start in starts {
+            if start.character <= character { answer = start.section } else { break }
+        }
+        return answer
     }
 
     /// Reserves the TRAILING footer band — the space below the very LAST line of a paged document,

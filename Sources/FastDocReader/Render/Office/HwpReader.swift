@@ -265,12 +265,15 @@ enum HwpReader {
                                  slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
                                  paged: pageWidth != nil)
         }
-        // The 바탕쪽 of the BODY section only, for the reason invariant 77 measured on running heads
-        // and which applies here with more force: a master page is paper furniture, so one belonging
-        // to the cover section would stamp the cover's artwork onto four hundred body pages. A parser
-        // predating the export leaves this nil = no master page at all.
+        // EVERY section's template is kept, and the painter picks per page (`sectionStartBlocks`).
+        // Keeping only the body section's — the rule a running head needs (invariant 77) — put that
+        // section's chapter title on the cover, on the table of contents and on every other
+        // chapter's pages, which is the same defect one level up. Without `sectionStarts` no page
+        // can be placed in a section at all, and then the body section's is the honest single answer.
+        let sectionStarts = envelope.sectionStarts ?? []
+        result.sectionStartBlocks = sectionStarts
         result.masterPages = (envelope.masterPages ?? [])
-            .filter { bodySection == nil || $0.section == bodySection }
+            .filter { !sectionStarts.isEmpty || bodySection == nil || $0.section == bodySection }
             .compactMap {
                 mapMasterPage($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
                               slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
@@ -331,7 +334,8 @@ enum HwpReader {
             }
         }
         guard !objects.isEmpty else { return nil }
-        return OfficeMasterPage(appliesTo: mapHeaderFooterApplyTo(page.applyTo), objects: objects)
+        return OfficeMasterPage(section: page.section,
+                                appliesTo: mapHeaderFooterApplyTo(page.applyTo), objects: objects)
     }
 
     /// One rhwp header/footer entry (`{"applyTo":"both"|"even"|"odd","blocks":[…]}`) → the SAME
@@ -1066,6 +1070,10 @@ private struct HwpEnvelope: Decodable {
     /// export — treated exactly like `[]`, i.e. no master page, which is how this reader behaved
     /// before the feature existed.
     let masterPages: [HwpMasterPage]?
+    /// Where each section begins in the flat `blocks` array. `nil` for a parser predating it, and
+    /// then no page can be told which section it is on — the reader keeps only the body section's
+    /// template, which is what it did before per-page selection existed.
+    let sectionStarts: [Int]?
 }
 
 /// One 바탕쪽 as rhwp exports it. `section` is filtered against the envelope's `bodySection` for the

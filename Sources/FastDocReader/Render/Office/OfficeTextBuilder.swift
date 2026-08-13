@@ -129,7 +129,8 @@ enum OfficeTextBuilder {
                       tableWidth: CGFloat? = nil,
                       lineGridPitch: CGFloat? = nil,
                       comments: [OfficeComment] = [],
-                      deferringTables: Set<Int> = []) -> NSAttributedString {
+                      deferringTables: Set<Int> = [],
+                      sectionStartBlocks: [Int] = []) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var blockSeq = 0
         // Ordered-list numbering state, keyed by nesting level. Lives for the whole build() call
@@ -154,11 +155,24 @@ enum OfficeTextBuilder {
         var commentNumbers: [String: Int] = [:]
         for c in comments { commentNumbers[c.id] = c.number }
 
-        func tagBlock(from start: Int) {
+        // Block index → the section that starts there, so the marker is one dictionary lookup per
+        // block rather than a search per section.
+        var sectionOfBlock: [Int: Int] = [:]
+        for (section, first) in sectionStartBlocks.enumerated() { sectionOfBlock[first] = section }
+
+        func tagBlock(from start: Int, index: Int) {
             let r = NSRange(location: start, length: result.length - start)
             guard r.length > 0 else { return }
             result.addAttribute(MDAttr.blockId, value: blockSeq, range: r)
             blockSeq += 1
+            // The section marker goes on the block that STARTS a section, over its whole range —
+            // one attribute run per section, which is what a page lookup binary-searches. A section
+            // whose first block builds to nothing carries no marker, exactly like `blockId`: an
+            // empty run cannot be found by a character, so claiming one would be a lie about where
+            // the section begins.
+            if let section = sectionOfBlock[index] {
+                result.addAttribute(MDAttr.sectionIndex, value: section, range: r)
+            }
         }
 
         for (index, block) in blocks.enumerated() {
@@ -285,7 +299,7 @@ enum OfficeTextBuilder {
                     result.addAttribute(MDAttr.paraBorderEdges, value: NSNumber(value: edges.rawValue), range: range)
                 }
             }
-            tagBlock(from: start)
+            tagBlock(from: start, index: index)
         }
         unifyParagraphTerminators(in: result)
         return result

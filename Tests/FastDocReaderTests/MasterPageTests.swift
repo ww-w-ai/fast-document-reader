@@ -145,8 +145,8 @@ final class MasterPageTests: XCTestCase {
     // MARK: which template covers which page
 
     func testEvenTemplateCoversEvenPageNumbers() {
-        let even = OfficeMasterPage(appliesTo: .evenPages, objects: [])
-        let both = OfficeMasterPage(appliesTo: .defaultPages, objects: [])
+        let even = OfficeMasterPage(section: 2, appliesTo: .evenPages, objects: [])
+        let both = OfficeMasterPage(section: 2, appliesTo: .defaultPages, objects: [])
         // pageIndex is 0-based, so index 1 is the human's page 2.
         XCTAssertEqual(MasterPagePainter.applicablePage([both, even], pageIndex: 1), even)
         XCTAssertEqual(MasterPagePainter.applicablePage([both, even], pageIndex: 0), both)
@@ -157,7 +157,32 @@ final class MasterPageTests: XCTestCase {
         // `applyTo:"odd"` folds into `.defaultPages` (see `HeaderFooterApplicability`), so a document
         // declaring only an even template has nothing else to fall back to — its own entry stands
         // rather than the page being silently blank.
-        let even = OfficeMasterPage(appliesTo: .evenPages, objects: [])
+        let even = OfficeMasterPage(section: 2, appliesTo: .evenPages, objects: [])
         XCTAssertEqual(MasterPagePainter.applicablePage([even], pageIndex: 0), even)
+    }
+
+    // MARK: the section a page is on
+
+    func testATemplateFromAnotherSectionIsNotUsedForThisPage() {
+        // The defect this exists to prevent, reported on sight: one section's chapter title printed
+        // on the cover, on the table of contents and on 400 pages of other chapters.
+        let cover = OfficeMasterPage(section: 0, appliesTo: .defaultPages, objects: [])
+        let body = OfficeMasterPage(section: 2, appliesTo: .defaultPages, objects: [])
+        XCTAssertEqual(MasterPagePainter.applicablePage([cover, body], pageIndex: 0, section: 0), cover)
+        XCTAssertEqual(MasterPagePainter.applicablePage([cover, body], pageIndex: 9, section: 2), body)
+    }
+
+    func testASectionWithNoTemplateOfItsOwnDrawsNothing() {
+        // Measured on the 편람: two of its 14 sections declare no master page at all, and one more
+        // declares a pair with no objects in them. Borrowing another section's would be an invention.
+        let body = OfficeMasterPage(section: 2, appliesTo: .defaultPages, objects: [])
+        XCTAssertNil(MasterPagePainter.applicablePage([body], pageIndex: 0, section: 0))
+    }
+
+    func testAnUnknownSectionFallsBackToEveryTemplate() {
+        // A parser that never said where a section starts — the single-answer behaviour this had
+        // before per-page selection, rather than a blank document.
+        let body = OfficeMasterPage(section: 2, appliesTo: .defaultPages, objects: [])
+        XCTAssertEqual(MasterPagePainter.applicablePage([body], pageIndex: 0, section: nil), body)
     }
 }

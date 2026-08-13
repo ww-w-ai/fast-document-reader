@@ -35,6 +35,11 @@ final class MarkdownDocument: NSDocument {
     private(set) var officeHeaders: [OfficeHeaderFooter] = []
     private(set) var officeFooters: [OfficeHeaderFooter] = []
 
+    /// Where each section starts in `officeBlocks` — carried through to the builder, which marks
+    /// those blocks with `MDAttr.sectionIndex` so a PAGE can be told which section it is on. Empty
+    /// for every format but HWP. See `OfficeReadResult.sectionStartBlocks`.
+    private(set) var officeSectionStartBlocks: [Int] = []
+
     /// The 바탕쪽 templates the source declares for the section this column is typeset on — see
     /// `OfficeMasterPage`. Threaded exactly like `officeHeaders` above. Empty for docx/odt (no such
     /// mechanism), for markdown/plain text, and for an HWP that declares none. UNLIKE a running
@@ -153,6 +158,7 @@ final class MarkdownDocument: NSDocument {
         officeHeaders = []
         officeFooters = []
         officeMasterPages = []
+        officeSectionStartBlocks = []
     }
 
     /// The archive `officeBlocks` was parsed from, kept so an `.image` block's id (an archive entry
@@ -315,6 +321,7 @@ final class MarkdownDocument: NSDocument {
                 pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
                 masterPages: result.masterPages,
+                sectionStartBlocks: result.sectionStartBlocks,
                 lineGridPitch: result.lineGridPitch)
             return
         }
@@ -332,6 +339,7 @@ final class MarkdownDocument: NSDocument {
                 pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
                 masterPages: result.masterPages,
+                sectionStartBlocks: result.sectionStartBlocks,
                 lineGridPitch: result.lineGridPitch)
     }
 
@@ -350,6 +358,7 @@ final class MarkdownDocument: NSDocument {
         pageHeaderDistance: CGFloat? = nil, pageFooterDistance: CGFloat? = nil,
         headers: [OfficeHeaderFooter] = [], footers: [OfficeHeaderFooter] = [],
         masterPages: [OfficeMasterPage] = [],
+        sectionStartBlocks: [Int] = [],
         lineGridPitch: CGFloat? = nil
     ) {
         self.officeBlocks = blocks
@@ -368,6 +377,7 @@ final class MarkdownDocument: NSDocument {
         self.officeHeaders = headers
         self.officeFooters = footers
         self.officeMasterPages = masterPages
+        self.officeSectionStartBlocks = sectionStartBlocks
         self.officeLineGridPitch = lineGridPitch
         self.text = ""
         self.file = TextFile(text: "", encoding: .utf8, hasBOM: false)
@@ -397,7 +407,7 @@ final class MarkdownDocument: NSDocument {
     /// failing meant the function silently did nothing, which looks identical to a successful no-op
     /// reload and hides a real problem (deleted file, permissions, a corrupted archive) from the user.
     enum ReloadOutcome {
-        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?, pageMarginLeft: CGFloat?, pageMarginRight: CGFloat?, pageContentHeight: CGFloat?, pageMarginTop: CGFloat?, pageMarginBottom: CGFloat?, pageHeaderDistance: CGFloat?, pageFooterDistance: CGFloat?, headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter], masterPages: [OfficeMasterPage], lineGridPitch: CGFloat?)
+        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?, pageMarginLeft: CGFloat?, pageMarginRight: CGFloat?, pageContentHeight: CGFloat?, pageMarginTop: CGFloat?, pageMarginBottom: CGFloat?, pageHeaderDistance: CGFloat?, pageFooterDistance: CGFloat?, headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter], masterPages: [OfficeMasterPage], sectionStartBlocks: [Int], lineGridPitch: CGFloat?)
         case text(TextFile)
         case failure(String)
     }
@@ -436,6 +446,7 @@ final class MarkdownDocument: NSDocument {
                 pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
                 masterPages: result.masterPages,
+                sectionStartBlocks: result.sectionStartBlocks,
                 lineGridPitch: result.lineGridPitch)
             }
             let archive = try ZipArchive(data: data)
@@ -452,6 +463,7 @@ final class MarkdownDocument: NSDocument {
                 pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
                 masterPages: result.masterPages,
+                sectionStartBlocks: result.sectionStartBlocks,
                 lineGridPitch: result.lineGridPitch)
         } catch {
             return .failure(error.localizedDescription)
@@ -476,7 +488,7 @@ final class MarkdownDocument: NSDocument {
         if let url = fileURL {
             let ext = url.pathExtension.isEmpty ? (untitledExtension ?? "") : url.pathExtension
             switch Self.reloadOutcome(url: url, kind: kind, extension: ext) {
-            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth, let pageMarginLeft, let pageMarginRight, let pageContentHeight, let pageMarginTop, let pageMarginBottom, let pageHeaderDistance, let pageFooterDistance, let headers, let footers, let masterPages, let lineGridPitch):
+            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth, let pageMarginLeft, let pageMarginRight, let pageContentHeight, let pageMarginTop, let pageMarginBottom, let pageHeaderDistance, let pageFooterDistance, let headers, let footers, let masterPages, let sectionStartBlocks, let lineGridPitch):
                 // Re-parse the archive, same as the initial read — never through the text-decode
                 // path (invariant: an office document's bytes are never handed to
                 // `TextEncodingDetector`). `defaultBodyFontSize` is carried through too, so a
@@ -488,6 +500,7 @@ final class MarkdownDocument: NSDocument {
                                  pageContentHeight: pageContentHeight,
                                  pageMarginTop: pageMarginTop, pageMarginBottom: pageMarginBottom,
                                  headers: headers, footers: footers, masterPages: masterPages,
+                                 sectionStartBlocks: sectionStartBlocks,
                                  lineGridPitch: lineGridPitch)
             case .text(let reread):
                 // The undo stack holds source OFFSETS into the text we're replacing. Re-reading the
@@ -1349,7 +1362,8 @@ final class MarkdownDocument: NSDocument {
                                            tableWidth: max(1, colW - 2 * pad),
                                            lineGridPitch: officeLineGridPitch,
                                            comments: officeComments,
-                                           deferringTables: deferredTables)
+                                           deferringTables: deferredTables,
+                                           sectionStartBlocks: officeSectionStartBlocks)
             // Running-header/footer page-boundary reservation AND painting (header-footer-design.md
             // §4/§5, build steps 4/5): wired here, before `wc.display(attr)` below replaces the
             // storage, so the layout manager's delegate reflects THIS render's own numbers before any
