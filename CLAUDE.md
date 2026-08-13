@@ -85,7 +85,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 78 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 79 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -103,7 +103,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | keyboard navigation, reading cursor, margin numbers, jump | 14, 15, 71 |
 | editing, save, text encoding, splice render | 16, 17, 18, 19, 20 |
 | reflow, resize, `precomputeLayout`, first-paint cost | 24, 25, 32, 48, 49, 55, 56 |
-| office readers (docx / odt / hwp), dispatch, rhwp, headings | 29, 33, 44, 45, 73, 75, 78 |
+| office readers (docx / odt / hwp), dispatch, rhwp, headings | 29, 33, 44, 45, 73, 75, 78, 79 |
 | tests, corpus probes, "is this check actually reached" | 5, 29, 30, 34, 35, 41 |
 | `RenderTheme` tokens, `OfficeTextBuilder`, style resolution | 36, 37 |
 | tables — build, widths, borders, merges, attribute cost | 39, 42, 47, 50, 51, 72, 74, 76 |

@@ -100,12 +100,55 @@ enum DocxReader: OfficeDocumentReader {
     /// discarded for the same reason `pageGeometry` guards its width — a malformed number must not
     /// become a layout instruction.
     private static func lineGridPitch(body: XMLNode) -> CGFloat? {
-        guard let sectPr = body.children.last(where: { $0.name == "w:sectPr" }),
+        guard let sectPr = typesetSectionProperties(body: body),
               let grid = sectPr.child("w:docGrid") else { return nil }
         let type = grid.attributes["w:type"] ?? "default"
         guard type == "lines" || type == "linesAndChars" else { return nil }
         guard let pitchStr = grid.attributes["w:linePitch"], let twips = Double(pitchStr), twips > 0 else { return nil }
         return CGFloat(twips / 20)
+    }
+
+    /// The section properties this document is TYPESET on — the section holding the most paragraphs,
+    /// not the last one the body happens to end with.
+    ///
+    /// Word states a page per SECTION exactly as HWP does, and invariant 73 measured what taking the
+    /// wrong one costs there: a 14-section manual typeset on its title page's margins came out 64
+    /// pages long. The docx equivalent is the mirror image — the body's TRAILING `w:sectPr` is the
+    /// LAST section's, so a report whose final section is a landscape appendix or a one-page
+    /// colophon typesets the whole document on that page. A section ends at the paragraph whose
+    /// `w:pPr/w:sectPr` closes it, and the body's own trailing one closes the last section; counting
+    /// the paragraphs between those boundaries is the same "most content wins" rule HWP uses, with
+    /// ties going to the EARLIER section.
+    ///
+    /// A single-section document — the overwhelming majority — has exactly one candidate, so this
+    /// returns precisely what `children.last` returned before it existed.
+    fileprivate static func typesetSectionProperties(body: XMLNode) -> XMLNode? {
+        var sections: [(sectPr: XMLNode, paragraphs: Int)] = []
+        var paragraphs = 0
+        for child in body.children {
+            switch child.name {
+            case "w:p":
+                paragraphs += 1
+                if let sectPr = child.child("w:pPr")?.child("w:sectPr") {
+                    sections.append((sectPr, paragraphs))
+                    paragraphs = 0
+                }
+            case "w:tbl":
+                // A table is content too — a section made of one long table must not read as empty.
+                paragraphs += 1
+            case "w:sectPr":
+                sections.append((child, paragraphs))
+                paragraphs = 0
+            default:
+                continue
+            }
+        }
+        guard !sections.isEmpty else { return nil }
+        // `max(by:)` returns the LAST maximum, which would silently prefer the later section on a
+        // tie — the same trap invariant 73 names for HWP's `max_by_key`.
+        var best = sections[0]
+        for section in sections.dropFirst() where section.paragraphs > best.paragraphs { best = section }
+        return best.sectPr
     }
 
     /// The document's page BODY width in points — the body-level `w:sectPr`'s `w:pgSz@w:w` minus its
@@ -133,7 +176,7 @@ enum DocxReader: OfficeDocumentReader {
     /// all — so a bad/missing height clamps only `height`/`top`/`bottom` to nil, never the whole
     /// return value.
     private static func pageGeometry(body: XMLNode) -> (content: CGFloat, left: CGFloat, right: CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?, headerDistance: CGFloat?, footerDistance: CGFloat?)? {
-        guard let sectPr = body.children.last(where: { $0.name == "w:sectPr" }),
+        guard let sectPr = typesetSectionProperties(body: body),
               let pgSz = sectPr.child("w:pgSz"),
               let wStr = pgSz.attributes["w:w"], let w = Double(wStr) else { return nil }
         let mar = sectPr.child("w:pgMar")
@@ -1895,7 +1938,7 @@ enum DocxReader: OfficeDocumentReader {
         body: XMLNode, tag: String, relationships: Relationships, archive: ZipArchive,
         styleInfo: StyleInfo, numbering: NumberingInfo
     ) -> [OfficeHeaderFooter] {
-        guard let sectPr = body.children.last(where: { $0.name == "w:sectPr" }) else { return [] }
+        guard let sectPr = typesetSectionProperties(body: body) else { return [] }
         let titlePg = sectPr.child("w:titlePg") != nil
         var blocksByType: [String: [OfficeBlock]] = [:]
         for ref in sectPr.children where ref.name == tag {

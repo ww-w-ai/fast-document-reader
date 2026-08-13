@@ -150,6 +150,30 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertEqual(r.pageContentWidth ?? -1, (11906.0 - 1701 - 1701) / 20, accuracy: 0.01)
     }
 
+    func testPageGeometryComesFromTheSectionHoldingTheMostContent() throws {
+        // Word states a page per SECTION, and the body's TRAILING `w:sectPr` is the LAST section's —
+        // so a report whose final section is a one-page landscape appendix used to typeset the whole
+        // document on that appendix's paper. The HWP twin of this is invariant 73, measured there as
+        // a 394-page manual coming out 458 pages long.
+        let body = (1...5).map { "<w:p><w:r><w:t>body \($0)</w:t></w:r></w:p>" }.joined()
+            + "<w:p><w:pPr><w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/>"
+            + "<w:pgMar w:left=\"1701\" w:right=\"1701\"/></w:sectPr></w:pPr></w:p>"
+            + "<w:p><w:r><w:t>appendix</w:t></w:r></w:p>"
+            + "<w:sectPr><w:pgSz w:w=\"16838\" w:h=\"11906\"/>"
+            + "<w:pgMar w:left=\"720\" w:right=\"720\"/></w:sectPr>"
+        let r = try readResult(body)
+        XCTAssertEqual(r.pageContentWidth ?? -1, (11906.0 - 1701 - 1701) / 20, accuracy: 0.01,
+                       "the six-paragraph portrait section wins over the one-paragraph landscape one")
+    }
+
+    func testASingleSectionDocumentIsUnaffectedByTheSectionChoice() throws {
+        // The overwhelmingly common shape: one candidate, so the answer is the trailing `w:sectPr`
+        // exactly as it was before the choice existed.
+        let r = try readResult("<w:p><w:r><w:t>x</w:t></w:r></w:p>"
+            + "<w:sectPr><w:pgSz w:w=\"12240\"/><w:pgMar w:left=\"720\" w:right=\"720\"/></w:sectPr>")
+        XCTAssertEqual(r.pageContentWidth ?? -1, (12240.0 - 720 - 720) / 20, accuracy: 0.01)
+    }
+
     func testPageContentWidthNilWhenNoSectPr() throws {
         // No page setup declared → nil → reader keeps window-filling column (byte-identical).
         XCTAssertNil(try readResult("<w:p><w:r><w:t>x</w:t></w:r></w:p>").pageContentWidth)
