@@ -1,0 +1,60 @@
+From 770a1785292dd79ebd42750cd432d9ba470ff87f Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Fri, 14 Aug 2026 08:40:03 +0900
+Subject: [PATCH 16/16] Keep the words a drawing carries, even when it also
+ carries a picture
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A cover is one group holding the artwork and the title; a foreword page
+is a group whose child box holds a paragraph of text. The exporter read
+the text box of the TOP object only — a group has no drawing of its own
+— and returned early as soon as it found a picture, so both pages
+arrived with the picture and none of the words.
+---
+ src/document_core/queries/document_json.rs | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 805d432c..0e6ef2bd 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -1117,6 +1117,11 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+         for picture in pictures {
+             out.push(build_image_block(doc, picture));
+         }
++        // …and the WORDS the same object carries, which returning here used to throw away. A cover
++        // page is one group holding the artwork AND the title, and a foreword page is a group whose
++        // child box holds 127 characters of text: dropping the text boxes lost both entirely, on
++        // pages that then rendered as a picture with nothing on them.
++        push_shape_text_boxes(doc, shape, out);
+         return;
+     }
+     let mut paths = Vec::new();
+@@ -1143,9 +1148,22 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+             paths,
+         }));
+     }
++    push_shape_text_boxes(doc, shape, out);
++}
++
++/// The paragraphs of every text box this object carries, INCLUDING through group nesting — the same
++/// recursion `collect_shape_pictures` and `collect_shape_paths` already do, for the third thing a
++/// drawing can contain. `shape_text_box` alone reads the top object's own drawing, and a GROUP has
++/// no drawing of its own, so a flattened HWPX group's words were invisible to it.
++fn push_shape_text_boxes(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>) {
+     if let Some(text) = shape_text_box(shape) {
+         out.extend(build_blocks(doc, &text.paragraphs));
+     }
++    if let ShapeObject::Group(group) = shape {
++        for child in &group.children {
++            push_shape_text_boxes(doc, child, out);
++        }
++    }
+ }
+ 
+ /// Every picture inside a drawing object, including through group nesting.
+-- 
+2.50.1 (Apple Git-155)
+

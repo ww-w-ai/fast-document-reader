@@ -1,7 +1,7 @@
 From cce992a1e7a2a4fa0ff21a409e475c039ada02dc Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 00:05:11 +0900
-Subject: [PATCH 10/15] Put a drawing's points through its own matrix, keep the
+Subject: [PATCH 10/16] Put a drawing's points through its own matrix, keep the
  picture inside it, and stop filling a line
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
