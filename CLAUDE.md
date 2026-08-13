@@ -84,7 +84,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 71 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 72 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -105,12 +105,12 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | office readers (docx / odt / hwp), dispatch, rhwp, headings | 29, 33, 44, 45 |
 | tests, corpus probes, "is this check actually reached" | 5, 29, 30, 34, 35, 41 |
 | `RenderTheme` tokens, `OfficeTextBuilder`, style resolution | 36, 37 |
-| tables — build, widths, borders, merges, attribute cost | 39, 42, 47, 50, 51 |
+| tables — build, widths, borders, merges, attribute cost | 39, 42, 47, 50, 51, 72 |
 | fonts, per-script slots, substitution | 52, 53 |
 | the comments panel | 38 |
 | paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62 |
 | printing, `--pdf`, `--extract`, anything headless | 40, 59, 66, 70 |
-| a table that crosses a page boundary | 61, 64 |
+| a table that crosses a page boundary | 61, 64, 72 |
 | memory, image caches, document lifetime, crashes | 63, 65 |
 | the Quick Look preview extension | 68 |
 | any Swift value carried as a text attribute | 67 |

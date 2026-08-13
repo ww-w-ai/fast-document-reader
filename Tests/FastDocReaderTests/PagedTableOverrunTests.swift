@@ -80,15 +80,19 @@ final class PagedTableOverrunTests: XCTestCase {
         }
     }
 
-    /// THE OWNER'S RULE: *"표가 한장이 넘을때... 이런 경우는 무조건 쪼개야 해"*. The setting is off here,
-    /// and the table is broken anyway, because keeping it whole could only mean leaving rows in a
-    /// margin.
-    func testATableTallerThanThePageIsBrokenEvenWithBreakingTurnedOff() {
+    /// THE OWNER'S RULE, in its final form: *"표 자체가 한페이지 넘기면"* the table is broken WHERE IT
+    /// STANDS — cell middles and all — and only a run of three lines or fewer is moved on. So no
+    /// piece of it is CARRIED at all; the pieces go to `oversizedPieces` instead, and the setting is
+    /// off here to show the rule overrides it.
+    ///
+    /// This replaces the earlier answer (carry each row to the next page top), which was measured on
+    /// the reported document and left page 0 holding 360pt of its own 728.5pt body — invariant 72(f).
+    func testATableTallerThanThePageIsBrokenWhereItStandsRatherThanCarried() {
         let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 20, bottom: 220,
-                                            firstLineTop: 20, rows: rows(10))
-        let out = decide([t])
-        XCTAssertEqual(out.count, 10, "every row may start a page, so every row is a piece")
-        XCTAssertEqual(out[100], PagePagination.TableMetrics(height: 20, topInset: 0))
+                                            firstLineTop: 20, lastChar: 900, rows: rows(10))
+        XCTAssertTrue(decide([t]).isEmpty, "nothing is carried out of a table taller than the page")
+        XCTAssertEqual(PagePagination.oversizedPieces([t], pageContentHeight: 120).count, 10,
+                       "every row of it is broken where it stands")
     }
 
     /// With breaking OFF, a table that would fit on a page of its own is carried down whole — one
@@ -158,6 +162,57 @@ final class PagedTableOverrunTests: XCTestCase {
     func testNothingIsDecidedForADocumentWithNoPage() {
         let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 60, bottom: 130, firstLineTop: 60)
         XCTAssertTrue(PagePagination.tablesToPush([t], pageContentHeight: 0, band: 0, leadingBand: 0).isEmpty)
+    }
+
+    // MARK: - 1c. The pieces nothing can carry
+
+    /// A piece taller than the page has no whole page to be moved to, so `tablesToPush` cannot help
+    /// it — and until it was named, the reader left its rows in the margin AND recorded a boundary as
+    /// opened over lines still drawn there. Word breaks such a row (`w:cantSplit` is what asks it not
+    /// to), and naming the extent is what lets the layout rule do the same.
+    func testAPieceTallerThanThePageIsNamedWithItsCharacterExtent() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 0, bottom: 400, firstLineTop: 0,
+                                            lastChar: 900,
+                                            rows: rows(2, from: 0, height: 200))
+        let out = PagePagination.oversizedPieces([t], pageContentHeight: 120)
+        // Rows 20pt apart by default; `rows(2, height: 200)` makes each row itself over-tall.
+        XCTAssertEqual(out, [100: 101, 101: 900],
+                       "each over-tall piece runs from its own first character to the next piece's")
+    }
+
+    func testAPieceThatFitsOnAPageIsNotNamed() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 0, bottom: 80, firstLineTop: 0,
+                                            lastChar: 900, rows: rows(2, from: 0, height: 40))
+        XCTAssertTrue(PagePagination.oversizedPieces([t], pageContentHeight: 120).isEmpty)
+    }
+
+    /// A table nobody measured rows for is one piece, and the extent is the table's own.
+    func testATableWithNoMeasuredRowsIsNamedWhole() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 0, bottom: 400, firstLineTop: 0,
+                                            lastChar: 900)
+        XCTAssertEqual(PagePagination.oversizedPieces([t], pageContentHeight: 120), [10: 900])
+    }
+
+    /// Kept verbatim for the reason `tablesToPush` keeps its own record: breaking a piece puts gaps
+    /// INSIDE it, which grows its measured extent, and a record re-derived from that could flip back
+    /// and forth for ever.
+    func testAnAlreadyNamedPieceSurvivesARoundThatWouldNotReDeriveIt() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 0, bottom: 80, firstLineTop: 0,
+                                            lastChar: 900, rows: rows(2, from: 0, height: 40))
+        XCTAssertEqual(PagePagination.oversizedPieces([t], pageContentHeight: 120,
+                                                      alreadyOversized: [10: 900]), [10: 900])
+    }
+
+    /// The metrics of a piece already in the record are RE-MEASURED even though it no longer overruns
+    /// — it no longer overruns BECAUSE it was moved. Freezing them froze a `topInset` measured before
+    /// anything moved, which put the piece's top 302pt above where it is drawn on the reported
+    /// document. Only the KEY is verbatim (invariant 61d).
+    func testAMovedTablesMetricsAreRefreshedWhileItsKeyIsKept() {
+        let moved = PagePagination.LaidOutTable(firstChar: 10, visualTop: 20, bottom: 90,
+                                                firstLineTop: 25)
+        let out = decide([moved], alreadyPushed: [10: PagePagination.TableMetrics(height: 70, topInset: 99)])
+        XCTAssertEqual(out[10], PagePagination.TableMetrics(height: 70, topInset: 5),
+                       "the entry stays, with the inset this layout actually shows")
     }
 
     // MARK: - 2. The move, in isolation
@@ -258,6 +313,112 @@ final class PagedTableOverrunTests: XCTestCase {
         XCTAssertEqual(d.openedBoundaries, [0], "the boundary it cleared is the one that opened")
         XCTAssertEqual(d.openedBands[0]?.top ?? -1, before.top, accuracy: 0.01,
                        "the gap starts where the table was going to, not at the arithmetic page bottom")
+    }
+
+    /// A piece that fits on NO page is the one case where a table line is moved WHERE IT STANDS. The
+    /// rest of the contract is unchanged — a table line outside such a piece is still never touched,
+    /// which the test above pins.
+    func testALineInsideAnOverTallPieceIsBrokenAtThePageBoundary() throws {
+        let d = PageBandLayoutDelegate(pageContentHeight: 120, band: 40)
+        let (storage, layout, container) = makeStack(d)
+        storage.setAttributedString(documentWithTable(leadingLines: 2, rows: 40))
+        let before = try XCTUnwrap(tableExtent(layout, container, storage))
+        XCTAssertGreaterThan(before.bottom - before.top, 120, "fixture must be taller than a page")
+        let linesInMarginBefore = tableLinesInMargins(d, layout, container, storage)
+        XCTAssertGreaterThan(linesInMarginBefore, 0, "precondition: it overruns where it stands")
+
+        d.oversizedPieces = [before.firstChar: storage.length]
+        layout.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
+                                actualCharacterRange: nil)
+        XCTAssertEqual(tableLinesInMargins(d, layout, container, storage), 0,
+                       "every row of an unmovable piece must be broken onto a page rather than left in a margin")
+        XCTAssertFalse(d.openedBoundaries.isEmpty, "breaking it opens the boundaries it crosses")
+    }
+
+    /// The inset a moved piece is placed by has to be measured in the frame it will be USED in. A
+    /// cell's vertical alignment is applied AFTER the line fragment is placed, so the finished layout
+    /// and this delegate see the same line at different heights — 723.08 against 423.94 on the
+    /// reported document, a 302pt error in the piece's top.
+    func testTheProposedTopOfATableLineIsRecordedAfterThisPassMovedIt() throws {
+        let d = PageBandLayoutDelegate(pageContentHeight: 120, band: 40)
+        let (storage, layout, container) = makeStack(d)
+        storage.setAttributedString(documentWithTable(leadingLines: 4, rows: 8))
+        let before = try XCTUnwrap(tableExtent(layout, container, storage))
+        d.pushedTables = [before.firstChar:
+            PagePagination.TableMetrics(height: before.bottom - before.top, topInset: 0)]
+        d.resetOpenedBoundaries()
+        layout.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
+                                actualCharacterRange: nil)
+        let after = try XCTUnwrap(tableExtent(layout, container, storage))
+        XCTAssertEqual(d.proposedTableLineTops[before.firstChar] ?? -1, after.top, accuracy: 0.01,
+                       "the record must hold where the line ENDED UP in this pass, not where it was proposed")
+    }
+
+    /// The FACT the substitution above stands on, pinned on its own: a vertically centred cell is
+    /// drawn well below where its line fragment was placed, so "where the finished layout shows this
+    /// line" and "where the typesetter proposes it" are different numbers. Anything that measures a
+    /// piece's inset from the finished layout and applies it to a proposed rect is therefore wrong by
+    /// this difference — 302.14pt on the reported document, enough to read a piece running past the
+    /// page bottom as ending 165pt above it.
+    func testAVerticallyCentredCellIsDrawnBelowWhereItsLineWasPlaced() throws {
+        let d = PageBandLayoutDelegate(pageContentHeight: 120, band: 40)
+        let (storage, layout, container) = makeStack(d)
+        storage.setAttributedString(tableWithACentredCellBesideATallOne(lines: 12))
+        layout.ensureLayout(for: container)
+
+        // The short cell is the FIRST in text order, so it is the one a piece's inset is measured to.
+        var shortCellTop: CGFloat?
+        var firstChar: Int?
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { rect, _, _, gr, _ in
+            let cr = layout.characterRange(forGlyphRange: gr, actualGlyphRange: nil)
+            guard shortCellTop == nil, cr.location < storage.length,
+                  (storage.attribute(.paragraphStyle, at: cr.location, effectiveRange: nil)
+                    as? NSParagraphStyle)?.textBlocks.first is NSTextTableBlock else { return }
+            shortCellTop = rect.minY
+            firstChar = cr.location
+        }
+        let drawn = try XCTUnwrap(shortCellTop)
+        let proposed = try XCTUnwrap(d.proposedTableLineTops[try XCTUnwrap(firstChar)])
+        XCTAssertGreaterThan(drawn - proposed, 10,
+                             "a centred cell is drawn below its placed line — the two frames really do differ")
+    }
+
+    /// One row: a single-line cell set to centre vertically, beside a cell of `lines` lines.
+    private func tableWithACentredCellBesideATallOne(lines: Int) -> NSAttributedString {
+        let font = NSFont.systemFont(ofSize: 12)
+        let table = NSTextTable()
+        table.numberOfColumns = 2
+        table.setContentWidth(300, type: .absoluteValueType)
+        table.collapsesBorders = false
+        let out = NSMutableAttributedString()
+        for c in 0..<2 {
+            let block = NSTextTableBlock(table: table, startingRow: 0, rowSpan: 1,
+                                         startingColumn: c, columnSpan: 1)
+            block.setContentWidth(150, type: .absoluteValueType)
+            block.verticalAlignment = .middleAlignment
+            let style = NSMutableParagraphStyle()
+            style.textBlocks = [block]
+            let text = c == 0 ? "short\n" : (0..<lines).map { "tall line \($0)" }.joined(separator: "\n") + "\n"
+            out.append(NSAttributedString(string: text, attributes: [.font: font, .paragraphStyle: style]))
+        }
+        return out
+    }
+
+    private func tableLinesInMargins(_ d: PageBandLayoutDelegate, _ layout: NSLayoutManager,
+                                     _ container: NSTextContainer, _ storage: NSTextStorage) -> Int {
+        layout.ensureLayout(for: container)
+        let pitch = d.pageContentHeight + d.band
+        var count = 0
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { rect, _, _, gr, _ in
+            let cr = layout.characterRange(forGlyphRange: gr, actualGlyphRange: nil)
+            guard cr.location < storage.length,
+                  let style = storage.attribute(.paragraphStyle, at: cr.location,
+                                                effectiveRange: nil) as? NSParagraphStyle,
+                  style.textBlocks.first is NSTextTableBlock else { return }
+            let page = ((rect.minY - d.leadingBand) / pitch).rounded(.down)
+            if (rect.maxY - d.leadingBand) - (page * pitch + d.pageContentHeight) > 0.01 { count += 1 }
+        }
+        return count
     }
 
     /// Idempotence, which is what lets the settle loop stop: the same rule applied to an already-moved
@@ -430,8 +591,8 @@ final class PagedTableOverrunTests: XCTestCase {
         XCTAssertTrue(wc.pageBandDelegate.isActive)
         XCTAssertFalse(try linesInMargins(wc).isEmpty, "precondition: it starts out overrunning")
         wc.settlePagedTablesFully()
-        XCTAssertFalse(wc.pageBandDelegate.pushedTables.isEmpty,
-                       "a table with no page to move to must be broken instead")
+        XCTAssertFalse(wc.pageBandDelegate.oversizedPieces.isEmpty,
+                       "a table with no page to move to is broken where it stands")
         XCTAssertEqual(try linesInMargins(wc), [], "and then no row of it may sit in a margin")
     }
 

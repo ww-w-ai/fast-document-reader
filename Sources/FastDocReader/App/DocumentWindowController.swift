@@ -404,7 +404,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // LOCATION, so carrying it into a different string would move whatever happens to start at
         // that offset. It is also band-dependent — the page outline changes the pitch, so which tables
         // overrun changes with it. `settlePagedTables` rebuilds it from the new layout.
-        pageBandDelegate.pushedTables = [:]
+        pageBandDelegate.resetMeasuredPieces()
         pagedTableSettles = 0
         pageBandContent = band > 0
             ? PageBandContent(headers: headers, footers: footers, theme: theme, columnWidth: columnWidth,
@@ -1636,8 +1636,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                 let row = rows[r]!
                 // Safe unless some cell that STARTED above this row is still open across it.
                 let crossed = spans.contains { $0.start < r && $0.end > r }
+                // The inset must be measured where it will be USED — against the position the
+                // typesetter PROPOSES for that line, not the one a vertically aligned cell ends up
+                // drawn at. See `PageBandLayoutDelegate.proposedTableLineTops`.
+                let firstLineTop = pageBandDelegate.proposedTableLineTops[row.firstChar] ?? row.firstLineTop
                 return PagePagination.LaidOutRow(firstChar: row.firstChar, top: row.top,
-                                                 bottom: row.bottom, firstLineTop: row.firstLineTop,
+                                                 bottom: row.bottom, firstLineTop: firstLineTop,
                                                  canBreakAbove: !crossed)
             }
             rows = [:]; spans = []
@@ -1667,11 +1671,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             if current != table {
                 flushRows()
                 current = table
-                out.append(PagePagination.LaidOutTable(firstChar: cr.location, visualTop: top,
-                                                       bottom: bottom, firstLineTop: rect.minY))
+                out.append(PagePagination.LaidOutTable(
+                    firstChar: cr.location, visualTop: top, bottom: bottom,
+                    firstLineTop: self.pageBandDelegate.proposedTableLineTops[cr.location] ?? rect.minY,
+                    lastChar: cr.location + cr.length))
             } else {
                 out[out.count - 1].visualTop = min(out[out.count - 1].visualTop, top)
                 out[out.count - 1].bottom = max(out[out.count - 1].bottom, bottom)
+                out[out.count - 1].lastChar = max(out[out.count - 1].lastChar, cr.location + cr.length)
             }
             if block.rowSpan > 1 {
                 spans.append((block.startingRow, block.startingRow + block.rowSpan))
@@ -1689,6 +1696,71 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             }
         }
         flushRows()
+        return out
+    }
+
+    /// A cell inside a piece that gets BROKEN across pages must sit at the top of its row, whatever
+    /// vertical alignment the document asked for.
+    ///
+    /// Measured on `사업계획서_13-15p_수정안.docx`: the left-hand label `유사 특허 / 분석 정확도` is centred
+    /// in its row, and once that row is broken the row spans the page gap — so its middle IS the gap,
+    /// and the two label lines were drawn at 786.1…804.7 inside an empty band running 784.5…910.6,
+    /// i.e. floating on the desk between two sheets. Word centres such a label within the part of the
+    /// row that is on each page; this reader cannot ask AppKit for that, and the top of the row is
+    /// the honest approximation — it is where the label's own row begins.
+    ///
+    /// Applied to the BLOCKS, once the settle knows which pieces will be broken, which is the only
+    /// moment that is knowable. Setting it again on a later round costs nothing and changes nothing.
+    private func topAlignCellsOf(_ pieces: [Int: Int], in storage: NSTextStorage) {
+        guard !pieces.isEmpty else { return }
+        for (start, end) in pieces {
+            let range = NSRange(location: start, length: max(0, min(end, storage.length) - start))
+            guard range.length > 0 else { continue }
+            storage.enumerateAttribute(.paragraphStyle, in: range) { value, _, _ in
+                guard let style = value as? NSParagraphStyle else { return }
+                for block in style.textBlocks where block.verticalAlignment != .topAlignment {
+                    block.verticalAlignment = .topAlignment
+                }
+            }
+        }
+    }
+
+    /// The first line of every run of THREE OR FEWER lines that a break would strand at the bottom of
+    /// a page — the owner's *"1~3줄 애매할 땐 다음 페이지로, 4줄 이상이면 그 자리에서"*. Measured from the
+    /// completed layout, because "how many of this piece's lines are on this page" is not a question
+    /// the typesetter can be asked while it is placing them.
+    ///
+    /// Only pieces that are broken WHERE THEY STAND can have such a run: everything else is carried
+    /// whole and never crosses a boundary at all. A run that already starts a page is skipped — it is
+    /// not stranded, it is the continuation, and marking it would ask for a shift the rule has
+    /// already made (the settle would never converge).
+    private func orphanRunStarts(in pieces: [Int: Int]) -> Set<Int> {
+        guard !pieces.isEmpty, let lm = textView.layoutManager, let tc = textView.textContainer,
+              let storage = textView.textStorage else { return [] }
+        let d = pageBandDelegate
+        let pitch = d.pageContentHeight + d.band
+        guard pitch > 0 else { return [] }
+        // Per piece, per page: the lines of that piece which landed on it, in order.
+        var runs: [String: [(location: Int, top: CGFloat)]] = [:]
+        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, glyphRange, _ in
+            let cr = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            guard cr.location < storage.length,
+                  let piece = pieces.first(where: { cr.location >= $0.key && cr.location < $0.value })
+            else { return }
+            let page = Int(((rect.minY - d.leadingBand) / pitch).rounded(.down))
+            runs["\(piece.key):\(page)", default: []].append((cr.location, rect.minY))
+        }
+        var out: Set<Int> = []
+        for (key, lines) in runs where lines.count <= 3 {
+            guard let page = Int(key.split(separator: ":").last ?? ""), page >= 0,
+                  let first = lines.min(by: { $0.location < $1.location }) else { continue }
+            // Already at this page's own top: it is the continuation, not a stranded run.
+            let pageTop = CGFloat(page) * pitch + d.leadingBand
+            guard first.top - pageTop > 0.5 else { continue }
+            // And the piece must actually continue past this page, or there is nothing to join it to.
+            guard runs["\(key.split(separator: ":").first ?? ""):\(page + 1)"] != nil else { continue }
+            out.insert(first.location)
+        }
         return out
     }
 
@@ -1720,8 +1792,18 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                                                leadingBand: pageBandDelegate.leadingBand,
                                                splitTables: PageViewOptionsStore.current.splitTables,
                                                alreadyPushed: pageBandDelegate.pushedTables)
-        guard next != pageBandDelegate.pushedTables else { return false }
+        let oversized = PagePagination.oversizedPieces(tables,
+                                                       pageContentHeight: pageBandDelegate.pageContentHeight,
+                                                       alreadyOversized: pageBandDelegate.oversizedPieces)
+        let orphans = pageBandDelegate.pullToNextPage
+            .union(orphanRunStarts(in: oversized))
+        guard next != pageBandDelegate.pushedTables
+                || oversized != pageBandDelegate.oversizedPieces
+                || orphans != pageBandDelegate.pullToNextPage else { return false }
         pageBandDelegate.pushedTables = next
+        pageBandDelegate.oversizedPieces = oversized
+        pageBandDelegate.pullToNextPage = orphans
+        topAlignCellsOf(oversized, in: storage)
         pageBandDelegate.resetOpenedBoundaries()
         lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
                             actualCharacterRange: nil)

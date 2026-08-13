@@ -606,9 +606,11 @@ enum TableBlockBuilder {
 
         for (idx, placement) in placements.enumerated() {
             let me = info[idx]
-            let block = NSTextTableBlock(table: table,
-                                         startingRow: placement.row, rowSpan: placement.rowSpan,
-                                         startingColumn: placement.col, columnSpan: placement.colSpan)
+            // `GridTextTableBlock`, not the bare AppKit class: a cell a page passes THROUGH has to
+            // paint itself in pieces, with no rule at the cut (see that class).
+            let block = GridTextTableBlock(table: table,
+                                           startingRow: placement.row, rowSpan: placement.rowSpan,
+                                           startingColumn: placement.col, columnSpan: placement.colSpan)
             // STEP D (part 1) — only the edges that actually draw something cost a call. A freshly
             // created `NSTextTableBlock`'s border width already defaults to 0 for every edge (verified
             // by the boundary/geometry tests reading a non-owner side back as exactly 0 without this

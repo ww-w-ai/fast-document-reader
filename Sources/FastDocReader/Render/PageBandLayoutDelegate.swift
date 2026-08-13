@@ -56,6 +56,34 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// empty and the layout is bit-for-bit what it was before this existed.
     var pushedTables: [Int: PagePagination.TableMetrics] = [:]
 
+    /// The character extents of table pieces that fit on NO page, `start → end` — measured by
+    /// `PagePagination.oversizedPieces` from a completed layout, exactly like `pushedTables`.
+    ///
+    /// A line inside one of these is the ONE case where a table line is shifted where it stands: there
+    /// is no whole page to carry the piece to, so refusing to touch it leaves its rows in the margin
+    /// and leaves this class recording a boundary as opened over content that is still drawn in it —
+    /// which paints the desk gap across the table's own lines. Word breaks such a row (it splits every
+    /// row that does not carry `w:cantSplit`), and this is that answer.
+    var oversizedPieces: [Int: Int] = [:]
+
+    /// Lines that must START a page even though they would fit where they stand — the first line of a
+    /// run of THREE OR FEWER lines a break would have stranded at the bottom of a page.
+    ///
+    /// The owner's rule: *"약간 1~3줄 애매할 땐 → 잘라서 다음 페이지로, 4줄 이상이면 페이지를 잘라서 셀이
+    /// 구분됨"*. Breaking a cell is only worth the seam when enough of it stays behind; one or two
+    /// stranded lines above a page gap read as a mistake. Measured from a completed layout by
+    /// `DocumentWindowController.orphanRunStarts` and kept, like every other record here, keyed by
+    /// character location.
+    var pullToNextPage: Set<Int> = []
+
+    /// Is this character inside a piece that must be broken where it stands? Linear over the record,
+    /// which holds one entry per over-tall piece — single digits on real documents, and empty for the
+    /// overwhelming majority, which is why the check begins by asking that.
+    private func isInsideOversizedPiece(_ location: Int) -> Bool {
+        guard !oversizedPieces.isEmpty else { return false }
+        return oversizedPieces.contains { location >= $0.key && location < $0.value }
+    }
+
     init(pageContentHeight: CGFloat = 0, band: CGFloat = 0, leadingBand: CGFloat = 0, trailingBand: CGFloat = 0) {
         self.pageContentHeight = pageContentHeight
         self.band = band
@@ -100,11 +128,43 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// proposed top is the previous page's last line, everything below the target is the next page.
     private(set) var openedBands: [Int: (top: CGFloat, height: CGFloat)] = [:]
 
+    /// Where the typesetter PROPOSED each table line, before this delegate touched it — keyed by the
+    /// line's first character.
+    ///
+    /// This exists because a cell's vertical alignment is applied AFTER the line fragment is placed,
+    /// so the completed layout and this delegate see the same line at different heights: measured on
+    /// `사업계획서_13-15p_수정안.docx`, the line at character 482 sits at 723.08 in the finished
+    /// layout (its cell is centred in a 623pt row) and is proposed here at 423.94. A `topInset`
+    /// measured from the finished layout and subtracted from the proposed rect therefore puts the
+    /// piece's top 302pt above where it is drawn, and the rule read a piece running to 911pt as
+    /// ending at 745 and declined to move it. `DocumentWindowController.laidOutTables` reads these
+    /// back so the inset is measured in the frame it will be USED in.
+    private(set) var proposedTableLineTops: [Int: CGFloat] = [:]
+
     /// Called when the storage is about to be laid out afresh — see `openedBoundaries`.
     func resetOpenedBoundaries() {
         openedBoundaries = []
         openedBands = [:]
         shiftCount = 0
+        proposedTableLineTops = [:]
+    }
+
+    /// Record a page boundary as opened, and WHERE the empty band it made is. Page 0's own first
+    /// line falls out of the shifting formula as page `-1` (see the rule below), and a negative index
+    /// is not a between-page boundary at all — the leading band is its own mechanism.
+    private func recordBand(page: CGFloat, top: CGFloat, target: CGFloat) {
+        guard page >= 0 else { return }
+        openedBoundaries.insert(Int(page))
+        openedBands[Int(page)] = (top: top, height: target - top)
+    }
+
+    /// Everything the settle measured from a layout — dropped together with the string it was keyed
+    /// against. Both records are character-keyed, so carrying either into a different document would
+    /// move whatever happens to start at that offset.
+    func resetMeasuredPieces() {
+        pushedTables = [:]
+        oversizedPieces = [:]
+        pullToNextPage = []
     }
 
     func layoutManager(_ layoutManager: NSLayoutManager,
@@ -120,9 +180,38 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         let pitch = pageContentHeight + band
         guard pitch > 0 else { return false }
         let rect = lineFragmentRect.pointee
-        if isInsideTable(layoutManager, glyphRange) {
-            return pushWholeTable(layoutManager, glyphRange, rect, pitch,
-                                  lineFragmentRect, lineFragmentUsedRect)
+        let insideTable = isInsideTable(layoutManager, glyphRange)
+        // Both recorded AFTER whatever this pass does to the line, so a table line's record differs
+        // from the finished layout only by the cell's own vertical alignment — which is exactly the
+        // difference the piece's inset has to be measured across.
+        let tableLine = insideTable
+            ? layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil).location
+            : nil
+        defer { if let tableLine { proposedTableLineTops[tableLine] = lineFragmentRect.pointee.minY } }
+        if insideTable {
+            if pushWholeTable(layoutManager, glyphRange, rect, pitch,
+                              lineFragmentRect, lineFragmentUsedRect) { return true }
+            // The one exception, and it is not a softening of the rule above: a piece that fits on NO
+            // page cannot be carried anywhere, so leaving it alone leaves its rows in the margin and
+            // this class recording a boundary as opened over lines that are still drawn there. Such a
+            // piece falls through to the ordinary between-page rule — one line moved at a page
+            // boundary, which is what Word does to any row that does not say `w:cantSplit`.
+            guard let tableLine, isInsideOversizedPiece(tableLine) else { return false }
+            // A run this short is moved WHOLE rather than broken across the gap, so its first line
+            // starts the next page even though it would have fitted where it stands.
+            if pullToNextPage.contains(tableLine) {
+                let page = PageBandLayoutDelegate.page(of: rect.minY, leadingBand: leadingBand,
+                                                       pitch: pitch)
+                let target = (page + 1) * pitch + leadingBand
+                let shift = target - rect.minY
+                // Already at a page top: nothing to do, which is what makes this idempotent.
+                guard shift > 0.5 else { return false }
+                lineFragmentRect.pointee.origin.y += shift
+                lineFragmentUsedRect.pointee.origin.y += shift
+                shiftCount += 1
+                recordBand(page: page, top: rect.minY, target: target)
+                return true
+            }
         }
         // Both derived in the exact coordinate system the between-page rule already proved correct —
         // just translated by `leadingBand` and back again. Page 0's own first line (proposed at its
@@ -145,14 +234,11 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         // Page 0's own first line falls out of the same formula as `page == -1` (see above), and a
         // negative index is not a between-page boundary at all — the leading band is its own
         // mechanism — so it is deliberately not recorded.
-        if page >= 0 {
-            openedBoundaries.insert(Int(page))
-            // The gap is what the shift OPENED: from where this line was GOING to start to where it
-            // now does. `rect` is the local copy taken before the mutation, so it still holds the
-            // proposed position — which is also the bottom of the previous page's last line, however
-            // far that page overran.
-            openedBands[Int(page)] = (top: rect.minY, height: shift)
-        }
+        // The gap is what the shift OPENED: from where this line was GOING to start to where it now
+        // does. `rect` is the local copy taken before the mutation, so it still holds the proposed
+        // position — which is also the bottom of the previous page's last line, however far that page
+        // overran.
+        recordBand(page: page, top: rect.minY, target: target)
         return true
     }
 
@@ -200,10 +286,7 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         lineFragmentRect.pointee.origin.y += shift
         lineFragmentUsedRect.pointee.origin.y += shift
         shiftCount += 1
-        if page >= 0 {
-            openedBoundaries.insert(Int(page))
-            openedBands[Int(page)] = (top: visualTop, height: shift)
-        }
+        recordBand(page: page, top: visualTop, target: target)
         return true
     }
 

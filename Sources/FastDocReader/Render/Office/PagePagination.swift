@@ -131,15 +131,21 @@ enum PagePagination {
         var visualTop: CGFloat
         var bottom: CGFloat
         var firstLineTop: CGFloat
+        /// One past the last character any of this table's lines covers — the end of the LAST piece,
+        /// which the piece boundaries alone cannot give (every other piece ends where the next begins).
+        /// Defaults to `firstChar`, i.e. an empty extent, so a caller that only asks whether the whole
+        /// table fits never accidentally claims a range it did not measure.
+        var lastChar: Int
         /// In document order. Empty for a caller that only cares whether the whole table fits.
         var rows: [LaidOutRow]
 
         init(firstChar: Int, visualTop: CGFloat, bottom: CGFloat, firstLineTop: CGFloat,
-             rows: [LaidOutRow] = []) {
+             lastChar: Int? = nil, rows: [LaidOutRow] = []) {
             self.firstChar = firstChar
             self.visualTop = visualTop
             self.bottom = bottom
             self.firstLineTop = firstLineTop
+            self.lastChar = lastChar ?? firstChar
             self.rows = rows
         }
     }
@@ -194,7 +200,18 @@ enum PagePagination {
 
         for t in tables {
             let height = t.bottom - t.visualTop
-            guard overruns(top: t.visualTop, bottom: t.bottom) else { continue }
+            // An entry already in the record is RE-MEASURED even though it no longer overruns — it no
+            // longer overruns BECAUSE it was moved, and its metrics were taken from the layout that
+            // existed before anything moved. Freezing them froze a `topInset` of 302.14pt on the
+            // reported document where the settled layout's is 3.0, which put the piece's top 300pt
+            // above where it is drawn, so the rule read a piece running to 911pt as ending at 745 and
+            // declined to move it. Only the KEY is kept verbatim (invariant 61d): dropping a key would
+            // make the piece fit, then not fit, then fit, and the settle would never converge, while
+            // refreshing a value converges as soon as the layout does — the record is compared whole
+            // each round and every number in it is rounded to a hundredth of a point.
+            let groups = unbreakableGroups(t.rows)
+            let known = out[t.firstChar] != nil || groups.contains { out[$0.firstChar] != nil }
+            guard known || overruns(top: t.visualTop, bottom: t.bottom) else { continue }
             let fitsOnAPage = height <= pageContentHeight
             // BREAK IT — always when it is taller than a page (there is no whole page to move it to,
             // and the owner's rule is that such a table must be split), and by preference when the
@@ -207,9 +224,14 @@ enum PagePagination {
                 // measured on the reference report, which is merged nearly everywhere — the safe rows
                 // moved, the merged stretches between them did not, and twenty lines still landed in
                 // margins. A group is exactly what may start a page.
-                let groups = unbreakableGroups(t.rows)
                 if groups.count > 1 {
-                    for g in groups where g.height <= pageContentHeight {
+                    // A piece that will be broken where it stands must NOT also be carried: the
+                    // layout rule asks `pushedTables` first, so registering both would move the piece
+                    // to the next page and only then start filling — the empty page this exists to
+                    // avoid.
+                    let tableExceedsAPage = height > pageContentHeight
+                    for g in groups where g.height <= pageContentHeight
+                        && !tableExceedsAPage && !brokenInPlace(g, pageContentHeight) {
                         out[g.firstChar] = TableMetrics(height: g.height, topInset: g.topInset)
                     }
                     continue
@@ -224,6 +246,66 @@ enum PagePagination {
         return out
     }
 
+    /// The character extents of the pieces that fit on NO page — the ones `tablesToPush` is
+    /// structurally unable to help, because moving a piece taller than the page body only empties the
+    /// page it left (invariant 61d). A reader that stops there leaves those rows in the margin AND
+    /// leaves a boundary recorded as opened over content that is still drawn there, which paints the
+    /// page's desk gap straight across a table's own lines.
+    ///
+    /// Word's answer is to break the row where it stands — `w:cantSplit` is what asks it not to, and a
+    /// document that never sets it is asking to be split (measured on the reported file: `cantSplit`
+    /// 0, `vMerge` 0, so invariant 61a's tearing hazard cannot arise there). So a piece in this list is
+    /// handed to the reader's ORDINARY between-page rule, one line at a time, exactly as prose is.
+    ///
+    /// `alreadyOversized` is kept VERBATIM for the same reason `tablesToPush` keeps its own record:
+    /// once a piece is being broken, the gaps that opening puts inside it grow its measured extent, so
+    /// re-deriving from the new layout could flip the answer back and forth and the settle would never
+    /// stop. The record only grows, and there are finitely many pieces.
+    static func oversizedPieces(_ tables: [LaidOutTable], pageContentHeight: CGFloat,
+                                alreadyOversized: [Int: Int] = [:]) -> [Int: Int] {
+        guard pageContentHeight > 0 else { return alreadyOversized }
+        var out = alreadyOversized
+        for t in tables {
+            let groups = unbreakableGroups(t.rows)
+            guard !groups.isEmpty else {
+                // No rows were measured, so the whole table is the only piece there is.
+                if t.bottom - t.visualTop > pageContentHeight, t.lastChar > t.firstChar {
+                    out[t.firstChar] = t.lastChar
+                }
+                continue
+            }
+            // The owner's rule is about the TABLE: *"표 자체가 한페이지 넘기면"* it is broken where it
+            // stands, cell middles and all — only a run of three lines or fewer is moved on
+            // (`pullToNextPage`). A table that FITS on a page keeps the menu's carry/break choice.
+            let tableExceedsAPage = t.bottom - t.visualTop > pageContentHeight
+            for (i, g) in groups.enumerated()
+                where tableExceedsAPage || brokenInPlace(g, pageContentHeight) {
+                let end = i + 1 < groups.count ? groups[i + 1].firstChar : t.lastChar
+                if end > g.firstChar { out[g.firstChar] = end }
+            }
+        }
+        return out
+    }
+
+    /// May this piece be broken WHERE IT STANDS, one line at a time, the way Word breaks a row that
+    /// does not carry `w:cantSplit`? ONLY when it fits on no page at all, so that carrying it is not
+    /// an option (invariant 61d).
+    ///
+    /// Extending it to every SINGLE-ROW piece — which is provably free of the merged cell invariant
+    /// 61a tears, since a merge welds the rows it spans into one group — was built and MEASURED, to
+    /// fill the page a carried row leaves partly empty. It fills the page and puts the rows back in
+    /// the margin, because a line inside an `NSTextTableBlock` does not stay where this delegate puts
+    /// it (invariants 39/42): table lines left in a margin went 15 → 94 on `2025_행정업무운영편람_최종.hwp`,
+    /// 0 → 7 on `1790387_prep_final_report.hwpx` and 0 → 3 on the reported docx, with page bodies of
+    /// 507pt carrying 780–1015pt of lines. Over-tall pieces are the exception that works because they
+    /// have nowhere to be carried to in the first place — for them the choice is between a broken row
+    /// and a row in the margin, not between a broken row and a whole one.
+    private static func brokenInPlace(_ group: (firstChar: Int, height: CGFloat, topInset: CGFloat,
+                                                rowCount: Int),
+                                      _ pageContentHeight: CGFloat) -> Bool {
+        group.height > pageContentHeight
+    }
+
     /// The pieces a table may be broken into: each run of rows from one breakable boundary up to the
     /// next. A row whose `canBreakAbove` is false is welded to the row above it, so the two share a
     /// group and move together.
@@ -231,14 +313,16 @@ enum PagePagination {
     /// One group means the table cannot be broken at all (its very first row is the only boundary),
     /// which is the answer for a form whose left column is merged from top to bottom.
     static func unbreakableGroups(_ rows: [LaidOutRow])
-        -> [(firstChar: Int, height: CGFloat, topInset: CGFloat)] {
-        var out: [(firstChar: Int, height: CGFloat, topInset: CGFloat)] = []
+        -> [(firstChar: Int, height: CGFloat, topInset: CGFloat, rowCount: Int)] {
+        var out: [(firstChar: Int, height: CGFloat, topInset: CGFloat, rowCount: Int)] = []
         var start: LaidOutRow?
         var top = CGFloat.greatestFiniteMagnitude
         var bottom = -CGFloat.greatestFiniteMagnitude
+        var rowsInGroup = 0
         func close() {
             guard let s = start else { return }
-            out.append((firstChar: s.firstChar, height: bottom - top, topInset: s.firstLineTop - top))
+            out.append((firstChar: s.firstChar, height: bottom - top, topInset: s.firstLineTop - top,
+                        rowCount: rowsInGroup))
         }
         for row in rows {
             if row.canBreakAbove || start == nil {
@@ -246,9 +330,11 @@ enum PagePagination {
                 start = row
                 top = row.top
                 bottom = row.bottom
+                rowsInGroup = 1
             } else {
                 top = min(top, row.top)
                 bottom = max(bottom, row.bottom)
+                rowsInGroup += 1
             }
         }
         close()
