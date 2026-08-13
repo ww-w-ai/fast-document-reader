@@ -1,0 +1,66 @@
+From 1efef7a3fd52519a415c49e6d671c612ed4c65f6 Mon Sep 17 00:00:00 2001
+From: Taehyoung Kim <taekim@ww-w.ai>
+Date: Sat, 1 Aug 2026 16:17:27 +0900
+Subject: [PATCH 6/8] Place an unlocatable inline control at its gap, not at
+ the end of the line
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A header reading "－   －" with a page-number control between the dashes came
+out as "－   － 17": the control was appended after the last character.
+
+control_text_positions counts a control as 8 units of char_offsets gap, but the
+measured gap in that file is 7 (offsets [0,1,2,10,11] — seven units unaccounted
+for after the third character), so gap analysis found nothing, the U+FFFC pass
+found no marker either, and the final fallback pushed chars.len().
+
+chars.len() means "position unknown", not "end of line". Before falling back to
+it, use the most plausible seat available: the largest offset gap not already
+claimed by another control. With no gap at all the old behaviour stands.
+---
+ src/model/paragraph.rs | 28 ++++++++++++++++++++++++++--
+ 1 file changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
+index 6a82b2fe..a83bdc69 100644
+--- a/src/model/paragraph.rs
++++ b/src/model/paragraph.rs
+@@ -1193,8 +1193,32 @@ impl Paragraph {
+                     search_start = abs_pos + 1;
+                 }
+                 None => {
+-                    // marker 더 이상 없으면 기존 동작 (chars.len() push)
+-                    positions.push(chars.len());
++                    // marker 도 없으면, 아직 설명되지 않은 오프셋 갭에 놓는다. 갭 분석은
++                    // `gap / 8` 로 세는데 실측상 인라인 컨트롤이 항상 8 을 차지하지는 않는다:
++                    // 행정업무운영편람의 머리말은 offsets=[0,1,2,10,11] 로 세 번째 글자 뒤에
++                    // **7** 칸이 비어 있고, 7/8 = 0 이라 갭 분석이 이 쪽번호 컨트롤을 놓쳤다.
++                    // 그 결과가 `-   -` 사이에 들어가야 할 번호가 줄 끝에 붙는 `-   - 17`.
++                    // 마지막 폴백인 `chars.len()` 은 "위치를 모른다"는 뜻이지 "줄 끝"이라는
++                    // 뜻이 아니므로, 그 전에 가장 그럴듯한 자리 — 아직 쓰이지 않은 가장 큰
++                    // 갭 — 을 먼저 쓴다. 갭이 하나도 없으면 종전대로 줄 끝.
++                    let mut best: Option<(usize, usize)> = None;   // (gap, pos)
++                    for i in 0..offsets.len().saturating_sub(1) {
++                        let cur = offsets[i] as usize;
++                        let next = offsets[i + 1] as usize;
++                        let width = if chars.get(i).map_or(false, |&c| c as u32 > 0xFFFF) { 2 } else { 1 };
++                        if next <= cur + width {
++                            continue;
++                        }
++                        let gap = next - cur - width;
++                        let pos = i + 1;
++                        if positions.contains(&pos) {
++                            continue;
++                        }
++                        if best.map_or(true, |(g, _)| gap > g) {
++                            best = Some((gap, pos));
++                        }
++                    }
++                    positions.push(best.map(|(_, pos)| pos).unwrap_or(chars.len()));
+                 }
+             }
+         }
+-- 
+2.50.1 (Apple Git-155)
+

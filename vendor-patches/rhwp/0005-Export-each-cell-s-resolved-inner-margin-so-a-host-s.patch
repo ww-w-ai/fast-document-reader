@@ -1,0 +1,73 @@
+From 9417eb8c8e106fd01483d5e4a96255f2720b5077 Mon Sep 17 00:00:00 2001
+From: Taehyoung Kim <taekim@ww-w.ai>
+Date: Sat, 1 Aug 2026 14:05:31 +0900
+Subject: [PATCH 5/8] Export each cell's resolved inner margin so a host stops
+ inventing one
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+FastDocReader had no cell padding from this parser at all, so every HWP
+table cell fell back to the reader's own 7pt default on all four edges.
+Measured on a real 490-page 행정업무운영편람: that invented number alone
+made the document 66 pages longer than Hancom's own viewer (495 vs 429).
+
+Exports `Cell::effective_padding(&table.padding)` — the existing single
+source that already resolves the aim flag, the table-wide fallback and the
+preserved-pad hygiene limit against Hancom's PDFs — rather than the raw
+field, so the host cannot end up with a second, divergent rule.
+---
+ src/document_core/queries/document_json.rs | 30 +++++++++++++++++-----
+ 1 file changed, 24 insertions(+), 6 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index bdddcfe0..d0debdc5 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -291,6 +291,17 @@ struct CellDto {
+     v_align: &'static str,
+     #[serde(rename = "borderFillId")]
+     border_fill_id: i32,
++    /// 셀 안 여백(pt), 네 축. `Cell::effective_padding` 이 해소한 값 — aim 플래그·표 기본
++    /// 폴백·보존 pad 위생 한도까지 이미 반영된 단일 출처이므로 호스트가 규칙을 다시 만들지
++    /// 않는다. 호스트는 이 값이 없으면 자기 기본값을 쓰므로, 누락은 조용한 조판 팽창이 된다.
++    #[serde(rename = "padLeft")]
++    pad_left: f64,
++    #[serde(rename = "padRight")]
++    pad_right: f64,
++    #[serde(rename = "padTop")]
++    pad_top: f64,
++    #[serde(rename = "padBottom")]
++    pad_bottom: f64,
+     blocks: Vec<Block>,
+ }
+ 
+@@ -660,12 +671,19 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {
+         row_cells.sort_by_key(|c| c.col);
+         let cells: Vec<CellDto> = row_cells
+             .into_iter()
+-            .map(|cell| CellDto {
+-                col_span: cell.col_span as i32,
+-                row_span: cell.row_span as i32,
+-                v_align: vertical_align_str(cell.vertical_align),
+-                border_fill_id: cell.border_fill_id as i32,
+-                blocks: build_blocks(doc, &cell.paragraphs),
++            .map(|cell| {
++                let pad = cell.effective_padding(&table.padding);
++                CellDto {
++                    col_span: cell.col_span as i32,
++                    row_span: cell.row_span as i32,
++                    v_align: vertical_align_str(cell.vertical_align),
++                    border_fill_id: cell.border_fill_id as i32,
++                    pad_left: pad.left as f64 / 100.0,
++                    pad_right: pad.right as f64 / 100.0,
++                    pad_top: pad.top as f64 / 100.0,
++                    pad_bottom: pad.bottom as f64 / 100.0,
++                    blocks: build_blocks(doc, &cell.paragraphs),
++                }
+             })
+             .collect();
+         rows.push(cells);
+-- 
+2.50.1 (Apple Git-155)
+

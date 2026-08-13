@@ -28,6 +28,13 @@ Applied on top of upstream **`8d3bfa4b92174b16bac587fe1409975cf34ba566`** (just 
 | 0002 | `csId` per span and a per-char-shape table of all seven font slots (per-script fonts) |
 | 0003 | Full page geometry — paper height and all four margins, not just the body width |
 | 0004 | HWP's page-number control (`AutoNumber(Page)`), so a running header can show its page |
+| 0005 | Each cell's resolved inner margin, so a host stops inventing one |
+| 0006 | An unlocatable inline control placed at its gap rather than at the line's end |
+| 0007 | A text run broken where a control sits, so an inline marker lands inside it |
+| 0008 | The border-fill table (`borderFills`), and page geometry from the section holding the most paragraphs rather than the first |
+
+The set is regenerated wholesale — `git format-patch <base>..HEAD -o vendor-patches/rhwp/` from the
+fork — so it never drifts behind the submodule again (it had: 0005–0007 existed only as commits).
 
 ## Restoring them
 

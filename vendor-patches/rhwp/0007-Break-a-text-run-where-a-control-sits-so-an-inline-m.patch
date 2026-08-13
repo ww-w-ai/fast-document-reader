@@ -1,0 +1,54 @@
+From 6eeb08f5cdec62cc5d87b838646b2c8b7b1dfba5 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Sat, 1 Aug 2026 20:42:41 +0900
+Subject: [PATCH 7/8] Break a text run where a control sits, so an inline
+ marker lands inside it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Placing the control at its gap (1efef7a3) computed the right seat and changed
+nothing visible: the exporter emits a text run whole, keyed only on char-shape
+changes, and merges markers by sorting on position — so a marker pointing into
+the middle of a run always sorts after the whole run.
+
+The 행정업무운영편람's header is one run ("－   －", a single char shape) with the
+page-number control at position 3, which came out as "－   －17". Breaking the
+run at any position a marker claims gives "－  17 －". Footnote and bookmark
+markers inside a uniformly styled run were mis-seated the same way.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index d0debdc5..8202fcf7 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -454,6 +454,13 @@ fn build_spans(doc_info: &DocInfo, para: &Paragraph) -> Vec<Span> {
+     }
+ 
+     // 텍스트 런: (문자 시작 인덱스, Span). 제어 문자(0x00~0x1F)는 표시에서 제외.
++    //
++    // 런은 char_shape 이 바뀔 때뿐 아니라 **컨트롤이 앉는 자리에서도** 끊는다. 아래 병합은
++    // (위치, 서브순서)로 정렬만 하므로, 한 런의 한가운데를 가리키는 마커는 정렬로는 그 안에
++    // 들어갈 수 없고 런 통째 뒤로 밀린다. 행정업무운영편람의 머리말이 그 경우다: `－   －` 가
++    // 같은 char_shape 이라 한 런이고, 쪽번호 컨트롤의 위치 3 은 그 런 안이라
++    // `－   －` + `17` 로 나와 `－   －17` 이 됐다. 자리에서 끊으면 `－  ` + `17` + ` －`.
++    let split_at: std::collections::HashSet<usize> = markers.iter().map(|(pos, _)| *pos).collect();
+     let mut ordered: Vec<(usize, u8, Span)> = Vec::new();
+     if !chars.is_empty() {
+         let mut cur_id: Option<u32> = None;
+@@ -461,7 +468,7 @@ fn build_spans(doc_info: &DocInfo, para: &Paragraph) -> Vec<Span> {
+         let mut cur_start = 0usize;
+         for (i, &ch) in chars.iter().enumerate() {
+             let id = para.char_shape_id_at(i).unwrap_or(0);
+-            if cur_id != Some(id) {
++            if cur_id != Some(id) || (i > cur_start && split_at.contains(&i)) {
+                 if let Some(pid) = cur_id {
+                     if !cur_text.is_empty() {
+                         let link = link_at(&link_ranges, cur_start);
+-- 
+2.50.1 (Apple Git-155)
+

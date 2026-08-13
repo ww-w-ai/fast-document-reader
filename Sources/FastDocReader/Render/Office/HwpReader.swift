@@ -168,12 +168,16 @@ enum HwpReader {
         // them. A parser predating the `charShapes` export yields `[]`, and every span then keeps
         // rhwp's own `font`, which is exactly what this reader drew before per-slot fonts existed.
         let slotFonts = (envelope.charShapes ?? []).map { HwpSlotFonts(row: $0) }
+        // The document's own border/background table, resolved ONCE for the whole document the same
+        // way `slotFonts` is — a cell carries only an id. `[]` (a parser predating this export)
+        // leaves every table exactly as this reader drew it before: the theme grid.
+        let borderFills = envelope.borderFills ?? []
         // `paged` is not a second flag — it is the SAME predicate `OfficeTextBuilder.build` resolves
         // as `pageBasis != nil` (a page content width the document actually stated), read here from
         // the same field so the reader and the builder cannot drift on what "paged" means.
         var result = OfficeReadResult(blocks: envelope.blocks.map {
             mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
-                     paged: pageWidth != nil)
+                     borderFills: borderFills, paged: pageWidth != nil)
         }, comments: [])
         // The document's own default body size (Normal/"바탕글" style char-shape base size, in pt),
         // rhwp's analog of docx `w:docDefaults/…/w:sz`. `null`/≤0 → leave the `11` default so an HWP
@@ -201,11 +205,11 @@ enum HwpReader {
         // captured, same as every other reader that finds none.
         result.headers = (envelope.headers ?? []).map {
             mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
-                                 slotFonts: slotFonts, paged: pageWidth != nil)
+                                 slotFonts: slotFonts, borderFills: borderFills, paged: pageWidth != nil)
         }
         result.footers = (envelope.footers ?? []).map {
             mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
-                                 slotFonts: slotFonts, paged: pageWidth != nil)
+                                 slotFonts: slotFonts, borderFills: borderFills, paged: pageWidth != nil)
         }
         return result
     }
@@ -216,12 +220,13 @@ enum HwpReader {
     /// header-footer-design.md §2c's "parseBody already generalizes" for docx/odt).
     private static func mapHeaderFooterEntry(
         _ entry: HwpHeaderFooterEntry, pageWidth: CGFloat?, defaultBodySize: CGFloat,
-        slotFonts: [HwpSlotFonts], paged: Bool
+        slotFonts: [HwpSlotFonts], borderFills: [HwpBorderFill], paged: Bool
     ) -> OfficeHeaderFooter {
         OfficeHeaderFooter(
             appliesTo: mapHeaderFooterApplyTo(entry.applyTo),
             blocks: entry.blocks.map {
-                mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts, paged: paged)
+                mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
+                         borderFills: borderFills, paged: paged)
             })
     }
 
@@ -632,7 +637,8 @@ enum HwpReader {
     }
 
     private static func mapBlock(_ b: HwpBlock, pageWidth: CGFloat?, defaultBodySize: CGFloat,
-                                 slotFonts: [HwpSlotFonts], paged: Bool) -> OfficeBlock {
+                                 slotFonts: [HwpSlotFonts], borderFills: [HwpBorderFill],
+                                 paged: Bool) -> OfficeBlock {
         switch b {
         case .para(let p):
             let spans = p.spans.flatMap { mapSpan($0, slotFonts: slotFonts) }
@@ -662,7 +668,7 @@ enum HwpReader {
         case .table(let t):
             let rows = t.rows.map { row in
                 row.map { mapCell($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
-                                  slotFonts: slotFonts, paged: paged) }
+                                  slotFonts: slotFonts, borderFills: borderFills, paged: paged) }
             }
             // colWidths as ABSOLUTE INTEGER-derived points, never percentages (invariant 39/42).
             let columnWidths = t.colWidths.map { points($0) }
@@ -672,6 +678,13 @@ enum HwpReader {
             var format = TableFormat()
             let sourceWidth = columnWidths.reduce(0, +)
             if sourceWidth > 0 { format.sourceWidth = sourceWidth }
+            // A table's own border-fill is its BACKGROUND, not a box around the grid: rhwp's renderer
+            // hands the table's fill to `render_cell_background` and to nothing else
+            // (`layout/table_cell_content.rs:529`), and every rule on screen comes from the CELL
+            // fills. So the id becomes shading here and never a border — see invariant 74 for the
+            // measurement that corrected the opposite assumption.
+            format.defaultShading = borderFill(forId: t.borderFillId, in: borderFills)
+                .flatMap { color($0.bg) }
             // headerRows = 0: HWP's JSON carries no header signal, and inventing "row one" bolds
             // ordinary text (OfficeBlock.table's own contract). Full geometry/merge fidelity is S4.
             return .table(rows: rows, headerRows: 0, columnWidths: columnWidths, format: format)
@@ -708,10 +721,11 @@ enum HwpReader {
     }
 
     private static func mapCell(_ c: HwpCell, pageWidth: CGFloat?, defaultBodySize: CGFloat,
-                                slotFonts: [HwpSlotFonts], paged: Bool) -> Cell {
+                                slotFonts: [HwpSlotFonts], borderFills: [HwpBorderFill],
+                                paged: Bool) -> Cell {
         let blocks = c.blocks.map {
             mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
-                     paged: paged)
+                     borderFills: borderFills, paged: paged)
         }
         // "top" is Word/HWP's own default → nil, so a cell that only ever says "top" renders
         // byte-identical to one that says nothing (Cell.verticalAlignment's contract); only an
@@ -740,8 +754,47 @@ enum HwpReader {
         } else {
             edges = nil
         }
-        return Cell(blocks: blocks, rowSpan: c.rowSpan, colSpan: c.colSpan, verticalAlignment: vAlign,
-                    edgePadding: edges)
+        // The cell's own four edges and background, resolved from the id it carries. Before this the
+        // id arrived and resolved to nothing, so EVERY HWP table was ruled with the reader's theme
+        // grid — including the layout tables a Korean document uses to place things, whose borders it
+        // had deliberately turned off (measured: 423 of the 편람's 821 definitions are all-off).
+        let fill = borderFill(forId: c.borderFillId, in: borderFills)
+        return Cell(blocks: blocks, rowSpan: c.rowSpan, colSpan: c.colSpan,
+                    backgroundColor: fill.flatMap { color($0.bg) },
+                    edgeBorders: edgeBorders(forFillId: c.borderFillId, in: borderFills),
+                    verticalAlignment: vAlign, edgePadding: edges)
+    }
+
+    /// The border-fill row an id names, or nil when the document named none. HWP's reference is
+    /// 1-BASED and `0` means "nothing specified" — the same convention rhwp's own renderer applies
+    /// (`border_fill_id - 1`), restated here rather than assumed, because an off-by-one silently
+    /// paints every cell with its neighbour's rules.
+    private static func borderFill(forId id: Int?, in fills: [HwpBorderFill]) -> HwpBorderFill? {
+        guard let id, id > 0, id - 1 < fills.count else { return nil }
+        return fills[id - 1]
+    }
+
+    /// A border-fill id → the four edges it declares. `nil` when no fill resolves (id absent, `0`,
+    /// out of range, or a parser predating the export) → unchanged behaviour: the theme grid.
+    ///
+    /// Every resolved edge is a DECLARATION, never silence — HWP's fill states all four, so an edge
+    /// this document turned off becomes `.suppressed` rather than nil. That distinction is the whole
+    /// fix: nil would fall back through the cascade to the very border the document erased
+    /// (invariant 47).
+    private static func edgeBorders(forFillId id: Int?, in fills: [HwpBorderFill]) -> EdgeBorders? {
+        guard let fill = borderFill(forId: id, in: fills) else { return nil }
+        return EdgeBorders(top: borderDecl(fill.top), left: borderDecl(fill.left),
+                           bottom: borderDecl(fill.bottom), right: borderDecl(fill.right))
+    }
+
+    /// One exported edge → the reader's three-state declaration. `"none"` (the document switched the
+    /// edge off) → `.suppressed`; anything else is a real rule at the width and colour the document
+    /// gave. A width that failed to arrive falls back to the same 1pt the theme uses, so a malformed
+    /// edge is still drawn rather than silently vanishing.
+    private static func borderDecl(_ edge: HwpBorderEdge) -> BorderDecl {
+        if edge.type == "none" { return .suppressed }
+        let width = (edge.widthPt).flatMap { $0 > 0 ? CGFloat($0) : nil } ?? 1
+        return .drawn(BorderSide(width: width, color: color(edge.color)))
     }
 }
 
@@ -777,6 +830,13 @@ private struct HwpEnvelope: Decodable {
     /// Absent against a parser built before this existed — hence optional, and hence the reason a
     /// test has to assert it is PRESENT for a real file rather than trusting the Rust source.
     let charShapes: [[String]]?
+    /// The document's own border/background definitions, indexed by `borderFillId - 1` (HWP's
+    /// reference is 1-based; `0` means "nothing specified" and points at no row at all). Absent
+    /// against a parser built before this export existed, which is exactly the state in which every
+    /// HWP table was drawn with the reader's OWN grid: the ids arrived, nothing could resolve them.
+    /// Measured on `2025_행정업무운영편람_최종.hwp`: 423 of 821 definitions turn all four edges OFF,
+    /// so a document that deliberately erased its grid (layout tables) was ruled anyway.
+    let borderFills: [HwpBorderFill]?
     let blocks: [HwpBlock]
     /// Running headers/footers (header-footer-design.md §3) — rhwp's `model/header_footer.rs`
     /// `Header`/`Footer`, each with its own `apply_to` and full paragraph body, exported by
@@ -896,6 +956,32 @@ private struct HwpSpan: Decodable {
         case superscript = "super"
         case subscripted = "sub"
     }
+}
+
+/// One row of the document's border/background table (rhwp `borderFills`). Every HWP cell names one
+/// of these, and it declares ALL FOUR of that cell's edges — so an HWP cell is never in
+/// `BorderDecl`'s "never mentioned" state once its id resolves: an edge is either drawn or
+/// explicitly `none`. That is why this maps to a fully-populated `EdgeBorders` rather than leaving
+/// unmentioned edges to the table cascade the way docx's partial `w:tcBorders` does.
+private struct HwpBorderFill: Decodable {
+    var left: HwpBorderEdge
+    var right: HwpBorderEdge
+    var top: HwpBorderEdge
+    var bottom: HwpBorderEdge
+    /// Solid background fill as `"RRGGBB"`, already filtered by rhwp's own renderer rule — a
+    /// pattern, gradient, image or transparent fill arrives absent, and the reader paints nothing
+    /// rather than guessing an average colour.
+    var bg: String?
+}
+
+/// One edge of an `HwpBorderFill`. `type == "none"` is the document SUPPRESSING that edge (and then
+/// carries no width/colour); any other type is a real rule. The reader keeps only "is it drawn, and
+/// at what width/colour" — `BorderSide` has no dash vocabulary — but the type is decoded as sent so
+/// a later dash model has the fact rather than having to rebuild the parser for it.
+private struct HwpBorderEdge: Decodable {
+    var type: String
+    var widthPt: Double?
+    var color: String?
 }
 
 private struct HwpTable: Decodable {

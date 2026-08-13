@@ -349,6 +349,107 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertNil(rows[0][0].verticalAlignment)       // Word's default top → nil (byte-identical)
     }
 
+    // MARK: border fills — the id every HWP cell already carried, now resolvable
+
+    /// A cell whose fill declares no rule → four `.suppressed` edges, NOT silence. This is the whole
+    /// point of the export: silence falls back through the cascade to the reader's own grid, which is
+    /// exactly the grid a Korean layout table erased on purpose (423 of one real 편람's 821 fills).
+    func testCellFillWithNoRulesSuppressesAllFourEdges() throws {
+        let json = """
+        {"v":1,"borderFills":[
+           {"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},"bottom":{"type":"none"}}
+         ],
+         "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+           "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+        """
+        guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected table")
+        }
+        XCTAssertEqual(rows[0][0].edgeBorders,
+                       EdgeBorders(top: .suppressed, left: .suppressed,
+                                   bottom: .suppressed, right: .suppressed))
+    }
+
+    /// A drawn edge carries the document's own width (points, converted from HWP's mm enum) and
+    /// colour, rather than the theme's 1pt.
+    func testCellFillCarriesWidthAndColour() throws {
+        let json = """
+        {"v":1,"borderFills":[
+           {"left":{"type":"solid","widthPt":1.42,"color":"FF0000"},
+            "right":{"type":"none"},"top":{"type":"dash","widthPt":0.28,"color":"0000FF"},
+            "bottom":{"type":"none"},"bg":"EEEEEE"}
+         ],
+         "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+           "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+        """
+        guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected table")
+        }
+        let cell = rows[0][0]
+        guard case let .drawn(left) = cell.edgeBorders?.left else { return XCTFail("left not drawn") }
+        XCTAssertEqual(left.width, 1.42, accuracy: 0.001)
+        XCTAssertEqual(left.color, NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
+        // A dash is still a drawn rule — the reader keeps width/colour; it has no dash vocabulary.
+        guard case let .drawn(top) = cell.edgeBorders?.top else { return XCTFail("top not drawn") }
+        XCTAssertEqual(top.width, 0.28, accuracy: 0.001)
+        XCTAssertEqual(cell.edgeBorders?.right, .suppressed)
+        XCTAssertEqual(cell.backgroundColor,
+                       NSColor(srgbRed: 0xEE/255, green: 0xEE/255, blue: 0xEE/255, alpha: 1))
+    }
+
+    /// `0` = the document named no fill, and an id past the table's end resolves to nothing — both
+    /// leave the cell exactly as this reader drew it before the export existed (nil = theme grid).
+    /// The same holds for a parser predating the table: no `borderFills` key at all.
+    func testUnnamedOrUnresolvableFillLeavesEdgesUntouched() throws {
+        func edges(_ envelope: String) throws -> EdgeBorders? {
+            guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(envelope).blocks[0] else {
+                XCTFail("expected table"); return nil
+            }
+            return rows[0][0].edgeBorders
+        }
+        let fills = """
+        "borderFills":[{"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},"bottom":{"type":"none"}}],
+        """
+        func table(_ cellFillId: Int) -> String {
+            """
+            "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+              "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":\(cellFillId),"blocks":[]}]]}]
+            """
+        }
+        XCTAssertNil(try edges("{\"v\":1,\(fills)\(table(0))}"))       // named none
+        XCTAssertNil(try edges("{\"v\":1,\(fills)\(table(99))}"))      // past the end
+        XCTAssertNil(try edges("{\"v\":1,\(table(1))}"))               // parser predating the export
+    }
+
+    /// A table's own border-fill is its BACKGROUND. rhwp's renderer passes the table's fill to
+    /// `render_cell_background` and nowhere else, and a page measured against its SVG carries no
+    /// stroke at all where the table's fill declares four solid edges — every rule on screen comes
+    /// from the CELL fills. So the table's id must never become a border: doing that drew a heavy
+    /// box around layout tables that the document draws with an image fill instead.
+    func testTableOwnFillIsShadingNeverABorder() throws {
+        let json = """
+        {"v":1,"borderFills":[
+           {"left":{"type":"solid","widthPt":0.34,"color":"000000"},
+            "right":{"type":"solid","widthPt":0.34,"color":"000000"},
+            "top":{"type":"solid","widthPt":0.34,"color":"000000"},
+            "bottom":{"type":"solid","widthPt":0.34,"color":"000000"},"bg":"D8D8D8"},
+           {"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},"bottom":{"type":"none"}}
+         ],
+         "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":1,
+           "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":2,"blocks":[]}]]}]}
+        """
+        guard case let .table(rows, _, _, format) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected table")
+        }
+        XCTAssertNil(format.edgeBorders, "a table's fill is not a box around the grid")
+        XCTAssertEqual(format.defaultShading,
+                       NSColor(srgbRed: 0xD8/255, green: 0xD8/255, blue: 0xD8/255, alpha: 1))
+        // The cell keeps its own answer — all four edges off — with nothing stamped over it.
+        XCTAssertEqual(rows[0][0].edgeBorders,
+                       EdgeBorders(top: .suppressed, left: .suppressed,
+                                   bottom: .suppressed, right: .suppressed))
+    }
+
     // MARK: image + unsupported (size reserved, nothing dropped)
 
     func testImageReservesSize() throws {
