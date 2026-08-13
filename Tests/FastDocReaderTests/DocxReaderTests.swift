@@ -3367,6 +3367,29 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertEqual(rows[0][0].borderWidth, 1)
     }
 
+    /// `w:val` says HOW the rule is drawn, and this reader used to read it only to tell "off" from
+    /// "on" — so a dotted or double rule was painted solid. The families collapse (Word states more
+    /// gap/stroke variants than a 0.5pt rule can show), but the picture on screen must differ.
+    func testCellEdgeCarriesItsLineStyle() throws {
+        func style(_ val: String) throws -> BorderLineStyle? {
+            let blocks = try read(document: """
+            <w:tbl><w:tr><w:tc><w:tcPr><w:tcBorders><w:top w:val="\(val)" w:sz="8" w:color="000000"/></w:tcBorders></w:tcPr><w:p><w:r><w:t>Cell</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+            """)
+            guard case .table(let rows, _, _, _) = blocks.first,
+                  case let .drawn(side) = rows[0][0].edgeBorders?.top else { return nil }
+            return side.style
+        }
+        XCTAssertEqual(try style("single"), .solid)
+        XCTAssertEqual(try style("dotted"), .dotted)
+        XCTAssertEqual(try style("dashed"), .dashed)
+        XCTAssertEqual(try style("dashSmallGap"), .dashed)
+        XCTAssertEqual(try style("dotDash"), .dashed)
+        XCTAssertEqual(try style("double"), .double)
+        XCTAssertEqual(try style("thinThickSmallGap"), .double)
+        // An art border this renderer cannot draw resolves to the nearest thing, never to nothing.
+        XCTAssertEqual(try style("apples"), .solid)
+    }
+
     /// `w:top`'s `w:val="none"` (no border drawn on that edge) must be skipped in favour of the
     /// next drawn edge, not read as though it were a real border.
     func testCellBorderNoneEdgeIsSkippedInFavorOfTheNextDrawnEdge() throws {

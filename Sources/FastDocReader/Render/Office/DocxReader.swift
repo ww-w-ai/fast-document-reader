@@ -2798,11 +2798,30 @@ enum DocxReader: OfficeDocumentReader {
             guard let sz = e.attributes["w:sz"].flatMap(Double.init) else { return nil }
             let color = e.attributes["w:color"].flatMap { $0.lowercased() == "auto" ? nil : colorFromHex($0) }
             // A declared-but-zero width still means "drawn" in Word; a hairline is the honest render.
-            return .drawn(BorderSide(width: max(CGFloat(sz / 8), 0.25), color: color))
+            return .drawn(BorderSide(width: max(CGFloat(sz / 8), 0.25), color: color,
+                                     style: lineStyle(val)))
         }
         let out = EdgeBorders(top: side("w:top"), left: side("w:left"), bottom: side("w:bottom"),
                               right: side("w:right"), insideH: side("w:insideH"), insideV: side("w:insideV"))
         return out.isEmpty ? nil : out
+    }
+
+    /// `w:val` (ST_Border, §17.18.2 — about two dozen values) → the four styles this reader paints.
+    /// Word's own list separates gaps and stroke widths this renderer cannot express at a 0.5pt
+    /// rule (`dashSmallGap` vs `dashed`), so the families collapse; the decorative art borders
+    /// (`w:val="apples"` and friends) and the bevels resolve to `solid`, which is what they are
+    /// nearest to and never to nothing.
+    static func lineStyle(_ val: String) -> BorderLineStyle {
+        if val.hasPrefix("dot") && val != "dotted" { return .dashed }   // dotDash, dotDotDash
+        switch val {
+        case "dotted", "dottedHeavy": return .dotted
+        case "dashed", "dashedHeavy", "dashSmallGap", "dashDotStroked", "dotted-dashed": return .dashed
+        case "double", "doubleWave", "triple", "thinThickSmallGap", "thickThinSmallGap",
+             "thinThickThinSmallGap", "thinThickMediumGap", "thickThinMediumGap",
+             "thinThickThinMediumGap", "thinThickLargeGap", "thickThinLargeGap",
+             "thinThickThinLargeGap": return .double
+        default: return .solid
+        }
     }
 
     private static func resolveBorder(_ borders: XMLNode?) -> (color: NSColor?, width: CGFloat?) {

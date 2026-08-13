@@ -977,6 +977,12 @@ enum OdtReader: OfficeDocumentReader {
         var backgroundColor: NSColor? = nil
         var borderColor: NSColor? = nil
         var borderWidth: CGFloat? = nil
+        /// The four edges as ODF states them INDIVIDUALLY (`fo:border` for all four, then each
+        /// `fo:border-*` overriding its own side) — the three-state model docx already used, which
+        /// this reader collapsed into the single colour/width pair above. `none`/`hidden` is a
+        /// SUPPRESSION, not silence, for the same reason it is in every other format: silence
+        /// inherits the theme's grid, which is the rule the document asked to remove.
+        var edgeBorders: EdgeBorders? = nil
         var verticalAlignment: CellVAlign? = nil
         var padding: CGFloat? = nil
         /// Per-edge padding for the PAGED model (Job 1) — see `parseTableCellStyleDecls`'s own doc
@@ -992,6 +998,7 @@ enum OdtReader: OfficeDocumentReader {
         var backgroundColor: NSColor? = nil
         var borderColor: NSColor? = nil
         var borderWidth: CGFloat? = nil
+        var edgeBorders: EdgeBorders? = nil
         var verticalAlignment: CellVAlign? = nil
         var padding: CGFloat? = nil
         var paddingTop: CGFloat? = nil
@@ -1018,6 +1025,7 @@ enum OdtReader: OfficeDocumentReader {
                 let border = parseODFBorder(props)
                 decl.borderColor = border.color
                 decl.borderWidth = border.width
+                decl.edgeBorders = parseODFEdgeBorders(props)
                 // ODF `style:vertical-align` (top/middle/bottom/automatic) → `CellVAlign`; `middle`
                 // is the odt spelling of docx's `center`, `automatic` means "no explicit alignment"
                 // and is left nil (TableBlockBuilder's own top default stands).
@@ -1055,7 +1063,7 @@ enum OdtReader: OfficeDocumentReader {
     private static func resolveTableCellStyle(_ styleName: String, decls: [String: TableCellStyleDecl]) -> TableCellStyle {
         var result = TableCellStyle()
         var have = (bg: false, borderColor: false, borderWidth: false, valign: false, padding: false,
-                    padTop: false, padLeft: false, padBottom: false, padRight: false)
+                    padTop: false, padLeft: false, padBottom: false, padRight: false, edges: false)
         var currentName: String? = styleName
         var visited = Set<String>()
         while let name = currentName {
@@ -1065,6 +1073,10 @@ enum OdtReader: OfficeDocumentReader {
             if !have.bg, let v = decl.backgroundColor { result.backgroundColor = v; have.bg = true }
             if !have.borderColor, let v = decl.borderColor { result.borderColor = v; have.borderColor = true }
             if !have.borderWidth, let v = decl.borderWidth { result.borderWidth = v; have.borderWidth = true }
+            // The per-edge set is taken WHOLE from the nearest style that states any edge — merging
+            // one ancestor's top with another's left would invent a border nobody declared, and ODF's
+            // own cascade replaces the border declaration rather than blending it.
+            if !have.edges, let v = decl.edgeBorders { result.edgeBorders = v; have.edges = true }
             if !have.valign, let v = decl.verticalAlignment { result.verticalAlignment = v; have.valign = true }
             if !have.padding, let v = decl.padding { result.padding = v; have.padding = true }
             if !have.padTop, let v = decl.paddingTop { result.paddingTop = v; have.padTop = true }
@@ -1495,7 +1507,8 @@ enum OdtReader: OfficeDocumentReader {
                     let cellStyle = ownStyle ?? rowDefaultStyle ?? columnDefault
                     var cell = Cell(
                         blocks: blocks, rowSpan: rowSpan, colSpan: colSpan, backgroundColor: cellStyle?.backgroundColor,
-                        borderColor: cellStyle?.borderColor, borderWidth: cellStyle?.borderWidth, width: width,
+                        borderColor: cellStyle?.borderColor, borderWidth: cellStyle?.borderWidth,
+                        edgeBorders: cellStyle?.edgeBorders, width: width,
                         verticalAlignment: cellStyle?.verticalAlignment, padding: cellStyle?.padding)
                     // PAGED model's per-edge padding (Job 1) — `nil` when the resolved style named
                     // no edge at all, so a cell with no cell-style keeps `edgePadding == nil` exactly
@@ -1778,6 +1791,39 @@ enum OdtReader: OfficeDocumentReader {
     /// `fo:border-top` set, no `fo:border` shorthand) still contributes something rather than nothing.
     /// The middle token being `"none"`/`"hidden"` means no border on that side, read the same as the
     /// attribute being absent entirely.
+    /// The same shorthand read PER SIDE, keeping what the uniform pair above throws away: which
+    /// sides were named, whether a side was switched OFF, and the style token (`solid`/`dashed`/
+    /// `dotted`/`double`), which every ODF file states and this reader used to drop — a dotted frame
+    /// then rendered as a solid one, the same defect measured in the docx and HWP paths.
+    /// `fo:border` seeds all four; a per-side attribute then overrides its own side, which is ODF's
+    /// own precedence. Returns nil when the style named no side at all, so an unstyled cell is
+    /// unchanged.
+    private static func parseODFEdgeBorders(_ props: XMLNode) -> EdgeBorders? {
+        func decl(_ raw: String) -> BorderDecl? {
+            let tokens = raw.split(separator: " ").map(String.init)
+            guard !tokens.isEmpty else { return nil }
+            if tokens.contains("none") || tokens.contains("hidden") { return .suppressed }
+            let width = tokens.first.flatMap(parseLength)
+            let color = tokens.last.flatMap(parseODFColor)
+            guard let width, width > 0 else { return nil }
+            let style: BorderLineStyle
+            switch tokens.count > 1 ? tokens[1] : "solid" {
+            case "dotted": style = .dotted
+            case "dashed", "dash-dot", "dash-dot-dot", "fine-dashed", "dotted-dashed": style = .dashed
+            case "double", "double-thin", "groove", "ridge": style = .double
+            default: style = .solid
+            }
+            return .drawn(BorderSide(width: width, color: color, style: style))
+        }
+        let all = props.attributes["fo:border"].flatMap(decl)
+        var out = EdgeBorders(top: all, left: all, bottom: all, right: all)
+        if let raw = props.attributes["fo:border-top"] { out.top = decl(raw) }
+        if let raw = props.attributes["fo:border-bottom"] { out.bottom = decl(raw) }
+        if let raw = props.attributes["fo:border-left"] { out.left = decl(raw) }
+        if let raw = props.attributes["fo:border-right"] { out.right = decl(raw) }
+        return out.isEmpty ? nil : out
+    }
+
     private static func parseODFBorder(_ props: XMLNode) -> (color: NSColor?, width: CGFloat?) {
         for key in ["fo:border", "fo:border-top", "fo:border-bottom", "fo:border-left", "fo:border-right"] {
             guard let raw = props.attributes[key] else { continue }

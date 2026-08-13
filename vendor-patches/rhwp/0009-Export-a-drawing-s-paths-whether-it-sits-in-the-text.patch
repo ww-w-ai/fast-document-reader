@@ -1,0 +1,362 @@
+From 8b85c9086bd50aa428c11423987edb5f42a0260c Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Thu, 13 Aug 2026 23:00:09 +0900
+Subject: [PATCH 9/9] Export a drawing's paths, whether it sits in the text,
+ and what a fill really is
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A drawing arrived as {"label":"shape","w":0,"h":0} — no geometry, not even a
+size — so 78 of them in one manual were 78 blanks. rhwp's own renderer already
+flattens every shape kind to move/line/curve/close before it draws, so that same
+reduction is what ships, with stroke, fill and arrowheads.
+
+treat_as_char rides along because a host with no floating layer must not inline
+an anchored object: several of those shapes are the size of the whole page, and
+inlining them all costs 29 pages.
+
+And a fill is a PICTURE far more often than a colour — 352 of that file's 821
+definitions, against 53 solid ones. Exporting only the colour rendered every
+rounded frame in the document as blank paper.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 279 ++++++++++++++++++++-
+ 1 file changed, 273 insertions(+), 6 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 07cecd31..076271c2 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -16,9 +16,11 @@ use crate::model::control::{AutoNumberType, Control, FieldType};
+ use crate::model::document::{DocInfo, Document};
+ use crate::model::header_footer::HeaderFooterApply;
+ use crate::model::page::PageAreas;
++use crate::model::shape::{DrawingObjAttr, ShapeObject};
+ use crate::model::paragraph::Paragraph;
+ use crate::model::style::{
+-    Alignment, BorderLine, BorderLineType, HeadType, LineSpacingType, UnderlineType, BORDER_WIDTHS,
++    Alignment, BorderLine, BorderLineType, FillType, HeadType, LineSpacingType, UnderlineType,
++    BORDER_WIDTHS,
+ };
+ use crate::model::table::{Cell, Table, VerticalAlign};
+ use crate::renderer::equation::latex::to_latex;
+@@ -139,6 +141,23 @@ struct BorderFillDto {
+     /// 그것이 렌더러와 드리프트하기 때문.
+     #[serde(rename = "bg", skip_serializing_if = "Option::is_none")]
+     background: Option<String>,
++    /// A PICTURE fill's image id (`bin_data_id`, the same 1-based id `image` blocks carry), when the
++    /// fill is a picture rather than a colour. This is how a Korean document draws a rounded
++    /// annotation box: the table's fill is an image and its cells declare no rules at all, so a host
++    /// that reads only `bg` renders the box as nothing — measured on the 편람's 전자문서 box, which
++    /// rhwp paints as nine image tiles and we drew as blank paper.
++    #[serde(rename = "bgImage", skip_serializing_if = "Option::is_none")]
++    background_image: Option<i32>,
++    /// A GRADIENT fill's colour stops (`"RRGGBB"`, in order) and its angle in degrees. A host that
++    /// cannot draw a gradient can still take the first stop; one that can, draws it.
++    #[serde(rename = "bgGradient", skip_serializing_if = "Option::is_none")]
++    background_gradient: Option<GradientDto>,
++}
++
++#[derive(Serialize)]
++struct GradientDto {
++    colors: Vec<String>,
++    angle: i32,
+ }
+ 
+ /// 한 변의 선. `type` 이 `"none"` 이면 **문서가 그 변을 명시적으로 껐다**는 뜻이고, 그때는
+@@ -214,6 +233,11 @@ fn build_border_fills(doc_info: &DocInfo) -> Vec<BorderFillDto> {
+                 top: border_edge_dto(&bf.borders[2]),
+                 bottom: border_edge_dto(&bf.borders[3]),
+                 background: resolved.fill_color.map(color_hex),
++                background_image: resolved.image_fill.as_ref().map(|f| f.bin_data_id as i32),
++                background_gradient: resolved.gradient.as_ref().map(|g| GradientDto {
++                    colors: g.colors.iter().map(|c| color_hex(*c)).collect(),
++                    angle: g.angle as i32,
++                }),
+             }
+         })
+         .collect()
+@@ -311,6 +335,7 @@ enum Block {
+     Table(TableBlock),
+     Image(ImageBlock),
+     Equation(EquationBlock),
++    Shape(ShapeBlock),
+     Unsupported(UnsupportedBlock),
+ }
+ 
+@@ -454,6 +479,63 @@ struct EquationBlock {
+     h: i32,
+ }
+ 
++/// A drawing object, FLATTENED TO PATHS. rhwp's own renderer reduces every shape kind — line,
++/// rectangle, ellipse, arc, polygon, curve, group — to move/line/curve/close commands before it
++/// draws anything (`renderer/layout/shape_layout.rs`), so exporting that same reduction gives a host
++/// one thing to draw instead of nine, and no chance to disagree with the renderer about what an
++/// `arc_type` or a `round_rate` means. Coordinates are HWPUNIT in the OBJECT's own box (0,0 = its
++/// top-left), so a host scales them by whatever size it gives the object.
++///
++/// Before this the whole family arrived as `{"t":"unsupported","label":"shape","w":0,"h":0}` — no
++/// geometry and not even a size — so a host could not draw it or reserve room for it. Measured on
++/// `2025_행정업무운영편람_최종.hwp`: 79 of them, and the arrows they draw are what a reader misses
++/// when a diagram of an approval flow arrives as four labels and no lines.
++#[derive(Serialize)]
++struct ShapeBlock {
++    /// The object's own box (HWPUNIT), from `CommonObjAttr` — the same units `image`'s `w`/`h` use.
++    w: i32,
++    h: i32,
++    /// The object's own horizontal alignment, exactly as `image` carries it.
++    align: &'static str,
++    /// TRUE when the document places this object "as a character" (`treat_as_char`) — i.e. in the
++    /// text flow, where a host can draw it inline without moving anything. FALSE means the object is
++    /// ANCHORED and positioned by coordinates, over or beside the text; drawing that one inline
++    /// would push the page apart. A host with no floating-object layer must tell the two apart, and
++    /// only the parser knows which is which. Measured on `2025_행정업무운영편람_최종.hwp`: several of
++    /// its 78 shapes are the size of the whole page (555×752pt), so inlining them all cost 29 pages.
++    #[serde(rename = "asChar")]
++    as_char: bool,
++    paths: Vec<ShapePath>,
++}
++
++#[derive(Serialize)]
++struct ShapePath {
++    /// Path commands: `["M",x,y]`, `["L",x,y]`, `["C",x1,y1,x2,y2,x,y]`, `["Z"]`.
++    d: Vec<Vec<serde_json::Value>>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    stroke: Option<ShapeStrokeDto>,
++    /// Solid fill (`"RRGGBB"`), or absent for no fill / a pattern / gradient / image fill — the same
++    /// honesty the border-fill table's `bg` applies.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    fill: Option<String>,
++    /// Arrowheads, from the border line's own attribute bits (10–15 start, 16–21 end).
++    #[serde(rename = "arrowStart", skip_serializing_if = "std::ops::Not::not")]
++    arrow_start: bool,
++    #[serde(rename = "arrowEnd", skip_serializing_if = "std::ops::Not::not")]
++    arrow_end: bool,
++}
++
++#[derive(Serialize)]
++struct ShapeStrokeDto {
++    color: String,
++    #[serde(rename = "widthPt")]
++    width_pt: f64,
++    /// Same four-value vocabulary the border-fill edges use (`solid`/`dash`/`dot`/`double`), taken
++    /// from the line-type bits 0–5 with rhwp's own mapping (`layout/utils.rs`).
++    #[serde(rename = "type")]
++    kind: &'static str,
++}
++
+ #[derive(Serialize)]
+ struct UnsupportedBlock {
+     label: String,
+@@ -906,16 +988,201 @@ fn append_control_blocks(doc: &Document, para: &Paragraph, out: &mut Vec<Block>)
+             Control::Table(t) => out.push(build_table_block(doc, t)),
+             Control::Picture(p) => out.push(build_image_block(doc, p)),
+             Control::Equation(e) => out.push(build_equation_block(e)),
+-            Control::Shape(_) => out.push(Block::Unsupported(UnsupportedBlock {
+-                label: "shape".to_string(),
+-                w: 0,
+-                h: 0,
+-            })),
++            Control::Shape(s) => push_shape_blocks(doc, s, out),
+             _ => {}
+         }
+     }
+ }
+ 
++
++/// A drawing object → its flattened paths. Group children recurse with their own offsets applied,
++/// so a grouped diagram arrives as one object with many paths rather than a hierarchy the host has
++/// to walk. A picture, chart or OLE object inside a group is NOT drawn here — those have their own
++/// blocks and their own honest placeholders.
++/// The shape itself, plus — as SIBLING blocks — the paragraphs of any text box it carries. A text
++/// box is a frame around words: the words are the content, and pushing them beside the drawing means
++/// they survive a host that cannot draw the frame, in the SAME vocabulary the body already uses.
++fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>) {
++    let common = shape.common();
++    let mut paths = Vec::new();
++    collect_shape_paths(shape, 0, 0, &mut paths);
++    if !paths.is_empty() {
++        out.push(Block::Shape(ShapeBlock {
++            w: common.width as i32,
++            h: common.height as i32,
++            align: horz_align_str(common.horz_align),
++            as_char: common.treat_as_char,
++            paths,
++        }));
++    }
++    if let Some(text) = shape_text_box(shape) {
++        out.extend(build_blocks(doc, &text.paragraphs));
++    }
++}
++
++fn shape_text_box(shape: &ShapeObject) -> Option<&crate::model::shape::TextBox> {
++    shape_drawing(shape).and_then(|d| d.text_box.as_ref())
++}
++
++fn shape_drawing(shape: &ShapeObject) -> Option<&DrawingObjAttr> {
++    match shape {
++        ShapeObject::Line(s) => Some(&s.drawing),
++        ShapeObject::Rectangle(s) => Some(&s.drawing),
++        ShapeObject::Ellipse(s) => Some(&s.drawing),
++        ShapeObject::Arc(s) => Some(&s.drawing),
++        ShapeObject::Polygon(s) => Some(&s.drawing),
++        ShapeObject::Curve(s) => Some(&s.drawing),
++        _ => None,
++    }
++}
++
++fn pt_cmd(op: &'static str, coords: &[i32]) -> Vec<serde_json::Value> {
++    let mut out = vec![serde_json::Value::from(op)];
++    out.extend(coords.iter().map(|v| serde_json::Value::from(*v)));
++    out
++}
++
++/// One shape's own path(s), in the object box's coordinates, offset by any group nesting.
++fn collect_shape_paths(shape: &ShapeObject, dx: i32, dy: i32, out: &mut Vec<ShapePath>) {
++    let mut d: Vec<Vec<serde_json::Value>> = Vec::new();
++    match shape {
++        ShapeObject::Line(line) => {
++            d.push(pt_cmd("M", &[line.start.x + dx, line.start.y + dy]));
++            d.push(pt_cmd("L", &[line.end.x + dx, line.end.y + dy]));
++        }
++        ShapeObject::Rectangle(rect) => {
++            for (i, (x, y)) in rect.x_coords.iter().zip(rect.y_coords.iter()).enumerate() {
++                d.push(pt_cmd(if i == 0 { "M" } else { "L" }, &[*x + dx, *y + dy]));
++            }
++            d.push(pt_cmd("Z", &[]));
++        }
++        ShapeObject::Ellipse(el) => {
++            // A circle/ellipse as four cubic arcs — the standard 0.5523 magic ratio, computed from
++            // the centre and the two axis endpoints the record stores, so a rotated ellipse keeps
++            // its axes instead of being straightened into a bounding box.
++            let (cx, cy) = (el.center.x + dx, el.center.y + dy);
++            let (ax, ay) = (el.axis1.x - el.center.x, el.axis1.y - el.center.y);
++            let (bx, by) = (el.axis2.x - el.center.x, el.axis2.y - el.center.y);
++            let k = 0.552_284_75_f64;
++            let p = |sx: f64, sy: f64| -> (i32, i32) {
++                (
++                    (cx as f64 + ax as f64 * sx + bx as f64 * sy).round() as i32,
++                    (cy as f64 + ay as f64 * sx + by as f64 * sy).round() as i32,
++                )
++            };
++            let (sx, sy) = p(1.0, 0.0);
++            d.push(pt_cmd("M", &[sx, sy]));
++            for (from, to) in [((1.0, 0.0), (0.0, 1.0)), ((0.0, 1.0), (-1.0, 0.0)),
++                               ((-1.0, 0.0), (0.0, -1.0)), ((0.0, -1.0), (1.0, 0.0))] {
++                let (c1x, c1y) = p(from.0 + to.0 * k, from.1 + to.1 * k);
++                let (c2x, c2y) = p(to.0 + from.0 * k, to.1 + from.1 * k);
++                let (ex, ey) = p(to.0, to.1);
++                d.push(pt_cmd("C", &[c1x, c1y, c2x, c2y, ex, ey]));
++            }
++            d.push(pt_cmd("Z", &[]));
++        }
++        ShapeObject::Arc(arc) => {
++            // An arc is exported as its chord-to-chord polyline through the two stored endpoints —
++            // honest and coarse. Drawing the true sweep needs the ellipse's own parametrisation,
++            // which the record states only indirectly; a straight join is visibly wrong only on a
++            // wide sweep, and the alternative (dropping it) is invisible everywhere.
++            d.push(pt_cmd("M", &[arc.center.x + dx, arc.center.y + dy]));
++            d.push(pt_cmd("L", &[arc.axis1.x + dx, arc.axis1.y + dy]));
++            d.push(pt_cmd("L", &[arc.axis2.x + dx, arc.axis2.y + dy]));
++        }
++        ShapeObject::Polygon(poly) => {
++            for (i, pt) in poly.points.iter().enumerate() {
++                d.push(pt_cmd(if i == 0 { "M" } else { "L" }, &[pt.x + dx, pt.y + dy]));
++            }
++            if poly.points.len() > 2 {
++                d.push(pt_cmd("Z", &[]));
++            }
++        }
++        ShapeObject::Curve(curve) => {
++            if let Some(first) = curve.points.first() {
++                d.push(pt_cmd("M", &[first.x + dx, first.y + dy]));
++                let mut i = 1;
++                while i + 2 < curve.points.len() {
++                    let (a, b, c) = (&curve.points[i], &curve.points[i + 1], &curve.points[i + 2]);
++                    d.push(pt_cmd("C", &[a.x + dx, a.y + dy, b.x + dx, b.y + dy, c.x + dx, c.y + dy]));
++                    i += 3;
++                }
++                // A trailing segment shorter than a cubic is joined straight rather than dropped.
++                while i < curve.points.len() {
++                    let pt = &curve.points[i];
++                    d.push(pt_cmd("L", &[pt.x + dx, pt.y + dy]));
++                    i += 1;
++                }
++            }
++        }
++        ShapeObject::Group(group) => {
++            for child in &group.children {
++                let attr = child.common();
++                collect_shape_paths(child, dx + attr.horizontal_offset as i32,
++                                    dy + attr.vertical_offset as i32, out);
++            }
++            return;
++        }
++        _ => return, // picture / chart / OLE — their own blocks, not a path
++    }
++    if d.is_empty() {
++        return;
++    }
++    let drawing = shape_drawing(shape);
++    let (stroke, arrow_start, arrow_end) = match drawing {
++        Some(drawing) => shape_stroke(drawing),
++        None => (None, false, false),
++    };
++    out.push(ShapePath {
++        d,
++        stroke,
++        fill: drawing.and_then(shape_fill_hex),
++        arrow_start,
++        arrow_end,
++    });
++}
++
++/// The border line of a drawing object → a stroke, plus its two arrowhead flags. The bit layout is
++/// rhwp's own (`layout/utils.rs`): 0–5 line type, 10–15 start arrow shape, 16–21 end arrow shape;
++/// a shape value of 0 means "no arrowhead".
++fn shape_stroke(drawing: &DrawingObjAttr) -> (Option<ShapeStrokeDto>, bool, bool) {
++    let border = &drawing.border_line;
++    let attr = border.attr;
++    let kind = match attr & 0x3F {
++        2 | 6 => "dash",
++        3 | 7 => "dot",
++        4 => "dashDot",
++        5 => "dashDotDot",
++        8..=11 => "double",
++        _ => "solid",
++    };
++    let stroke = if border.width > 0 {
++        Some(ShapeStrokeDto {
++            color: color_hex(border.color),
++            width_pt: border.width as f64 / 100.0,
++            kind,
++        })
++    } else {
++        None
++    };
++    (stroke, (attr >> 10) & 0x3F != 0, (attr >> 16) & 0x3F != 0)
++}
++
++/// A drawing object's SOLID fill, by the same rule the renderer applies to a border fill: a pattern
++/// or a transparent colour is not a solid fill and arrives absent rather than as an invented colour.
++fn shape_fill_hex(drawing: &DrawingObjAttr) -> Option<String> {
++    if !matches!(drawing.fill.fill_type, FillType::Solid) {
++        return None;
++    }
++    drawing.fill.solid.and_then(|s| {
++        if s.pattern_type > 0 || (s.background_color >> 24) != 0 {
++            None
++        } else {
++            Some(color_hex(s.background_color))
++        }
++    })
++}
++
+ /// 문단 목록을 블록 배열로 변환한다 (셀 재귀에도 사용).
+ fn build_blocks(doc: &Document, paragraphs: &[Paragraph]) -> Vec<Block> {
+     let mut out = Vec::new();
+-- 
+2.50.1 (Apple Git-155)
+

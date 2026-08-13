@@ -28,7 +28,13 @@ final class GridTextTableBlock: NSTextTableBlock {
         let originY = (controlView as? NSTextView)?.textContainerOrigin.y ?? 0
         let gaps = Self.gapsCrossing(frameRect, layoutManager: layoutManager, charRange: charRange,
                                      originY: originY)
+        // A styled edge has to be drawn by `paint` even on a cell no band crosses — `super` knows
+        // only solid bars. One segment, no cuts: the same picture as `super` for every solid edge.
         guard !gaps.isEmpty else {
+            if hasStyledEdge || backgroundImage != nil {
+                paint(frameRect, cutAbove: false, cutBelow: false)
+                return
+            }
             super.drawBackground(withFrame: frameRect, in: controlView,
                                  characterRange: charRange, layoutManager: layoutManager)
             return
@@ -86,11 +92,28 @@ final class GridTextTableBlock: NSTextTableBlock {
 
     /// Background plus the edges this segment is allowed to show. A cut edge shows nothing — that is
     /// the whole point — and every other edge keeps the width and colour invariant 47 resolved for it.
+    /// How each edge is DRAWN, by edge. `NSTextTableBlock` carries a width and a colour per edge and
+    /// nothing else, so a document's dotted or double rule had nowhere to go and was painted solid.
+    /// Set by `TableBlockBuilder` from the resolved `BorderSide`; an edge absent here is solid, which
+    /// is what every markdown table and every rule this reader invents itself is.
+    var edgeStyles: [NSRectEdge: BorderLineStyle] = [:]
+
+    /// The cell's own picture fill (`Cell.backgroundImage`). Painted per SEGMENT, like the shading
+    /// and the side rules, so a cell a page break crosses shows its image on each sheet and nothing
+    /// on the desk between them.
+    var backgroundImage: NSImage?
+
+    /// True when any edge needs a stroke this class has to draw itself. `super` paints solid bars, so
+    /// only a non-solid edge forces the override on a cell no page break crosses.
+    var hasStyledEdge: Bool { edgeStyles.values.contains { $0 != .solid } }
+
     private func paint(_ rect: NSRect, cutAbove: Bool, cutBelow: Bool) {
         if let background = backgroundColor {
             background.setFill()
             rect.fill()
         }
+        backgroundImage?.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                              respectFlipped: true, hints: nil)
         let edges: [(NSRectEdge, NSRect)] = [
             (.minX, NSRect(x: rect.minX, y: rect.minY,
                            width: width(for: .border, edge: .minX), height: rect.height)),
@@ -105,8 +128,48 @@ final class GridTextTableBlock: NSTextTableBlock {
             if edge == .minY && cutAbove { continue }
             if edge == .maxY && cutBelow { continue }
             guard bar.width > 0, bar.height > 0 else { continue }
-            (borderColor(for: edge) ?? .clear).setFill()
-            bar.fill()
+            let colour = borderColor(for: edge) ?? .clear
+            switch edgeStyles[edge] ?? .solid {
+            case .solid:
+                colour.setFill()
+                bar.fill()
+            case .dashed, .dotted:
+                // A dash is STROKED down the middle of the bar the solid case fills, so a dotted and
+                // a solid rule of the same declared width occupy the same band and the geometry the
+                // layout already accounted for does not move. The pattern is in multiples of the
+                // rule's own width — a fixed 3pt dash disappears on a 0.3pt hairline and looks like
+                // a chain on a 3pt frame.
+                let unit = max(bar.width, bar.height) == bar.width ? bar.height : bar.width
+                let thickness = max(unit, 0.5)
+                let pattern: [CGFloat] = (edgeStyles[edge] == .dotted)
+                    ? [thickness, thickness * 2] : [thickness * 4, thickness * 2]
+                let path = NSBezierPath()
+                if bar.width >= bar.height {                       // horizontal edge
+                    let y = bar.midY
+                    path.move(to: NSPoint(x: bar.minX, y: y)); path.line(to: NSPoint(x: bar.maxX, y: y))
+                } else {                                            // vertical edge
+                    let x = bar.midX
+                    path.move(to: NSPoint(x: x, y: bar.minY)); path.line(to: NSPoint(x: x, y: bar.maxY))
+                }
+                path.lineWidth = thickness
+                path.setLineDash(pattern, count: 2, phase: 0)
+                colour.setStroke()
+                path.stroke()
+            case .double:
+                // Two rules inside the SAME band, each a third of it, with a third of clear between —
+                // the band's total is what the document declared and what layout reserved, so a
+                // double rule cannot push a cell's content.
+                colour.setFill()
+                if bar.width >= bar.height {
+                    let t = max(bar.height / 3, 0.5)
+                    NSRect(x: bar.minX, y: bar.minY, width: bar.width, height: t).fill()
+                    NSRect(x: bar.minX, y: bar.maxY - t, width: bar.width, height: t).fill()
+                } else {
+                    let t = max(bar.width / 3, 0.5)
+                    NSRect(x: bar.minX, y: bar.minY, width: t, height: bar.height).fill()
+                    NSRect(x: bar.maxX - t, y: bar.minY, width: t, height: bar.height).fill()
+                }
+            }
         }
     }
 }

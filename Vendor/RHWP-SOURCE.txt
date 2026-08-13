@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 67c77e8b2b85635ee0a78e79547ccd8d16bb3583
+rhwp commit   : 8b85c9086bd50aa428c11423987edb5f42a0260c
 rhwp branch   : fastdocreader/charshape-export
-rhwp subject  : Export the border-fill table, and take the page from the section that holds the document
+rhwp subject  : Export a drawing's paths, whether it sits in the text, and what a fill really is
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 58910928
-library sha256: 1dd792e1584a1cc80b46a9c156f79889e82040de8515d91e0eaa142ff0c8d0b1
+library bytes : 58888528
+library sha256: 400da2f35fa2456b338d7a7a0e1c830526f657ad8e91dc61a4ebbe11ba7ec38d

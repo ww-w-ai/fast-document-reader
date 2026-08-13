@@ -1225,6 +1225,7 @@ enum OfficeTextBuilder {
                                           lineGridPitch: lineGridPitch, tableWidth: solvedWidth)
                 return TableBlockBuilder.CellContent(content: content, rowSpan: cell.rowSpan, columnSpan: cell.colSpan,
                                                       backgroundColor: cell.backgroundColor,
+                                                      backgroundImage: cell.backgroundImage,
                                                       borderColor: cell.borderColor, borderWidth: cell.borderWidth,
                                                       width: cell.width, verticalAlignment: cell.verticalAlignment,
                                                       padding: cell.padding, styleShading: cell.styleShading,
@@ -1240,6 +1241,7 @@ enum OfficeTextBuilder {
                                               tableShading: tableFormat.defaultShading,
                                               tableEdges: tableFormat.edgeBorders,
                                               tablePadding: tableFormat.defaultPadding,
+                                              tableBackgroundImage: tableFormat.backgroundImage,
                                               paged: paged, maxWidth: maxWidth,
                                               width: solvedWidth))
         result.append(NSAttributedString(string: "\n"))

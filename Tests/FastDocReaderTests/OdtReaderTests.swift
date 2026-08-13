@@ -1930,6 +1930,30 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertNotNil(cell.borderColor)
     }
 
+    /// ODF states each side, and states HOW it is drawn, and this reader kept neither: the shorthand
+    /// collapsed to one colour/width and the style token was parsed and thrown away. Both now reach
+    /// the cell — `fo:border` seeds four edges, a per-side attribute overrides its own, and
+    /// `none` is a SUPPRESSION rather than silence (silence inherits the theme's grid).
+    func testCellEdgeBordersCarrySideAndStyle() throws {
+        let blocks = try read(body: """
+          <table:table><table:table-row><table:table-cell table:style-name="C">
+            <text:p>Cell</text:p></table:table-cell></table:table-row></table:table>
+          """, automaticStyles: """
+          <style:style style:name="C" style:family="table-cell">
+            <style:table-cell-properties fo:border="1pt dotted #000000" fo:border-left="2pt double #FF0000" fo:border-right="none"/>
+          </style:style>
+          """)
+        guard case .table(let rows, _, _, _) = blocks.first else { return XCTFail("expected a table") }
+        let edges = rows[0][0].edgeBorders
+        guard case let .drawn(top) = edges?.top else { return XCTFail("top not drawn") }
+        XCTAssertEqual(top.style, .dotted)
+        XCTAssertEqual(top.width, 1)
+        guard case let .drawn(left) = edges?.left else { return XCTFail("left not drawn") }
+        XCTAssertEqual(left.style, .double)
+        XCTAssertEqual(left.width, 2)
+        XCTAssertEqual(edges?.right, .suppressed)
+    }
+
     /// Only the FIRST side found wins (`Cell`'s own one-uniform-border scope) — `fo:border-top` alone,
     /// with no `fo:border` shorthand, must still contribute something rather than nothing.
     func testAsymmetricBorderTopAloneStillContributesAWidthAndColor() throws {

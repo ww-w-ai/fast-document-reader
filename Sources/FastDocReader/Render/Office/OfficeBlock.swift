@@ -188,6 +188,13 @@ struct Cell: Equatable {
     /// explicit `backgroundColor` on a HEADER cell overrides that theme shading; on a body cell it
     /// is the only shading there is).
     var backgroundColor: NSColor? = nil
+    /// The cell's own PICTURE fill, already decoded. HWP is the only format here that fills a cell
+    /// with an image, and it does so constantly: measured on one manual, 352 of its 821 fill
+    /// definitions are pictures and 610 cells use one — the rounded frames and tinted panels a
+    /// Korean document is built out of. A reader that knows only `backgroundColor` renders all of
+    /// them as blank paper. `nil` everywhere else, and nil from `mapJSON` alone (the bytes need the
+    /// parse handle, so `HwpReader.read` is what fills it).
+    var backgroundImage: NSImage? = nil
     /// The cell's own border colour/width (docx `w:tcPr/w:tcBorders`, odt cell-style borders) —
     /// either or both may be `nil`, in which case `TableBlockBuilder`'s existing theme default
     /// (`Palette.tableBorder` at 1pt) is used for that one, exactly as before this field existed.
@@ -266,7 +273,8 @@ struct Cell: Equatable {
     }
 
     init(blocks: [OfficeBlock], rowSpan: Int = 1, colSpan: Int = 1,
-         backgroundColor: NSColor? = nil, borderColor: NSColor? = nil, borderWidth: CGFloat? = nil,
+         backgroundColor: NSColor? = nil, backgroundImage: NSImage? = nil,
+         borderColor: NSColor? = nil, borderWidth: CGFloat? = nil,
          edgeBorders: EdgeBorders? = nil,
          width: CGFloat? = nil, verticalAlignment: CellVAlign? = nil, padding: CGFloat? = nil,
          edgePadding: EdgePadding? = nil) {
@@ -274,6 +282,7 @@ struct Cell: Equatable {
         self.rowSpan = rowSpan
         self.colSpan = colSpan
         self.backgroundColor = backgroundColor
+        self.backgroundImage = backgroundImage
         self.borderColor = borderColor
         self.borderWidth = borderWidth
         self.edgeBorders = edgeBorders
@@ -308,6 +317,22 @@ enum CellVAlign: Equatable {
 struct BorderSide: Equatable {
     var width: CGFloat
     var color: NSColor?
+    /// How the rule is DRAWN. All three office formats state this and all three used to drop it, so a
+    /// document's dotted rule was painted as a solid one — measured on one Korean manual, 59 of its
+    /// 1,097 declared edges are dotted and 13 are double, and the dotted ones are the boxes a reader
+    /// notices, because a dotted frame reads as "example/annotation" and a solid frame as a real table.
+    /// A style this reader cannot draw (wavy, the 3-D bevels) resolves to the nearest thing it can,
+    /// never to nothing — see each reader's own mapping.
+    var style: BorderLineStyle = .solid
+}
+
+/// The four ways a table rule can be PAINTED, which is all the vocabulary this reader can honour:
+/// docx `w:val`, ODF's `fo:border` style token and HWP's own 18-value line-type enum all collapse
+/// into these. Deliberately NOT a copy of any one format's list — a `dashDotStroked` and a
+/// `dash-dot` are the same picture on screen, and carrying eighteen cases would oblige the painter
+/// to invent seventeen dash patterns nobody can tell apart at a 0.3pt rule.
+enum BorderLineStyle: Equatable {
+    case solid, dashed, dotted, double
 }
 
 /// What a document said about ONE edge — the three states the renderer has to tell apart:
@@ -406,6 +431,11 @@ struct TableFormat: Equatable {
     var defaultBorderColor: NSColor? = nil
     var defaultBorderWidth: CGFloat? = nil
     var defaultShading: NSColor? = nil
+    /// The TABLE's own picture fill, painted once across the whole grid rather than repeated per
+    /// cell — HWP's rounded annotation box is exactly this: one image behind a table whose cells
+    /// declare nothing at all (55 tables in one measured manual). Filled by `HwpReader.read`, nil
+    /// for every other format and for `mapJSON` alone.
+    var backgroundImage: NSImage? = nil
     /// The table's own total width in POINTS as the SOURCE document laid it out (docx `w:tblGrid`
     /// twips summed, HWP's HWPUNIT column widths summed, ODF `style:column-width` summed) — `nil`
     /// when the format states only proportions (ODF `style:rel-column-width`) or nothing at all.

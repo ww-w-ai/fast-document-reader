@@ -83,8 +83,16 @@ enum HwpReader {
         let json = String(cString: cstr)
         rhwp_string_free(cstr)
 
-        var result = try mapJSON(json)                          // KEEP mapJSON pure (String -> result)
-        result.images = collectImages(handle: handle, blocks: result.blocks)
+        // The picture provider is what lets a FILL image be decoded during the mapping walk; it is
+        // the same FFI `collectImages` uses, handed in rather than reached for, so `mapJSON` stays a
+        // pure function of its two arguments and every hand-built-envelope test is unaffected.
+        var result = try mapJSON(json) { binDataId in
+            guard let id = UInt16(exactly: binDataId), let b64 = imageBase64(handle, binDataId: id) else { return nil }
+            return Data(base64Encoded: b64)
+        }
+        // Embedded pictures are fetched here (they need the live handle); drawings were already
+        // rendered inside `mapJSON` and must survive that — hence a merge rather than an assignment.
+        result.images.merge(collectImages(handle: handle, blocks: result.blocks)) { _, new in new }
         // `.resolvingFontSubstitution()` is applied HERE, at HWP's own single dispatch point
         // (invariant 44 — HWP bypasses `DocumentTypes.readOffice` entirely, so it needs its own
         // call rather than `readOffice`'s), NOT inside `mapJSON`: `mapJSON` stays a pure JSON->
@@ -123,6 +131,36 @@ enum HwpReader {
     /// drift on the string.
     static let hwpImagePrefix = "hwpimg:"
 
+    /// The id prefix for a DRAWING this reader rendered itself (`HwpShapeRenderer`) — distinct from
+    /// `hwpImagePrefix` because these bytes are made here, not fetched from the file, so
+    /// `collectImages` must not try to look them up by `binDataId`.
+    static let hwpShapePrefix = "hwpshape:"
+
+    /// Where a drawing's rendered PDF goes while the block walk is still running. A reference type
+    /// so the `map` closures that build blocks can add to it without threading `inout` through five
+    /// signatures; `mapJSON` hands its contents to the result, which is what makes the shape bytes
+    /// reachable by `reconcileMedia` under the id the block carries.
+    final class MediaContext {
+        var images: [String: Data] = [:]
+        /// Bytes for an embedded picture by `binDataId`, when the caller has a live parse handle.
+        /// `nil` in `mapJSON`-only use (every unit test): a picture FILL then stays unpainted rather
+        /// than the mapper inventing a colour for it.
+        let picture: ((Int) -> Data?)?
+        private var next = 0
+        init(picture: ((Int) -> Data?)? = nil) { self.picture = picture }
+        /// The decoded image for a fill's `binDataId`, or nil when there is no provider or no bytes.
+        func fillImage(_ binDataId: Int?) -> NSImage? {
+            guard let binDataId, binDataId > 0, let data = picture?(binDataId) else { return nil }
+            return NSImage(data: data)
+        }
+        func add(_ data: Data) -> String {
+            next += 1
+            let id = "\(hwpShapePrefix)\(next)"
+            images[id] = data
+            return id
+        }
+    }
+
     /// The longest a STYLE-INFERRED heading's text may be. A heading is a label; a paragraph of prose
     /// carrying a heading-ish style name is not one, however the document styled it. Only applies to
     /// inference — an explicitly outlined paragraph is honoured at any length.
@@ -149,7 +187,7 @@ enum HwpReader {
     /// PURE mapping: rhwp's structured JSON string → `OfficeReadResult`. Separated from the FFI so
     /// the whole JSON→OfficeBlock vocabulary is testable with hand-built envelopes. HWP comments are
     /// a later/never sprint, so `comments` is always `[]`.
-    static func mapJSON(_ json: String) throws -> OfficeReadResult {
+    static func mapJSON(_ json: String, pictureProvider: ((Int) -> Data?)? = nil) throws -> OfficeReadResult {
         guard let data = json.data(using: .utf8) else { throw MapError.malformedJSON }
         let envelope: HwpEnvelope
         do {
@@ -172,13 +210,19 @@ enum HwpReader {
         // way `slotFonts` is — a cell carries only an id. `[]` (a parser predating this export)
         // leaves every table exactly as this reader drew it before: the theme grid.
         let borderFills = envelope.borderFills ?? []
+        // Drawings are rendered DURING the block walk (see `HwpShapeRenderer`); the bytes they produce
+        // join the result's own media map, keyed by the id their block carries.
+        let shapes = MediaContext(picture: pictureProvider)
         // `paged` is not a second flag — it is the SAME predicate `OfficeTextBuilder.build` resolves
         // as `pageBasis != nil` (a page content width the document actually stated), read here from
         // the same field so the reader and the builder cannot drift on what "paged" means.
         var result = OfficeReadResult(blocks: envelope.blocks.map {
             mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
-                     borderFills: borderFills, paged: pageWidth != nil)
+                     borderFills: borderFills, shapes: shapes, paged: pageWidth != nil)
         }, comments: [])
+        // The drawings this read rendered — merged, not assigned, so a later `read()` that also
+        // fetches embedded pictures keeps both (invariant: one media map, one id space).
+        result.images = shapes.images
         // The document's own default body size (Normal/"바탕글" style char-shape base size, in pt),
         // rhwp's analog of docx `w:docDefaults/…/w:sz`. `null`/≤0 → leave the `11` default so an HWP
         // that declares none scales exactly like a docx/odt that declares none (invariant 37).
@@ -205,11 +249,13 @@ enum HwpReader {
         // captured, same as every other reader that finds none.
         result.headers = (envelope.headers ?? []).map {
             mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
-                                 slotFonts: slotFonts, borderFills: borderFills, paged: pageWidth != nil)
+                                 slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
+                                 paged: pageWidth != nil)
         }
         result.footers = (envelope.footers ?? []).map {
             mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
-                                 slotFonts: slotFonts, borderFills: borderFills, paged: pageWidth != nil)
+                                 slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
+                                 paged: pageWidth != nil)
         }
         return result
     }
@@ -220,13 +266,13 @@ enum HwpReader {
     /// header-footer-design.md §2c's "parseBody already generalizes" for docx/odt).
     private static func mapHeaderFooterEntry(
         _ entry: HwpHeaderFooterEntry, pageWidth: CGFloat?, defaultBodySize: CGFloat,
-        slotFonts: [HwpSlotFonts], borderFills: [HwpBorderFill], paged: Bool
+        slotFonts: [HwpSlotFonts], borderFills: [HwpBorderFill], shapes: MediaContext, paged: Bool
     ) -> OfficeHeaderFooter {
         OfficeHeaderFooter(
             appliesTo: mapHeaderFooterApplyTo(entry.applyTo),
             blocks: entry.blocks.map {
                 mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
-                         borderFills: borderFills, paged: paged)
+                         borderFills: borderFills, shapes: shapes, paged: paged)
             })
     }
 
@@ -302,7 +348,7 @@ enum HwpReader {
                 })
             case .table(let t):
                 for row in t.rows { for cell in row { cell.blocks.forEach(walk) } }
-            case .image, .unsupported, .equation:
+            case .image, .shape, .unsupported, .equation:
                 break
             }
         }
@@ -638,7 +684,7 @@ enum HwpReader {
 
     private static func mapBlock(_ b: HwpBlock, pageWidth: CGFloat?, defaultBodySize: CGFloat,
                                  slotFonts: [HwpSlotFonts], borderFills: [HwpBorderFill],
-                                 paged: Bool) -> OfficeBlock {
+                                 shapes: MediaContext, paged: Bool) -> OfficeBlock {
         switch b {
         case .para(let p):
             let spans = p.spans.flatMap { mapSpan($0, slotFonts: slotFonts) }
@@ -668,7 +714,8 @@ enum HwpReader {
         case .table(let t):
             let rows = t.rows.map { row in
                 row.map { mapCell($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
-                                  slotFonts: slotFonts, borderFills: borderFills, paged: paged) }
+                                  slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
+                                  paged: paged) }
             }
             // colWidths as ABSOLUTE INTEGER-derived points, never percentages (invariant 39/42).
             let columnWidths = t.colWidths.map { points($0) }
@@ -683,8 +730,17 @@ enum HwpReader {
             // (`layout/table_cell_content.rs:529`), and every rule on screen comes from the CELL
             // fills. So the id becomes shading here and never a border — see invariant 74 for the
             // measurement that corrected the opposite assumption.
-            format.defaultShading = borderFill(forId: t.borderFillId, in: borderFills)
-                .flatMap { color($0.bg) }
+            let tableFill = borderFill(forId: t.borderFillId, in: borderFills)
+            format.defaultShading = tableFill.flatMap { color($0.bg) }
+            // A PICTURE fill on the table is one image behind the whole grid — the rounded box a
+            // Korean document draws around an annotation. Painted once by `GridTextTable`, never
+            // repeated per cell, which is what turns one frame into a wall of frames.
+            format.backgroundImage = shapes.fillImage(tableFill?.bgImage)
+            // A gradient degrades to its first stop rather than to nothing: a panel that is a wash
+            // of one colour reads far closer to the document than blank paper does.
+            if format.defaultShading == nil, let stops = tableFill?.bgGradient?.colors, !stops.isEmpty {
+                format.defaultShading = color(stops[0])
+            }
             // headerRows = 0: HWP's JSON carries no header signal, and inventing "row one" bolds
             // ordinary text (OfficeBlock.table's own contract). Full geometry/merge fidelity is S4.
             return .table(rows: rows, headerRows: 0, columnWidths: columnWidths, format: format)
@@ -703,6 +759,22 @@ enum HwpReader {
                                            pageWidth: pageWidth) ?? declared
             return .image(id: "\(hwpImagePrefix)\(im.binDataId)", size: size,
                           alignment: imageAlignment(im.align))
+        case .shape(let sh):
+            // ONLY an AS-CHARACTER object is drawn. HWP anchors most drawings by coordinates —
+            // over the text, beside it, or across a whole page — and this reader has no floating
+            // layer (invariant 31: built, measured, deliberately not shipped). Drawing an anchored
+            // object inline does not put it where the document put it; it INSERTS it, pushing the
+            // page apart. Measured on `2025_행정업무운영편람_최종.hwp`: several of its 78 shapes are
+            // the size of the whole page, and inlining them all took the document from 423 pages to
+            // 452. A drawing skipped here is the same nothing this reader showed before it could
+            // draw shapes at all; a drawing inserted here would be a wrong page for every reader.
+            let paths = sh.paths.compactMap { shapePath($0) }
+            var size = CGSize(width: points(sh.w), height: points(sh.h))
+            if size.width < 1 || size.height < 1, let extent = pathsExtent(paths) { size = extent }
+            guard sh.asChar == true, let pdf = HwpShapeRenderer.pdf(paths: paths, size: size) else {
+                return .paragraph(spans: [])
+            }
+            return .image(id: shapes.add(pdf), size: size, alignment: imageAlignment(sh.align))
         case .unsupported(let u):
             return .unsupportedGraphic(label: u.label, size: CGSize(width: points(u.w), height: points(u.h)))
         case .equation(let e):
@@ -722,10 +794,10 @@ enum HwpReader {
 
     private static func mapCell(_ c: HwpCell, pageWidth: CGFloat?, defaultBodySize: CGFloat,
                                 slotFonts: [HwpSlotFonts], borderFills: [HwpBorderFill],
-                                paged: Bool) -> Cell {
+                                shapes: MediaContext, paged: Bool) -> Cell {
         let blocks = c.blocks.map {
             mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
-                     borderFills: borderFills, paged: paged)
+                     borderFills: borderFills, shapes: shapes, paged: paged)
         }
         // "top" is Word/HWP's own default → nil, so a cell that only ever says "top" renders
         // byte-identical to one that says nothing (Cell.verticalAlignment's contract); only an
@@ -759,10 +831,61 @@ enum HwpReader {
         // grid — including the layout tables a Korean document uses to place things, whose borders it
         // had deliberately turned off (measured: 423 of the 편람's 821 definitions are all-off).
         let fill = borderFill(forId: c.borderFillId, in: borderFills)
+        var shading = fill.flatMap { color($0.bg) }
+        if shading == nil, let stops = fill?.bgGradient?.colors, !stops.isEmpty { shading = color(stops[0]) }
         return Cell(blocks: blocks, rowSpan: c.rowSpan, colSpan: c.colSpan,
-                    backgroundColor: fill.flatMap { color($0.bg) },
+                    backgroundColor: shading,
+                    backgroundImage: shapes.fillImage(fill?.bgImage),
                     edgeBorders: edgeBorders(forFillId: c.borderFillId, in: borderFills),
                     verticalAlignment: vAlign, edgePadding: edges)
+    }
+
+    /// One exported path → the renderer's own vocabulary, converting HWPUNIT to points as it goes.
+    /// A command whose operator or arity this reader does not recognise is DROPPED rather than
+    /// guessed at — a mis-read control point draws a line across the page, which is worse than a
+    /// missing segment.
+    private static func shapePath(_ p: HwpShapePath) -> HwpShapeRenderer.Path? {
+        var commands: [HwpShapeRenderer.Path.Command] = []
+        for token in p.d {
+            let numbers = token.compactMap { $0.value }.map { CGFloat($0) / 100 }
+            switch (token.first?.name ?? "", numbers.count) {
+            case ("M", 2): commands.append(.move(CGPoint(x: numbers[0], y: numbers[1])))
+            case ("L", 2): commands.append(.line(CGPoint(x: numbers[0], y: numbers[1])))
+            case ("C", 6):
+                commands.append(.curve(CGPoint(x: numbers[0], y: numbers[1]),
+                                       CGPoint(x: numbers[2], y: numbers[3]),
+                                       CGPoint(x: numbers[4], y: numbers[5])))
+            case ("Z", _): commands.append(.close)
+            default: continue
+            }
+        }
+        guard !commands.isEmpty else { return nil }
+        var stroke: BorderSide?
+        if let s = p.stroke {
+            stroke = BorderSide(width: CGFloat(s.widthPt ?? 0.5), color: color(s.color) ?? .black,
+                                style: lineStyle(s.type ?? "solid"))
+        }
+        return HwpShapeRenderer.Path(commands: commands, stroke: stroke, fill: color(p.fill),
+                                     arrowStart: p.arrowStart ?? false, arrowEnd: p.arrowEnd ?? false)
+    }
+
+    /// The box the paths themselves occupy — the fallback size for an object whose own record states
+    /// none, so a drawing with real geometry is never collapsed to nothing.
+    private static func pathsExtent(_ paths: [HwpShapeRenderer.Path]) -> CGSize? {
+        var maxX: CGFloat = 0, maxY: CGFloat = 0, any = false
+        for path in paths {
+            for command in path.commands {
+                let points: [CGPoint]
+                switch command {
+                case .move(let p), .line(let p): points = [p]
+                case .curve(let a, let b, let c): points = [a, b, c]
+                case .close: points = []
+                }
+                for p in points { maxX = max(maxX, p.x); maxY = max(maxY, p.y); any = true }
+            }
+        }
+        guard any, maxX > 0.5, maxY > 0.5 else { return nil }
+        return CGSize(width: maxX, height: maxY)
     }
 
     /// The border-fill row an id names, or nil when the document named none. HWP's reference is
@@ -794,7 +917,20 @@ enum HwpReader {
     private static func borderDecl(_ edge: HwpBorderEdge) -> BorderDecl {
         if edge.type == "none" { return .suppressed }
         let width = (edge.widthPt).flatMap { $0 > 0 ? CGFloat($0) : nil } ?? 1
-        return .drawn(BorderSide(width: width, color: color(edge.color)))
+        return .drawn(BorderSide(width: width, color: color(edge.color), style: lineStyle(edge.type)))
+    }
+
+    /// HWP's 18-value line type (spec table 27, exported by name) → the four this reader paints.
+    /// The dash family collapses to one dash and the multi-line family to `double`; `wave` and the
+    /// four 3-D bevels have no honest match and stay `solid`, which is what they are made of.
+    private static func lineStyle(_ type: String) -> BorderLineStyle {
+        switch type {
+        case "dash", "dashDot", "dashDotDot", "longDash": return .dashed
+        case "dot", "circle": return .dotted
+        case "double", "thinThickDouble", "thickThinDouble", "thinThickThinTriple", "doubleWave":
+            return .double
+        default: return .solid
+        }
     }
 }
 
@@ -863,6 +999,7 @@ private enum HwpBlock: Decodable {
     case para(HwpPara)
     case table(HwpTable)
     case image(HwpImage)
+    case shape(HwpShape)
     case unsupported(HwpUnsupported)
     case equation(HwpEquation)
 
@@ -874,6 +1011,7 @@ private enum HwpBlock: Decodable {
         case "para": self = .para(try HwpPara(from: decoder))
         case "table": self = .table(try HwpTable(from: decoder))
         case "image": self = .image(try HwpImage(from: decoder))
+        case "shape": self = .shape(try HwpShape(from: decoder))
         case "unsupported": self = .unsupported(try HwpUnsupported(from: decoder))
         case "equation": self = .equation(try HwpEquation(from: decoder))
         default:
@@ -972,6 +1110,18 @@ private struct HwpBorderFill: Decodable {
     /// pattern, gradient, image or transparent fill arrives absent, and the reader paints nothing
     /// rather than guessing an average colour.
     var bg: String?
+    /// A PICTURE fill's `binDataId`. This is how a Korean document draws a rounded annotation box:
+    /// the TABLE's fill is an image and every cell declares no rules at all, so a reader that knows
+    /// only `bg` renders the box as blank paper (measured on the 편람's 전자문서 box).
+    var bgImage: Int?
+    /// A GRADIENT fill's stops and angle. Painted as a linear gradient; a single stop degrades to a
+    /// plain fill, which is what it is.
+    var bgGradient: HwpGradient?
+}
+
+private struct HwpGradient: Decodable {
+    var colors: [String]
+    var angle: Int?
 }
 
 /// One edge of an `HwpBorderFill`. `type == "none"` is the document SUPPRESSING that edge (and then
@@ -1005,6 +1155,50 @@ private struct HwpCell: Decodable {
     var padTop: Double?
     var padBottom: Double?
     var blocks: [HwpBlock]
+}
+
+/// A drawing object, flattened to paths by rhwp (`{"t":"shape",…}`). See `HwpShapeRenderer` for why
+/// this is drawn at read time instead of becoming a new kind of block.
+private struct HwpShape: Decodable {
+    var w: Int
+    var h: Int
+    var align: String?
+    /// TRUE when the document places the object AS A CHARACTER — in the text flow, where drawing it
+    /// inline moves nothing. FALSE = anchored by coordinates, over or beside the text.
+    var asChar: Bool?
+    var paths: [HwpShapePath]
+}
+
+private struct HwpShapePath: Decodable {
+    /// Path commands as rhwp writes them: `["M",x,y]`, `["L",x,y]`, `["C",…6 numbers]`, `["Z"]`,
+    /// in HWPUNIT relative to the object's own box. Decoded as a heterogeneous array because that
+    /// is the shape SVG itself uses, and a per-command object would triple the JSON for 79 shapes.
+    var d: [[HwpPathToken]]
+    var stroke: HwpShapeStroke?
+    var fill: String?
+    var arrowStart: Bool?
+    var arrowEnd: Bool?
+}
+
+/// One element of a path command — the leading operator string or one of its numbers.
+private enum HwpPathToken: Decodable {
+    case op(String)
+    case number(Double)
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if let s = try? c.decode(String.self) { self = .op(s); return }
+        self = .number(try c.decode(Double.self))
+    }
+
+    var value: Double? { if case .number(let v) = self { return v } else { return nil } }
+    var name: String? { if case .op(let s) = self { return s } else { return nil } }
+}
+
+private struct HwpShapeStroke: Decodable {
+    var color: String?
+    var widthPt: Double?
+    var type: String?
 }
 
 private struct HwpImage: Decodable {

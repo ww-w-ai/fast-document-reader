@@ -8,6 +8,19 @@ import AppKit
 /// rounded integer edges, put every row's column boundary at the SAME integer x by construction.
 final class GridTextTable: NSTextTable {
     var columnProportions: [CGFloat] = []   // one per column, sums to 1
+    /// The table's own picture fill (`TableFormat.backgroundImage`), painted ONCE across the whole
+    /// grid. A table block is drawn before its cells, so this lands behind them; stretching it to
+    /// the table's frame is what reproduces HWP's rounded annotation frames, which are one image
+    /// behind a table whose cells declare nothing at all.
+    var backgroundImage: NSImage?
+
+    override func drawBackground(withFrame frameRect: NSRect, in controlView: NSView,
+                                 characterRange charRange: NSRange, layoutManager: NSLayoutManager) {
+        super.drawBackground(withFrame: frameRect, in: controlView,
+                             characterRange: charRange, layoutManager: layoutManager)
+        backgroundImage?.draw(in: frameRect, from: .zero, operation: .sourceOver, fraction: 1,
+                              respectFlipped: true, hints: nil)
+    }
     /// The table's own AUTHORED width, in points — set only for a PAGED document's table that
     /// declared one (`TableFormat.sourceWidth`, threaded through `TableBlockBuilder.build`'s own
     /// `maxWidth` parameter). `nil` (every markdown table, every non-paged office table, and a
@@ -141,6 +154,10 @@ enum TableBlockBuilder {
         /// `OfficeBlock.swift` for the source-format reasoning; this struct only carries the
         /// already-decided values through to `NSTextTableBlock`.
         var backgroundColor: NSColor? = nil
+        /// Mirrors `Cell.backgroundImage` — a picture fill, painted stretched into the cell's own
+        /// frame (and clipped per page piece by `GridTextTableBlock`, so a cell a page break crosses
+        /// does not paint its image on the desk between sheets).
+        var backgroundImage: NSImage? = nil
         var borderColor: NSColor? = nil
         var borderWidth: CGFloat? = nil
         var width: CGFloat? = nil
@@ -207,6 +224,7 @@ enum TableBlockBuilder {
                        columnWidths: [CGFloat] = [], tableBorderColor: NSColor? = nil,
                        tableBorderWidth: CGFloat? = nil, tableShading: NSColor? = nil,
                        tableEdges: EdgeBorders? = nil, tablePadding: EdgePadding? = nil,
+                       tableBackgroundImage: NSImage? = nil,
                        paged: Bool = false, maxWidth: CGFloat? = nil,
                        width: CGFloat = Self.initialColumnWidth) -> NSAttributedString {
         let result = NSMutableAttributedString()
@@ -300,6 +318,7 @@ enum TableBlockBuilder {
         // reflow that asks `edges(forWidth:)` for the full column — see `GridTextTable.maxWidth`'s
         // own doc for why this is stored on the table object rather than applied only here.
         table.maxWidth = maxWidth
+        table.backgroundImage = tableBackgroundImage
         // Collapsing is OFF. With it on, two adjacent cells can each independently draw a different
         // border and AppKit — not this code — silently picks which one shows, which is why a
         // vertically merged cell used to change which rule it drew every time its neighbour changed
@@ -629,6 +648,10 @@ enum TableBlockBuilder {
                     block.setWidth(Self.laidOutBorderWidth(side!.width),
                                    type: .absoluteValueType, for: .border, edge: edge)
                     if let c = side!.color, c != me.borderColor { block.setBorderColor(c, for: edge) }
+                    // The one thing `NSTextTableBlock` cannot carry: HOW the rule is drawn. Only a
+                    // non-solid style is recorded, so a table of ordinary rules keeps an empty
+                    // dictionary and the block draws exactly as it did before this existed.
+                    if side!.style != .solid { block.edgeStyles[edge] = side!.style }
                 }
             }
             // STEP D (part 2) — ABSOLUTE integer content width: the cell's integer span width minus
@@ -682,6 +705,7 @@ enum TableBlockBuilder {
             block.setContentWidth(max(1, cellWidth - effLeft - effRight - leftWidth - rightWidth),
                                   type: .absoluteValueType)
             if let background = me.background { block.backgroundColor = background }
+            block.backgroundImage = placement.cell?.backgroundImage
             switch placement.cell?.verticalAlignment ?? .top {
             case .top: block.verticalAlignment = .topAlignment
             case .center: block.verticalAlignment = .middleAlignment

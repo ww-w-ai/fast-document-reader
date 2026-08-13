@@ -450,6 +450,119 @@ final class HwpMappingTests: XCTestCase {
                                    bottom: .suppressed, right: .suppressed))
     }
 
+    /// HWP's line type reaches the renderer. A dotted rule drawn solid is what a Korean manual's
+    /// example boxes looked like before this: 59 of that file's 1,097 declared edges are `dot` and
+    /// 13 are `double`, and a dotted frame means "example", not "table".
+    func testCellFillCarriesLineStyle() throws {
+        func style(_ type: String) throws -> BorderLineStyle? {
+            let json = """
+            {"v":1,"borderFills":[
+               {"left":{"type":"\(type)","widthPt":0.34,"color":"000000"},
+                "right":{"type":"none"},"top":{"type":"none"},"bottom":{"type":"none"}}],
+             "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+               "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+            """
+            guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0],
+                  case let .drawn(side) = rows[0][0].edgeBorders?.left else { return nil }
+            return side.style
+        }
+        XCTAssertEqual(try style("dot"), .dotted)
+        XCTAssertEqual(try style("circle"), .dotted)
+        XCTAssertEqual(try style("dash"), .dashed)
+        XCTAssertEqual(try style("longDash"), .dashed)
+        XCTAssertEqual(try style("double"), .double)
+        XCTAssertEqual(try style("thinThickThinTriple"), .double)
+        XCTAssertEqual(try style("solid"), .solid)
+        // A style with no honest match is drawn as the nearest thing, never dropped to nothing.
+        XCTAssertEqual(try style("wave"), .solid)
+        XCTAssertEqual(try style("thick3d"), .solid)
+    }
+
+    // MARK: drawings (shapes) and picture fills
+
+    /// An AS-CHARACTER drawing is rendered here, at read time, into a vector PDF and handed to the
+    /// SAME media path an embedded picture uses — so the block vocabulary, the builder and the
+    /// serializer learn nothing new. `mapJSON` alone produces the bytes (no parse handle needed:
+    /// the drawing is made from the paths, not fetched from the file).
+    func testAnAsCharacterShapeBecomesAVectorImage() throws {
+        let json = """
+        {"v":1,"blocks":[{"t":"shape","w":7200,"h":3600,"align":"center","asChar":true,
+          "paths":[{"d":[["M",0,0],["L",7200,3600]],
+                    "stroke":{"color":"FF0000","widthPt":1.5,"type":"solid"},"arrowEnd":true}]}]}
+        """
+        let result = try HwpReader.mapJSON(json)
+        guard case let .image(id, size, alignment) = result.blocks[0] else {
+            return XCTFail("expected an image, got \(result.blocks[0])")
+        }
+        XCTAssertTrue(id.hasPrefix(HwpReader.hwpShapePrefix))
+        XCTAssertEqual(size, CGSize(width: 72, height: 36))     // HWPUNIT ÷ 100
+        XCTAssertEqual(alignment, .center)
+        let pdf = try XCTUnwrap(result.images[id])
+        XCTAssertGreaterThan(pdf.count, 100)
+        XCTAssertEqual(pdf.prefix(4), Data("%PDF".utf8), "a drawing is vector, so it survives zoom")
+    }
+
+    /// An ANCHORED drawing is NOT drawn. HWP positions most objects by coordinates — over the text,
+    /// beside it, across a whole page — and this reader has no floating layer (invariant 31), so
+    /// drawing one inline would INSERT it and push the page apart rather than place it. Measured:
+    /// inlining all 78 shapes of one manual cost 29 pages.
+    func testAnAnchoredShapeIsNotInlined() throws {
+        let json = """
+        {"v":1,"blocks":[{"t":"shape","w":55559,"h":75293,"align":"left","asChar":false,
+          "paths":[{"d":[["M",0,0],["L",55559,75293]],"stroke":{"color":"000000","widthPt":1}}]}]}
+        """
+        let result = try HwpReader.mapJSON(json)
+        guard case let .paragraph(spans, _, _, _, _) = result.blocks[0] else {
+            return XCTFail("expected an empty paragraph, got \(result.blocks[0])")
+        }
+        XCTAssertTrue(spans.isEmpty)
+        XCTAssertTrue(result.images.isEmpty, "an object that is not drawn must not carry bytes either")
+    }
+
+    /// A picture FILL — how a Korean document draws its rounded frames and tinted panels (352 of one
+    /// manual's 821 fill definitions). The bytes need the parse handle, so `mapJSON` takes a
+    /// provider; without one the fill is simply unpainted rather than guessed at.
+    func testAPictureFillBecomesACellAndTableBackground() throws {
+        let png = try XCTUnwrap(NSImage(size: NSSize(width: 4, height: 4), flipped: false) { rect in
+            NSColor.red.setFill(); rect.fill(); return true
+        }.tiffRepresentation)
+        let json = """
+        {"v":1,"borderFills":[
+           {"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},
+            "bottom":{"type":"none"},"bgImage":7}],
+         "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":1,
+           "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+        """
+        let withBytes = try HwpReader.mapJSON(json) { binDataId in binDataId == 7 ? png : nil }
+        guard case let .table(rows, _, _, format) = withBytes.blocks[0] else { return XCTFail("expected a table") }
+        XCTAssertNotNil(rows[0][0].backgroundImage)
+        XCTAssertNotNil(format.backgroundImage)
+
+        // No provider (every unit test, and any caller without a live parse) → nothing painted.
+        guard case let .table(bare, _, _, bareFormat) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected a table")
+        }
+        XCTAssertNil(bare[0][0].backgroundImage)
+        XCTAssertNil(bareFormat.backgroundImage)
+    }
+
+    /// A gradient fill degrades to its first stop — a panel washed in one of its own colours reads
+    /// far closer to the document than blank paper, and nothing else in this reader can paint a ramp.
+    func testAGradientFillDegradesToItsFirstStop() throws {
+        let json = """
+        {"v":1,"borderFills":[
+           {"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},
+            "bottom":{"type":"none"},"bgGradient":{"colors":["112233","445566"],"angle":90}}],
+         "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+           "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+        """
+        guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected a table")
+        }
+        XCTAssertEqual(rows[0][0].backgroundColor,
+                       NSColor(srgbRed: 0x11/255, green: 0x22/255, blue: 0x33/255, alpha: 1))
+    }
+
     // MARK: image + unsupported (size reserved, nothing dropped)
 
     func testImageReservesSize() throws {
