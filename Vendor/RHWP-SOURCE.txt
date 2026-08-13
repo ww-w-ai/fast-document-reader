@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : cce992a1e7a2a4fa0ff21a409e475c039ada02dc
+rhwp commit   : 65fa5b21f441b3ac53c125474be6dca1bc031edd
 rhwp branch   : fastdocreader/charshape-export
-rhwp subject  : Put a drawing's points through its own matrix, keep the picture inside it, and stop filling a line
+rhwp subject  : Take a picture's size from the shape that holds it when it states none of its own
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 58933216
-library sha256: 439270acc914ad7e055999e59e58789273160c7fec66a4e50d58f803ba8ded29
+library bytes : 58932784
+library sha256: ed9465fb6be44accfa362149972eb565b9ebe2f2761b2b09336502d5c90cc09a

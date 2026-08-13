@@ -1,0 +1,50 @@
+From 65fa5b21f441b3ac53c125474be6dca1bc031edd Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Fri, 14 Aug 2026 00:28:19 +0900
+Subject: [PATCH 11/11] Take a picture's size from the shape that holds it when
+ it states none of its own
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A picture inside a drawing object often carries no size — the size sits on the
+shape component around it — and exporting that zero made the host reserve
+nothing, so the screenshot simply was not on the page. Measured on one manual:
+two figures absent, and the pages they belonged to ended early enough that their
+numbering looked wrong.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 6a3ada7d..b9f2f540 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -923,10 +923,20 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {
+ 
+ fn build_image_block(doc: &Document, pic: &crate::model::image::Picture) -> Block {
+     let bin_data_id = pic.image_attr.bin_data_id;
++    // A picture that lives INSIDE a drawing object often states no size of its own — the size is on
++    // the shape component that holds it (`current_width`/`current_height`). Emitting the zero made
++    // the host reserve nothing and the picture vanished: measured, two screenshots of a real manual
++    // were simply absent from their pages, which is also why those pages' numbering looked wrong
++    // (the page was short by the height of a missing figure).
++    let (mut w, mut h) = (pic.common.width as i32, pic.common.height as i32);
++    if w <= 0 || h <= 0 {
++        w = pic.shape_attr.current_width as i32;
++        h = pic.shape_attr.current_height as i32;
++    }
+     Block::Image(ImageBlock {
+         bin_data_id: bin_data_id as i32,
+-        w: pic.common.width as i32,
+-        h: pic.common.height as i32,
++        w,
++        h,
+         mime: image_mime(doc, bin_data_id),
+         align: horz_align_str(pic.common.horz_align),
+         width_criterion: size_criterion_str(pic.common.width_criterion),
+-- 
+2.50.1 (Apple Git-155)
+
