@@ -818,6 +818,21 @@ struct OfficeMasterObject: Equatable {
     }
 }
 
+/// An object the document pins to the PAPER rather than to the text — a cover's artwork, a seal
+/// over a signature line, a decorative rule down a margin.
+///
+/// It is the same drawable thing a master-page object is (`OfficeMasterObject`), with one extra
+/// fact: WHICH BLOCK it was anchored at, so the reader can draw it on the page that block falls on
+/// rather than on every page. Only PAPER- and PAGE-relative objects arrive here — one anchored to a
+/// paragraph needs that paragraph's own position, which is the floating layer invariant 75 measured
+/// and rejected, and those keep behaving exactly as they did.
+struct OfficeAnchoredObject: Equatable {
+    /// Index into `OfficeReadResult.blocks` — the block whose place in the text says which page this
+    /// object belongs to.
+    var blockIndex: Int
+    var object: OfficeMasterObject
+}
+
 /// One 바탕쪽 — the template a document repeats behind every page of a section.
 ///
 /// `appliesTo` reuses the header/footer vocabulary because HWP states it with the same three words
@@ -949,6 +964,10 @@ struct OfficeReadResult: Equatable {
     /// through `sectionStartBlocks`. Empty for docx and odt, which have no equivalent mechanism, and
     /// for every HWP that declares none. See `OfficeMasterPage`.
     var masterPages: [OfficeMasterPage] = []
+
+    /// Objects the document pins to the paper, each naming the block it is anchored at — see
+    /// `OfficeAnchoredObject`. Empty for docx and odt.
+    var anchoredObjects: [OfficeAnchoredObject] = []
 
     /// Where each section begins in `blocks` — `sectionStartBlocks[i]` is the index of section `i`'s
     /// first block. The document is ONE continuous column here (invariant 57), so this is the only

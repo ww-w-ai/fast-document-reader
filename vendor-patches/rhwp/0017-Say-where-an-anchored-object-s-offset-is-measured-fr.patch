@@ -1,0 +1,121 @@
+From 43f1b0cd24c8b31b7231ef1bb1be7a12b3fc8352 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Fri, 14 Aug 2026 10:24:44 +0900
+Subject: [PATCH 17/17] Say where an anchored object's offset is measured from
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A drawing carried its reference and its two offsets but not the ALIGN
+that says which edge of that reference the offset starts at, so a host
+could not place one — an offset alone is not a position. A picture
+carried none of the five at all, though a cover's artwork and a seal
+over a signature line are anchored exactly as a drawing is.
+---
+ src/document_core/queries/document_json.rs | 66 ++++++++++++++++++++++
+ 1 file changed, 66 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 0e6ef2bd..f8fa86ba 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -545,6 +545,23 @@ struct ImageBlock {
+     /// `w` 가 만분율(1/10000)이므로 호스트가 해당 기준 폭에 곱해야 한다.
+     #[serde(rename = "widthCriterion")]
+     width_criterion: &'static str,
++    /// The same anchor a drawing carries — see `ShapeBlock`. A picture is anchored exactly as often
++    /// as a drawing is (a cover's artwork, a seal over a signature line), and a host with a floating
++    /// layer needs the same five facts to place one.
++    #[serde(rename = "asChar")]
++    as_char: bool,
++    #[serde(rename = "vertRelTo")]
++    vert_rel_to: &'static str,
++    #[serde(rename = "horzRelTo")]
++    horz_rel_to: &'static str,
++    #[serde(rename = "vertAlign")]
++    vert_align: &'static str,
++    #[serde(rename = "horzAlign")]
++    horz_align: &'static str,
++    #[serde(rename = "offsetX")]
++    offset_x: i32,
++    #[serde(rename = "offsetY")]
++    offset_y: i32,
+ }
+ 
+ #[derive(Serialize)]
+@@ -595,6 +612,15 @@ struct ShapeBlock {
+     offset_x: i32,
+     #[serde(rename = "offsetY")]
+     offset_y: i32,
++    /// WHERE the offset is measured from within the reference area — the other half of the placement
++    /// rhwp's own renderer applies (`shape_layout.rs`'s `calc_shape_bottom_y`): `top` adds the
++    /// offset to the reference's top, `center` centres the object in it, `bottom` measures the
++    /// offset UP from its bottom. Without them a host can only guess, and guessing put a 431pt
++    /// decorative rule across a table's own label (invariant 75's rejected float layer).
++    #[serde(rename = "vertAlign")]
++    vert_align: &'static str,
++    #[serde(rename = "horzAlign")]
++    horz_align: &'static str,
+     paths: Vec<ShapePath>,
+ }
+ 
+@@ -1018,9 +1044,47 @@ fn build_image_block(doc: &Document, pic: &crate::model::image::Picture) -> Bloc
+         mime: image_mime(doc, bin_data_id),
+         align: horz_align_str(pic.common.horz_align),
+         width_criterion: size_criterion_str(pic.common.width_criterion),
++        as_char: pic.common.treat_as_char,
++        vert_rel_to: vert_rel_to_str(pic.common.vert_rel_to),
++        horz_rel_to: horz_rel_to_str(pic.common.horz_rel_to),
++        vert_align: vert_align_str(pic.common.vert_align),
++        horz_align: horz_align_str(pic.common.horz_align),
++        offset_x: pic.common.horizontal_offset as i32,
++        offset_y: pic.common.vertical_offset as i32,
+     })
+ }
+ 
++/// Which edge (or centre) of the reference area an anchored object's offset is measured from.
++fn vert_align_str(a: crate::model::shape::VertAlign) -> &'static str {
++    use crate::model::shape::VertAlign;
++    match a {
++        VertAlign::Top => "top",
++        VertAlign::Center => "center",
++        VertAlign::Bottom => "bottom",
++        VertAlign::Inside => "inside",
++        VertAlign::Outside => "outside",
++    }
++}
++
++fn vert_rel_to_str(r: crate::model::shape::VertRelTo) -> &'static str {
++    use crate::model::shape::VertRelTo;
++    match r {
++        VertRelTo::Paper => "paper",
++        VertRelTo::Page => "page",
++        VertRelTo::Para => "para",
++    }
++}
++
++fn horz_rel_to_str(r: crate::model::shape::HorzRelTo) -> &'static str {
++    use crate::model::shape::HorzRelTo;
++    match r {
++        HorzRelTo::Paper => "paper",
++        HorzRelTo::Page => "page",
++        HorzRelTo::Column => "column",
++        HorzRelTo::Para => "para",
++    }
++}
++
+ fn horz_align_str(a: crate::model::shape::HorzAlign) -> &'static str {
+     use crate::model::shape::HorzAlign;
+     match a {
+@@ -1145,6 +1209,8 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+             },
+             offset_x: common.horizontal_offset as i32,
+             offset_y: common.vertical_offset as i32,
++            vert_align: vert_align_str(common.vert_align),
++            horz_align: horz_align_str(common.horz_align),
+             paths,
+         }));
+     }
+-- 
+2.50.1 (Apple Git-155)
+

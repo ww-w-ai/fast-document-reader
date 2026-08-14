@@ -428,9 +428,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// owner's master-switch rule (`PageViewOptions.underOutlineRule`) is exactly "the page outline
     /// is off, so there is no page for anything to be about".
     var masterPageContent: MasterPageContent? {
-        guard PageViewOptionsStore.current.masterPage,
-              let pages = mdDocument?.officeMasterPages, !pages.isEmpty,
+        guard PageViewOptionsStore.current.masterPage, let doc = mdDocument,
+              !(doc.officeMasterPages.isEmpty && doc.officeAnchoredObjects.isEmpty),
               let band = pageBandContent else { return nil }
+        let pages = doc.officeMasterPages
         return MasterPageContent(pages: pages, theme: band.theme,
                                  documentDefaultFontSize: band.documentDefaultFontSize,
                                  pageContentWidth: band.pageContentWidth)

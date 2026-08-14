@@ -130,7 +130,8 @@ enum OfficeTextBuilder {
                       lineGridPitch: CGFloat? = nil,
                       comments: [OfficeComment] = [],
                       deferringTables: Set<Int> = [],
-                      sectionStartBlocks: [Int] = []) -> NSAttributedString {
+                      sectionStartBlocks: [Int] = [],
+                      anchoredObjects: [Int: [Int]] = [:]) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var blockSeq = 0
         // Ordered-list numbering state, keyed by nesting level. Lives for the whole build() call
@@ -172,6 +173,13 @@ enum OfficeTextBuilder {
             // the section begins.
             if let section = sectionOfBlock[index] {
                 result.addAttribute(MDAttr.sectionIndex, value: section, range: r)
+            }
+            // The objects the document pinned to the paper AT this block. The block itself renders
+            // as an empty paragraph (the reader took the object out of the flow), and that empty
+            // paragraph's own newline is what carries the marker — an object with no range could
+            // never be found by a page.
+            if let ids = anchoredObjects[index] {
+                result.addAttribute(MDAttr.anchoredObjects, value: ids, range: r)
             }
         }
 

@@ -223,3 +223,53 @@ final class SectionRunningHeadTests: XCTestCase {
         XCTAssertEqual(top, 660)
     }
 }
+
+/// Where an object the document pins to the PAPER lands — rhwp's own placement rule, restated for
+/// the two references this reader can honour (invariant 78).
+final class AnchoredObjectPlacementTests: XCTestCase {
+
+    private let paper = HwpReader.PaperGeometry(contentWidth: 400, contentHeight: 600,
+                                                marginLeft: 70, marginTop: 80,
+                                                marginRight: 60, marginBottom: 90)
+
+    func testPaperRelativeTopLeftIsTheSheetsOwnCorner() {
+        let f = HwpReader.anchoredFrame(size: CGSize(width: 100, height: 50),
+                                        vertRelTo: "paper", horzRelTo: "paper",
+                                        vertAlign: "top", horzAlign: "left",
+                                        offset: CGPoint(x: 10, y: 20), page: paper)
+        XCTAssertEqual(f, CGRect(x: 10, y: 20, width: 100, height: 50))
+    }
+
+    func testPageRelativeMeasuresFromTheBodyArea() {
+        let f = HwpReader.anchoredFrame(size: CGSize(width: 100, height: 50),
+                                        vertRelTo: "page", horzRelTo: "page",
+                                        vertAlign: "top", horzAlign: "left",
+                                        offset: .zero, page: paper)
+        XCTAssertEqual(f, CGRect(x: 70, y: 80, width: 100, height: 50))
+    }
+
+    func testBottomAndCentreMeasureTheWayTheRendererDoes() {
+        // `calc_shape_bottom_y`: centre puts the object in the middle of the reference and ADDS the
+        // offset; bottom measures the offset UP from the reference's own bottom edge.
+        let centred = HwpReader.anchoredFrame(size: CGSize(width: 100, height: 50),
+                                              vertRelTo: "paper", horzRelTo: "paper",
+                                              vertAlign: "center", horzAlign: "center",
+                                              offset: .zero, page: paper)
+        XCTAssertEqual(centred?.midY ?? 0, paper.paperHeight / 2, accuracy: 0.01)
+        XCTAssertEqual(centred?.midX ?? 0, paper.paperWidth / 2, accuracy: 0.01)
+        let bottom = HwpReader.anchoredFrame(size: CGSize(width: 100, height: 50),
+                                             vertRelTo: "paper", horzRelTo: "paper",
+                                             vertAlign: "bottom", horzAlign: "left",
+                                             offset: CGPoint(x: 0, y: 30), page: paper)
+        XCTAssertEqual(bottom?.maxY ?? 0, paper.paperHeight - 30, accuracy: 0.01)
+    }
+
+    func testAParagraphAnchoredObjectIsNotPlaced() {
+        // Its reference is a paragraph, whose position only layout knows — the floating layer that
+        // was built, measured and rejected (invariant 75). Nil here means "leave it as it was".
+        XCTAssertNil(HwpReader.anchoredFrame(size: CGSize(width: 10, height: 10),
+                                             vertRelTo: "para", horzRelTo: "para",
+                                             vertAlign: "top", horzAlign: "left",
+                                             offset: .zero, page: paper))
+    }
+}

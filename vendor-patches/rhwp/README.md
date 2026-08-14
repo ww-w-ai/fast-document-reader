@@ -40,6 +40,7 @@ Applied on top of upstream **`8d3bfa4b92174b16bac587fe1409975cf34ba566`** (just 
 | 0014 | A shape's border taken from its LINE TYPE (0 = none) rather than from its width alone, plus the paper sort key (`plane`/`z`) on a master object |
 | 0015 | `sectionStarts` — where each section begins in the flat block stream, so a host can tell which page belongs to which section |
 | 0016 | A drawing's text boxes collected through GROUP nesting, and kept when the same object also carries a picture |
+| 0017 | `vertAlign`/`horzAlign` on an anchored drawing, and the whole anchor (as-char, reference, aligns, offsets) on a picture |
 
 The set is regenerated wholesale — `git format-patch <base>..HEAD -o vendor-patches/rhwp/` from the
 fork — so it never drifts behind the submodule again (it had: 0005–0007 existed only as commits).

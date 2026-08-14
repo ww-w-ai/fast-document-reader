@@ -60,34 +60,43 @@ enum MasterPagePainter {
             guard let page = applicablePage(content.pages, pageIndex: index,
                                             section: sectionOfPage(index)) else { continue }
             for object in page.objects {
-                let rect = NSRect(x: sheet.minX + object.frame.minX, y: sheet.minY + object.frame.minY,
-                                  width: object.frame.width, height: object.frame.height)
-                guard rect.intersects(visibleRect) else { continue }
-                switch object.content {
-                case .image(let image):
-                    // `respectFlipped` because this view IS flipped and an image drawn without it
-                    // arrives upside down — the one place that matters in this file, since the
-                    // artwork here is a whole page of it.
-                    image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
-                               respectFlipped: true, hints: nil)
-                case .drawing(let pdf):
-                    guard let image = NSImage(data: pdf) else { continue }
-                    image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
-                               respectFlipped: true, hints: nil)
-                case .text(let blocks):
-                    // Built through the SAME `OfficeTextBuilder` the body and every band use
-                    // (invariant 29), then given this page's live number by the SAME substitution a
-                    // running header's page field goes through — the box holds an ordinary
-                    // `MDAttr.pageNumberField` span, so there is no second field mechanism here.
-                    let built = OfficeTextBuilder.build(blocks, theme: content.theme,
-                                                        columnWidth: rect.width,
-                                                        documentDefaultFontSize: content.documentDefaultFontSize,
-                                                        pageContentWidth: content.pageContentWidth)
-                    guard built.length > 0 else { continue }
-                    PageBandPainter.substitutingPageFields(built, page: index + 1,
-                                                           totalPages: totalPages).draw(in: rect)
-                }
+                draw(object, onSheet: sheet, pageIndex: index, totalPages: totalPages,
+                     content: content, visibleRect: visibleRect)
             }
+        }
+    }
+
+    /// ONE object, on ONE sheet — shared by the master page and by an object the document pinned to
+    /// the paper at a particular place in the text (`OfficeAnchoredObject`). They differ only in
+    /// WHICH pages they appear on; where they go on a page, and how they are drawn, is one rule.
+    static func draw(_ object: OfficeMasterObject, onSheet sheet: CGRect, pageIndex: Int,
+                     totalPages: Int, content: MasterPageContent, visibleRect: NSRect) {
+        let rect = NSRect(x: sheet.minX + object.frame.minX, y: sheet.minY + object.frame.minY,
+                          width: object.frame.width, height: object.frame.height)
+        guard rect.intersects(visibleRect) else { return }
+        switch object.content {
+        case .image(let image):
+            // `respectFlipped` because this view IS flipped and an image drawn without it arrives
+            // upside down — the one place that matters in this file, since the artwork here is a
+            // whole page of it.
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                       respectFlipped: true, hints: nil)
+        case .drawing(let pdf):
+            guard let image = NSImage(data: pdf) else { return }
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                       respectFlipped: true, hints: nil)
+        case .text(let blocks):
+            // Built through the SAME `OfficeTextBuilder` the body and every band use (invariant 29),
+            // then given this page's live number by the SAME substitution a running header's page
+            // field goes through — the box holds an ordinary `MDAttr.pageNumberField` span, so there
+            // is no second field mechanism here.
+            let built = OfficeTextBuilder.build(blocks, theme: content.theme,
+                                                columnWidth: rect.width,
+                                                documentDefaultFontSize: content.documentDefaultFontSize,
+                                                pageContentWidth: content.pageContentWidth)
+            guard built.length > 0 else { return }
+            PageBandPainter.substitutingPageFields(built, page: pageIndex + 1,
+                                                   totalPages: totalPages).draw(in: rect)
         }
     }
 }

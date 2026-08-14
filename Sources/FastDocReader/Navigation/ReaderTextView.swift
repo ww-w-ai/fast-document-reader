@@ -168,6 +168,41 @@ final class ReaderTextView: NSTextView {
         MasterPagePainter.draw(content, sheets: sheets, totalPages: sheets.count,
                                visibleRect: visibleRect,
                                sectionOfPage: { wc.sectionOfPage($0) })
+        drawAnchoredObjects(wc, content: content, sheets: sheets)
+    }
+
+    /// Objects the document pinned to the PAPER at a particular place in the text — a cover's
+    /// artwork, a rule down a margin (`OfficeAnchoredObject`).
+    ///
+    /// Unlike a master page these appear on ONE page: the page their anchoring block landed on. The
+    /// block is marked (`MDAttr.anchoredObjects`) and its own line rect answers which page that is,
+    /// so this asks layout rather than keeping a second record that a reflow could invalidate. Only
+    /// the visible range is scanned, which is a handful of characters' worth of attribute runs.
+    private func drawAnchoredObjects(_ wc: DocumentWindowController,
+                                     content: MasterPageContent, sheets: [CGRect]) {
+        let objects = wc.mdDocument?.officeAnchoredObjects ?? []
+        guard !objects.isEmpty, let lm = layoutManager, let tc = textContainer,
+              let storage = textStorage, storage.length > 0 else { return }
+        let pitch = PagePagination.pitch(pageContentHeight: wc.pageBandDelegate.pageContentHeight,
+                                         band: wc.pageBandDelegate.band)
+        guard pitch > 0 else { return }
+        // The whole document, not just the visible range: an object is drawn on its OWN page, and a
+        // page is visible long before the marker's own line is (a cover's artwork is anchored at the
+        // top of a page whose marker sits above the visible rect). The attribute is set on a handful
+        // of blocks, so this is a short walk over attribute RUNS rather than characters.
+        let whole = NSRange(location: 0, length: storage.length)
+        storage.enumerateAttribute(MDAttr.anchoredObjects, in: whole) { value, range, _ in
+            guard let ids = value as? [Int] else { return }
+            let glyph = lm.glyphIndexForCharacter(at: range.location)
+            let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let page = Int(((frag.minY - wc.pageBandDelegate.leadingBand) / pitch).rounded(.down))
+            guard page >= 0, page < sheets.count else { return }
+            for id in ids where id >= 0 && id < objects.count {
+                MasterPagePainter.draw(objects[id].object, onSheet: sheets[page], pageIndex: page,
+                                       totalPages: sheets.count, content: content,
+                                       visibleRect: visibleRect)
+            }
+        }
     }
 
     // MARK: - Printing a paged document on its OWN page grid

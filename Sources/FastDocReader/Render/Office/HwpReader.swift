@@ -142,6 +142,17 @@ enum HwpReader {
     /// reachable by `reconcileMedia` under the id the block carries.
     final class MediaContext {
         var images: [String: Data] = [:]
+        /// Objects pinned to the PAPER, collected during the block walk with the index of the block
+        /// they were anchored at — see `OfficeAnchoredObject`. A reference type for the same reason
+        /// `images` is: the `map` closures that build blocks add to it without threading `inout`.
+        var anchored: [OfficeAnchoredObject] = []
+        /// The document's own paper, when it declared one — the reference an anchored object is
+        /// placed against.
+        var paper: PaperGeometry?
+        /// The index of the top-level block being mapped, so an anchored object knows where in the
+        /// document it belongs. Set by `mapJSON`'s own loop; nested content (a table cell) keeps the
+        /// top-level block's index, which is the page-bearing one.
+        var blockIndex = 0
         /// Bytes for an embedded picture by `binDataId`, when the caller has a live parse handle.
         /// `nil` in `mapJSON`-only use (every unit test): a picture FILL then stays unpainted rather
         /// than the mapper inventing a colour for it.
@@ -216,10 +227,22 @@ enum HwpReader {
         // `paged` is not a second flag — it is the SAME predicate `OfficeTextBuilder.build` resolves
         // as `pageBasis != nil` (a page content width the document actually stated), read here from
         // the same field so the reader and the builder cannot drift on what "paged" means.
-        var result = OfficeReadResult(blocks: envelope.blocks.map {
-            mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
-                     borderFills: borderFills, shapes: shapes, paged: pageWidth != nil)
+        // The paper an anchored object is placed on. Only present when the document declared a page
+        // at all; without it nothing can be pinned to a sheet and every object stays in the flow.
+        if let w = envelope.pageContentWidth, w > 0, let h = envelope.pageContentHeight, h > 0 {
+            shapes.paper = PaperGeometry(contentWidth: CGFloat(w), contentHeight: CGFloat(h),
+                                         marginLeft: CGFloat(envelope.pageMarginLeft ?? 0),
+                                         marginTop: CGFloat(envelope.pageMarginTop ?? 0),
+                                         marginRight: CGFloat(envelope.pageMarginRight ?? 0),
+                                         marginBottom: CGFloat(envelope.pageMarginBottom ?? 0))
+        }
+        var result = OfficeReadResult(blocks: envelope.blocks.enumerated().map { index, block in
+            shapes.blockIndex = index
+            return mapBlock(block, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
+                            slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
+                            paged: pageWidth != nil)
         }, comments: [])
+        result.anchoredObjects = shapes.anchored
         // The drawings this read rendered — merged, not assigned, so a later `read()` that also
         // fetches embedded pictures keeps both (invariant: one media map, one id space).
         result.images = shapes.images
@@ -285,6 +308,48 @@ enum HwpReader {
                               paged: pageWidth != nil)
             }
         return result
+    }
+
+    /// Where an anchored object sits on the SHEET, in points from the paper's top-left — rhwp's own
+    /// placement rule (`renderer/layout/shape_layout.rs`'s `calc_shape_bottom_y`), restated for the
+    /// two references this reader can honour.
+    ///
+    /// `paper` measures against the whole sheet, `page` against the body area inside the margins.
+    /// `para`/`column` need the anchoring paragraph's own position — the floating layer invariant 75
+    /// measured and rejected — so they never reach here.
+    static func anchoredFrame(size: CGSize, vertRelTo: String, horzRelTo: String,
+                              vertAlign: String, horzAlign: String,
+                              offset: CGPoint, page: PaperGeometry) -> CGRect? {
+        guard vertRelTo == "paper" || vertRelTo == "page",
+              horzRelTo == "paper" || horzRelTo == "page" else { return nil }
+        func place(_ refOrigin: CGFloat, _ refExtent: CGFloat, _ own: CGFloat,
+                   _ align: String, _ offset: CGFloat) -> CGFloat {
+            switch align {
+            case "center": return refOrigin + (refExtent - own) / 2 + offset
+            case "bottom", "outside": return refOrigin + refExtent - own - offset
+            default: return refOrigin + offset          // top / inside
+            }
+        }
+        let vRef: (CGFloat, CGFloat) = vertRelTo == "paper"
+            ? (0, page.paperHeight) : (page.marginTop, page.contentHeight)
+        let hRef: (CGFloat, CGFloat) = horzRelTo == "paper"
+            ? (0, page.paperWidth) : (page.marginLeft, page.contentWidth)
+        return CGRect(x: place(hRef.0, hRef.1, size.width, horzAlign, offset.x),
+                      y: place(vRef.0, vRef.1, size.height, vertAlign, offset.y),
+                      width: size.width, height: size.height)
+    }
+
+    /// The paper an anchored object is placed on, in points — what the reader already read off the
+    /// document's own page definition.
+    struct PaperGeometry {
+        var contentWidth: CGFloat
+        var contentHeight: CGFloat
+        var marginLeft: CGFloat
+        var marginTop: CGFloat
+        var marginRight: CGFloat
+        var marginBottom: CGFloat
+        var paperWidth: CGFloat { marginLeft + contentWidth + marginRight }
+        var paperHeight: CGFloat { marginTop + contentHeight + marginBottom }
     }
 
     /// One 바탕쪽 → the format-neutral `OfficeMasterPage`, or nil when nothing in it can be drawn.
@@ -841,6 +906,13 @@ enum HwpReader {
             let declared = CGSize(width: points(im.w), height: points(im.h))
             let size = relativeGraphicSize(w: im.w, h: im.h, criterion: im.widthCriterion,
                                            pageWidth: pageWidth) ?? declared
+            // A PICTURE stays in the flow even when the document anchors it, deliberately. Taking
+            // one out was built and measured on the same manual: its cover is two pages of anchored
+            // artwork and nothing else, so floating them collapsed the cover to no pages at all
+            // (451 → 436) — this reader lays every section into ONE column and does not start a page
+            // per section (invariants 57/73), so a page with only anchored content has nothing left
+            // to make it a page. A drawing is different: it was DROPPED entirely before, so floating
+            // it can only add.
             return .image(id: "\(hwpImagePrefix)\(im.binDataId)", size: size,
                           alignment: imageAlignment(im.align))
         case .shape(let sh):
@@ -854,6 +926,23 @@ enum HwpReader {
             let paths = sh.paths.compactMap { shapePath($0) }
             var size = CGSize(width: points(sh.w), height: points(sh.h))
             if size.width < 1 || size.height < 1, let extent = pathsExtent(paths) { size = extent }
+            // PINNED TO THE PAPER — a cover's decoration, a rule down a margin. Placed by the
+            // document's own rule (`anchoredFrame`) and drawn on the sheet the anchoring block falls
+            // on, rather than pushed into the text where inlining one cost 29 pages (invariant 75).
+            if sh.asChar != true, let paper = shapes.paper,
+               let frame = anchoredFrame(size: size, vertRelTo: sh.vertRelTo ?? "para",
+                                         horzRelTo: sh.horzRelTo ?? "para",
+                                         vertAlign: sh.vertAlign ?? "top",
+                                         horzAlign: sh.horzAlign ?? "left",
+                                         offset: CGPoint(x: points(sh.offsetX ?? 0),
+                                                         y: points(sh.offsetY ?? 0)),
+                                         page: paper),
+               let pdf = HwpShapeRenderer.pdf(paths: paths, size: size) {
+                shapes.anchored.append(OfficeAnchoredObject(
+                    blockIndex: shapes.blockIndex,
+                    object: OfficeMasterObject(frame: frame, content: .drawing(pdf))))
+                return .paragraph(spans: [])
+            }
             guard sh.asChar == true, let pdf = HwpShapeRenderer.pdf(paths: paths, size: size) else {
                 return .paragraph(spans: [])
             }
@@ -1303,6 +1392,10 @@ private struct HwpShape: Decodable {
     var horzRelTo: String?
     var offsetX: Int?
     var offsetY: Int?
+    /// WHICH EDGE of that reference the offset is measured from — the other half of rhwp's own
+    /// placement (`shape_layout.rs`'s `calc_shape_bottom_y`). Without it an offset is not a position.
+    var vertAlign: String?
+    var horzAlign: String?
     var paths: [HwpShapePath]
 }
 
@@ -1346,6 +1439,16 @@ private struct HwpImage: Decodable {
     /// The object's OWN horizontal alignment, which in HWP lives on the picture rather than on a
     /// containing paragraph (`left`/`center`/`right`/`inside`/`outside`).
     var align: String?
+    /// The anchor, exactly as a drawing carries it — a picture is anchored as often as a drawing is
+    /// (a cover's artwork, a seal over a signature line). Absent for a parser predating the export,
+    /// and then every picture reads as in-flow, which is how this reader always treated them.
+    var asChar: Bool?
+    var vertRelTo: String?
+    var horzRelTo: String?
+    var vertAlign: String?
+    var horzAlign: String?
+    var offsetX: Int?
+    var offsetY: Int?
     /// What `w` is measured against: `absolute` (HWPUNIT, the overwhelmingly common case) or
     /// `paper`/`page`/`column`/`para`, where `w` is instead a share in ten-thousandths. Honouring
     /// this is what "follow the option the document stored" means for HWP — the format has five

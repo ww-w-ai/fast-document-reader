@@ -144,4 +144,9 @@ enum MDAttr {
     /// (invariant 78), so without this the reader would have to pick one template for the whole
     /// document, which puts one chapter's running title on every other chapter's pages.
     static let sectionIndex = NSAttributedString.Key("mdSectionIndex")
+
+    /// The anchored objects (an `[Int]` of indices into `OfficeReadResult.anchoredObjects`) that
+    /// belong to THIS block — the marker that says which page a paper-pinned object is drawn on.
+    /// Set on the block the document anchored them at, and nowhere else.
+    static let anchoredObjects = NSAttributedString.Key("mdAnchoredObjects")
 }
