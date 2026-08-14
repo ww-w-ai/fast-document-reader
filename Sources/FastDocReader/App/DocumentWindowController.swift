@@ -356,11 +356,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         pageBandDelegate.band = band
         // This render replaces the storage, so where the section markers sit is about to change.
         cachedSectionStarts = nil
-        // The document's own page breaks, read off the text that was just built. Known BEFORE
-        // layout (unlike every other record the delegate keeps, which is measured from a finished
-        // one), because the instruction came from the file rather than from how the lines fell.
-        pageBandDelegate.documentPageBreaks = documentPageBreakLocations()
-        pageBandDelegate.keepWithNextRanges = keepWithNextRanges()
+        // Cleared, NOT read, here. `configurePageBand` runs BEFORE `display(_:)` installs the new
+        // text — deliberately, so the delegate carries this render's numbers before a single line is
+        // laid out — which means the storage in hand at this moment is still the PREVIOUS document's.
+        // Reading the markers here found the old text's locations (or none at all on a first open),
+        // so the app silently ignored every page break while `--pdf`, which re-applies the band with
+        // the text already installed, honoured them. `display(_:)` sets them from the real text.
+        pageBandDelegate.documentPageBreaks = []
+        pageBandDelegate.keepWithNextRanges = []
         // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
         // edges the between-page reservation cannot reach on its own (header-footer-design.md's own
         // recorded gap). LEADING is gated on page 0's OWN applicable header actually carrying
@@ -1589,6 +1592,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             lm.setExtraLineFragmentRect(.zero, usedRect: .zero, textContainer: tc)
         }
         textView.textStorage?.setAttributedString(attributed)
+        // THE DOCUMENT'S OWN PAGE BREAKS, read from the text that was just installed — the earliest
+        // point at which the markers exist. `configurePageBand` runs before this and so can only see
+        // the OUTGOING document; setting them there left the app ignoring every break while `--pdf`,
+        // which re-applies the band against text already in place, honoured them. Set before any
+        // layout is asked for below, so the first pass already breaks where the author did.
+        pageBandDelegate.documentPageBreaks = documentPageBreakLocations()
+        pageBandDelegate.keepWithNextRanges = keepWithNextRanges()
         textView.recomputeHeadingOffsets()
         reloadOutline()
         reloadCommentPanel()

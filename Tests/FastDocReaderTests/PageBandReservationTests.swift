@@ -296,6 +296,49 @@ final class PageBandReservationTests: XCTestCase {
         XCTAssertEqual(paged.last!.maxY - plain.last!.maxY, pagesCrossed * band, accuracy: 0.5)
     }
 
+    /// THE TEST THAT WAS MISSING, and whose absence shipped a document that broke pages when
+    /// PRINTED and ignored every break on SCREEN.
+    ///
+    /// The breaks were read inside `configurePageBand`, which the render calls BEFORE `display(_:)`
+    /// installs the new text — so the markers being looked for were still the previous document's,
+    /// and on a first open there was no text at all. `--pdf` re-applies the band with the text
+    /// already in place and so looked correct the whole time, which is exactly why every check that
+    /// went through the print path passed. This one goes through the REAL render.
+    func testARenderLeavesTheDelegateHoldingTheDocumentsOwnBreaks() throws {
+        let doc = MarkdownDocument()
+        // A file URL so the document IS an office one — `kind` is decided by the extension, and a
+        // document that reads as markdown never runs the office render this test is about.
+        doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-break-render-\(UUID().uuidString).hwp")
+        doc.setOfficeContent(
+            blocks: [.paragraph(spans: [Span(text: "cover")]),
+                     .paragraph(spans: [Span(text: "foreword")]),
+                     .paragraph(spans: [Span(text: "body")])],
+            comments: [], archive: nil, images: [:], defaultBodyFontSize: 11,
+            pageContentWidth: 400, pageMarginLeft: 60, pageMarginRight: 60,
+            pageContentHeight: 500, pageMarginTop: 60, pageMarginBottom: 60,
+            headers: [OfficeHeaderFooter(appliesTo: .defaultPages,
+                                         blocks: [.paragraph(spans: [Span(text: "head")])])],
+            footers: [], masterPages: [], sectionStartBlocks: [0],
+            pageBreakBlocks: [1], keepWithNextBlocks: [],
+            sections: [], anchoredObjects: [], lineGridPitch: nil)
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 900, height: 700), display: false)
+
+        XCTAssertGreaterThan(try XCTUnwrap(wc.textStorageRef).length, 0,
+                             "the render must actually have painted something")
+        XCTAssertFalse(wc.pageBandDelegate.documentPageBreaks.isEmpty,
+                       "after a real render the delegate must hold the document's own break, or the " +
+                       "screen silently ignores it while printing honours it")
+        let storage = try XCTUnwrap(wc.textStorageRef)
+        for location in wc.pageBandDelegate.documentPageBreaks {
+            XCTAssertLessThan(location, storage.length,
+                              "a break location must point INTO the text that is actually installed")
+            XCTAssertNotNil(storage.attribute(MDAttr.startsPage, at: location, effectiveRange: nil),
+                            "…and at a character the builder actually marked")
+        }
+    }
+
     /// The AUTHOR's page break, not the page's own edge (invariant 82). A line marked
     /// `documentPageBreaks` starts a fresh page even though it would have fitted where it stood —
     /// this is what a document's 쪽 나누기 means, and dropping it is what let a cover, its blank verso
