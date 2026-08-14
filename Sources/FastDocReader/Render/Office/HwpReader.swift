@@ -901,6 +901,12 @@ enum HwpReader {
             let spans = p.spans.flatMap { mapSpan($0, slotFonts: slotFonts) }
             let align = alignment(p.align)
             let format = paragraphFormat(p, defaultBodySize: defaultBodySize, paged: paged)
+            // NOT indented to `boxX`/`boxW`, deliberately. A text box that is a GROUP's child states
+            // its offset in the GROUP's coordinates, not the paper's, and rhwp resolves that through
+            // its own render tree (`shape_layout.rs`'s group origin walk). Treating the raw offset as
+            // a paper coordinate was tried and measured: 1,510 paragraphs took an indent that left
+            // them almost no width, and the manual went 520 pages to 436. The geometry is exported
+            // and carried; honouring it needs the group-origin math, not a guess.
             // The paragraph's OWN tab stops. HWP keeps them in a shared tab-definition table the
             // paragraph points at, so a signature block's right-aligned column or a leader dot run
             // used to fall back to this reader's default tab width — the same information docx and
@@ -1381,6 +1387,12 @@ private struct HwpPara: Decodable {
     var list: HwpList?
     /// The paragraph's own tab stops, from HWP's shared tab-definition table.
     var tabStops: [HwpTabStop]?
+    /// When the paragraph lives inside a drawing's TEXT BOX rather than in the body, the box's own
+    /// position and size in HWPUNIT (accumulated through group nesting). Absent for a body paragraph.
+    var boxX: Int?
+    var boxY: Int?
+    var boxW: Int?
+    var boxH: Int?
     /// Keep this paragraph with the next one / do not split it / do not strand its first or last
     /// line / the STYLE says start a page here (which is a different signal from the author's own
     /// `breakBefore`). All four are what stop a heading being paginated away from its body.

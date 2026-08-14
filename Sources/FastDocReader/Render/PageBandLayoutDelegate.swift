@@ -174,6 +174,24 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         guard page >= 0 else { return }
         openedBoundaries.insert(Int(page))
         openedBands[Int(page)] = (top: top, height: target - top)
+        // EVERY boundary the shift jumped OVER is open too. A line that moves more than one page —
+        // which is what an author's page break does whenever the page it leaves is barely used —
+        // skips the pages in between, and those pages then have no line of their own to open their
+        // boundary. `joiningUnopenedBoundaries` reads an unopened boundary as "layout never broke
+        // here" and welds the two sheets into one, so a chapter divider came out as a single
+        // double-height page carrying two running heads and two page numbers. The pages exist
+        // because the document says they do; their boundaries are real.
+        let pitch = pageContentHeight + band
+        guard pitch > 0 else { return }
+        let targetPage = Int(((target - leadingBand) / pitch).rounded())
+        guard targetPage > Int(page) + 1 else { return }
+        for skipped in (Int(page) + 1)..<targetPage {
+            openedBoundaries.insert(skipped)
+            // The gap at a boundary nothing was shifted across is exactly the band, in its own
+            // page's place — the same geometry an ordinary crossing would have produced.
+            openedBands[skipped] = (top: leadingBand + CGFloat(skipped) * pitch + pageContentHeight,
+                                    height: band)
+        }
     }
 
     /// Everything the settle measured from a layout — dropped together with the string it was keyed

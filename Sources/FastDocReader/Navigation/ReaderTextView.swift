@@ -185,7 +185,16 @@ final class ReaderTextView: NSTextView {
               let storage = textStorage, storage.length > 0 else { return }
         let pitch = PagePagination.pitch(pageContentHeight: wc.pageBandDelegate.pageContentHeight,
                                          band: wc.pageBandDelegate.band)
-        guard pitch > 0 else { return }
+        // NO PAGES TO DRAW ON — the reader is in continuous mode (the page outline is off, or the
+        // document declared no paper). The objects still have to appear: taking a picture out of the
+        // flow is what lets it sit where the document pinned it, and that trade is only honest if it
+        // is still SEEN. Each one is drawn against its anchoring line instead of against a sheet —
+        // its own x from the paper, its y from where its block actually landed, which is the same
+        // pair of facts the paged path uses, minus the sheet.
+        guard pitch > 0, !sheets.isEmpty else {
+            drawAnchoredObjectsInContinuousFlow(wc, content: content, objects: objects)
+            return
+        }
         // The whole document, not just the visible range: an object is drawn on its OWN page, and a
         // page is visible long before the marker's own line is (a cover's artwork is anchored at the
         // top of a page whose marker sits above the visible rect). The attribute is set on a handful
@@ -211,6 +220,35 @@ final class ReaderTextView: NSTextView {
                 MasterPagePainter.draw(object, onSheet: sheets[page], pageIndex: page,
                                        totalPages: sheets.count, content: content,
                                        visibleRect: visibleRect)
+            }
+        }
+    }
+
+    /// The continuous-mode half of `drawAnchoredObjects` — no sheets, so an object is placed at the
+    /// text container's own left edge plus the paper x it declared, and at its anchoring line's y.
+    private func drawAnchoredObjectsInContinuousFlow(_ wc: DocumentWindowController,
+                                                     content: MasterPageContent,
+                                                     objects: [OfficeAnchoredObject]) {
+        guard let lm = layoutManager, let tc = textContainer, let storage = textStorage,
+              storage.length > 0 else { return }
+        let origin = textContainerOrigin
+        let whole = NSRange(location: 0, length: storage.length)
+        storage.enumerateAttribute(MDAttr.anchoredObjects, in: whole) { value, range, _ in
+            guard let ids = value as? [Int] else { return }
+            let glyph = lm.glyphIndexForCharacter(at: range.location)
+            let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            for id in ids where id >= 0 && id < objects.count {
+                var object = objects[id].object
+                if let anchor = objects[id].paragraphAnchor {
+                    object.frame.origin.y = anchor.top(lineTop: 0, lineHeight: frag.height,
+                                                       objectHeight: object.frame.height)
+                }
+                // A "sheet" whose top-left is this line's own start: the object keeps its paper x
+                // and the y it declared, measured from where its block sits in the flow.
+                let pseudoSheet = CGRect(x: origin.x, y: frag.minY,
+                                         width: tc.size.width, height: object.frame.height)
+                MasterPagePainter.draw(object, onSheet: pseudoSheet, pageIndex: 0, totalPages: 1,
+                                       content: content, visibleRect: visibleRect)
             }
         }
     }

@@ -339,6 +339,38 @@ final class PageBandReservationTests: XCTestCase {
         }
     }
 
+    /// The MIRROR of the test above, and the regression fixing that one caused. Printing re-applies
+    /// the band on text that is already installed and never calls `display(_:)` again, so clearing
+    /// the breaks in `configurePageBand` left the PRINT path ignoring every one of them — the manual
+    /// went from 520 pages to 436. Both paths must end up holding the same instruction.
+    func testReapplyingTheBandKeepsTheDocumentsBreaks() throws {
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-break-print-\(UUID().uuidString).hwp")
+        doc.setOfficeContent(
+            blocks: [.paragraph(spans: [Span(text: "cover")]),
+                     .paragraph(spans: [Span(text: "foreword")]),
+                     .paragraph(spans: [Span(text: "body")])],
+            comments: [], archive: nil, images: [:], defaultBodyFontSize: 11,
+            pageContentWidth: 400, pageMarginLeft: 60, pageMarginRight: 60,
+            pageContentHeight: 500, pageMarginTop: 60, pageMarginBottom: 60,
+            headers: [OfficeHeaderFooter(appliesTo: .defaultPages,
+                                         blocks: [.paragraph(spans: [Span(text: "head")])])],
+            footers: [], masterPages: [], sectionStartBlocks: [0],
+            pageBreakBlocks: [1], keepWithNextBlocks: [],
+            sections: [], anchoredObjects: [], lineGridPitch: nil)
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 900, height: 700), display: false)
+        let afterRender = wc.pageBandDelegate.documentPageBreaks
+        XCTAssertFalse(afterRender.isEmpty)
+
+        // What printing does: re-apply the band against the text already on screen.
+        doc.applyPageBand(to: wc, forPrinting: true)
+        XCTAssertEqual(wc.pageBandDelegate.documentPageBreaks, afterRender,
+                       "re-applying the band must not lose the document's own breaks — printing " +
+                       "never calls display(_:) again, so whatever this leaves is what it prints")
+    }
+
     /// The AUTHOR's page break, not the page's own edge (invariant 82). A line marked
     /// `documentPageBreaks` starts a fresh page even though it would have fitted where it stood —
     /// this is what a document's 쪽 나누기 means, and dropping it is what let a cover, its blank verso

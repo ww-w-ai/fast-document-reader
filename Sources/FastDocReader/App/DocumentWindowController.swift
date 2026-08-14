@@ -356,14 +356,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         pageBandDelegate.band = band
         // This render replaces the storage, so where the section markers sit is about to change.
         cachedSectionStarts = nil
-        // Cleared, NOT read, here. `configurePageBand` runs BEFORE `display(_:)` installs the new
-        // text — deliberately, so the delegate carries this render's numbers before a single line is
-        // laid out — which means the storage in hand at this moment is still the PREVIOUS document's.
-        // Reading the markers here found the old text's locations (or none at all on a first open),
-        // so the app silently ignored every page break while `--pdf`, which re-applies the band with
-        // the text already installed, honoured them. `display(_:)` sets them from the real text.
-        pageBandDelegate.documentPageBreaks = []
-        pageBandDelegate.keepWithNextRanges = []
+        // Read from whatever text is installed RIGHT NOW, which is the right answer for the two
+        // callers that reach here with the document already on screen — printing (which re-applies
+        // the band and never calls `display(_:)` again) and a View-menu toggle.
+        //
+        // During a RENDER this is the OUTGOING document, because the render deliberately configures
+        // the band before installing the new text. That is harmless only because `display(_:)` sets
+        // both again the instant the new storage is in — and it must, or the window silently ignores
+        // every break while printing honours them. Clearing here instead was tried and broke the
+        // mirror image: printing then ignored them (the manual went 520 pages to 436).
+        pageBandDelegate.documentPageBreaks = documentPageBreakLocations()
+        pageBandDelegate.keepWithNextRanges = keepWithNextRanges()
         // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
         // edges the between-page reservation cannot reach on its own (header-footer-design.md's own
         // recorded gap). LEADING is gated on page 0's OWN applicable header actually carrying
