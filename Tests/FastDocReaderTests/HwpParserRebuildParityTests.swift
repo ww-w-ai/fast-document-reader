@@ -123,7 +123,7 @@ final class HwpParserRebuildParityTests: XCTestCase {
         case .heading(let level, let spans, let rtl, let align, let tabs, let format):
             out += "\(path) head level=\(level) rtl=\(rtl) align=\(fmt(align)) tabs=\(tabs.count) fmt=\(fmt(format))\n"
             emit(spans, path: path, into: &out)
-        case .listItem(let level, let ordered, let spans, let marker, let rtl, let align, let tabs, let format):
+        case .listItem(let level, let ordered, let spans, let marker, let rtl, let align, let tabs, let format, _):
             out += "\(path) list level=\(level) ordered=\(ordered) marker=\(marker ?? "-") rtl=\(rtl) align=\(fmt(align)) tabs=\(tabs.count) fmt=\(fmt(format))\n"
             emit(spans, path: path, into: &out)
         case .table(let rows, let headerRows, let columnWidths, let format):

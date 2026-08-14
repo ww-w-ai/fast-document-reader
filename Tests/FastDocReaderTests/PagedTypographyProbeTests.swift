@@ -55,7 +55,7 @@ final class PagedTypographyProbeTests: XCTestCase {
                     count(real)
                 case let .paragraph(spans, _, _, _, _):
                     count(spans)
-                case let .listItem(_, _, spans, _, _, _, _, _):
+                case let .listItem(_, _, spans, _, _, _, _, _, _):
                     listItems += 1
                     if spans.first(where: { !$0.text.isEmpty })?.fontSize != nil { listItemsFirstSpanSized += 1 }
                     count(spans)

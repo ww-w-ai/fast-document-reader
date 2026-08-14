@@ -53,7 +53,7 @@ enum OfficeMarkdownSerializer {
         case let .paragraph(spans, _, _, _, _):
             return (inline(spans, inCell: false), false)
 
-        case let .listItem(level, ordered, spans, marker, _, _, _, _):
+        case let .listItem(level, ordered, spans, marker, _, _, _, _, _):
             let indent = String(repeating: "  ", count: max(level, 0))
             let mark: String
             if ordered {
@@ -252,7 +252,7 @@ enum OfficeMarkdownSerializer {
         switch block {
         case let .heading(_, spans, _, _, _, _): return spans.map(\.text).joined()
         case let .paragraph(spans, _, _, _, _): return spans.map(\.text).joined()
-        case let .listItem(_, _, spans, _, _, _, _, _): return spans.map(\.text).joined()
+        case let .listItem(_, _, spans, _, _, _, _, _, _): return spans.map(\.text).joined()
         case let .table(rows, _, _, _):
             return rows.map { $0.map { plainCell($0) }.joined(separator: " | ") }.joined(separator: "\n")
         case let .image(id, _, _): return "[image \(id)]"

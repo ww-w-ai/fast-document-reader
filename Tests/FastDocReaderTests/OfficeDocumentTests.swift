@@ -1466,7 +1466,7 @@ final class OfficeDocumentTests: XCTestCase {
         for block in doc.officeBlocks {
             switch block {
             case .paragraph(let spans, _, _, _, _), .heading(_, let spans, _, _, _, _),
-                 .listItem(_, _, let spans, _, _, _, _, _):
+                 .listItem(_, _, let spans, _, _, _, _, _, _):
                 XCTAssertTrue(spans.allSatisfy { $0.commentIds.isEmpty })
             case .table, .image, .unsupportedGraphic, .formula:
                 continue
@@ -1537,7 +1537,7 @@ final class OfficeDocumentTests: XCTestCase {
         for block in doc.officeBlocks {
             switch block {
             case .paragraph(let spans, _, _, _, _), .heading(_, let spans, _, _, _, _),
-                 .listItem(_, _, let spans, _, _, _, _, _):
+                 .listItem(_, _, let spans, _, _, _, _, _, _):
                 XCTAssertTrue(spans.allSatisfy { $0.commentIds.isEmpty })
             case .table, .image, .unsupportedGraphic, .formula:
                 continue
@@ -1671,4 +1671,34 @@ final class OfficeDocumentTests: XCTestCase {
         XCTAssertTrue(extracted.contains("😀"), extracted)
         XCTAssertTrue(extracted.contains("𠀀"), extracted)
     }
+    // MARK: A list numbered the way the DOCUMENT numbers it
+
+    func testTheDocumentsNumberFormatIsFilledInNotPrintedLiterally() {
+        // HWP writes `^1.`; the caret is a placeholder for this level's counter, and printing it
+        // verbatim put a literal `^` on screen.
+        XCTAssertEqual(OfficeTextBuilder.fillListFormat("^1.", level: 0, number: 3, counters: [:],
+                                                        numbering: ListNumbering(glyphs: .decimal)),
+                       "3.")
+        XCTAssertEqual(OfficeTextBuilder.fillListFormat("제^1장", level: 0, number: 2, counters: [:],
+                                                        numbering: ListNumbering(glyphs: .hangulSyllable)),
+                       "제나장", "가·나·다 numbering writes its own glyphs, not digits")
+    }
+
+    func testAnOuterLevelsPlaceholderReadsThatLevelsCounter() {
+        // `^1.^2` on a level-2 item is "the section we are in" then "this item".
+        XCTAssertEqual(OfficeTextBuilder.fillListFormat("^1.^2", level: 1, number: 4,
+                                                        counters: [0: 2, 1: 4], numbering: nil),
+                       "2.4")
+    }
+
+    func testARomanAndCircledSystemWriteRealGlyphs() {
+        XCTAssertEqual(ListNumbering(glyphs: .romanUpper).text(9), "IX")
+        XCTAssertEqual(ListNumbering(glyphs: .romanLower).text(4), "iv")
+        XCTAssertEqual(ListNumbering(glyphs: .circledDecimal).text(3), "③")
+        XCTAssertEqual(ListNumbering(glyphs: .latinUpper).text(2), "B")
+        XCTAssertEqual(ListNumbering(glyphs: .hanjaNumber).text(3), "三")
+        XCTAssertEqual(ListNumbering(glyphs: .circledDecimal).text(99), "99",
+                       "past the end of a finite alphabet, fall back to digits rather than invent a glyph")
+    }
+
 }

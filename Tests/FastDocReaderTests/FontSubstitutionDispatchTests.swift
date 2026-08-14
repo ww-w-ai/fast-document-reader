@@ -59,7 +59,7 @@ final class FontSubstitutionDispatchTests: XCTestCase {
             switch block {
             case let .heading(_, spans, _, _, _, _), let .paragraph(spans, _, _, _, _):
                 return spans
-            case let .listItem(_, _, spans, _, _, _, _, _):
+            case let .listItem(_, _, spans, _, _, _, _, _, _):
                 return spans
             case let .table(rows, _, _, _):
                 return rows.flatMap { $0.flatMap { everySpan(in: $0.blocks) } }

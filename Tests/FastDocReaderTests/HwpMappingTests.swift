@@ -69,6 +69,103 @@ final class HwpMappingTests: XCTestCase {
             .pageBreakBlocks.isEmpty)
     }
 
+    // MARK: what the AUDIT found missing — everything the parser knew and the export dropped
+
+    func testTheStylesOwnPageBreakCountsTooAndKeepWithNextIsCollected() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"para","spans":[{"text":"heading"}],"keepWithNext":true},
+          {"t":"para","spans":[{"text":"body"}]},
+          {"t":"para","spans":[{"text":"chapter"}],"pageBreakBefore":true}
+        ]}
+        """
+        let r = try HwpReader.mapJSON(json)
+        XCTAssertEqual(r.keepWithNextBlocks, [0],
+                       "a heading marked keep-with-next must be findable, or it gets stranded")
+        XCTAssertEqual(r.pageBreakBlocks, [2],
+                       "the STYLE's page-break-before is a break too, not only the author's own")
+    }
+
+    func testAParagraphsOwnTabStopsSurvive() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"para","spans":[{"text":"name and date"}],
+           "tabStops":[{"posHwpUnit":20000,"kind":"right"},{"posHwpUnit":30000,"kind":"decimal"}]}
+        ]}
+        """
+        guard case .paragraph(_, _, _, let stops, _)? = try HwpReader.mapJSON(json).blocks.first else {
+            return XCTFail("expected a paragraph")
+        }
+        XCTAssertEqual(stops.map(\.position), [200, 300], "HWPUNIT ÷100 = points, as everywhere else")
+        XCTAssertEqual(stops.map(\.alignment), [.right, .decimal])
+    }
+
+    func testTheDocumentsOwnListMarkerAndNumberSystemArrive() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"para","spans":[{"text":"first"}],
+           "list":{"level":0,"ordered":true,"marker":"^1.","startNumber":3,"numberFormat":"hangulSyllable"}},
+          {"t":"para","spans":[{"text":"a bullet"}],"list":{"level":0,"ordered":false,"marker":"▶"}}
+        ]}
+        """
+        let blocks = try HwpReader.mapJSON(json).blocks
+        guard case .listItem(_, _, _, let marker, _, _, _, _, let numbering)? = blocks.first else {
+            return XCTFail("expected a list item")
+        }
+        XCTAssertEqual(marker, "^1.", "the FORMAT travels; the number itself is the reader's to write")
+        XCTAssertEqual(numbering?.glyphs, .hangulSyllable)
+        XCTAssertEqual(numbering?.startNumber, 3)
+        guard case .listItem(_, _, _, let bullet, _, _, _, _, _) = blocks[1] else {
+            return XCTFail("expected a bullet")
+        }
+        XCTAssertEqual(bullet, "▶", "a bullet's own glyph, not this reader's default dot")
+    }
+
+    func testATablesRepeatingHeaderRowsAreTheDocumentsOwnCount() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"table","cols":2,"colWidths":[1000,1000],"headerRows":2,
+           "rows":[[{"colSpan":1,"rowSpan":1,"blocks":[]},{"colSpan":1,"rowSpan":1,"blocks":[]}],
+                   [{"colSpan":1,"rowSpan":1,"blocks":[]},{"colSpan":1,"rowSpan":1,"blocks":[]}],
+                   [{"colSpan":1,"rowSpan":1,"blocks":[]},{"colSpan":1,"rowSpan":1,"blocks":[]}]]}
+        ]}
+        """
+        guard case .table(_, let headerRows, _, _)? = try HwpReader.mapJSON(json).blocks.first else {
+            return XCTFail("expected a table")
+        }
+        XCTAssertEqual(headerRows, 2, "the author marked two header rows; guessing one was the old answer")
+    }
+
+    func testATableThatDeclaresNoHeaderStillGetsNone() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"table","cols":1,"colWidths":[1000],
+           "rows":[[{"colSpan":1,"rowSpan":1,"blocks":[]}]]}
+        ]}
+        """
+        guard case .table(_, let headerRows, _, _)? = try HwpReader.mapJSON(json).blocks.first else {
+            return XCTFail("expected a table")
+        }
+        XCTAssertEqual(headerRows, 0, "never invent a header — a wrongly bolded row is a lie (invariant: OfficeBlock.table)")
+    }
+
+    func testASectionsOwnDeclarationsArrive() throws {
+        let json = """
+        {"v":1,"sections":[
+          {"hideHeader":true,"hideMasterPage":true},
+          {"pageNumberStart":1,"lineGridHwpUnit":1600,"verticalText":true}
+        ],"blocks":[]}
+        """
+        let sections = try HwpReader.mapJSON(json).sections
+        XCTAssertEqual(sections.count, 2)
+        XCTAssertTrue(sections[0].hidesHeader)
+        XCTAssertTrue(sections[0].hidesMasterPage)
+        XCTAssertFalse(sections[0].hidesFooter)
+        XCTAssertEqual(sections[1].pageNumberStart, 1)
+        XCTAssertEqual(sections[1].lineGridPitch, 16)
+        XCTAssertTrue(sections[1].isVertical, "recorded even though this reader sets text horizontally")
+    }
+
     // MARK: page content height + all four margins — HWP wired NONE of these before this change
 
     func testPageGeometryDecodedFromEnvelope() throws {
@@ -199,7 +296,7 @@ final class HwpMappingTests: XCTestCase {
         """
         let blocks = try mapBlocks(json)
         XCTAssertEqual(blocks.count, 2)
-        guard case let .listItem(level0, ordered0, spans0, marker0, _, _, _, _) = blocks[0] else {
+        guard case let .listItem(level0, ordered0, spans0, marker0, _, _, _, _, _) = blocks[0] else {
             return XCTFail("expected .listItem, got \(blocks[0])")
         }
         XCTAssertEqual(level0, 0)
@@ -207,7 +304,7 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertEqual(marker0, "1.")
         XCTAssertEqual(spans0.first?.text, "one")
 
-        guard case let .listItem(level1, ordered1, _, marker1, _, _, _, _) = blocks[1] else {
+        guard case let .listItem(level1, ordered1, _, marker1, _, _, _, _, _) = blocks[1] else {
             return XCTFail("expected .listItem, got \(blocks[1])")
         }
         XCTAssertEqual(level1, 1)

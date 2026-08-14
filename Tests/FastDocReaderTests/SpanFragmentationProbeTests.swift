@@ -62,7 +62,7 @@ final class SpanFragmentationProbeTests: XCTestCase {
                 switch b {
                 case let .paragraph(spans, _, _, _, _): tally(spans)
                 case let .heading(_, spans, _, _, _, _): tally(spans)
-                case let .listItem(_, _, spans, _, _, _, _, _): tally(spans)
+                case let .listItem(_, _, spans, _, _, _, _, _, _): tally(spans)
                 case let .table(rows, _, _, _):
                     for row in rows {
                         for cell in row {

@@ -249,8 +249,23 @@ enum HwpReader {
         // they move to the next COLUMN, which a single-column reader has nowhere to honour, and
         // treating them as pages would invent breaks the document never asked for.
         result.pageBreakBlocks = envelope.blocks.enumerated().compactMap { index, block in
-            guard case .para(let p) = block,
-                  p.breakBefore == "page" || p.breakBefore == "section" else { return nil }
+            guard case .para(let p) = block else { return nil }
+            // The author's own break, and the STYLE's — two separate signals in HWP, the same
+            // instruction to a reader.
+            return (p.breakBefore == "page" || p.breakBefore == "section" || p.pageBreakBefore == true)
+                ? index : nil
+        }
+        result.sections = (envelope.sections ?? []).map { section in
+            OfficeSectionDeclaration(
+                hidesHeader: section.hideHeader ?? false,
+                hidesFooter: section.hideFooter ?? false,
+                hidesMasterPage: section.hideMasterPage ?? false,
+                pageNumberStart: section.pageNumberStart.flatMap { $0 > 0 ? $0 : nil },
+                lineGridPitch: section.lineGridHwpUnit.flatMap { $0 > 0 ? points($0) : nil },
+                isVertical: section.verticalText ?? false)
+        }
+        result.keepWithNextBlocks = envelope.blocks.enumerated().compactMap { index, block in
+            guard case .para(let p) = block, p.keepWithNext == true else { return nil }
             return index
         }
         // The drawings this read rendered — merged, not assigned, so a later `read()` that also
@@ -886,6 +901,22 @@ enum HwpReader {
             let spans = p.spans.flatMap { mapSpan($0, slotFonts: slotFonts) }
             let align = alignment(p.align)
             let format = paragraphFormat(p, defaultBodySize: defaultBodySize, paged: paged)
+            // The paragraph's OWN tab stops. HWP keeps them in a shared tab-definition table the
+            // paragraph points at, so a signature block's right-aligned column or a leader dot run
+            // used to fall back to this reader's default tab width — the same information docx and
+            // odt have carried since they were built.
+            let tabStops: [TabStop] = (p.tabStops ?? []).compactMap { stop in
+                let position = points(stop.posHwpUnit)
+                guard position > 0 else { return nil }
+                let alignment: TabAlignment
+                switch stop.kind {
+                case "right": alignment = .right
+                case "center": alignment = .center
+                case "decimal": alignment = .decimal
+                default: alignment = .left
+                }
+                return TabStop(position: position, alignment: alignment)
+            }
             // An EXPLICIT outline paragraph is a heading because the document said so — no second
             // guessing. A STYLE-derived one is an inference, so it also has to look like a heading:
             // non-empty, and short enough to be a label rather than a sentence. Measured need — one
@@ -904,9 +935,12 @@ enum HwpReader {
             }
             if let list = p.list {
                 return .listItem(level: list.level, ordered: list.ordered, spans: spans, marker: list.marker,
-                                 rtl: false, alignment: align, tabStops: [], format: format)
+                                 rtl: false, alignment: align, tabStops: tabStops, format: format,
+                                 numbering: ListNumbering(
+                                    glyphs: ListNumbering.Glyphs(rawValue: list.numberFormat ?? "") ?? .decimal,
+                                    startNumber: list.startNumber))
             }
-            return .paragraph(spans: spans, rtl: false, alignment: align, tabStops: [], format: format)
+            return .paragraph(spans: spans, rtl: false, alignment: align, tabStops: tabStops, format: format)
         case .table(let t):
             let rows = t.rows.map { row in
                 row.map { mapCell($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
@@ -937,9 +971,11 @@ enum HwpReader {
             if format.defaultShading == nil, let stops = tableFill?.bgGradient?.colors, !stops.isEmpty {
                 format.defaultShading = color(stops[0])
             }
-            // headerRows = 0: HWP's JSON carries no header signal, and inventing "row one" bolds
-            // ordinary text (OfficeBlock.table's own contract). Full geometry/merge fidelity is S4.
-            return .table(rows: rows, headerRows: 0, columnWidths: columnWidths, format: format)
+            // The AUTHOR's own repeating header rows. Inventing "row one is a header" was the
+            // alternative and it bolds ordinary text; taking the document's mark costs nothing and
+            // is the only way a table that crosses a page keeps its column labels on page two.
+            return .table(rows: rows, headerRows: max(0, t.headerRows ?? 0),
+                          columnWidths: columnWidths, format: format)
         case .image(let im):
             // `read` resolves binDataId → pixels via `imageBase64` at read time (pre-decoded into
             // OfficeReadResult.images); the block only RESERVES the layout area here (invariant
@@ -1250,6 +1286,7 @@ private struct HwpEnvelope: Decodable {
     /// then no page can be told which section it is on — the reader keeps only the body section's
     /// template, which is what it did before per-page selection existed.
     let sectionStarts: [Int]?
+    let sections: [HwpSection]?
 }
 
 /// One 바탕쪽 as rhwp exports it. `section` is filtered against the envelope's `bodySection` for the
@@ -1342,6 +1379,15 @@ private struct HwpPara: Decodable {
     var spaceAfter: Int?
     var lineHeight: HwpLineHeight?
     var list: HwpList?
+    /// The paragraph's own tab stops, from HWP's shared tab-definition table.
+    var tabStops: [HwpTabStop]?
+    /// Keep this paragraph with the next one / do not split it / do not strand its first or last
+    /// line / the STYLE says start a page here (which is a different signal from the author's own
+    /// `breakBefore`). All four are what stop a heading being paginated away from its body.
+    var keepWithNext: Bool?
+    var keepLines: Bool?
+    var widowOrphan: Bool?
+    var pageBreakBefore: Bool?
     /// `"page"`/`"section"`/`"multiColumn"`/`"column"`, absent when the paragraph starts nothing.
     var breakBefore: String?
 }
@@ -1351,10 +1397,35 @@ private struct HwpLineHeight: Decodable {
     var value: Int
 }
 
+/// What a SECTION declared about itself — which page furniture it hides, where it restarts page
+/// numbering, whether it is written on a grid or vertically. Absent for a parser predating the
+/// export, and then every section reads as declaring nothing, which is how this reader always
+/// behaved.
+private struct HwpSection: Decodable {
+    var hideHeader: Bool?
+    var hideFooter: Bool?
+    var hideMasterPage: Bool?
+    var pageNumberStart: Int?
+    var lineGridHwpUnit: Int?
+    var charGridHwpUnit: Int?
+    var verticalText: Bool?
+}
+
+private struct HwpTabStop: Decodable {
+    var posHwpUnit: Int
+    var kind: String?
+}
+
 private struct HwpList: Decodable {
     var level: Int
     var ordered: Bool
+    /// The document's OWN marker — its number format string (`^1.`, 가./나./다.) or its bullet
+    /// character (▶). Absent means the document declared none and the reader's default stands.
     var marker: String?
+    /// The level's start number when the author set one other than 1.
+    var startNumber: Int?
+    /// Which glyphs the number is written in (HWP's own table 43), named — see `ListNumbering.Glyphs`.
+    var numberFormat: String?
 }
 
 private struct HwpSpan: Decodable {
@@ -1441,6 +1512,9 @@ private struct HwpTable: Decodable {
     var colWidths: [Int]
     var borderFillId: Int?
     var rows: [[HwpCell]]
+    /// How many rows at the TOP the document repeats when the table crosses a page — the author's
+    /// own mark, not a guess that row one is a header. Absent for a parser predating the export.
+    var headerRows: Int?
 }
 
 private struct HwpCell: Decodable {

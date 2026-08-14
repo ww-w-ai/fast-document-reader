@@ -9,6 +9,10 @@ import AppKit
 struct PageBandContent {
     var headers: [OfficeHeaderFooter]
     var footers: [OfficeHeaderFooter]
+    /// Sections that turned their own running header/footer off — the document's own veto, applied
+    /// before parity or inheritance picks anything.
+    var sectionsHidingHeader: Set<Int> = []
+    var sectionsHidingFooter: Set<Int> = []
     var theme: RenderTheme
     var columnWidth: CGFloat
     var documentDefaultFontSize: CGFloat
@@ -162,7 +166,12 @@ enum PageBandPainter {
     }
 
     static func applicableEntry(_ entries: [OfficeHeaderFooter], pageIndex: Int,
-                                section: Int? = nil) -> OfficeHeaderFooter? {
+                                section: Int? = nil,
+                                hiddenSections: Set<Int> = []) -> OfficeHeaderFooter? {
+        // THE SECTION'S OWN VETO first: a section that hides its running head shows none, whatever
+        // parity or inheritance would otherwise pick. Without it a cover that declares "no header"
+        // still gets the nearest applicable one.
+        if let section, hiddenSections.contains(section) { return nil }
         // THE SECTION FIRST, when both the page and the entry know theirs — a running head belongs
         // to its own section (invariant 77) and a page belongs to one section (invariant 78). An
         // entry that names no section (docx, odt) applies wherever its parity does, as it always has.
@@ -286,7 +295,8 @@ enum PageBandPainter {
             // Footer of THIS page draws in the band that FOLLOWS it — never for the last page, which
             // has no following BETWEEN-PAGE band; its own trailing footer is the dedicated arm below.
             if boundaryIsOpen, page < total - 1, content.footerHeight > 0,
-               let entry = applicableEntry(content.footers, pageIndex: page, section: sectionOfPage(page)),
+               let entry = applicableEntry(content.footers, pageIndex: page, section: sectionOfPage(page),
+                                          hiddenSections: content.sectionsHidingFooter),
                !entry.blocks.isEmpty {
                 // ITS OWN DISTANCE above the sheet's bottom edge (docx `w:pgMar/@w:footer`) — the
                 // same number Word measures it by, so the footer lands identically on every page.
@@ -309,7 +319,8 @@ enum PageBandPainter {
             // Gated on the boundary BEFORE this page — the one whose band this header sits in.
             if bandExists(after: page - 1, in: content),
                page > 0, content.headerHeight > 0,
-               let entry = applicableEntry(content.headers, pageIndex: page, section: sectionOfPage(page)),
+               let entry = applicableEntry(content.headers, pageIndex: page, section: sectionOfPage(page),
+                                          hiddenSections: content.sectionsHidingHeader),
                !entry.blocks.isEmpty {
                 // At the BOTTOM of the gap that PRECEDES this page — directly above its first line.
                 // ITS OWN DISTANCE below the sheet's TOP edge, which is the boundary that precedes
@@ -334,7 +345,8 @@ enum PageBandPainter {
             // must keep producing nothing — `applicableEntry` already encodes that selection; this
             // arm only adds WHERE to paint once it says there is something to paint.
             if page == 0, leading > 0,
-               let entry = applicableEntry(content.headers, pageIndex: 0, section: sectionOfPage(0)),
+               let entry = applicableEntry(content.headers, pageIndex: 0, section: sectionOfPage(0),
+                                          hiddenSections: content.sectionsHidingHeader),
                !entry.blocks.isEmpty {
                 // Its own declared distance below the sheet's top edge — which, for page 0, is where
                 // the leading reservation begins. Reduces to 0 (the original behaviour) whenever the
@@ -346,7 +358,8 @@ enum PageBandPainter {
                      origin: origin)
             }
             if page == total - 1, trailing > 0,
-               let entry = applicableEntry(content.footers, pageIndex: total - 1, section: sectionOfPage(total - 1)),
+               let entry = applicableEntry(content.footers, pageIndex: total - 1, section: sectionOfPage(total - 1),
+                                          hiddenSections: content.sectionsHidingFooter),
                !entry.blocks.isEmpty {
                 // The same, from the other end: its own distance ABOVE the last sheet's bottom edge,
                 // clamped so it never rides up over the document's own last line. Also reduces to 0

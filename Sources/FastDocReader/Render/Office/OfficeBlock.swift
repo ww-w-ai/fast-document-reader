@@ -663,7 +663,8 @@ enum OfficeBlock: Equatable {
     /// `format` means exactly what it means on `.paragraph`/`.heading` above — this sprint's
     /// vocabulary-only addition, trailing and defaulted so no existing caller changes meaning.
     case listItem(level: Int, ordered: Bool, spans: [Span], marker: String? = nil, rtl: Bool = false,
-                  alignment: NSTextAlignment? = nil, tabStops: [TabStop] = [], format: ParagraphFormat = ParagraphFormat())
+                  alignment: NSTextAlignment? = nil, tabStops: [TabStop] = [], format: ParagraphFormat = ParagraphFormat(),
+                  numbering: ListNumbering? = nil)
     /// Rows of ANCHOR cells only (`rows[row]` lists the cells that START in that row, left to
     /// right — a row's `count` is therefore the number of anchors in it, NOT the column count once
     /// any span is wider than 1; a parser reading `w:gridSpan`/`table:number-columns-spanned` must
@@ -865,6 +866,82 @@ struct ParagraphAnchor: Equatable {
     }
 }
 
+/// How a NUMBERED list item counts and what glyphs it counts in — the document's own scheme rather
+/// than the reader's.
+///
+/// `marker` on a list item is the document's FORMAT (`^1.`, `제^1장`), not finished text: the number
+/// itself is the reader's to compute, because only the reader knows how many items came before under
+/// its own layout. This says which glyphs to write it in and where to start.
+struct ListNumbering: Equatable {
+    /// HWP's own table-43 systems, named. `decimal` is the default and the fallback for anything a
+    /// document declares that this reader cannot write.
+    enum Glyphs: String, Equatable {
+        case decimal, circledDecimal, romanUpper, romanLower, latinUpper, latinLower
+        case hangulSyllable      // 가, 나, 다
+        case hangulNumber        // 일, 이, 삼
+        case hanjaNumber         // 一, 二, 三
+    }
+    var glyphs: Glyphs = .decimal
+    /// The level's first number when the author set one other than 1.
+    var startNumber: Int? = nil
+
+    /// `n` written in this system. Falls back to decimal past the end of a finite alphabet, which is
+    /// what Word and Hancom both do rather than inventing a glyph.
+    func text(_ n: Int) -> String {
+        guard n > 0 else { return "\(n)" }
+        switch glyphs {
+        case .decimal: return "\(n)"
+        case .circledDecimal: return n <= 20 ? String(UnicodeScalar(0x2460 + n - 1)!) : "\(n)"
+        case .romanUpper: return ListNumbering.roman(n)
+        case .romanLower: return ListNumbering.roman(n).lowercased()
+        case .latinUpper: return ListNumbering.alphabet(n, base: "A")
+        case .latinLower: return ListNumbering.alphabet(n, base: "a")
+        case .hangulSyllable: return ListNumbering.pick(n, from: ["가","나","다","라","마","바","사","아","자","차","카","타","파","하"])
+        case .hangulNumber: return ListNumbering.pick(n, from: ["일","이","삼","사","오","육","칠","팔","구","십"])
+        case .hanjaNumber: return ListNumbering.pick(n, from: ["一","二","三","四","五","六","七","八","九","十"])
+        }
+    }
+
+    private static func pick(_ n: Int, from list: [String]) -> String {
+        n <= list.count ? list[n - 1] : "\(n)"
+    }
+
+    private static func alphabet(_ n: Int, base: Character) -> String {
+        guard n <= 26, let scalar = base.unicodeScalars.first,
+              let c = UnicodeScalar(scalar.value + UInt32(n - 1)) else { return "\(n)" }
+        return String(Character(c))
+    }
+
+    private static func roman(_ n: Int) -> String {
+        guard n < 4000 else { return "\(n)" }
+        let table: [(Int, String)] = [(1000,"M"),(900,"CM"),(500,"D"),(400,"CD"),(100,"C"),(90,"XC"),
+                                      (50,"L"),(40,"XL"),(10,"X"),(9,"IX"),(5,"V"),(4,"IV"),(1,"I")]
+        var left = n, out = ""
+        for (value, glyph) in table {
+            while left >= value { out += glyph; left -= value }
+        }
+        return out
+    }
+}
+
+/// A section's own declarations about its pages — the half of a section that is not geometry.
+struct OfficeSectionDeclaration: Equatable {
+    /// The section turned its own running header / footer / master page off. A veto, not a
+    /// preference: a page in this section shows none, whatever the document declares elsewhere.
+    var hidesHeader = false
+    var hidesFooter = false
+    var hidesMasterPage = false
+    /// The page number this section restarts at, when it declares one (a chapter that begins at 1
+    /// again). `nil` = continue from the previous section.
+    var pageNumberStart: Int? = nil
+    /// The 원고지-style fixed line pitch in points, when the section is written on a grid.
+    var lineGridPitch: CGFloat? = nil
+    /// The section is set VERTICALLY. Recorded, not honoured: this reader lays text out
+    /// horizontally, and saying so in the vocabulary is what lets a caller tell "we ignored it"
+    /// apart from "the document never said".
+    var isVertical = false
+}
+
 /// One 바탕쪽 — the template a document repeats behind every page of a section.
 ///
 /// `appliesTo` reuses the header/footer vocabulary because HWP states it with the same three words
@@ -997,6 +1074,13 @@ struct OfficeReadResult: Equatable {
     /// for every HWP that declares none. See `OfficeMasterPage`.
     var masterPages: [OfficeMasterPage] = []
 
+    /// What each SECTION declared about its own page furniture — hidden running head, hidden master
+    /// page, a page number that restarts here. Indexed the same way `sectionStartBlocks` is.
+    ///
+    /// Which section's header applies to a page was already answerable; whether that section turned
+    /// its header OFF was not, so a cover that says "no running head" still got one.
+    var sections: [OfficeSectionDeclaration] = []
+
     /// Objects the document pins to the paper, each naming the block it is anchored at — see
     /// `OfficeAnchoredObject`. Empty for docx and odt.
     var anchoredObjects: [OfficeAnchoredObject] = []
@@ -1006,6 +1090,15 @@ struct OfficeReadResult: Equatable {
     /// thing that says which stretch of it belongs to which section, and therefore which master page
     /// covers a given page. Empty for a format or a parser that does not say.
     var sectionStartBlocks: [Int] = []
+
+    /// Blocks that must not be separated from the block AFTER them (HWP's 다음 문단과 함께 —
+    /// `keepWithNext`), plus the ones a STYLE breaks a page before.
+    ///
+    /// A heading is the whole point: styled "keep with next", it must not be typeset as the last
+    /// line of a page with its body starting the next one. A reader that re-paginates on its own —
+    /// this one does, at its own fonts and line heights — has no way to know that without the flag,
+    /// and the defect looks exactly like a rendering bug rather than a missing input.
+    var keepWithNextBlocks: [Int] = []
 
     /// Blocks the DOCUMENT says must start a new page — a paragraph carrying HWP's own 쪽 나누기 or
     /// 구역 나누기 (`ColumnBreakType::Page`/`Section`).

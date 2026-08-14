@@ -42,6 +42,7 @@ Applied on top of upstream **`8d3bfa4b92174b16bac587fe1409975cf34ba566`** (just 
 | 0016 | A drawing's text boxes collected through GROUP nesting, and kept when the same object also carries a picture |
 | 0017 | `vertAlign`/`horzAlign` on an anchored drawing, and the whole anchor (as-char, reference, aligns, offsets) on a picture |
 | 0018 | `breakBefore` — the break that STARTS a paragraph (쪽/구역/단 나누기), without which a host loses every page break the author placed (invariant 82) |
+| 0019 | The ten things the model knew and the export never said: keep-with-next / keep-lines / widow-orphan / style page-break-before, tab stops, a list's format + start number + glyph system + bullet char, a table's repeat-header rows, and each section's hidden furniture / page-number restart / grid / vertical flag (invariant 83) |
 
 The set is regenerated wholesale — `git format-patch <base>..HEAD -o vendor-patches/rhwp/` from the
 fork — so it never drifts behind the submodule again (it had: 0005–0007 existed only as commits).

@@ -1,0 +1,275 @@
+From e64b81369850228a985418aa2ad8a53b39641fd4 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Sat, 15 Aug 2026 00:46:17 +0900
+Subject: [PATCH 19/19] Export what the model already knew and the host had to
+ guess
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+An audit of this export against the parser's own model found ten kinds of
+information the model carries, the renderer honours, and the JSON never
+mentioned. A host consuming only this JSON therefore had to invent them, and the
+inventions were visible: a heading stranded at the foot of a page, a table's
+column labels missing from its second page, a list numbered 1,2,3 when the
+author wrote 가,나,다, a signature block's tab columns collapsed to a default
+width, a cover with a running header it explicitly turned off.
+
+Now carried: a paragraph's keep-with-next / keep-lines / widow-orphan and the
+STYLE's page-break-before; the paragraph's own tab stops; a numbered list's
+format string, start number and glyph system, and a bullet's own character; a
+table's leading repeat-header row count; and per section, the header/footer/
+master-page it hides, the page number it restarts at, its line and character
+grid, and whether it is set vertically.
+
+Everything here is data the model already held — nothing new is parsed.
+---
+ src/document_core/queries/document_json.rs | 162 ++++++++++++++++++++-
+ 1 file changed, 160 insertions(+), 2 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 03f194f3..b647abe9 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -104,6 +104,11 @@ struct DocumentJson {
+     /// therefore cannot pick the master page or running head that applies there.
+     #[serde(rename = "sectionStarts")]
+     section_starts: Vec<usize>,
++    /// 구역마다 그 구역이 스스로 정한 것 — 무엇을 감췄는지, 쪽 번호를 다시 시작하는지, 줄/글자
++    /// 격자를 쓰는지. 어느 구역의 머리말이 어느 쪽에 붙는지는 `sectionStarts` 로 알 수 있지만,
++    /// 그 구역이 "머리말 감추기"를 켰는지는 여기에만 있다.
++    #[serde(rename = "sections", skip_serializing_if = "Vec::is_empty")]
++    sections: Vec<SectionDto>,
+     /// 문서 전 구역에서 수집한 머리말('head' 컨트롤), 문서 순서대로.
+     /// 각 항목은 자신의 `applyTo`(양쪽/짝수/홀수)와, 본문과 동일한 `build_blocks`로 만든
+     /// `blocks`를 담는다 — 호스트가 새 블록 어휘를 배울 필요가 없다.
+@@ -417,6 +422,49 @@ enum Block {
+     Unsupported(UnsupportedBlock),
+ }
+ 
++/// 구역마다 자기가 선언한 것 — 순서는 `sectionStarts` 와 같다.
++fn build_sections(document: &Document) -> Vec<SectionDto> {
++    document
++        .sections
++        .iter()
++        .map(|section| {
++            let def = &section.section_def;
++            SectionDto {
++                hide_header: def.hide_header,
++                hide_footer: def.hide_footer,
++                hide_master_page: def.hide_master_page,
++                page_number_start: (def.page_num > 0).then(|| def.page_num as i32),
++                line_grid: (def.line_grid > 0).then(|| def.line_grid as i32),
++                char_grid: (def.char_grid > 0).then(|| def.char_grid as i32),
++                vertical_text: def.text_direction == 1,
++            }
++        })
++        .collect()
++}
++
++/// 한 구역이 스스로 선언한 것들.
++#[derive(Serialize)]
++struct SectionDto {
++    /// 이 구역이 머리말/꼬리말/바탕쪽을 감췄는가. 감춘 구역에 그리면 표지에 장 제목이 찍힌다.
++    #[serde(rename = "hideHeader", skip_serializing_if = "std::ops::Not::not")]
++    hide_header: bool,
++    #[serde(rename = "hideFooter", skip_serializing_if = "std::ops::Not::not")]
++    hide_footer: bool,
++    #[serde(rename = "hideMasterPage", skip_serializing_if = "std::ops::Not::not")]
++    hide_master_page: bool,
++    /// 이 구역에서 쪽 번호를 다시 시작한다면 그 번호(0 = 앞 구역에서 이어서).
++    #[serde(rename = "pageNumberStart", skip_serializing_if = "Option::is_none")]
++    page_number_start: Option<i32>,
++    /// 줄/글자 격자(원고지) 간격, HWPUNIT. 0/없음 = 격자 없음.
++    #[serde(rename = "lineGridHwpUnit", skip_serializing_if = "Option::is_none")]
++    line_grid: Option<i32>,
++    #[serde(rename = "charGridHwpUnit", skip_serializing_if = "Option::is_none")]
++    char_grid: Option<i32>,
++    /// 세로쓰기 구역인가(0 = 가로). 호스트가 세로 조판을 못 해도, 못 한다는 사실을 알 수 있다.
++    #[serde(rename = "verticalText", skip_serializing_if = "std::ops::Not::not")]
++    vertical_text: bool,
++}
++
+ #[derive(Serialize)]
+ struct ParaBlock {
+     /// null = 본문 문단, 그 외 = 제목 수준(1-based).
+@@ -448,6 +496,30 @@ struct ParaBlock {
+     /// 오는 글이 표지 위로 흘러 들어가는 식). `null` = 나누기 없음.
+     #[serde(rename = "breakBefore", skip_serializing_if = "Option::is_none")]
+     break_before: Option<&'static str>,
++    /// 이 문단을 다음 문단과 같은 쪽에 두라(`keepWithNext`), 문단을 쪼개지 말라(`keepLines`),
++    /// 첫/끝 줄을 혼자 남기지 말라(`widowOrphan`), 스타일이 쪽 앞에서 끊으라고 했다
++    /// (`pageBreakBefore` — 저자가 삽입한 `breakBefore` 와 다른 신호다).
++    /// 스스로 다시 쪽을 나누는 호스트는 이 넷이 없으면 제목만 앞 쪽에 남긴다.
++    #[serde(rename = "keepWithNext", skip_serializing_if = "std::ops::Not::not")]
++    keep_with_next: bool,
++    #[serde(rename = "keepLines", skip_serializing_if = "std::ops::Not::not")]
++    keep_lines: bool,
++    #[serde(rename = "widowOrphan", skip_serializing_if = "std::ops::Not::not")]
++    widow_orphan: bool,
++    #[serde(rename = "pageBreakBefore", skip_serializing_if = "std::ops::Not::not")]
++    page_break_before: bool,
++    /// 문단이 쓰는 탭 정지 위치(위치는 HWPUNIT, 종류 = left/right/center/decimal).
++    /// 비어 있으면 문서가 정한 것이 없다는 뜻이고, 호스트의 기본 탭 폭이 곧 답이다.
++    #[serde(rename = "tabStops", skip_serializing_if = "Vec::is_empty")]
++    tab_stops: Vec<TabStopDto>,
++}
++
++/// 탭 정지 하나 — 위치(HWPUNIT)와 종류.
++#[derive(Serialize)]
++struct TabStopDto {
++    #[serde(rename = "posHwpUnit")]
++    pos: i32,
++    kind: &'static str,
+ }
+ 
+ #[derive(Serialize)]
+@@ -462,6 +534,14 @@ struct ListInfo {
+     level: i32,
+     ordered: bool,
+     marker: Option<String>,
++    /// 이 수준의 시작 번호가 1이 아닐 때만. 저자가 "3부터" 라고 정한 목록이 1부터 다시 세지 않게.
++    #[serde(rename = "startNumber", skip_serializing_if = "Option::is_none")]
++    start_number: Option<i32>,
++    /// 번호 글자 체계(HWP 표 43) — `decimal`/`circledDecimal`/`romanUpper`/`romanLower`/
++    /// `latinUpper`/`latinLower`/`hangulSyllable`(가·나·다)/`hangulNumber`(일·이·삼)/
++    /// `hanjaNumber`(一·二·三). 형식 문자열의 `^N` 을 어떤 글자로 채울지 정한다.
++    #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
++    number_format: Option<&'static str>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -511,6 +591,15 @@ struct TableBlock {
+     #[serde(rename = "borderFillId")]
+     border_fill_id: i32,
+     rows: Vec<Vec<CellDto>>,
++    /// 표 상단의 연속 제목행 수 — 저자가 "쪽이 넘어가면 제목 줄을 다시 찍어라"라고 표시한 그
++    /// 행들이다(`Table::leading_header_rows`, 표 중간에 흩어진 header 셀은 제외). 0이면 없음.
++    /// 이 신호가 없으면 여러 쪽에 걸친 표의 둘째 쪽부터 열 이름 없는 데이터만 남는다.
++    #[serde(rename = "headerRows", skip_serializing_if = "is_zero_i32")]
++    header_rows: i32,
++}
++
++fn is_zero_i32(v: &i32) -> bool {
++    *v == 0
+ }
+ 
+ #[derive(Serialize)]
+@@ -938,7 +1027,22 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+             Some(ListInfo {
+                 level: level as i32,
+                 ordered: true,
+-                marker: None,
++                // 저자가 고른 번호 형식(예: `^1.`, 가./나./다.)과 시작 번호. 이걸 안 보내면
++                // 호스트는 자기 글머리 규칙을 지어내고, 문서가 정한 번호 체계는 사라진다.
++                marker: ps
++                    .and_then(|p| doc_info.numberings.get(p.numbering_id.wrapping_sub(1) as usize))
++                    .and_then(|n| n.level_formats.get(level as usize))
++                    .map(|f| f.trim().to_string())
++                    .filter(|f| !f.is_empty()),
++                start_number: ps
++                    .and_then(|p| doc_info.numberings.get(p.numbering_id.wrapping_sub(1) as usize))
++                    .and_then(|n| n.level_start_numbers.get(level as usize).copied())
++                    .filter(|n| *n > 1)
++                    .map(|n| n as i32),
++                number_format: ps
++                    .and_then(|p| doc_info.numberings.get(p.numbering_id.wrapping_sub(1) as usize))
++                    .and_then(|n| n.heads.get(level as usize))
++                    .map(|h| number_format_str(h.number_format)),
+             }),
+         ),
+         Some((HeadType::Bullet, level)) => (
+@@ -946,7 +1050,13 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+             Some(ListInfo {
+                 level: level as i32,
+                 ordered: false,
+-                marker: None,
++                // 글머리표 문자 그대로 — ▶ 를 쓴 문서가 ● 로 읽히지 않게.
++                marker: ps
++                    .and_then(|p| doc_info.bullets.get(p.numbering_id.wrapping_sub(1) as usize))
++                    .map(|b| b.bullet_char.to_string())
++                    .filter(|c| !c.trim().is_empty() && c != "\u{0}"),
++                start_number: None,
++                number_format: None,
+             }),
+         ),
+         _ => (None, None),
+@@ -994,6 +1104,47 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+         line_height,
+         list,
+         break_before: break_before_str(para.column_type),
++        keep_with_next: ps.map(|p| (p.attr1 >> 17) & 1 != 0 || (p.attr2 >> 6) & 1 != 0).unwrap_or(false),
++        keep_lines: ps.map(|p| (p.attr1 >> 18) & 1 != 0 || (p.attr2 >> 7) & 1 != 0).unwrap_or(false),
++        widow_orphan: ps.map(|p| (p.attr1 >> 16) & 1 != 0 || (p.attr2 >> 5) & 1 != 0).unwrap_or(false),
++        page_break_before: ps.map(|p| (p.attr1 >> 19) & 1 != 0 || (p.attr2 >> 8) & 1 != 0).unwrap_or(false),
++        tab_stops: ps
++            .and_then(|p| doc_info.tab_defs.get(p.tab_def_id as usize))
++            .map(|def| {
++                def.tabs
++                    .iter()
++                    .map(|t| TabStopDto {
++                        pos: t.position as i32,
++                        kind: tab_kind_str(t.tab_type),
++                    })
++                    .collect()
++            })
++            .unwrap_or_default(),
++    }
++}
++
++/// HWP 표 43 번호 형식 코드를 호스트 어휘로 — `utils::numbering_format_to_number_format` 과 같은 표.
++fn number_format_str(code: u8) -> &'static str {
++    match code {
++        1 => "circledDecimal",
++        2 => "romanUpper",
++        3 => "romanLower",
++        4 => "latinUpper",
++        5 => "latinLower",
++        8 => "hangulSyllable",
++        12 => "hangulNumber",
++        13 => "hanjaNumber",
++        _ => "decimal",
++    }
++}
++
++/// 탭 종류 코드를 호스트 어휘로. 알 수 없는 값은 왼쪽 — HWP 의 기본이다.
++fn tab_kind_str(t: u8) -> &'static str {
++    match t {
++        1 => "right",
++        2 => "center",
++        3 => "decimal",
++        _ => "left",
+     }
+ }
+ 
+@@ -1040,6 +1191,7 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {
+         col_widths,
+         border_fill_id: table.border_fill_id as i32,
+         rows,
++        header_rows: table.leading_header_rows().len() as i32,
+     })
+ }
+ 
+@@ -1711,6 +1863,11 @@ fn minimal_note_para(span: Span) -> ParaBlock {
+         },
+         list: None,
+         break_before: None,
++        keep_with_next: false,
++        keep_lines: false,
++        widow_orphan: false,
++        page_break_before: false,
++        tab_stops: Vec::new(),
+     }
+ }
+ 
+@@ -1754,6 +1911,7 @@ impl DocumentCore {
+             body_section: body_section_index(&self.document),
+             master_pages: build_master_pages(&self.document),
+             section_starts,
++            sections: build_sections(&self.document),
+             headers: build_header_footer_entries(&self.document, &header_ctrls),
+             footers: build_header_footer_entries(&self.document, &footer_ctrls),
+             blocks,
+-- 
+2.50.1 (Apple Git-155)
+

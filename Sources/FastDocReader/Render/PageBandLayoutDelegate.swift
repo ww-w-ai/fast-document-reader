@@ -85,6 +85,15 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// pushing every page after them off by the difference.
     var documentPageBreaks: Set<Int> = []
 
+    /// Character RANGES the document keeps with what follows them (`MDAttr.keepWithNext`), as
+    /// `(start, end)` pairs — a heading and the paragraph under it must not be split by a page.
+    ///
+    /// Held as ranges rather than as single locations because the rule is about the block's LAST
+    /// line: if that line is the last thing on a page, the block moves to the next page WHOLE, so
+    /// the reader needs to know where the block began to move it. Empty for every document that
+    /// declares none, which is most of them.
+    var keepWithNextRanges: [(start: Int, end: Int)] = []
+
     /// Is this character inside a piece that must be broken where it stands? Linear over the record,
     /// which holds one entry per over-tall piece — single digits on real documents, and empty for the
     /// overwhelming majority, which is why the check begins by asking that.
@@ -231,6 +240,35 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         // is exactly page 0's own start. No separate branch is needed for it. `leadingBand == 0`
         // reduces this identically to the original, untranslated formula — a document with no
         // leading reservation is providably unaffected (`PageBandReservationTests` proves it).
+        // KEEP WITH NEXT — the block's last line is about to end a page, and what follows belongs
+        // with it. Moving the whole block down is the only honest answer: shifting just the last
+        // line would split the block itself, and leaving it puts a heading alone at the foot of a
+        // page. Checked here, where the line that WOULD end the page is still in hand.
+        if !keepWithNextRanges.isEmpty, !insideTable {
+            let line = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            if let block = keepWithNextRanges.first(where: { line.location >= $0.start && line.location < $0.end }),
+               block.start == line.location {
+                // Only the block's FIRST line is moved — every later line follows it, the same
+                // property the between-page rule relies on. Whether it needs moving is decided by
+                // where the block's own end would land, which is one page-crossing check on the
+                // line that starts it plus the block's height, and layout has not measured that
+                // yet. So the cheap, correct approximation: if this first line would sit in the
+                // LAST line-height of its page, the block starts the next page instead.
+                let page = ((rect.minY - leadingBand) / pitch).rounded(.down)
+                let textBottom = page * pitch + pageContentHeight
+                if (rect.maxY - leadingBand) > textBottom - rect.height {
+                    let target = (page + 1) * pitch + leadingBand
+                    let shift = target - rect.minY
+                    if shift > 0.5 {
+                        lineFragmentRect.pointee.origin.y += shift
+                        lineFragmentUsedRect.pointee.origin.y += shift
+                        shiftCount += 1
+                        recordBand(page: page, top: rect.minY, target: target)
+                        return true
+                    }
+                }
+            }
+        }
         // THE DOCUMENT'S OWN BREAK, before the "does it fit" rule: this line starts a page because
         // the author said so, not because the previous one ran out of room. Table lines are excluded
         // above (they own their geometry through the table), which is also why this sits after that

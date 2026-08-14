@@ -432,7 +432,7 @@ enum OdtReader: OfficeDocumentReader {
         case .heading(let level, let spans, let rtl, let alignment, let tabStops, let format):
             return .heading(level: level, spans: [marker, noteMarkerSeparator] + spans, rtl: rtl,
                             alignment: alignment, tabStops: tabStops, format: format)
-        case .listItem(let level, let ordered, let spans, let itemMarker, let rtl, let alignment, let tabStops, let format):
+        case .listItem(let level, let ordered, let spans, let itemMarker, let rtl, let alignment, let tabStops, let format, _):
             return .listItem(level: level, ordered: ordered, spans: [marker, noteMarkerSeparator] + spans,
                               marker: itemMarker, rtl: rtl, alignment: alignment, tabStops: tabStops, format: format)
         case .table, .image, .unsupportedGraphic, .formula: return nil
@@ -1630,7 +1630,7 @@ enum OdtReader: OfficeDocumentReader {
     /// always passes through. Mirrors `DocxReader.isEmptyTextBlock` exactly.
     private static func isEmptyTextBlock(_ block: OfficeBlock) -> Bool {
         switch block {
-        case .paragraph(let spans, _, _, _, _), .heading(_, let spans, _, _, _, _), .listItem(_, _, let spans, _, _, _, _, _):
+        case .paragraph(let spans, _, _, _, _), .heading(_, let spans, _, _, _, _), .listItem(_, _, let spans, _, _, _, _, _, _):
             return spans.isEmpty
         case .table, .image, .unsupportedGraphic, .formula:
             return false

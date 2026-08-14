@@ -58,6 +58,13 @@ final class MarkdownDocument: NSDocument {
     /// format but HWP. See `OfficeReadResult.pageBreakBlocks`.
     private(set) var officePageBreakBlocks: [Int] = []
 
+    /// The blocks the document keeps with the block after them — carried to the builder, which marks
+    /// them with `MDAttr.keepWithNext`. See `OfficeReadResult.keepWithNextBlocks`.
+    private(set) var officeKeepWithNextBlocks: [Int] = []
+
+    /// What each section declared about its own page furniture — see `OfficeSectionDeclaration`.
+    private(set) var officeSections: [OfficeSectionDeclaration] = []
+
     /// The 바탕쪽 templates the source declares for the section this column is typeset on — see
     /// `OfficeMasterPage`. Threaded exactly like `officeHeaders` above. Empty for docx/odt (no such
     /// mechanism), for markdown/plain text, and for an HWP that declares none. UNLIKE a running
@@ -141,7 +148,7 @@ final class MarkdownDocument: NSDocument {
             switch block {
             case .heading(_, let spans, _, _, _, _), .paragraph(let spans, _, _, _, _):
                 return spans.reduce(0) { $0 + $1.text.count }
-            case .listItem(_, _, let spans, _, _, _, _, _):
+            case .listItem(_, _, let spans, _, _, _, _, _, _):
                 return spans.reduce(0) { $0 + $1.text.count }
             case .table(let rows, _, _, _):
                 return rows.reduce(0) { $0 + $1.reduce(0) { $0 + $1.blocks.reduce(0) { $0 + length($1) } } }
@@ -342,6 +349,8 @@ final class MarkdownDocument: NSDocument {
                 masterPages: result.masterPages,
                 sectionStartBlocks: result.sectionStartBlocks,
                 pageBreakBlocks: result.pageBreakBlocks,
+                keepWithNextBlocks: result.keepWithNextBlocks,
+                sections: result.sections,
                 anchoredObjects: result.anchoredObjects,
                 lineGridPitch: result.lineGridPitch)
             return
@@ -362,6 +371,8 @@ final class MarkdownDocument: NSDocument {
                 masterPages: result.masterPages,
                 sectionStartBlocks: result.sectionStartBlocks,
                 pageBreakBlocks: result.pageBreakBlocks,
+                keepWithNextBlocks: result.keepWithNextBlocks,
+                sections: result.sections,
                 anchoredObjects: result.anchoredObjects,
                 lineGridPitch: result.lineGridPitch)
     }
@@ -383,6 +394,8 @@ final class MarkdownDocument: NSDocument {
         masterPages: [OfficeMasterPage] = [],
         sectionStartBlocks: [Int] = [],
         pageBreakBlocks: [Int] = [],
+        keepWithNextBlocks: [Int] = [],
+        sections: [OfficeSectionDeclaration] = [],
         anchoredObjects: [OfficeAnchoredObject] = [],
         lineGridPitch: CGFloat? = nil
     ) {
@@ -404,6 +417,8 @@ final class MarkdownDocument: NSDocument {
         self.officeMasterPages = masterPages
         self.officeSectionStartBlocks = sectionStartBlocks
         self.officePageBreakBlocks = pageBreakBlocks
+        self.officeKeepWithNextBlocks = keepWithNextBlocks
+        self.officeSections = sections
         self.officeAnchoredObjects = anchoredObjects
         self.officeLineGridPitch = lineGridPitch
         self.text = ""
@@ -518,6 +533,8 @@ final class MarkdownDocument: NSDocument {
                                  masterPages: result.masterPages,
                                  sectionStartBlocks: result.sectionStartBlocks,
                                  pageBreakBlocks: result.pageBreakBlocks,
+                                 keepWithNextBlocks: result.keepWithNextBlocks,
+                                 sections: result.sections,
                                  anchoredObjects: result.anchoredObjects,
                                  lineGridPitch: result.lineGridPitch)
             case .text(let reread):
@@ -1383,6 +1400,7 @@ final class MarkdownDocument: NSDocument {
                                            deferringTables: deferredTables,
                                            sectionStartBlocks: officeSectionStartBlocks,
                                            pageBreakBlocks: officePageBreakBlocks,
+                                           keepWithNextBlocks: officeKeepWithNextBlocks,
                                            anchoredObjects: officeAnchoredBlockMap)
             // Running-header/footer page-boundary reservation AND painting (header-footer-design.md
             // §4/§5, build steps 4/5): wired here, before `wc.display(attr)` below replaces the

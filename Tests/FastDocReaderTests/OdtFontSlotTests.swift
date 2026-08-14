@@ -165,7 +165,7 @@ final class OdtFontSlotTests: XCTestCase {
             switch block {
             case .paragraph(let spans, _, _, _, _): out += spans
             case .heading(_, let spans, _, _, _, _): out += spans
-            case .listItem(_, _, let spans, _, _, _, _, _): out += spans
+            case .listItem(_, _, let spans, _, _, _, _, _, _): out += spans
             case .table(let rows, _, _, _):
                 for row in rows { for cell in row { out += everySpan(in: cell.blocks) } }
             default: break

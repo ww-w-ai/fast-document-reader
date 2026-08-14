@@ -152,7 +152,7 @@ final class FontSubstitutionCacheTests: XCTestCase {
                 switch b {
                 case let .heading(_, spans, _, _, _, _), let .paragraph(spans, _, _, _, _):
                     return acc + spans.count
-                case let .listItem(_, _, spans, _, _, _, _, _):
+                case let .listItem(_, _, spans, _, _, _, _, _, _):
                     return acc + spans.count
                 case let .table(rows, _, _, _):
                     return acc + rows.reduce(0) { a, row in a + row.reduce(0) { a2, c in a2 + countSpans(c.blocks) } }

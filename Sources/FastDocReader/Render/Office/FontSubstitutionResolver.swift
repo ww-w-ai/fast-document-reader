@@ -224,7 +224,7 @@ enum FontSubstitutionResolver {
             switch block {
             case let .heading(_, spans, _, _, _, _):
                 tally(spans, blockWeight: .semibold, into: &histograms)
-            case let .paragraph(spans, _, _, _, _), let .listItem(_, _, spans, _, _, _, _, _):
+            case let .paragraph(spans, _, _, _, _), let .listItem(_, _, spans, _, _, _, _, _, _):
                 tally(spans, blockWeight: blockWeight, into: &histograms)
             case let .table(rows, _, _, _):
                 for row in rows {
@@ -401,10 +401,11 @@ extension OfficeBlock {
         case let .paragraph(spans, rtl, alignment, tabStops, format):
             return .paragraph(spans: FontSubstitutionResolver.resolve(spans, plan: plan), rtl: rtl,
                                alignment: alignment, tabStops: tabStops, format: format)
-        case let .listItem(level, ordered, spans, marker, rtl, alignment, tabStops, format):
+        case let .listItem(level, ordered, spans, marker, rtl, alignment, tabStops, format, numbering):
             return .listItem(level: level, ordered: ordered,
                               spans: FontSubstitutionResolver.resolve(spans, plan: plan),
-                              marker: marker, rtl: rtl, alignment: alignment, tabStops: tabStops, format: format)
+                              marker: marker, rtl: rtl, alignment: alignment, tabStops: tabStops,
+                              format: format, numbering: numbering)
         case let .table(rows, headerRows, columnWidths, format):
             let resolvedRows = rows.map { row in
                 row.map { cell -> Cell in

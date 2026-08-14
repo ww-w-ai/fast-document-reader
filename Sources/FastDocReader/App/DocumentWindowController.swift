@@ -360,6 +360,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // layout (unlike every other record the delegate keeps, which is measured from a finished
         // one), because the instruction came from the file rather than from how the lines fell.
         pageBandDelegate.documentPageBreaks = documentPageBreakLocations()
+        pageBandDelegate.keepWithNextRanges = keepWithNextRanges()
         // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
         // edges the between-page reservation cannot reach on its own (header-footer-design.md's own
         // recorded gap). LEADING is gated on page 0's OWN applicable header actually carrying
@@ -413,7 +414,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         pageBandDelegate.resetMeasuredPieces()
         pagedTableSettles = 0
         pageBandContent = band > 0
-            ? PageBandContent(headers: headers, footers: footers, theme: theme, columnWidth: columnWidth,
+            ? PageBandContent(headers: headers, footers: footers,
+                              sectionsHidingHeader: Set((mdDocument?.officeSections ?? []).enumerated()
+                                .filter { $0.element.hidesHeader }.map(\.offset)),
+                              sectionsHidingFooter: Set((mdDocument?.officeSections ?? []).enumerated()
+                                .filter { $0.element.hidesFooter }.map(\.offset)),
+                              theme: theme, columnWidth: columnWidth,
                               documentDefaultFontSize: documentDefaultFontSize, pageContentWidth: pageContentWidth,
                               headerHeight: headerHeight, footerHeight: footerHeight,
                               leadingBand: leading, trailingBand: trailing,
@@ -436,7 +442,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
               !(doc.officeMasterPages.isEmpty && doc.officeAnchoredObjects.isEmpty),
               let band = pageBandContent else { return nil }
         let pages = doc.officeMasterPages
-        return MasterPageContent(pages: pages, theme: band.theme,
+        let hidden = Set(doc.officeSections.enumerated()
+            .filter { $0.element.hidesMasterPage }
+            .map { $0.offset })
+        return MasterPageContent(pages: pages, sectionsHidingMasterPage: hidden, theme: band.theme,
                                  documentDefaultFontSize: band.documentDefaultFontSize,
                                  pageContentWidth: band.pageContentWidth)
     }
@@ -460,6 +469,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             }
         }
         cachedSectionStarts = out
+        return out
+    }
+
+    /// Every block the document keeps with what follows it, as character ranges.
+    private func keepWithNextRanges() -> [(start: Int, end: Int)] {
+        guard let storage = textView.textStorage, storage.length > 0 else { return [] }
+        var out: [(start: Int, end: Int)] = []
+        storage.enumerateAttribute(MDAttr.keepWithNext, in: NSRange(location: 0, length: storage.length)) {
+            value, range, _ in
+            if value != nil { out.append((range.location, range.location + range.length)) }
+        }
         return out
     }
 

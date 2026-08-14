@@ -132,6 +132,7 @@ enum OfficeTextBuilder {
                       deferringTables: Set<Int> = [],
                       sectionStartBlocks: [Int] = [],
                       pageBreakBlocks: [Int] = [],
+                      keepWithNextBlocks: [Int] = [],
                       anchoredObjects: [Int: [Int]] = [:]) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var blockSeq = 0
@@ -162,6 +163,7 @@ enum OfficeTextBuilder {
         var sectionOfBlock: [Int: Int] = [:]
         for (section, first) in sectionStartBlocks.enumerated() { sectionOfBlock[first] = section }
         let breaksPage = Set(pageBreakBlocks)
+        let keepsWithNext = Set(keepWithNextBlocks)
 
         func tagBlock(from start: Int, index: Int) {
             let r = NSRange(location: start, length: result.length - start)
@@ -189,6 +191,9 @@ enum OfficeTextBuilder {
             // layout can never see it.
             if breaksPage.contains(index) {
                 result.addAttribute(MDAttr.startsPage, value: true, range: r)
+            }
+            if keepsWithNext.contains(index) {
+                result.addAttribute(MDAttr.keepWithNext, value: true, range: r)
             }
         }
 
@@ -247,12 +252,12 @@ enum OfficeTextBuilder {
                 }
                 markTabLeaders(tabStops, in: paragraphRange, on: result)
 
-            case let .listItem(level, ordered, spans, marker, rtl, alignment, tabStops, _):
+            case let .listItem(level, ordered, spans, marker, rtl, alignment, tabStops, _, numbering):
                 appendListItem(level: level, ordered: ordered, spans: spans, marker: marker, rtl: rtl,
                                alignment: alignment, tabStops: tabStops, into: result,
                                theme: theme, orderedCounters: &orderedCounters, fontSizeScale: fontSizeScale,
                                paged: paged, lineGridPitch: lineGridPitch, format: format,
-                               commentNumbers: commentNumbers)
+                               commentNumbers: commentNumbers, numbering: numbering)
 
             case .table where deferringTables.contains(index):
                 // Holds this table's PLACE (and, via `tagBlock` below, its block id) so the splice
@@ -353,7 +358,7 @@ enum OfficeTextBuilder {
         switch block {
         case let .heading(_, _, _, _, _, format): return format
         case let .paragraph(_, _, _, _, format): return format
-        case let .listItem(_, _, _, _, _, _, _, format): return format
+        case let .listItem(_, _, _, _, _, _, _, format, _): return format
         case .table, .image, .unsupportedGraphic, .formula: return nil
         }
     }
@@ -1038,6 +1043,33 @@ enum OfficeTextBuilder {
         }
     }
 
+    /// The document's own number format with its `^N` placeholders filled in.
+    ///
+    /// `^1`…`^7` are HWP's level counters — a level-3 item under format `^1.^2.^3` reads `2.4.1`, so
+    /// an OUTER level's placeholder is answered from the counter that level is currently on rather
+    /// than from this item's own number. A level with no counter yet reads as 1, which is what it
+    /// would have been had the document numbered it.
+    static func fillListFormat(_ format: String, level: Int, number: Int,
+                               counters: [Int: Int], numbering: ListNumbering?) -> String {
+        var out = ""
+        var rest = Substring(format)
+        while let caret = rest.firstIndex(of: "^") {
+            out += rest[rest.startIndex..<caret]
+            let after = rest.index(after: caret)
+            guard after < rest.endIndex, let digit = rest[after].wholeNumberValue, (1...7).contains(digit) else {
+                out.append("^")
+                rest = rest[after...]
+                continue
+            }
+            let placeholderLevel = digit - 1
+            let value = placeholderLevel == level ? number : (counters[placeholderLevel] ?? 1)
+            out += (numbering ?? ListNumbering()).text(value)
+            rest = rest[rest.index(after: after)...]
+        }
+        out += rest
+        return out
+    }
+
     /// Hanging-indent paragraph style: marker at `markerX`, a tab pushes text to `textX`, and
     /// wrapped lines align at `textX` — so the item's first line and every wrap share one edge.
     /// `extraTabStops` (points, from `OfficeBlock.listItem.tabStops`) are AUTHORED stops beyond the
@@ -1109,10 +1141,28 @@ enum OfficeTextBuilder {
                                        fontSizeScale: CGFloat = 1, paged: Bool = false,
                                        lineGridPitch: CGFloat? = nil,
                                        format: ParagraphFormat? = nil,
-                                       commentNumbers: [String: Int] = [:]) {
+                                       commentNumbers: [String: Int] = [:],
+                                       numbering: ListNumbering? = nil) {
         let marker: String
         if let suppliedMarker {
-            marker = suppliedMarker + "\t"
+            // A supplied marker is the DOCUMENT's, and for a numbered list it is a FORMAT — HWP
+            // writes `^1.`, `제^1장`, where `^N` stands for level N's counter. Emitting it verbatim
+            // printed a literal caret on screen; the number is the reader's to compute because only
+            // the reader knows how many items its own layout has passed. A bullet's marker carries
+            // no placeholder and so survives this untouched.
+            if ordered, suppliedMarker.contains("^") {
+                for deeper in orderedCounters.keys.filter({ $0 > level }) {
+                    orderedCounters.removeValue(forKey: level == deeper ? level : deeper)
+                }
+                let start = numbering?.startNumber ?? 1
+                let n = orderedCounters[level].map { $0 + 1 } ?? start
+                orderedCounters[level] = n
+                marker = OfficeTextBuilder.fillListFormat(suppliedMarker, level: level, number: n,
+                                                          counters: orderedCounters,
+                                                          numbering: numbering) + "\t"
+            } else {
+                marker = suppliedMarker + "\t"
+            }
         } else {
             // Snapshot the keys first — removing while iterating `.keys` directly mutates the same
             // storage the view is walking.
@@ -1346,7 +1396,7 @@ enum OfficeTextBuilder {
                                               paged: paged, lineGridPitch: lineGridPitch),
                     range: NSRange(location: 0, length: str.length))
                 result.append(str)
-            case let .listItem(level, ordered, spans, marker, _, _, _, _):
+            case let .listItem(level, ordered, spans, marker, _, _, _, _, _):
                 // Cell-local numbering state — a list embedded in one cell doesn't continue a
                 // count begun in a sibling cell or at top level.
                 var counters: [Int: Int] = [:]

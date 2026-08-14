@@ -157,4 +157,9 @@ enum MDAttr {
     /// storage must stay the document's own text, and a reflow re-asks layout rather than replaying
     /// arithmetic someone baked in.
     static let startsPage = NSAttributedString.Key("mdStartsPage")
+
+    /// Set on a block the document keeps with the one AFTER it (HWP 다음 문단과 함께). Layout moves
+    /// such a block to the next page rather than let a page boundary fall between it and what
+    /// follows — which is what stops a heading being stranded at the foot of a page.
+    static let keepWithNext = NSAttributedString.Key("mdKeepWithNext")
 }

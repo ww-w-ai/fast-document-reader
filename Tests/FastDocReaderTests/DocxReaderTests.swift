@@ -884,7 +884,7 @@ final class DocxReaderTests: XCTestCase {
             + (1...3).map { numberedItem("70", 0, "l\($0)") }.joined()
         let blocks = try read(document: body, numbering: numbering)
         let markers = blocks.compactMap { block -> String? in
-            if case .listItem(_, _, _, let marker, _, _, _, _) = block { return marker }
+            if case .listItem(_, _, _, let marker, _, _, _, _, _) = block { return marker }
             return nil
         }
         XCTAssertEqual(markers, [
@@ -911,7 +911,7 @@ final class DocxReaderTests: XCTestCase {
         let body = (1...29).map { numberedItem("80", 0, "i\($0)") }.joined()
         let blocks = try read(document: body, numbering: numbering)
         let markers = blocks.compactMap { block -> String? in
-            if case .listItem(_, _, _, let marker, _, _, _, _) = block { return marker }
+            if case .listItem(_, _, _, let marker, _, _, _, _, _) = block { return marker }
             return nil
         }
         XCTAssertEqual(markers.count, 29)
@@ -960,7 +960,7 @@ final class DocxReaderTests: XCTestCase {
         let body = (1...3).map { numberedItem("9", 0, "Item\($0)") }.joined()
         let blocks = try read(document: body, numbering: numbering)
         let markers = blocks.compactMap { block -> String? in
-            if case .listItem(_, _, _, let marker, _, _, _, _) = block { return marker }
+            if case .listItem(_, _, _, let marker, _, _, _, _, _) = block { return marker }
             return nil
         }
         XCTAssertEqual(markers, ["一.", "二.", "三."])
@@ -994,7 +994,7 @@ final class DocxReaderTests: XCTestCase {
         let body = (1...3).map { numberedItem("9", 0, "Item\($0)") }.joined()
         let blocks = try read(document: body, numbering: numbering)
         let markers = blocks.compactMap { block -> String? in
-            if case .listItem(_, _, _, let marker, _, _, _, _) = block { return marker }
+            if case .listItem(_, _, _, let marker, _, _, _, _, _) = block { return marker }
             return nil
         }
         XCTAssertEqual(markers, ["\u{2460}", "\u{2461}", "\u{2462}"])

@@ -5,6 +5,9 @@ import AppKit
 /// looks nothing up.
 struct MasterPageContent {
     var pages: [OfficeMasterPage]
+    /// Sections that turned their own master page OFF. A veto the document itself declared, so a
+    /// cover that says "no 바탕쪽" gets none even though its section declares templates.
+    var sectionsHidingMasterPage: Set<Int> = []
     var theme: RenderTheme
     var documentDefaultFontSize: CGFloat
     var pageContentWidth: CGFloat?
@@ -57,8 +60,12 @@ enum MasterPagePainter {
                      visibleRect: NSRect, sectionOfPage: (Int) -> Int? = { _ in nil }) {
         guard !content.pages.isEmpty, !sheets.isEmpty else { return }
         for (index, sheet) in sheets.enumerated() where sheet.intersects(visibleRect) {
+            let section = sectionOfPage(index)
+            // THE SECTION'S OWN VETO, before anything is chosen: a section that hides its master
+            // page shows none, however many templates the document declares for it.
+            if let section, content.sectionsHidingMasterPage.contains(section) { continue }
             guard let page = applicablePage(content.pages, pageIndex: index,
-                                            section: sectionOfPage(index)) else { continue }
+                                            section: section) else { continue }
             for object in page.objects {
                 draw(object, onSheet: sheet, pageIndex: index, totalPages: totalPages,
                      content: content, visibleRect: visibleRect)

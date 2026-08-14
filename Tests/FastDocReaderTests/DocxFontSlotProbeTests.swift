@@ -68,7 +68,7 @@ final class DocxFontSlotProbeTests: XCTestCase {
             switch block {
             case let .heading(_, spans, _, _, _, _),
                  let .paragraph(spans, _, _, _, _),
-                 let .listItem(_, _, spans, _, _, _, _, _):
+                 let .listItem(_, _, spans, _, _, _, _, _, _):
                 out += spans
             case let .table(rows, _, _, _):
                 for row in rows { for cell in row { out += allSpans(cell.blocks) } }

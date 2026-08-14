@@ -65,7 +65,7 @@ final class FontSubstitutionProbeTests: XCTestCase {
                 switch b {
                 case let .paragraph(spans, _, _, _, _): n += spans.count
                 case let .heading(_, spans, _, _, _, _): n += spans.count
-                case let .listItem(_, _, spans, _, _, _, _, _): n += spans.count
+                case let .listItem(_, _, spans, _, _, _, _, _, _): n += spans.count
                 case let .table(rows, _, _, _):
                     for row in rows { for cell in row { walk(cell.blocks) } }
                 default: break
