@@ -224,6 +224,59 @@ final class SectionRunningHeadTests: XCTestCase {
     }
 }
 
+/// Ink pinned to a sheet stays ON that sheet. The screen draws every page into ONE continuous view,
+/// so an object bigger than its paper — a chapter divider's numeral is 736pt on a 754pt sheet — ran
+/// off the page, across the desk and onto the next one.
+final class MasterPageSheetClipTests: XCTestCase {
+
+    /// Drawn into a canvas holding TWO sheets with a desk gap between them, with an object on the
+    /// first that is taller than the paper. Nothing may be painted below the first sheet's bottom.
+    func testAnObjectTallerThanItsPaperDoesNotPaintOnTheNextSheet() throws {
+        let sheet = CGRect(x: 10, y: 10, width: 80, height: 100)
+        let canvas = NSImage(size: NSSize(width: 100, height: 260))
+
+        let art = NSImage(size: NSSize(width: 60, height: 200))
+        art.lockFocus(); NSColor.black.setFill(); NSRect(x: 0, y: 0, width: 60, height: 200).fill(); art.unlockFocus()
+
+        let object = OfficeMasterObject(frame: CGRect(x: 10, y: 40, width: 60, height: 200),
+                                        content: .image(art))
+        let content = MasterPageContent(pages: [], theme: RenderTheme(baseFontSize: 13),
+                                        documentDefaultFontSize: 11,
+                                        pageContentWidth: 80)
+
+        // A bitmap with the SAME flipped CTM the text view draws under — `lockFocusFlipped` is not
+        // that: it sets a flag the AppKit helpers consult while raw geometry keeps the unflipped
+        // axis, so a clip and a picture end up in two different coordinate systems and the test
+        // measures the harness instead of the painter.
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 260, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let g = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = g
+        // Painted white FIRST: a transparent pixel reads as rgb(0,0,0) through `colorAt`, so an
+        // unpainted canvas would look like solid ink everywhere.
+        NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 100, height: 260).fill()
+        let flip = NSAffineTransform()
+        flip.translateX(by: 0, yBy: 260)
+        flip.scaleX(by: 1, yBy: -1)
+        flip.concat()
+        MasterPagePainter.draw(object, onSheet: sheet, pageIndex: 0, totalPages: 2,
+                               content: content, visibleRect: NSRect(x: 0, y: 0, width: 100, height: 260))
+        NSGraphicsContext.restoreGraphicsState()
+        _ = canvas
+
+        func isInk(_ x: Int, _ y: Int) -> Bool {
+            guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
+            return c.redComponent < 0.5 && c.greenComponent < 0.5 && c.blueComponent < 0.5
+        }
+        XCTAssertTrue(isInk(40, 100), "the object must still be drawn inside its own sheet")
+        XCTAssertFalse(isInk(40, 130), "nothing may be painted on the desk below the sheet")
+        XCTAssertFalse(isInk(40, 180), "and certainly not on the next sheet")
+    }
+}
+
 /// Where an object the document pins to the PAPER lands — rhwp's own placement rule, restated for
 /// the two references this reader can honour (invariant 78).
 final class AnchoredObjectPlacementTests: XCTestCase {

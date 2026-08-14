@@ -74,6 +74,17 @@ enum MasterPagePainter {
         let rect = NSRect(x: sheet.minX + object.frame.minX, y: sheet.minY + object.frame.minY,
                           width: object.frame.width, height: object.frame.height)
         guard rect.intersects(visibleRect) else { return }
+        // CLIPPED TO ITS OWN SHEET. An object can be taller or wider than the paper it is pinned to
+        // — a chapter divider's numeral is 736pt on a 754pt sheet and sits low — and with no clip its
+        // ink ran off the paper, across the desk gap and onto the NEXT page, which is where the
+        // second running header a reader saw beside it came from. Printing never showed this because
+        // each printed page clips to its own sheet by construction; only the screen, which draws
+        // every sheet into one continuous view, could. Paper is paper: ink outside it is not the
+        // document.
+        let ctx = NSGraphicsContext.current
+        ctx?.saveGraphicsState()
+        defer { ctx?.restoreGraphicsState() }
+        ctx?.cgContext.clip(to: sheet)
         switch object.content {
         case .image(let image):
             // `respectFlipped` because this view IS flipped and an image drawn without it arrives

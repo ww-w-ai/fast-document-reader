@@ -55,7 +55,14 @@ final class SizedAttachmentCell: NSTextAttachmentCell {
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
         if let image = pixels ?? attachment?.image {
-            image.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1.0)
+            // `respectFlipped` — the text view is FLIPPED, and the four-argument `draw(in:…)` does
+            // not consult that, so every picture drawn by this cell arrived upside down. It was
+            // invisible while AppKit still drew the attachment itself from `.image`; the moment the
+            // pixels moved onto the cell (invariant 80) this became the app's own draw call, and a
+            // whole-page cover reads as an obvious mirror while a photograph reads as merely wrong.
+            // The one flag `MasterPagePainter` already passes for the same reason.
+            image.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1.0,
+                       respectFlipped: true, hints: nil)
         } else if let undrawableLabel {
             // The SAME card `OfficeTextBuilder` bakes for a chart it has no picture for at all —
             // one drawing routine, so "a graphic this reader cannot draw" looks like itself

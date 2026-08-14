@@ -50,4 +50,41 @@ final class AttachmentReservedBoxTests: XCTestCase {
         XCTAssertNil(att.attachmentCell as? SizedAttachmentCell,
                      "setting .image discards the sized cell — invariant 31")
     }
+
+    // MARK: The other half of holding the pixels: THIS cell now draws them
+
+    /// The regression that shipped with the move. Once the pixels live on the cell, the app makes
+    /// the draw call itself — and `draw(in:from:operation:fraction:)` ignores a flipped context, so
+    /// every picture in every office document came out upside down. A whole-page cover reads as an
+    /// obvious mirror; a photograph just reads as wrong.
+    ///
+    /// Drawn into a FLIPPED canvas, which is what the text view is. The source picture is red on
+    /// top and blue underneath, so "which colour is at the top of the result" is the whole test.
+    func testAPictureIsNotDrawnUpsideDownInAFlippedContext() throws {
+        let source = NSImage(size: NSSize(width: 20, height: 20))
+        source.lockFocus()
+        NSColor.red.setFill();  NSRect(x: 0, y: 10, width: 20, height: 10).fill()   // image-space TOP
+        NSColor.blue.setFill(); NSRect(x: 0, y: 0, width: 20, height: 10).fill()
+        source.unlockFocus()
+
+        let frame = NSRect(x: 0, y: 0, width: 40, height: 40)
+        let cell = SizedAttachmentCell(reservedSize: frame.size)
+        cell.attachment = NSTextAttachment()
+        cell.pixels = source
+
+        let canvas = NSImage(size: frame.size)
+        canvas.lockFocusFlipped(true)
+        cell.draw(withFrame: frame, in: nil)
+        let rep = try XCTUnwrap(NSBitmapImageRep(focusedViewRect: frame))
+        canvas.unlockFocus()
+
+        // Row 0 is the TOP of the bitmap.
+        let top = try XCTUnwrap(rep.colorAt(x: rep.pixelsWide / 2, y: 4)?.usingColorSpace(.deviceRGB))
+        let bottom = try XCTUnwrap(rep.colorAt(x: rep.pixelsWide / 2,
+                                               y: rep.pixelsHigh - 5)?.usingColorSpace(.deviceRGB))
+        XCTAssertGreaterThan(top.redComponent, 0.5,
+                             "the picture's own top must be at the top — got r\(top.redComponent) b\(top.blueComponent)")
+        XCTAssertGreaterThan(bottom.blueComponent, 0.5,
+                             "and its bottom at the bottom — got r\(bottom.redComponent) b\(bottom.blueComponent)")
+    }
 }
