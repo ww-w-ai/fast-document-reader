@@ -823,14 +823,46 @@ struct OfficeMasterObject: Equatable {
 ///
 /// It is the same drawable thing a master-page object is (`OfficeMasterObject`), with one extra
 /// fact: WHICH BLOCK it was anchored at, so the reader can draw it on the page that block falls on
-/// rather than on every page. Only PAPER- and PAGE-relative objects arrive here — one anchored to a
-/// paragraph needs that paragraph's own position, which is the floating layer invariant 75 measured
-/// and rejected, and those keep behaving exactly as they did.
+/// rather than on every page.
+///
+/// A PAPER- or PAGE-relative object is fully placed at read time — the sheet it is measured against
+/// is the same on every page. A PARAGRAPH-relative one is not: its reference is the anchoring
+/// paragraph's own line, which only layout knows, so `paragraphAnchor` carries the unfinished half
+/// and the draw pass completes it (`ReaderTextView.drawAnchoredObjects`). Nothing is cached: the
+/// line rect is asked for at draw time, so a reflow cannot leave a stale position behind.
 struct OfficeAnchoredObject: Equatable {
     /// Index into `OfficeReadResult.blocks` — the block whose place in the text says which page this
     /// object belongs to.
     var blockIndex: Int
     var object: OfficeMasterObject
+    /// Non-nil when the object is anchored to its PARAGRAPH: `object.frame`'s x/width/height are
+    /// final, its `y` is a placeholder, and this says how to measure the real one.
+    var paragraphAnchor: ParagraphAnchor?
+}
+
+/// The vertical half of a paragraph-anchored object's placement — rhwp's own rule
+/// (`renderer/layout/shape_layout.rs`'s `calc_shape_bottom_y`, the `Para` reference) with the
+/// reference area left open until layout can supply it.
+///
+/// The ALIGN is the whole reason this is expressible at all. The float layer invariant 75 rejected
+/// used the offsets alone and so put a 431pt rule over a table's column label; with the align
+/// exported (invariant 81) the offset is measured from the edge the document actually named.
+struct ParagraphAnchor: Equatable {
+    enum Align: Equatable { case top, center, bottom }
+    var align: Align
+    /// The document's own vertical offset in points, measured from the aligned edge.
+    var offset: CGFloat
+
+    /// The object's top edge, given the anchoring line's own top and height in the SAME coordinate
+    /// space the answer is wanted in (the reader hands it paper-relative values, so the answer is
+    /// paper-relative too).
+    func top(lineTop: CGFloat, lineHeight: CGFloat, objectHeight: CGFloat) -> CGFloat {
+        switch align {
+        case .top: return lineTop + offset
+        case .center: return lineTop + (lineHeight - objectHeight) / 2 + offset
+        case .bottom: return lineTop + lineHeight - objectHeight - offset
+        }
+    }
 }
 
 /// One 바탕쪽 — the template a document repeats behind every page of a section.

@@ -339,6 +339,43 @@ enum HwpReader {
                       width: size.width, height: size.height)
     }
 
+    /// Where a PARAGRAPH-anchored object sits — the half of the placement that does not need layout,
+    /// plus the rule for the half that does.
+    ///
+    /// Horizontally there is nothing to wait for: `para`/`column` both measure against the text
+    /// COLUMN, which this reader lays out at one fixed width, so it is the same body area
+    /// `anchoredFrame` uses for a page-relative object. Vertically the reference is the anchoring
+    /// paragraph's own line, so the returned frame's `y` is a placeholder and the `ParagraphAnchor`
+    /// beside it says how to measure the real one once layout can answer where that line is.
+    ///
+    /// Returns nil for a vertical reference that is NOT the paragraph — those are already placed in
+    /// full by `anchoredFrame`, and one function must not answer for both.
+    static func paragraphAnchoredPlacement(
+        size: CGSize, vertRelTo: String, horzRelTo: String, vertAlign: String, horzAlign: String,
+        offset: CGPoint, page: PaperGeometry
+    ) -> (frame: CGRect, anchor: ParagraphAnchor)? {
+        guard vertRelTo == "para" else { return nil }
+        let hRef: (CGFloat, CGFloat)
+        switch horzRelTo {
+        case "paper": hRef = (0, page.paperWidth)
+        default: hRef = (page.marginLeft, page.contentWidth)   // page / column / para
+        }
+        let x: CGFloat
+        switch horzAlign {
+        case "center": x = hRef.0 + (hRef.1 - size.width) / 2 + offset.x
+        case "right", "outside": x = hRef.0 + hRef.1 - size.width - offset.x
+        default: x = hRef.0 + offset.x                          // left / inside
+        }
+        let align: ParagraphAnchor.Align
+        switch vertAlign {
+        case "center": align = .center
+        case "bottom", "outside": align = .bottom
+        default: align = .top                                   // top / inside
+        }
+        return (CGRect(x: x, y: 0, width: size.width, height: size.height),
+                ParagraphAnchor(align: align, offset: offset.y))
+    }
+
     /// The paper an anchored object is placed on, in points — what the reader already read off the
     /// document's own page definition.
     struct PaperGeometry {
@@ -916,13 +953,13 @@ enum HwpReader {
             return .image(id: "\(hwpImagePrefix)\(im.binDataId)", size: size,
                           alignment: imageAlignment(im.align))
         case .shape(let sh):
-            // ONLY an AS-CHARACTER object is drawn. HWP anchors most drawings by coordinates, and
-            // placing one needs more than the offsets: `vert_align`/`horz_align` decide what the
-            // offset is measured FROM, and this reader has no floating layer to put the result on
-            // (invariant 31/75). A float layer was built and measured: paragraph-anchored objects
-            // painted over the text they were meant to sit beside — a decorative rule 431pt wide
-            // covered a table's own column label — so it is not shipped, and an anchored drawing is
-            // the same nothing it was before shapes could be drawn at all.
+            // An ANCHORED drawing is placed by the document's own rule — the offsets ALONE are not
+            // enough, and that is exactly what the float layer invariant 75 rejected got wrong: it
+            // guessed the reference edge and laid a 431pt rule over a table's own column label.
+            // `vert_align`/`horz_align` say which edge the offset is measured from (invariant 81),
+            // so with those exported, a paper-, page- or paragraph-anchored drawing lands where the
+            // document put it. A PICTURE is still never floated — see the `.image` case above for
+            // the 451→436 measurement that decided it.
             let paths = sh.paths.compactMap { shapePath($0) }
             var size = CGSize(width: points(sh.w), height: points(sh.h))
             if size.width < 1 || size.height < 1, let extent = pathsExtent(paths) { size = extent }
@@ -941,6 +978,22 @@ enum HwpReader {
                 shapes.anchored.append(OfficeAnchoredObject(
                     blockIndex: shapes.blockIndex,
                     object: OfficeMasterObject(frame: frame, content: .drawing(pdf))))
+                return .paragraph(spans: [])
+            }
+            // PINNED TO ITS PARAGRAPH — a seal over a signature line, an arrow onto the table beside
+            // it. Only the horizontal half can be settled here; the vertical one is finished by the
+            // draw pass, which is the only place that knows where the anchoring line ended up.
+            if sh.asChar != true, let paper = shapes.paper,
+               let placement = paragraphAnchoredPlacement(
+                    size: size, vertRelTo: sh.vertRelTo ?? "para", horzRelTo: sh.horzRelTo ?? "para",
+                    vertAlign: sh.vertAlign ?? "top", horzAlign: sh.horzAlign ?? "left",
+                    offset: CGPoint(x: points(sh.offsetX ?? 0), y: points(sh.offsetY ?? 0)),
+                    page: paper),
+               let pdf = HwpShapeRenderer.pdf(paths: paths, size: size) {
+                shapes.anchored.append(OfficeAnchoredObject(
+                    blockIndex: shapes.blockIndex,
+                    object: OfficeMasterObject(frame: placement.frame, content: .drawing(pdf)),
+                    paragraphAnchor: placement.anchor))
                 return .paragraph(spans: [])
             }
             guard sh.asChar == true, let pdf = HwpShapeRenderer.pdf(paths: paths, size: size) else {

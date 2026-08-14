@@ -425,7 +425,17 @@ final class MarkdownDocument: NSDocument {
     /// failing meant the function silently did nothing, which looks identical to a successful no-op
     /// reload and hides a real problem (deleted file, permissions, a corrupted archive) from the user.
     enum ReloadOutcome {
-        case office(blocks: [OfficeBlock], comments: [OfficeComment], archive: ZipArchive?, images: [String: Data], defaultBodyFontSize: CGFloat, pageContentWidth: CGFloat?, pageMarginLeft: CGFloat?, pageMarginRight: CGFloat?, pageContentHeight: CGFloat?, pageMarginTop: CGFloat?, pageMarginBottom: CGFloat?, pageHeaderDistance: CGFloat?, pageFooterDistance: CGFloat?, headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter], masterPages: [OfficeMasterPage], sectionStartBlocks: [Int], anchoredObjects: [OfficeAnchoredObject], lineGridPitch: CGFloat?)
+        /// Everything the reader found, carried as the reader's OWN result value rather than spread
+        /// across one associated value per field. Every field a reader produces already lives on
+        /// `OfficeReadResult`, so listing them again here bought nothing and cost a pattern that has
+        /// to be re-widened — with a positional `_` per field — at every call site each time a reader
+        /// learns a new one.
+        ///
+        /// `archive` and `defaultBodyFontSize` stay separate because they are NOT the reader's to
+        /// decide here: HWP has no archive at all, and the zip readers leave
+        /// `result.defaultBodyFontSize` at its default because that value is resolved from the
+        /// archive by `DocumentTypes.officeDefaultBodyFontSize` instead (see the field's own note).
+        case office(OfficeReadResult, archive: ZipArchive?, defaultBodyFontSize: CGFloat)
         case text(TextFile)
         case failure(String)
     }
@@ -453,38 +463,12 @@ final class MarkdownDocument: NSDocument {
             // from its first open, the exact regression invariant 29 forbids).
             if DocumentTypes.isHwp(ext) {
                 let result = try HwpReader.read(data)
-                return .office(
-                    blocks: result.blocks, comments: result.comments, archive: nil,
-                    images: result.images, defaultBodyFontSize: result.defaultBodyFontSize,
-                    pageContentWidth: result.pageContentWidth,
-                pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
-                pageContentHeight: result.pageContentHeight,
-                pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
-                pageHeaderDistance: result.pageHeaderDistance,
-                pageFooterDistance: result.pageFooterDistance,
-                headers: result.headers, footers: result.footers,
-                masterPages: result.masterPages,
-                sectionStartBlocks: result.sectionStartBlocks,
-                anchoredObjects: result.anchoredObjects,
-                lineGridPitch: result.lineGridPitch)
+                return .office(result, archive: nil, defaultBodyFontSize: result.defaultBodyFontSize)
             }
             let archive = try ZipArchive(data: data)
             let result = try DocumentTypes.readOffice(archive, extension: ext)
-            let defaultBodyFontSize = DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext)
-            return .office(
-                blocks: result.blocks, comments: result.comments, archive: archive,
-                images: result.images, defaultBodyFontSize: defaultBodyFontSize,
-                pageContentWidth: result.pageContentWidth,
-                pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
-                pageContentHeight: result.pageContentHeight,
-                pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
-                pageHeaderDistance: result.pageHeaderDistance,
-                pageFooterDistance: result.pageFooterDistance,
-                headers: result.headers, footers: result.footers,
-                masterPages: result.masterPages,
-                sectionStartBlocks: result.sectionStartBlocks,
-                anchoredObjects: result.anchoredObjects,
-                lineGridPitch: result.lineGridPitch)
+            return .office(result, archive: archive,
+                           defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext))
         } catch {
             return .failure(error.localizedDescription)
         }
@@ -508,21 +492,24 @@ final class MarkdownDocument: NSDocument {
         if let url = fileURL {
             let ext = url.pathExtension.isEmpty ? (untitledExtension ?? "") : url.pathExtension
             switch Self.reloadOutcome(url: url, kind: kind, extension: ext) {
-            case .office(let blocks, let comments, let archive, let images, let defaultBodyFontSize, let pageContentWidth, let pageMarginLeft, let pageMarginRight, let pageContentHeight, let pageMarginTop, let pageMarginBottom, let pageHeaderDistance, let pageFooterDistance, let headers, let footers, let masterPages, let sectionStartBlocks, let anchoredObjects, let lineGridPitch):
+            case .office(let result, let archive, let defaultBodyFontSize):
                 // Re-parse the archive, same as the initial read — never through the text-decode
                 // path (invariant: an office document's bytes are never handed to
                 // `TextEncodingDetector`). `defaultBodyFontSize` is carried through too, so a
                 // reload renders identically to the first open of the same file (see invariant 29's
                 // "reload must behave the same as first open" lesson).
-                setOfficeContent(blocks: blocks, comments: comments, archive: archive, images: images,
-                                 defaultBodyFontSize: defaultBodyFontSize, pageContentWidth: pageContentWidth,
-                                 pageMarginLeft: pageMarginLeft, pageMarginRight: pageMarginRight,
-                                 pageContentHeight: pageContentHeight,
-                                 pageMarginTop: pageMarginTop, pageMarginBottom: pageMarginBottom,
-                                 headers: headers, footers: footers, masterPages: masterPages,
-                                 sectionStartBlocks: sectionStartBlocks,
-                                 anchoredObjects: anchoredObjects,
-                                 lineGridPitch: lineGridPitch)
+                setOfficeContent(blocks: result.blocks, comments: result.comments, archive: archive,
+                                 images: result.images,
+                                 defaultBodyFontSize: defaultBodyFontSize,
+                                 pageContentWidth: result.pageContentWidth,
+                                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
+                                 pageContentHeight: result.pageContentHeight,
+                                 pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
+                                 headers: result.headers, footers: result.footers,
+                                 masterPages: result.masterPages,
+                                 sectionStartBlocks: result.sectionStartBlocks,
+                                 anchoredObjects: result.anchoredObjects,
+                                 lineGridPitch: result.lineGridPitch)
             case .text(let reread):
                 // The undo stack holds source OFFSETS into the text we're replacing. Re-reading the
                 // file can move every one of them (the file may have changed behind us), so an undo

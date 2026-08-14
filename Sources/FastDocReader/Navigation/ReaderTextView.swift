@@ -198,7 +198,17 @@ final class ReaderTextView: NSTextView {
             let page = Int(((frag.minY - wc.pageBandDelegate.leadingBand) / pitch).rounded(.down))
             guard page >= 0, page < sheets.count else { return }
             for id in ids where id >= 0 && id < objects.count {
-                MasterPagePainter.draw(objects[id].object, onSheet: sheets[page], pageIndex: page,
+                var object = objects[id].object
+                // A paragraph-anchored object arrives with its vertical placement UNFINISHED: its
+                // reference is this line, and only layout knows where the line is (invariant 81).
+                // Measured here rather than at read time, and never stored, so a reflow that moves
+                // the line moves the object with it instead of leaving it behind.
+                if let anchor = objects[id].paragraphAnchor {
+                    object.frame.origin.y = anchor.top(lineTop: frag.minY - sheets[page].minY,
+                                                       lineHeight: frag.height,
+                                                       objectHeight: object.frame.height)
+                }
+                MasterPagePainter.draw(object, onSheet: sheets[page], pageIndex: page,
                                        totalPages: sheets.count, content: content,
                                        visibleRect: visibleRect)
             }

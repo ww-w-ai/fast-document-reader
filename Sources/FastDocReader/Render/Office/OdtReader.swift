@@ -91,9 +91,11 @@ enum OdtReader: OfficeDocumentReader {
         let notes = NoteCollector()
         let bodyBlocks = parseBody(body, styles: styles, archive: archive, notes: notes)
         let noteBlocks = buildNoteBlocks(notes.entries, styles: styles, archive: archive)
-        let page = pageGeometry(styleRoots: styleRoots)
+        let masterPage = typesetMasterPage(body: body, styleRoots: styleRoots)
+        let page = pageGeometry(styleRoots: styleRoots, masterPage: masterPage)
         // header-footer-design.md step 2/4 — read ONLY, nothing renders these yet.
-        let headerFooter = masterPageHeaderFooters(styleRoots: styleRoots, styles: styles, archive: archive)
+        let headerFooter = masterPageHeaderFooters(
+            masterPage: masterPage, styles: styles, archive: archive)
         return OfficeReadResult(
             blocks: bodyBlocks + noteBlocks,
             comments: notes.comments.sorted { $0.number < $1.number },
@@ -104,16 +106,83 @@ enum OdtReader: OfficeDocumentReader {
             headers: headerFooter.headers, footers: headerFooter.footers)
     }
 
-    /// The document's page BODY width in points — a `style:page-layout-properties`' `fo:page-width`
-    /// minus `fo:margin-left`/`-right`. ODF keeps page geometry in `style:page-layout` (usually in
-    /// `styles.xml`'s `office:automatic-styles`), referenced by a `style:master-page`; the first
-    /// `style:page-layout-properties` carrying a `fo:page-width` is used (documents overwhelmingly
-    /// declare one page layout — same "first section only" scope as the HWP/docx readers). Lengths go
-    /// through the shared `parseLength` (cm/mm/in/pt→pt). `fo:page-width` in ODF is ALREADY the
-    /// orientation-applied paper width, so landscape needs no swap. Returns nil when no page layout /
-    /// no `fo:page-width` / width ≤0 → the reader keeps its window-filling column.
-    private static func pageContentWidth(styleRoots: [XMLNode]) -> CGFloat? {
-        pageGeometry(styleRoots: styleRoots)?.content
+    /// The master page this document is TYPESET on — the one the most body paragraphs sit under,
+    /// not simply the first `style:master-page` the file declares.
+    ///
+    /// ODF has no `w:sectPr`/HWP section to count: a page style changes when a paragraph applies a
+    /// style carrying `style:master-page-name`, and every following paragraph stays on that master
+    /// page until another one switches it. Walking the body and counting paragraphs per master page
+    /// is therefore the exact ODF equivalent of `DocxReader.typesetSectionProperties`' "most content
+    /// wins", and it exists for the same measured reason (invariant 73/79): taking the wrong one
+    /// typesets the whole document on a title page's or a landscape appendix's paper.
+    ///
+    /// The FIRST declared master page is the default — a paragraph that names none inherits whatever
+    /// is in effect, and nothing is in effect before the first switch. An EMPTY
+    /// `style:master-page-name` is a page break that keeps the current page style, so it is ignored
+    /// here rather than treated as a switch. Ties go to the earlier-declared master page, matching
+    /// the docx rule's tie-break.
+    ///
+    /// A single-master-page document — the overwhelming majority — has exactly one candidate, so
+    /// this returns precisely what `children.first` returned before it existed.
+    private static func typesetMasterPage(body: XMLNode, styleRoots: [XMLNode]) -> XMLNode? {
+        guard let masterStyles = styleRoots.compactMap({ $0.child("office:master-styles") }).first
+        else { return nil }
+        let masterPages = masterStyles.children.filter { $0.name == "style:master-page" }
+        guard let first = masterPages.first else { return nil }
+        guard masterPages.count > 1 else { return first }
+
+        // A style declares its master page directly or inherits it through `style:parent-style-name`
+        // — an automatic style (`P1`) almost always carries the geometry-free half and points at the
+        // named style that holds the switch. Resolved with the same cycle guard the other style
+        // resolvers here use: a malformed document must not spin.
+        var declared: [String: String] = [:]
+        var parents: [String: String] = [:]
+        for root in styleRoots {
+            for styleNode in root.allDescendants("style:style") {
+                guard let name = styleNode.attributes["style:name"] else { continue }
+                if let parent = styleNode.attributes["style:parent-style-name"], parents[name] == nil {
+                    parents[name] = parent
+                }
+                guard let master = styleNode.attributes["style:master-page-name"], !master.isEmpty,
+                      declared[name] == nil else { continue }
+                declared[name] = master
+            }
+        }
+        func masterPageName(ofStyle name: String) -> String? {
+            var seen: Set<String> = []
+            var current: String? = name
+            while let key = current, seen.insert(key).inserted {
+                if let master = declared[key] { return master }
+                current = parents[key]
+            }
+            return nil
+        }
+
+        var counts: [String: Int] = [:]
+        var current = first.attributes["style:name"] ?? ""
+        func walk(_ node: XMLNode) {
+            for child in node.children {
+                // Counted whether or not it names a style: a paragraph with no `text:style-name` is
+                // the ORDINARY case, and skipping those counted only the switch points — one
+                // appendix paragraph then outvoted a whole body of plain ones.
+                let isBodyContent = child.name == "text:p" || child.name == "text:h" || child.name == "table:table"
+                let styleName = child.attributes["text:style-name"] ?? child.attributes["table:style-name"]
+                if isBodyContent, let styleName, let master = masterPageName(ofStyle: styleName) { current = master }
+                if isBodyContent { counts[current, default: 0] += 1 }
+                // Recurse regardless: a `text:section`, list or frame holds paragraphs that carry
+                // their own style, and a switch declared inside one is still a switch.
+                walk(child)
+            }
+        }
+        walk(body)
+
+        var best = first
+        var bestCount = counts[first.attributes["style:name"] ?? ""] ?? 0
+        for page in masterPages.dropFirst() {
+            let count = counts[page.attributes["style:name"] ?? ""] ?? 0
+            if count > bestCount { best = page; bestCount = count }
+        }
+        return best
     }
 
     /// The page layout's geometry in points: the printable column and the margins either side of it,
@@ -127,8 +196,26 @@ enum OdtReader: OfficeDocumentReader {
     /// Height/top/bottom are a SEPARATE guard from width/left/right: a page layout that declares
     /// `fo:page-width` but not `fo:page-height` (or whose vertical geometry computes to ≤0) must not
     /// lose its WIDTH, so a bad/missing height clamps only these three fields to nil.
-    private static func pageGeometry(styleRoots: [XMLNode]) -> (content: CGFloat, left: CGFloat, right: CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?)? {
-        for root in styleRoots {
+    ///
+    /// `masterPage` is the one the body is actually typeset on (`typesetMasterPage`); its
+    /// `style:page-layout-name` names the layout to read. When that name resolves to nothing — no
+    /// master page, no such layout, or a layout declaring no usable paper — this falls back to the
+    /// old scan of every layout in declaration order, so a document whose master page is unhelpful is
+    /// no worse off than before this lookup existed.
+    private static func pageGeometry(styleRoots: [XMLNode], masterPage: XMLNode? = nil) -> (content: CGFloat, left: CGFloat, right: CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?)? {
+        if let layoutName = masterPage?.attributes["style:page-layout-name"],
+           let layout = styleRoots.lazy
+               .flatMap({ $0.allDescendants("style:page-layout") })
+               .first(where: { $0.attributes["style:name"] == layoutName }),
+           let geometry = pageGeometry(scanning: [layout]) {
+            return geometry
+        }
+        return pageGeometry(scanning: styleRoots)
+    }
+
+    /// The first usable paper declared anywhere under `roots`, in declaration order.
+    private static func pageGeometry(scanning roots: [XMLNode]) -> (content: CGFloat, left: CGFloat, right: CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?)? {
+        for root in roots {
             // EVERY page-layout-properties under this root, not just the first: a real writer emits
             // page layouts that carry no paper at all — LibreOffice writes a bare
             // `<style:page-layout-properties style:layout-grid-standard-mode="true"/>` ahead of the
@@ -176,20 +263,20 @@ enum OdtReader: OfficeDocumentReader {
     /// looks inside `style:master-page` (never `style:page-layout`), where the CONTENT-bearing
     /// `style:header`/`style:footer` elements actually live.
     ///
-    /// Only the FIRST `style:master-page` is read — the same "first section/page-layout only" scope
-    /// `pageGeometry` above already documents for this reader; a document with more than one master
-    /// page (mirrored left/right sections beyond the `-left` variant, multiple page styles) is not
-    /// resolved per-section. `styleRoots` is searched in order (content.xml, then styles.xml) and
-    /// the first root that HAS an `office:master-styles` wins outright — ODF keeps master-styles in
-    /// `styles.xml` in every real document this reader has seen, but nothing stops a producer from
-    /// putting it in content.xml instead, so both are checked rather than hardcoding one part.
+    /// The running header/footer read is the one belonging to the master page the body is actually
+    /// TYPESET on (`typesetMasterPage`), not simply the first `style:master-page` declared — the same
+    /// "most content wins" selection `pageGeometry` uses, so a document's paper and its running
+    /// header can never come from two different page styles. A document whose master page could not
+    /// be resolved has no header/footer to read.
+    ///
+    /// Still only ONE master page: a page style is chosen for the whole document, not per switch,
+    /// because this reader lays the body out as one continuous column (invariant 57) and has nowhere
+    /// to put a second paper. That is the same scope the HWP reader had before invariant 78 gave it
+    /// per-page section selection.
     private static func masterPageHeaderFooters(
-        styleRoots: [XMLNode], styles: ParsedStyles, archive: ZipArchive
+        masterPage: XMLNode?, styles: ParsedStyles, archive: ZipArchive
     ) -> (headers: [OfficeHeaderFooter], footers: [OfficeHeaderFooter]) {
-        for root in styleRoots {
-            guard let masterStyles = root.child("office:master-styles"),
-                  let masterPage = masterStyles.child("style:master-page")
-            else { continue }
+        if let masterPage {
             var headers: [OfficeHeaderFooter] = []
             var footers: [OfficeHeaderFooter] = []
             func append(_ tag: String, appliesTo: HeaderFooterApplicability, into list: inout [OfficeHeaderFooter]) {

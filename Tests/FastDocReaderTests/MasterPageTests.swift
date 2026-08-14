@@ -264,12 +264,70 @@ final class AnchoredObjectPlacementTests: XCTestCase {
         XCTAssertEqual(bottom?.maxY ?? 0, paper.paperHeight - 30, accuracy: 0.01)
     }
 
-    func testAParagraphAnchoredObjectIsNotPlaced() {
-        // Its reference is a paragraph, whose position only layout knows — the floating layer that
-        // was built, measured and rejected (invariant 75). Nil here means "leave it as it was".
+    func testAParagraphAnchoredObjectIsNotPlacedByTheSheetRule() {
+        // Its VERTICAL reference is a paragraph, whose position only layout knows, so the sheet rule
+        // must not answer for it — `paragraphAnchoredPlacement` does, and finishes at draw time.
         XCTAssertNil(HwpReader.anchoredFrame(size: CGSize(width: 10, height: 10),
                                              vertRelTo: "para", horzRelTo: "para",
                                              vertAlign: "top", horzAlign: "left",
                                              offset: .zero, page: paper))
+    }
+
+    // MARK: Anchored to the PARAGRAPH (invariant 81's remaining half)
+
+    func testParagraphAnchoredHorizontalIsSettledAtReadTime() {
+        // `para`/`column` measure horizontally against the text column, which this reader lays out
+        // at one fixed width — so there is nothing here for layout to answer.
+        let p = HwpReader.paragraphAnchoredPlacement(
+            size: CGSize(width: 100, height: 50), vertRelTo: "para", horzRelTo: "column",
+            vertAlign: "top", horzAlign: "left", offset: CGPoint(x: 12, y: 34), page: paper)
+        XCTAssertEqual(p?.frame.minX, paper.marginLeft + 12)
+        XCTAssertEqual(p?.frame.width, 100)
+        XCTAssertEqual(p?.frame.height, 50)
+        XCTAssertEqual(p?.anchor, ParagraphAnchor(align: .top, offset: 34))
+    }
+
+    func testParagraphAnchoredHorizontalHonoursCentreAndRight() {
+        let centred = HwpReader.paragraphAnchoredPlacement(
+            size: CGSize(width: 100, height: 50), vertRelTo: "para", horzRelTo: "paper",
+            vertAlign: "top", horzAlign: "center", offset: .zero, page: paper)
+        XCTAssertEqual(centred?.frame.midX ?? 0, paper.paperWidth / 2, accuracy: 0.01)
+        let right = HwpReader.paragraphAnchoredPlacement(
+            size: CGSize(width: 100, height: 50), vertRelTo: "para", horzRelTo: "column",
+            vertAlign: "top", horzAlign: "right", offset: CGPoint(x: 20, y: 0), page: paper)
+        XCTAssertEqual(right?.frame.maxX ?? 0, paper.marginLeft + paper.contentWidth - 20, accuracy: 0.01)
+    }
+
+    func testAPaperAnchoredObjectIsNotAnsweredTwice() {
+        // The two placement rules must partition the vocabulary: a paper/page-relative object is
+        // already fully placed, and answering it here as well would give it two positions.
+        XCTAssertNil(HwpReader.paragraphAnchoredPlacement(
+            size: CGSize(width: 10, height: 10), vertRelTo: "paper", horzRelTo: "paper",
+            vertAlign: "top", horzAlign: "left", offset: .zero, page: paper))
+    }
+
+    /// The vertical half, finished the way the draw pass finishes it: the reference is the anchoring
+    /// LINE, and the align says which of its edges the offset is measured from.
+    func testParagraphAnchorMeasuresFromTheAlignedEdgeOfTheLine() {
+        let top = ParagraphAnchor(align: .top, offset: 6)
+        XCTAssertEqual(top.top(lineTop: 200, lineHeight: 18, objectHeight: 40), 206)
+
+        let centre = ParagraphAnchor(align: .center, offset: 0)
+        XCTAssertEqual(centre.top(lineTop: 200, lineHeight: 18, objectHeight: 40), 200 + (18 - 40) / 2,
+                       "centre puts the object's middle on the line's middle, even when it is taller")
+
+        let bottom = ParagraphAnchor(align: .bottom, offset: 5)
+        XCTAssertEqual(bottom.top(lineTop: 200, lineHeight: 18, objectHeight: 40) + 40, 200 + 18 - 5,
+                       "bottom measures the offset UP from the line's own bottom edge")
+    }
+
+    /// The defect the rejected float layer shipped: with the offsets alone, every object is placed as
+    /// if it were top-aligned. This asserts the three aligns actually DIVERGE, so a regression that
+    /// dropped the align would fail here rather than look plausible.
+    func testTheThreeAlignsDoNotAgree() {
+        let ys = [ParagraphAnchor.Align.top, .center, .bottom].map {
+            ParagraphAnchor(align: $0, offset: 4).top(lineTop: 100, lineHeight: 60, objectHeight: 20)
+        }
+        XCTAssertEqual(Set(ys).count, 3, "top/center/bottom must land in three different places: \(ys)")
     }
 }

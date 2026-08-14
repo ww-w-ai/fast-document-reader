@@ -2578,6 +2578,151 @@ final class OdtReaderTests: XCTestCase {
         XCTAssertEqual(result.footers, [])
     }
 
+    // MARK: The master page the body is TYPESET on (the ODF mirror of invariant 79's docx rule)
+
+    /// A landscape appendix declared LAST must not typeset the whole document, and its running
+    /// header must not become the document's. This is the ODF shape of the same defect invariant 73
+    /// measured in HWP and invariant 79 removed from docx: taking a master page by DECLARATION
+    /// ORDER rather than by how much body actually sits under it.
+    ///
+    /// `Landscape` is second here, so the "first master page wins" reader this replaced would have
+    /// been right by luck; the switch is what makes it wrong — the body's last paragraph moves onto
+    /// `Landscape`, and only counting paragraphs keeps `Standard`'s A4 paper and its header.
+    func testTypesetMasterPageIsTheOneMostOfTheBodySitsUnder() throws {
+        let styles = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-styles>
+          <office:automatic-styles>
+            <style:page-layout style:name="pmPortrait">
+              <style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm" fo:margin-right="2cm"/>
+            </style:page-layout>
+            <style:page-layout style:name="pmLandscape">
+              <style:page-layout-properties fo:page-width="29.7cm" fo:margin-left="1cm" fo:margin-right="1cm"/>
+            </style:page-layout>
+          </office:automatic-styles>
+          <office:styles>
+            <style:style style:name="AppendixStart" style:family="paragraph" style:master-page-name="Landscape"/>
+          </office:styles>
+          <office:master-styles>
+            <style:master-page style:name="Standard" style:page-layout-name="pmPortrait">
+              <style:header><text:p>Body header</text:p></style:header>
+            </style:master-page>
+            <style:master-page style:name="Landscape" style:page-layout-name="pmLandscape">
+              <style:header><text:p>Appendix header</text:p></style:header>
+            </style:master-page>
+          </office:master-styles>
+        </office:document-styles>
+        """
+        let body = """
+        <text:p>one</text:p><text:p>two</text:p><text:p>three</text:p>
+        <text:p text:style-name="AppendixStart">appendix</text:p>
+        """
+        let r = try readResult(body: body, styles: styles)
+        XCTAssertEqual(r.pageContentWidth ?? -1, 17.0 * 72 / 2.54, accuracy: 0.01,
+                       "three paragraphs on Standard outvote one on Landscape — A4 body width, not 27.7cm")
+        XCTAssertEqual(r.headers.first?.blocks, [.paragraph(spans: [Span(text: "Body header")])])
+    }
+
+    /// The mirror image, so the rule is proven to actually COUNT rather than always pick the first:
+    /// the same file with the switch early enough that most of the body lands on the second master
+    /// page must typeset on THAT one.
+    func testTypesetMasterPageFollowsTheCountNotTheDeclarationOrder() throws {
+        let styles = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-styles>
+          <office:automatic-styles>
+            <style:page-layout style:name="pmPortrait">
+              <style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm" fo:margin-right="2cm"/>
+            </style:page-layout>
+            <style:page-layout style:name="pmLandscape">
+              <style:page-layout-properties fo:page-width="29.7cm" fo:margin-left="1cm" fo:margin-right="1cm"/>
+            </style:page-layout>
+          </office:automatic-styles>
+          <office:styles>
+            <style:style style:name="AppendixStart" style:family="paragraph" style:master-page-name="Landscape"/>
+          </office:styles>
+          <office:master-styles>
+            <style:master-page style:name="Standard" style:page-layout-name="pmPortrait">
+              <style:header><text:p>Body header</text:p></style:header>
+            </style:master-page>
+            <style:master-page style:name="Landscape" style:page-layout-name="pmLandscape">
+              <style:header><text:p>Appendix header</text:p></style:header>
+            </style:master-page>
+          </office:master-styles>
+        </office:document-styles>
+        """
+        let body = """
+        <text:p>cover</text:p>
+        <text:p text:style-name="AppendixStart">wide one</text:p><text:p>wide two</text:p><text:p>wide three</text:p>
+        """
+        let r = try readResult(body: body, styles: styles)
+        XCTAssertEqual(r.pageContentWidth ?? -1, 27.7 * 72 / 2.54, accuracy: 0.01,
+                       "the switch carries every following paragraph, so Landscape holds three of four")
+        XCTAssertEqual(r.headers.first?.blocks, [.paragraph(spans: [Span(text: "Appendix header")])])
+    }
+
+    /// A writer puts the switch on an AUTOMATIC style (`P1`) that inherits it from the named style
+    /// — reading only the style the paragraph names directly would miss every real document.
+    func testMasterPageSwitchIsInheritedThroughParentStyleName() throws {
+        let styles = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-styles>
+          <office:automatic-styles>
+            <style:page-layout style:name="pmPortrait">
+              <style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm" fo:margin-right="2cm"/>
+            </style:page-layout>
+            <style:page-layout style:name="pmLandscape">
+              <style:page-layout-properties fo:page-width="29.7cm" fo:margin-left="1cm" fo:margin-right="1cm"/>
+            </style:page-layout>
+          </office:automatic-styles>
+          <office:styles>
+            <style:style style:name="AppendixStart" style:family="paragraph" style:master-page-name="Landscape"/>
+          </office:styles>
+          <office:master-styles>
+            <style:master-page style:name="Standard" style:page-layout-name="pmPortrait"/>
+            <style:master-page style:name="Landscape" style:page-layout-name="pmLandscape"/>
+          </office:master-styles>
+        </office:document-styles>
+        """
+        let r = try readResult(
+            body: """
+            <text:p>cover</text:p>
+            <text:p text:style-name="P1">wide one</text:p><text:p>wide two</text:p><text:p>wide three</text:p>
+            """,
+            automaticStyles: "<style:style style:name=\"P1\" style:family=\"paragraph\" style:parent-style-name=\"AppendixStart\"/>",
+            styles: styles)
+        XCTAssertEqual(r.pageContentWidth ?? -1, 27.7 * 72 / 2.54, accuracy: 0.01)
+    }
+
+    /// An EMPTY `style:master-page-name` is ODF's "break the page, keep the page style". Treating it
+    /// as a switch would move the body onto a master page named "" — no geometry, no header.
+    func testEmptyMasterPageNameIsAPageBreakNotASwitch() throws {
+        let styles = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <office:document-styles>
+          <office:automatic-styles>
+            <style:page-layout style:name="pmPortrait">
+              <style:page-layout-properties fo:page-width="21cm" fo:margin-left="2cm" fo:margin-right="2cm"/>
+            </style:page-layout>
+          </office:automatic-styles>
+          <office:styles>
+            <style:style style:name="JustABreak" style:family="paragraph" style:master-page-name=""/>
+          </office:styles>
+          <office:master-styles>
+            <style:master-page style:name="Standard" style:page-layout-name="pmPortrait">
+              <style:header><text:p>Body header</text:p></style:header>
+            </style:master-page>
+            <style:master-page style:name="Other" style:page-layout-name="pmPortrait"/>
+          </office:master-styles>
+        </office:document-styles>
+        """
+        let r = try readResult(
+            body: "<text:p>one</text:p><text:p text:style-name=\"JustABreak\">two</text:p><text:p>three</text:p>",
+            styles: styles)
+        XCTAssertEqual(r.pageContentWidth ?? -1, 17.0 * 72 / 2.54, accuracy: 0.01)
+        XCTAssertEqual(r.headers.first?.blocks, [.paragraph(spans: [Span(text: "Body header")])])
+    }
+
     private func repoRoot() -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
