@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : e64b81369850228a985418aa2ad8a53b39641fd4
+rhwp commit   : 2288e08460e75469728acbf599638c1185002636
 rhwp branch   : fastdocreader/charshape-export
-rhwp subject  : Export what the model already knew and the host had to guess
+rhwp subject  : Say where a drawing's text box sits
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 58857512
-library sha256: f331a9f91fcfeaca90c4fec5965be3004b55f987aca45aabca2ed3dfc7abe055
+library bytes : 58868776
+library sha256: af68b3520b848c33ea2710dee08105f1ed4e1e29587c0da785861ccfea0cf79f

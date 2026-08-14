@@ -1,0 +1,109 @@
+From 2288e08460e75469728acbf599638c1185002636 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Sat, 15 Aug 2026 02:00:37 +0900
+Subject: [PATCH 20/20] Say where a drawing's text box sits
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A text box's paragraphs were exported with no geometry at all, so a host could
+only pour them into the body column — the 발간사 printed inside a 300pt frame
+spread across the full 396pt column instead. The box's own position and size now
+travel with its paragraphs, accumulated through group nesting.
+
+Note for the host: a group CHILD states its offset in the GROUP's coordinates,
+not the paper's. Resolving that is this renderer's own group-origin walk
+(shape_layout.rs); treating the raw offset as a paper coordinate was measured on
+2025_행정업무운영편람_최종.hwp and left 1,510 paragraphs with almost no width.
+---
+ src/document_core/queries/document_json.rs | 49 +++++++++++++++++++++-
+ 1 file changed, 47 insertions(+), 2 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index b647abe9..caf75ed7 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -512,6 +512,16 @@ struct ParaBlock {
+     /// 비어 있으면 문서가 정한 것이 없다는 뜻이고, 호스트의 기본 탭 폭이 곧 답이다.
+     #[serde(rename = "tabStops", skip_serializing_if = "Vec::is_empty")]
+     tab_stops: Vec<TabStopDto>,
++    /// 이 문단이 본문이 아니라 **글상자 안**에 있을 때, 그 상자의 위치·크기(HWPUNIT).
++    /// 없으면 본문 문단이다.
++    #[serde(rename = "boxX", skip_serializing_if = "Option::is_none")]
++    box_x: Option<i32>,
++    #[serde(rename = "boxY", skip_serializing_if = "Option::is_none")]
++    box_y: Option<i32>,
++    #[serde(rename = "boxW", skip_serializing_if = "Option::is_none")]
++    box_w: Option<i32>,
++    #[serde(rename = "boxH", skip_serializing_if = "Option::is_none")]
++    box_h: Option<i32>,
+ }
+ 
+ /// 탭 정지 하나 — 위치(HWPUNIT)와 종류.
+@@ -1108,6 +1118,10 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+         keep_lines: ps.map(|p| (p.attr1 >> 18) & 1 != 0 || (p.attr2 >> 7) & 1 != 0).unwrap_or(false),
+         widow_orphan: ps.map(|p| (p.attr1 >> 16) & 1 != 0 || (p.attr2 >> 5) & 1 != 0).unwrap_or(false),
+         page_break_before: ps.map(|p| (p.attr1 >> 19) & 1 != 0 || (p.attr2 >> 8) & 1 != 0).unwrap_or(false),
++        box_x: None,
++        box_y: None,
++        box_w: None,
++        box_h: None,
+         tab_stops: ps
+             .and_then(|p| doc_info.tab_defs.get(p.tab_def_id as usize))
+             .map(|def| {
+@@ -1392,12 +1406,39 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+ /// drawing can contain. `shape_text_box` alone reads the top object's own drawing, and a GROUP has
+ /// no drawing of its own, so a flattened HWPX group's words were invisible to it.
+ fn push_shape_text_boxes(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>) {
++    push_shape_text_boxes_at(doc, shape, 0, 0, out)
++}
++
++/// 글상자 문단을 모으되, 그 글상자가 **어디에 얼마만 한 크기로** 놓여 있는지도 함께 실어 준다.
++///
++/// 이 문단들은 본문 흐름이 아니라 도형 안에 있다. 좌표 없이 문단만 보내면 호스트는 본문 단 전체
++/// 너비로 흘려 버리고, 문서가 정한 자리(예: 발간사 액자 안 300pt 폭)와 어긋난다. 오프셋은 묶음
++/// 개체 안에서 누적한다 — 자식은 자기 묶음 원점 기준으로 위치를 말하기 때문이다.
++fn push_shape_text_boxes_at(
++    doc: &Document,
++    shape: &ShapeObject,
++    origin_x: i32,
++    origin_y: i32,
++    out: &mut Vec<Block>,
++) {
++    let common = shape.common();
++    let x = origin_x + common.horizontal_offset as i32;
++    let y = origin_y + common.vertical_offset as i32;
+     if let Some(text) = shape_text_box(shape) {
+-        out.extend(build_blocks(doc, &text.paragraphs));
++        let mut blocks = build_blocks(doc, &text.paragraphs);
++        for block in blocks.iter_mut() {
++            if let Block::Para(para) = block {
++                para.box_x = Some(x);
++                para.box_y = Some(y);
++                para.box_w = Some(common.width as i32);
++                para.box_h = Some(common.height as i32);
++            }
++        }
++        out.extend(blocks);
+     }
+     if let ShapeObject::Group(group) = shape {
+         for child in &group.children {
+-            push_shape_text_boxes(doc, child, out);
++            push_shape_text_boxes_at(doc, child, x, y, out);
+         }
+     }
+ }
+@@ -1868,6 +1909,10 @@ fn minimal_note_para(span: Span) -> ParaBlock {
+         widow_orphan: false,
+         page_break_before: false,
+         tab_stops: Vec::new(),
++        box_x: None,
++        box_y: None,
++        box_w: None,
++        box_h: None,
+     }
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+
