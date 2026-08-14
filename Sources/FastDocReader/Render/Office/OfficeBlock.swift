@@ -1007,6 +1007,15 @@ struct OfficeReadResult: Equatable {
     /// covers a given page. Empty for a format or a parser that does not say.
     var sectionStartBlocks: [Int] = []
 
+    /// Blocks the DOCUMENT says must start a new page — a paragraph carrying HWP's own 쪽 나누기 or
+    /// 구역 나누기 (`ColumnBreakType::Page`/`Section`).
+    ///
+    /// Without this a reader receives only the flow, so every break the author placed disappears and
+    /// the text simply runs on: a cover's artwork and the foreword meant to follow it on its own page
+    /// end up sharing one, and every page after that is off by however much slid up. It is the
+    /// document's own instruction, not a heuristic about what looks like a new page.
+    var pageBreakBlocks: [Int] = []
+
     /// The section's LINE GRID pitch in points — Word's `w:sectPr/w:docGrid` with
     /// `@w:type="lines"`/`"linesAndChars"`, whose `@w:linePitch` is in twips.
     ///

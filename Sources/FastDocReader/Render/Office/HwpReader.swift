@@ -243,6 +243,16 @@ enum HwpReader {
                             paged: pageWidth != nil)
         }, comments: [])
         result.anchoredObjects = shapes.anchored
+        // The author's OWN page breaks. `section` counts too: a Korean document starts a new page at
+        // a section break, and this reader flattens every section into one column (invariant 57), so
+        // without it the sections simply run together. `multiColumn`/`column` are NOT page breaks —
+        // they move to the next COLUMN, which a single-column reader has nowhere to honour, and
+        // treating them as pages would invent breaks the document never asked for.
+        result.pageBreakBlocks = envelope.blocks.enumerated().compactMap { index, block in
+            guard case .para(let p) = block,
+                  p.breakBefore == "page" || p.breakBefore == "section" else { return nil }
+            return index
+        }
         // The drawings this read rendered — merged, not assigned, so a later `read()` that also
         // fetches embedded pictures keeps both (invariant: one media map, one id space).
         result.images = shapes.images
@@ -943,13 +953,31 @@ enum HwpReader {
             let declared = CGSize(width: points(im.w), height: points(im.h))
             let size = relativeGraphicSize(w: im.w, h: im.h, criterion: im.widthCriterion,
                                            pageWidth: pageWidth) ?? declared
-            // A PICTURE stays in the flow even when the document anchors it, deliberately. Taking
-            // one out was built and measured on the same manual: its cover is two pages of anchored
-            // artwork and nothing else, so floating them collapsed the cover to no pages at all
-            // (451 → 436) — this reader lays every section into ONE column and does not start a page
-            // per section (invariants 57/73), so a page with only anchored content has nothing left
-            // to make it a page. A drawing is different: it was DROPPED entirely before, so floating
-            // it can only add.
+            // PINNED TO THE PAPER — a cover's artwork, the frame a foreword is printed inside. It is
+            // drawn on the sheet its anchoring block falls on, exactly like an anchored drawing.
+            //
+            // This was measured and REJECTED once, and what changed is not the reasoning but a
+            // missing fact: with the picture out of the flow, a page that holds nothing else stopped
+            // existing at all, and the manual's two-page cover collapsed (451 → 436). Pages existed
+            // only where text reached. They no longer do — the document's own page breaks are read
+            // now (`pageBreakBlocks`), so a page the author declared exists whether or not anything
+            // flows onto it, and the artwork has a sheet to be drawn on. Keeping the picture inline
+            // is what was corrupting everything after it: a 688pt frame in a 555pt body takes two
+            // pages by itself and pushes the text meant to sit INSIDE it onto the next one.
+            if im.asChar != true, let paper = shapes.paper, let bytes = shapes.picture?(im.binDataId),
+               let image = NSImage(data: bytes),
+               let frame = anchoredFrame(size: size, vertRelTo: im.vertRelTo ?? "para",
+                                         horzRelTo: im.horzRelTo ?? "para",
+                                         vertAlign: im.vertAlign ?? "top",
+                                         horzAlign: im.horzAlign ?? "left",
+                                         offset: CGPoint(x: points(im.offsetX ?? 0),
+                                                         y: points(im.offsetY ?? 0)),
+                                         page: paper) {
+                shapes.anchored.append(OfficeAnchoredObject(
+                    blockIndex: shapes.blockIndex,
+                    object: OfficeMasterObject(frame: frame, content: .image(image))))
+                return .paragraph(spans: [])
+            }
             return .image(id: "\(hwpImagePrefix)\(im.binDataId)", size: size,
                           alignment: imageAlignment(im.align))
         case .shape(let sh):
@@ -1314,6 +1342,8 @@ private struct HwpPara: Decodable {
     var spaceAfter: Int?
     var lineHeight: HwpLineHeight?
     var list: HwpList?
+    /// `"page"`/`"section"`/`"multiColumn"`/`"column"`, absent when the paragraph starts nothing.
+    var breakBefore: String?
 }
 
 private struct HwpLineHeight: Decodable {

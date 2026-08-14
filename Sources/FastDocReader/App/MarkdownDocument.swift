@@ -53,6 +53,11 @@ final class MarkdownDocument: NSDocument {
     /// for every format but HWP. See `OfficeReadResult.sectionStartBlocks`.
     private(set) var officeSectionStartBlocks: [Int] = []
 
+    /// The blocks the DOCUMENT itself breaks a page at — carried through to the builder, which marks
+    /// them with `MDAttr.startsPage` so layout can start each one on a fresh page. Empty for every
+    /// format but HWP. See `OfficeReadResult.pageBreakBlocks`.
+    private(set) var officePageBreakBlocks: [Int] = []
+
     /// The 바탕쪽 templates the source declares for the section this column is typeset on — see
     /// `OfficeMasterPage`. Threaded exactly like `officeHeaders` above. Empty for docx/odt (no such
     /// mechanism), for markdown/plain text, and for an HWP that declares none. UNLIKE a running
@@ -336,6 +341,7 @@ final class MarkdownDocument: NSDocument {
                 headers: result.headers, footers: result.footers,
                 masterPages: result.masterPages,
                 sectionStartBlocks: result.sectionStartBlocks,
+                pageBreakBlocks: result.pageBreakBlocks,
                 anchoredObjects: result.anchoredObjects,
                 lineGridPitch: result.lineGridPitch)
             return
@@ -355,6 +361,7 @@ final class MarkdownDocument: NSDocument {
                 headers: result.headers, footers: result.footers,
                 masterPages: result.masterPages,
                 sectionStartBlocks: result.sectionStartBlocks,
+                pageBreakBlocks: result.pageBreakBlocks,
                 anchoredObjects: result.anchoredObjects,
                 lineGridPitch: result.lineGridPitch)
     }
@@ -375,6 +382,7 @@ final class MarkdownDocument: NSDocument {
         headers: [OfficeHeaderFooter] = [], footers: [OfficeHeaderFooter] = [],
         masterPages: [OfficeMasterPage] = [],
         sectionStartBlocks: [Int] = [],
+        pageBreakBlocks: [Int] = [],
         anchoredObjects: [OfficeAnchoredObject] = [],
         lineGridPitch: CGFloat? = nil
     ) {
@@ -395,6 +403,7 @@ final class MarkdownDocument: NSDocument {
         self.officeFooters = footers
         self.officeMasterPages = masterPages
         self.officeSectionStartBlocks = sectionStartBlocks
+        self.officePageBreakBlocks = pageBreakBlocks
         self.officeAnchoredObjects = anchoredObjects
         self.officeLineGridPitch = lineGridPitch
         self.text = ""
@@ -508,6 +517,7 @@ final class MarkdownDocument: NSDocument {
                                  headers: result.headers, footers: result.footers,
                                  masterPages: result.masterPages,
                                  sectionStartBlocks: result.sectionStartBlocks,
+                                 pageBreakBlocks: result.pageBreakBlocks,
                                  anchoredObjects: result.anchoredObjects,
                                  lineGridPitch: result.lineGridPitch)
             case .text(let reread):
@@ -1372,6 +1382,7 @@ final class MarkdownDocument: NSDocument {
                                            comments: officeComments,
                                            deferringTables: deferredTables,
                                            sectionStartBlocks: officeSectionStartBlocks,
+                                           pageBreakBlocks: officePageBreakBlocks,
                                            anchoredObjects: officeAnchoredBlockMap)
             // Running-header/footer page-boundary reservation AND painting (header-footer-design.md
             // §4/§5, build steps 4/5): wired here, before `wc.display(attr)` below replaces the

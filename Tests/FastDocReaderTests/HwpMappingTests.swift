@@ -37,6 +37,38 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertNil(try HwpReader.mapJSON("{\"v\":1,\"pageContentWidth\":-5,\"blocks\":[]}").pageContentWidth)
     }
 
+    // MARK: the author's own page breaks (invariant 82)
+
+    func testAParagraphsPageBreakIsRecordedAsTheBlockThatStartsAPage() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"para","spans":[{"text":"cover"}]},
+          {"t":"para","spans":[{"text":"foreword"}],"breakBefore":"page"},
+          {"t":"para","spans":[{"text":"more"}]},
+          {"t":"para","spans":[{"text":"chapter"}],"breakBefore":"section"}
+        ]}
+        """
+        XCTAssertEqual(try HwpReader.mapJSON(json).pageBreakBlocks, [1, 3],
+                       "a section break starts a page too — this reader flattens sections into one column")
+    }
+
+    func testAColumnBreakIsNotAPageBreak() throws {
+        // `column`/`multiColumn` move to the next COLUMN. A single-column reader cannot honour that,
+        // and calling it a page would invent breaks the document never asked for.
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"para","spans":[{"text":"a"}],"breakBefore":"column"},
+          {"t":"para","spans":[{"text":"b"}],"breakBefore":"multiColumn"}
+        ]}
+        """
+        XCTAssertTrue(try HwpReader.mapJSON(json).pageBreakBlocks.isEmpty)
+    }
+
+    func testAParserPredatingTheFieldBreaksNothing() throws {
+        XCTAssertTrue(try HwpReader.mapJSON(envelope("{\"t\":\"para\",\"spans\":[{\"text\":\"x\"}]}"))
+            .pageBreakBlocks.isEmpty)
+    }
+
     // MARK: page content height + all four margins — HWP wired NONE of these before this change
 
     func testPageGeometryDecodedFromEnvelope() throws {

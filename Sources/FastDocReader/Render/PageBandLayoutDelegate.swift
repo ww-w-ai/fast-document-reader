@@ -76,6 +76,15 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// character location.
     var pullToNextPage: Set<Int> = []
 
+    /// Character locations the DOCUMENT breaks a page at (`MDAttr.startsPage` — HWP's 쪽 나누기 /
+    /// 구역 나누기), collected from the built text before layout runs.
+    ///
+    /// Unlike everything else recorded here, this is not measured FROM a layout: the instruction is
+    /// in the document, so it is known before the first line is placed. Honouring it is what keeps a
+    /// cover, a foreword and a table of contents on three pages instead of running them together and
+    /// pushing every page after them off by the difference.
+    var documentPageBreaks: Set<Int> = []
+
     /// Is this character inside a piece that must be broken where it stands? Linear over the record,
     /// which holds one entry per over-tall piece — single digits on real documents, and empty for the
     /// overwhelming majority, which is why the check begins by asking that.
@@ -222,6 +231,27 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         // is exactly page 0's own start. No separate branch is needed for it. `leadingBand == 0`
         // reduces this identically to the original, untranslated formula — a document with no
         // leading reservation is providably unaffected (`PageBandReservationTests` proves it).
+        // THE DOCUMENT'S OWN BREAK, before the "does it fit" rule: this line starts a page because
+        // the author said so, not because the previous one ran out of room. Table lines are excluded
+        // above (they own their geometry through the table), which is also why this sits after that
+        // guard rather than at the top.
+        if !documentPageBreaks.isEmpty, !insideTable {
+            let line = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil).location
+            if documentPageBreaks.contains(line) {
+                let page = PageBandLayoutDelegate.page(of: rect.minY, leadingBand: leadingBand, pitch: pitch)
+                let target = (page + 1) * pitch + leadingBand
+                let shift = target - rect.minY
+                // Already at a page top — the break has nothing to do, which is what makes a second
+                // layout pass over the same text idempotent.
+                if shift > 0.5 {
+                    lineFragmentRect.pointee.origin.y += shift
+                    lineFragmentUsedRect.pointee.origin.y += shift
+                    shiftCount += 1
+                    recordBand(page: page, top: rect.minY, target: target)
+                    return true
+                }
+            }
+        }
         let page = ((rect.minY - leadingBand) / pitch).rounded(.down)
         let textBottom = page * pitch + pageContentHeight
         guard (rect.maxY - leadingBand) > textBottom else { return false }

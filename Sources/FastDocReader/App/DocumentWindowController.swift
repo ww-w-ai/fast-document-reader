@@ -356,6 +356,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         pageBandDelegate.band = band
         // This render replaces the storage, so where the section markers sit is about to change.
         cachedSectionStarts = nil
+        // The document's own page breaks, read off the text that was just built. Known BEFORE
+        // layout (unlike every other record the delegate keeps, which is measured from a finished
+        // one), because the instruction came from the file rather than from how the lines fell.
+        pageBandDelegate.documentPageBreaks = documentPageBreakLocations()
         // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
         // edges the between-page reservation cannot reach on its own (header-footer-design.md's own
         // recorded gap). LEADING is gated on page 0's OWN applicable header actually carrying
@@ -456,6 +460,22 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             }
         }
         cachedSectionStarts = out
+        return out
+    }
+
+    /// Every character location the document breaks a page at — the first character of each block
+    /// carrying `MDAttr.startsPage`.
+    ///
+    /// Recomputed per render rather than cached: it is one walk over ATTRIBUTE RUNS (a couple of
+    /// hundred on a 400-page manual, not one per character), and a stale copy would break pages at
+    /// locations that belong to text that is no longer there.
+    private func documentPageBreakLocations() -> Set<Int> {
+        guard let storage = textView.textStorage, storage.length > 0 else { return [] }
+        var out: Set<Int> = []
+        storage.enumerateAttribute(MDAttr.startsPage, in: NSRange(location: 0, length: storage.length)) {
+            value, range, _ in
+            if value != nil { out.insert(range.location) }
+        }
         return out
     }
 

@@ -131,6 +131,7 @@ enum OfficeTextBuilder {
                       comments: [OfficeComment] = [],
                       deferringTables: Set<Int> = [],
                       sectionStartBlocks: [Int] = [],
+                      pageBreakBlocks: [Int] = [],
                       anchoredObjects: [Int: [Int]] = [:]) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var blockSeq = 0
@@ -160,6 +161,7 @@ enum OfficeTextBuilder {
         // block rather than a search per section.
         var sectionOfBlock: [Int: Int] = [:]
         for (section, first) in sectionStartBlocks.enumerated() { sectionOfBlock[first] = section }
+        let breaksPage = Set(pageBreakBlocks)
 
         func tagBlock(from start: Int, index: Int) {
             let r = NSRange(location: start, length: result.length - start)
@@ -180,6 +182,13 @@ enum OfficeTextBuilder {
             // never be found by a page.
             if let ids = anchoredObjects[index] {
                 result.addAttribute(MDAttr.anchoredObjects, value: ids, range: r)
+            }
+            // The document's own page break, marked on the block that starts the new page. A block
+            // that builds to nothing carries no marker for the same reason the section one does not:
+            // an empty run cannot be found by a line, so claiming one would put the break somewhere
+            // layout can never see it.
+            if breaksPage.contains(index) {
+                result.addAttribute(MDAttr.startsPage, value: true, range: r)
             }
         }
 

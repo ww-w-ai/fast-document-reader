@@ -296,6 +296,43 @@ final class PageBandReservationTests: XCTestCase {
         XCTAssertEqual(paged.last!.maxY - plain.last!.maxY, pagesCrossed * band, accuracy: 0.5)
     }
 
+    /// The AUTHOR's page break, not the page's own edge (invariant 82). A line marked
+    /// `documentPageBreaks` starts a fresh page even though it would have fitted where it stood —
+    /// this is what a document's 쪽 나누기 means, and dropping it is what let a cover, its blank verso
+    /// and a foreword run together on one page.
+    func testALineTheDocumentBreaksAtStartsAFreshPage() throws {
+        let column: CGFloat = 400
+        let text = body(paragraphs: 6)
+
+        let (plainStorage, plainLayout, plainContainer) = makeStack(columnWidth: column, delegate: nil)
+        plainStorage.setAttributedString(text)
+        let plain = lineRects(plainLayout, plainContainer)
+        let lineHeight = plain[1].minY - plain[0].minY
+        let pageHeight = (lineHeight * 12).rounded()
+        let delegate = PageBandLayoutDelegate(pageContentHeight: pageHeight, band: 40)
+
+        // The break goes on the SECOND PARAGRAPH's first character — a line well inside page 0, so
+        // "it fits where it stands" is true and only the document's instruction can move it. Taken
+        // from the STRING (the character after the first newline) rather than from a line rect: a
+        // rect belongs to the layout that produced it, and this one has to be known before layout.
+        let paragraphStart = (text.string as NSString).range(of: "\n").upperBound
+        let (storage, layout, container) = makeStack(columnWidth: column, delegate: delegate)
+        delegate.documentPageBreaks = [paragraphStart]
+        storage.setAttributedString(text)
+        let paged = lineRects(layout, container)
+
+        let pitch = pageHeight + 40
+        XCTAssertEqual(paged.count, plain.count, "a break must not change how the text WRAPS")
+        let brokenLine = try XCTUnwrap(paged.enumerated().first { index, _ in
+            let glyph = layout.glyphIndexForCharacter(at: paragraphStart)
+            return layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).minY == paged[index].minY
+        })
+        XCTAssertEqual(brokenLine.element.minY, pitch, accuracy: 0.5,
+                       "the marked line must start page 1, not sit where it fitted on page 0")
+        XCTAssertLessThan(paged[brokenLine.offset - 1].maxY, pitch,
+                          "the line before it stays on page 0")
+    }
+
     /// IDEMPOTENCE — re-laying out from the middle of the document must not double-shift. See
     /// `PageBandShiftSpikeTests.testRelayingOutFromTheMiddleDoesNotShiftTwice`'s own doc comment for
     /// why a running counter fails this and a rect-derived rule doesn't.

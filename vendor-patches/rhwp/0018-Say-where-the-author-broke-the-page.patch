@@ -1,0 +1,64 @@
+From 79eb7c93890c29286987dddc669b71ddf6cedc4e Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Sat, 15 Aug 2026 00:04:03 +0900
+Subject: [PATCH 18/18] Say where the author broke the page
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A paragraph carries the break that starts it — 쪽 나누기, 구역 나누기, 단 나누기
+— and the renderer here already honours it, but the structured export dropped it
+entirely. A host that receives only the flow therefore loses every page break the
+author placed: a cover's artwork and the foreword that should follow it on its own
+page run together, and every page after that is off by however much slid up.
+---
+ src/document_core/queries/document_json.rs | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index f8fa86ba..03f194f3 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -443,6 +443,11 @@ struct ParaBlock {
+     #[serde(rename = "lineHeight")]
+     line_height: LineHeight,
+     list: Option<ListInfo>,
++    /// 이 문단이 새 쪽/구역/단에서 시작하는가 — HWP 문단의 나누기 종류(`ColumnBreakType`).
++    /// 흐름만 받는 호스트는 이 신호가 없으면 저자가 정한 쪽나눔을 통째로 잃는다(표지 뒤에
++    /// 오는 글이 표지 위로 흘러 들어가는 식). `null` = 나누기 없음.
++    #[serde(rename = "breakBefore", skip_serializing_if = "Option::is_none")]
++    break_before: Option<&'static str>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -988,6 +993,19 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+         space_after,
+         line_height,
+         list,
++        break_before: break_before_str(para.column_type),
++    }
++}
++
++/// 문단의 나누기 종류를 호스트 어휘로. `None` 은 필드 자체를 생략한다.
++fn break_before_str(t: crate::model::paragraph::ColumnBreakType) -> Option<&'static str> {
++    use crate::model::paragraph::ColumnBreakType;
++    match t {
++        ColumnBreakType::None => None,
++        ColumnBreakType::Page => Some("page"),
++        ColumnBreakType::Section => Some("section"),
++        ColumnBreakType::MultiColumn => Some("multiColumn"),
++        ColumnBreakType::Column => Some("column"),
+     }
+ }
+ 
+@@ -1692,6 +1710,7 @@ fn minimal_note_para(span: Span) -> ParaBlock {
+             value: 0,
+         },
+         list: None,
++        break_before: None,
+     }
+ }
+ 
+-- 
+2.50.1 (Apple Git-155)
+

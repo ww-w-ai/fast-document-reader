@@ -149,4 +149,12 @@ enum MDAttr {
     /// belong to THIS block — the marker that says which page a paper-pinned object is drawn on.
     /// Set on the block the document anchored them at, and nowhere else.
     static let anchoredObjects = NSAttributedString.Key("mdAnchoredObjects")
+
+    /// Set on a block the DOCUMENT breaks a page at (HWP's 쪽 나누기 / 구역 나누기), so layout starts
+    /// it on a fresh page instead of letting it run on from the previous one. The value is `true`;
+    /// the attribute's PRESENCE is the instruction. Carried as a marker rather than as a shift
+    /// applied at build time for the same reason the running band is (invariant 58): the text
+    /// storage must stay the document's own text, and a reflow re-asks layout rather than replaying
+    /// arithmetic someone baked in.
+    static let startsPage = NSAttributedString.Key("mdStartsPage")
 }

@@ -1,7 +1,7 @@
 From 17e67ee2e9155abae3befb7a532d9ddbaf7a7ef1 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 28 Jul 2026 08:32:16 +0900
-Subject: [PATCH 02/17] Export the char shape id and a per-shape table of all
+Subject: [PATCH 02/18] Export the char shape id and a per-shape table of all
  seven font slots
 
 FastDocReader needs per-script fonts, and HWP stores seven font ids per char
