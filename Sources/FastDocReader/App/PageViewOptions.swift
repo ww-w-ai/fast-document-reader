@@ -28,6 +28,16 @@ struct PageViewOptions: Equatable {
     var header: Bool { outline }
     var footer: Bool { outline }
 
+    /// The 바탕쪽 — the template a Korean document repeats behind every page: its running title, the
+    /// tab down the outer edge, the artwork and the PAGE NUMBER (invariant 78).
+    ///
+    /// A stored sub-choice UNDER the outline rather than a derived one, unlike the header and footer
+    /// above: those are the same two bands the outline itself draws, while this is a whole layer of
+    /// the document's own furniture — the owner asked for it where the other page choices live
+    /// (*"머리말 꼬리말 바탕쪽 등을 보고 안 보고 옵션화… 거기에 포함시켜"*). Still governed by the
+    /// outline: with no page drawn there is no sheet for it to be on.
+    var masterPage: Bool = true
+
     /// What to do with a table that will not finish on the page it starts on: BREAK it at a row
     /// boundary and carry the rest onto the next page (what Word does by default), or keep it whole
     /// and move the whole thing down.
@@ -44,7 +54,7 @@ struct PageViewOptions: Equatable {
     /// furniture toggles means "the shape before tables could be broken", which is exactly `false`.
     var splitTables: Bool = false
 
-    static let `default` = PageViewOptions(outline: true, splitTables: false)
+    static let `default` = PageViewOptions(outline: true, masterPage: true, splitTables: false)
 
     /// With the outline off a paged document reserves NO band at all
     /// (`PageBandLayoutDelegate.isActive`), which is the code path this reader had before any of the
@@ -61,7 +71,7 @@ struct PageViewOptions: Equatable {
     /// caller — every consumer therefore gets the rule without knowing it exists.
     var underOutlineRule: PageViewOptions {
         guard !outline else { return self }
-        return PageViewOptions(outline: false, splitTables: false)
+        return PageViewOptions(outline: false, masterPage: false, splitTables: false)
     }
 }
 
@@ -70,6 +80,7 @@ struct PageViewOptions: Equatable {
 enum PageViewOptionsStore {
     private static let outlineKey = "pageOutlineVisible"
     private static let splitTablesKey = "pageSplitTables"
+    private static let masterPageKey = "pageMasterPageVisible"
 
     /// `UserDefaults.bool(forKey:)` returns `false` for a key that was never written, which would make
     /// every default OFF — the opposite of what is wanted. Each flag is therefore read through
@@ -80,6 +91,7 @@ enum PageViewOptionsStore {
         set {
             let d = UserDefaults.standard
             d.set(newValue.outline, forKey: outlineKey)
+            d.set(newValue.masterPage, forKey: masterPageKey)
             d.set(newValue.splitTables, forKey: splitTablesKey)
         }
     }
@@ -96,6 +108,7 @@ enum PageViewOptionsStore {
             d.object(forKey: key) as? Bool ?? fallback
         }
         return PageViewOptions(outline: flag(outlineKey, PageViewOptions.default.outline),
+                               masterPage: flag(masterPageKey, PageViewOptions.default.masterPage),
                                splitTables: flag(splitTablesKey, PageViewOptions.default.splitTables))
     }
 
@@ -103,6 +116,6 @@ enum PageViewOptionsStore {
     /// defaults rather than from whatever an earlier case chose.
     static func reset() {
         let d = UserDefaults.standard
-        [outlineKey, splitTablesKey].forEach { d.removeObject(forKey: $0) }
+        [outlineKey, masterPageKey, splitTablesKey].forEach { d.removeObject(forKey: $0) }
     }
 }

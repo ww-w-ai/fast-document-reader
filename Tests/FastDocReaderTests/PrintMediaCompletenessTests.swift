@@ -38,7 +38,9 @@ final class PrintMediaCompletenessTests: XCTestCase {
         storage.enumerateAttribute(.attachment, in: NSRange(location: 0, length: storage.length)) { v, _, _ in
             guard let att = v as? NSTextAttachment else { return }
             guard let cell = att.attachmentCell as? SizedAttachmentCell else { return }
-            if att.image == nil && cell.undrawableLabel == nil { missing += 1 }
+            // Pixels live on the CELL for an office picture (invariant 31 — see
+            // `SizedAttachmentCell.pixels`); `att.image` remains the markdown path's home.
+            if att.image == nil && cell.pixels == nil && cell.undrawableLabel == nil { missing += 1 }
         }
         return missing
     }

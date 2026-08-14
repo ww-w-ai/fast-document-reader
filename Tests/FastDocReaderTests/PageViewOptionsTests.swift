@@ -44,7 +44,8 @@ final class PageViewOptionsTests: XCTestCase {
     func testTheOutlineIsTheMasterSwitch() {
         let chosen = PageViewOptions(outline: false, splitTables: true)
         XCTAssertEqual(chosen.underOutlineRule,
-                       PageViewOptions(outline: false, splitTables: false))
+                       PageViewOptions(outline: false, masterPage: false, splitTables: false),
+                       "the master page is under the outline too — no sheet, nothing to put on it")
         let withPages = PageViewOptions(outline: true, splitTables: true)
         XCTAssertEqual(withPages.underOutlineRule, withPages, "with a page, nothing is derived away")
 

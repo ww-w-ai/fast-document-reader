@@ -199,7 +199,7 @@ final class UndrawablePictureTests: XCTestCase {
 
         doc.reconcileMedia(in: wc)
 
-        XCTAssertNotNil(att.image, "a decodable picture still shows its own pixels")
+        XCTAssertNotNil(cell.pixels, "a decodable picture still shows its own pixels")
         XCTAssertNil(cell.undrawableLabel, "nothing failed, so nothing is claimed")
         XCTAssertEqual(cell.reservedSize, reservedBefore)
     }

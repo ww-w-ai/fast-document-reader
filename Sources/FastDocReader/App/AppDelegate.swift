@@ -200,6 +200,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // What happens to a table that will not finish on its page: break it where it stands, or carry
         // it whole to the next one. A table TALLER than the page is always broken whatever this says —
         // there is no whole page to carry it to (invariant 64).
+        // The document's own page template — the running title, the side tab, the artwork and the
+        // page number a Korean document keeps on its 바탕쪽 (invariant 78). Under the outline like
+        // every other page choice: with no page drawn there is no sheet to put it on.
+        viewMenu.addItem(withTitle: "Master Page Furniture",
+                         action: Selector(("toggleMasterPage:")), keyEquivalent: "")
         viewMenu.addItem(withTitle: "Split Tables Across Pages",
                          action: Selector(("toggleSplitTables:")), keyEquivalent: "")
         viewMenu.addItem(.separator())

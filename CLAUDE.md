@@ -85,7 +85,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 79 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 80 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -95,7 +95,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 
 | if you touch | read INVARIANTS.md |
 |---|---|
-| image / diagram / formula sizing, attachments, placeholders | 1, 2, 3, 10, 11, 31, 54, 75 |
+| image / diagram / formula sizing, attachments, placeholders | 1, 2, 3, 10, 11, 31, 54, 75, 80 |
 | the mermaid + KaTeX web-block cache | 4, 5, 13 |
 | `Info.plist`, document types, default handler, sandbox, entitlements | 6, 8, 9, 22, 28, 43, 69, 70 |
 | menus, Open Recent, titlebar accessory, sidebar, outline panel | 7, 21, 23, 26, 27 |

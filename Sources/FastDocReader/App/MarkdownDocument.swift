@@ -1773,6 +1773,7 @@ final class MarkdownDocument: NSDocument {
         func purgeAt(_ r: NSRange) {
             guard r.location < storage.length, let att = attach(r) else { return }
             att.image = nil                 // reserved size (cell) unchanged → space kept, no reflow
+            (att.attachmentCell as? SizedAttachmentCell)?.pixels = nil
             wc.redrawGlyphs(r)              // repaint the now-empty reserved area
         }
         // Office counterpart of `load`: PAINT ONLY. `OfficeTextBuilder` already reserved the exact,
@@ -1794,9 +1795,15 @@ final class MarkdownDocument: NSDocument {
         // that label; nothing here decides anything from them.
         func loadOfficePixels(_ image: NSImage?, _ bytes: Data?, _ r: NSRange) {
             guard gen == self.renderGeneration, r.location < storage.length, let att = attach(r) else { return }
-            if let image {
+            let cell = att.attachmentCell as? SizedAttachmentCell
+            if let image, let cell {
+                // On the CELL, never on the attachment — see `SizedAttachmentCell.pixels`. Setting
+                // `att.image` here is the one-liner that reads as harmless and silently hands layout
+                // back to AppKit, which sizes from the pixels instead of from the document's own box.
+                cell.pixels = image
+            } else if let image {
                 att.image = image
-            } else if let cell = att.attachmentCell as? SizedAttachmentCell {
+            } else if let cell {
                 cell.undrawableLabel = MarkdownDocument.undrawablePictureLabel(for: bytes)
             } else {
                 // No cell to draw through (invariant 31 — one was set once, so pixels had already
@@ -1821,8 +1828,8 @@ final class MarkdownDocument: NSDocument {
                 // without the second half of this test we would re-read, re-decode and re-fail that
                 // picture on every reconcile — which is to say on every scroll — for as long as the
                 // document stays open. The document that prompted this work carries eight of them.
-                guard att.image == nil,
-                      (att.attachmentCell as? SizedAttachmentCell)?.undrawableLabel == nil else { return }
+                let cell = att.attachmentCell as? SizedAttachmentCell
+                guard att.image == nil, cell?.pixels == nil, cell?.undrawableLabel == nil else { return }
                 if kind == .office {
                     // A linked (not embedded) office image's id carries the file's real,
                     // real-world location — a `file:///…`/`http(s)://…` URL, exactly the shape
@@ -1847,7 +1854,9 @@ final class MarkdownDocument: NSDocument {
                    MarkdownDocument.remoteSizes[u.absoluteString] == nil { return }
                 imgLoad.append((src, r))
             }
-            else if att.image != nil { purge.append(r) }
+            else if att.image != nil || (att.attachmentCell as? SizedAttachmentCell)?.pixels != nil {
+                purge.append(r)
+            }
         }
         storage.enumerateWebBlocks(in: whole) { block, r in
             guard let att = attach(r) else { return }

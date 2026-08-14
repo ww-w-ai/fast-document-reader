@@ -115,14 +115,14 @@ final class OfficeImageLoadingTests: XCTestCase {
         let cell = try XCTUnwrap(att.attachmentCell as? SizedAttachmentCell)
         let sizeBefore = cell.reservedSize
         let boundsBefore = att.bounds
-        XCTAssertNil(att.image, "no pixels yet — see OfficeTextBuilderTests for the build-time reservation")
+        XCTAssertNil(cell.pixels, "no pixels yet — see OfficeTextBuilderTests for the build-time reservation")
 
         let exp = expectation(description: "office image pixels loaded")
         doc.reconcileMedia(in: wc)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exp.fulfill() }
         wait(for: [exp], timeout: 2)
 
-        XCTAssertNotNil(att.image, "pixels should have loaded from the archive")
+        XCTAssertNotNil(cell.pixels, "pixels should have loaded from the archive, onto the CELL")
         XCTAssertEqual(cell.reservedSize, sizeBefore, "loading pixels must NEVER change the reserved layout size")
         XCTAssertEqual(att.bounds, boundsBefore, "loading pixels must NEVER change the attachment's bounds")
     }
@@ -150,7 +150,7 @@ final class OfficeImageLoadingTests: XCTestCase {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exp.fulfill() }
         wait(for: [exp], timeout: 2)
 
-        XCTAssertNotNil(att.image, "re-load should restore the pixels")
+        XCTAssertNotNil(cell.pixels, "re-load should restore the pixels")
         XCTAssertEqual(cell.reservedSize, reservedBeforePurge, "reload must reproduce the identical reserved size")
         XCTAssertEqual(att.bounds, boundsBeforePurge, "reload must reproduce the identical bounds")
     }

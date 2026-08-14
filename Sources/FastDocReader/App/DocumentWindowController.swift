@@ -428,7 +428,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// owner's master-switch rule (`PageViewOptions.underOutlineRule`) is exactly "the page outline
     /// is off, so there is no page for anything to be about".
     var masterPageContent: MasterPageContent? {
-        guard let pages = mdDocument?.officeMasterPages, !pages.isEmpty,
+        guard PageViewOptionsStore.current.masterPage,
+              let pages = mdDocument?.officeMasterPages, !pages.isEmpty,
               let band = pageBandContent else { return nil }
         return MasterPageContent(pages: pages, theme: band.theme,
                                  documentDefaultFontSize: band.documentDefaultFontSize,
@@ -1487,6 +1488,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let intent = PageViewOptionsStore.intent
         for (selector, on, needsOutline) in
                 [(#selector(togglePageOutline(_:)), intent.outline, false),
+                 (#selector(toggleMasterPage(_:)), intent.masterPage, true),
                  (#selector(toggleSplitTables(_:)), intent.splitTables, true)]
         where item.action == selector {
             item.state = on ? .on : .off
@@ -2784,6 +2786,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// every-open-window sweep, and a second path that re-derived any of that would drift from this
     /// one the first time either was touched (invariant 60f).
     @objc func toggleSplitTables(_ sender: Any?) { flipPageOption { $0.splitTables.toggle() } }
+    /// Show or hide the 바탕쪽. Through the same `flipPageOption` as the rest: it draws no differently
+    /// from the page furniture beside it and must re-solve and repaint every open window the same way.
+    @objc func toggleMasterPage(_ sender: Any?) { flipPageOption { $0.masterPage.toggle() } }
 
     /// Line (or page) numbers in the left margin. NOT a `flipPageOption`: nothing is re-solved and no
     /// line moves — the numbers are painted into the margin the reading column already sits inside —

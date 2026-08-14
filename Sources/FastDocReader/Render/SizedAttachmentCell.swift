@@ -27,6 +27,18 @@ final class SizedAttachmentCell: NSTextAttachmentCell {
     /// invariant 31: AppKit drops a custom `attachmentCell` the moment `.image` is set.
     var undrawableLabel: String?
 
+    /// The picture's own pixels, held HERE rather than on `attachment.image`.
+    ///
+    /// This is invariant 31 applied to the thing the invariant is actually about: setting
+    /// `attachment.image` makes AppKit drop this cell and lay the attachment out its own way, from
+    /// the image's NATURAL size — so an office picture whose declared box has a different aspect
+    /// than its pixels (36 of 124 in one real manual, one of them by 2.7×) silently stopped using
+    /// the reserved box the document asked for the moment its pixels arrived. What a reader saw was
+    /// a picture drawn at one size and a click/selection area at another.
+    ///
+    /// Kept on the cell, the reserved size governs both, always, whether pixels are loaded or not.
+    var pixels: NSImage?
+
     init(reservedSize: NSSize) {
         self.reservedSize = reservedSize
         super.init()
@@ -42,7 +54,7 @@ final class SizedAttachmentCell: NSTextAttachmentCell {
     }
 
     override func draw(withFrame cellFrame: NSRect, in controlView: NSView?) {
-        if let image = attachment?.image {
+        if let image = pixels ?? attachment?.image {
             image.draw(in: cellFrame, from: .zero, operation: .sourceOver, fraction: 1.0)
         } else if let undrawableLabel {
             // The SAME card `OfficeTextBuilder` bakes for a chart it has no picture for at all —
