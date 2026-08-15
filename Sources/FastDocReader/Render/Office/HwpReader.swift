@@ -149,6 +149,13 @@ enum HwpReader {
         /// The document's own paper, when it declared one — the reference an anchored object is
         /// placed against.
         var paper: PaperGeometry?
+        /// Where the drawing whose text box is being read sits on the paper. A text box's paragraphs
+        /// arrive as the SIBLING blocks right after their own drawing (the exporter's contract, see
+        /// `docs/BUILD-RHWP.md` item 7), and they state their geometry in that drawing's frame rather
+        /// than the paper's — so the frame this records is the origin those coordinates are measured
+        /// from. Nil until the walk has passed an anchored object, which is exactly when a box
+        /// coordinate cannot be resolved and is therefore ignored.
+        var lastAnchoredFrame: CGRect?
         /// The index of the top-level block being mapped, so an anchored object knows where in the
         /// document it belongs. Set by `mapJSON`'s own loop; nested content (a table cell) keeps the
         /// top-level block's index, which is the page-bearing one.
@@ -731,6 +738,44 @@ enum HwpReader {
         spans.compactMap { $0.size.flatMap { $0 > 0 ? CGFloat($0) / 100 : nil } }.max()
     }
 
+    /// A paragraph that lives INSIDE a drawing's text box, moved to where that box is.
+    ///
+    /// These words are not body text. A Korean document builds its cover and its foreword out of a
+    /// picture frame with a box of text sitting inside it, and a reader that flows them down the full
+    /// body column puts a 300pt block of type across a 396pt column — beside the frame it belongs in
+    /// rather than within it. The box states where it is (`boxX`/`boxW`, HWPUNIT) in ITS OWN
+    /// DRAWING's frame, so the paper position is that drawing's origin plus the box, and the indent
+    /// is what is left once the body column's own left edge is taken off.
+    ///
+    /// Only the HORIZONTAL half is honoured. The vertical one would have to lift the paragraph out of
+    /// the flow entirely, which is the floating-object layout invariant 31 measured and did not ship,
+    /// and doing it would also take the words out of `--extract` (invariant 40). Left in the flow the
+    /// text still reads and still extracts; it is only lower on the page than the document draws it.
+    ///
+    /// The narrowing is CLAMPED. Trusting a box width blindly is what the first attempt did with
+    /// coordinates that were not coordinates at all (`boxW` was 0 because a group child's own
+    /// `common` is empty), and 1,510 paragraphs took an indent that left them almost no width — the
+    /// 편람 went 520 pages to 436. A box that does not leave a readable column is not honoured.
+    private static func boxedFormat(_ format: ParagraphFormat, para p: HwpPara,
+                                    shapes: MediaContext) -> ParagraphFormat {
+        guard let paper = shapes.paper, let owner = shapes.lastAnchoredFrame,
+              let bx = p.boxX, let bw = p.boxW, bw > 0 else { return format }
+        let column = (left: paper.marginLeft, width: paper.contentWidth)
+        guard column.width > 0 else { return format }
+        let boxLeft = owner.minX + points(bx)
+        let boxWidth = points(bw)
+        let start = max(0, boxLeft - column.left)
+        let end = max(0, column.width - start - boxWidth)
+        // Below this the "box" is telling us something we cannot draw — a coordinate we misread, or a
+        // box that genuinely sits outside the body column. Flowing at full width is wrong but legible;
+        // a 40pt column is neither.
+        guard column.width - start - end >= column.width * 0.25 else { return format }
+        var f = format
+        f.indentStart = start
+        f.indentEnd = end
+        return f
+    }
+
     private static func paragraphFormat(_ p: HwpPara, defaultBodySize: CGFloat,
                                         paged: Bool) -> ParagraphFormat {
         var f = ParagraphFormat()
@@ -900,7 +945,7 @@ enum HwpReader {
         case .para(let p):
             let spans = p.spans.flatMap { mapSpan($0, slotFonts: slotFonts) }
             let align = alignment(p.align)
-            let format = paragraphFormat(p, defaultBodySize: defaultBodySize, paged: paged)
+            let base = paragraphFormat(p, defaultBodySize: defaultBodySize, paged: paged)
             // NOT indented to `boxX`/`boxW`, deliberately. A text box that is a GROUP's child states
             // its offset in the GROUP's coordinates, not the paper's, and rhwp resolves that through
             // its own render tree (`shape_layout.rs`'s group origin walk). Treating the raw offset as
@@ -923,6 +968,7 @@ enum HwpReader {
                 }
                 return TabStop(position: position, alignment: alignment)
             }
+            let format = boxedFormat(base, para: p, shapes: shapes)
             // An EXPLICIT outline paragraph is a heading because the document said so — no second
             // guessing. A STYLE-derived one is an inference, so it also has to look like a heading:
             // non-empty, and short enough to be a label rather than a sentence. Measured need — one
@@ -1015,6 +1061,7 @@ enum HwpReader {
                                          offset: CGPoint(x: points(im.offsetX ?? 0),
                                                          y: points(im.offsetY ?? 0)),
                                          page: paper) {
+                shapes.lastAnchoredFrame = frame
                 shapes.anchored.append(OfficeAnchoredObject(
                     blockIndex: shapes.blockIndex,
                     object: OfficeMasterObject(frame: frame, content: .image(image))))
@@ -1045,6 +1092,7 @@ enum HwpReader {
                                                          y: points(sh.offsetY ?? 0)),
                                          page: paper),
                let pdf = HwpShapeRenderer.pdf(paths: paths, size: size) {
+                shapes.lastAnchoredFrame = frame
                 shapes.anchored.append(OfficeAnchoredObject(
                     blockIndex: shapes.blockIndex,
                     object: OfficeMasterObject(frame: frame, content: .drawing(pdf))))
@@ -1060,6 +1108,7 @@ enum HwpReader {
                     offset: CGPoint(x: points(sh.offsetX ?? 0), y: points(sh.offsetY ?? 0)),
                     page: paper),
                let pdf = HwpShapeRenderer.pdf(paths: paths, size: size) {
+                shapes.lastAnchoredFrame = placement.frame
                 shapes.anchored.append(OfficeAnchoredObject(
                     blockIndex: shapes.blockIndex,
                     object: OfficeMasterObject(frame: placement.frame, content: .drawing(pdf)),

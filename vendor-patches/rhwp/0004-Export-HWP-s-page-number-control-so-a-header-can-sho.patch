@@ -1,7 +1,7 @@
 From d7c3f6f20ca1cd98bf173e45410a33558def6e5e Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Thu, 30 Jul 2026 03:34:11 +0900
-Subject: [PATCH 04/20] Export HWP's page-number control so a header can show
+Subject: [PATCH 04/21] Export HWP's page-number control so a header can show
  the page it is on
 
 HWP writes a page number as an AutoNumber(Page) control rather than characters,

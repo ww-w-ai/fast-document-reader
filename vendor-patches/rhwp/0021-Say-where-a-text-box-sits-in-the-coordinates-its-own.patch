@@ -1,0 +1,120 @@
+From e463c156f62ccc1b52a218b366c4d41c312e1b99 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Sat, 15 Aug 2026 12:09:35 +0900
+Subject: [PATCH 21/21] Say where a text box sits in the coordinates its own
+ drawing uses
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A group child's `common` is empty, so accumulating its offsets exported
+`boxX=2` and a 0x0 box — not a coordinate at all. A child's position is in
+its render matrix, which already composes every nested group's transform, so
+the outermost origin is added once and nesting never accumulates. A rotated
+child carries no box rather than an invented axis-aligned one.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 71 ++++++++++++++++++----
+ 1 file changed, 60 insertions(+), 11 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index caf75ed7..4b1aa7de 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -1412,8 +1412,18 @@ fn push_shape_text_boxes(doc: &Document, shape: &ShapeObject, out: &mut Vec<Bloc
+ /// 글상자 문단을 모으되, 그 글상자가 **어디에 얼마만 한 크기로** 놓여 있는지도 함께 실어 준다.
+ ///
+ /// 이 문단들은 본문 흐름이 아니라 도형 안에 있다. 좌표 없이 문단만 보내면 호스트는 본문 단 전체
+-/// 너비로 흘려 버리고, 문서가 정한 자리(예: 발간사 액자 안 300pt 폭)와 어긋난다. 오프셋은 묶음
+-/// 개체 안에서 누적한다 — 자식은 자기 묶음 원점 기준으로 위치를 말하기 때문이다.
++/// 너비로 흘려 버리고, 문서가 정한 자리(예: 발간사 액자 안 300pt 폭)와 어긋난다.
++///
++/// 좌표계는 **맨 바깥 개체의 원점 기준**이다(종이 기준이 아니다). 그 개체가 종이 어디에 앉는지는
++/// `asChar`/`vertRelTo`/`offsetX` 로 이미 따로 실려 있고, 호스트가 그림을 앉힐 때 쓰는 계산이
++/// 그대로 답이다. 여기서 그 계산을 한 번 더 하면 두 벌이 되어 갈라진다.
++///
++/// 묶음 자식의 위치는 `common` 이 아니라 **렌더 행렬**(`render_tx/ty` + `render_sx/sy`)에 있다.
++/// 자식의 `common` 은 비어 있어서(폭·높이 0, 오프셋 0) 그것을 누적하면 좌표가 아니라 잡음을 싣게
++/// 된다 — 실측으로 `boxX=2`, `boxW×boxH = 0×0` 이 나왔다. 행렬에는 중첩 묶음의 이동·확대·대칭이
++/// 이미 합성돼 있으므로 **맨 바깥 원점에만 더하고 중첩마다 다시 더하지 않는다**
++/// (`renderer/layout/shape_layout.rs` 의 group-origin walk 와 같은 규칙). 음수 배율이면 `tx` 가
++/// 오른쪽·아래 모서리일 수 있어 두 모서리의 min/max 로 상자를 만든다.
+ fn push_shape_text_boxes_at(
+     doc: &Document,
+     shape: &ShapeObject,
+@@ -1422,23 +1432,62 @@ fn push_shape_text_boxes_at(
+     out: &mut Vec<Block>,
+ ) {
+     let common = shape.common();
+-    let x = origin_x + common.horizontal_offset as i32;
+-    let y = origin_y + common.vertical_offset as i32;
++    let frame = Some((
++        origin_x,
++        origin_y,
++        common.width as i32,
++        common.height as i32,
++    ));
++    push_shape_text_boxes_in_group(doc, shape, origin_x, origin_y, frame, out)
++}
++
++/// `frame` = 이 개체가 차지하는 상자(맨 바깥 원점 기준, HWPUNIT). `None` 이면 **자리를 모른다**는
++/// 뜻이고, 그때는 좌표를 싣지 않아 호스트가 본문 흐름으로 두게 한다. 자식의 `common` 으로 채우는
++/// 것은 답이 아니다 — 비어 있어서 0×0 상자가 된다.
++fn push_shape_text_boxes_in_group(
++    doc: &Document,
++    shape: &ShapeObject,
++    origin_x: i32,
++    origin_y: i32,
++    frame: Option<(i32, i32, i32, i32)>,
++    out: &mut Vec<Block>,
++) {
+     if let Some(text) = shape_text_box(shape) {
+         let mut blocks = build_blocks(doc, &text.paragraphs);
+-        for block in blocks.iter_mut() {
+-            if let Block::Para(para) = block {
+-                para.box_x = Some(x);
+-                para.box_y = Some(y);
+-                para.box_w = Some(common.width as i32);
+-                para.box_h = Some(common.height as i32);
++        if let Some((x, y, w, h)) = frame {
++            for block in blocks.iter_mut() {
++                if let Block::Para(para) = block {
++                    para.box_x = Some(x);
++                    para.box_y = Some(y);
++                    para.box_w = Some(w);
++                    para.box_h = Some(h);
++                }
+             }
+         }
+         out.extend(blocks);
+     }
+     if let ShapeObject::Group(group) = shape {
+         for child in &group.children {
+-            push_shape_text_boxes_at(doc, child, x, y, out);
++            let sa = child.shape_attr();
++            // 회전·전단이 걸린 자식은 축에 나란한 상자로 말할 수 없다. 좌표를 지어내느니
++            // 말하지 않고 호스트가 흐름으로 두게 한다.
++            let rotated = sa.render_b.abs() > 1e-6 || sa.render_c.abs() > 1e-6;
++            let child_frame = if rotated {
++                None
++            } else {
++                let x0 = sa.render_tx;
++                let y0 = sa.render_ty;
++                let x1 = x0 + sa.original_width as f64 * sa.render_sx;
++                let y1 = y0 + sa.original_height as f64 * sa.render_sy;
++                Some((
++                    origin_x + x0.min(x1) as i32,
++                    origin_y + y0.min(y1) as i32,
++                    (x1 - x0).abs() as i32,
++                    (y1 - y0).abs() as i32,
++                ))
++            };
++            // 원점은 그대로 물려준다 — 행렬이 이미 맨 바깥 기준이다.
++            push_shape_text_boxes_in_group(doc, child, origin_x, origin_y, child_frame, out);
+         }
+     }
+ }
+-- 
+2.50.1 (Apple Git-155)
+
