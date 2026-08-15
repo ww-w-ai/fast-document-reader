@@ -1,0 +1,88 @@
+From 8b8c9737294c4534a15a2c6c40f43962f4a24e48 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Sat, 15 Aug 2026 12:21:37 +0900
+Subject: [PATCH 22/22] Say what paper each section declared, not just the
+ busiest one
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+HWP defines a page per section and the export carried one geometry for the
+whole document — the section with the most paragraphs. On the 2025 행정업무운영
+편람 that typeset a 413.9x612.3pt appendix on the body's 396.9x555.6pt sheet,
+throwing away 56.7pt of every appendix page. The per-section value reuses the
+document-level calculation rather than restating it.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 26 +++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 4b1aa7de..328873f1 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -338,13 +338,21 @@ fn default_body_font_size_pt(document: &Document) -> Option<f64> {
+     Some(cs.base_size as f64 / 100.0)
+ }
+ 
+-/// `page_geometry_pt` 의 계산 결과 — 본문 폭·높이 + 네 여백(전부 pt).
++/// `page_geometry_pt` 의 계산 결과 — 본문 폭·높이 + 네 여백(전부 pt). 문서 전체의 대표값으로도,
++/// 한 구역이 스스로 선언한 종이(`SectionDto.page`)로도 쓰이므로 직렬화 이름은 여기 한 벌만 있다.
++#[derive(Serialize)]
+ struct PageGeometry {
++    #[serde(rename = "contentWidth")]
+     content_width: f64,
++    #[serde(rename = "contentHeight")]
+     content_height: f64,
++    #[serde(rename = "marginLeft")]
+     margin_left: f64,
++    #[serde(rename = "marginRight")]
+     margin_right: f64,
++    #[serde(rename = "marginTop")]
+     margin_top: f64,
++    #[serde(rename = "marginBottom")]
+     margin_bottom: f64,
+ }
+ 
+@@ -393,6 +401,13 @@ fn page_geometry_pt(document: &Document) -> Option<PageGeometry> {
+         .enumerate()
+         .max_by_key(|(index, section)| (section.paragraphs.len(), std::cmp::Reverse(*index)))
+         .map(|(_, section)| section)?;
++    section_geometry_pt(section)
++}
++
++/// 한 구역이 선언한 종이와 본문 영역(pt). 문서 전체의 대표값(`page_geometry_pt`)과 **같은 계산**을
++/// 쓴다 — 대표값은 이 함수를 한 구역에 대해 부른 것일 뿐이다. 두 벌로 나뉘면 대표 쪽과 구역 쪽이
++/// 서로 다른 종이를 말하게 된다.
++fn section_geometry_pt(section: &crate::model::document::Section) -> Option<PageGeometry> {
+     let areas = PageAreas::from_page_def(&section.section_def.page_def);
+     let body = &areas.body_area;
+     let content_width = body.width();
+@@ -429,7 +444,9 @@ fn build_sections(document: &Document) -> Vec<SectionDto> {
+         .iter()
+         .map(|section| {
+             let def = &section.section_def;
++            let geometry = section_geometry_pt(section);
+             SectionDto {
++                page: geometry,
+                 hide_header: def.hide_header,
+                 hide_footer: def.hide_footer,
+                 hide_master_page: def.hide_master_page,
+@@ -445,6 +462,13 @@ fn build_sections(document: &Document) -> Vec<SectionDto> {
+ /// 한 구역이 스스로 선언한 것들.
+ #[derive(Serialize)]
+ struct SectionDto {
++    /// 이 구역이 선언한 종이와 본문 영역(pt). HWP 는 쪽을 **구역마다** 정의하는데 문서 전체의
++    /// `pageContentWidth`/`Height` 는 문단이 가장 많은 구역 하나만 골라 실어 왔다(invariant 73).
++    /// 그래서 앞부속과 부록처럼 여백이 다른 구역이 본문 종이로 조판돼 쪽이 남거나 모자랐다 —
++    /// 실측(2025 행정업무운영 편람): 본문 396.9×555.6pt 에 대해 부록은 413.9×612.3pt 로 쪽마다
++    /// 56.7pt 를 버리고 있었다. 없으면 그 구역이 종이를 말하지 않은 것이고, 대표값이 곧 답이다.
++    #[serde(rename = "page", skip_serializing_if = "Option::is_none")]
++    page: Option<PageGeometry>,
+     /// 이 구역이 머리말/꼬리말/바탕쪽을 감췄는가. 감춘 구역에 그리면 표지에 장 제목이 찍힌다.
+     #[serde(rename = "hideHeader", skip_serializing_if = "std::ops::Not::not")]
+     hide_header: bool,
+-- 
+2.50.1 (Apple Git-155)
+

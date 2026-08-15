@@ -45,6 +45,7 @@ Applied on top of upstream **`8d3bfa4b92174b16bac587fe1409975cf34ba566`** (just 
 | 0019 | The ten things the model knew and the export never said: keep-with-next / keep-lines / widow-orphan / style page-break-before, tab stops, a list's format + start number + glyph system + bullet char, a table's repeat-header rows, and each section's hidden furniture / page-number restart / grid / vertical flag (invariant 83) |
 | 0020 | Where a drawing's TEXT BOX sits — the position + size fields themselves (`boxX`/`boxY`/`boxW`/`boxH`) |
 | 0021 | …and the coordinates that actually fill them: a group CHILD's position is in its render matrix, which already composes every nested group's transform, so the outermost origin is added once and nesting never accumulates. Accumulating `common` offsets instead exported a 0×0 box, because a child's `common` is empty (invariant 85) |
+| 0022 | The paper EACH SECTION declared, not just the busiest one. HWP defines a page per section; carrying one geometry for the document typeset the 편람's 413.9×612.3pt appendix on the body's 396.9×555.6pt sheet |
 
 The set is regenerated wholesale — `git format-patch <base>..HEAD -o vendor-patches/rhwp/` from the
 fork — so it never drifts behind the submodule again (it had: 0005–0007 existed only as commits).

@@ -926,6 +926,11 @@ struct ListNumbering: Equatable {
 
 /// A section's own declarations about its pages — the half of a section that is not geometry.
 struct OfficeSectionDeclaration: Equatable {
+    /// The sheet THIS section declared. `nil` = the section stated no page of its own, and the
+    /// document's own geometry is the answer. HWP defines a page per section and this reader used to
+    /// keep only the busiest one (invariant 73), which typeset a 612pt appendix page on the body's
+    /// 555pt sheet.
+    var paper: PaperGeometry? = nil
     /// The section turned its own running header / footer / master page off. A veto, not a
     /// preference: a page in this section shows none, whatever the document declares elsewhere.
     var hidesHeader = false
@@ -940,6 +945,23 @@ struct OfficeSectionDeclaration: Equatable {
     /// horizontally, and saying so in the vocabulary is what lets a caller tell "we ignored it"
     /// apart from "the document never said".
     var isVertical = false
+}
+
+/// A sheet of paper, in points — the body area a page offers and the four margins around it.
+///
+/// Every office format states this per SECTION, not per document. This reader lays a document out at
+/// ONE width (invariant 57), so the width here is what an anchored object is placed against and what
+/// a page's own height is measured by; carrying it per section is what lets a page table know that
+/// an appendix's sheet is not the body's.
+struct PaperGeometry: Equatable {
+    var contentWidth: CGFloat
+    var contentHeight: CGFloat
+    var marginLeft: CGFloat
+    var marginTop: CGFloat
+    var marginRight: CGFloat
+    var marginBottom: CGFloat
+    var paperWidth: CGFloat { marginLeft + contentWidth + marginRight }
+    var paperHeight: CGFloat { marginTop + contentHeight + marginBottom }
 }
 
 /// One 바탕쪽 — the template a document repeats behind every page of a section.

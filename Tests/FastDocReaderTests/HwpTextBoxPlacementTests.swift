@@ -112,3 +112,45 @@ final class HwpTextBoxPlacementTests: XCTestCase {
         XCTAssertNil(f.indentEnd)
     }
 }
+
+/// What each SECTION says its own paper is.
+///
+/// HWP defines a page per section, and this reader kept only the section with the most paragraphs
+/// (invariant 73) — so a document whose appendix declares a different sheet was typeset on the
+/// body's. Measured on `2025 행정업무운영 편람`: the body's 396.9 × 555.6pt against the appendix's
+/// 413.9 × 612.3pt, which threw away 56.7pt of every appendix page.
+final class HwpSectionPaperTests: XCTestCase {
+
+    func testEachSectionCarriesTheSheetItDeclared() throws {
+        let json = """
+        {"v":1,"pageContentWidth":396.86,"pageContentHeight":555.59,
+         "sections":[
+           {"page":{"contentWidth":396.86,"contentHeight":555.59,"marginLeft":73.7,
+                    "marginRight":86.2,"marginTop":110.6,"marginBottom":87.9}},
+           {"page":{"contentWidth":413.87,"contentHeight":612.32,"marginLeft":70.9,
+                    "marginRight":70.9,"marginTop":70.8,"marginBottom":70.8},"hideHeader":true}],
+         "blocks":[]}
+        """
+        let sections = try HwpReader.mapJSON(json).sections
+        XCTAssertEqual(sections.count, 2)
+        let body = try XCTUnwrap(sections[0].paper)
+        let appendix = try XCTUnwrap(sections[1].paper)
+        XCTAssertEqual(body.contentHeight, 555.59, accuracy: 0.01)
+        XCTAssertEqual(appendix.contentHeight, 612.32, accuracy: 0.01)
+        // The whole point: the two sheets are NOT the same, and the reader can now tell.
+        XCTAssertNotEqual(body, appendix)
+        // The paper a page is cut from, margins included.
+        XCTAssertEqual(appendix.paperWidth, 70.9 + 413.87 + 70.9, accuracy: 0.01)
+        XCTAssertEqual(appendix.paperHeight, 70.8 + 612.32 + 70.8, accuracy: 0.01)
+        // The section's other declarations still decode beside it.
+        XCTAssertTrue(sections[1].hidesHeader)
+    }
+
+    /// A section that states no page of its own says so, rather than inheriting a sheet nobody
+    /// declared — the same distinction invariant 83 keeps for everything else in this vocabulary.
+    func testASectionThatDeclaredNoPageSaysSo() throws {
+        let sections = try HwpReader.mapJSON(
+            "{\"v\":1,\"sections\":[{\"hideFooter\":true}],\"blocks\":[]}").sections
+        XCTAssertNil(try XCTUnwrap(sections.first).paper)
+    }
+}

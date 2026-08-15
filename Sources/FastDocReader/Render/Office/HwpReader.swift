@@ -264,6 +264,11 @@ enum HwpReader {
         }
         result.sections = (envelope.sections ?? []).map { section in
             OfficeSectionDeclaration(
+                paper: section.page.map {
+                    PaperGeometry(contentWidth: $0.contentWidth, contentHeight: $0.contentHeight,
+                                  marginLeft: $0.marginLeft, marginTop: $0.marginTop,
+                                  marginRight: $0.marginRight, marginBottom: $0.marginBottom)
+                },
                 hidesHeader: section.hideHeader ?? false,
                 hidesFooter: section.hideFooter ?? false,
                 hidesMasterPage: section.hideMasterPage ?? false,
@@ -408,18 +413,10 @@ enum HwpReader {
                 ParagraphAnchor(align: align, offset: offset.y))
     }
 
-    /// The paper an anchored object is placed on, in points — what the reader already read off the
-    /// document's own page definition.
-    struct PaperGeometry {
-        var contentWidth: CGFloat
-        var contentHeight: CGFloat
-        var marginLeft: CGFloat
-        var marginTop: CGFloat
-        var marginRight: CGFloat
-        var marginBottom: CGFloat
-        var paperWidth: CGFloat { marginLeft + contentWidth + marginRight }
-        var paperHeight: CGFloat { marginTop + contentHeight + marginBottom }
-    }
+    /// The paper an anchored object is placed on lives in the format-neutral vocabulary
+    /// (`PaperGeometry` in `OfficeBlock.swift`) — a section's own sheet is a fact docx and odt state
+    /// too, so the type that carries it must not belong to one reader.
+    typealias PaperGeometry = FastDocReader.PaperGeometry
 
     /// One 바탕쪽 → the format-neutral `OfficeMasterPage`, or nil when nothing in it can be drawn.
     ///
@@ -1463,6 +1460,7 @@ private struct HwpLineHeight: Decodable {
 /// export, and then every section reads as declaring nothing, which is how this reader always
 /// behaved.
 private struct HwpSection: Decodable {
+    var page: HwpSectionPage?
     var hideHeader: Bool?
     var hideFooter: Bool?
     var hideMasterPage: Bool?
@@ -1470,6 +1468,17 @@ private struct HwpSection: Decodable {
     var lineGridHwpUnit: Int?
     var charGridHwpUnit: Int?
     var verticalText: Bool?
+}
+
+/// The paper a SECTION declared, in points. HWP defines a page per section; the envelope's own
+/// `pageContentWidth`/`Height` carry only the section with the most paragraphs (invariant 73).
+private struct HwpSectionPage: Decodable {
+    var contentWidth: CGFloat
+    var contentHeight: CGFloat
+    var marginLeft: CGFloat
+    var marginRight: CGFloat
+    var marginTop: CGFloat
+    var marginBottom: CGFloat
 }
 
 private struct HwpTabStop: Decodable {
