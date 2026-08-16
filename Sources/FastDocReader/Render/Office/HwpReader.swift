@@ -600,6 +600,34 @@ enum HwpReader {
             blue: CGFloat(value & 0xFF) / 255, alpha: 1)
     }
 
+    /// A gradient fill drawn as the gradient it is — every stop, at the angle the document stated.
+    ///
+    /// The stops and the angle were decoded and then thrown away: both consumers read `colors[0]` and
+    /// painted a flat wash, so a two-colour panel rendered as its first colour and the angle was dead
+    /// data. There is no gradient in the table/cell vocabulary — a fill is a colour or an image — so
+    /// this renders one into the IMAGE slot the picture fill already uses, which the painters draw
+    /// stretched into the rect (`GridTextTableBlock`, `TableBlockBuilder`). A single stop is a plain
+    /// fill and stays on the colour path; a picture fill wins, because that is a real picture.
+    ///
+    /// HWP measures the angle in degrees CLOCKWISE from straight down (0 = top-to-bottom), which is
+    /// the direction Hancom's own gradient dialog states.
+    private static func gradientImage(_ gradient: HwpGradient?) -> NSImage? {
+        guard let gradient else { return nil }
+        let stops = gradient.colors.compactMap { color($0) }
+        guard stops.count >= 2 else { return nil }
+        let size = NSSize(width: 64, height: 64)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        defer { image.unlockFocus() }
+        let ns = NSGradient(colors: stops)
+        // NSGradient measures counter-clockwise from the positive x axis; HWP measures clockwise
+        // from straight down. 0° must come out pointing down the page, which in this flipped-free
+        // image space is -90°.
+        ns?.draw(in: NSRect(origin: .zero, size: size),
+                 angle: -90 - CGFloat(gradient.angle ?? 0))
+        return image
+    }
+
     /// HWP paragraph `align` → the block's `NSTextAlignment?`, resolved exactly the way
     /// `DocxReader.alignmentFromJc` does: `"both"`/`"justify"`/`"distribute"` → `.justified`
     /// (`NSTextAlignment` has no distributed case, so distribute collapses to justify — same choice
@@ -1015,9 +1043,11 @@ enum HwpReader {
             // Korean document draws around an annotation. Painted once by `GridTextTable`, never
             // repeated per cell, which is what turns one frame into a wall of frames.
             format.backgroundImage = shapes.fillImage(tableFill?.bgImage)
-            // A gradient degrades to its first stop rather than to nothing: a panel that is a wash
-            // of one colour reads far closer to the document than blank paper does.
-            if format.defaultShading == nil, let stops = tableFill?.bgGradient?.colors, !stops.isEmpty {
+                ?? gradientImage(tableFill?.bgGradient)
+            // A single-stop gradient is a plain fill, and one that could not be drawn still reads
+            // closer to the document as its first colour than as blank paper.
+            if format.defaultShading == nil, format.backgroundImage == nil,
+               let stops = tableFill?.bgGradient?.colors, !stops.isEmpty {
                 format.defaultShading = color(stops[0])
             }
             // The AUTHOR's own repeating header rows. Inventing "row one is a header" was the
@@ -1173,10 +1203,12 @@ enum HwpReader {
         // had deliberately turned off (measured: 423 of the 편람's 821 definitions are all-off).
         let fill = borderFill(forId: c.borderFillId, in: borderFills)
         var shading = fill.flatMap { color($0.bg) }
-        if shading == nil, let stops = fill?.bgGradient?.colors, !stops.isEmpty { shading = color(stops[0]) }
+        let fillImage = shapes.fillImage(fill?.bgImage) ?? gradientImage(fill?.bgGradient)
+        if shading == nil, fillImage == nil,
+           let stops = fill?.bgGradient?.colors, !stops.isEmpty { shading = color(stops[0]) }
         return Cell(blocks: blocks, rowSpan: c.rowSpan, colSpan: c.colSpan,
                     backgroundColor: shading,
-                    backgroundImage: shapes.fillImage(fill?.bgImage),
+                    backgroundImage: fillImage,
                     edgeBorders: edgeBorders(forFillId: c.borderFillId, in: borderFills),
                     verticalAlignment: vAlign, edgePadding: edges)
     }
