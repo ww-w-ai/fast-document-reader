@@ -1091,7 +1091,8 @@ enum HwpReader {
             // flows onto it, and the artwork has a sheet to be drawn on. Keeping the picture inline
             // is what was corrupting everything after it: a 688pt frame in a 555pt body takes two
             // pages by itself and pushes the text meant to sit INSIDE it onto the next one.
-            if im.asChar != true, let paper = shapes.paper, let bytes = shapes.picture?(im.binDataId),
+            if im.asChar != true, im.wrapsText != true, let paper = shapes.paper,
+               let bytes = shapes.picture?(im.binDataId),
                let image = NSImage(data: bytes),
                let frame = anchoredFrame(size: size, vertRelTo: im.vertRelTo ?? "para",
                                          horzRelTo: im.horzRelTo ?? "para",
@@ -1122,7 +1123,7 @@ enum HwpReader {
             // PINNED TO THE PAPER — a cover's decoration, a rule down a margin. Placed by the
             // document's own rule (`anchoredFrame`) and drawn on the sheet the anchoring block falls
             // on, rather than pushed into the text where inlining one cost 29 pages (invariant 75).
-            if sh.asChar != true, let paper = shapes.paper,
+            if sh.asChar != true, sh.wrapsText != true, let paper = shapes.paper,
                let frame = anchoredFrame(size: size, vertRelTo: sh.vertRelTo ?? "para",
                                          horzRelTo: sh.horzRelTo ?? "para",
                                          vertAlign: sh.vertAlign ?? "top",
@@ -1140,7 +1141,7 @@ enum HwpReader {
             // PINNED TO ITS PARAGRAPH — a seal over a signature line, an arrow onto the table beside
             // it. Only the horizontal half can be settled here; the vertical one is finished by the
             // draw pass, which is the only place that knows where the anchoring line ended up.
-            if sh.asChar != true, let paper = shapes.paper,
+            if sh.asChar != true, sh.wrapsText != true, let paper = shapes.paper,
                let placement = paragraphAnchoredPlacement(
                     size: size, vertRelTo: sh.vertRelTo ?? "para", horzRelTo: sh.horzRelTo ?? "para",
                     vertAlign: sh.vertAlign ?? "top", horzAlign: sh.horzAlign ?? "left",
@@ -1656,6 +1657,12 @@ private struct HwpShape: Decodable {
     /// TRUE when the document places the object AS A CHARACTER — in the text flow, where drawing it
     /// inline moves nothing. FALSE = anchored by coordinates, over or beside the text.
     var asChar: Bool?
+    /// The object holds SPACE in the flow — 어울림/자연스럽게/통과/위아래, where HWP pushes the text
+    /// out of the object's way. FALSE (and absent, which is a parser predating the export) means it
+    /// is painted over or behind the text (글 앞으로/글 뒤로) and holds no space at all. A reader that
+    /// floats BOTH kinds takes away the space the wrapping ones were holding, and every page that
+    /// space was making disappears with it — measured across 2,066 documents: 7 lost 1–2 pages each.
+    var wrapsText: Bool?
     /// What an anchored object's position is measured against (`paper`/`page`/`para`) and the two
     /// offsets in HWPUNIT. Only `para` is placeable by this reader: its anchor is a paragraph this
     /// layout knows the position of, while `paper`/`page` presuppose the document's own pagination.
@@ -1714,6 +1721,12 @@ private struct HwpImage: Decodable {
     /// (a cover's artwork, a seal over a signature line). Absent for a parser predating the export,
     /// and then every picture reads as in-flow, which is how this reader always treated them.
     var asChar: Bool?
+    /// The object holds SPACE in the flow — 어울림/자연스럽게/통과/위아래, where HWP pushes the text
+    /// out of the object's way. FALSE (and absent, which is a parser predating the export) means it
+    /// is painted over or behind the text (글 앞으로/글 뒤로) and holds no space at all. A reader that
+    /// floats BOTH kinds takes away the space the wrapping ones were holding, and every page that
+    /// space was making disappears with it — measured across 2,066 documents: 7 lost 1–2 pages each.
+    var wrapsText: Bool?
     var vertRelTo: String?
     var horzRelTo: String?
     var vertAlign: String?

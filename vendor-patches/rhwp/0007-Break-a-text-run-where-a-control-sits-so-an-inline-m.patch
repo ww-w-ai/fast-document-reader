@@ -1,7 +1,7 @@
 From 6eeb08f5cdec62cc5d87b838646b2c8b7b1dfba5 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sat, 1 Aug 2026 20:42:41 +0900
-Subject: [PATCH 07/22] Break a text run where a control sits, so an inline
+Subject: [PATCH 07/23] Break a text run where a control sits, so an inline
  marker lands inside it
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

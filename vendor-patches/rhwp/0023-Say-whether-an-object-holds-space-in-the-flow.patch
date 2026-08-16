@@ -1,0 +1,99 @@
+From 7b212ea76645b86c857dd14441f8e106d5ddce5f Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Sun, 16 Aug 2026 12:28:51 +0900
+Subject: [PATCH 23/23] Say whether an object holds space in the flow
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+HWP states with textWrap whether an object pushes text out of its way
+(어울림/자연스럽게/통과/위아래) or is painted over and behind it (글 앞으로/글 뒤로).
+A host that floats both kinds takes away the space the wrapping ones hold,
+and the pages that space was making go with it. The wrap of a picture inside
+a group is the OUTERMOST object's: the child keeps a stale one of its own.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 31 +++++++++++++++++++++-
+ 1 file changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 328873f1..389dedbb 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -678,6 +678,10 @@ struct ImageBlock {
+     /// layer needs the same five facts to place one.
+     #[serde(rename = "asChar")]
+     as_char: bool,
++    /// The object holds SPACE in the flow (어울림/자연스럽게/통과/위아래) rather than being painted
++    /// over or behind the text (글 앞으로/글 뒤로). Absent = it does not.
++    #[serde(rename = "wrapsText", skip_serializing_if = "std::ops::Not::not")]
++    wraps_text: bool,
+     #[serde(rename = "vertRelTo")]
+     vert_rel_to: &'static str,
+     #[serde(rename = "horzRelTo")]
+@@ -728,6 +732,10 @@ struct ShapeBlock {
+     /// its 78 shapes are the size of the whole page (555×752pt), so inlining them all cost 29 pages.
+     #[serde(rename = "asChar")]
+     as_char: bool,
++    /// The object holds SPACE in the flow rather than being painted over/behind the text — see
++    /// `ImageBlock.wraps_text`.
++    #[serde(rename = "wrapsText", skip_serializing_if = "std::ops::Not::not")]
++    wraps_text: bool,
+     /// For an ANCHORED object: what its position is measured against (`paper`/`page`/`para` for the
+     /// vertical axis, `paper`/`page`/`column`/`para` for the horizontal) and the two offsets, in
+     /// HWPUNIT. A host with a floating layer places the object with these; one without them can only
+@@ -1253,6 +1261,7 @@ fn build_image_block(doc: &Document, pic: &crate::model::image::Picture) -> Bloc
+         align: horz_align_str(pic.common.horz_align),
+         width_criterion: size_criterion_str(pic.common.width_criterion),
+         as_char: pic.common.treat_as_char,
++        wraps_text: occupies_flow(pic.common.text_wrap),
+         vert_rel_to: vert_rel_to_str(pic.common.vert_rel_to),
+         horz_rel_to: horz_rel_to_str(pic.common.horz_rel_to),
+         vert_align: vert_align_str(pic.common.vert_align),
+@@ -1387,7 +1396,15 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+     collect_shape_pictures(shape, &mut pictures);
+     if !pictures.is_empty() {
+         for picture in pictures {
+-            out.push(build_image_block(doc, picture));
++            let mut block = build_image_block(doc, picture);
++            // Whether the object holds space in the flow is the OUTERMOST object's answer, not the
++            // child's. A group child's own `text_wrap` is leftover state: the 편람's cover container
++            // says 글 앞으로 while the picture inside it still says 위아래, and reading the child put
++            // a full-page cover back into the text — 520 pages became 529.
++            if let Block::Image(ref mut image) = block {
++                image.wraps_text = occupies_flow(common.text_wrap);
++            }
++            out.push(block);
+         }
+         // …and the WORDS the same object carries, which returning here used to throw away. A cover
+         // page is one group holding the artwork AND the title, and a foreword page is a group whose
+@@ -1404,6 +1421,7 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+             h: common.height as i32,
+             align: horz_align_str(common.horz_align),
+             as_char: common.treat_as_char,
++            wraps_text: occupies_flow(common.text_wrap),
+             vert_rel_to: match common.vert_rel_to {
+                 crate::model::shape::VertRelTo::Paper => "paper",
+                 crate::model::shape::VertRelTo::Page => "page",
+@@ -1754,6 +1772,17 @@ fn shape_fill_hex(drawing: &DrawingObjAttr) -> Option<String> {
+ /// The text-wrap band an object draws in — the same three-way split
+ /// `renderer::layout::Layout::render_layer_plane` sorts paper-relative nodes by, restated here
+ /// rather than reached for through a private renderer function.
++/// Does this object take SPACE in the text flow, or is it painted over/behind it?
++///
++/// HWP says so with the same `text_wrap` `master_plane` reads: 어울림(square)/자연스럽게(tight)/
++/// 통과(through)/위아래(top-and-bottom) all push text out of the way, so the object occupies the
++/// flow; 글 앞으로/글 뒤로 do not — they are painted on the sheet and the text runs underneath.
++/// A host that floats BOTH kinds loses the space the wrapping ones were holding, and every page
++/// their space was making disappears with it.
++fn occupies_flow(text_wrap: TextWrap) -> bool {
++    !matches!(text_wrap, TextWrap::BehindText | TextWrap::InFrontOfText)
++}
++
+ fn master_plane(text_wrap: TextWrap) -> u8 {
+     match text_wrap {
+         TextWrap::BehindText => 1,
+-- 
+2.50.1 (Apple Git-155)
+

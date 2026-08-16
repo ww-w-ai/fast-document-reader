@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 8b8c9737294c4534a15a2c6c40f43962f4a24e48
+rhwp commit   : 7b212ea76645b86c857dd14441f8e106d5ddce5f
 rhwp branch   : fastdocreader/charshape-export
-rhwp subject  : Say what paper each section declared, not just the busiest one
+rhwp subject  : Say whether an object holds space in the flow
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 58939856
-library sha256: 88782a619a744aaa0c61311caae4cafaf1e745c0de225db3895d37ac2b835f20
+library bytes : 58874848
+library sha256: ffdca2ac04963d046d30b3f84a4a91091a35b9bc8b1fe3aaf8b5d1437fe0cec7

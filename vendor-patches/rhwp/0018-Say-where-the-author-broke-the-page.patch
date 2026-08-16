@@ -1,7 +1,7 @@
 From 79eb7c93890c29286987dddc669b71ddf6cedc4e Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sat, 15 Aug 2026 00:04:03 +0900
-Subject: [PATCH 18/22] Say where the author broke the page
+Subject: [PATCH 18/23] Say where the author broke the page
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
