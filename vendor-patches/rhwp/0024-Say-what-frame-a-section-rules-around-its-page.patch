@@ -1,0 +1,85 @@
+From fa4892c9019dfaed94d41cd969de391e869478c7 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Sun, 16 Aug 2026 12:57:50 +0900
+Subject: [PATCH 24/24] Say what frame a section rules around its page
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+rhwp's model has carried 쪽 테두리/배경 since the beginning and the export
+never mentioned it, so a form that rules a frame around every page arrived
+as blank paper with no way to tell it from one that rules none. The line and
+colour are not repeated — the id points into the same borderFills table a
+cell uses — and the basis rides along because measuring the spacings from
+the body area instead of the sheet moves the frame by a whole margin.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 35 ++++++++++++++++++++++
+ 1 file changed, 35 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 389dedbb..30e221cd 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -445,8 +445,20 @@ fn build_sections(document: &Document) -> Vec<SectionDto> {
+         .map(|section| {
+             let def = &section.section_def;
+             let geometry = section_geometry_pt(section);
++            let border = &def.page_border_fill;
+             SectionDto {
+                 page: geometry,
++                page_border: (border.border_fill_id > 0).then(|| PageBorderDto {
++                    border_fill_id: border.border_fill_id as i32,
++                    spacing_left: border.spacing_left as i32,
++                    spacing_right: border.spacing_right as i32,
++                    spacing_top: border.spacing_top as i32,
++                    spacing_bottom: border.spacing_bottom as i32,
++                    basis: match border.basis {
++                        crate::model::page::PageBorderBasis::PaperBased => "paper",
++                        crate::model::page::PageBorderBasis::BodyBased => "body",
++                    },
++                }),
+                 hide_header: def.hide_header,
+                 hide_footer: def.hide_footer,
+                 hide_master_page: def.hide_master_page,
+@@ -462,6 +474,11 @@ fn build_sections(document: &Document) -> Vec<SectionDto> {
+ /// 한 구역이 스스로 선언한 것들.
+ #[derive(Serialize)]
+ struct SectionDto {
++    /// 이 구역이 그리는 쪽 테두리/배경(쪽 테두리·배경 대화상자). 없으면 이 구역은 테두리를 두르지
++    /// 않는다. 실제 선·색은 `borderFills[borderFillId - 1]` — 셀이 쓰는 것과 같은 표라, 호스트는
++    /// 이미 가진 표를 한 번 더 찾아보면 된다.
++    #[serde(rename = "pageBorder", skip_serializing_if = "Option::is_none")]
++    page_border: Option<PageBorderDto>,
+     /// 이 구역이 선언한 종이와 본문 영역(pt). HWP 는 쪽을 **구역마다** 정의하는데 문서 전체의
+     /// `pageContentWidth`/`Height` 는 문단이 가장 많은 구역 하나만 골라 실어 왔다(invariant 73).
+     /// 그래서 앞부속과 부록처럼 여백이 다른 구역이 본문 종이로 조판돼 쪽이 남거나 모자랐다 —
+@@ -548,6 +565,24 @@ struct ParaBlock {
+     box_h: Option<i32>,
+ }
+ 
++/// 한 구역의 쪽 테두리/배경. 간격은 HWPUNIT, 기준은 그 간격을 **어디서부터** 재는가다:
++/// `paper` = 종이 가장자리, `body` = 본문 영역 가장자리. 기준을 빼고 간격만 보내면 호스트는 두
++/// 배치 중 하나를 찍어야 하고, 둘의 차이는 여백만큼(이 문서들에서 70~110pt) 벌어진다.
++#[derive(Serialize)]
++struct PageBorderDto {
++    #[serde(rename = "borderFillId")]
++    border_fill_id: i32,
++    #[serde(rename = "spacingLeftHwpUnit")]
++    spacing_left: i32,
++    #[serde(rename = "spacingRightHwpUnit")]
++    spacing_right: i32,
++    #[serde(rename = "spacingTopHwpUnit")]
++    spacing_top: i32,
++    #[serde(rename = "spacingBottomHwpUnit")]
++    spacing_bottom: i32,
++    basis: &'static str,
++}
++
+ /// 탭 정지 하나 — 위치(HWPUNIT)와 종류.
+ #[derive(Serialize)]
+ struct TabStopDto {
+-- 
+2.50.1 (Apple Git-155)
+

@@ -264,6 +264,17 @@ enum HwpReader {
         }
         result.sections = (envelope.sections ?? []).map { section in
             OfficeSectionDeclaration(
+                pageBorder: section.pageBorder.map {
+                    OfficePageBorder(
+                        borders: edgeBorders(forFillId: $0.borderFillId, in: borderFills),
+                        background: borderFill(forId: $0.borderFillId, in: borderFills)
+                            .flatMap { fill in color(fill.bg) },
+                        spacing: NSEdgeInsets(top: points($0.spacingTopHwpUnit ?? 0),
+                                              left: points($0.spacingLeftHwpUnit ?? 0),
+                                              bottom: points($0.spacingBottomHwpUnit ?? 0),
+                                              right: points($0.spacingRightHwpUnit ?? 0)),
+                        measuredFromPaper: $0.basis != "body")
+                },
                 paper: section.page.map {
                     PaperGeometry(contentWidth: $0.contentWidth, contentHeight: $0.contentHeight,
                                   marginLeft: $0.marginLeft, marginTop: $0.marginTop,
@@ -1506,6 +1517,7 @@ private struct HwpLineHeight: Decodable {
 /// behaved.
 private struct HwpSection: Decodable {
     var page: HwpSectionPage?
+    var pageBorder: HwpPageBorder?
     var hideHeader: Bool?
     var hideFooter: Bool?
     var hideMasterPage: Bool?
@@ -1513,6 +1525,18 @@ private struct HwpSection: Decodable {
     var lineGridHwpUnit: Int?
     var charGridHwpUnit: Int?
     var verticalText: Bool?
+}
+
+/// A section's 쪽 테두리/배경 — the frame a Korean document rules around the whole page. The line and
+/// colour live in the SAME `borderFills` table a cell's `borderFillId` points at; `basis` says where
+/// the spacings are measured FROM, and the two answers differ by a margin (70–110pt on real files).
+private struct HwpPageBorder: Decodable {
+    var borderFillId: Int
+    var spacingLeftHwpUnit: Int?
+    var spacingRightHwpUnit: Int?
+    var spacingTopHwpUnit: Int?
+    var spacingBottomHwpUnit: Int?
+    var basis: String?
 }
 
 /// The paper a SECTION declared, in points. HWP defines a page per section; the envelope's own

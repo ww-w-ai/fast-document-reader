@@ -925,7 +925,50 @@ struct ListNumbering: Equatable {
 }
 
 /// A section's own declarations about its pages — the half of a section that is not geometry.
+/// The 쪽 테두리/배경 a section rules around its whole page — a frame a Korean form or report draws
+/// once per sheet, not per paragraph.
+///
+/// The line and colour are NOT here: they are the same `borderFills` table a cell's fill id points
+/// at, so a reader that already resolved that table for its tables resolves this with it.
+/// `measuredFromPaper` decides where `spacing` is measured from — the sheet's own edge, or the body
+/// area's. The two land a margin apart (70–110pt on real documents), so guessing draws the frame in
+/// the wrong place rather than slightly off.
+struct OfficePageBorder: Equatable {
+    /// The four edges, resolved through the document's own fill table at read time — the same
+    /// resolution a cell's border gets, in the same vocabulary. Resolved here rather than carried as
+    /// an id because the table itself does not outlive the read: it is folded into the blocks and
+    /// dropped, so an id kept for later would point at nothing when the page is painted.
+    var borders: EdgeBorders?
+    /// The page's own background colour, when the same fill declares one.
+    var background: NSColor?
+    var spacing: NSEdgeInsets
+    /// Where `spacing` is measured FROM — the sheet's own edge, or the body area's. The two land a
+    /// margin apart (70–110pt on real documents), so this is not a detail to infer.
+    var measuredFromPaper: Bool
+    /// The document declared a frame that actually draws something. An id pointing at an all-off
+    /// fill is a declaration of NO frame, and HWP files are full of them: measured over 644 real
+    /// documents, 494 name a page fill and only 48 name one with a drawn edge or a background.
+    var drawsAnything: Bool {
+        if background != nil { return true }
+        guard let borders else { return false }
+        // A SUPPRESSED edge is not a missing one (invariant 47): the document said "no line here",
+        // which arrives as a declaration rather than as nothing. Only a DRAWN edge is a frame.
+        return [borders.top, borders.left, borders.bottom, borders.right].contains {
+            if case .drawn = $0 { return true }
+            return false
+        }
+    }
+    static func == (a: OfficePageBorder, b: OfficePageBorder) -> Bool {
+        a.borders == b.borders && a.background == b.background
+            && a.measuredFromPaper == b.measuredFromPaper
+            && a.spacing.top == b.spacing.top && a.spacing.left == b.spacing.left
+            && a.spacing.bottom == b.spacing.bottom && a.spacing.right == b.spacing.right
+    }
+}
+
 struct OfficeSectionDeclaration: Equatable {
+    /// The frame this section rules around its page, when it declares one. CARRIED, NOT YET PAINTED.
+    var pageBorder: OfficePageBorder? = nil
     /// The sheet THIS section declared. `nil` = the section stated no page of its own, and the
     /// document's own geometry is the answer. HWP defines a page per section and this reader used to
     /// keep only the busiest one (invariant 73), which typeset a 612pt appendix page on the body's
