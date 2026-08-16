@@ -675,9 +675,10 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertNil(bareFormat.backgroundImage)
     }
 
-    /// A gradient fill degrades to its first stop — a panel washed in one of its own colours reads
-    /// far closer to the document than blank paper, and nothing else in this reader can paint a ramp.
-    func testAGradientFillDegradesToItsFirstStop() throws {
+    /// A gradient fill is painted as a gradient, into the image slot a picture fill already uses —
+    /// see `HwpGradientFillTests` for the ramp itself. Here: it must NOT also be flattened onto the
+    /// cell's colour, which would paint a flat wash over the ramp.
+    func testAGradientFillIsPaintedRatherThanFlattened() throws {
         let json = """
         {"v":1,"borderFills":[
            {"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},
@@ -688,8 +689,8 @@ final class HwpMappingTests: XCTestCase {
         guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
             return XCTFail("expected a table")
         }
-        XCTAssertEqual(rows[0][0].backgroundColor,
-                       NSColor(srgbRed: 0x11/255, green: 0x22/255, blue: 0x33/255, alpha: 1))
+        XCTAssertNil(rows[0][0].backgroundColor)
+        XCTAssertNotNil(rows[0][0].backgroundImage)
     }
 
     /// A running head belongs to ITS OWN section. Measured on a real manual: exactly one of its 14
