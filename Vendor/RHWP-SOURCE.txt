@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : fa4892c9019dfaed94d41cd969de391e869478c7
+rhwp commit   : 87bceab8b1cb425422230f1c205426770e5d868e
 rhwp branch   : fastdocreader/charshape-export
-rhwp subject  : Say what frame a section rules around its page
+rhwp subject  : Read an object's placement once, from the object that was placed
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 58864568
-library sha256: 6d54cfaa945585eba7cb5507e71dfa7a3c8b0c33277abfa1bbae70d91a6b443d
+library bytes : 58869672
+library sha256: 23985591ebc0dbe11e46cfd3598fd1ed206537af2926e72d869e64bee38dfa87

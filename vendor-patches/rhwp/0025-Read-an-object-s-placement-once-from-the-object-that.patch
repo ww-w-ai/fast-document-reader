@@ -1,0 +1,266 @@
+From 87bceab8b1cb425422230f1c205426770e5d868e Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Sun, 16 Aug 2026 22:25:05 +0900
+Subject: [PATCH 25/25] Read an object's placement once, from the object that
+ was placed
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+HWP hangs a CommonObjAttr on every node of an object tree and only the
+outermost one is a placement; a group's children carry defaults (왼쪽/위,
+어울림, zero offsets) while their real geometry is in their render matrices.
+Reading a child does not fail, it answers "top-left, in the flow", so the
+same defect arrived three times in three fields and was patched three times
+beside the emit site.
+
+Placement::of is now built once and handed to everything the object emits,
+at any depth. Measured on the 편람: its foreword frame is a group declaring
+가운데/가운데 whose inner picture declares the defaults, so the frame had
+been drawn at the paper's left edge — the page 39.6pt out. Its ink is now
+symmetric (x 69.0~486.0 of 555.59pt) and its text lands at x 147.0~455.0
+against rhwp's own 151~452.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 174 ++++++++++++++++-----
+ 1 file changed, 135 insertions(+), 39 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 30e221cd..fa0503e5 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -1276,7 +1276,8 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {
+     })
+ }
+ 
+-fn build_image_block(doc: &Document, pic: &crate::model::image::Picture) -> Block {
++fn build_image_block(doc: &Document, pic: &crate::model::image::Picture,
++                     placement: Placement) -> Block {
+     let bin_data_id = pic.image_attr.bin_data_id;
+     // A picture that lives INSIDE a drawing object often states no size of its own — the size is on
+     // the shape component that holds it (`current_width`/`current_height`). Emitting the zero made
+@@ -1293,19 +1294,68 @@ fn build_image_block(doc: &Document, pic: &crate::model::image::Picture) -> Bloc
+         w,
+         h,
+         mime: image_mime(doc, bin_data_id),
+-        align: horz_align_str(pic.common.horz_align),
++        align: placement.horz_align,
++        // NOT part of the placement: this says what the picture's own `w` is measured against, which
++        // is a fact about the picture, not about where the document put the object.
+         width_criterion: size_criterion_str(pic.common.width_criterion),
+-        as_char: pic.common.treat_as_char,
+-        wraps_text: occupies_flow(pic.common.text_wrap),
+-        vert_rel_to: vert_rel_to_str(pic.common.vert_rel_to),
+-        horz_rel_to: horz_rel_to_str(pic.common.horz_rel_to),
+-        vert_align: vert_align_str(pic.common.vert_align),
+-        horz_align: horz_align_str(pic.common.horz_align),
+-        offset_x: pic.common.horizontal_offset as i32,
+-        offset_y: pic.common.vertical_offset as i32,
++        as_char: placement.as_char,
++        wraps_text: placement.wraps_text,
++        vert_rel_to: placement.vert_rel_to,
++        horz_rel_to: placement.horz_rel_to,
++        vert_align: placement.vert_align,
++        horz_align: placement.horz_align,
++        offset_x: placement.offset_x,
++        offset_y: placement.offset_y,
+     })
+ }
+ 
++/// WHERE THE DOCUMENT PUT AN OBJECT, and whether that object holds space in the text.
++///
++/// This exists because the same defect kept arriving one field at a time. HWP's object tree carries
++/// a `CommonObjAttr` on every node, but only ONE of them is a placement: the node the document
++/// actually positioned — the OUTERMOST object. A group's children carry a `CommonObjAttr` of
++/// leftover defaults (어울림 for the wrap, 왼쪽/위 for the alignment, zero offsets, zero size), and
++/// their real geometry is in their render matrices instead. Reading a child's therefore does not
++/// fail loudly; it quietly answers "top-left, in the flow", which is a plausible-looking lie.
++///
++/// Measured, three times, each time as a separate bug before this type existed:
++///   * the wrap → the 편람's cover went back into the text and the document grew 520 pages to 529;
++///   * the alignment → the same file's foreword frame was drawn at the paper's left edge when the
++///     document centres it, putting the whole page 39.6pt out ((555.59 − 476.4) / 2);
++///   * and the offsets and reference edges ride on the same attribute, so they were wrong with it.
++///
++/// So placement is read ONCE, from the object the document placed, and handed to everything that
++/// object emits — at any nesting depth, because the depth never changes the answer. A caller cannot
++/// forget: every block that carries an anchor takes this value rather than an object to read it off.
++#[derive(Clone, Copy)]
++struct Placement {
++    as_char: bool,
++    wraps_text: bool,
++    vert_rel_to: &'static str,
++    horz_rel_to: &'static str,
++    vert_align: &'static str,
++    horz_align: &'static str,
++    offset_x: i32,
++    offset_y: i32,
++}
++
++impl Placement {
++    /// The ONLY way to make one. Call it on the object the document placed — `push_shape_blocks`'s
++    /// own `shape`, or a picture that is itself a top-level control — never on a group's child.
++    fn of(common: &crate::model::shape::CommonObjAttr) -> Self {
++        Placement {
++            as_char: common.treat_as_char,
++            wraps_text: occupies_flow(common.text_wrap),
++            vert_rel_to: vert_rel_to_str(common.vert_rel_to),
++            horz_rel_to: horz_rel_to_str(common.horz_rel_to),
++            vert_align: vert_align_str(common.vert_align),
++            horz_align: horz_align_str(common.horz_align),
++            offset_x: common.horizontal_offset as i32,
++            offset_y: common.vertical_offset as i32,
++        }
++    }
++}
++
+ /// Which edge (or centre) of the reference area an anchored object's offset is measured from.
+ fn vert_align_str(a: crate::model::shape::VertAlign) -> &'static str {
+     use crate::model::shape::VertAlign;
+@@ -1402,7 +1452,10 @@ fn append_control_blocks(doc: &Document, para: &Paragraph, out: &mut Vec<Block>)
+     for ctrl in &para.controls {
+         match ctrl {
+             Control::Table(t) => out.push(build_table_block(doc, t)),
+-            Control::Picture(p) => out.push(build_image_block(doc, p)),
++            Control::Picture(p) => {
++                let placement = Placement::of(&p.common);
++                out.push(build_image_block(doc, p, placement))
++            }
+             Control::Equation(e) => out.push(build_equation_block(e)),
+             Control::Shape(s) => push_shape_blocks(doc, s, out),
+             _ => {}
+@@ -1420,6 +1473,10 @@ fn append_control_blocks(doc: &Document, para: &Paragraph, out: &mut Vec<Block>)
+ /// they survive a host that cannot draw the frame, in the SAME vocabulary the body already uses.
+ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>) {
+     let common = shape.common();
++    // THE object the document placed. Everything this call emits — the pictures inside it at any
++    // depth, its own flattened paths — is placed by this one answer, never by a child's own
++    // attributes (see `Placement`).
++    let placement = Placement::of(common);
+     // A drawing object that CONTAINS PICTURES is a picture with a frame around it — a screenshot in
+     // a box, which is how a Korean manual illustrates a procedure. The picture is the content and
+     // the frame is decoration, so the picture is what ships: emitting both would stack them, since
+@@ -1431,15 +1488,7 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+     collect_shape_pictures(shape, &mut pictures);
+     if !pictures.is_empty() {
+         for picture in pictures {
+-            let mut block = build_image_block(doc, picture);
+-            // Whether the object holds space in the flow is the OUTERMOST object's answer, not the
+-            // child's. A group child's own `text_wrap` is leftover state: the 편람's cover container
+-            // says 글 앞으로 while the picture inside it still says 위아래, and reading the child put
+-            // a full-page cover back into the text — 520 pages became 529.
+-            if let Block::Image(ref mut image) = block {
+-                image.wraps_text = occupies_flow(common.text_wrap);
+-            }
+-            out.push(block);
++            out.push(build_image_block(doc, picture, placement));
+         }
+         // …and the WORDS the same object carries, which returning here used to throw away. A cover
+         // page is one group holding the artwork AND the title, and a foreword page is a group whose
+@@ -1454,24 +1503,15 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+         out.push(Block::Shape(ShapeBlock {
+             w: common.width as i32,
+             h: common.height as i32,
+-            align: horz_align_str(common.horz_align),
+-            as_char: common.treat_as_char,
+-            wraps_text: occupies_flow(common.text_wrap),
+-            vert_rel_to: match common.vert_rel_to {
+-                crate::model::shape::VertRelTo::Paper => "paper",
+-                crate::model::shape::VertRelTo::Page => "page",
+-                crate::model::shape::VertRelTo::Para => "para",
+-            },
+-            horz_rel_to: match common.horz_rel_to {
+-                crate::model::shape::HorzRelTo::Paper => "paper",
+-                crate::model::shape::HorzRelTo::Page => "page",
+-                crate::model::shape::HorzRelTo::Column => "column",
+-                crate::model::shape::HorzRelTo::Para => "para",
+-            },
+-            offset_x: common.horizontal_offset as i32,
+-            offset_y: common.vertical_offset as i32,
+-            vert_align: vert_align_str(common.vert_align),
+-            horz_align: horz_align_str(common.horz_align),
++            align: placement.horz_align,
++            as_char: placement.as_char,
++            wraps_text: placement.wraps_text,
++            vert_rel_to: placement.vert_rel_to,
++            horz_rel_to: placement.horz_rel_to,
++            offset_x: placement.offset_x,
++            offset_y: placement.offset_y,
++            vert_align: placement.vert_align,
++            horz_align: placement.horz_align,
+             paths,
+         }));
+     }
+@@ -2108,7 +2148,7 @@ impl DocumentCore {
+ mod tests {
+     use super::*;
+ 
+-    fn export(path: &str) -> String {
++    pub(super) fn export(path: &str) -> String {
+         let data = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+         let core = DocumentCore::from_bytes(&data)
+             .unwrap_or_else(|e| panic!("parse {path}: {e:?}"));
+@@ -2296,3 +2336,59 @@ mod tests {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod placement_tests {
++    use super::tests::export;
++    use super::*;
++
++    /// AN OBJECT'S PLACEMENT COMES FROM THE OBJECT THE DOCUMENT PLACED — never from a child.
++    ///
++    /// HWP hangs a `CommonObjAttr` on every node of an object tree, and only the outermost one is a
++    /// placement; a group's children carry defaults (왼쪽/위, 어울림, zero offsets). Reading a
++    /// child's does not fail, it answers plausibly and wrongly, which is why the same defect arrived
++    /// three times in three different fields before `Placement` made it one decision.
++    ///
++    /// `2025 행정업무운영 편람` is the measured case: its foreword frame is a GROUP 476.4pt wide on
++    /// 555.59pt paper, and the group declares 가운데/가운데 while the picture inside it declares the
++    /// defaults. Reading the child drew the frame at the paper's left edge — the whole page 39.6pt
++    /// out, ((555.59 − 476.4) / 2).
++    #[test]
++    fn a_nested_picture_is_placed_by_the_object_that_holds_it() {
++        const SAMPLE: &str = "samples/2025 행정업무운영 편람(최종).hwp";
++        if !std::path::Path::new(SAMPLE).exists() {
++            eprintln!("skipping: {SAMPLE} not present");
++            return;
++        }
++        let json = export(SAMPLE);
++        let doc: serde_json::Value = serde_json::from_str(&json).expect("valid json");
++        let blocks = doc["blocks"].as_array().expect("blocks");
++
++        // The foreword frame: 476.4 × 688.8pt, in HWPUNIT.
++        let frame = blocks
++            .iter()
++            .find(|b| b["t"] == "image" && b["w"] == 47640 && b["h"] == 68880)
++            .expect("the foreword frame must be exported");
++
++        // The GROUP's own declaration, not the picture's defaults.
++        assert_eq!(frame["horzAlign"], "center", "the document centres this frame");
++        assert_eq!(frame["vertAlign"], "center");
++        assert_eq!(frame["horzRelTo"], "paper");
++        assert_eq!(frame["vertRelTo"], "paper");
++        // 글 앞으로: painted over the text, holding no space. The picture inside it says 위아래.
++        assert!(
++            frame["wrapsText"].is_null(),
++            "a 글 앞으로 group must not report its child's 위아래 wrap"
++        );
++        assert_eq!(frame["asChar"], false);
++
++        // And the cover, which IS a top-level picture, still reads its own — the same code path has
++        // to be right for an object with no group around it at all.
++        let cover = blocks
++            .iter()
++            .find(|b| b["t"] == "image" && b["w"] == 53880 && b["h"] == 73680)
++            .expect("the cover must be exported");
++        assert_eq!(cover["horzAlign"], "center");
++        assert_eq!(cover["vertAlign"], "center");
++    }
++}
+-- 
+2.50.1 (Apple Git-155)
+

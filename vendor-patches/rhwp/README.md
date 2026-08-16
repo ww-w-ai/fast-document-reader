@@ -48,6 +48,7 @@ Applied on top of upstream **`8d3bfa4b92174b16bac587fe1409975cf34ba566`** (just 
 | 0022 | The paper EACH SECTION declared, not just the busiest one. HWP defines a page per section; carrying one geometry for the document typeset the 편람's 413.9×612.3pt appendix on the body's 396.9×555.6pt sheet |
 | 0023 | `wrapsText` — whether an object HOLDS SPACE in the flow (어울림/위아래) or is painted over and behind it (글 앞으로/글 뒤로). Floating both kinds deleted the space the wrapping ones held: 16 of 2,066 real documents lost pages (invariant 86) |
 | 0024 | `pageBorder` — the 쪽 테두리/배경 a section rules around its whole page (fill id into the same `borderFills` table, four spacings, and whether they are measured from the sheet or the body area) |
+| 0025 | `Placement` — an object's anchor read ONCE from the object the document placed, then handed to everything it emits at any depth. A group child's `CommonObjAttr` is defaults, so reading it drew the 편람's centred foreword frame at the paper's left edge (invariant 87) |
 
 The set is regenerated wholesale — `git format-patch <base>..HEAD -o vendor-patches/rhwp/` from the
 fork — so it never drifts behind the submodule again (it had: 0005–0007 existed only as commits).
