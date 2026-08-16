@@ -70,3 +70,37 @@ final class HwpGradientFillTests: XCTestCase {
         XCTAssertEqual(format.defaultShading?.redComponent, 1.0)
     }
 }
+
+/// The 원고지 line grid a document is written on.
+///
+/// HWP states it per SECTION; this reader lays a document out in one container, so there is exactly
+/// one grid it can honour. The pitch used to reach the section vocabulary and stop — the builder
+/// that consumes it was fed by docx alone — so an HWP written on a grid was typeset without one.
+final class HwpLineGridTests: XCTestCase {
+
+    private func read(_ sections: String) throws -> OfficeReadResult {
+        try HwpReader.mapJSON("{\"v\":1,\"sections\":[\(sections)],\"blocks\":[]}")
+    }
+
+    func testAGridEverySectionAgreesOnIsHonoured() throws {
+        let r = try read("""
+        {"lineGridHwpUnit":1600},{"lineGridHwpUnit":1600}
+        """)
+        XCTAssertEqual(try XCTUnwrap(r.lineGridPitch), 16.0, accuracy: 0.001)
+    }
+
+    /// Sections that disagree cannot be expressed at one pitch, so the reader says nothing rather
+    /// than picking one and typesetting the rest on a grid they never declared.
+    func testSectionsThatDisagreeYieldNoGrid() throws {
+        XCTAssertNil(try read("{\"lineGridHwpUnit\":1600},{\"lineGridHwpUnit\":2000}").lineGridPitch)
+    }
+
+    /// One section on a grid and one not is the same disagreement.
+    func testAGridOnlySomeSectionsDeclareIsNotAppliedToAll() throws {
+        XCTAssertNil(try read("{\"lineGridHwpUnit\":1600},{\"hideFooter\":true}").lineGridPitch)
+    }
+
+    func testADocumentWithNoGridStaysUngridded() throws {
+        XCTAssertNil(try read("{\"hideHeader\":true}").lineGridPitch)
+    }
+}

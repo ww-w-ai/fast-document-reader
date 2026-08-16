@@ -276,6 +276,18 @@ enum HwpReader {
                 lineGridPitch: section.lineGridHwpUnit.flatMap { $0 > 0 ? points($0) : nil },
                 isVertical: section.verticalText ?? false)
         }
+        // The 원고지 line grid the document is written on. HWP states it per SECTION and this reader
+        // lays a document out in ONE container, so there is exactly one grid to honour — and the only
+        // honest answer is the one every section agrees on. A document where sections disagree, or
+        // where some are on a grid and others are not, cannot be expressed at one pitch, and saying
+        // nothing is what tells a caller "we could not" apart from "the document never said"
+        // (invariant 83's own rule). Until now HWP set this NOWHERE: the pitch reached the section
+        // vocabulary and stopped, while the builder that consumes it (`OfficeTextBuilder`, a FLOOR on
+        // line height) was fed by docx alone.
+        let declaredGrids = result.sections.map(\.lineGridPitch)
+        if let first = declaredGrids.first, first != nil, declaredGrids.allSatisfy({ $0 == first }) {
+            result.lineGridPitch = first
+        }
         result.keepWithNextBlocks = envelope.blocks.enumerated().compactMap { index, block in
             guard case .para(let p) = block, p.keepWithNext == true else { return nil }
             return index
