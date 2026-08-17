@@ -56,12 +56,23 @@ final class PageViewOptionsTests: XCTestCase {
         XCTAssertEqual(PageViewOptionsStore.intent.splitTables, true, "the split choice is remembered")
     }
 
-    /// Defaults are all on, and a never-written preference must read that way rather than as the
-    /// `false` `UserDefaults.bool(forKey:)` hands back for a missing key.
+    /// Defaults are all on — page outline, master page AND table breaking — and a never-written
+    /// preference must read that way rather than as the `false` `UserDefaults.bool(forKey:)` hands
+    /// back for a missing key.
+    ///
+    /// Stated field by field rather than against `PageViewOptions(outline: true)`: the memberwise
+    /// init's own `splitTables` default stays `false` deliberately, because the call sites that name
+    /// only the furniture toggles are describing the shape from before tables could be broken. The
+    /// two are no longer the same thing, and this test is the place that says so.
     func testAFreshMachineGetsTheDefaultsNotFalse() {
         PageViewOptionsStore.reset()
         XCTAssertEqual(PageViewOptionsStore.current, PageViewOptions.default)
-        XCTAssertEqual(PageViewOptions.default, PageViewOptions(outline: true))
+        XCTAssertTrue(PageViewOptions.default.outline)
+        XCTAssertTrue(PageViewOptions.default.masterPage)
+        XCTAssertTrue(PageViewOptions.default.splitTables,
+                      "HWP breaks a table at a page boundary and so does this reader by default")
+        XCTAssertFalse(PageViewOptions(outline: true).splitTables,
+                       "the memberwise shorthand still means the pre-breaking shape")
     }
 
     // MARK: - (2) All three off IS the pre-paged code path

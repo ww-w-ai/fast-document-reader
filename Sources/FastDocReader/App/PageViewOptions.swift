@@ -46,15 +46,26 @@ struct PageViewOptions: Equatable {
     /// moved to and is always broken — the owner's rule: *"표가 한장이 넘을때가 있거든. 이런 경우는
     /// 무조건 쪼개야 해"*.
     ///
-    /// Off by default. Breaking is only ever done where no vertically merged cell crosses the
-    /// boundary, and a Korean report form is merged almost everywhere, so on the documents this reader
-    /// is used for "keep it whole" is the choice that reliably produces a clean page. One click either
-    /// way.
-    /// Defaulted in the memberwise init on purpose: every existing caller that names the three
-    /// furniture toggles means "the shape before tables could be broken", which is exactly `false`.
+    /// ON by default, because it is what the DOCUMENT does. Measured on `2025 행정업무운영 편람`
+    /// against rhwp's own render: keeping tables whole leaves the bottom of a page empty and carries
+    /// the table down — 166pt of blank paper on one measured page, where HWP starts the table there
+    /// and continues it overleaf — and across the file that is **11 pages** of the gap to rhwp's page
+    /// count (526 whole against 515 broken). This reader exists to reproduce a page, and a page the
+    /// document fills is not ours to leave half empty.
+    ///
+    /// The earlier default was OFF, for a reason that has not gone away but is narrower than it
+    /// looked: breaking is only ever done where no vertically merged cell crosses the boundary, and a
+    /// Korean report form is merged almost everywhere. That rule still holds — it is a guard inside
+    /// the breaking itself, so turning this on cannot break a merged form; those tables are still
+    /// carried whole because the boundary refuses them. What changes is the ordinary table, which HWP
+    /// breaks and this reader was moving. One click either way, and the choice is remembered.
+    ///
+    /// Defaulted in the memberwise init to `false` on purpose, and deliberately NOT changed with the
+    /// preference: every existing caller that names only the three furniture toggles means "the shape
+    /// before tables could be broken", and those call sites are describing a state, not choosing one.
     var splitTables: Bool = false
 
-    static let `default` = PageViewOptions(outline: true, masterPage: true, splitTables: false)
+    static let `default` = PageViewOptions(outline: true, masterPage: true, splitTables: true)
 
     /// With the outline off a paged document reserves NO band at all
     /// (`PageBandLayoutDelegate.isActive`), which is the code path this reader had before any of the
