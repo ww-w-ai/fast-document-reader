@@ -107,7 +107,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | tests, corpus probes, "is this check actually reached" | 5, 29, 30, 34, 35, 41 |
 | `RenderTheme` tokens, `OfficeTextBuilder`, style resolution | 36, 37 |
 | tables — build, widths, borders, merges, attribute cost | 39, 42, 47, 50, 51, 72, 74, 76 |
-| fonts, per-script slots, substitution | 52, 53 |
+| fonts, per-script slots, substitution | 52, 53, 93 |
 | the comments panel | 38 |
 | paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62, 77, 78 |
 | printing, `--pdf`, `--extract`, anything headless | 40, 59, 66, 70 |

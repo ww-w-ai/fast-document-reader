@@ -17,6 +17,10 @@ enum MarkdownRenderer {
         var builder = AttributedBuilder(theme: theme, source: markdown)
         builder.visit(document)
         autolink(builder.result)
+        // The theme names one font for everything, and it has no Hangul — so without this AppKit
+        // fixes the string per character and cuts a run at every word boundary (invariant 52's own
+        // rule, applied to the path that has no document to declare a face).
+        FontSubstitutionResolver.applySubstitutions(to: builder.result)
         return builder.result
     }
 

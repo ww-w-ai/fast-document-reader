@@ -64,6 +64,8 @@ enum PlainTextRenderer {
             }
             lineStart = end
         }
+        // Same reason as the markdown path — see `applySubstitutions`.
+        FontSubstitutionResolver.applySubstitutions(to: out)
         return out
     }
 }

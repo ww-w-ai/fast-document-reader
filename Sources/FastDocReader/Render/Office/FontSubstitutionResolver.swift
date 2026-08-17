@@ -275,6 +275,102 @@ enum FontSubstitutionResolver {
         tally(spans, blockWeight: blockWeight, into: &histograms)
         return resolve(spans, blockWeight: blockWeight, plan: decide(histograms, cache: cache))
     }
+
+    /// The same rule for a string that was never built from `Span`s — markdown and plain text, whose
+    /// fonts come from the theme rather than from any document declaration.
+    ///
+    /// **What these two paths were missing, and it is the whole per-script layer.** An office reader
+    /// names the document's OWN face PER SCRIPT (invariant 53 — HWP carries seven slots, docx four,
+    /// ODF three, and 53.6% of real HWPs genuinely declare different fonts across them). The theme
+    /// declares one font for everything, it has no Hangul, and AppKit then fixes the string per
+    /// CHARACTER: Hangul lands on `AppleSDGothicNeo` while every space, digit and newline between the
+    /// words stays on the system font, so a run is cut at nearly every word. Measured on a generated
+    /// Korean markdown document: **246,900 font runs across 370k characters, one every 1.5**, against
+    /// 8,215 on a Korean HWP of comparable size that came through the office path.
+    ///
+    /// So this gives those paths the same per-script slots the formats have, decided the same way
+    /// invariant 52 decides an office document's: **once per (declared font, script)** — never per
+    /// character and never per run — on the most common character that font actually draws in that
+    /// script, and only where the declared font does NOT already draw it. A theme font that draws
+    /// Latin keeps the Latin, which is the point of slots rather than one blanket substitution: it is
+    /// what lets English in a Korean document stay in the face the theme chose for it.
+    ///
+    /// Runs are then split by `ScriptRunSplitter`, which is load-bearing for the same reason it is in
+    /// the office path: **a character with no script of its own joins the run in progress instead of
+    /// starting one.** Without that the spaces alone are 42% of the runs on a mixed Korean/English
+    /// document (measured), which is the very fragmentation this exists to remove.
+    ///
+    /// Returns how many ranges were restamped — the deterministic number a test asserts on.
+    @discardableResult
+    static func applySubstitutions(to string: NSMutableAttributedString,
+                                   cache: FontSubstitutionCache = FontSubstitutionCache()) -> Int {
+        guard string.length > 0 else { return 0 }
+        let whole = NSRange(location: 0, length: string.length)
+        let text = string.string as NSString
+
+        struct SlotKey: Hashable {
+            let font: String
+            let script: ScriptClass
+        }
+        // Keyed on the font as a VALUE (face + size), not as an object: a theme hands out
+        // equal-but-distinct instances, and keying on identity would ask the same question once per
+        // run instead of once per face.
+        func fontKey(_ font: NSFont) -> String { "\(font.fontName)|\(font.pointSize)" }
+
+        var histograms: [SlotKey: [UInt32: Int]] = [:]
+        var declaredFonts: [String: NSFont] = [:]
+        string.enumerateAttribute(.font, in: whole, options: []) { value, range, _ in
+            guard let font = value as? NSFont else { return }
+            let key = fontKey(font)
+            declaredFonts[key] = font
+            for scalar in text.substring(with: range).unicodeScalars where isSampleEligible(scalar) {
+                histograms[SlotKey(font: key, script: UnicodeScript.of(scalar)), default: [:]][scalar.value, default: 0] += 1
+            }
+        }
+
+        var substitutes: [SlotKey: NSFont] = [:]
+        var byFamily: [String: NSFont] = [:]
+        for (key, histogram) in histograms {
+            guard let sample = sampleCharacter(histogram), let declared = declaredFonts[key.font] else { continue }
+            guard !cache.covers(declared, sample) else { continue }
+            let substitute = cache.substituteFont(declared: declared, scalar: sample)
+            guard substitute.fontName != noSubstituteFontName else { continue }
+            substitutes[key] = substitute
+            byFamily[substitute.fontName] = substitute
+        }
+        guard !substitutes.isEmpty else { return 0 }
+
+        // Collected first, applied after: mutating the attributes being enumerated is undefined.
+        var edits: [(NSRange, NSFont)] = []
+        string.enumerateAttribute(.font, in: whole, options: []) { value, range, _ in
+            guard let font = value as? NSFont else { return }
+            let key = fontKey(font)
+            guard substitutes.contains(where: { $0.key.font == key }) else { return }
+            let piece = text.substring(with: range)
+            var offset = range.location
+            for part in ScriptRunSplitter.split(piece,
+                                                classify: { scalar -> ScriptClass? in
+                                                    let script = UnicodeScript.of(scalar)
+                                                    return script.isAbsorbing ? nil : script
+                                                },
+                                                // The DECLARED family for a script this font
+                                                // already draws — never `nil`. `nil` means "the
+                                                // document said nothing", which tells the splitter
+                                                // not to break at all; here "no substitute" is the
+                                                // opposite, a positive statement that the theme font
+                                                // draws this script, and it must break so the Latin
+                                                // keeps the face the theme chose for it.
+                                                family: { substitutes[SlotKey(font: key, script: $0)]?.fontName ?? font.fontName }) {
+                let length = String(part.text).utf16.count
+                if let family = part.family, let substitute = byFamily[family] {
+                    edits.append((NSRange(location: offset, length: length), substitute))
+                }
+                offset += length
+            }
+        }
+        for (range, font) in edits { string.addAttribute(.font, value: font, range: range) }
+        return edits.count
+    }
 }
 
 /// One document's whole substitution decision: for each distinct declared font, the ONE descriptor
