@@ -85,6 +85,85 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// pushing every page after them off by the difference.
     var documentPageBreaks: Set<Int> = []
 
+    /// The markers in `storage` that actually have work to do — every `MDAttr.startsPage` EXCEPT one
+    /// whose page would hold nothing but the empty paragraph the PREVIOUS marker left there.
+    ///
+    /// **Why the `shift > 0.5` guard in the rule below is not already this.** That guard asks "is this
+    /// line at a page top", which is what makes a second layout pass idempotent. It cannot ask "is
+    /// this line the first thing ON its page", because a line one empty paragraph below the top is
+    /// not at the top and its page still carries nothing. Measured on `2025 행정업무운영 편람`: 94 of
+    /// its 185 markers sit on an EMPTY paragraph, which takes the break, lands at the top of the new
+    /// page and occupies one line there — so the next paragraph's break is no longer at the top and
+    /// opens ANOTHER page, leaving the first holding only the 바탕쪽. Suppressing those is **2 pages**
+    /// on this manual (516 → 514), not the 11 invariant 90 estimated from the marker shape alone:
+    /// most of the pages that hold nothing are emptied by something else entirely, which that
+    /// invariant now records.
+    ///
+    /// **Derived, never accumulated** — the discipline in this file's own header. Counting "has a
+    /// glyph-bearing line landed on this page yet" would be a running counter, and mid-document
+    /// re-layout (a resize, a splice, ⌘F) re-lays only a RANGE, so the count would arrive stale and
+    /// the same marker would decide differently on the second pass. Emptiness BETWEEN two markers is
+    /// a property of the text, decided once before layout, and every pass reads the same answer.
+    ///
+    /// Two deliberate narrowings, each because the wider rule would claim something unmeasured:
+    /// - **The document's FIRST marker is always honoured.** Nothing precedes it, so what sits above
+    ///   it is the document's opening rather than a page a break abandoned — here that is the cover,
+    ///   whose body is empty only because its artwork is 바탕쪽 (invariant 78).
+    /// - **A marker that also begins a SECTION is always honoured.** 구역 나누기 can change the paper
+    ///   itself (invariant 73 — this manual runs five different body boxes), and a section that never
+    ///   starts a page can never apply the paper it declares.
+    /// Every PARAGRAPH carrying `key`, as its own range — the reliable way to read a per-paragraph
+    /// marker back out of built text.
+    ///
+    /// **`enumerateAttribute` alone cannot do this, and the way it fails is silent.** It reports the
+    /// longest range over which one attribute is CONSTANT, and every paragraph that carries one of
+    /// these markers carries the same `true` — so two adjacent marked paragraphs arrive as a SINGLE
+    /// run. A caller reading `range.location` then sees one marker where the document wrote two, and
+    /// a caller reading the range sees one block where the document wrote two. Measured on
+    /// `2025 행정업무운영 편람`: **176 runs against 185 marked paragraphs — 9 page breaks lost**,
+    /// including ones with real text above them, where the effect was a heading that breaks straight
+    /// after a paragraph that breaks quietly not starting a page at all.
+    ///
+    /// Splitting at paragraph boundaries costs one `paragraphRange` per MARKED paragraph — a couple
+    /// of hundred on a 400-page manual, not one per character.
+    static func markedParagraphs(_ key: NSAttributedString.Key,
+                                 in storage: NSAttributedString) -> [(start: Int, end: Int)] {
+        guard storage.length > 0 else { return [] }
+        let text = storage.string as NSString
+        var out: [(start: Int, end: Int)] = []
+        storage.enumerateAttribute(key, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard value != nil else { return }
+            var location = range.location
+            while location < NSMaxRange(range) {
+                let paragraph = text.paragraphRange(for: NSRange(location: location, length: 0))
+                let end = min(max(NSMaxRange(paragraph), location + 1), NSMaxRange(range))
+                out.append((start: location, end: end))
+                location = end
+            }
+        }
+        return out
+    }
+
+    static func honouredPageBreaks(in storage: NSAttributedString) -> Set<Int> {
+        guard storage.length > 0 else { return [] }
+        let text = storage.string as NSString
+        var markers = markedParagraphs(MDAttr.startsPage, in: storage).map(\.start)
+        guard markers.count > 1 else { return Set(markers) }
+        markers.sort()
+        var honoured: Set<Int> = [markers[0]]
+        var previous = markers[0]
+        for marker in markers.dropFirst() {
+            let between = text.substring(with: NSRange(location: previous, length: marker - previous))
+            let holdsNothing = between.unicodeScalars
+                .allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
+            let section = storage.attribute(MDAttr.sectionIndex, at: marker, effectiveRange: nil) as? Int
+            let previousSection = storage.attribute(MDAttr.sectionIndex, at: previous, effectiveRange: nil) as? Int
+            if !holdsNothing || section != previousSection { honoured.insert(marker) }
+            previous = marker
+        }
+        return honoured
+    }
+
     /// Character RANGES the document keeps with what follows them (`MDAttr.keepWithNext`), as
     /// `(start, end)` pairs — a heading and the paragraph under it must not be split by a page.
     ///

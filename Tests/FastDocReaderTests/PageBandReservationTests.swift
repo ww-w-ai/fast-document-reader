@@ -1102,4 +1102,110 @@ final class PageBandReservationTests: XCTestCase {
         XCTAssertEqual(sv.contentView.bounds.origin.y, 0, accuracy: 0.5,
                        "scrolling character 0 to the top must land at the true top, header band included")
     }
+
+    // MARK: - Which of the document's breaks have work to do (invariant 90)
+
+    /// Builds the shape the rule is about: paragraphs in order, each optionally carrying the
+    /// document's own break marker and a section index. Returns the string plus every marker's
+    /// character location, so a test names positions by paragraph rather than by counting characters.
+    private func markedParagraphs(_ paragraphs: [(text: String, breaks: Bool, section: Int)])
+        -> (storage: NSAttributedString, locations: [Int]) {
+        let out = NSMutableAttributedString()
+        var locations: [Int] = []
+        for paragraph in paragraphs {
+            let start = out.length
+            out.append(NSAttributedString(string: paragraph.text + "\n"))
+            let range = NSRange(location: start, length: out.length - start)
+            out.addAttribute(MDAttr.sectionIndex, value: paragraph.section, range: range)
+            if paragraph.breaks {
+                out.addAttribute(MDAttr.startsPage, value: true, range: range)
+                locations.append(start)
+            }
+        }
+        return (out, locations)
+    }
+
+    /// Two adjacent paragraphs that both carry the same marker are ONE attribute run, and reading
+    /// the run is what silently welds them: measured on the reference manual, 176 runs against 185
+    /// marked paragraphs. Both readers of this attribute depend on the split — a lost page break,
+    /// and a keep-with-next pair moved as a single block by its first line.
+    func testTwoAdjacentMarkedParagraphsAreTwoMarkers() {
+        let (storage, locations) = markedParagraphs([
+            (text: "A heading", breaks: true, section: 0),
+            (text: "Another heading", breaks: true, section: 0),
+            (text: "Body", breaks: false, section: 0)
+        ])
+        let found = PageBandLayoutDelegate.markedParagraphs(MDAttr.startsPage, in: storage)
+
+        XCTAssertEqual(found.count, 2,
+                       "two marked paragraphs must read back as two markers — one run is what the " +
+                       "attribute store reports, not what the document said")
+        XCTAssertEqual(found.map(\.start), locations,
+                       "and each must start at its own paragraph")
+        XCTAssertEqual(found[0].end, locations[1],
+                       "the first block must END where the second begins, or a rule that moves a " +
+                       "block by its range moves both")
+    }
+
+    /// A break whose page would hold nothing but the empty paragraph the previous break left there
+    /// has nothing to do — measured on `2025 행정업무운영 편람`, where honouring it opened a page
+    /// carrying only the 바탕쪽 (invariant 90).
+    func testABreakAboveNothingIsNotHonoured() {
+        let (storage, locations) = markedParagraphs([
+            (text: "First page's body", breaks: false, section: 0),
+            (text: "", breaks: true, section: 0),          // takes the break, lands alone at a page top
+            (text: "Second page's body", breaks: true, section: 0)  // its page holds only the line above
+        ])
+        let honoured = PageBandLayoutDelegate.honouredPageBreaks(in: storage)
+
+        XCTAssertTrue(honoured.contains(locations[0]),
+                      "the break that MADE the page is the one that has work to do")
+        XCTAssertFalse(honoured.contains(locations[1]),
+                       "a break one empty paragraph below a page top would open a page holding " +
+                       "nothing — HWP does not spend a sheet on it and neither may this reader")
+    }
+
+    /// The narrowing that keeps a real page: the moment anything glyph-bearing sits between two
+    /// breaks, the second one is opening a page over CONTENT and must be honoured.
+    func testABreakBelowRealTextIsHonoured() {
+        let (storage, locations) = markedParagraphs([
+            (text: "First page's body", breaks: false, section: 0),
+            (text: "A heading", breaks: true, section: 0),
+            (text: "Third page's body", breaks: true, section: 0)
+        ])
+        let honoured = PageBandLayoutDelegate.honouredPageBreaks(in: storage)
+
+        XCTAssertEqual(honoured, Set(locations),
+                       "every break whose page carries text must survive — suppressing one would " +
+                       "run two pages of the document together")
+    }
+
+    /// 구역 나누기 can change the paper itself (invariant 73), and a section that never starts a page
+    /// can never apply the paper it declares — so this one is honoured even over an empty paragraph.
+    func testASectionBreakIsHonouredEvenAboveNothing() {
+        let (storage, locations) = markedParagraphs([
+            (text: "First page's body", breaks: false, section: 0),
+            (text: "", breaks: true, section: 0),
+            (text: "Landscape appendix", breaks: true, section: 1)
+        ])
+        let honoured = PageBandLayoutDelegate.honouredPageBreaks(in: storage)
+
+        XCTAssertTrue(honoured.contains(locations[1]),
+                      "a break that also begins a section must start a page whatever sits above it, " +
+                      "or the section's own paper is never applied")
+    }
+
+    /// The document's opening is not a page a break abandoned: on the reference manual page 0's body
+    /// is empty only because the cover's artwork is 바탕쪽 (invariant 78), and suppressing there
+    /// folded the cover into the page after it.
+    func testTheFirstBreakIsAlwaysHonoured() {
+        let (storage, locations) = markedParagraphs([
+            (text: "", breaks: false, section: 0),
+            (text: "", breaks: true, section: 0)
+        ])
+        let honoured = PageBandLayoutDelegate.honouredPageBreaks(in: storage)
+
+        XCTAssertEqual(honoured, Set(locations),
+                       "the first marker has no preceding break to have abandoned a page")
+    }
 }

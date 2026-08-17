@@ -478,31 +478,26 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         return out
     }
 
-    /// Every block the document keeps with what follows it, as character ranges.
+    /// Every block the document keeps with what follows it, as character ranges — one per PARAGRAPH,
+    /// which `PageBandLayoutDelegate.markedParagraphs` is what makes true. Reading the attribute's
+    /// own runs instead welds two adjacent kept paragraphs into one block, and the rule moves a
+    /// block by its FIRST line, so the welded pair moves as one and the second heading's own
+    /// decision is never made.
     private func keepWithNextRanges() -> [(start: Int, end: Int)] {
         guard let storage = textView.textStorage, storage.length > 0 else { return [] }
-        var out: [(start: Int, end: Int)] = []
-        storage.enumerateAttribute(MDAttr.keepWithNext, in: NSRange(location: 0, length: storage.length)) {
-            value, range, _ in
-            if value != nil { out.append((range.location, range.location + range.length)) }
-        }
-        return out
+        return PageBandLayoutDelegate.markedParagraphs(MDAttr.keepWithNext, in: storage)
     }
 
     /// Every character location the document breaks a page at — the first character of each block
-    /// carrying `MDAttr.startsPage`.
+    /// carrying `MDAttr.startsPage`, less the ones that would open a page holding nothing (see
+    /// `PageBandLayoutDelegate.honouredPageBreaks`, which owns that rule and the measurements for it).
     ///
     /// Recomputed per render rather than cached: it is one walk over ATTRIBUTE RUNS (a couple of
     /// hundred on a 400-page manual, not one per character), and a stale copy would break pages at
     /// locations that belong to text that is no longer there.
     private func documentPageBreakLocations() -> Set<Int> {
         guard let storage = textView.textStorage, storage.length > 0 else { return [] }
-        var out: Set<Int> = []
-        storage.enumerateAttribute(MDAttr.startsPage, in: NSRange(location: 0, length: storage.length)) {
-            value, range, _ in
-            if value != nil { out.insert(range.location) }
-        }
-        return out
+        return PageBandLayoutDelegate.honouredPageBreaks(in: storage)
     }
 
     /// Which section page `page` (0-based) is typeset on, or `nil` when the document never said.
