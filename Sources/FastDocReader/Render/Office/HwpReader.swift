@@ -1118,6 +1118,28 @@ enum HwpReader {
                     object: OfficeMasterObject(frame: frame, content: .image(image))))
                 return .paragraph(spans: [])
             }
+            // PINNED TO ITS PARAGRAPH — a 도장 over a signature line, which is what a scanned seal in
+            // a Korean contract IS. The drawing branch below has had this since invariant 81; the
+            // picture branch never did, so a seal fell into the flow at its paragraph's own left
+            // edge and BOTH its offsets were discarded. Measured on a real contract: the seal
+            // declares 어울림 없음 at column + 285.9pt, 155.3pt below its line, and was drawn at the
+            // body's own margin instead — 264pt to the left of where the document puts it, on a page
+            // where the signature block it belongs to is the whole point.
+            if im.asChar != true, im.wrapsText != true, let paper = shapes.paper,
+               let bytes = shapes.picture?(im.binDataId),
+               let image = NSImage(data: bytes),
+               let placement = paragraphAnchoredPlacement(
+                    size: size, vertRelTo: im.vertRelTo ?? "para", horzRelTo: im.horzRelTo ?? "para",
+                    vertAlign: im.vertAlign ?? "top", horzAlign: im.horzAlign ?? "left",
+                    offset: CGPoint(x: points(im.offsetX ?? 0), y: points(im.offsetY ?? 0)),
+                    page: paper) {
+                shapes.lastAnchoredFrame = placement.frame
+                shapes.anchored.append(OfficeAnchoredObject(
+                    blockIndex: shapes.blockIndex,
+                    object: OfficeMasterObject(frame: placement.frame, content: .image(image)),
+                    paragraphAnchor: placement.anchor))
+                return .paragraph(spans: [])
+            }
             return .image(id: "\(hwpImagePrefix)\(im.binDataId)", size: size,
                           alignment: imageAlignment(im.align))
         case .shape(let sh):

@@ -98,6 +98,17 @@ final class GridTextTableBlock: NSTextTableBlock {
     /// is what every markdown table and every rule this reader invents itself is.
     var edgeStyles: [NSRectEdge: BorderLineStyle] = [:]
 
+    /// What the document said this edge's rule MEASURES, when that is not what layout reserved for
+    /// it. `NSTextTableBlock` draws a rule at the width it was given, and the width it is given has
+    /// to be a whole point or the geometry stops adding up (`TableBlockBuilder.laidOutBorderWidth`) —
+    /// so a 0.1mm hairline and a 0.4mm rule were both handed up rounded, and a real contract's six
+    /// declared widths (0.28 / 0.34 / 1.13 / 1.42 / 1.70 / 1.98pt) came out as two. The document's
+    /// own hierarchy of weights disappeared, which is what reads as a ragged grid.
+    ///
+    /// So the reserved band stays whole-point and the RULE is drawn at its declared width, centred
+    /// in that band. Nothing moves: the geometry is the same number layout already charged for.
+    var declaredWidths: [NSRectEdge: CGFloat] = [:]
+
     /// The cell's own picture fill (`Cell.backgroundImage`). Painted per SEGMENT, like the shading
     /// and the side rules, so a cell a page break crosses shows its image on each sheet and nothing
     /// on the desk between them.
@@ -105,7 +116,25 @@ final class GridTextTableBlock: NSTextTableBlock {
 
     /// True when any edge needs a stroke this class has to draw itself. `super` paints solid bars, so
     /// only a non-solid edge forces the override on a cell no page break crosses.
-    var hasStyledEdge: Bool { edgeStyles.values.contains { $0 != .solid } }
+    var hasStyledEdge: Bool {
+        edgeStyles.values.contains { $0 != .solid } || !declaredWidths.isEmpty
+    }
+
+    /// The thickness this edge's rule is DRAWN at, and where inside its reserved band it sits.
+    /// Absent from `declaredWidths` = draw the whole band, which is what every markdown table and
+    /// every rule this reader invents itself does.
+    func rule(in band: NSRect, edge: NSRectEdge) -> NSRect {
+        let reserved = max(band.width, band.height) == band.width ? band.height : band.width
+        guard let declared = declaredWidths[edge], declared < reserved else { return band }
+        // A rule the document declared is never drawn away to nothing: below about a quarter point
+        // it stops being a line on any display and becomes a smudge, which reads as a MISSING rule
+        // rather than a fine one.
+        let drawn = max(declared, 0.25)
+        let inset = (reserved - drawn) / 2
+        return band.width >= band.height
+            ? NSRect(x: band.minX, y: band.minY + inset, width: band.width, height: drawn)
+            : NSRect(x: band.minX + inset, y: band.minY, width: drawn, height: band.height)
+    }
 
     private func paint(_ rect: NSRect, cutAbove: Bool, cutBelow: Bool) {
         if let background = backgroundColor {
@@ -124,15 +153,25 @@ final class GridTextTableBlock: NSTextTableBlock {
             (.maxY, NSRect(x: rect.minX, y: rect.maxY - width(for: .border, edge: .maxY),
                            width: rect.width, height: width(for: .border, edge: .maxY))),
         ]
-        for (edge, bar) in edges {
+        for (edge, band) in edges {
             if edge == .minY && cutAbove { continue }
             if edge == .maxY && cutBelow { continue }
-            guard bar.width > 0, bar.height > 0 else { continue }
+            guard band.width > 0, band.height > 0 else { continue }
+            let bar = rule(in: band, edge: edge)
             let colour = borderColor(for: edge) ?? .clear
             switch edgeStyles[edge] ?? .solid {
             case .solid:
                 colour.setFill()
-                bar.fill()
+                if declaredWidths[edge] != nil {
+                    // `NSRect.fill()` SNAPS to whole device pixels, so a 0.3pt and a 0.9pt rule land
+                    // on the same single pixel and the declared width is thrown away again — on
+                    // screen only; the PDF, being vector, kept it. A bezier fill is antialiased, so
+                    // a fine rule reads as a fine rule at any scale. Whole-point rules keep the
+                    // snapped fill they have always had: crisp is right when the width is exact.
+                    NSBezierPath(rect: bar).fill()
+                } else {
+                    bar.fill()
+                }
             case .dashed, .dotted:
                 // A dash is STROKED down the middle of the bar the solid case fills, so a dotted and
                 // a solid rule of the same declared width occupy the same band and the geometry the

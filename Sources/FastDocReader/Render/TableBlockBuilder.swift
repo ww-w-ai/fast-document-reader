@@ -652,6 +652,12 @@ enum TableBlockBuilder {
                     // non-solid style is recorded, so a table of ordinary rules keeps an empty
                     // dictionary and the block draws exactly as it did before this existed.
                     if side!.style != .solid { block.edgeStyles[edge] = side!.style }
+                    // …and how WIDE it really is. The width above had to be a whole point for the
+                    // geometry to add up; the rule itself is drawn at what the document declared,
+                    // centred in that band, so 0.1mm and 0.4mm stop looking like the same line.
+                    if side!.width < Self.laidOutBorderWidth(side!.width) - 0.01 {
+                        block.declaredWidths[edge] = side!.width
+                    }
                 }
             }
             // STEP D (part 2) — ABSOLUTE integer content width: the cell's integer span width minus
