@@ -1,7 +1,7 @@
 From 67c77e8b2b85635ee0a78e79547ccd8d16bb3583 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Thu, 13 Aug 2026 22:30:32 +0900
-Subject: [PATCH 08/25] Export the border-fill table, and take the page from
+Subject: [PATCH 08/26] Export the border-fill table, and take the page from
  the section that holds the document
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

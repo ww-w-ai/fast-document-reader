@@ -885,7 +885,8 @@ enum HwpReader {
             case "percent":
                 if let percent = percentLineHeight(lh.value) {
                     if paged {
-                        f.lineHeight = .atLeast((maxRunSize(p.spans) ?? defaultBodySize) * percent / 100)
+                        f.lineHeight = .atLeast(
+                            (maxRunSize(p.spans) ?? p.baseSizePt ?? defaultBodySize) * percent / 100)
                     } else if abs(percent - neutralPercentLineHeight) > 0.5 {
                         f.lineHeight = .atLeast(defaultBodySize * percent / 100)
                     }
@@ -1513,6 +1514,12 @@ private struct HwpPara: Decodable {
     var tabStops: [HwpTabStop]?
     /// When the paragraph lives inside a drawing's TEXT BOX rather than in the body, the box's own
     /// position and size in HWPUNIT (accumulated through group nesting). Absent for a body paragraph.
+    /// The paragraph's OWN base character size in points — present even when it has no runs, which
+    /// is the case that mattered: a paragraph with no text still has a char shape, and without it a
+    /// percentage line height has no basis and falls back to a document default this document may
+    /// never have stated. Measured on the 편람: 793 of its 2,789 paragraphs are empty AND carry no
+    /// spans, so 28% of the document was being spaced against a guess.
+    var baseSizePt: CGFloat?
     var boxX: Int?
     var boxY: Int?
     var boxW: Int?

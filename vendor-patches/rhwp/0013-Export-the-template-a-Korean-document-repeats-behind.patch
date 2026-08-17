@@ -1,7 +1,7 @@
 From 81e97ce575ecdb1d94eb460b4291cca99a6e5ac7 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 01:11:17 +0900
-Subject: [PATCH 13/25] Export the template a Korean document repeats behind
+Subject: [PATCH 13/26] Export the template a Korean document repeats behind
  every page
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

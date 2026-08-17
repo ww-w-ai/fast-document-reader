@@ -1,0 +1,73 @@
+From 59649b20872ea835195ce830de61e4530841c72c Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Mon, 17 Aug 2026 16:03:12 +0900
+Subject: [PATCH 26/26] Say what size a paragraph is, even when it has no
+ characters
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+HWP's percentage line spacing is of the text's own size, and a paragraph
+with no runs had no size to send — so a host had to fall back to a document
+default that may not exist. On the 2025 행정업무운영 편람 that is 793 of 2,789
+paragraphs, every one an empty spacer, spaced against a guess. Every
+paragraph has a char shape whether or not it has text.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index fa0503e5..4a30d031 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -518,6 +518,12 @@ struct ParaBlock {
+     #[serde(rename = "styleLocalName", skip_serializing_if = "Option::is_none")]
+     style_local_name: Option<String>,
+     spans: Vec<Span>,
++    /// 이 문단 자신의 기준 글자 크기(pt) — 글자가 하나도 없어도 문단은 자기 char shape 를 갖는다.
++    /// 빈 문단은 `spans` 가 비어 호스트가 크기를 알 길이 없었고, 그러면 퍼센트 줄간격의 기준이
++    /// 사라진다. 실측(2025 행정업무운영 편람): 문단 2,789개 중 808개가 비어 있고 그중 793개가
++    /// span 0개 — 문서 전체의 29%가 크기를 말하지 못한 채 호스트 기본값에 얹혀 있었다.
++    #[serde(rename = "baseSizePt", skip_serializing_if = "Option::is_none")]
++    base_size_pt: Option<f64>,
+     align: &'static str,
+     #[serde(rename = "indentStart")]
+     indent_start: i32,
+@@ -1086,6 +1092,16 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+ 
+ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+     let doc_info = &doc.doc_info;
++    // 문단 자신의 기준 글자 크기. 렌더러가 쓰는 해소 경로와 같다 — 문단의 첫 `CharShapeRef` 의
++    // char_shape_id, 없으면 0 번으로 폴백.
++    let base_size_pt = para
++        .char_shapes
++        .first()
++        .map(|r| r.char_shape_id as usize)
++        .or(Some(0))
++        .and_then(|id| doc_info.char_shapes.get(id))
++        .map(|cs| cs.base_size as f64 / 100.0)
++        .filter(|pt| *pt > 0.0);
+     let ps = doc_info.para_shapes.get(para.para_shape_id as usize);
+     // 스타일 이름 — 호스트가 "개요/제목 스타일" 을 제목으로 승격할 수 있게 그대로 넘긴다.
+     // head_type 만으로는 실무 문서 대부분의 제목을 놓친다(스타일로만 제목을 만든 문서가 흔함).
+@@ -1168,6 +1184,7 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+         };
+ 
+     ParaBlock {
++        base_size_pt,
+         heading,
+         style_name,
+         style_local_name,
+@@ -2065,6 +2082,7 @@ fn build_note_blocks(doc: &Document, note: &Control) -> Vec<Block> {
+ /// 번호 span 하나만 담은 최소 문단 블록(빈 노트 폴백용).
+ fn minimal_note_para(span: Span) -> ParaBlock {
+     ParaBlock {
++        base_size_pt: None,
+         heading: None,
+         style_name: None,
+         style_local_name: None,
+-- 
+2.50.1 (Apple Git-155)
+

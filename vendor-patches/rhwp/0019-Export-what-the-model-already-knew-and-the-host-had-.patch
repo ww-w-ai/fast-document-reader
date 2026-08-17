@@ -1,7 +1,7 @@
 From e64b81369850228a985418aa2ad8a53b39641fd4 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sat, 15 Aug 2026 00:46:17 +0900
-Subject: [PATCH 19/25] Export what the model already knew and the host had to
+Subject: [PATCH 19/26] Export what the model already knew and the host had to
  guess
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
