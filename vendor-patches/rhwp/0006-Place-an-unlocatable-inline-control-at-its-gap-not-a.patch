@@ -1,7 +1,7 @@
 From 1efef7a3fd52519a415c49e6d671c612ed4c65f6 Mon Sep 17 00:00:00 2001
 From: Taehyoung Kim <taekim@ww-w.ai>
 Date: Sat, 1 Aug 2026 16:17:27 +0900
-Subject: [PATCH 06/26] Place an unlocatable inline control at its gap, not at
+Subject: [PATCH 06/30] Place an unlocatable inline control at its gap, not at
  the end of the line
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

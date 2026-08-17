@@ -125,6 +125,16 @@ enum MDAttr {
     /// remains. See `docs/giant-table-deferral-design.md`.
     static let deferredTable = NSAttributedString.Key("mdDeferredTable")
 
+    /// Value = `true`, stamped over a table the DOCUMENT forbids splitting at a page boundary
+    /// (HWP `Table.page_break == 나누지 않음`; docx's `w:cantSplit` on every row is the same claim).
+    /// Absent means the document did not forbid it, which is every markdown table and most office
+    /// ones — so the reader's own policy (invariant 92: break by default) still governs them.
+    ///
+    /// It has to be an ATTRIBUTE rather than a lookup back into the block model, because the
+    /// decision is taken from a COMPLETED layout (`settlePagedTables`), where the only handle on a
+    /// table is where its characters are.
+    static let tableKeepsWhole = NSAttributedString.Key("mdTableKeepsWhole")
+
     /// Value = `PageNumberField` (`.page`/`.numPages`) — the attribute-string mirror of
     /// `Span.pageNumberField`, stamped by `OfficeTextBuilder.spansAttributedString` on a running
     /// header/footer's PAGE/NUMPAGES run so `PageBandPainter.substitutingPageFields` can find and

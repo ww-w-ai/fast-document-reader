@@ -133,6 +133,41 @@ final class PagedTableOverrunTests: XCTestCase {
                        [10: PagePagination.TableMetrics(height: 70, topInset: 0)])
     }
 
+    // MARK: the DOCUMENT's own answer (invariant 96)
+
+    /// A table the document forbids cutting is carried whole even when the reader's own policy is to
+    /// break — the document's instruction outranks the reader's default. Measured across 1,589 real
+    /// Korean files: 5,878 of 18,616 tables (32%), in 558 of the documents, say exactly this.
+    func testATableTheDocumentForbidsCuttingIsCarriedWholeWithBreakingOn() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 60, bottom: 130,
+                                            firstLineTop: 60, rows: rows(4, from: 60, height: 17.5),
+                                            keepsWhole: true)
+        XCTAssertEqual(decide([t], splitTables: true),
+                       [10: PagePagination.TableMetrics(height: 70, topInset: 0)],
+                       "the whole table moves; no row of it is registered as a break point")
+    }
+
+    /// …but only when there is a page it can be moved to. Taller than the page, the document's wish
+    /// cannot be met either way: `tablesToPush` refuses to CARRY it (moving it would only empty the
+    /// page it is on), and `oversizedPieces` is what handles it from there.
+    func testATableTallerThanThePageIsNotCarriedEvenWhenTheDocumentForbidsCuttingIt() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 10, bottom: 210,
+                                            firstLineTop: 10, rows: rows(8, from: 10, height: 25),
+                                            keepsWhole: true)
+        XCTAssertTrue(decide([t], splitTables: true).isEmpty,
+                      "a table with no page to move to is neither carried nor pretended to fit")
+    }
+
+    /// A table that said nothing keeps behaving exactly as it did before the flag existed — which is
+    /// what makes every markdown table and every silent office one unchanged by this.
+    func testATableThatSaidNothingIsStillBrokenWithBreakingOn() {
+        let t = PagePagination.LaidOutTable(firstChar: 10, visualTop: 60, bottom: 130,
+                                            firstLineTop: 60, rows: rows(4, from: 60, height: 17.5))
+        let out = decide([t], splitTables: true)
+        XCTAssertNil(out[10])
+        XCTAssertEqual(out.count, 4)
+    }
+
     /// Exactly at the page's last point is still inside it — the boundary case that decides whether a
     /// document paginates one way or the other.
     func testATableEndingExactlyOnThePageBottomIsNotMoved() {

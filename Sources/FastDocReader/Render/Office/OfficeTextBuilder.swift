@@ -525,6 +525,20 @@ enum OfficeTextBuilder {
             if let highlight = span.highlightColor { attrs[.backgroundColor] = highlight }
             if span.underline { attrs[.underlineStyle] = nsUnderlineStyle(for: span.underlineStyle).rawValue }
             if span.strikethrough { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            // A decoration's OWN colour, when the document gave it one distinct from the text.
+            // Set only alongside the decoration itself: AppKit draws neither from a colour alone,
+            // and an underline colour on a run with no underline is a fact about nothing.
+            if span.underline, let c = span.underlineColor { attrs[.underlineColor] = c }
+            if span.strikethrough, let c = span.strikethroughColor { attrs[.strikethroughColor] = c }
+            // Letter spacing and baseline shift are stated as a share of the run's own em, so they
+            // become points against the font this build actually resolved — which is what keeps
+            // them proportional at every reading size, exactly like every other authored length.
+            if let pct = span.letterSpacingPercent, pct != 0 {
+                attrs[.kern] = font.pointSize * pct / 100
+            }
+            if let pct = span.baselineOffsetPercent, pct != 0 {
+                attrs[.baselineOffset] = font.pointSize * pct / 100
+            }
             // Same colour/underline treatment `MarkdownRenderer.inlineFragment`'s `Markdown.Link`
             // case uses — a link must look and behave identically whether it arrived via markdown
             // or an office hyperlink, not grow a second visual style.
@@ -1029,6 +1043,47 @@ enum OfficeTextBuilder {
                 p.tailIndent = -(end * fontSizeScale)
             }
         }
+        applyLineBreaking(format, to: p)
+    }
+
+    /// Where the document says a line may be broken — the one half of HWP's five line-fitting bits
+    /// that real documents actually use, and the only one this builder honours.
+    ///
+    /// Measured over 1,589 real HWP/HWPX files (454,134 paragraphs, `HwpLineBreakProbeTests`):
+    ///
+    /// | declaration | paragraphs | documents |
+    /// |---|---|---|
+    /// | Hangul broken between CHARACTERS | 287,367 (63%) | 1,489 of 1,589 |
+    /// | Hangul broken between WORDS | 164,928 (36%) | — |
+    /// | Latin broken other than between words | 394 (0.09%) | 49 |
+    /// | auto-space at a Hangul/Latin or Hangul/digit seam | 3,366 (0.7%) | 82 |
+    /// | line height taken from the font's metrics | 59 (0.013%) | 9 |
+    ///
+    /// So the Hangul bit is not a curiosity — two thirds of every Korean paragraph on this machine
+    /// sets it, and getting it wrong changes how many characters fit on a line, which is a page
+    /// count. The bottom two rows are why the other three fields are decoded and NOT honoured: both
+    /// would cost every paragraph of every document something (an attribute run at every script
+    /// seam, a second line-height basis) to serve well under one paragraph in a hundred. They are
+    /// carried in `ParagraphFormat` so the next reader of this code can see they were measured
+    /// rather than missed.
+    ///
+    /// `.hyphen` deliberately behaves as `.word`: a hyphen already IS a break opportunity in
+    /// standard line breaking, so TextKit gives HWP's middle setting without being asked.
+    private static func applyLineBreaking(_ format: ParagraphFormat, to p: NSMutableParagraphStyle) {
+        switch format.eastAsianLineBreak {
+        case .word:
+            // The Korean-aware strategy: prefer a word boundary, and only fall inside a word when
+            // nothing else fits. This is what a document means by 어절 단위.
+            p.lineBreakStrategy.insert(.hangulWordPriority)
+        case .character:
+            // 글자 단위 — fill the line and break wherever it runs out, which is what AppKit does
+            // for CJK with no strategy set. Removing the flag rather than clearing the whole set
+            // leaves any other strategy (`.pushOut`) the caller chose alone.
+            p.lineBreakStrategy.remove(.hangulWordPriority)
+        case .hyphen, nil:
+            break
+        }
+        if format.latinLineBreak == .character { p.lineBreakMode = .byCharWrapping }
     }
 
     // MARK: Lists
@@ -1315,6 +1370,7 @@ enum OfficeTextBuilder {
                                                       edgeBorders: cell.edgeBorders, edgePadding: cell.edgePadding)
             }
         }
+        let tableStart = result.length
         result.append(TableBlockBuilder.build(rows: cellRows, headerRows: headerRows, theme: theme,
                                               columnWidths: columnWidths,
                                               tableBorderColor: tableFormat.defaultBorderColor,
@@ -1325,6 +1381,13 @@ enum OfficeTextBuilder {
                                               tableBackgroundImage: tableFormat.backgroundImage,
                                               paged: paged, maxWidth: maxWidth,
                                               width: solvedWidth))
+        // The document's own answer to "may this be cut at the foot of a page". Stamped only when
+        // it says NO: an absent attribute is every table that said nothing, and those keep behaving
+        // exactly as they did before this existed (invariant 92's default).
+        if tableFormat.pageBreakPolicy == .never, result.length > tableStart {
+            result.addAttribute(MDAttr.tableKeepsWhole, value: true,
+                                range: NSRange(location: tableStart, length: result.length - tableStart))
+        }
         result.append(NSAttributedString(string: "\n"))
     }
 

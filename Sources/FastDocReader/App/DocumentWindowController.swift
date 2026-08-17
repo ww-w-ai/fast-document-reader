@@ -1788,10 +1788,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             if current != table {
                 flushRows()
                 current = table
+                // Read where the table BEGINS: the attribute is stamped over the whole table, and
+                // this is the one character every piece of it can be traced back to.
+                let keepsWhole = (storage.attribute(MDAttr.tableKeepsWhole, at: cr.location,
+                                                    effectiveRange: nil) as? Bool) == true
                 out.append(PagePagination.LaidOutTable(
                     firstChar: cr.location, visualTop: top, bottom: bottom,
                     firstLineTop: self.pageBandDelegate.proposedTableLineTops[cr.location] ?? rect.minY,
-                    lastChar: cr.location + cr.length))
+                    lastChar: cr.location + cr.length, keepsWhole: keepsWhole))
             } else {
                 out[out.count - 1].visualTop = min(out[out.count - 1].visualTop, top)
                 out[out.count - 1].bottom = max(out[out.count - 1].bottom, bottom)

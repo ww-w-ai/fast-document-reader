@@ -1,0 +1,82 @@
+From 64d9bbdfacb8a75c83abe56ab06e658900ee49bc Mon Sep 17 00:00:00 2001
+From: FastDocReader <taekim@ww-w.ai>
+Date: Tue, 18 Aug 2026 02:18:21 +0900
+Subject: [PATCH 27/30] Say where a paragraph allows its lines to break
+
+A host that re-typesets the text rather than replaying HWP's own line
+segmentation has to decide where a line may break, and the document
+already answered: ParaShape attr1 carries the Hangul and Latin break
+units, the two auto-spacing switches and the font-metric line height.
+None of them were exported, so every paragraph was fitted with the
+host's default. Measured over 1,589 real files, 63% of 454,134
+paragraphs ask for the setting the host was not being told about.
+---
+ src/document_core/queries/document_json.rs | 38 ++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 4a30d031..db71aa9b 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -555,6 +555,30 @@ struct ParaBlock {
+     widow_orphan: bool,
+     #[serde(rename = "pageBreakBefore", skip_serializing_if = "std::ops::Not::not")]
+     page_break_before: bool,
++    /// 줄을 어디서 끊는가 — 한글은 `0` 어절 / `1` 글자(attr1 bit 7), 영문은 `0` 단어 / `1` 하이픈 /
++    /// `2` 글자(bits 5-6). 스키마의 명목과 한컴의 실동작이 반대라 rhwp 자신이 세 번 실측해 확정한
++    /// 값이다(`composer/line_breaking.rs` #2185). 이 신호가 없으면 호스트는 자기 언어 규칙으로
++    /// 끊으므로 한 줄에 들어가는 글자 수가 달라지고, 그 차이가 그대로 쪽수 차이가 된다.
++    ///
++    /// ZERO IS NOT OMITTED here, unlike every other defaulted field in this DTO: zero is a real
++    /// value in both codes (break between words), so omitting it would spell "the document said
++    /// nothing" and "the document said words" the same way — and a host reading the absent key as
++    /// unstated would fall back to its own default for the 36% of real paragraphs that ask for
++    /// word breaking.
++    #[serde(rename = "koreanBreakUnit")]
++    korean_break_unit: u8,
++    #[serde(rename = "englishBreakUnit")]
++    english_break_unit: u8,
++    /// 한글과 영문/숫자가 붙는 자리를 문서가 스스로 벌리는가(attr1 bits 20-21, HWPX 는 attr2 4-5).
++    /// 바이너리와 HWPX 가 서로 다른 비트에 적으므로 양쪽을 OR 로 읽는다 —
++    /// `document_core/commands/formatting.rs` 가 쓰는 규칙과 같은 것이다.
++    #[serde(rename = "autoSpaceKrEn", skip_serializing_if = "std::ops::Not::not")]
++    auto_space_kr_en: bool,
++    #[serde(rename = "autoSpaceKrNum", skip_serializing_if = "std::ops::Not::not")]
++    auto_space_kr_num: bool,
++    /// 줄 높이를 글꼴이 말하는 높이에 맞추는가(attr1 bit 22). 끄면 줄 높이는 글자 크기에서 나온다.
++    #[serde(rename = "fontLineHeight", skip_serializing_if = "std::ops::Not::not")]
++    font_line_height: bool,
+     /// 문단이 쓰는 탭 정지 위치(위치는 HWPUNIT, 종류 = left/right/center/decimal).
+     /// 비어 있으면 문서가 정한 것이 없다는 뜻이고, 호스트의 기본 탭 폭이 곧 답이다.
+     #[serde(rename = "tabStops", skip_serializing_if = "Vec::is_empty")]
+@@ -1202,6 +1226,15 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+         keep_lines: ps.map(|p| (p.attr1 >> 18) & 1 != 0 || (p.attr2 >> 7) & 1 != 0).unwrap_or(false),
+         widow_orphan: ps.map(|p| (p.attr1 >> 16) & 1 != 0 || (p.attr2 >> 5) & 1 != 0).unwrap_or(false),
+         page_break_before: ps.map(|p| (p.attr1 >> 19) & 1 != 0 || (p.attr2 >> 8) & 1 != 0).unwrap_or(false),
++        korean_break_unit: ps.map(|p| ((p.attr1 >> 7) & 0x01) as u8).unwrap_or(0),
++        english_break_unit: ps.map(|p| ((p.attr1 >> 5) & 0x03) as u8).unwrap_or(0),
++        auto_space_kr_en: ps
++            .map(|p| (p.attr2 >> 4) & 1 != 0 || (p.attr1 >> 20) & 1 != 0)
++            .unwrap_or(false),
++        auto_space_kr_num: ps
++            .map(|p| (p.attr2 >> 5) & 1 != 0 || (p.attr1 >> 21) & 1 != 0)
++            .unwrap_or(false),
++        font_line_height: ps.map(|p| (p.attr1 >> 22) & 1 != 0).unwrap_or(false),
+         box_x: None,
+         box_y: None,
+         box_w: None,
+@@ -2103,6 +2136,11 @@ fn minimal_note_para(span: Span) -> ParaBlock {
+         keep_lines: false,
+         widow_orphan: false,
+         page_break_before: false,
++        korean_break_unit: 0,
++        english_break_unit: 0,
++        auto_space_kr_en: false,
++        auto_space_kr_num: false,
++        font_line_height: false,
+         tab_stops: Vec::new(),
+         box_x: None,
+         box_y: None,
+-- 
+2.50.1 (Apple Git-155)
+

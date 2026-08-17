@@ -1,0 +1,98 @@
+From 01c7aa6a28d54c114166729039827dd733729eb7 Mon Sep 17 00:00:00 2001
+From: FastDocReader <taekim@ww-w.ai>
+Date: Tue, 18 Aug 2026 02:34:28 +0900
+Subject: [PATCH 28/30] Export the document's own font table, substitutes and
+ all
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+charShapes already carries a resolved NAME per language slot, but the
+resolution runs through rhwp's own web substitution table, so a host
+never sees what the DOCUMENT nominated when its font is absent — nor
+whether the bytes are embedded in the file. Measured on 1,589 real
+files, 99.5% of 1.55M font-slot references name a face the host machine
+does not have, so the host's fallback decides every glyph width, and a
+glyph width is a page count.
+---
+ src/document_core/queries/document_json.rs | 50 ++++++++++++++++++++++
+ 1 file changed, 50 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index db71aa9b..1b2dde71 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -76,6 +76,14 @@ struct DocumentJson {
+     /// FFI 는 `DocInfo` 를 내보내지 않으므로, 뷰어가 font_id 를 받아도 이름으로 바꿀 방법이 없다.
+     #[serde(rename = "charShapes")]
+     char_shapes: Vec<[String; 7]>,
++    /// 문서의 글꼴 표 그대로 — 언어 슬롯(0 한글 … 6 사용자)마다 그 슬롯의 글꼴 목록.
++    /// `charShapes` 가 이미 **해소된 이름**을 주는데도 이것을 따로 내보내는 이유는, 그 해소가
++    /// rhwp 자신의 웹 치환표(`resolve_font_substitution`)를 거친 결과라 **문서가 스스로 지정한
++    /// 대체 글꼴**(HWP5 `alt_name`, HWPX `substFont`)과 임베드 여부를 알 길이 없기 때문이다.
++    /// 지정한 글꼴이 없는 기계에서 무엇으로 대신 재는가는 모든 줄의 폭이자 곧 쪽수이므로,
++    /// 호스트가 자기 폴백을 고르기 전에 문서의 답을 먼저 볼 수 있어야 한다.
++    #[serde(rename = "fontFaces")]
++    font_faces: Vec<Vec<FontFaceDto>>,
+     /// 문서의 테두리/배경 정의 테이블(`doc_info.border_fills`) — 표·셀의 `borderFillId` 가
+     /// 가리키는 대상. **인덱스는 `borderFillId - 1`**(HWP 의 이 참조는 1-based 이고, 렌더러도
+     /// `border_fill_id as usize - 1` 로 찾는다 — `layout.rs`/`table_cell_content.rs`). `0` 은
+@@ -189,6 +197,47 @@ struct HeaderFooterEntry {
+ /// `lookup_font_name` 은 범위를 벗어난 lang_index/font_id 에 대해 빈 문자열을 돌려주므로
+ /// (`style_resolver.rs`), 폰트 테이블이 짧은 문서도 패닉 없이 빈 슬롯으로 표현된다. 빈 문자열
+ /// = "이 슬롯에 해당하는 항목이 문서의 글꼴 테이블에 없다" 이며, 소비자는 폴백해야 한다.
++/// 글꼴 표 한 항목. 이름은 문서가 적은 그대로이고(치환 전), 대체 글꼴은 HWP5 의 `alt_name` 과
++/// HWPX 의 `substFont.face` 중 있는 쪽을 쓴다 — 둘은 같은 것을 두 형식이 다르게 적은 것이다.
++#[derive(Serialize)]
++struct FontFaceDto {
++    name: String,
++    /// 문서가 지정한 대체 글꼴 이름. 없으면 생략.
++    #[serde(rename = "altName", skip_serializing_if = "Option::is_none")]
++    alt_name: Option<String>,
++    /// 0 알 수 없음 / 1 TTF / 2 HFT. HFT 는 한컴 전용 형식이라 어느 기계에도 설치돼 있지 않다.
++    #[serde(rename = "type")]
++    font_type: u8,
++    /// 이 글꼴의 바이트가 문서 안에 들어 있는가. 들어 있으면 `binDataId` 로 꺼낼 수 있다.
++    #[serde(rename = "embedded", skip_serializing_if = "std::ops::Not::not")]
++    embedded: bool,
++    #[serde(rename = "binDataId", skip_serializing_if = "Option::is_none")]
++    bin_data_id: Option<u16>,
++}
++
++fn build_font_faces(doc_info: &DocInfo) -> Vec<Vec<FontFaceDto>> {
++    doc_info
++        .font_faces
++        .iter()
++        .map(|slot| {
++            slot.iter()
++                .map(|f| FontFaceDto {
++                    name: f.name.clone(),
++                    alt_name: f
++                        .subst_font
++                        .as_ref()
++                        .map(|s| s.face.clone())
++                        .or_else(|| f.alt_name.clone())
++                        .filter(|s| !s.trim().is_empty()),
++                    font_type: f.alt_type,
++                    embedded: f.is_embedded,
++                    bin_data_id: f.resolved_bin_data_id,
++                })
++                .collect()
++        })
++        .collect()
++}
++
+ fn build_char_shapes(doc_info: &DocInfo) -> Vec<[String; 7]> {
+     doc_info
+         .char_shapes
+@@ -2185,6 +2234,7 @@ impl DocumentCore {
+             page_margin_top: geometry.as_ref().map(|g| g.margin_top),
+             page_margin_bottom: geometry.as_ref().map(|g| g.margin_bottom),
+             char_shapes: build_char_shapes(&self.document.doc_info),
++            font_faces: build_font_faces(&self.document.doc_info),
+             border_fills: build_border_fills(&self.document.doc_info),
+             body_section: body_section_index(&self.document),
+             master_pages: build_master_pages(&self.document),
+-- 
+2.50.1 (Apple Git-155)
+

@@ -223,7 +223,10 @@ enum HwpReader {
         // the whole document — tens to low hundreds of rows, against the ~1.1 M spans that index into
         // them. A parser predating the `charShapes` export yields `[]`, and every span then keeps
         // rhwp's own `font`, which is exactly what this reader drew before per-slot fonts existed.
-        let slotFonts = (envelope.charShapes ?? []).map { HwpSlotFonts(row: $0) }
+        let decorRows = envelope.charShapeDecor ?? []
+        let slotFonts = (envelope.charShapes ?? []).enumerated().map { index, row in
+            HwpSlotFonts(row: row, decor: index < decorRows.count ? decorRows[index] : nil)
+        }
         // The document's own border/background table, resolved ONCE for the whole document the same
         // way `slotFonts` is — a cell carries only an id. `[]` (a parser predating this export)
         // leaves every table exactly as this reader drew it before: the theme grid.
@@ -558,6 +561,15 @@ enum HwpReader {
         /// read only by probes; the render path takes the mapped `Span`s, not this.
         var spans: [SpanSample] = []
 
+        /// The document's own font table, one list per language slot — what it NAMED, before
+        /// rhwp's substitution table rewrote it, and what it nominates instead when that name is
+        /// not installed. `[]` for a parser predating the export.
+        var fontFaces: [[HwpFontFace]] = []
+
+        /// One row per char shape, same row number as `charShapes` — the decoration table.
+        /// `[]` for a parser predating the export.
+        var charShapeDecor: [HwpCharDecor] = []
+
         struct SpanSample: Equatable {
             var text: String
             var csId: Int?
@@ -592,7 +604,8 @@ enum HwpReader {
         }
         envelope.blocks.forEach(walk)
         return FontSlotExport(charShapes: envelope.charShapes ?? [], spanCharShapeIds: ids,
-                              spans: samples)
+                              spans: samples, fontFaces: envelope.fontFaces ?? [],
+                              charShapeDecor: envelope.charShapeDecor ?? [])
     }
 
     // MARK: unit conversion (HWPUNIT = 1/7200 inch; points = HWPUNIT ÷ 100)
@@ -730,6 +743,7 @@ enum HwpReader {
             return [span]
         }
         let fonts = slotFonts[id]
+        applyDecor(fonts.decor, to: &span)
         // The case invariant 37 rests on, and the one 46.4% of real documents are in: when all seven
         // slots resolve to one family — or to none at all — no character can select anything
         // different from any other, so the scalar walk is skipped rather than run to rediscover
@@ -767,6 +781,34 @@ enum HwpReader {
             if index > 0 { out.pageNumberField = nil }
             return out
         }
+    }
+
+    /// The char shape's decorations that this reader draws — and only those. The rest of the
+    /// sixteen are decoded and left alone; `HwpCharDecorProbeTests` measured all of them over 1,589
+    /// real documents and invariant 97 carries the table that decided which is which.
+    ///
+    /// The per-script values are applied ONLY when the document's seven slots agree. A span carries
+    /// one letter spacing, so honouring a shape whose Hangul and Latin ask for different values
+    /// would mean applying one script's answer to the other — measured, the slots agree on 95.9% of
+    /// the char shapes that state a spacing at all, and the remaining 4.1% keep the font's own.
+    private static func applyDecor(_ d: HwpCharDecor?, to span: inout Span) {
+        guard let d else { return }
+        if let v = uniformValue(d.spacings), v != 0 { span.letterSpacingPercent = CGFloat(v) }
+        if let v = uniformValue(d.charOffsets), v != 0 { span.baselineOffsetPercent = CGFloat(v) }
+        if let c = d.underlineColor { span.underlineColor = color(c) }
+        if let c = d.strikeColor { span.strikethroughColor = color(c) }
+        // 음영 is a background painted behind the glyphs — the same thing `highlightColor` already
+        // carries for docx's highlighter, so it reuses that rather than growing a second attribute
+        // that would paint the same pixels.
+        if let c = d.shadeColor, span.highlightColor == nil { span.highlightColor = color(c) }
+    }
+
+    /// The one value all seven language slots agree on, or `nil` when they do not — see
+    /// `applyDecor`. An empty or short array is also `nil`: a partial answer is not an answer.
+    static func uniformValue(_ slots: [Int]?) -> Int? {
+        guard let slots, slots.count == 7, let first = slots.first,
+              slots.allSatisfy({ $0 == first }) else { return nil }
+        return first
     }
 
     /// rhwp's own `max_fs` for one paragraph: the largest size any of its runs DECLARES, in points.
@@ -898,7 +940,48 @@ enum HwpReader {
             default: break
             }
         }
+        // Zero is a REAL value in both codes (break between words), so the export sends it rather
+        // than omitting it the way it omits every other default — see `document_json.rs`. An absent
+        // key therefore means a parser predating that export, and the reader leaves its own line
+        // breaking alone rather than reading silence as a setting.
+        f.eastAsianLineBreak = p.koreanBreakUnit.flatMap(hangulBreak)
+        f.latinLineBreak = p.englishBreakUnit.flatMap(latinBreak)
+        f.autoSpaceEastAsianLatin = p.autoSpaceKrEn
+        f.autoSpaceEastAsianNumber = p.autoSpaceKrNum
+        f.lineHeightFromFontMetrics = p.fontLineHeight
         return f
+    }
+
+    /// HWP's two line-break codes, in this reader's vocabulary. The export omits a zero, so a
+    /// paragraph that never states one decodes to `nil` and the reader's own default stands — which
+    /// is why "unstated" and "stated as 0" are deliberately NOT collapsed here.
+    static func hangulBreak(_ code: Int) -> LineBreakGranularity? {
+        switch code {
+        case 0: return .word
+        case 1: return .character
+        default: return nil
+        }
+    }
+
+    /// HWP's three page-break answers for a table, in this reader's vocabulary. An unknown string
+    /// is not guessed at — a parser that grows a fourth answer should read as "said nothing" rather
+    /// than as whichever case happened to be the default here.
+    static func tablePageBreakPolicy(_ raw: String) -> TablePageBreakPolicy? {
+        switch raw {
+        case "none": return .never
+        case "row": return .atRowBoundary
+        case "cell": return .anywhere
+        default: return nil
+        }
+    }
+
+    static func latinBreak(_ code: Int) -> LineBreakGranularity? {
+        switch code {
+        case 0: return .word
+        case 1: return .hyphen
+        case 2: return .character
+        default: return nil
+        }
     }
 
     /// A heading level from the paragraph's STYLE, for the documents HWP's outline flag misses.
@@ -1077,6 +1160,8 @@ enum HwpReader {
             // The AUTHOR's own repeating header rows. Inventing "row one is a header" was the
             // alternative and it bolds ordinary text; taking the document's mark costs nothing and
             // is the only way a table that crosses a page keeps its column labels on page two.
+            format.repeatHeaderRows = t.repeatHeader
+            format.pageBreakPolicy = t.pageBreak.flatMap(tablePageBreakPolicy)
             return .table(rows: rows, headerRows: max(0, t.headerRows ?? 0),
                           columnWidths: columnWidths, format: format)
         case .image(let im):
@@ -1386,6 +1471,16 @@ private struct HwpEnvelope: Decodable {
     /// Absent against a parser built before this existed — hence optional, and hence the reason a
     /// test has to assert it is PRESENT for a real file rather than trusting the Rust source.
     let charShapes: [[String]]?
+    /// The document's own font table, one list per language slot in the same order `charShapes`
+    /// uses. `charShapes` already carries a resolved NAME, but that name went through rhwp's own
+    /// substitution table on the way out, so it cannot say what the DOCUMENT nominated when its
+    /// font is absent, nor whether the file carries the bytes. Absent against a parser built
+    /// before this export existed.
+    let fontFaces: [[HwpFontFace]]?
+    /// One row per char shape, read by the SAME row number `charShapes` uses — everything a char
+    /// shape does beyond weight, slant, underline presence, colour and size, which the span itself
+    /// already carries. Absent against a parser built before this export existed.
+    let charShapeDecor: [HwpCharDecor]?
     /// The document's own border/background definitions, indexed by `borderFillId - 1` (HWP's
     /// reference is 1-based; `0` means "nothing specified" and points at no row at all). Absent
     /// against a parser built before this export existed, which is exactly the state in which every
@@ -1531,8 +1626,60 @@ private struct HwpPara: Decodable {
     var keepLines: Bool?
     var widowOrphan: Bool?
     var pageBreakBefore: Bool?
+    /// Where a line may be broken — Hangul: `0` between words, `1` between characters; Latin: `0`
+    /// between words, `1` also at a hyphen, `2` between characters. The nominal schema says the
+    /// opposite for Hangul; rhwp measured Hancom three separate ways and its own line breaker uses
+    /// THIS reading (`composer/line_breaking.rs`, #2185), so it is the one to follow.
+    var koreanBreakUnit: Int?
+    var englishBreakUnit: Int?
+    /// Whether the document widens the seam where Hangul meets Latin letters / digits.
+    var autoSpaceKrEn: Bool?
+    var autoSpaceKrNum: Bool?
+    /// Whether the line height comes from the font's own metrics rather than the character size.
+    var fontLineHeight: Bool?
     /// `"page"`/`"section"`/`"multiColumn"`/`"column"`, absent when the paragraph starts nothing.
     var breakBefore: String?
+}
+
+/// What a char shape does beyond the handful of things a span already carries. Every field is
+/// omitted at its default, so an ordinary document's rows decode to all-nil.
+///
+/// Colours are present ONLY when the decoration that uses them is on: a colour of `000000` is
+/// indistinguishable from "no colour stated", so carrying it unconditionally would shade every
+/// document in black.
+struct HwpCharDecor: Decodable, Equatable {
+    var underlineShape: Int?
+    var underlineColor: String?
+    var strikeShape: Int?
+    var strikeColor: String?
+    var shadeColor: String?
+    var outlineType: Int?
+    var shadowType: Int?
+    var shadowColor: String?
+    var shadowOffsetX: Int?
+    var shadowOffsetY: Int?
+    var emboss: Bool?
+    var engrave: Bool?
+    var emphasisDot: Int?
+    var kerning: Bool?
+    /// Per language slot, in `charShapes`' own order: width %, letter spacing %, relative size %,
+    /// baseline offset %. Absent when every slot is at its default (100 / 0 / 100 / 0).
+    var ratios: [Int]?
+    var spacings: [Int]?
+    var relativeSizes: [Int]?
+    var charOffsets: [Int]?
+}
+
+/// One entry of the document's font table — the name as the document wrote it (before any
+/// substitution), the substitute the DOCUMENT nominates for it, what kind of font file it is
+/// (`0` unknown, `1` TTF, `2` HFT — Hancom's own format, installed on no machine but a Hancom one),
+/// and whether the file carries the bytes.
+struct HwpFontFace: Decodable, Equatable {
+    var name: String
+    var altName: String?
+    var type: Int?
+    var embedded: Bool?
+    var binDataId: Int?
 }
 
 private struct HwpLineHeight: Decodable {
@@ -1680,9 +1827,15 @@ private struct HwpTable: Decodable {
     var colWidths: [Int]
     var borderFillId: Int?
     var rows: [[HwpCell]]
-    /// How many rows at the TOP the document repeats when the table crosses a page — the author's
-    /// own mark, not a guess that row one is a header. Absent for a parser predating the export.
+    /// How many rows at the TOP are the table's heading — the author's own mark, not a guess that
+    /// row one is a header. Absent for a parser predating the export.
     var headerRows: Int?
+    /// Whether the author asked for those heading rows to be REPRINTED on each further page, which
+    /// is a separate switch from having a heading at all.
+    var repeatHeader: Bool?
+    /// `"none"` / `"cell"` / `"row"` — where the document allows this table to be split when it
+    /// reaches the foot of a page. Absent for a parser predating the export.
+    var pageBreak: String?
 }
 
 private struct HwpCell: Decodable {

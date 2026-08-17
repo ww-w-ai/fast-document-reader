@@ -50,6 +50,10 @@ Applied on top of upstream **`8d3bfa4b92174b16bac587fe1409975cf34ba566`** (just 
 | 0024 | `pageBorder` — the 쪽 테두리/배경 a section rules around its whole page (fill id into the same `borderFills` table, four spacings, and whether they are measured from the sheet or the body area) |
 | 0025 | `Placement` — an object's anchor read ONCE from the object the document placed, then handed to everything it emits at any depth. A group child's `CommonObjAttr` is defaults, so reading it drew the 편람's centred foreword frame at the paper's left edge (invariant 87) |
 | 0026 | `baseSizePt` — a paragraph's own base character size, present even with no runs, so a percentage line height has a basis. 793 of the 편람's 2,789 paragraphs are empty and carried none (invariant 91) |
+| 0027 | Where a paragraph allows its lines to break — `koreanBreakUnit`/`englishBreakUnit`, plus `autoSpaceKrEn`/`autoSpaceKrNum`/`fontLineHeight`. A host that re-typesets instead of replaying HWP's own line segmentation has to decide this, and 63% of 454,134 paragraphs across 1,589 real files ask for a setting it was never told (invariant 94) |
+| 0028 | The document's OWN font table (`fontFaces`) — what it named before rhwp's substitution table rewrote it, what it nominates when that name is absent, and whether the bytes are embedded. 99.5% of 1.55M font references name a face the host does not have (invariant 95) |
+| 0029 | `repeatHeader` and `pageBreak` on a table — the author's 제목 줄 반복 switch, and whether the table may be cut at a page boundary at all. 5,878 of 18,616 real tables forbid it (invariant 96) |
+| 0030 | `charShapeDecor` — everything a char shape does beyond bold/italic/underline/colour/size: the two decorations' colours and line shapes, character shading, outline, shadow, emboss, engrave, emphasis dots, kerning, and the per-script width/spacing/size/offset arrays (invariant 97) |
 
 The set is regenerated wholesale — `git format-patch <base>..HEAD -o vendor-patches/rhwp/` from the
 fork — so it never drifts behind the submodule again (it had: 0005–0007 existed only as commits).

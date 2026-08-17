@@ -58,7 +58,14 @@ struct HwpSlotFonts: Equatable {
     /// therefore unreached on real files and is here as an honest total function, not as a behaviour
     /// change — which is also why the neutral path below can use this chain rather than having to
     /// carry rhwp's answer separately to stay byte-identical.
-    init(row: [String]) {
+    /// What this char shape does BEYOND its seven families — carried alongside the fonts because
+    /// both are read by the same row number and threaded to the same place, and a second parallel
+    /// array threaded through the same eight call sites would be one more thing to keep in step.
+    /// `nil` for a parser predating the decoration export.
+    var decor: HwpCharDecor?
+
+    init(row: [String], decor: HwpCharDecor? = nil) {
+        self.decor = decor
         let names: [String?] = (0..<7).map { i in
             guard i < row.count else { return nil }
             let n = row[i]

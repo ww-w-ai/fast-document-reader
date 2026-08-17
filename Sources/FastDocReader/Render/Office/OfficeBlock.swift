@@ -78,6 +78,27 @@ struct Span: Equatable {
     /// an unambiguous, deliberate mark (there's no "ordinary black highlight" the way there's
     /// "ordinary black body text"), so it is always drawn exactly as authored.
     var highlightColor: NSColor? = nil
+    /// The run's LETTER SPACING as a percentage of its own em (HWP `CharShape.spacings`, 자간, −50…50;
+    /// docx `w:spacing` states the same thing in twentieths of a point and a reader converts). `nil`
+    /// = the source said nothing, and the font's own spacing stands. A percentage rather than points
+    /// deliberately: the value has to survive the reader's zoom, and every absolute length in this
+    /// vocabulary is already scaled at build time for the same reason.
+    ///
+    /// HWP states it PER SCRIPT, and this carries ONE value — so a reader fills it only when the
+    /// document's seven slots agree, which they do in 95.9% of the 52,451 real char shapes that
+    /// state it at all. A shape whose slots disagree carries nothing rather than one script's answer
+    /// applied to all of them.
+    var letterSpacingPercent: CGFloat? = nil
+    /// The run's baseline shift as a percentage of its own em (HWP `CharShape.char_offsets`, 글자
+    /// 위치), positive being UP. Distinct from `superscript`/`subscripted`, which also resize.
+    /// Filled under the same all-slots-agree rule as `letterSpacingPercent` (99.7% agree).
+    var baselineOffsetPercent: CGFloat? = nil
+    /// The colour of this run's UNDERLINE, when the document states one distinct from the text
+    /// (HWP `CharShape.underline_color`, docx `w:u/@w:color`). `nil` = the underline takes the
+    /// text's own colour, which is what every underline did before this existed.
+    var underlineColor: NSColor? = nil
+    /// The colour of this run's STRIKETHROUGH, same rule as `underlineColor`.
+    var strikethroughColor: NSColor? = nil
     /// The run's authored font size, in POINTS — a reader converts from its own source unit before
     /// constructing this (docx `w:sz`/`w:szCs` are HALF-points; ODT `fo:font-size` is already
     /// points). `nil` means the source didn't specify a size for this run — see
@@ -466,6 +487,26 @@ struct TableFormat: Equatable {
     /// resolution falls through to `TableBlockBuilder.defaultCellPadding`. Consulted ONLY by the
     /// PAGED model — see `Cell.edgePadding`'s own doc.
     var defaultPadding: EdgePadding? = nil
+    /// Whether the AUTHOR asked for the heading rows to be reprinted on every page the table runs
+    /// onto (HWP `Table.repeat_header`, docx `w:trPr/w:tblHeader` on the row). Distinct from
+    /// `OfficeBlock.table`'s `headerRows`, which says only WHICH rows are the heading: a table can
+    /// have a heading and not ask for it to repeat, and reprinting it then invents a row the
+    /// document never put there. `nil` = the source said nothing.
+    var repeatHeaderRows: Bool? = nil
+    /// Where the DOCUMENT allows this table to be split when it reaches the foot of a page — HWP's
+    /// own three-way answer (`Table.page_break`), whose docx cousin is `w:trPr/w:cantSplit` on each
+    /// row. `nil` = the source said nothing, and the reader's own policy stands (invariant 92).
+    var pageBreakPolicy: TablePageBreakPolicy? = nil
+}
+
+/// What a document permits when its table meets a page boundary — see `TableFormat.pageBreakPolicy`.
+enum TablePageBreakPolicy: Equatable {
+    /// Never split: the whole table moves to the next page rather than being cut.
+    case never
+    /// Split at a ROW boundary only — a row is never cut through the middle.
+    case atRowBoundary
+    /// Split anywhere, including through a row's own cells.
+    case anywhere
 }
 
 /// A paragraph's line-spacing mode — docx `w:pPr/w:spacing/@w:lineRule` (`auto`/`exact`/`atLeast`)
@@ -590,6 +631,36 @@ struct ParagraphFormat: Equatable {
     /// colour and width is still the deliberate simplification above; a document that rules its top
     /// in red and its bottom in blue gets whichever it declared first, on both.
     var borderEdges: RectEdge = []
+    /// Where a line may be broken inside a stretch of East Asian text (HWP `ParaShape` attr1 bit 7;
+    /// docx's nearest spelling is `w:pPr/w:kinsoku`, which governs the same question from the other
+    /// side). `nil` = the source said nothing, and the reader's own line-breaking default stands —
+    /// which is what every document did before this field existed.
+    var eastAsianLineBreak: LineBreakGranularity? = nil
+    /// The same question for a stretch of Latin text (HWP attr1 bits 5-6; docx `w:pPr/w:wordWrap`,
+    /// whose `w:val="0"` is this vocabulary's `.character`). `.hyphen` is HWP's middle setting:
+    /// break at a word boundary, and additionally at a hyphen already in the word.
+    var latinLineBreak: LineBreakGranularity? = nil
+    /// Whether the document itself widens the seam where East Asian text meets Latin letters
+    /// (docx `w:pPr/w:autoSpaceDE`, HWP attr1 bit 20 / attr2 bit 4) or digits (`w:autoSpaceDN`,
+    /// attr1 bit 21 / attr2 bit 5). `nil` = unstated.
+    var autoSpaceEastAsianLatin: Bool? = nil
+    var autoSpaceEastAsianNumber: Bool? = nil
+    /// Whether the line's height is taken from the FONT's own metrics rather than from the
+    /// character size the paragraph declares (HWP attr1 bit 22 — 글꼴에 어울리는 줄 높이).
+    /// `nil` = unstated.
+    var lineHeightFromFontMetrics: Bool? = nil
+}
+
+/// How finely a line may be broken inside one script's text — see `ParagraphFormat`'s two
+/// `…LineBreak` fields. Named after what the setting DOES rather than after any one format's
+/// spelling, because the two formats that state it disagree about which value is the default.
+enum LineBreakGranularity: Equatable {
+    /// Break only between words — a word is never split across two lines.
+    case word
+    /// Break between words, and also at a hyphen the word already contains.
+    case hyphen
+    /// Break between any two characters, which is how a line of Han/Kana/Hangul is normally filled.
+    case character
 }
 
 /// The four sides of a rectangle, as a set — see `ParagraphFormat.borderEdges`.

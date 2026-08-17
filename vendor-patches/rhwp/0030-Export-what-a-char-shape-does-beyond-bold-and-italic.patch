@@ -1,0 +1,155 @@
+From 2b5ebbc94c09ec3a49be8ec856e1e5f2a303135c Mon Sep 17 00:00:00 2001
+From: FastDocReader <taekim@ww-w.ai>
+Date: Tue, 18 Aug 2026 03:33:54 +0900
+Subject: [PATCH 30/30] Export what a char shape does beyond bold and italic
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A span already carries weight, slant, underline presence, colour and
+size; the rest of the char shape — the colour and line type of an
+underline or strikethrough, the shading behind the glyphs, outline,
+emboss, engrave, shadow, emphasis dots, kerning, and the per-script
+width, letter spacing, relative size and baseline offset — was in the
+model and in no export, so a host could not know it existed. Carried as
+a table read by the same row number charShapes uses.
+---
+ src/document_core/queries/document_json.rs | 108 +++++++++++++++++++++
+ 1 file changed, 108 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index c9de4963..756e954d 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -84,6 +84,12 @@ struct DocumentJson {
+     /// 호스트가 자기 폴백을 고르기 전에 문서의 답을 먼저 볼 수 있어야 한다.
+     #[serde(rename = "fontFaces")]
+     font_faces: Vec<Vec<FontFaceDto>>,
++    /// `charShapes` 와 **같은 행 번호**로 읽는 글자 장식 표 — 밑줄·취소선의 색과 모양, 음영색,
++    /// 외곽선·양각·음각·그림자, 강조점, 커닝, 그리고 언어 슬롯별 장평·자간·상대크기·글자위치.
++    /// span 이 이미 굵기·기울임·밑줄 유무·색·크기를 들고 오지만 그것은 이 표의 앞머리뿐이고,
++    /// 나머지는 어디에도 실리지 않아 호스트가 존재 자체를 알 수 없었다.
++    #[serde(rename = "charShapeDecor")]
++    char_shape_decor: Vec<CharDecorDto>,
+     /// 문서의 테두리/배경 정의 테이블(`doc_info.border_fills`) — 표·셀의 `borderFillId` 가
+     /// 가리키는 대상. **인덱스는 `borderFillId - 1`**(HWP 의 이 참조는 1-based 이고, 렌더러도
+     /// `border_fill_id as usize - 1` 로 찾는다 — `layout.rs`/`table_cell_content.rs`). `0` 은
+@@ -238,6 +244,107 @@ fn build_font_faces(doc_info: &DocInfo) -> Vec<Vec<FontFaceDto>> {
+         .collect()
+ }
+ 
++/// 한 글자 모양의 장식. 기본값(0/false/없음)은 생략해 문서 대부분에서 빈 객체가 되게 한다 —
++/// 이 표는 char_shape 마다 한 행이고, 장식을 쓰는 문서는 소수다.
++#[derive(Serialize)]
++struct CharDecorDto {
++    /// 밑줄 선 종류(표 27: 0 실선, 1 긴점선 …)와 색. 색은 밑줄이 있을 때만 뜻이 있다.
++    #[serde(rename = "underlineShape", skip_serializing_if = "is_zero_u8")]
++    underline_shape: u8,
++    #[serde(rename = "underlineColor", skip_serializing_if = "Option::is_none")]
++    underline_color: Option<String>,
++    #[serde(rename = "strikeShape", skip_serializing_if = "is_zero_u8")]
++    strike_shape: u8,
++    #[serde(rename = "strikeColor", skip_serializing_if = "Option::is_none")]
++    strike_color: Option<String>,
++    /// 음영색 — 글자 뒤에 칠하는 바탕.
++    #[serde(rename = "shadeColor", skip_serializing_if = "Option::is_none")]
++    shade_color: Option<String>,
++    #[serde(rename = "outlineType", skip_serializing_if = "is_zero_u8")]
++    outline_type: u8,
++    #[serde(rename = "shadowType", skip_serializing_if = "is_zero_u8")]
++    shadow_type: u8,
++    #[serde(rename = "shadowColor", skip_serializing_if = "Option::is_none")]
++    shadow_color: Option<String>,
++    #[serde(rename = "shadowOffsetX", skip_serializing_if = "is_zero_i8")]
++    shadow_offset_x: i8,
++    #[serde(rename = "shadowOffsetY", skip_serializing_if = "is_zero_i8")]
++    shadow_offset_y: i8,
++    #[serde(rename = "emboss", skip_serializing_if = "std::ops::Not::not")]
++    emboss: bool,
++    #[serde(rename = "engrave", skip_serializing_if = "std::ops::Not::not")]
++    engrave: bool,
++    /// 강조점 종류(0 없음, 1 ● 2 ○ 3 ˇ 4 ˜ 5 ･ 6 :).
++    #[serde(rename = "emphasisDot", skip_serializing_if = "is_zero_u8")]
++    emphasis_dot: u8,
++    #[serde(rename = "kerning", skip_serializing_if = "std::ops::Not::not")]
++    kerning: bool,
++    /// 언어 슬롯별(`charShapes` 와 같은 순서) 장평 %, 자간 %, 상대 크기 %, 글자 위치 %.
++    /// 기본값 배열(장평·상대크기 100, 자간·위치 0)이면 통째로 생략한다.
++    #[serde(rename = "ratios", skip_serializing_if = "Option::is_none")]
++    ratios: Option<[u8; 7]>,
++    #[serde(rename = "spacings", skip_serializing_if = "Option::is_none")]
++    spacings: Option<[i8; 7]>,
++    #[serde(rename = "relativeSizes", skip_serializing_if = "Option::is_none")]
++    relative_sizes: Option<[u8; 7]>,
++    #[serde(rename = "charOffsets", skip_serializing_if = "Option::is_none")]
++    char_offsets: Option<[i8; 7]>,
++}
++
++fn is_zero_u8(v: &u8) -> bool {
++    *v == 0
++}
++
++fn is_zero_i8(v: &i8) -> bool {
++    *v == 0
++}
++
++/// 색은 "쓰지 않음"과 검정을 구별할 수 없다(둘 다 0x000000). 그래서 그것을 쓰는 장식이 켜져
++/// 있을 때만 색을 싣는다 — 켜지지 않은 색을 실으면 호스트가 온 문서를 검정 음영으로 칠한다.
++fn decor_color(on: bool, c: crate::model::ColorRef) -> Option<String> {
++    if on { Some(color_hex(c)) } else { None }
++}
++
++/// 음영색이 실제로 칠하라는 뜻인가 — 렌더러(`html.rs`)와 같은 규칙. 흰색은 "칠하지 않음" 의
++/// 관용 표기이고 0 은 미지정이다.
++fn is_real_shade(c: crate::model::ColorRef) -> bool {
++    let rgb = c & 0x00FF_FFFF;
++    rgb != 0x00FF_FFFF && rgb != 0
++}
++
++fn build_char_shape_decor(doc_info: &DocInfo) -> Vec<CharDecorDto> {
++    doc_info
++        .char_shapes
++        .iter()
++        .map(|cs| {
++            let underlined = cs.underline_type != UnderlineType::None;
++            CharDecorDto {
++                underline_shape: if underlined { cs.underline_shape } else { 0 },
++                underline_color: decor_color(underlined, cs.underline_color),
++                strike_shape: if cs.strikethrough { cs.strike_shape } else { 0 },
++                strike_color: decor_color(cs.strikethrough, cs.strike_color),
++                // 렌더러와 **같은 판정**: 흰색과 0 은 둘 다 "음영 없음" 이다(`renderer/html.rs`).
++                // `!= 0` 만 보면 흰색을 칠하라는 뜻으로 읽혀, 실측에서 1,589개 문서 중 1,559개가
++                // 음영을 쓴다는 거짓 수치가 나왔다.
++                shade_color: decor_color(is_real_shade(cs.shade_color), cs.shade_color),
++                outline_type: cs.outline_type,
++                shadow_type: cs.shadow_type,
++                shadow_color: decor_color(cs.shadow_type != 0, cs.shadow_color),
++                shadow_offset_x: if cs.shadow_type != 0 { cs.shadow_offset_x } else { 0 },
++                shadow_offset_y: if cs.shadow_type != 0 { cs.shadow_offset_y } else { 0 },
++                emboss: cs.emboss,
++                engrave: cs.engrave,
++                emphasis_dot: cs.emphasis_dot,
++                kerning: cs.kerning,
++                ratios: (cs.ratios != [100; 7]).then_some(cs.ratios),
++                spacings: (cs.spacings != [0; 7]).then_some(cs.spacings),
++                relative_sizes: (cs.relative_sizes != [100; 7]).then_some(cs.relative_sizes),
++                char_offsets: (cs.char_offsets != [0; 7]).then_some(cs.char_offsets),
++            }
++        })
++        .collect()
++}
++
+ fn build_char_shapes(doc_info: &DocInfo) -> Vec<[String; 7]> {
+     doc_info
+         .char_shapes
+@@ -2257,6 +2364,7 @@ impl DocumentCore {
+             page_margin_bottom: geometry.as_ref().map(|g| g.margin_bottom),
+             char_shapes: build_char_shapes(&self.document.doc_info),
+             font_faces: build_font_faces(&self.document.doc_info),
++            char_shape_decor: build_char_shape_decor(&self.document.doc_info),
+             border_fills: build_border_fills(&self.document.doc_info),
+             body_section: body_section_index(&self.document),
+             master_pages: build_master_pages(&self.document),
+-- 
+2.50.1 (Apple Git-155)
+

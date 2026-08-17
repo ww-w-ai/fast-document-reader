@@ -138,9 +138,15 @@ enum PagePagination {
         var lastChar: Int
         /// In document order. Empty for a caller that only cares whether the whole table fits.
         var rows: [LaidOutRow]
+        /// The DOCUMENT forbids cutting this table at a page boundary (`MDAttr.tableKeepsWhole`).
+        /// `false` is "it did not say", not "it allows it" — the reader's own policy decides those.
+        /// A table taller than a whole page is still broken: there is no page to move it to, and
+        /// leaving it whole would put its foot in a margin rather than honour anything.
+        var keepsWhole: Bool
 
         init(firstChar: Int, visualTop: CGFloat, bottom: CGFloat, firstLineTop: CGFloat,
-             lastChar: Int? = nil, rows: [LaidOutRow] = []) {
+             lastChar: Int? = nil, rows: [LaidOutRow] = [], keepsWhole: Bool = false) {
+            self.keepsWhole = keepsWhole
             self.firstChar = firstChar
             self.visualTop = visualTop
             self.bottom = bottom
@@ -218,7 +224,9 @@ enum PagePagination {
             // reader has asked for breaking. Every row that may safely start a page is registered;
             // the layout rule then moves whichever of them actually crosses, and the ones that do not
             // cost nothing.
-            if !fitsOnAPage || splitTables {
+            // A table the document says may not be cut is carried whole — unless it cannot fit on a
+            // page at all, where breaking is the only thing that keeps it out of a margin.
+            if !fitsOnAPage || (splitTables && !t.keepsWhole) {
                 // The unit that moves is not a ROW but an UNBREAKABLE GROUP: the run of rows between
                 // two boundaries a merged cell does not cross. Registering rows instead was tried and
                 // measured on the reference report, which is merged nearly everywhere — the safe rows
