@@ -1124,6 +1124,14 @@ struct OfficeReadResult: Equatable {
     /// already carries the value in the parse it just did — no second FFI call (invariant 29's HWP
     /// branch owns this the same way docx/odt own theirs through the reader lookup).
     var defaultBodyFontSize: CGFloat = 11
+    /// What the document's OWN font table says about each family it names, keyed by that name. Read
+    /// only when a declared family cannot be resolved on this machine — 99.5% of font slots across
+    /// 1,589 real Korean documents (invariant 95) — to work out what should stand in for it. Empty
+    /// means "the document told us nothing extra", which is what the zip readers currently pass and
+    /// exactly what the resolver assumed before this existed, so every construction site keeps its
+    /// meaning. Format-neutral by design: `.docx` and `.odt` keep equivalent tables and can fill this
+    /// in without the substitution pass learning which format it is serving.
+    var declaredFaces: [String: DeclaredFace] = [:]
     /// The document's own page BODY width in points — the printable column between the left and right
     /// page margins (paper width − left margin − right margin), honouring page orientation. It is the
     /// DENOMINATOR of the graphic scale and nothing else: `MarkdownDocument.render(into:)` divides the

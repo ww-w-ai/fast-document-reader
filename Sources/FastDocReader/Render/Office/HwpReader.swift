@@ -253,6 +253,24 @@ enum HwpReader {
                             paged: pageWidth != nil)
         }, comments: [])
         result.anchoredObjects = shapes.anchored
+        // What the DOCUMENT's own font table says about each family it names, handed to the format-
+        // neutral substitution pass. It is read only when a declared family cannot be resolved on
+        // this machine — 99.5% of font slots across 1,589 real documents (invariant 95) — so on a
+        // machine that has the fonts this costs a dictionary nobody looks at.
+        //
+        // The table is per SECTION in the export (`[[HwpFontFace]]`, one row per font-table slot per
+        // section) but a family NAME is the key the resolver has, so the rows are flattened. A later
+        // section re-declaring the same name keeps the FIRST entry rather than overwriting it: the
+        // rows agree in every real document seen, and taking the first makes which section a span
+        // came from irrelevant to what it is drawn in.
+        result.declaredFaces = (envelope.fontFaces ?? []).flatMap { $0 }
+            .reduce(into: [String: DeclaredFace]()) { table, face in
+                guard !face.name.isEmpty, table[face.name] == nil else { return }
+                table[face.name] = DeclaredFace(
+                    nominatedSubstitute: face.altName?.isEmpty == false ? face.altName : nil,
+                    isEmbedded: face.embedded ?? false,
+                    typeInfo: face.panose.map { $0.map { UInt8(clamping: $0) } })
+            }
         // The author's OWN page breaks. `section` counts too: a Korean document starts a new page at
         // a section break, and this reader flattens every section into one column (invariant 57), so
         // without it the sections simply run together. `multiColumn`/`column` are NOT page breaks —
@@ -1680,6 +1698,21 @@ struct HwpFontFace: Decodable, Equatable {
     var type: Int?
     var embedded: Bool?
     var binDataId: Int?
+    /// A second name for this SAME face (not a substitute). For an HWP5 file this is what the file
+    /// itself wrote; for an HWPX file rhwp fills it from its own fixed lookup table of well-known
+    /// Korean font names, so it is the parser's own knowledge rather than the document's, on that path.
+    var defaultName: String?
+    /// The raw 10-byte PANOSE block (HWP5 FACE_NAME type info), undecoded — byte 0 is family kind,
+    /// byte 1 is serif style. On an HWP5 file both bytes came from the file; on an HWPX file byte 0
+    /// came from `<hh:typeInfo familyType>` but byte 1 is rhwp's OWN name-based guess
+    /// (`synthesize_serif_type`), not something the XML states — treat HWPX byte 1 accordingly.
+    /// `nil` means the document carries no such record at all; ten zeroes is PANOSE "Any", a real
+    /// value, not the same as absent.
+    var panose: [Int]?
+    /// The type (`0` unknown / `1` TTF / `2` HFT) of the SUBSTITUTE face nominated in `altName`,
+    /// independent of this font's own `type` above. `nil` when the document nominates no substitute.
+    /// HWP5 has no such concept, so this is always `nil` there.
+    var substType: Int?
 }
 
 private struct HwpLineHeight: Decodable {

@@ -95,13 +95,20 @@ enum FontSubstitutionResolver {
     /// and adding `[.bold, .italic]` on top of an `-Regular` substitute silently no-opped. Building
     /// the FULLY-TRAITED probe font first and asking CoreText ONCE is what "the SAME cascade AppKit's
     /// own attribute fixing already consults" (design §2) actually requires.
-    private static func declaredFont(for key: DeclaredFontKey, cache: FontSubstitutionCache) -> NSFont {
-        if let cached = cache.declaredFontMemo[key] { return cached }
+    private static func declaredFont(for key: DeclaredFontKey, cache: FontSubstitutionCache,
+                                     declaredFaces: [String: DeclaredFace] = [:])
+        -> (font: NSFont, isStandIn: Bool) {
+        if let cached = cache.declaredFontMemo[key] { return (cached, cache.standInKeys.contains(key)) }
         var font: NSFont
+        var isStandIn = false
         if key.code {
             font = codeFamilyFont
         } else if let name = key.fontName, let named = NSFont(name: name, size: probeSize) {
             font = named
+        } else if let name = key.fontName,
+                  let substitute = standIn(forUnresolved: name, declaredFaces: declaredFaces) {
+            font = substitute
+            isStandIn = true
         } else {
             font = key.blockWeight.probeFont
         }
@@ -110,7 +117,50 @@ enum FontSubstitutionResolver {
         if key.italic { traits.insert(.italic) }
         if !traits.isEmpty { font = fontAdding(traits, to: font) }
         cache.declaredFontMemo[key] = font
-        return font
+        if isStandIn { cache.standInKeys.insert(key) }
+        return (font, isStandIn)
+    }
+
+    /// What stands in for a declared family this machine cannot resolve — the ONE thing that changes
+    /// about the declared font, and the reason a 명조 document stopped coming out in a sans face.
+    ///
+    /// **What this does NOT do is choose a substitute.** Everything downstream is untouched: whatever
+    /// comes back here still goes through the same `covers()` test and, failing that, the same
+    /// `substituteFont()` cascade the app has always run. CoreText still overrules a candidate that
+    /// cannot draw the document's characters, exactly as it overrules the app's own base font today.
+    /// What changes is only the quality of the starting point — a face of the kind the document asked
+    /// for, instead of the font this reader would have used if the document had said nothing.
+    ///
+    /// The order is by how DIRECTLY the document said it:
+    ///
+    ///   1. a face the document NOMINATED as its own substitute
+    ///   2. a KIND the document DECLARED, in its font table's type-info block (PANOSE)
+    ///   3. a kind the declared NAME states, read from its morphemes (`DeclaredFontKind`)
+    ///
+    /// and if none of those produces a resolvable face, the caller falls back to what it does now.
+    /// Only step 3 is this reader inferring anything, and it is the last one asked.
+    ///
+    /// Costs nothing per span: `declaredFont` is memoised per `DeclaredFontKey`, so this runs once per
+    /// DISTINCT declared font in the document and never again — not per span, not per ⌘+/⌘− press.
+    private static func standIn(forUnresolved name: String,
+                                declaredFaces: [String: DeclaredFace]) -> NSFont? {
+        let face = declaredFaces[name]
+        if let nominated = face?.nominatedSubstitute,
+           let font = NSFont(name: nominated, size: probeSize) {
+            return font
+        }
+        // A kind the document DECLARED is an ANSWER, including when the answer is "nothing suits this".
+        // A document calling its face decorative or symbolic has spoken; falling through to our own
+        // name rules there would let this reader overrule it with an inference, which is the one thing
+        // the order exists to prevent. Only silence from the document reaches the rules below.
+        if let declared = face?.declaredKind {
+            guard let family = declared.systemFamily else { return nil }
+            return NSFont(name: family, size: probeSize)
+        }
+        if let family = DeclaredFontKind.fallbackFamily(for: name) {
+            return NSFont(name: family, size: probeSize)
+        }
+        return nil
     }
 
     /// Adds symbolic traits while keeping the SAME family — used here only on PUBLIC, ordinary font
@@ -189,25 +239,36 @@ enum FontSubstitutionResolver {
     /// The whole decision for one document: census every span, then ask CoreText once per declared
     /// font. Nothing is written to any span here — the plan is a value the apply pass reads.
     static func plan(for blocks: [OfficeBlock],
-                     cache: FontSubstitutionCache = FontSubstitutionCache()) -> FontSubstitutionPlan {
+                     cache: FontSubstitutionCache = FontSubstitutionCache(),
+                     declaredFaces: [String: DeclaredFace] = [:]) -> FontSubstitutionPlan {
         var histograms: [DeclaredFontKey: [UInt32: Int]] = [:]
         census(blocks, blockWeight: .regular, into: &histograms)
-        return decide(histograms, cache: cache)
+        return decide(histograms, cache: cache, declaredFaces: declaredFaces)
     }
 
     /// One question per declared font, and the only place CoreText is consulted.
     private static func decide(_ histograms: [DeclaredFontKey: [UInt32: Int]],
-                               cache: FontSubstitutionCache) -> FontSubstitutionPlan {
+                               cache: FontSubstitutionCache,
+                               declaredFaces: [String: DeclaredFace] = [:]) -> FontSubstitutionPlan {
         var substitutes: [DeclaredFontKey: FontSubstitutionPlan.Substitute] = [:]
         for (key, histogram) in histograms {
             guard let sample = sampleCharacter(histogram) else { continue }
-            let declared = declaredFont(for: key, cache: cache)
+            let (declared, isStandIn) = declaredFont(for: key, cache: cache, declaredFaces: declaredFaces)
             // THE GATE. Not "is the declared family installed?" — Times New Roman, Arial, Helvetica
             // and Georgia are all installed here and none of them draws Hangul, so an availability
             // test passes a Korean `.docx` (Word writes Times New Roman into the ascii slot by
             // default) straight through to AppKit's per-character fixing. Ask whether the declared
             // font draws THIS DOCUMENT's own characters instead, and that cliff cannot exist.
-            guard !cache.covers(declared, sample) else { continue }
+            // A STAND-IN has to be recorded even when it covers, and this is the one thing about the
+            // shape of this pass that the chain changed. `OfficeTextBuilder` reaches a span's family
+            // by calling `NSFont(name: span.fontName)` itself (`:425`) — which returns nil for exactly
+            // the unresolvable families the chain exists for — so `resolvedFontDescriptor` is the ONLY
+            // channel a stand-in can travel down. Leaving it unset because the stand-in happened to
+            // draw the sample would decide the right face and then throw it away.
+            guard !cache.covers(declared, sample) else {
+                if isStandIn { substitutes[key] = .init(sample: sample, descriptor: declared.fontDescriptor) }
+                continue
+            }
             let substitute = cache.substituteFont(declared: declared, scalar: sample)
             guard substitute.fontName != noSubstituteFontName else { continue }
             substitutes[key] = .init(sample: sample, descriptor: substitute.fontDescriptor)
@@ -437,6 +498,10 @@ final class FontSubstitutionCache {
     }
 
     fileprivate var declaredFontMemo: [FontSubstitutionResolver.DeclaredFontKey: NSFont] = [:]
+    /// Which memoised entries came from the fallback CHAIN rather than from the declared name itself.
+    /// Kept beside the memo rather than folded into it so a cache hit answers both questions without
+    /// re-walking anything.
+    fileprivate var standInKeys: Set<FontSubstitutionResolver.DeclaredFontKey> = []
     private var coverageMemo: [Key: Bool] = [:]
     private var substituteMemo: [Key: NSFont] = [:]
 
@@ -534,7 +599,7 @@ extension OfficeReadResult {
     /// this declared font" is a fact about the document, not about whichever paragraph happened to
     /// be reached first.
     func resolvingFontSubstitution(cache: FontSubstitutionCache = FontSubstitutionCache()) -> OfficeReadResult {
-        let plan = FontSubstitutionResolver.plan(for: blocks, cache: cache)
+        let plan = FontSubstitutionResolver.plan(for: blocks, cache: cache, declaredFaces: declaredFaces)
         var copy = self
         copy.blocks = blocks.map { $0.applyingFontSubstitution(plan) }
         return copy

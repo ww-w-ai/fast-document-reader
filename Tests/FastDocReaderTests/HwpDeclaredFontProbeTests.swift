@@ -285,4 +285,51 @@ final class HwpDeclaredFontProbeTests: XCTestCase {
         // above would read as a confident zero.
         XCTAssertGreaterThan(docsWithFontTable, 0, "no document carried a font table — the export broke")
     }
+
+    /// Whether the three fields S2's export round added — `defaultName`, `panose`, `substType` —
+    /// actually reach Swift, split by HWP5 vs HWPX. The split matters because their PANOSE byte 1
+    /// has different provenance: for HWP5 it is bytes the file itself carried, for HWPX it is
+    /// `synthesize_serif_type`'s OWN guess from the font name (see `panose`'s doc comment on
+    /// `HwpFontFace`) — an HWPX "agreement" with a morpheme rule is not independent evidence the way
+    /// an HWP5 one is. This is arrival proof, not the design's own measurement (§3a covers that).
+    func testHowOftenAFontFaceCarriesPanoseADefaultNameOrASubstituteType() throws {
+        let files = try corpusFiles()
+        var parsed = 0, unreadable = 0, faces = 0
+        var panoseCount = 0, panoseHwp5 = 0, panoseHwpx = 0
+        var defaultNameCount = 0, substTypeCount = 0
+        var samples: [(String, HwpFontFace)] = []
+
+        for url in files {
+            guard let data = try? Data(contentsOf: url),
+                  let json = HwpReader.exportDocumentJSON(data),
+                  let export = try? HwpReader.fontSlotExport(json) else { unreadable += 1; continue }
+            parsed += 1
+            let isHwpx = url.pathExtension.lowercased() == "hwpx"
+            for slot in export.fontFaces {
+                for face in slot {
+                    faces += 1
+                    if let p = face.panose {
+                        panoseCount += 1
+                        if isHwpx { panoseHwpx += 1 } else { panoseHwp5 += 1 }
+                        if samples.count < 8, p.contains(where: { $0 != 0 }) {
+                            samples.append((url.lastPathComponent, face))
+                        }
+                    }
+                    if face.defaultName != nil { defaultNameCount += 1 }
+                    if face.substType != nil { substTypeCount += 1 }
+                }
+            }
+        }
+
+        print("""
+        FONTFIELDPROBE files=\(files.count) parsed=\(parsed) unreadable=\(unreadable) faces=\(faces)
+        FONTFIELDPROBE panose=\(panoseCount) (hwp5=\(panoseHwp5) hwpx=\(panoseHwpx)) defaultName=\(defaultNameCount) substType=\(substTypeCount)
+        """)
+        for (doc, f) in samples {
+            print("FONTFIELDPROBE sample doc=\(doc) name=\(f.name) panose=\(f.panose ?? []) defaultName=\(f.defaultName ?? "nil") type=\(f.type ?? -1) substType=\(f.substType ?? -1) altName=\(f.altName ?? "nil")")
+        }
+
+        XCTAssertGreaterThan(parsed, 0, "no document could be read — the probe measured nothing")
+        XCTAssertGreaterThan(faces, 0, "no font face decoded — the export path is broken")
+    }
 }
