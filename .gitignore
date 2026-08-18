@@ -24,5 +24,9 @@ docs
 .ucd-cache/
 
 # Personal test-document collection — real files, some with sensitive content. Local only.
+# Both spellings, for the reason spelled out above `docs`: a worktree reaches the collection through a
+# SYMLINK named testdocs, and a trailing slash does not match one. Without the second line the link
+# shows as untracked in every worktree, one `git add .` from publishing a path to private documents.
 /testdocs/
+/testdocs
 docs/.doc-sync-state.json
