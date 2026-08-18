@@ -155,6 +155,13 @@ enum MDAttr {
     /// document, which puts one chapter's running title on every other chapter's pages.
     static let sectionIndex = NSAttributedString.Key("mdSectionIndex")
 
+    /// Set (value `true`) on a block the DOCUMENT vetoes a page number for (HWP's `Control::
+    /// PageHide`'s `hidePageNum`) — see `OfficeReadResult.hidePageNumberBlocks`. A page resolved
+    /// from where this marker sits in the laid-out text (`DocumentWindowController`'s section-page
+    /// arithmetic) is told to substitute its master page's `PAGE` field with an empty string rather
+    /// than skip the whole master page — HWP suppresses the NUMBER, not the 바탕쪽's title/artwork.
+    static let hidesPageNumber = NSAttributedString.Key("mdHidesPageNumber")
+
     /// The anchored objects (an `[Int]` of indices into `OfficeReadResult.anchoredObjects`) that
     /// belong to THIS block — the marker that says which page a paper-pinned object is drawn on.
     /// Set on the block the document anchored them at, and nowhere else.

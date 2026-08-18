@@ -208,11 +208,22 @@ enum PageBandPainter {
     /// back-to-front so an earlier range's offset stays valid while a later one's length changes.
     /// A span with no `pageNumberField` is never touched — its cached text (Word's stale last-computed
     /// value) survives exactly as authored, everywhere this function isn't asked to look.
-    static func substitutingPageFields(_ attr: NSAttributedString, page: Int, totalPages: Int) -> NSAttributedString {
+    ///
+    /// `hidesPageNumber` is the DOCUMENT's own veto (HWP's `Control::PageHide`'s `hidePageNum`,
+    /// `MDAttr.hidesPageNumber`) for THIS page — when set, the `.page` field is substituted with an
+    /// empty string rather than the live number. `.numPages` is untouched: hiding a page's own
+    /// number says nothing about the document's total. The master page itself is still drawn — its
+    /// title and artwork are not what HWP asked to suppress here — only this one field goes blank.
+    static func substitutingPageFields(_ attr: NSAttributedString, page: Int, totalPages: Int,
+                                       hidesPageNumber: Bool = false) -> NSAttributedString {
         guard attr.length > 0 else { return attr }
         var replacements: [(NSRange, String)] = []
         attr.enumerateAttribute(MDAttr.pageNumberField, in: NSRange(location: 0, length: attr.length)) { value, range, _ in
             guard let field = value as? PageNumberField else { return }
+            if field == .page, hidesPageNumber {
+                replacements.append((range, ""))
+                return
+            }
             replacements.append((range, String(field == .page ? page : totalPages)))
         }
         guard !replacements.isEmpty else { return attr }

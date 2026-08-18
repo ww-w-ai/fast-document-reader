@@ -160,4 +160,42 @@ final class PageBandPainterTests: XCTestCase {
         let sub = PageBandPainter.substitutingPageFields(built, page: 2, totalPages: 9)
         XCTAssertEqual(sub.string, built.string)
     }
+
+    // MARK: - hidesPageNumber (HWP's Control::PageHide 쪽 감추기 veto, header-footer-design.md's
+    // sibling for the master page's own PAGE field rather than a running head's)
+
+    /// On a HIDDEN page, the `.page` field is substituted with EMPTY rather than the live number —
+    /// the veto this test exists to prove is reached (not vacuous): the field's cached "2" must be
+    /// GONE, not merely un-updated.
+    func testHidesPageNumberEmptiesTheFieldOnAHiddenPage() {
+        let span = Span(text: "2", pageNumberField: .page)
+        let built = OfficeTextBuilder.build([.paragraph(spans: [span])], theme: theme)
+        var stamped: PageNumberField?
+        built.enumerateAttribute(MDAttr.pageNumberField, in: NSRange(location: 0, length: built.length)) { v, _, _ in
+            if let field = v as? PageNumberField { stamped = field }
+        }
+        XCTAssertEqual(stamped, .page, "precondition: the field must actually be stamped, or the " +
+                       "veto below is never reached at all")
+        let sub = PageBandPainter.substitutingPageFields(built, page: 7, totalPages: 40, hidesPageNumber: true)
+        XCTAssertEqual(sub.string, "\n", "the number must be gone entirely, not left at its stale value")
+    }
+
+    /// The MIRROR — a normal (not-hidden) page keeps its live number exactly as before. Proves the
+    /// veto is a real branch rather than an accidental always-empty.
+    func testHidesPageNumberLeavesAnOrdinaryPageUntouched() {
+        let span = Span(text: "2", pageNumberField: .page)
+        let built = OfficeTextBuilder.build([.paragraph(spans: [span])], theme: theme)
+        let sub = PageBandPainter.substitutingPageFields(built, page: 7, totalPages: 40, hidesPageNumber: false)
+        XCTAssertEqual(sub.string, "7\n")
+    }
+
+    /// `.numPages` is untouched by the veto — hiding a page's own number says nothing about the
+    /// document's total, and a "Page  of 40" that lost its denominator too would be a second bug.
+    func testHidesPageNumberDoesNotTouchNumPages() {
+        let spans = [Span(text: "Page "), Span(text: "2", pageNumberField: .page),
+                    Span(text: " of "), Span(text: "5", pageNumberField: .numPages)]
+        let built = OfficeTextBuilder.build([.paragraph(spans: spans)], theme: theme)
+        let sub = PageBandPainter.substitutingPageFields(built, page: 9, totalPages: 40, hidesPageNumber: true)
+        XCTAssertEqual(sub.string, "Page  of 40\n")
+    }
 }

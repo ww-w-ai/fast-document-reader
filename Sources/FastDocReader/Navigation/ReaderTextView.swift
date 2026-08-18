@@ -167,7 +167,8 @@ final class ReaderTextView: NSTextView {
         guard !sheets.isEmpty else { return }
         MasterPagePainter.draw(content, sheets: sheets, totalPages: sheets.count,
                                visibleRect: visibleRect,
-                               sectionOfPage: { wc.sectionOfPage($0) })
+                               sectionOfPage: { wc.sectionOfPage($0) },
+                               hidesPageNumber: { wc.hiddenPageNumberPages.contains($0) })
         drawAnchoredObjects(wc, content: content, sheets: sheets)
     }
 

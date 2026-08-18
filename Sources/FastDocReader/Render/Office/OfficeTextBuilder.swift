@@ -133,6 +133,7 @@ enum OfficeTextBuilder {
                       sectionStartBlocks: [Int] = [],
                       pageBreakBlocks: [Int] = [],
                       keepWithNextBlocks: [Int] = [],
+                      hidePageNumberBlocks: [Int] = [],
                       anchoredObjects: [Int: [Int]] = [:]) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var blockSeq = 0
@@ -164,6 +165,7 @@ enum OfficeTextBuilder {
         for (section, first) in sectionStartBlocks.enumerated() { sectionOfBlock[first] = section }
         let breaksPage = Set(pageBreakBlocks)
         let keepsWithNext = Set(keepWithNextBlocks)
+        let hidesPageNumber = Set(hidePageNumberBlocks)
 
         func tagBlock(from start: Int, index: Int) {
             let r = NSRange(location: start, length: result.length - start)
@@ -194,6 +196,13 @@ enum OfficeTextBuilder {
             }
             if keepsWithNext.contains(index) {
                 result.addAttribute(MDAttr.keepWithNext, value: true, range: r)
+            }
+            // The document's own veto against printing a page number on the page this block lands
+            // on (HWP's PageHide). Marked the same way `startsPage` is — on the block's own range,
+            // absent when it builds to nothing — because a page is resolved from where a marker
+            // sits in the laid-out text, exactly as `sectionIndex` is.
+            if hidesPageNumber.contains(index) {
+                result.addAttribute(MDAttr.hidesPageNumber, value: true, range: r)
             }
         }
 

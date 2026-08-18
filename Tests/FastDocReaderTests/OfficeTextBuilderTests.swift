@@ -2484,4 +2484,34 @@ final class OfficeTextBuilderTests: XCTestCase {
         let firstRange = (out.string as NSString).range(of: "First")
         XCTAssertEqual(paragraphStyle(in: out, at: firstRange.location).paragraphSpacing, 8)
     }
+
+    // MARK: MDAttr.hidesPageNumber (HWP's PageHide veto reaching the built storage)
+
+    /// The marker actually reaches the built storage on the block `hidePageNumberBlocks` names —
+    /// the same "one attribute run over the whole kept range" shape `sectionIndex`/`startsPage` use.
+    func testHidePageNumberBlockIsStampedOnItsOwnRange() {
+        let out = OfficeTextBuilder.build(
+            [.paragraph(spans: [span("cover")]), .paragraph(spans: [span("divider")]),
+             .paragraph(spans: [span("body")])],
+            theme: theme, hidePageNumberBlocks: [1])
+        var hidden: [Bool] = []
+        out.enumerateAttribute(MDAttr.hidesPageNumber, in: NSRange(location: 0, length: out.length)) { v, range, _ in
+            guard let flag = v as? Bool else { return }
+            XCTAssertGreaterThan(range.length, 0, "a hidesPageNumber run must not be zero-length")
+            hidden.append(flag)
+        }
+        XCTAssertEqual(hidden, [true], "exactly one block was named — exactly one marked run must exist")
+    }
+
+    /// The MIRROR — a block not named in `hidePageNumberBlocks` carries no marker at all (absence,
+    /// not `false`), which is what `enumerateAttribute` finding nothing here proves.
+    func testABlockNotInHidePageNumberBlocksCarriesNoMarker() {
+        let out = OfficeTextBuilder.build([.paragraph(spans: [span("ordinary")])],
+                                          theme: theme, hidePageNumberBlocks: [])
+        var found = false
+        out.enumerateAttribute(MDAttr.hidesPageNumber, in: NSRange(location: 0, length: out.length)) { v, _, _ in
+            if v != nil { found = true }
+        }
+        XCTAssertFalse(found)
+    }
 }

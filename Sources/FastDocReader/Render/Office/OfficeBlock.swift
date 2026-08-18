@@ -1253,6 +1253,18 @@ struct OfficeReadResult: Equatable {
     /// document's own instruction, not a heuristic about what looks like a new page.
     var pageBreakBlocks: [Int] = []
 
+    /// Blocks the DOCUMENT says must print NO PAGE NUMBER on the page they land on — HWP's
+    /// `Control::PageHide` (쪽 감추기) with its own `hidePageNum` bit set, a per-paragraph veto
+    /// distinct from a SECTION turning its running head off (`OfficeSectionDeclaration`). The
+    /// covers and dividers of the 행정업무운영편람 say this 75 times; ignoring it numbered them.
+    ///
+    /// `Control::PageHide` carries five other switches (header/footer/master-page/border/fill) —
+    /// NOT adopted here: the section-level equivalents already cover header/footer/master-page
+    /// suppression, and there is no border/fill painter for this reader to veto in the first
+    /// place. Only the page-number bit is unique to this per-paragraph marker. Empty for a format
+    /// or a parser that does not say.
+    var hidePageNumberBlocks: [Int] = []
+
     /// The section's LINE GRID pitch in points — Word's `w:sectPr/w:docGrid` with
     /// `@w:type="lines"`/`"linesAndChars"`, whose `@w:linePitch` is in twips.
     ///

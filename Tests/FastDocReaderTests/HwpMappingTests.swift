@@ -69,6 +69,34 @@ final class HwpMappingTests: XCTestCase {
             .pageBreakBlocks.isEmpty)
     }
 
+    // MARK: PageHide's `hidePageNum` (Control::PageHide, 쪽 감추기) — the 편람 says this 75 times
+
+    func testASpanWithHidePageNumMarksItsBlock() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"para","spans":[{"text":"cover"}]},
+          {"t":"para","spans":[{"text":"divider","pageHide":{"hidePageNum":true}}]},
+          {"t":"para","spans":[{"text":"body"}]}
+        ]}
+        """
+        XCTAssertEqual(try HwpReader.mapJSON(json).hidePageNumberBlocks, [1],
+                       "only the paragraph carrying the PageHide span vetoes its own page's number")
+    }
+
+    func testASpanWithHidePageNumFalseDoesNotMarkItsBlock() throws {
+        // The DTO's other five switches (header/footer/master-page/border/fill) can be on with
+        // hidePageNum explicitly false — that combination must not veto the number either.
+        let json = envelope("""
+        {"t":"para","spans":[{"text":"x","pageHide":{"hideHeader":true,"hidePageNum":false}}]}
+        """)
+        XCTAssertTrue(try HwpReader.mapJSON(json).hidePageNumberBlocks.isEmpty)
+    }
+
+    func testADocumentWithNoPageHideAtAllYieldsAnEmptySet() throws {
+        let json = envelope("{\"t\":\"para\",\"spans\":[{\"text\":\"ordinary\"}]}")
+        XCTAssertTrue(try HwpReader.mapJSON(json).hidePageNumberBlocks.isEmpty)
+    }
+
     // MARK: what the AUDIT found missing — everything the parser knew and the export dropped
 
     func testTheStylesOwnPageBreakCountsTooAndKeepWithNextIsCollected() throws {

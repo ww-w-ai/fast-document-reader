@@ -356,6 +356,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         pageBandDelegate.band = band
         // This render replaces the storage, so where the section markers sit is about to change.
         cachedSectionStarts = nil
+        cachedHiddenPageNumberPages = nil
         // Read from whatever text is installed RIGHT NOW, which is the right answer for the two
         // callers that reach here with the document already on screen — printing (which re-applies
         // the band and never calls `display(_:)` again) and a View-menu toggle.
@@ -475,6 +476,38 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             }
         }
         cachedSectionStarts = out
+        return out
+    }
+
+    /// Which PAGES (0-based) the document vetoes a page number on — read from `MDAttr.
+    /// hidesPageNumber`'s marked characters, resolved to a page index by the SAME arithmetic
+    /// `sectionOfPage` uses (`pageBandDelegate.leadingBand + page * pitch`,
+    /// `PageBandLayoutDelegate.page(of:leadingBand:pitch:)`), so the two never disagree about which
+    /// page a marked character lands on. Cached and cleared the same way `cachedSectionStarts` is —
+    /// one walk over attribute runs per render, not per page queried.
+    private var cachedHiddenPageNumberPages: Set<Int>?
+
+    var hiddenPageNumberPages: Set<Int> {
+        if let cached = cachedHiddenPageNumberPages { return cached }
+        var out: Set<Int> = []
+        if let storage = textView.textStorage, storage.length > 0,
+           let lm = textView.layoutManager, pageBandDelegate.isActive {
+            let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                             band: pageBandDelegate.band)
+            if pitch > 0 {
+                storage.enumerateAttribute(MDAttr.hidesPageNumber,
+                                           in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                    guard value as? Bool == true else { return }
+                    let glyph = lm.glyphIndexForCharacter(at: range.location)
+                    let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                    let page = PageBandLayoutDelegate.page(of: frag.minY,
+                                                           leadingBand: pageBandDelegate.leadingBand,
+                                                           pitch: pitch)
+                    if page >= 0 { out.insert(Int(page)) }
+                }
+            }
+        }
+        cachedHiddenPageNumberPages = out
         return out
     }
 

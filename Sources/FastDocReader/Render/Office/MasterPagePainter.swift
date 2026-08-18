@@ -56,8 +56,14 @@ enum MasterPagePainter {
     /// `DocumentWindowController.sectionOfPage`, which resolves it from where the section markers
     /// landed in the laid-out text. Returning `nil` for a page means "unknown", and that page falls
     /// back to every template rather than to none.
+    ///
+    /// `hidesPageNumber` answers whether THIS page's own paragraph vetoed a page number
+    /// (`DocumentWindowController.hiddenPageNumberPages`) — passed down to the page's `PAGE` field
+    /// only; the rest of the template (title, artwork) is untouched. Defaults to "never hidden" for
+    /// every caller that has no such veto (docx/odt, and every HWP page that never declared one).
     static func draw(_ content: MasterPageContent, sheets: [CGRect], totalPages: Int,
-                     visibleRect: NSRect, sectionOfPage: (Int) -> Int? = { _ in nil }) {
+                     visibleRect: NSRect, sectionOfPage: (Int) -> Int? = { _ in nil },
+                     hidesPageNumber: (Int) -> Bool = { _ in false }) {
         guard !content.pages.isEmpty, !sheets.isEmpty else { return }
         for (index, sheet) in sheets.enumerated() where sheet.intersects(visibleRect) {
             let section = sectionOfPage(index)
@@ -68,7 +74,8 @@ enum MasterPagePainter {
                                             section: section) else { continue }
             for object in page.objects {
                 draw(object, onSheet: sheet, pageIndex: index, totalPages: totalPages,
-                     content: content, visibleRect: visibleRect)
+                     content: content, visibleRect: visibleRect,
+                     pageNumberHidden: hidesPageNumber(index))
             }
         }
     }
@@ -77,7 +84,8 @@ enum MasterPagePainter {
     /// the paper at a particular place in the text (`OfficeAnchoredObject`). They differ only in
     /// WHICH pages they appear on; where they go on a page, and how they are drawn, is one rule.
     static func draw(_ object: OfficeMasterObject, onSheet sheet: CGRect, pageIndex: Int,
-                     totalPages: Int, content: MasterPageContent, visibleRect: NSRect) {
+                     totalPages: Int, content: MasterPageContent, visibleRect: NSRect,
+                     pageNumberHidden: Bool = false) {
         let rect = NSRect(x: sheet.minX + object.frame.minX, y: sheet.minY + object.frame.minY,
                           width: object.frame.width, height: object.frame.height)
         guard rect.intersects(visibleRect) else { return }
@@ -114,7 +122,8 @@ enum MasterPagePainter {
                                                 pageContentWidth: content.pageContentWidth)
             guard built.length > 0 else { return }
             PageBandPainter.substitutingPageFields(built, page: pageIndex + 1,
-                                                   totalPages: totalPages).draw(in: rect)
+                                                   totalPages: totalPages,
+                                                   hidesPageNumber: pageNumberHidden).draw(in: rect)
         }
     }
 }

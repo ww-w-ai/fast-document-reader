@@ -283,6 +283,14 @@ enum HwpReader {
             return (p.breakBefore == "page" || p.breakBefore == "section" || p.pageBreakBefore == true)
                 ? index : nil
         }
+        // The author's own PageHide('쪽 감추기') — a span-level marker rather than a paragraph
+        // field, because HWP lets it start mid-paragraph. Only `hidePageNum == true` matters here
+        // (see `OfficeReadResult.hidePageNumberBlocks`); `false` and absent are the same "this
+        // paragraph said nothing" case, so both are excluded the same way.
+        result.hidePageNumberBlocks = envelope.blocks.enumerated().compactMap { index, block in
+            guard case .para(let p) = block else { return nil }
+            return p.spans.contains(where: { $0.pageHide?.hidePageNum == true }) ? index : nil
+        }
         result.sections = (envelope.sections ?? []).map { section in
             OfficeSectionDeclaration(
                 pageBorder: section.pageBorder.map {
@@ -1842,12 +1850,24 @@ private struct HwpSpan: Decodable {
     /// actually being drawn, exactly as it does for Word's `PAGE` field.
     var pageNumberField: String?
 
+    /// `Control::PageHide`('pghd') — a per-paragraph veto that starts at this run's own position,
+    /// carrying `hidePageNum` (plus five other switches this reader does not adopt — see
+    /// `OfficeReadResult.hidePageNumberBlocks`). A zero-width anchor span, the same shape a
+    /// bookmark or footnote-reference marker already arrives as.
+    var pageHide: HwpPageHide?
+
     private enum CodingKeys: String, CodingKey {
         case text, bold, italic, underline, strike, color, size, font, link, bookmark, csId
-        case pageNumberField
+        case pageNumberField, pageHide
         case superscript = "super"
         case subscripted = "sub"
     }
+}
+
+/// `PageHideDto` — only `hidePageNum` is read; see `OfficeReadResult.hidePageNumberBlocks` for why
+/// the other five (header/footer/master-page/border/fill) are decoded here and then never used.
+private struct HwpPageHide: Decodable {
+    var hidePageNum: Bool?
 }
 
 /// One row of the document's border/background table (rhwp `borderFills`). Every HWP cell names one

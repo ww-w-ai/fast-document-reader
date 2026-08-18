@@ -62,6 +62,11 @@ final class MarkdownDocument: NSDocument {
     /// them with `MDAttr.keepWithNext`. See `OfficeReadResult.keepWithNextBlocks`.
     private(set) var officeKeepWithNextBlocks: [Int] = []
 
+    /// The blocks the document vetoes a page number for — carried to the builder, which marks them
+    /// with `MDAttr.hidesPageNumber`. Empty for every format but HWP. See
+    /// `OfficeReadResult.hidePageNumberBlocks`.
+    private(set) var officeHidePageNumberBlocks: [Int] = []
+
     /// What each section declared about its own page furniture — see `OfficeSectionDeclaration`.
     private(set) var officeSections: [OfficeSectionDeclaration] = []
 
@@ -184,6 +189,7 @@ final class MarkdownDocument: NSDocument {
         officeFooters = []
         officeMasterPages = []
         officeSectionStartBlocks = []
+        officeHidePageNumberBlocks = []
         officeAnchoredObjects = []
     }
 
@@ -350,6 +356,7 @@ final class MarkdownDocument: NSDocument {
                 sectionStartBlocks: result.sectionStartBlocks,
                 pageBreakBlocks: result.pageBreakBlocks,
                 keepWithNextBlocks: result.keepWithNextBlocks,
+                hidePageNumberBlocks: result.hidePageNumberBlocks,
                 sections: result.sections,
                 anchoredObjects: result.anchoredObjects,
                 lineGridPitch: result.lineGridPitch)
@@ -372,6 +379,7 @@ final class MarkdownDocument: NSDocument {
                 sectionStartBlocks: result.sectionStartBlocks,
                 pageBreakBlocks: result.pageBreakBlocks,
                 keepWithNextBlocks: result.keepWithNextBlocks,
+                hidePageNumberBlocks: result.hidePageNumberBlocks,
                 sections: result.sections,
                 anchoredObjects: result.anchoredObjects,
                 lineGridPitch: result.lineGridPitch)
@@ -395,6 +403,7 @@ final class MarkdownDocument: NSDocument {
         sectionStartBlocks: [Int] = [],
         pageBreakBlocks: [Int] = [],
         keepWithNextBlocks: [Int] = [],
+        hidePageNumberBlocks: [Int] = [],
         sections: [OfficeSectionDeclaration] = [],
         anchoredObjects: [OfficeAnchoredObject] = [],
         lineGridPitch: CGFloat? = nil
@@ -418,6 +427,7 @@ final class MarkdownDocument: NSDocument {
         self.officeSectionStartBlocks = sectionStartBlocks
         self.officePageBreakBlocks = pageBreakBlocks
         self.officeKeepWithNextBlocks = keepWithNextBlocks
+        self.officeHidePageNumberBlocks = hidePageNumberBlocks
         self.officeSections = sections
         self.officeAnchoredObjects = anchoredObjects
         self.officeLineGridPitch = lineGridPitch
@@ -534,6 +544,7 @@ final class MarkdownDocument: NSDocument {
                                  sectionStartBlocks: result.sectionStartBlocks,
                                  pageBreakBlocks: result.pageBreakBlocks,
                                  keepWithNextBlocks: result.keepWithNextBlocks,
+                                 hidePageNumberBlocks: result.hidePageNumberBlocks,
                                  sections: result.sections,
                                  anchoredObjects: result.anchoredObjects,
                                  lineGridPitch: result.lineGridPitch)
@@ -1401,6 +1412,7 @@ final class MarkdownDocument: NSDocument {
                                            sectionStartBlocks: officeSectionStartBlocks,
                                            pageBreakBlocks: officePageBreakBlocks,
                                            keepWithNextBlocks: officeKeepWithNextBlocks,
+                                           hidePageNumberBlocks: officeHidePageNumberBlocks,
                                            anchoredObjects: officeAnchoredBlockMap)
             // Running-header/footer page-boundary reservation AND painting (header-footer-design.md
             // §4/§5, build steps 4/5): wired here, before `wc.display(attr)` below replaces the
