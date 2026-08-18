@@ -4,8 +4,8 @@
 exact commit `Vendor/RHWP-SOURCE.txt` names.** Git records that pin, so "the shipped `.a` and its source
 must be committed together" is a rule the tooling keeps rather than a rule a person has to remember.
 
-These patches remain as the READABLE record of what we changed — 86 KB against upstream, which is far
-easier to review than a diff of two 6,000-commit trees — and as a second recovery route if the fork
+These patches remain as the READABLE record of what we changed — under 400 KB against upstream, which is
+far easier to review than a diff of two 6,000-commit trees — and as a second recovery route if the fork
 repository is ever lost. They are no longer the only copy of the source.
 
 Restoring the parser source now:
@@ -57,6 +57,7 @@ Applied on top of upstream **`8d3bfa4b92174b16bac587fe1409975cf34ba566`** (just 
 | 0031 | `fontFaces` gains `panose`, `defaultName`, `substType` — what the document's own font table says about a face beyond its name |
 | 0032 | `panose`/`defaultName` gated to the HWP5 binary path only — HWPX's `<hh:typeInfo>` fills the SAME Rust fields with rhwp's own synthesis (a name-morpheme serif guess, a fixed lookup-table name), not anything the file states, so this exporter omits the keys entirely on that path rather than letting a guess travel as a document fact |
 | 0033 | The S3 batch — 95 fields across 33 types the exporter already reached (a sibling field of each was already being read on the same struct), added as flat/nested fields on the existing DTOs. No new parsing branch, no renderer change. Nine related fields were left out on purpose — not silently dropped, see `document_json.rs`'s own commit message for which and why |
+| 0034 | The S4 batch — 21 NEW branches (state C, not field adds): the owning record — footnote shapes, picture crop/shadow, one shared `Caption` for six owners, OLE/chart (which fell through every catch-all and emitted nothing), the file header, five inline controls that fell into `build_spans`' catch-all, a paragraph's range tags and orphan field ends, a connector's control points, a table's zones, form controls, every `Control::Field`'s remaining facts, and a border fill's diagonal — was never constructed anywhere in the export path before this round |
 
 The set is regenerated wholesale — `git format-patch <base>..HEAD -o vendor-patches/rhwp/` from the
 fork — so it never drifts behind the submodule again (it had: 0005–0007 existed only as commits).

@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : f5c48434dc045467187c578a533c72686393d5e9
-rhwp branch   : fastdocreader/charshape-export
-rhwp subject  : Carry the sibling fields the exporter already had the record open for
+rhwp commit   : 84f98c22ec15e10ed5fec7d1eecc3c549e665f43
+rhwp branch   : HEAD
+rhwp subject  : feat(export): wire 21 new state-C branches into the structured JSON exporter
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 59037088
-library sha256: 2e5bf4f07590f007cf9eed0ed70cb4ed25bd2d59f0e2f20ad1522cd9960cf37f
+library bytes : 59110384
+library sha256: 2562cf7d5aeded8717ecc38921d7dac403f59727ebf6db448deaa5dfd969f7b7

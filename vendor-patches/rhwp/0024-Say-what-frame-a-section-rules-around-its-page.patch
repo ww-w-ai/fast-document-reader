@@ -1,7 +1,7 @@
 From fa4892c9019dfaed94d41cd969de391e869478c7 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sun, 16 Aug 2026 12:57:50 +0900
-Subject: [PATCH 24/33] Say what frame a section rules around its page
+Subject: [PATCH 24/34] Say what frame a section rules around its page
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

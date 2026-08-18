@@ -1,7 +1,7 @@
 From 2b5ebbc94c09ec3a49be8ec856e1e5f2a303135c Mon Sep 17 00:00:00 2001
 From: FastDocReader <taekim@ww-w.ai>
 Date: Tue, 18 Aug 2026 03:33:54 +0900
-Subject: [PATCH 30/33] Export what a char shape does beyond bold and italic
+Subject: [PATCH 30/34] Export what a char shape does beyond bold and italic
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

@@ -1,0 +1,1328 @@
+From 84f98c22ec15e10ed5fec7d1eecc3c549e665f43 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 14:48:57 +0900
+Subject: [PATCH 34/34] feat(export): wire 21 new state-C branches into the
+ structured JSON exporter
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds fields whose owning record was never constructed anywhere in the
+export path before this round (as opposed to S3's field-adds onto
+records the exporter already had open):
+
+- SectionDef.footnote_shape/endnote_shape (FootnoteShapeDto)
+- Picture.crop/effects.shadow (CropDto/PictureShadowDto, HWPX-only shadow)
+- one shared CaptionDto for Table/Picture/DrawingObjAttr/GroupShape/
+  ChartShape/OleShape.caption
+- OLE and chart shapes, which fell through every catch-all in
+  collect_shape_pictures/collect_shape_paths and emitted nothing at
+  all — routed to the existing Unsupported tag with new ole/chart
+  payloads so Swift's decoder does not need to learn a new block tag
+- Document.header (FileHeaderDto) and doc_properties (section_count,
+  caret_char_pos)
+- DocInfo.bin_data_list (BinDataDeclDto), indexed like borderFills/
+  charShapes
+- five inline Control variants that fell into build_spans' :
+  PageNumberPos, PageHide, NewNumber, Ruby, CharOverlap, plus
+  ColumnDef, HiddenComment (needed widening build_spans' signature to
+  take &Document so its paragraphs render through build_blocks), Form,
+  and every Control::Field (moved from S3, which had classified it
+  state B; reaching it usefully needs a new loop over all Field
+  controls, not the existing hyperlink filter)
+- Paragraph.range_tags/orphan_field_ends (ParaBlock)
+- LineShape.connector.control_points (ShapeBlock)
+- Table.zones (TableZoneDto)
+- BorderFill.diagonal.diagonal_type
+
+All new inline-control markers are zero-width anchor spans (the same
+contract Bookmark already uses), so they only ever split an existing
+text run at the control's position and add no visible glyphs.
+
+export_s4_c_tier_branches_reach_the_corpus proves 22 of 30 probed keys
+arrive with real values across the 340 hwp/hwpx files under samples/
+(the other 8 are genuinely rare: ruby, chart, footnote superscript/
+inline bits, OLE preview format).
+---
+ src/document_core/queries/document_json.rs | 1073 +++++++++++++++++++-
+ 1 file changed, 1069 insertions(+), 4 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index b500eee4..5e32437b 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -150,9 +150,95 @@ struct DocumentJson {
+     /// HWPX 원본 보조 ZIP 엔트리의 경로(`Document.hwpx_aux_entries`) — 같은 이유로 경로만.
+     #[serde(rename = "hwpxAuxEntryPaths", skip_serializing_if = "Vec::is_empty")]
+     hwpx_aux_entry_paths: Vec<String>,
++    /// `Document.header`(`FileHeader`) — 파일 자체의 버전/속성. HWPX 는 이 스트림이 없으므로
++    /// (`hwpx/mod.rs` 가 채우는 `FileHeader` 는 HWP5 관례로 만든 대역), `isHwpxVariant` 와 같은
++    /// 판단을 여기 얹지 않고 값을 그대로 싣는다 — HWPX 경로에서 이 값이 무엇을 뜻하는지는
++    /// 채택하는 쪽이 정한다.
++    #[serde(rename = "fileHeader")]
++    file_header: FileHeaderDto,
++    /// `Document.doc_properties`(HWPTAG_DOCUMENT_PROPERTIES) 중 매니페스트가 승인한 두 필드.
++    /// `sectionCount` 는 문서가 **선언한** 구역 수(`document.sections.len()` 과 다를 수 있는
++    /// 원본 값), `caretCharPos` 는 저장 시점 커서가 있던 문자 위치 — 둘 다 렌더에 쓰지 않는
++    /// 순수 메타데이터라, 페이지 시작 번호 등 나머지 시작 번호들(각주/그림/표/수식)은 이미
++    /// `SectionDto.pageNumberStart`/`pictureNumStart` 등으로 구역 단위로 더 정확히 실려 있어
++    /// 이 라운드에서 다시 싣지 않는다.
++    #[serde(rename = "docProperties")]
++    doc_properties: DocPropertiesDto,
++    /// `DocInfo.bin_data_list` — 그림이 `binDataId` 로 참조하는 것과 **같은 인덱스**
++    /// (`id - 1`, `charShapes`/`borderFills`와 같은 1-based 관례). 매니페스트가 승인한 네
++    /// 필드만(`attr`, `compression`, `abs_path`, `rel_path`) — `data_type`/`status`는 이미
++    /// 그림 쪽에서 `externalPath`(내부/외부 판정)로 사실상 갈음되고 있어 이 라운드 밖.
++    #[serde(rename = "binDataDeclarations", skip_serializing_if = "Vec::is_empty")]
++    bin_data_declarations: Vec<BinDataDeclDto>,
+     blocks: Vec<Block>,
+ }
+ 
++#[derive(Serialize)]
++struct BinDataDeclDto {
++    #[serde(skip_serializing_if = "is_zero_u16")]
++    attr: u16,
++    compression: &'static str,
++    #[serde(rename = "absPath", skip_serializing_if = "Option::is_none")]
++    abs_path: Option<String>,
++    #[serde(rename = "relPath", skip_serializing_if = "Option::is_none")]
++    rel_path: Option<String>,
++}
++
++fn bin_data_compression_str(c: crate::model::bin_data::BinDataCompression) -> &'static str {
++    use crate::model::bin_data::BinDataCompression;
++    match c {
++        BinDataCompression::Default => "default",
++        BinDataCompression::Compress => "compress",
++        BinDataCompression::NoCompress => "noCompress",
++    }
++}
++
++#[derive(Serialize)]
++struct DocPropertiesDto {
++    #[serde(rename = "sectionCount")]
++    section_count: u16,
++    #[serde(rename = "caretCharPos")]
++    caret_char_pos: u32,
++}
++
++/// `FileHeader`/`HwpVersion` — 파일이 스스로 적은 버전과 속성 비트.
++#[derive(Serialize)]
++struct FileHeaderDto {
++    version: HwpVersionDto,
++    /// 원본 속성 비트 플래그 — 아래 세 불리언 이상이 필요해질 때를 위한 원본.
++    #[serde(skip_serializing_if = "is_zero_u32")]
++    flags: u32,
++    #[serde(skip_serializing_if = "std::ops::Not::not")]
++    compressed: bool,
++    #[serde(skip_serializing_if = "std::ops::Not::not")]
++    encrypted: bool,
++    #[serde(skip_serializing_if = "std::ops::Not::not")]
++    distribution: bool,
++}
++
++#[derive(Serialize)]
++struct HwpVersionDto {
++    major: u8,
++    minor: u8,
++    build: u8,
++    revision: u8,
++}
++
++fn file_header_dto(h: &crate::model::document::FileHeader) -> FileHeaderDto {
++    FileHeaderDto {
++        version: HwpVersionDto {
++            major: h.version.major,
++            minor: h.version.minor,
++            build: h.version.build,
++            revision: h.version.revision,
++        },
++        flags: h.flags,
++        compressed: h.compressed,
++        encrypted: h.encrypted,
++        distribution: h.distribution,
++    }
++}
++
+ /// A 바탕쪽 (master page) — the template a Korean document repeats behind EVERY page: the running
+ /// title, the side tab, the ruled decoration and, in real files, the page number itself. It is a
+ /// different mechanism from a header/footer (invariant 77 measured that on this same manual: both
+@@ -475,6 +561,11 @@ struct BorderFillDto {
+     /// 로 해소한 것 이상(대각선 유무, 중심선 방향 등)이 필요해질 때를 위한 원본.
+     #[serde(rename = "attr", skip_serializing_if = "is_zero_u16")]
+     attr: u16,
++    /// `BorderFill.diagonal.diagonal_type` — 셀을 가로지르는 대각선의 종류 코드, 나머지 네 변과
++    /// 같은 `BorderLineType` 코드 공간. `0` 은 그 공간에서 "없음" 이므로 생략 — 대각선 굵기/색은
++    /// 이 라운드의 매니페스트 밖(요청된 한 필드만).
++    #[serde(rename = "diagonalType", skip_serializing_if = "is_zero_u8")]
++    diagonal_type: u8,
+ }
+ 
+ #[derive(Serialize)]
+@@ -562,6 +653,7 @@ fn build_border_fills(doc_info: &DocInfo) -> Vec<BorderFillDto> {
+                     angle: g.angle as i32,
+                 }),
+                 attr: bf.attr,
++                diagonal_type: bf.diagonal.diagonal_type,
+             }
+         })
+         .collect()
+@@ -762,6 +854,8 @@ fn build_sections(document: &Document) -> Vec<SectionDto> {
+                 hide_border: def.hide_border,
+                 hide_fill: def.hide_fill,
+                 hide_empty_line: def.hide_empty_line,
++                footnote_shape: footnote_shape_dto(&def.footnote_shape),
++                endnote_shape: footnote_shape_dto(&def.endnote_shape),
+             }
+         })
+         .collect()
+@@ -828,6 +922,13 @@ struct SectionDto {
+     /// 쪽 시작의 빈 줄 2개까지를 높이 0 으로 감추는가.
+     #[serde(rename = "hideEmptyLine", skip_serializing_if = "std::ops::Not::not")]
+     hide_empty_line: bool,
++    /// 이 구역이 선언한 각주/미주 모양 — 각주 번호 형식·구분선·배치의 구역 기본값. `FootnoteShape`
++    /// 는 구역마다 항상 하나 있으므로(빈 기본값도 "document said Digit/continue/…"라는 사실),
++    /// `Option` 이 아니라 항상 싣는다 — 다른 필드들의 "0 과 미기재 구분" 과 같은 원칙.
++    #[serde(rename = "footnoteShape")]
++    footnote_shape: FootnoteShapeDto,
++    #[serde(rename = "endnoteShape")]
++    endnote_shape: FootnoteShapeDto,
+ }
+ 
+ #[derive(Serialize)]
+@@ -955,6 +1056,33 @@ struct ParaBlock {
+     box_margin_bottom: Option<i32>,
+     #[serde(rename = "boxMaxWidth", skip_serializing_if = "Option::is_none")]
+     box_max_width: Option<i32>,
++    /// 이 문단의 영역 태그(`Paragraph.range_tags`) — 문서 검토/개인정보 등 도구가 표시한 문자
++    /// 범위(`start`/`end`, char 인덱스)와 태그 코드(상위 8비트 종류·하위 24비트 데이터) 원본.
++    /// 어떤 도구가 무엇을 표시했는지는 이 라운드가 해석하지 않고 코드 그대로 싣는다.
++    #[serde(rename = "rangeTags", skip_serializing_if = "Vec::is_empty")]
++    range_tags: Vec<RangeTagDto>,
++    /// 이 문단의 짝 없는 필드 끝(`Paragraph.orphan_field_ends`, HWPX `<hp:fieldEnd>`) — 시작이
++    /// 다른 문단/표 셀에 있어 이 문단 안에서는 끝 슬롯만 보이는 자리. 위치(`charIdx`)가 있어야
++    /// 라운드트립하는 호스트가 이 문단의 텍스트 어디에 그 8-유닛 슬롯을 되돌려 놓을지 안다.
++    #[serde(rename = "orphanFieldEnds", skip_serializing_if = "Vec::is_empty")]
++    orphan_field_ends: Vec<OrphanFieldEndDto>,
++}
++
++#[derive(Serialize)]
++struct RangeTagDto {
++    start: u32,
++    end: u32,
++    tag: u32,
++}
++
++#[derive(Serialize)]
++struct OrphanFieldEndDto {
++    #[serde(rename = "charIdx")]
++    char_idx: i32,
++    #[serde(rename = "beginIdRef")]
++    begin_id_ref: u32,
++    #[serde(rename = "fieldId")]
++    field_id: u32,
+ }
+ 
+ /// 한 구역의 쪽 테두리/배경. 간격은 HWPUNIT, 기준은 그 간격을 **어디서부터** 재는가다:
+@@ -975,6 +1103,144 @@ struct PageBorderDto {
+     basis: &'static str,
+ }
+ 
++/// 각주/미주 모양(`FootnoteShape`, HWPTAG_FOOTNOTE_SHAPE) — 구역이 선언하는 기본값. 컨트롤
++/// 인스턴스 자신의 장식 문자(`Span.noteBeforeChar`/`noteAfterChar`/`noteNumberShape`)와는 별개다.
++#[derive(Serialize)]
++struct FootnoteShapeDto {
++    /// 원본 속성 비트 — 아래 개별 필드로 이미 풀린 것 이상이 필요해질 때를 위한 원본.
++    #[serde(skip_serializing_if = "is_zero_u32")]
++    attr: u32,
++    #[serde(rename = "numberFormat")]
++    number_format: &'static str,
++    #[serde(rename = "userChar", skip_serializing_if = "Option::is_none")]
++    user_char: Option<String>,
++    #[serde(rename = "prefixChar", skip_serializing_if = "Option::is_none")]
++    prefix_char: Option<String>,
++    #[serde(rename = "suffixChar", skip_serializing_if = "Option::is_none")]
++    suffix_char: Option<String>,
++    #[serde(rename = "startNumber", skip_serializing_if = "is_zero_u16")]
++    start_number: u16,
++    /// 구분선 길이(HWPUNIT). 한컴 미주 기본값 noteLine="14692344"(전폭 sentinel)이 i16 범위를
++    /// 넘으므로 i32 그대로 싣는다.
++    #[serde(rename = "separatorLengthHwpUnit", skip_serializing_if = "is_zero_i32")]
++    separator_length: i32,
++    #[serde(rename = "separatorMarginTopHwpUnit", skip_serializing_if = "is_zero_i32")]
++    separator_margin_top: i32,
++    #[serde(rename = "separatorMarginBottomHwpUnit", skip_serializing_if = "is_zero_i32")]
++    separator_margin_bottom: i32,
++    #[serde(rename = "noteSpacingHwpUnit", skip_serializing_if = "is_zero_i32")]
++    note_spacing: i32,
++    #[serde(rename = "separatorLineType", skip_serializing_if = "is_zero_u8")]
++    separator_line_type: u8,
++    #[serde(rename = "separatorLineWidth", skip_serializing_if = "is_zero_u8")]
++    separator_line_width: u8,
++    #[serde(rename = "separatorColor", skip_serializing_if = "Option::is_none")]
++    separator_color: Option<String>,
++    numbering: &'static str,
++    placement: &'static str,
++    #[serde(rename = "numberCodeSuperscript", skip_serializing_if = "std::ops::Not::not")]
++    number_code_superscript: bool,
++    #[serde(rename = "printInlineAfterText", skip_serializing_if = "std::ops::Not::not")]
++    print_inline_after_text: bool,
++}
++
++fn footnote_shape_dto(shape: &crate::model::footnote::FootnoteShape) -> FootnoteShapeDto {
++    use crate::model::footnote::{FootnoteNumbering, FootnotePlacement, NumberFormat};
++    FootnoteShapeDto {
++        attr: shape.attr,
++        number_format: match shape.number_format {
++            NumberFormat::Digit => "digit",
++            NumberFormat::CircledDigit => "circledDigit",
++            NumberFormat::UpperRoman => "romanUpper",
++            NumberFormat::LowerRoman => "romanLower",
++            NumberFormat::UpperAlpha => "latinUpper",
++            NumberFormat::LowerAlpha => "latinLower",
++            NumberFormat::CircledUpperAlpha => "circledLatinUpper",
++            NumberFormat::CircledLowerAlpha => "circledLatinLower",
++            NumberFormat::HangulSyllable => "hangulSyllable",
++            NumberFormat::CircledHangulSyllable => "circledHangulSyllable",
++            NumberFormat::HangulJamo => "hangulJamo",
++            NumberFormat::CircledHangulJamo => "circledHangulJamo",
++            NumberFormat::HangulDigit => "hangulNumber",
++            NumberFormat::HanjaDigit => "hanjaNumber",
++            NumberFormat::CircledHanjaDigit => "circledHanjaNumber",
++            NumberFormat::HanjaGapEul => "hanjaGapEul",
++            NumberFormat::HanjaGapEulHanja => "hanjaGapEulHanja",
++            NumberFormat::FourSymbol => "fourSymbol",
++            NumberFormat::UserChar => "userChar",
++        },
++        user_char: char_field(shape.user_char),
++        prefix_char: char_field(shape.prefix_char),
++        suffix_char: char_field(shape.suffix_char),
++        start_number: shape.start_number,
++        separator_length: shape.separator_length,
++        separator_margin_top: shape.separator_margin_top as i32,
++        separator_margin_bottom: shape.separator_margin_bottom as i32,
++        note_spacing: shape.note_spacing as i32,
++        separator_line_type: shape.separator_line_type,
++        separator_line_width: shape.separator_line_width,
++        separator_color: (shape.separator_line_type != 0).then(|| color_hex(shape.separator_color)),
++        numbering: match shape.numbering {
++            FootnoteNumbering::Continue => "continue",
++            FootnoteNumbering::RestartSection => "restartSection",
++            FootnoteNumbering::RestartPage => "restartPage",
++        },
++        placement: match shape.placement {
++            FootnotePlacement::EachColumn => "eachColumn",
++            FootnotePlacement::BelowText => "belowText",
++            FootnotePlacement::RightColumn => "rightColumn",
++        },
++        number_code_superscript: shape.number_code_superscript,
++        print_inline_after_text: shape.print_inline_after_text,
++    }
++}
++
++/// 캡션(`Caption`) — 표·그림·그리기 개체·그룹·차트·OLE 개체가 전부 같은 이 구조체 하나를
++/// 가리킨다(`Table.caption`, `Picture.caption`, `DrawingObjAttr.caption`, `GroupShape.caption`,
++/// `ChartShape.caption`, `OleShape.caption`). 여섯 소유자를 위해 이 DTO 와 변환 함수를 한 번만
++/// 만들고 전부 재사용한다.
++#[derive(Serialize)]
++struct CaptionDto {
++    /// 방향 — left/right/top/bottom.
++    direction: &'static str,
++    /// Left/Right 캡션의 세로 정렬 — top/center/bottom. Top/Bottom 방향에서는 뜻이 없다.
++    #[serde(rename = "vertAlign")]
++    vert_align: &'static str,
++    /// 세로 방향(left/right)일 때의 캡션 폭(HWPUNIT). 가로 방향이면 0.
++    #[serde(rename = "widthHwpUnit", skip_serializing_if = "is_zero_i32")]
++    width: i32,
++    #[serde(rename = "spacingHwpUnit", skip_serializing_if = "is_zero_i32")]
++    spacing: i32,
++    #[serde(rename = "maxWidthHwpUnit", skip_serializing_if = "is_zero_i32")]
++    max_width: i32,
++    /// 가로 방향(top/bottom)일 때 캡션 폭에 틀의 여백을 포함할지.
++    #[serde(rename = "includeMargin", skip_serializing_if = "std::ops::Not::not")]
++    include_margin: bool,
++    blocks: Vec<Block>,
++}
++
++fn caption_dto(doc: &Document, cap: &crate::model::shape::Caption) -> CaptionDto {
++    use crate::model::shape::{CaptionDirection, CaptionVertAlign};
++    CaptionDto {
++        direction: match cap.direction {
++            CaptionDirection::Left => "left",
++            CaptionDirection::Right => "right",
++            CaptionDirection::Top => "top",
++            CaptionDirection::Bottom => "bottom",
++        },
++        vert_align: match cap.vert_align {
++            CaptionVertAlign::Top => "top",
++            CaptionVertAlign::Center => "center",
++            CaptionVertAlign::Bottom => "bottom",
++        },
++        width: cap.width as i32,
++        spacing: cap.spacing as i32,
++        max_width: cap.max_width as i32,
++        include_margin: cap.include_margin,
++        blocks: build_blocks(doc, &cap.paragraphs),
++    }
++}
++
+ /// 탭 정지 하나 — 위치(HWPUNIT)와 종류.
+ #[derive(Serialize)]
+ struct TabStopDto {
+@@ -1085,6 +1351,232 @@ struct Span {
+     note_after_char: Option<String>,
+     #[serde(rename = "noteNumberShape", skip_serializing_if = "Option::is_none")]
+     note_number_shape: Option<i32>,
++    /// `Control::PageNumberPos`('pgnp') 마커 — 쪽 번호를 지금 자리에 즉시 찍으라는 지시(구역의
++    /// `AutoNumber` 필드와 별개). 이 컨트롤이 앉은 자리에서만 채워진다.
++    #[serde(rename = "pageNumberPos", skip_serializing_if = "Option::is_none")]
++    page_number_pos: Option<PageNumberPosDto>,
++    /// `Control::PageHide`('pghd') 마커 — 이 문단부터 머리말/꼬리말/바탕쪽/테두리/배경/쪽번호를
++    /// 개별적으로 감추라는 지시. 구역 전체의 `hideHeader` 등과 달리 문서 중간 한 문단에서 켤 수
++    /// 있다.
++    #[serde(rename = "pageHide", skip_serializing_if = "Option::is_none")]
++    page_hide: Option<PageHideDto>,
++    /// `Control::NewNumber`('nwno') 마커 — 그림/표/각주/미주/수식 중 하나의 번호를 이 자리부터
++    /// 다시 매기라는 지시.
++    #[serde(rename = "newNumber", skip_serializing_if = "Option::is_none")]
++    new_number: Option<NewNumberDto>,
++    /// `Control::Ruby`('tdut') 마커 — 덧말(후리가나류). 기준 텍스트는 이미 본문 글자로도 흐르므로
++    /// 여기서는 덧말 자신의 사실만 싣는다.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    ruby: Option<RubyDto>,
++    /// `Control::CharOverlap`('tcps') 마커 — 여러 글자를 한 칸에 겹쳐 찍는 지시(원문자·괄호문자
++    /// 등 사용자 지정).
++    #[serde(rename = "charOverlap", skip_serializing_if = "Option::is_none")]
++    char_overlap: Option<CharOverlapDto>,
++    /// `Control::ColumnDef`('cold') 마커 — 이 문단부터 다단으로 바뀌라는 지시. 매니페스트가
++    /// 승인한 필드만(개수/방향/균등폭 여부/비례폭 여부/구분선 종류·굵기·색) — `column_type`,
++    /// 개별 단 폭/간격 배열, `spacing`(구역 기본 단간격은 이미 `SectionDef.columnSpacingHwpUnit`
++    /// 로 실려 있다)은 이 라운드 밖.
++    #[serde(rename = "columnDef", skip_serializing_if = "Option::is_none")]
++    column_def: Option<ColumnDefDto>,
++    /// `Control::HiddenComment`('tcmt') 마커 — 인쇄되지 않는 숨은 설명(코멘트). 표시 텍스트로는
++    /// 흐르지 않으므로, 리뷰 패널의 댓글과 같은 `blocks` 계약으로 그 문단들을 실어 보낸다.
++    #[serde(rename = "hiddenComment", skip_serializing_if = "Option::is_none")]
++    hidden_comment: Option<HiddenCommentDto>,
++    /// `Control::Form`('form') 마커 — 명령단추/선택상자/목록상자/라디오단추/입력상자 폼 컨트롤.
++    /// 이 개체는 그 자리에서 실제로 폭을 차지하는 위젯이지만, 어떻게 그릴지는 채택하는
++    /// 스프린트(폼 컨트롤 렌더링)의 몫이라 여기서는 사실만 싣는다.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    form: Option<FormObjectDto>,
++    /// `Control::Field`(모든 필드 타입) 의 나머지 사실 — `properties`/`extra_properties`/
++    /// `ctrl_data_name`. S3 조사가 처음엔 "이미 읽고 있다"(state B)로 분류했다가 잘못 판정된
++    /// 것으로 정정됐다: 실제로 읽히는 자리는 하이퍼링크 필터(`build_spans` 상단의 `link_ranges`)
++    /// 뿐이라 그 타입에서만 값이 있고, 나머지 타입(누름틀·메모·상호참조 등)은 전혀 방문되지
++    /// 않았다 — 그래서 모든 `Control::Field` 를 도는 새 자리를 이 마커에 만든다.
++    #[serde(rename = "fieldExtra", skip_serializing_if = "Option::is_none")]
++    field_extra: Option<FieldExtraDto>,
++}
++
++#[derive(Serialize)]
++struct FieldExtraDto {
++    /// 판별자 — 나머지 세 필드가 어느 필드 타입의 것인지 없으면 알 수 없다(FormObjectDto 와
++    /// 같은 이유로 매니페스트 밖이어도 함께 싣는다).
++    #[serde(rename = "fieldType")]
++    field_type: &'static str,
++    #[serde(skip_serializing_if = "is_zero_u32")]
++    properties: u32,
++    #[serde(rename = "extraProperties", skip_serializing_if = "is_zero_u8")]
++    extra_properties: u8,
++    #[serde(rename = "ctrlDataName", skip_serializing_if = "Option::is_none")]
++    ctrl_data_name: Option<String>,
++}
++
++fn field_type_str(t: crate::model::control::FieldType) -> &'static str {
++    use crate::model::control::FieldType;
++    match t {
++        FieldType::Unknown => "unknown",
++        FieldType::Date => "date",
++        FieldType::DocDate => "docDate",
++        FieldType::Path => "path",
++        FieldType::Bookmark => "bookmark",
++        FieldType::MailMerge => "mailMerge",
++        FieldType::CrossRef => "crossRef",
++        FieldType::Formula => "formula",
++        FieldType::ClickHere => "clickHere",
++        FieldType::Summary => "summary",
++        FieldType::UserInfo => "userInfo",
++        FieldType::Hyperlink => "hyperlink",
++        FieldType::Memo => "memo",
++        FieldType::PrivateInfoSecurity => "privateInfoSecurity",
++        FieldType::TableOfContents => "tableOfContents",
++    }
++}
++
++/// `formType` 을 뺀 매니페스트 승인 필드 그대로가 아니라, 판별자(`formType`)를 더했다 — 나머지
++/// 아홉 필드가 무엇을 뜻하는지(캡션이 단추 글자인지 입력값인지)가 이것 없이는 읽는 쪽에서
++/// 알 길이 없어, 이 하나만은 매니페스트 밖이어도 함께 싣는다(chart_type/series 값처럼 별도
++/// 서브그래프가 필요한 확장과 달리, 판별자 없는 나머지 아홉은 그 자체로 의미가 없어진다).
++#[derive(Serialize)]
++struct FormObjectDto {
++    #[serde(rename = "formType")]
++    form_type: &'static str,
++    name: String,
++    #[serde(skip_serializing_if = "String::is_empty")]
++    caption: String,
++    #[serde(skip_serializing_if = "String::is_empty")]
++    text: String,
++    #[serde(rename = "widthHwpUnit")]
++    width: i32,
++    #[serde(rename = "heightHwpUnit")]
++    height: i32,
++    #[serde(rename = "foreColor")]
++    fore_color: String,
++    #[serde(rename = "backColor")]
++    back_color: String,
++    #[serde(skip_serializing_if = "is_zero_i32")]
++    value: i32,
++    /// 항상 싣는다 — 대부분의 폼이 활성 상태이므로 "false 는 생략" 규칙을 쓰면 꺼진 컨트롤과
++    /// 아예 정보가 없는 것이 똑같이 보인다.
++    enabled: bool,
++    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
++    properties: std::collections::HashMap<String, String>,
++}
++
++fn form_type_str(t: crate::model::control::FormType) -> &'static str {
++    use crate::model::control::FormType;
++    match t {
++        FormType::PushButton => "pushButton",
++        FormType::CheckBox => "checkBox",
++        FormType::ComboBox => "comboBox",
++        FormType::RadioButton => "radioButton",
++        FormType::Edit => "edit",
++    }
++}
++
++#[derive(Serialize)]
++struct HiddenCommentDto {
++    blocks: Vec<Block>,
++}
++
++#[derive(Serialize)]
++struct ColumnDefDto {
++    #[serde(rename = "columnCount")]
++    column_count: u16,
++    direction: &'static str,
++    #[serde(rename = "sameWidth", skip_serializing_if = "std::ops::Not::not")]
++    same_width: bool,
++    #[serde(rename = "proportionalWidths", skip_serializing_if = "std::ops::Not::not")]
++    proportional_widths: bool,
++    #[serde(rename = "separatorType", skip_serializing_if = "is_zero_u8")]
++    separator_type: u8,
++    #[serde(rename = "separatorWidth", skip_serializing_if = "is_zero_u8")]
++    separator_width: u8,
++    #[serde(rename = "separatorColor", skip_serializing_if = "Option::is_none")]
++    separator_color: Option<String>,
++}
++
++#[derive(Serialize)]
++struct PageNumberPosDto {
++    /// HWP 표 134 번호 형식 코드, 원문 그대로(`AutoNumber.format`/`pageNumberFormat`과 같은 계약 —
++    /// 이 파일의 `number_format_str`은 19개 중 8개만 다뤄 재사용하지 않는다).
++    format: u8,
++    /// 위치(표 150 bit 8~11) — 원문 코드 그대로.
++    position: u8,
++    #[serde(rename = "userSymbol", skip_serializing_if = "Option::is_none")]
++    user_symbol: Option<String>,
++    #[serde(rename = "prefixChar", skip_serializing_if = "Option::is_none")]
++    prefix_char: Option<String>,
++    #[serde(rename = "suffixChar", skip_serializing_if = "Option::is_none")]
++    suffix_char: Option<String>,
++    #[serde(rename = "dashChar", skip_serializing_if = "Option::is_none")]
++    dash_char: Option<String>,
++}
++
++#[derive(Serialize)]
++struct PageHideDto {
++    #[serde(rename = "hideHeader", skip_serializing_if = "std::ops::Not::not")]
++    hide_header: bool,
++    #[serde(rename = "hideFooter", skip_serializing_if = "std::ops::Not::not")]
++    hide_footer: bool,
++    #[serde(rename = "hideMasterPage", skip_serializing_if = "std::ops::Not::not")]
++    hide_master_page: bool,
++    #[serde(rename = "hideBorder", skip_serializing_if = "std::ops::Not::not")]
++    hide_border: bool,
++    #[serde(rename = "hideFill", skip_serializing_if = "std::ops::Not::not")]
++    hide_fill: bool,
++    #[serde(rename = "hidePageNum", skip_serializing_if = "std::ops::Not::not")]
++    hide_page_num: bool,
++}
++
++#[derive(Serialize)]
++struct NewNumberDto {
++    #[serde(rename = "numberType")]
++    number_type: &'static str,
++    number: u16,
++}
++
++fn auto_number_type_str(t: crate::model::control::AutoNumberType) -> &'static str {
++    use crate::model::control::AutoNumberType;
++    match t {
++        AutoNumberType::Page => "page",
++        AutoNumberType::Footnote => "footnote",
++        AutoNumberType::Endnote => "endnote",
++        AutoNumberType::Picture => "picture",
++        AutoNumberType::Table => "table",
++        AutoNumberType::Equation => "equation",
++    }
++}
++
++#[derive(Serialize)]
++struct RubyDto {
++    #[serde(rename = "mainText")]
++    main_text: String,
++    #[serde(rename = "rubyText")]
++    ruby_text: String,
++    /// 위치 원문 코드(0 TOP / 1 BOTTOM).
++    #[serde(rename = "posType")]
++    pos_type: u8,
++    /// 정렬 원문 코드(0 LEFT / 1 RIGHT / 2 CENTER).
++    align: u8,
++    #[serde(rename = "szRatioPercent")]
++    sz_ratio: u8,
++    #[serde(skip_serializing_if = "is_zero_u32")]
++    option: u32,
++    #[serde(rename = "styleIdRef", skip_serializing_if = "is_zero_u16")]
++    style_id_ref: u16,
++}
++
++#[derive(Serialize)]
++struct CharOverlapDto {
++    chars: String,
++    /// 테두리 타입 원문 코드(0 없음/글자끼리 1 원 2 반전원 3 사각형 4 반전사각형).
++    #[serde(rename = "borderType", skip_serializing_if = "is_zero_u8")]
++    border_type: u8,
++    #[serde(rename = "innerCharSizePercent", skip_serializing_if = "is_zero_i8")]
++    inner_char_size: i8,
++    #[serde(skip_serializing_if = "is_zero_u8")]
++    expansion: u8,
++    #[serde(rename = "charShapeIds", skip_serializing_if = "Vec::is_empty")]
++    char_shape_ids: Vec<u32>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -1129,6 +1621,28 @@ struct TableBlock {
+     outer_margin_top: i32,
+     #[serde(rename = "outerMarginBottom", skip_serializing_if = "is_zero_i32")]
+     outer_margin_bottom: i32,
++    /// `Table.caption` — 그림·그리기 개체와 같은 `CaptionDto`.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    caption: Option<CaptionDto>,
++    /// `Table.zones` — 표 안의 부분 영역마다 다른 테두리/배경을 주는 사각형 구역(시작/끝
++    /// 행·열, `borderFillId`). 셀 자신의 `borderFillId`(각 `CellDto`)와 별개로, 여러 셀에
++    /// 걸친 사각 구역 단위의 선언이 이 표에 더 있을 수 있다는 사실.
++    #[serde(rename = "zones", skip_serializing_if = "Vec::is_empty")]
++    zones: Vec<TableZoneDto>,
++}
++
++#[derive(Serialize)]
++struct TableZoneDto {
++    #[serde(rename = "startCol")]
++    start_col: i32,
++    #[serde(rename = "startRow")]
++    start_row: i32,
++    #[serde(rename = "endCol")]
++    end_col: i32,
++    #[serde(rename = "endRow")]
++    end_row: i32,
++    #[serde(rename = "borderFillId")]
++    border_fill_id: i32,
+ }
+ 
+ /// `TablePageBreak` 를 호스트 어휘로. 알 수 없는 값은 없다(열거형이 셋뿐).
+@@ -1247,6 +1761,91 @@ struct ImageBlock {
+     prevent_page_break: bool,
+     #[serde(rename = "description", skip_serializing_if = "String::is_empty")]
+     description: String,
++    /// 자르기(`Picture.crop`, HWPUNIT) — 그림 원본에서 실제로 보이는 사각형의 네 변. 넷 다
++    /// 0 이면 자르기 없음이라 생략.
++    #[serde(rename = "crop", skip_serializing_if = "Option::is_none")]
++    crop: Option<CropDto>,
++    /// HWPX `<hp:effects><hp:shadow>` 그림자 효과 — HWPX 만 갖는 raw XML 속성 그대로. HWP5 는
++    /// 이 개념이 없어 항상 없음.
++    #[serde(rename = "shadow", skip_serializing_if = "Option::is_none")]
++    shadow: Option<PictureShadowDto>,
++    /// `Picture.caption` — 표·그리기 개체와 같은 `CaptionDto`.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    caption: Option<CaptionDto>,
++}
++
++/// `Picture.crop` — 원본에서 남기는 사각형의 네 변(HWPUNIT).
++#[derive(Serialize)]
++struct CropDto {
++    left: i32,
++    top: i32,
++    right: i32,
++    bottom: i32,
++}
++
++/// `PictureShadow` — 필드 전부가 HWPX XML 속성을 그대로 실은 문자열(raw, 단위 비정규화).
++/// 파서가 값을 만들지 않고 파일의 속성 문자열을 그대로 보존하므로 여기서도 그대로 싣는다.
++#[derive(Serialize)]
++struct PictureShadowDto {
++    #[serde(skip_serializing_if = "Option::is_none")]
++    style: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    alpha: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    radius: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    direction: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    distance: Option<String>,
++    /// `PictureShadow.scale` — x/y 배율(각 문자열). `EffectRgb`/`EffectPoint` 와 같은 raw-string
++    /// 계약: rhwp 가 값을 만들지 않고 XML 속성 문자열을 그대로 보존한다.
++    #[serde(rename = "scaleX", skip_serializing_if = "Option::is_none")]
++    scale_x: Option<String>,
++    #[serde(rename = "scaleY", skip_serializing_if = "Option::is_none")]
++    scale_y: Option<String>,
++    /// `PictureShadow.color.rgb` — 세 성분(r/g/b) 각각 raw 문자열.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    color: Option<EffectRgbDto>,
++}
++
++#[derive(Serialize)]
++struct EffectRgbDto {
++    #[serde(skip_serializing_if = "Option::is_none")]
++    r: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    g: Option<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    b: Option<String>,
++}
++
++fn crop_dto(c: &crate::model::image::CropInfo) -> Option<CropDto> {
++    if c.left == 0 && c.top == 0 && c.right == 0 && c.bottom == 0 {
++        return None;
++    }
++    Some(CropDto {
++        left: c.left,
++        top: c.top,
++        right: c.right,
++        bottom: c.bottom,
++    })
++}
++
++fn picture_shadow_dto(effects: &crate::model::image::PictureEffects) -> Option<PictureShadowDto> {
++    let shadow = effects.shadow.as_ref()?;
++    Some(PictureShadowDto {
++        style: shadow.style.clone(),
++        alpha: shadow.alpha.clone(),
++        radius: shadow.radius.clone(),
++        direction: shadow.direction.clone(),
++        distance: shadow.distance.clone(),
++        scale_x: shadow.scale.as_ref().and_then(|s| s.x.clone()),
++        scale_y: shadow.scale.as_ref().and_then(|s| s.y.clone()),
++        color: shadow.color.as_ref().and_then(|c| c.rgb.as_ref()).map(|rgb| EffectRgbDto {
++            r: rgb.r.clone(),
++            g: rgb.g.clone(),
++            b: rgb.b.clone(),
++        }),
++    })
+ }
+ 
+ #[derive(Serialize)]
+@@ -1330,6 +1929,60 @@ struct ShapeBlock {
+     /// 않으므로(다음 라운드), 이 값 하나로는 그림자를 그릴 수 없다. 원본 사실만 미리 싣는다.
+     #[serde(rename = "shadowAlpha", skip_serializing_if = "is_zero_u8")]
+     shadow_alpha: u8,
++    /// `DrawingObjAttr.caption`(선/사각형/타원/호/다각형/곡선)이나 `GroupShape.caption`(묶음) —
++    /// 그림·표와 같은 `CaptionDto`.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    caption: Option<CaptionDto>,
++    /// `LineShape.connector.control_points`(SC_LINE 확장) — 꺽인/곡선 연결선이 지나는 제어점.
++    /// 직선 연결선(`connector`가 `None`)이거나 일반 선이면 비어 있다. 좌표는 아직 이 개체의
++    /// 렌더 행렬을 거치지 않은 원본이다 — `paths` 가 이미 변환을 거쳐 실려 있어, 여기서는
++    /// 매니페스트가 승인한 세 필드(x/y/pointType)만 원본 그대로 싣는다.
++    #[serde(rename = "connectorPoints", skip_serializing_if = "Vec::is_empty")]
++    connector_points: Vec<ConnectorControlPointDto>,
++}
++
++#[derive(Serialize)]
++struct ConnectorControlPointDto {
++    x: i32,
++    y: i32,
++    #[serde(rename = "pointType")]
++    point_type: u16,
++}
++
++fn shape_connector_points(shape: &ShapeObject) -> Vec<ConnectorControlPointDto> {
++    match shape {
++        ShapeObject::Line(line) => line
++            .connector
++            .as_ref()
++            .map(|c| {
++                c.control_points
++                    .iter()
++                    .map(|p| ConnectorControlPointDto {
++                        x: p.x,
++                        y: p.y,
++                        point_type: p.point_type,
++                    })
++                    .collect()
++            })
++            .unwrap_or_default(),
++        _ => Vec::new(),
++    }
++}
++
++/// 이 개체 자신의 캡션 — 기본 그리기 개체는 `DrawingObjAttr.caption` 을 통해, 묶음은 자신의
++/// `GroupShape.caption` 을 직접 갖는다. 차트/OLE 는 각자의 export 경로(`chart`/`ole` 분기)에서
++/// 같은 `CaptionDto` 를 재사용한다.
++fn shape_own_caption(shape: &ShapeObject) -> Option<&crate::model::shape::Caption> {
++    match shape {
++        ShapeObject::Line(s) => s.drawing.caption.as_ref(),
++        ShapeObject::Rectangle(s) => s.drawing.caption.as_ref(),
++        ShapeObject::Ellipse(s) => s.drawing.caption.as_ref(),
++        ShapeObject::Arc(s) => s.drawing.caption.as_ref(),
++        ShapeObject::Polygon(s) => s.drawing.caption.as_ref(),
++        ShapeObject::Curve(s) => s.drawing.caption.as_ref(),
++        ShapeObject::Group(g) => g.caption.as_ref(),
++        _ => None,
++    }
+ }
+ 
+ #[derive(Serialize)]
+@@ -1407,6 +2060,107 @@ struct UnsupportedBlock {
+     label: String,
+     w: i32,
+     h: i32,
++    /// `label == "ole"` 일 때만 채워지는 OLE 개체 자신의 사실 — 아직 아무 컨트롤도 이 개체를
++    /// 만들지 않았던 자리(state C)라, 필드가 아니라 이 자리를 만드는 것 자체가 이번 라운드의 일.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    ole: Option<OleDto>,
++    /// `label == "chart"` 일 때만 채워지는 차트 개체 자신의 사실. 같은 이유로 새 자리.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    chart: Option<ChartDto>,
++}
++
++/// `OleShape` 자신의 사실 — HWP 개체 트리 어디에서도 아직 읽지 않던 레코드(state C).
++/// 미리보기 원본 바이트는 싣지 않는다: 그림이 `binDataId` 로 참조만 하고 실제 바이트는 별도
++/// FFI(`rhwp_image_base64`)로 가져오는 것과 같은 계약을 아직 OLE 프리뷰는 갖지 못했고, 매
++/// 문서 JSON 에 원본 WMF/EMF 바이트를 인라인하면 그 계약을 우회해 크기를 무한정 부풀린다 —
++/// 있다는 사실과 형식/길이만 싣고, 실제 바이트를 옮기는 통로는 채택하는 스프린트가 정한다.
++#[derive(Serialize)]
++struct OleDto {
++    /// OLE 속성 플래그(`OleShape.flags`) 원본.
++    #[serde(skip_serializing_if = "is_zero_u8")]
++    flags: u8,
++    #[serde(rename = "binDataId", skip_serializing_if = "is_zero_i32")]
++    bin_data_id: i32,
++    #[serde(rename = "previewFormat", skip_serializing_if = "Option::is_none")]
++    preview_format: Option<&'static str>,
++    #[serde(rename = "previewBytesLength", skip_serializing_if = "is_zero_i32")]
++    preview_bytes_length: i32,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    caption: Option<CaptionDto>,
++}
++
++fn ole_preview_format_str(f: crate::model::shape::OlePreviewFormat) -> &'static str {
++    use crate::model::shape::OlePreviewFormat;
++    match f {
++        OlePreviewFormat::Wmf => "wmf",
++        OlePreviewFormat::Emf => "emf",
++        OlePreviewFormat::Png => "png",
++        OlePreviewFormat::Bmp => "bmp",
++    }
++}
++
++fn ole_dto(doc: &Document, ole: &crate::model::shape::OleShape) -> OleDto {
++    OleDto {
++        flags: ole.flags,
++        bin_data_id: ole.bin_data_id as i32,
++        preview_format: ole.preview.as_ref().map(|p| ole_preview_format_str(p.format)),
++        preview_bytes_length: ole.preview.as_ref().map(|p| p.bytes.len() as i32).unwrap_or(0),
++        caption: ole.caption.as_ref().map(|c| caption_dto(doc, c)),
++    }
++}
++
++/// `ChartShape` 자신의 사실 — 매니페스트가 승인한 필드만(`Legend.visible`, `Axis.labels/min/max`,
++/// `DataSeries.categories`, `ChartShape.title/legend/caption`). `chart_type`·시리즈의 값/이름/색은
++/// 이 라운드의 매니페스트 밖이라 싣지 않는다.
++#[derive(Serialize)]
++struct ChartDto {
++    #[serde(skip_serializing_if = "Option::is_none")]
++    title: Option<String>,
++    #[serde(rename = "legendVisible", skip_serializing_if = "Option::is_none")]
++    legend_visible: Option<bool>,
++    #[serde(rename = "xAxis", skip_serializing_if = "Option::is_none")]
++    x_axis: Option<ChartAxisDto>,
++    #[serde(rename = "yAxis", skip_serializing_if = "Option::is_none")]
++    y_axis: Option<ChartAxisDto>,
++    /// 시리즈마다의 X축 카테고리 레이블(`DataSeries.categories`) — 시리즈 순서대로.
++    #[serde(rename = "seriesCategories", skip_serializing_if = "Vec::is_empty")]
++    series_categories: Vec<Vec<String>>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    caption: Option<CaptionDto>,
++}
++
++#[derive(Serialize)]
++struct ChartAxisDto {
++    #[serde(skip_serializing_if = "Vec::is_empty")]
++    labels: Vec<String>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    min: Option<f64>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    max: Option<f64>,
++}
++
++fn chart_axis_dto(axis: &crate::model::shape::Axis) -> ChartAxisDto {
++    ChartAxisDto {
++        labels: axis.labels.clone(),
++        min: axis.min,
++        max: axis.max,
++    }
++}
++
++fn chart_dto(doc: &Document, chart: &crate::model::shape::ChartShape) -> ChartDto {
++    ChartDto {
++        title: chart.title.clone(),
++        legend_visible: chart.legend.as_ref().map(|l| l.visible),
++        x_axis: chart.x_axis.as_ref().map(chart_axis_dto),
++        y_axis: chart.y_axis.as_ref().map(chart_axis_dto),
++        series_categories: chart
++            .series
++            .iter()
++            .map(|s| s.categories.clone())
++            .filter(|c: &Vec<String>| !c.is_empty())
++            .collect(),
++        caption: chart.caption.as_ref().map(|c| caption_dto(doc, c)),
++    }
+ }
+ 
+ fn alignment_str(a: Alignment) -> &'static str {
+@@ -1492,7 +2246,8 @@ fn hyperlink_url(command: &str) -> String {
+ /// - 책갈피: `Control::Bookmark` 위치에 폭 0 앵커 span(`span.bookmark`)을 넣는다.
+ /// - 각주/미주: `Control::Footnote`/`Endnote` 위치(참조 마커)에 번호 텍스트 +
+ ///   `superscript=true` span 을 넣는다. 본문은 구역 뒤에 별도 블록으로 붙는다.
+-fn build_spans(doc_info: &DocInfo, para: &Paragraph) -> Vec<Span> {
++fn build_spans(doc: &Document, para: &Paragraph) -> Vec<Span> {
++    let doc_info = &doc.doc_info;
+     let chars: Vec<char> = para.text.chars().collect();
+ 
+     // 하이퍼링크 문자 범위: (start_char_idx, end_char_idx, url).
+@@ -1544,6 +2299,116 @@ fn build_spans(doc_info: &DocInfo, para: &Paragraph) -> Vec<Span> {
+                 span.page_number_suffix_char = char_field(an.suffix_char);
+                 markers.push((pos, span));
+             }
++            // 아래 다섯은 이 자리에 이르기 전 어떤 매치암도 없어(state C) 전부 이 `_ => {}` 로
++            // 조용히 사라지던 것들 — 문자 하나로 존재하지만 span 이 하나도 안 생겨 본문에서
++            // 통째로 빠졌다. 전부 폭 0 앵커 span(북마크와 같은 계약)이라, 자리만 표시하고
++            // 표시 텍스트는 만들지 않는다.
++            Control::PageNumberPos(p) => {
++                let mut span = anchor_span(None);
++                span.page_number_pos = Some(PageNumberPosDto {
++                    format: p.format,
++                    position: p.position,
++                    user_symbol: char_field(p.user_symbol),
++                    prefix_char: char_field(p.prefix_char),
++                    suffix_char: char_field(p.suffix_char),
++                    dash_char: char_field(p.dash_char),
++                });
++                markers.push((pos, span));
++            }
++            Control::PageHide(h) => {
++                let mut span = anchor_span(None);
++                span.page_hide = Some(PageHideDto {
++                    hide_header: h.hide_header,
++                    hide_footer: h.hide_footer,
++                    hide_master_page: h.hide_master_page,
++                    hide_border: h.hide_border,
++                    hide_fill: h.hide_fill,
++                    hide_page_num: h.hide_page_num,
++                });
++                markers.push((pos, span));
++            }
++            Control::NewNumber(n) => {
++                let mut span = anchor_span(None);
++                span.new_number = Some(NewNumberDto {
++                    number_type: auto_number_type_str(n.number_type),
++                    number: n.number,
++                });
++                markers.push((pos, span));
++            }
++            Control::Ruby(r) => {
++                let mut span = anchor_span(None);
++                span.ruby = Some(RubyDto {
++                    main_text: r.main_text.clone(),
++                    ruby_text: r.ruby_text.clone(),
++                    pos_type: r.pos_type,
++                    align: r.align,
++                    sz_ratio: r.sz_ratio,
++                    option: r.option,
++                    style_id_ref: r.style_id_ref,
++                });
++                markers.push((pos, span));
++            }
++            Control::CharOverlap(c) => {
++                let mut span = anchor_span(None);
++                span.char_overlap = Some(CharOverlapDto {
++                    chars: c.chars.iter().collect(),
++                    border_type: c.border_type,
++                    inner_char_size: c.inner_char_size,
++                    expansion: c.expansion,
++                    char_shape_ids: c.char_shape_ids.clone(),
++                });
++                markers.push((pos, span));
++            }
++            Control::ColumnDef(cd) => {
++                let mut span = anchor_span(None);
++                span.column_def = Some(ColumnDefDto {
++                    column_count: cd.column_count,
++                    direction: match cd.direction {
++                        crate::model::page::ColumnDirection::LeftToRight => "leftToRight",
++                        crate::model::page::ColumnDirection::RightToLeft => "rightToLeft",
++                    },
++                    same_width: cd.same_width,
++                    proportional_widths: cd.proportional_widths,
++                    separator_type: cd.separator_type,
++                    separator_width: cd.separator_width,
++                    separator_color: (cd.separator_type != 0).then(|| color_hex(cd.separator_color)),
++                });
++                markers.push((pos, span));
++            }
++            Control::HiddenComment(hc) => {
++                let mut span = anchor_span(None);
++                span.hidden_comment = Some(HiddenCommentDto {
++                    blocks: build_blocks(doc, &hc.paragraphs),
++                });
++                markers.push((pos, span));
++            }
++            Control::Form(f) => {
++                let mut span = anchor_span(None);
++                span.form = Some(FormObjectDto {
++                    form_type: form_type_str(f.form_type),
++                    name: f.name.clone(),
++                    caption: f.caption.clone(),
++                    text: f.text.clone(),
++                    width: f.width as i32,
++                    height: f.height as i32,
++                    fore_color: color_hex(f.fore_color),
++                    back_color: color_hex(f.back_color),
++                    value: f.value,
++                    enabled: f.enabled,
++                    properties: f.properties.clone(),
++                });
++                markers.push((pos, span));
++            }
++            Control::Field(f) => {
++                let mut span = anchor_span(None);
++                span.field_extra = Some(FieldExtraDto {
++                    field_type: field_type_str(f.field_type),
++                    properties: f.properties,
++                    extra_properties: f.extra_properties,
++                    ctrl_data_name: f.ctrl_data_name.clone(),
++                });
++                markers.push((pos, span));
++            }
+             _ => {}
+         }
+     }
+@@ -1631,6 +2496,15 @@ fn anchor_span(bookmark: Option<String>) -> Span {
+         note_before_char: None,
+         note_after_char: None,
+         note_number_shape: None,
++        page_number_pos: None,
++        page_hide: None,
++        new_number: None,
++        ruby: None,
++        char_overlap: None,
++        column_def: None,
++        hidden_comment: None,
++        form: None,
++        field_extra: None,
+     }
+ }
+ 
+@@ -1680,6 +2554,15 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+                 note_before_char: None,
+                 note_after_char: None,
+                 note_number_shape: None,
++                page_number_pos: None,
++                page_hide: None,
++                new_number: None,
++                ruby: None,
++                char_overlap: None,
++                column_def: None,
++                hidden_comment: None,
++                form: None,
++                field_extra: None,
+             }
+         }
+         None => Span {
+@@ -1706,6 +2589,15 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+             note_before_char: None,
+             note_after_char: None,
+             note_number_shape: None,
++            page_number_pos: None,
++            page_hide: None,
++            new_number: None,
++            ruby: None,
++            char_overlap: None,
++            column_def: None,
++            hidden_comment: None,
++            form: None,
++            field_extra: None,
+         },
+     }
+ }
+@@ -1844,7 +2736,7 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+         heading,
+         style_name,
+         style_local_name,
+-        spans: build_spans(doc_info, para),
++        spans: build_spans(doc, para),
+         align,
+         indent_start,
+         indent_end,
+@@ -1891,6 +2783,24 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+         box_margin_top: None,
+         box_margin_bottom: None,
+         box_max_width: None,
++        range_tags: para
++            .range_tags
++            .iter()
++            .map(|rt| RangeTagDto {
++                start: rt.start,
++                end: rt.end,
++                tag: rt.tag,
++            })
++            .collect(),
++        orphan_field_ends: para
++            .orphan_field_ends
++            .iter()
++            .map(|e| OrphanFieldEndDto {
++                char_idx: e.char_idx as i32,
++                begin_id_ref: e.begin_id_ref,
++                field_id: e.field_id,
++            })
++            .collect(),
+     }
+ }
+ 
+@@ -1975,6 +2885,18 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {
+         outer_margin_right: table.outer_margin_right as i32,
+         outer_margin_top: table.outer_margin_top as i32,
+         outer_margin_bottom: table.outer_margin_bottom as i32,
++        caption: table.caption.as_ref().map(|c| caption_dto(doc, c)),
++        zones: table
++            .zones
++            .iter()
++            .map(|z| TableZoneDto {
++                start_col: z.start_col as i32,
++                start_row: z.start_row as i32,
++                end_col: z.end_col as i32,
++                end_row: z.end_row as i32,
++                border_fill_id: z.border_fill_id as i32,
++            })
++            .collect(),
+     })
+ }
+ 
+@@ -2018,6 +2940,9 @@ fn build_image_block(doc: &Document, pic: &crate::model::image::Picture,
+         obj_attr: placement.attr,
+         prevent_page_break: placement.prevent_page_break,
+         description: placement.description.clone(),
++        crop: crop_dto(&pic.crop),
++        shadow: picture_shadow_dto(&pic.effects),
++        caption: pic.caption.as_ref().map(|c| caption_dto(doc, c)),
+     })
+ }
+ 
+@@ -2165,6 +3090,8 @@ fn build_equation_block(e: &crate::model::control::Equation) -> Block {
+         label: "equation".to_string(),
+         w,
+         h,
++        ole: None,
++        chart: None,
+     })
+ }
+ 
+@@ -2211,6 +3138,35 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+     // depth, its own flattened paths — is placed by this one answer, never by a child's own
+     // attributes (see `Placement`).
+     let placement = Placement::of(common);
++    // OLE and chart objects fell through every catch-all below them — `collect_shape_pictures`
++    // only knows `Picture`/`Group`, `collect_shape_paths`'s own match ends in `_ => {}` for them —
++    // so a top-level OLE or chart control emitted NOTHING at all, not even an honest placeholder
++    // (the equation fallback a few lines up gets one; these did not). Route them to the same
++    // `Unsupported` tag Swift already decodes, carrying their own facts as the new `ole`/`chart`
++    // payload instead of leaving the object invisible.
++    match shape {
++        ShapeObject::Ole(ole) => {
++            out.push(Block::Unsupported(UnsupportedBlock {
++                label: "ole".to_string(),
++                w: common.width as i32,
++                h: common.height as i32,
++                ole: Some(ole_dto(doc, ole)),
++                chart: None,
++            }));
++            return;
++        }
++        ShapeObject::Chart(chart) => {
++            out.push(Block::Unsupported(UnsupportedBlock {
++                label: "chart".to_string(),
++                w: common.width as i32,
++                h: common.height as i32,
++                ole: None,
++                chart: Some(chart_dto(doc, chart)),
++            }));
++            return;
++        }
++        _ => {}
++    }
+     // A drawing object that CONTAINS PICTURES is a picture with a frame around it — a screenshot in
+     // a box, which is how a Korean manual illustrates a procedure. The picture is the content and
+     // the frame is decoration, so the picture is what ships: emitting both would stack them, since
+@@ -2252,6 +3208,8 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+             prevent_page_break: placement.prevent_page_break,
+             description: placement.description.clone(),
+             shadow_alpha,
++            caption: shape_own_caption(shape).map(|c| caption_dto(doc, c)),
++            connector_points: shape_connector_points(shape),
+         }));
+     }
+     push_shape_text_boxes(doc, shape, out);
+@@ -2912,6 +3870,8 @@ fn minimal_note_para(span: Span) -> ParaBlock {
+         box_margin_top: None,
+         box_margin_bottom: None,
+         box_max_width: None,
++        range_tags: Vec::new(),
++        orphan_field_ends: Vec::new(),
+     }
+ }
+ 
+@@ -2978,6 +3938,23 @@ impl DocumentCore {
+                 .iter()
+                 .map(|(path, _)| path.clone())
+                 .collect(),
++            file_header: file_header_dto(&self.document.header),
++            doc_properties: DocPropertiesDto {
++                section_count: self.document.doc_properties.section_count,
++                caret_char_pos: self.document.doc_properties.caret_char_pos,
++            },
++            bin_data_declarations: self
++                .document
++                .doc_info
++                .bin_data_list
++                .iter()
++                .map(|b| BinDataDeclDto {
++                    attr: b.attr,
++                    compression: bin_data_compression_str(b.compression),
++                    abs_path: b.abs_path.clone(),
++                    rel_path: b.rel_path.clone(),
++                })
++                .collect(),
+             blocks,
+         };
+         serde_json::to_string(&dto).map_err(|error| {
+@@ -3124,8 +4101,8 @@ mod tests {
+             name: "mark1".to_string(),
+         })];
+ 
+-        let doc_info = DocInfo::default();
+-        let spans = build_spans(&doc_info, &para);
++        let doc = Document::default();
++        let spans = build_spans(&doc, &para);
+         assert!(
+             spans.iter().any(|s| s.bookmark.as_deref() == Some("mark1")),
+             "expected a bookmark anchor span, got: {:?}",
+@@ -3366,6 +4343,94 @@ mod tests {
+             missing
+         );
+     }
++
++    /// S4's C-tier round — 21 NEW BRANCHES, not field adds: the owning record was never
++    /// constructed anywhere in the export path before this round (footnote shapes, picture
++    /// crop/shadow, one shared `Caption` for six owners, OLE/chart's fall-through, the file
++    /// header, five inline controls that fell into `_ => {}`, a paragraph's range tags and
++    /// orphan field ends, a connector's control points, a table's zones, form controls, every
++    /// `Control::Field`'s remaining facts, and a border fill's diagonal). Same gate shape as
++    /// S3: scan the real corpus, count each new key, and fail if more than half were never
++    /// observed — that is a wiring bug, not corpus rarity.
++    #[test]
++    fn export_s4_c_tier_branches_reach_the_corpus() {
++        let keys: &[(&str, &str)] = &[
++            ("\"footnoteShape\":", "SectionDef.footnote_shape (branch: footnote-shape)"),
++            ("\"endnoteShape\":", "SectionDef.endnote_shape (branch: footnote-shape)"),
++            ("\"numberCodeSuperscript\":", "FootnoteShape.number_code_superscript"),
++            ("\"printInlineAfterText\":", "FootnoteShape.print_inline_after_text"),
++            ("\"crop\":", "Picture.crop (branch: picture-effects)"),
++            ("\"shadow\":", "Picture.effects.shadow, HWPX only (branch: picture-effects)"),
++            ("\"caption\":", "Table/Picture/DrawingObjAttr/GroupShape/ChartShape/OleShape.caption (branch: caption)"),
++            ("\"ole\":", "OleShape via Unsupported (branch: ole)"),
++            ("\"previewFormat\":", "OlePreview.format (branch: ole)"),
++            ("\"chart\":", "ChartShape via Unsupported (branch: chart)"),
++            ("\"legendVisible\":", "Legend.visible (branch: chart)"),
++            ("\"seriesCategories\":", "DataSeries.categories (branch: chart)"),
++            ("\"fileHeader\":", "Document.header (branch: file-header)"),
++            ("\"distribution\":", "FileHeader.distribution (branch: file-header)"),
++            ("\"docProperties\":", "Document.doc_properties (branch: other:DocProperties)"),
++            ("\"caretCharPos\":", "DocProperties.caret_char_pos (branch: other:DocProperties)"),
++            ("\"binDataDeclarations\":", "DocInfo.bin_data_list (branch: other:BinData)"),
++            ("\"pageNumberPos\":", "Control::PageNumberPos (branch: page-number-pos)"),
++            ("\"pageHide\":", "Control::PageHide (branch: page-hide)"),
++            ("\"newNumber\":", "Control::NewNumber (branch: new-number)"),
++            ("\"ruby\":", "Control::Ruby (branch: ruby)"),
++            ("\"charOverlap\":", "Control::CharOverlap (branch: char-overlap)"),
++            ("\"columnDef\":", "Control::ColumnDef (branch: column-def)"),
++            ("\"rangeTags\":", "Paragraph.range_tags (branch: range-tag)"),
++            ("\"orphanFieldEnds\":", "Paragraph.orphan_field_ends (branch: other:OrphanFieldEnd)"),
++            ("\"connectorPoints\":", "LineShape.connector.control_points (branch: connector)"),
++            ("\"zones\":", "Table.zones (branch: table-zone)"),
++            ("\"form\":", "Control::Form (branch: form-object)"),
++            ("\"fieldExtra\":", "Control::Field, all types (moved from S3's state-B misjudgement)"),
++            ("\"diagonalType\":", "BorderFill.diagonal.diagonal_type (branch: other:DiagonalLine)"),
++        ];
++        let mut counts = vec![0usize; keys.len()];
++        let mut scanned = 0usize;
++        let entries = std::fs::read_dir("samples").expect("read samples dir");
++        let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
++        paths.sort();
++        for path in paths {
++            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
++            if ext != "hwp" && ext != "hwpx" {
++                continue;
++            }
++            let p = path.to_string_lossy().to_string();
++            let json = match std::panic::catch_unwind(|| export(&p)) {
++                Ok(j) => j,
++                Err(_) => continue,
++            };
++            scanned += 1;
++            for (i, (key, _)) in keys.iter().enumerate() {
++                counts[i] += json.matches(key).count();
++            }
++        }
++        assert!(scanned > 100, "expected a real corpus scan, only reached {scanned} files");
++
++        let mut missing: Vec<&str> = Vec::new();
++        for ((key, source), count) in keys.iter().zip(counts.iter()) {
++            println!("S4-FIELD {key:<32} <- {source:<70} count={count}");
++            if *count == 0 {
++                missing.push(source);
++            }
++        }
++        println!(
++            "S4-FIELD SUMMARY: {} keys scanned across {} files, {} never observed: {:?}",
++            keys.len(),
++            scanned,
++            missing.len(),
++            missing
++        );
++        assert!(
++            missing.len() * 2 < keys.len(),
++            "more than half of the {} new S4 keys were never observed across {} files — \
++             likely a wiring bug, not corpus rarity: {:?}",
++            keys.len(),
++            scanned,
++            missing
++        );
++    }
+ }
+ 
+ #[cfg(test)]
+-- 
+2.50.1 (Apple Git-155)
+
