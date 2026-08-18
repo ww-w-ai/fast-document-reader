@@ -1,0 +1,191 @@
+From 117642ae608c9a86b956ae0aeff47bc7ad2ea3b2 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 22:33:16 +0900
+Subject: [PATCH 43/43] Say how wide each column is, not just how many there
+ are
+
+A viewer could split a page equally and no more: the per-column widths, their
+gaps and the spacing between columns were in the model and in no export. 57 of
+149 declarations in a 637-sample corpus (38%) do not want equal columns.
+---
+ examples/scan_columns.rs                   | 122 +++++++++++++++++++++
+ src/document_core/queries/document_json.rs |  27 +++++
+ 2 files changed, 149 insertions(+)
+ create mode 100644 examples/scan_columns.rs
+
+diff --git a/examples/scan_columns.rs b/examples/scan_columns.rs
+new file mode 100644
+index 00000000..1a79854c
+--- /dev/null
++++ b/examples/scan_columns.rs
+@@ -0,0 +1,122 @@
++// S16 — does a real corpus actually use multiple columns, and how?
++//
++// The sprint would teach the reader to typeset in columns, which is the single biggest change to
++// its layout model. Three numbers decide whether that is worth it: how many DOCUMENTS declare more
++// than one column anywhere, how many PARAGRAPHS live under such a declaration, and whether the
++// declarations are the simple kind (equal widths, no rule) or the hard kind.
++//
++// PRIVACY: counts only. No document text, no filename, no path is ever printed.
++
++use rhwp::model::control::Control;
++use rhwp::model::paragraph::Paragraph;
++use rhwp::model::table::Table;
++use rhwp::DocumentCore;
++use std::collections::BTreeMap;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++#[derive(Default)]
++struct Counts {
++    files_read: usize,
++    files_failed: usize,
++    docs_with_columns: usize,
++    /// column_count -> how many declarations
++    counts: BTreeMap<u16, usize>,
++    same_width: BTreeMap<bool, usize>,
++    proportional: BTreeMap<bool, usize>,
++    sep_type: BTreeMap<u8, usize>,
++    direction: BTreeMap<String, usize>,
++    /// how many paragraphs follow a multi-column declaration in the same section
++    paras_under_columns: usize,
++    paras_total: usize,
++    /// documents whose multi-column run is only a fraction of the document
++    multi_decls_per_doc: BTreeMap<usize, usize>,
++    samples: Vec<(u64, String, u16)>,
++}
++
++fn walk(paras: &[Paragraph], c: &mut Counts, doc_multi: &mut usize, active_cols: &mut u16) {
++    for p in paras {
++        c.paras_total += 1;
++        for ctrl in &p.controls {
++            match ctrl {
++                Control::ColumnDef(cd) => {
++                    *c.counts.entry(cd.column_count).or_default() += 1;
++                    if cd.column_count > 1 {
++                        *doc_multi += 1;
++                        *active_cols = cd.column_count;
++                        *c.same_width.entry(cd.same_width).or_default() += 1;
++                        *c.proportional.entry(cd.proportional_widths).or_default() += 1;
++                        *c.sep_type.entry(cd.separator_type).or_default() += 1;
++                        *c.direction.entry(format!("{:?}", cd.direction)).or_default() += 1;
++                    } else {
++                        *active_cols = 1;
++                    }
++                }
++                Control::Table(t) => walk_table(t, c, doc_multi, active_cols),
++                _ => {}
++            }
++        }
++        if *active_cols > 1 { c.paras_under_columns += 1; }
++    }
++}
++
++fn walk_table(t: &Table, c: &mut Counts, doc_multi: &mut usize, active: &mut u16) {
++    for cell in &t.cells { walk(&cell.paragraphs, c, doc_multi, active); }
++}
++
++fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
++    let Ok(entries) = fs::read_dir(dir) else { return };
++    for e in entries.flatten() {
++        let path = e.path();
++        if path.is_dir() { collect(&path, out); }
++        else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
++            let ext = ext.to_ascii_lowercase();
++            if ext == "hwp" || ext == "hwpx" { out.push(path); }
++        }
++    }
++}
++
++fn main() {
++    let root = std::env::args().nth(1).unwrap_or_else(|| "samples".to_string());
++    let mut files = Vec::new();
++    collect(Path::new(&root), &mut files);
++    files.sort();
++
++    let mut c = Counts::default();
++    for path in &files {
++        let Ok(bytes) = fs::read(path) else { c.files_failed += 1; continue };
++        let Ok(core) = DocumentCore::from_bytes(&bytes) else { c.files_failed += 1; continue };
++        c.files_read += 1;
++        let doc = core.document();
++        let mut doc_multi = 0usize;
++        for section in &doc.sections {
++            let mut active = 1u16;
++            walk(&section.paragraphs, &mut c, &mut doc_multi, &mut active);
++        }
++        if doc_multi > 0 {
++            c.docs_with_columns += 1;
++            // rhwp's OWN repo samples, not private material — the path is reportable, and it is how
++            // a sprint picks its smoke document.
++            let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
++            let cols = c.counts.keys().rev().find(|k| **k > 1).copied().unwrap_or(0);
++            c.samples.push((size, path.display().to_string(), cols));
++            *c.multi_decls_per_doc.entry(doc_multi).or_default() += 1;
++        }
++    }
++
++    println!("files read        : {} (failed {})", c.files_read, c.files_failed);
++    println!("docs w/ >1 column : {}", c.docs_with_columns);
++    println!("column_count      : {:?}", c.counts);
++    println!("paras under cols  : {} of {} ({:.2}%)", c.paras_under_columns, c.paras_total,
++             100.0 * c.paras_under_columns as f64 / c.paras_total.max(1) as f64);
++    println!("same_width        : {:?}", c.same_width);
++    println!("proportional      : {:?}", c.proportional);
++    println!("separator type    : {:?}", c.sep_type);
++    println!("direction         : {:?}", c.direction);
++    println!("multi decls/doc   : {:?}", c.multi_decls_per_doc);
++    c.samples.sort();
++    println!("--- smallest multi-column samples ---");
++    for (size, path, cols) in c.samples.iter().take(4) {
++        println!("  {size:>8} bytes  {cols} cols  {path}");
++    }
++}
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 37ddccbb..4fee92fd 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -1551,6 +1551,22 @@ struct ColumnDefDto {
+     separator_width: u8,
+     #[serde(rename = "separatorColor", skip_serializing_if = "Option::is_none")]
+     separator_color: Option<String>,
++    /// 단 사이 간격(pt). `same_width` 여부와 무관하게 열 폭 계산에 반드시 필요하다 —
++    /// 폭 = (본문폭 − 간격×(단수−1)) ÷ 단수.
++    #[serde(rename = "columnSpacingPt", skip_serializing_if = "is_zero_f64")]
++    column_spacing_pt: f64,
++    /// 단별 너비/간격. `sameWidth` 가 false 일 때만 의미가 있어 그때만 내보낸다. 값의 단위는
++    /// `proportionalWidths` 가 정한다 — true 면 비례값(합 32768), false 면 pt.
++    /// 표본 637개 실측: 149개 다단 선언 중 57개(38%)가 비균등이라, 이것이 없으면 그 38%는
++    /// 균등 분할로 그려질 수밖에 없다.
++    #[serde(rename = "columnWidths", skip_serializing_if = "Vec::is_empty")]
++    column_widths: Vec<f64>,
++    #[serde(rename = "columnGaps", skip_serializing_if = "Vec::is_empty")]
++    column_gaps: Vec<f64>,
++}
++
++fn is_zero_f64(v: &f64) -> bool {
++    *v == 0.0
+ }
+ 
+ #[derive(Serialize)]
+@@ -2443,6 +2459,17 @@ fn build_spans(doc: &Document, para: &Paragraph) -> Vec<Span> {
+                     separator_type: cd.separator_type,
+                     separator_width: cd.separator_width,
+                     separator_color: (cd.separator_type != 0).then(|| color_hex(cd.separator_color)),
++                    column_spacing_pt: cd.spacing as f64 / 100.0,
++                    column_widths: if cd.same_width { Vec::new() } else {
++                        cd.widths.iter()
++                            .map(|w| if cd.proportional_widths { *w as f64 } else { *w as f64 / 100.0 })
++                            .collect()
++                    },
++                    column_gaps: if cd.same_width { Vec::new() } else {
++                        cd.gaps.iter()
++                            .map(|g| if cd.proportional_widths { *g as f64 } else { *g as f64 / 100.0 })
++                            .collect()
++                    },
+                 });
+                 markers.push((pos, span));
+             }
+-- 
+2.50.1 (Apple Git-155)
+

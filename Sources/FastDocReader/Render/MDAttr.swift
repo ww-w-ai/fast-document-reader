@@ -168,6 +168,11 @@ enum MDAttr {
     /// the body flow where it already belongs (`OfficeReadResult.footnotes`), so nothing needs to
     /// find it.
     static let footnoteRef = NSAttributedString.Key("mdFootnoteRef")
+    /// Where the document changes its column layout — an `OfficeColumnLayout`, on the run the
+    /// declaration sat at. Read from the LAID-OUT text rather than the block model for the same
+    /// reason `footnoteRef` is: the decision it feeds is taken from a finished layout, where the
+    /// only handle on a position is a character index.
+    static let columnLayout = NSAttributedString.Key("mdColumnLayout")
 
     /// Set (value `true`) on a block the DOCUMENT vetoes a page number for (HWP's `Control::
     /// PageHide`'s `hidePageNum`) — see `OfficeReadResult.hidePageNumberBlocks`. A page resolved

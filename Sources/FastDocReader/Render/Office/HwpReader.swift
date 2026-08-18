@@ -878,6 +878,26 @@ enum HwpReader {
     /// had its Latin drawn in 휴먼명조. Measured over 1,557 real files, 53.6% of documents and 47.1%
     /// of char-shape rows declare families that are not all identical, so this is the common case and
     /// not an exotic one.
+    /// HWP's own column declaration in this reader's vocabulary. Every length arrives in points
+    /// already (rhwp divides by 100), EXCEPT the per-column widths when the document states shares
+    /// — `proportional` says which, and `ColumnGeometry` is what resolves them against a real page.
+    private static func columnLayout(_ cd: HwpColumnDef) -> OfficeColumnLayout {
+        // The rule's thickness reuses HWP's sixteen-step line-width table, the same one a cell
+        // diagonal and a footnote separator are measured with — one table, three consumers.
+        let rule = (cd.separatorType ?? 0) != 0
+            ? diagonalWidthPt(cd.separatorWidth ?? 0)
+            : 0
+        return OfficeColumnLayout(
+            count: max(1, cd.columnCount),
+            spacing: CGFloat(cd.columnSpacingPt ?? 0),
+            widths: (cd.columnWidths ?? []).map { CGFloat($0) },
+            gaps: (cd.columnGaps ?? []).map { CGFloat($0) },
+            proportional: cd.proportionalWidths ?? false,
+            separatorType: cd.separatorType ?? 0,
+            separatorWidthPt: rule,
+            separatorColor: rule > 0 ? color(cd.separatorColor) : nil)
+    }
+
     private static func mapSpan(_ s: HwpSpan, slotFonts: [HwpSlotFonts]) -> [Span] {
         let (ul, ulStyle) = underline(s.underline)
         var span = Span(text: s.text)
@@ -904,6 +924,7 @@ enum HwpReader {
             // reader that draws the bare digit is wrong on 97% of the documents that have notes.
             span.text = (s.noteBeforeChar ?? "") + span.text + (s.noteAfterChar ?? "")
         }
+        if let cd = s.columnDef { span.columnLayout = columnLayout(cd) }
         span.subscripted = s.subscripted ?? false
         span.textColor = color(s.color)
         // size is a base_size in HWPUNIT; ÷100 = points. 0/absent → unspecified (theme decides).
@@ -2097,6 +2118,20 @@ private struct HwpList: Decodable {
     var bulletTextDistance: Int?
 }
 
+/// What a section's text says about the columns it flows through — `ColumnDef` in the format.
+private struct HwpColumnDef: Decodable {
+    var columnCount: Int
+    var direction: String?
+    var sameWidth: Bool?
+    var proportionalWidths: Bool?
+    var separatorType: Int?
+    var separatorWidth: Int?
+    var separatorColor: String?
+    var columnSpacingPt: Double?
+    var columnWidths: [Double]?
+    var columnGaps: [Double]?
+}
+
 private struct HwpSpan: Decodable {
     var text: String
     var bold: Bool?
@@ -2113,6 +2148,9 @@ private struct HwpSpan: Decodable {
     /// INSTANCE, not just per section, so it is read here rather than from the section's shape.
     var noteBeforeChar: String?
     var noteAfterChar: String?
+    /// `Control::ColumnDef`('cold') — "from here on, N columns". A zero-width anchor span, the same
+    /// shape a bookmark or a note marker arrives as.
+    var columnDef: HwpColumnDef?
     var subscripted: Bool?      // JSON key "sub"
     var color: String?
     var size: Int?
@@ -2159,7 +2197,7 @@ private struct HwpSpan: Decodable {
         // run and the footnote path found nothing to place. Same failure shape as a stale binary
         // (invariant 45): the field is in the model, the value is on the wire, and the reader
         // never sees it. Anything added above must be added here too.
-        case noteRef, noteRefKind, noteBeforeChar, noteAfterChar
+        case noteRef, noteRefKind, noteBeforeChar, noteAfterChar, columnDef
         case superscript = "super"
         case subscripted = "sub"
     }

@@ -506,6 +506,7 @@ enum OfficeTextBuilder {
             // — which page the note lands on, how tall that page's band is — is found from where
             // this attribute ends up after layout (invariant 98).
             if let ref = span.footnoteRef { attrs[MDAttr.footnoteRef] = ref }
+            if let cols = span.columnLayout { attrs[MDAttr.columnLayout] = cols }
             if span.superscript {
                 let raised = font.pointSize * 0.35
                 font = fontScaled(font, by: 0.7)

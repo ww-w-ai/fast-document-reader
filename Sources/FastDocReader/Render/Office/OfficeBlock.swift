@@ -40,6 +40,10 @@ struct Span: Equatable {
     /// `nil` on every other run, including an ENDNOTE's marker: an endnote stays in the body flow
     /// and nothing needs to go looking for it.
     var footnoteRef: Int? = nil
+    /// Where the document switches how many columns its text flows through, carried on the run the
+    /// declaration sits at. A declaration is a POSITION, not a property of a section: HWP puts it in
+    /// the text, so one document can go to two columns and back. Becomes `MDAttr.columnLayout`.
+    var columnLayout: OfficeColumnLayout? = nil
     /// Named `subscripted`, not `subscript` — that spelling is a Swift keyword and would need
     /// backticks at every call site (`` `subscript` ``). `superscript`/`subscripted` reads a little
     /// unevenly next to each other, but stays typeable everywhere without ceremony.

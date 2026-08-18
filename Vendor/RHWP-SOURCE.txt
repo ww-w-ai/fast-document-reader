@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 97a7f4d8629f95cc23773ffe53fa573b39035005
+rhwp commit   : 117642ae608c9a86b956ae0aeff47bc7ad2ea3b2
 rhwp branch   : HEAD
-rhwp subject  : Let a footnote marker carry the characters printed around its number
+rhwp subject  : Say how wide each column is, not just how many there are
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 59129672
-library sha256: e6189f18ba285dae68aad146961f6c4f738382574c825077a1f75b63d4001fb7
+library bytes : 59158392
+library sha256: e6de09d1eb65536c1017f481ab4c3b50906b9fcefe831d695d861ad664a685de

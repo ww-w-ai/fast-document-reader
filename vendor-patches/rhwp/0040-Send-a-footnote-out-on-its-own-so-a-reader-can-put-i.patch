@@ -1,7 +1,7 @@
 From 04f33667281a6d3c2c8a8ee2862e3b5562f1a6b8 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 20:37:00 +0900
-Subject: [PATCH 40/42] Send a footnote out on its own, so a reader can put it
+Subject: [PATCH 40/43] Send a footnote out on its own, so a reader can put it
  where it belongs
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
