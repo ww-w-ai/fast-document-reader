@@ -3,9 +3,9 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 117642ae608c9a86b956ae0aeff47bc7ad2ea3b2
+rhwp commit   : 42ea1c460d69257331a84a010bae5c14882d5054
 rhwp branch   : HEAD
-rhwp subject  : Say how wide each column is, not just how many there are
+rhwp subject  : Count what a corpus says about column direction, so a sprint can rule it out
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
 library bytes : 59158392

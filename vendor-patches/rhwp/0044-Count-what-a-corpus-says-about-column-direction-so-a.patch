@@ -1,0 +1,46 @@
+From 42ea1c460d69257331a84a010bae5c14882d5054 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 22:38:02 +0900
+Subject: [PATCH 44/44] Count what a corpus says about column direction, so a
+ sprint can rule it out
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+811 of 811 sections are horizontal and all 149 column declarations flow left to
+right — no right-to-left or vertical machinery is owed to this material.
+---
+ examples/scan_columns.rs | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/examples/scan_columns.rs b/examples/scan_columns.rs
+index 1a79854c..0272f526 100644
+--- a/examples/scan_columns.rs
++++ b/examples/scan_columns.rs
+@@ -32,6 +32,7 @@ struct Counts {
+     /// documents whose multi-column run is only a fraction of the document
+     multi_decls_per_doc: BTreeMap<usize, usize>,
+     samples: Vec<(u64, String, u16)>,
++    text_direction: BTreeMap<String, usize>,
+ }
+ 
+ fn walk(paras: &[Paragraph], c: &mut Counts, doc_multi: &mut usize, active_cols: &mut u16) {
+@@ -90,6 +91,7 @@ fn main() {
+         let doc = core.document();
+         let mut doc_multi = 0usize;
+         for section in &doc.sections {
++            *c.text_direction.entry(format!("{:?}", section.section_def.text_direction)).or_default() += 1;
+             let mut active = 1u16;
+             walk(&section.paragraphs, &mut c, &mut doc_multi, &mut active);
+         }
+@@ -113,6 +115,7 @@ fn main() {
+     println!("proportional      : {:?}", c.proportional);
+     println!("separator type    : {:?}", c.sep_type);
+     println!("direction         : {:?}", c.direction);
++    println!("section text dir  : {:?}", c.text_direction);
+     println!("multi decls/doc   : {:?}", c.multi_decls_per_doc);
+     c.samples.sort();
+     println!("--- smallest multi-column samples ---");
+-- 
+2.50.1 (Apple Git-155)
+

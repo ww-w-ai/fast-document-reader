@@ -1,7 +1,7 @@
 From 117642ae608c9a86b956ae0aeff47bc7ad2ea3b2 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 22:33:16 +0900
-Subject: [PATCH 43/43] Say how wide each column is, not just how many there
+Subject: [PATCH 43/44] Say how wide each column is, not just how many there
  are
 
 A viewer could split a page equally and no more: the per-column widths, their

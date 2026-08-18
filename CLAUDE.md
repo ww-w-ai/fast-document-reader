@@ -113,6 +113,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | footnotes — the band fixpoint, where a note lands, the settle's round budget | 98, 99 |
 | printing, `--pdf`, `--extract`, anything headless | 40, 59, 66, 70 |
 | a table that crosses a page boundary | 61, 64, 72, 96 |
+| multi-column layout, `ColumnGeometry`, column flow | 100 |
 | memory, image caches, document lifetime, crashes | 63, 65 |
 | the Quick Look preview extension | 68 |
 | any Swift value carried as a text attribute | 67 |

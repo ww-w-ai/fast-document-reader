@@ -1,7 +1,7 @@
 From 99714c7278d565146ef6612a9cd54ab2feacb1dc Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Thu, 30 Jul 2026 02:55:48 +0900
-Subject: [PATCH 03/43] Export full page geometry so a reader can place a
+Subject: [PATCH 03/44] Export full page geometry so a reader can place a
  document on its own paper
 
 A reader reproducing a page needs the paper it was authored on, not just the

@@ -1,7 +1,7 @@
 From 96a8c2656f065e9341be22107cbe4c11350588b2 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 16:58:14 +0900
-Subject: [PATCH 37/43] The parser already knew what the diagonal byte means
+Subject: [PATCH 37/44] The parser already knew what the diagonal byte means
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

@@ -1,7 +1,7 @@
 From 97a7f4d8629f95cc23773ffe53fa573b39035005 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 21:35:28 +0900
-Subject: [PATCH 42/43] Let a footnote marker carry the characters printed
+Subject: [PATCH 42/44] Let a footnote marker carry the characters printed
  around its number
 
 The decoration was exported on the note's BODY run and not on the marker, so a
