@@ -1,7 +1,7 @@
 From 8b85c9086bd50aa428c11423987edb5f42a0260c Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Thu, 13 Aug 2026 23:00:09 +0900
-Subject: [PATCH 09/34] Export a drawing's paths, whether it sits in the text,
+Subject: [PATCH 09/35] Export a drawing's paths, whether it sits in the text,
  and what a fill really is
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

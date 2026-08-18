@@ -1,7 +1,7 @@
 From 2fbf051c61c53002305c06fcaed2bfb668ed4dce Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 13:00:25 +0900
-Subject: [PATCH 31/34] Say what the font table knows about a face beyond its
+Subject: [PATCH 31/35] Say what the font table knows about a face beyond its
  name
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

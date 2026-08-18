@@ -1,0 +1,54 @@
+From 98843f151ec4178e936b1dffa5eacff05efd58bf Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 16:02:05 +0900
+Subject: [PATCH 35/35] Say how thick a cell diagonal is, not just that one was
+ declared
+
+A diagonal type alone cannot tell a consumer whether to draw: measured over
+340 real documents, 6,619 border fills declare a non-zero type and only 2,522
+of them carry a non-zero width. The other 4,097 are declarations with no line.
+A reader adopting the type alone would rule 62% of those cells for nothing.
+
+The colour rides along only when a type was declared, since it means nothing
+otherwise.
+---
+ src/document_core/queries/document_json.rs | 14 ++++++++++++--
+ 1 file changed, 12 insertions(+), 2 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 5e32437b..048b027c 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -562,10 +562,18 @@ struct BorderFillDto {
+     #[serde(rename = "attr", skip_serializing_if = "is_zero_u16")]
+     attr: u16,
+     /// `BorderFill.diagonal.diagonal_type` — 셀을 가로지르는 대각선의 종류 코드, 나머지 네 변과
+-    /// 같은 `BorderLineType` 코드 공간. `0` 은 그 공간에서 "없음" 이므로 생략 — 대각선 굵기/색은
+-    /// 이 라운드의 매니페스트 밖(요청된 한 필드만).
++    /// 같은 `BorderLineType` 코드 공간. `0` 은 그 공간에서 "없음" 이므로 생략.
+     #[serde(rename = "diagonalType", skip_serializing_if = "is_zero_u8")]
+     diagonal_type: u8,
++    /// 대각선의 굵기와 색. 종류만으로는 **그릴지 말지를 판정할 수 없다** — `diagonal_type` 이
++    /// 0 이 아니어도 굵기가 0 이면 선은 그려지지 않으므로, 종류만 내보내면 "선언한 셀"과
++    /// "실제로 선이 있는 셀"을 소비자가 구분할 방법이 없다. 굵기는 나머지 네 변과 같은 코드
++    /// 공간(`resolve_single_border_style` 이 pt 로 바꾸는 그 값)이고, 색은 종류가 0 이 아닐
++    /// 때만 뜻이 있으므로 그때만 싣는다.
++    #[serde(rename = "diagonalWidth", skip_serializing_if = "is_zero_u8")]
++    diagonal_width: u8,
++    #[serde(rename = "diagonalColor", skip_serializing_if = "Option::is_none")]
++    diagonal_color: Option<String>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -654,6 +662,8 @@ fn build_border_fills(doc_info: &DocInfo) -> Vec<BorderFillDto> {
+                 }),
+                 attr: bf.attr,
+                 diagonal_type: bf.diagonal.diagonal_type,
++                diagonal_width: bf.diagonal.width,
++                diagonal_color: (bf.diagonal.diagonal_type != 0).then(|| color_hex(bf.diagonal.color)),
+             }
+         })
+         .collect()
+-- 
+2.50.1 (Apple Git-155)
+

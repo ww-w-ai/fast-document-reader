@@ -1,7 +1,7 @@
 From 3825afc25f81262e71e2ca4649731c7f3bf0538f Mon Sep 17 00:00:00 2001
 From: FastDocReader <taekim@ww-w.ai>
 Date: Tue, 18 Aug 2026 03:08:07 +0900
-Subject: [PATCH 29/34] Say whether a table repeats its heading, and where it
+Subject: [PATCH 29/35] Say whether a table repeats its heading, and where it
  may break
 
 headerRows already told a host WHICH rows are the heading, which is a

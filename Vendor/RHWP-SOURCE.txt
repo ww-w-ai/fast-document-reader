@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 84f98c22ec15e10ed5fec7d1eecc3c549e665f43
+rhwp commit   : 98843f151ec4178e936b1dffa5eacff05efd58bf
 rhwp branch   : HEAD
-rhwp subject  : feat(export): wire 21 new state-C branches into the structured JSON exporter
+rhwp subject  : Say how thick a cell diagonal is, not just that one was declared
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 59110384
-library sha256: 2562cf7d5aeded8717ecc38921d7dac403f59727ebf6db448deaa5dfd969f7b7
+library bytes : 59179376
+library sha256: 71205ed728b9a5927b351e968d59abdd61cd24f7f04d0fb186191dd2045558ff
