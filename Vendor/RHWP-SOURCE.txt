@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 2ce36c0af1eaff5496678f80a18bdaff9414361d
+rhwp commit   : ed512f86b1f2a5d079e3218cde98989de6a61399
 rhwp branch   : HEAD
-rhwp subject  : Answer the diagonal question once, where the parser already knew it
+rhwp subject  : Say how big a picture's original is, so a crop can be read
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 59105808
-library sha256: 06d66e634ec5c97be51c8d2ca1ced04f08716e7293e2d483c13a93ba40bbb976
+library bytes : 59163840
+library sha256: 9e13af4f39b86f27a7bd758f66f7082e683816bfb009df652b3452cd75f3a28d

@@ -1,7 +1,7 @@
 From 43f1b0cd24c8b31b7231ef1bb1be7a12b3fc8352 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 10:24:44 +0900
-Subject: [PATCH 17/38] Say where an anchored object's offset is measured from
+Subject: [PATCH 17/39] Say where an anchored object's offset is measured from
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

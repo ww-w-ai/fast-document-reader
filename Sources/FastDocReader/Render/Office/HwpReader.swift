@@ -111,11 +111,20 @@ enum HwpReader {
         func walk(_ block: OfficeBlock) {
             switch block {
             case .image(let id, _, _):
-                guard out[id] == nil, id.hasPrefix(hwpImagePrefix),
-                      let binDataId = UInt16(id.dropFirst(hwpImagePrefix.count)),
+                guard out[id] == nil, id.hasPrefix(hwpImagePrefix) else { return }
+                // The id may carry the crop this occurrence applies (`hwpimg:5!crop=x,y,w,h`), so
+                // the same original shown twice at different crops keeps two entries.
+                let body = id.dropFirst(hwpImagePrefix.count)
+                let parts = body.components(separatedBy: hwpCropSeparator)
+                guard let binDataId = UInt16(parts[0]),
                       let b64 = imageBase64(handle, binDataId: binDataId),
                       let data = Data(base64Encoded: b64) else { return }
-                out[id] = data
+                if parts.count > 1, let box = cropBox(parts[1]),
+                   let cropped = croppedImageData(data, fraction: box) {
+                    out[id] = cropped
+                } else {
+                    out[id] = data
+                }
             case .table(let rows, _, _, _):
                 for row in rows { for cell in row { for b in cell.blocks { walk(b) } } }
             default:
@@ -130,6 +139,66 @@ enum HwpReader {
     /// (`mapBlock`) and the reader (`collectImages`, and `reconcileMedia`'s map lookup) can never
     /// drift on the string.
     static let hwpImagePrefix = "hwpimg:"
+    /// Separates a picture's binData id from the crop applied to it. A cropped picture gets its own
+    /// key so the SAME original shown twice, cropped differently, cannot collide — which is the
+    /// whole reason the crop lives in the id rather than beside it.
+    static let hwpCropSeparator = "!crop="
+
+    /// The id suffix for a picture that actually crops, empty for one that does not.
+    ///
+    /// A crop rectangle covering the whole original is NOT a crop — most documents write one
+    /// (the 편람 declares 101 and cuts nothing with 28 of them). Reading those as crops would
+    /// re-encode every picture in the corpus for no visible change.
+    private static func cropSuffix(_ im: HwpImage) -> String {
+        guard let box = realCrop(im) else { return "" }
+        return "\(hwpCropSeparator)\(box.minX),\(box.minY),\(box.width),\(box.height)"
+    }
+
+    /// The crop as FRACTIONS of the original (0…1), or nil when the picture is not cropped. Kept as
+    /// fractions because the reader never learns the original's pixel dimensions until the bytes are
+    /// decoded, and HWPUNIT-to-pixel needs both.
+    static func realCrop(left: Int, top: Int, right: Int, bottom: Int,
+                         originalWidth: Int, originalHeight: Int) -> CGRect? {
+        guard originalWidth > 0, originalHeight > 0,
+              right > left, bottom > top,
+              left > 0 || top > 0 || right < originalWidth || bottom < originalHeight
+        else { return nil }
+        let w = CGFloat(originalWidth), h = CGFloat(originalHeight)
+        return CGRect(x: CGFloat(left) / w, y: CGFloat(top) / h,
+                      width: CGFloat(right - left) / w, height: CGFloat(bottom - top) / h)
+    }
+
+    /// `x,y,w,h` as fractions, back from an image id. Malformed = no crop, so a future id shape
+    /// cannot make this reader cut a picture by accident.
+    private static func cropBox(_ text: String) -> CGRect? {
+        let n = text.components(separatedBy: ",").compactMap(Double.init)
+        guard n.count == 4, n[2] > 0, n[3] > 0 else { return nil }
+        return CGRect(x: n[0], y: n[1], width: n[2], height: n[3])
+    }
+
+    /// The picture's bytes, cut down to the fraction of itself the document shows.
+    ///
+    /// Re-encoded as PNG rather than clipped at draw time because everything downstream — the
+    /// reserved size (invariant 1), the media cache, `--extract`, the Quick Look preview — takes a
+    /// picture as BYTES. Cutting here means every one of them sees the same picture the reader
+    /// draws, with no second crop model to keep in step.
+    static func croppedImageData(_ data: Data, fraction: CGRect) -> Data? {
+        guard let source = NSBitmapImageRep(data: data) else { return nil }
+        let w = CGFloat(source.pixelsWide), h = CGFloat(source.pixelsHigh)
+        let rect = NSRect(x: (fraction.minX * w).rounded(.down), y: (fraction.minY * h).rounded(.down),
+                          width: max(1, (fraction.width * w).rounded()),
+                          height: max(1, (fraction.height * h).rounded()))
+        guard w > 0, h > 0, rect.maxX <= w, rect.maxY <= h,
+              let cgImage = source.cgImage,
+              let cut = cgImage.cropping(to: rect) else { return nil }
+        return NSBitmapImageRep(cgImage: cut).representation(using: .png, properties: [:])
+    }
+
+    private static func realCrop(_ im: HwpImage) -> CGRect? {
+        guard let c = im.crop, let ow = im.originalWidth, let oh = im.originalHeight else { return nil }
+        return realCrop(left: c.left, top: c.top, right: c.right, bottom: c.bottom,
+                        originalWidth: ow, originalHeight: oh)
+    }
 
     /// The id prefix for a DRAWING this reader rendered itself (`HwpShapeRenderer`) — distinct from
     /// `hwpImagePrefix` because these bytes are made here, not fetched from the file, so
@@ -1312,7 +1381,7 @@ enum HwpReader {
                     paragraphAnchor: placement.anchor))
                 return .paragraph(spans: [])
             }
-            return .image(id: "\(hwpImagePrefix)\(im.binDataId)", size: size,
+            return .image(id: "\(hwpImagePrefix)\(im.binDataId)\(cropSuffix(im))", size: size,
                           alignment: imageAlignment(im.align))
         case .shape(let sh):
             // An ANCHORED drawing is placed by the document's own rule — the offsets ALONE are not
@@ -2198,6 +2267,26 @@ private struct HwpImage: Decodable {
     /// this is what "follow the option the document stored" means for HWP — the format has five
     /// ways to state a width and forcing them all through the absolute one is a guess.
     var widthCriterion: String?
+    /// The rectangle of the ORIGINAL picture this object actually shows, in the original's own
+    /// HWPUNIT coordinates. Absent for a parser predating the export → no crop, which is how every
+    /// HWP picture was drawn before this.
+    var crop: HwpCrop?
+    /// The original picture's size, the SAME coordinates `crop` is in. Without it a crop cannot be
+    /// read: most documents that do not crop still write a rectangle covering the whole original,
+    /// and the two are indistinguishable without this. Measured across 637 documents — 3,159 crops
+    /// are declared and 563 of them (138 documents) actually cut something.
+    var originalWidth: Int?
+    var originalHeight: Int?
+}
+
+/// A crop rectangle in the original picture's coordinates. `left`/`top` are inset from the
+/// original's own origin; `right`/`bottom` are the far edges, NOT insets — so an uncropped picture
+/// writes `(0, 0, originalWidth, originalHeight)`.
+private struct HwpCrop: Decodable {
+    var left: Int
+    var top: Int
+    var right: Int
+    var bottom: Int
 }
 
 private struct HwpUnsupported: Decodable {

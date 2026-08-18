@@ -694,6 +694,75 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertNil(try edges("{\"v\":1,\(table(1))}"))               // parser predating the export
     }
 
+    // MARK: picture crop — the part of a picture the document actually shows
+
+    /// A rectangle covering the WHOLE original is not a crop, however explicitly it is written.
+    /// Most documents write exactly that: 3,159 crops are declared across 637 documents and only
+    /// 563 of them cut anything. Reading the rest as crops would re-encode every picture in the
+    /// corpus for no visible change.
+    func testAWholeOriginalRectangleIsNotACrop() {
+        XCTAssertNil(HwpReader.realCrop(left: 0, top: 0, right: 4000, bottom: 3000,
+                                        originalWidth: 4000, originalHeight: 3000))
+    }
+
+    /// A real crop becomes FRACTIONS of the original, because the reader does not know the
+    /// picture's pixel dimensions until its bytes are decoded.
+    func testARealCropBecomesFractionsOfTheOriginal() throws {
+        let box = try XCTUnwrap(HwpReader.realCrop(left: 1000, top: 0, right: 3000, bottom: 1500,
+                                                   originalWidth: 4000, originalHeight: 3000))
+        XCTAssertEqual(box.minX, 0.25, accuracy: 0.0001)
+        XCTAssertEqual(box.minY, 0, accuracy: 0.0001)
+        XCTAssertEqual(box.width, 0.5, accuracy: 0.0001)
+        XCTAssertEqual(box.height, 0.5, accuracy: 0.0001)
+    }
+
+    /// Nonsense is not a crop: an inverted or empty rectangle, and a missing original size, all
+    /// leave the picture whole rather than cutting it to nothing.
+    func testAnUnusableCropIsIgnored() {
+        XCTAssertNil(HwpReader.realCrop(left: 3000, top: 0, right: 1000, bottom: 1500,
+                                        originalWidth: 4000, originalHeight: 3000))
+        XCTAssertNil(HwpReader.realCrop(left: 0, top: 0, right: 0, bottom: 0,
+                                        originalWidth: 4000, originalHeight: 3000))
+        XCTAssertNil(HwpReader.realCrop(left: 100, top: 0, right: 3000, bottom: 1500,
+                                        originalWidth: 0, originalHeight: 3000))
+    }
+
+    /// The crop travels in the picture's ID, so the same original shown twice at different crops
+    /// keeps two entries rather than colliding on one key.
+    func testACroppedPictureGetsItsOwnId() throws {
+        func id(_ crop: String) throws -> String? {
+            let json = """
+            {"v":1,"blocks":[{"t":"image","binDataId":5,"w":10000,"h":10000\(crop)}]}
+            """
+            guard case let .image(id, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+                XCTFail("expected image"); return nil
+            }
+            return id
+        }
+        let plain = try id("")
+        let sizes = #","originalWidth":4000,"originalHeight":3000"#
+        let whole = try id(#","crop":{"left":0,"top":0,"right":4000,"bottom":3000}"# + sizes)
+        let cut = try id(#","crop":{"left":1000,"top":0,"right":3000,"bottom":1500}"# + sizes)
+        XCTAssertEqual(plain, "hwpimg:5")
+        XCTAssertEqual(whole, "hwpimg:5", "a whole-original rectangle must not change the id")
+        XCTAssertEqual(cut, "hwpimg:5!crop=0.25,0.0,0.5,0.5")
+    }
+
+    /// The bytes really are cut — a 100x100 picture cropped to its bottom-right quarter decodes to
+    /// 50x50, which is what makes the reserved size and the cache agree with what is drawn.
+    func testCroppedBytesAreActuallySmaller() throws {
+        let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 100,
+                                   bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                   isPlanar: false, colorSpaceName: .deviceRGB,
+                                   bytesPerRow: 0, bitsPerPixel: 0)!
+        let png = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+        let cut = try XCTUnwrap(HwpReader.croppedImageData(
+            png, fraction: CGRect(x: 0.5, y: 0.5, width: 0.5, height: 0.5)))
+        let out = try XCTUnwrap(NSBitmapImageRep(data: cut))
+        XCTAssertEqual(out.pixelsWide, 50)
+        XCTAssertEqual(out.pixelsHigh, 50)
+    }
+
     // MARK: list geometry — the gap the document put between a marker and its text
 
     /// A numbered level takes its head's distance; a bullet level takes the bullet's. They are the

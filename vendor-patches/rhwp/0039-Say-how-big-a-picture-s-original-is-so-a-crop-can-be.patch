@@ -1,0 +1,52 @@
+From ed512f86b1f2a5d079e3218cde98989de6a61399 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 19:07:28 +0900
+Subject: [PATCH 39/39] Say how big a picture's original is, so a crop can be
+ read
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A crop rectangle is in the ORIGINAL picture's coordinates, and most documents
+that do not crop still write one covering the whole original — 101 of the
+편람's 101 crops are exactly that. Without the original's size a consumer
+cannot tell those apart from a real crop, so the fact travelled as noise.
+
+Measured with this field in place, across 637 documents: 3,159 declared
+crops, of which 563 in 138 documents actually cut something. Every one of
+them resolves — no picture carrying a crop lacks an original size.
+---
+ src/document_core/queries/document_json.rs | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index ec663601..675c550b 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -1796,6 +1796,14 @@ struct ImageBlock {
+     /// 0 이면 자르기 없음이라 생략.
+     #[serde(rename = "crop", skip_serializing_if = "Option::is_none")]
+     crop: Option<CropDto>,
++    /// 그림 원본의 크기(HWPUNIT). `crop` 과 **같은 좌표계**라, 이것 없이는 자르기 사각형이
++    /// 실제로 무엇을 잘라내는지 알 수 없다 — 대부분의 문서는 자르지 않으면서도 원본 전체를
++    /// 가리키는 사각형을 그대로 적어 두기 때문이다(참조 편람의 crop 101 건이 전부 그렇다).
++    /// 소비자는 `crop == (0, 0, originalWidth, originalHeight)` 를 "자르기 없음" 으로 읽는다.
++    #[serde(rename = "originalWidth", skip_serializing_if = "is_zero_i32")]
++    original_width: i32,
++    #[serde(rename = "originalHeight", skip_serializing_if = "is_zero_i32")]
++    original_height: i32,
+     /// HWPX `<hp:effects><hp:shadow>` 그림자 효과 — HWPX 만 갖는 raw XML 속성 그대로. HWP5 는
+     /// 이 개념이 없어 항상 없음.
+     #[serde(rename = "shadow", skip_serializing_if = "Option::is_none")]
+@@ -2972,6 +2980,8 @@ fn build_image_block(doc: &Document, pic: &crate::model::image::Picture,
+         prevent_page_break: placement.prevent_page_break,
+         description: placement.description.clone(),
+         crop: crop_dto(&pic.crop),
++        original_width: pic.shape_attr.original_width as i32,
++        original_height: pic.shape_attr.original_height as i32,
+         shadow: picture_shadow_dto(&pic.effects),
+         caption: pic.caption.as_ref().map(|c| caption_dto(doc, c)),
+     })
+-- 
+2.50.1 (Apple Git-155)
+
