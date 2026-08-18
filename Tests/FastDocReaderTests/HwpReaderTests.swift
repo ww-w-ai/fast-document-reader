@@ -40,6 +40,31 @@ final class HwpReaderTests: XCTestCase {
         print("FMD_HWP_SAMPLE defaultBodyFontSize = \(result.defaultBodyFontSize)")
     }
 
+    // End-to-end running-head distances (S5a), gated on a sample path. The synthetic mapping tests
+    // prove the decode; only a real file proves the chain reaches production — a `sections` array
+    // that never arrives, or a body section whose page block is absent, leaves both nil while every
+    // synthetic test still passes. Prints the measured pair so a corpus can be surveyed with it.
+    func testRealSampleSurfacesTheRunningHeadDistances() throws {
+        guard let path = ProcessInfo.processInfo.environment["FMD_HWP_SAMPLE"] else {
+            throw XCTSkip("Set FMD_HWP_SAMPLE to a .hwp/.hwpx path to run this")
+        }
+        let result = try HwpReader.read(Data(contentsOf: URL(fileURLWithPath: path)))
+        print("FMD_HWP_SAMPLE headerDistance=\(String(describing: result.pageHeaderDistance))"
+              + " footerDistance=\(String(describing: result.pageFooterDistance))"
+              + " marginTop=\(String(describing: result.pageMarginTop))"
+              + " marginBottom=\(String(describing: result.pageMarginBottom))")
+        // Whatever the document declared, a surfaced distance must sit INSIDE its own margin —
+        // otherwise the running head would be placed among the body text.
+        if let h = result.pageHeaderDistance {
+            XCTAssertGreaterThan(h, 0)
+            if let top = result.pageMarginTop { XCTAssertLessThan(h, top) }
+        }
+        if let f = result.pageFooterDistance {
+            XCTAssertGreaterThan(f, 0)
+            if let bottom = result.pageMarginBottom { XCTAssertLessThan(f, bottom) }
+        }
+    }
+
     // End-to-end page-content-width, gated on a sample path. Proves the WHOLE chain: real bytes →
     // rhwp FFI → PageAreas.body_area ÷100 → envelope `pageContentWidth` → `result.pageContentWidth`.
     // A real A4 document surfaces a positive width near the A4 body (~476pt at 30mm margins); the

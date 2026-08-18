@@ -348,6 +348,25 @@ enum HwpReader {
         if let r = envelope.pageMarginRight, r > 0 { result.pageMarginRight = CGFloat(r) }
         if let t = envelope.pageMarginTop, t > 0 { result.pageMarginTop = CGFloat(t) }
         if let b = envelope.pageMarginBottom, b > 0 { result.pageMarginBottom = CGFloat(b) }
+        // Invariant 58's open half — "ODT and HWP state neither distance yet". HWP does state both,
+        // and the machinery to use them already exists on both sides: `DocxReader` writes these two
+        // fields and `PageBandPainter.headerTop`/`.footerTop` read them to place the running head
+        // INSIDE the band. The band's own height is unaffected — `PageBandGeometry.measure`, which
+        // feeds the page pitch and therefore the page COUNT, never reads either distance, and the
+        // painter clamps both into the gap it already reserved.
+        //
+        // Read from the section the envelope's own `pageMargin*` came from: `body_section_index` and
+        // `page_geometry_pt` select by the identical key (most paragraphs, earliest on a tie), so a
+        // distance taken here cannot describe a different sheet than the margins beside it.
+        let geometrySection = envelope.bodySection
+            .flatMap { index in (envelope.sections ?? []).indices.contains(index) ? envelope.sections?[index] : nil }
+            ?? envelope.sections?.first
+        if let page = geometrySection?.page {
+            // A distance at or past the body's own start would put the running head inside the body
+            // text, which no document means — the same rejection `DocxReader` makes for `w:header`.
+            if let h = page.marginHeader, h > 0, h < page.marginTop { result.pageHeaderDistance = h }
+            if let f = page.marginFooter, f > 0, f < page.marginBottom { result.pageFooterDistance = f }
+        }
         // header-footer-design.md step 2/3 — read ONLY, nothing renders these yet. `nil` (a parser
         // built before this field existed) behaves exactly like `[]`: no running header/footer
         // captured, same as every other reader that finds none.
@@ -1764,6 +1783,13 @@ private struct HwpSectionPage: Decodable {
     var marginRight: CGFloat
     var marginTop: CGFloat
     var marginBottom: CGFloat
+    /// Where the running head STARTS, measured from the paper's own edge — the document's raw
+    /// `PageDef` declaration rather than the resolved body area the four `margin*` above carry.
+    /// `marginTop` already includes this (body top = marginHeader + the top margin proper), so the
+    /// two are not interchangeable: this is the only value that says where inside the band the
+    /// header sits. Absent against a parser built before the declaration was exported.
+    var marginHeader: CGFloat?
+    var marginFooter: CGFloat?
 }
 
 private struct HwpTabStop: Decodable {

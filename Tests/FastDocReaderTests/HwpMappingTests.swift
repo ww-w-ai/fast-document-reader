@@ -166,6 +166,71 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertTrue(sections[1].isVertical, "recorded even though this reader sets text horizontally")
     }
 
+    // MARK: where the running head sits inside its band (S5a — invariant 58's open half)
+
+    /// The paper block a section declares, with the two distances S5a reads. The four resolved
+    /// margins are required by the DTO, so every case states them even when it is asserting on the
+    /// distances alone.
+    private func sectionPage(top: Double, bottom: Double,
+                             header: String = "", footer: String = "") -> String {
+        """
+        {"page":{"contentWidth":400,"contentHeight":600,"marginLeft":50,"marginRight":50,\
+        "marginTop":\(top),"marginBottom":\(bottom)\(header)\(footer)}}
+        """
+    }
+
+    func testTheHeaderAndFooterDistancesArriveFromTheDocument() throws {
+        // rhwp emits both already in points, from the section's raw PageDef rather than the
+        // resolved body area — so a header distance is SMALLER than the body's own start.
+        let json = "{\"v\":1,\"sections\":[\(sectionPage(top: 80, bottom: 70, header: ",\"marginHeader\":30", footer: ",\"marginFooter\":25"))],\"blocks\":[]}"
+        let r = try HwpReader.mapJSON(json)
+        XCTAssertEqual(r.pageHeaderDistance, 30)
+        XCTAssertEqual(r.pageFooterDistance, 25)
+    }
+
+    func testTheDistancesComeFromTheSectionTheMarginsCameFrom() throws {
+        // `bodySection` names the section rhwp measured the envelope's own page margins on
+        // (most paragraphs, earliest on a tie). Taking a distance from any OTHER section would
+        // describe a different sheet than the margins beside it.
+        let json = """
+        {"v":1,"bodySection":1,"sections":[
+          \(sectionPage(top: 80, bottom: 70, header: ",\"marginHeader\":10", footer: ",\"marginFooter\":11")),
+          \(sectionPage(top: 80, bottom: 70, header: ",\"marginHeader\":40", footer: ",\"marginFooter\":35"))
+        ],"blocks":[]}
+        """
+        let r = try HwpReader.mapJSON(json)
+        XCTAssertEqual(r.pageHeaderDistance, 40, "the body section's distance, not the first section's")
+        XCTAssertEqual(r.pageFooterDistance, 35)
+    }
+
+    func testADistancePastTheBodysOwnStartIsRejected() throws {
+        // Such a value would place the running head inside the body text, which no document means.
+        // `DocxReader` makes the identical rejection for `w:header`/`w:footer`.
+        let json = "{\"v\":1,\"sections\":[\(sectionPage(top: 80, bottom: 70, header: ",\"marginHeader\":80", footer: ",\"marginFooter\":90"))],\"blocks\":[]}"
+        let r = try HwpReader.mapJSON(json)
+        XCTAssertNil(r.pageHeaderDistance, "a distance at the body's own start is not a band position")
+        XCTAssertNil(r.pageFooterDistance)
+    }
+
+    func testDistancesAbsentOrNonPositiveStayNil() throws {
+        // A parser built before the declaration was exported leaves both absent — the reader keeps
+        // the halves-of-the-gap fallback it used before, unchanged.
+        let absent = try HwpReader.mapJSON("{\"v\":1,\"sections\":[\(sectionPage(top: 80, bottom: 70))],\"blocks\":[]}")
+        XCTAssertNil(absent.pageHeaderDistance)
+        XCTAssertNil(absent.pageFooterDistance)
+        let zero = try HwpReader.mapJSON("{\"v\":1,\"sections\":[\(sectionPage(top: 80, bottom: 70, header: ",\"marginHeader\":0", footer: ",\"marginFooter\":0"))],\"blocks\":[]}")
+        XCTAssertNil(zero.pageHeaderDistance, "0 means the document pinned the head to the paper edge, which the painter's own default already does")
+        XCTAssertNil(zero.pageFooterDistance)
+    }
+
+    func testASectionlessDocumentStillHasNoDistances() throws {
+        // The whole path is guarded by a section existing at all — an envelope with none must not
+        // reach for `first` and crash.
+        let r = try HwpReader.mapJSON("{\"v\":1,\"blocks\":[]}")
+        XCTAssertNil(r.pageHeaderDistance)
+        XCTAssertNil(r.pageFooterDistance)
+    }
+
     // MARK: page content height + all four margins — HWP wired NONE of these before this change
 
     func testPageGeometryDecodedFromEnvelope() throws {
