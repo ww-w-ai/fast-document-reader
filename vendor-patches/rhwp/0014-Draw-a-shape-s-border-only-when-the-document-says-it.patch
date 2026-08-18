@@ -1,7 +1,7 @@
 From e985f537b37483bd7e64507dd9d0ce34800c2c57 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 01:53:58 +0900
-Subject: [PATCH 14/40] Draw a shape's border only when the document says it
+Subject: [PATCH 14/41] Draw a shape's border only when the document says it
  has one
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

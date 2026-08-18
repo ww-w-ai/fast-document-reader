@@ -101,6 +101,79 @@ final class FootnotePlacementTests: XCTestCase {
         XCTAssertEqual(found, [1], "exactly one marker carries a reference, and it is the footnote's")
     }
 
+    /// The SAME question as the test above, asked one layer lower — from the JSON the exporter
+    /// actually sends, through the decoder, to the built text.
+    ///
+    /// The test above builds its `Span` by hand and so proves only that the builder honours a tag
+    /// it is handed. That is exactly the half that was never broken. `HwpSpan` declares an explicit
+    /// `CodingKeys`, `noteRef`/`noteRefKind` were not in it, and Swift's synthesised decoder skips
+    /// an unlisted property in silence — so every marker in every document decoded to `nil`, the
+    /// reader found no page to place a note on, and the notes (already lifted out of the body flow
+    /// by the exporter) were drawn nowhere at all. Nothing failed; the feature was simply absent.
+    func testAMarkerTagSurvivesTheDecoder() throws {
+        let json = """
+        {"v":1,"blocks":[{"t":"para","spans":[\
+        {"text":"body "},\
+        {"text":"1","super":true,"noteRef":1,"noteRefKind":"footnote"},\
+        {"text":"2","super":true,"noteRef":2,"noteRefKind":"endnote"}]}]}
+        """
+        let blocks = try HwpReader.mapJSON(json).blocks
+        guard case let .paragraph(spans, _, _, _, _)? = blocks.first else {
+            return XCTFail("expected one paragraph, got \(blocks)")
+        }
+        XCTAssertEqual(spans.compactMap(\.footnoteRef), [1],
+                       "the footnote marker keeps its number; the endnote marker stays bare")
+    }
+
+    /// A marker inside a TABLE CELL is tagged too — which is not a detail: on the corpus document
+    /// this was first measured against, all five markers sat in cells, so a cell path that dropped
+    /// the tag would look exactly like no footnotes at all.
+    func testAMarkerInsideACellIsTaggedToo() throws {
+        let json = """
+        {"v":1,"blocks":[{"t":"table","colWidths":[100],"rows":[[\
+        {"colSpan":1,"rowSpan":1,"blocks":[{"t":"para","spans":[\
+        {"text":"7","super":true,"noteRef":7,"noteRefKind":"footnote"}]}]}]]}]}
+        """
+        var found: [Int] = []
+        func walk(_ blocks: [OfficeBlock]) {
+            for b in blocks {
+                switch b {
+                case let .paragraph(spans, _, _, _, _): found += spans.compactMap(\.footnoteRef)
+                case let .table(rows, _, _, _):
+                    for row in rows { for cell in row { walk(cell.blocks) } }
+                default: break
+                }
+            }
+        }
+        walk(try HwpReader.mapJSON(json).blocks)
+        XCTAssertEqual(found, [7])
+    }
+
+    // MARK: the gate that decides whether a note is placed at all
+
+    /// A document with notes and NO running head still paginates for them.
+    ///
+    /// `isActive` asks "is there anything to reserve", and a note band is the one reservation that
+    /// is derived from the layout rather than known before it — so gating the note path on
+    /// `isActive` is circular and settles on "no". Measured: 17 of the 22 footnote-citing documents
+    /// in the 637-document corpus declare neither a head nor a foot, i.e. the gate excluded 77% of
+    /// exactly the documents the feature exists for.
+    func testADocumentWithNotesButNoRunningHeadStillPaginates() {
+        let d = PageBandLayoutDelegate(pageContentHeight: 500, band: 0)
+        XCTAssertTrue(d.paginates, "it has sheets")
+        XCTAssertFalse(d.isActive, "and nothing yet to reserve on them")
+        d.noteBands = [0: 60]
+        XCTAssertTrue(d.isActive, "the notes' own reservation is what activates the shift")
+        XCTAssertEqual(d.textBottom(ofPage: 0), 440, accuracy: 0.001)
+    }
+
+    /// And a document with neither is untouched — `paginates` must not become "always".
+    func testADocumentWithNoSheetsNeitherPaginatesNorActivates() {
+        let d = PageBandLayoutDelegate(pageContentHeight: 0, band: 0)
+        XCTAssertFalse(d.paginates)
+        XCTAssertFalse(d.isActive)
+    }
+
     // MARK: the separator the document declared
 
     /// A section that said nothing gets the reader's own minimum — and a document with no notes is

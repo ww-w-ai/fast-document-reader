@@ -2135,6 +2135,13 @@ private struct HwpSpan: Decodable {
     private enum CodingKeys: String, CodingKey {
         case text, bold, italic, underline, strike, color, size, font, link, bookmark, csId
         case pageNumberField, pageHide, newNumber
+        // Listed EXPLICITLY, like every other key here. An explicit `CodingKeys` makes the
+        // synthesised decoder ignore any property it does not name — silently, with no error and
+        // no warning — so a marker tag that the exporter really does send arrived `nil` on every
+        // run and the footnote path found nothing to place. Same failure shape as a stale binary
+        // (invariant 45): the field is in the model, the value is on the wire, and the reader
+        // never sees it. Anything added above must be added here too.
+        case noteRef, noteRefKind
         case superscript = "super"
         case subscripted = "sub"
     }

@@ -336,6 +336,21 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// always set TOGETHER, from the same `configurePageBand` call.
     private(set) var pageBandContent: PageBandContent?
 
+    /// The page-wide material a footnote needs to be drawn — the four numbers `pageBandContent`
+    /// happens to carry that are not a running head's at all.
+    ///
+    /// Separate from `pageBandContent` deliberately. That one is `nil` exactly when `band == 0`, and
+    /// `masterPageContent` READS that nil as "this document has no running head" (see its own doc),
+    /// so widening it to cover footnotes would silently change what a 바탕쪽 paints. A footnote is
+    /// drawn on a sheet, not in a band, and needs only the sheet's own measurements.
+    struct FootnotePaintContext {
+        let theme: RenderTheme
+        let columnWidth: CGFloat
+        let documentDefaultFontSize: CGFloat
+        let pageContentWidth: CGFloat?
+    }
+    private(set) var footnotePaintContext: FootnotePaintContext?
+
     /// Wires `pageBandDelegate`'s two numbers AND `pageBandContent` for whatever this document just
     /// became — called from `MarkdownDocument.render(into:)`, before `display(_:)` below replaces the
     /// storage, so the layout manager's delegate reflects THIS render's own numbers before a single
@@ -433,6 +448,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // overrun changes with it. `settlePagedTables` rebuilds it from the new layout.
         pageBandDelegate.resetMeasuredPieces()
         pagedTableSettles = 0
+        footnotePaintContext = pageBandDelegate.paginates
+            ? FootnotePaintContext(theme: theme, columnWidth: columnWidth,
+                                   documentDefaultFontSize: documentDefaultFontSize,
+                                   pageContentWidth: pageContentWidth)
+            : nil
         pageBandContent = band > 0
             ? PageBandContent(headers: headers, footers: footers,
                               sectionsHidingHeader: Set((mdDocument?.officeSections ?? []).enumerated()
@@ -541,7 +561,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         if let cached = cachedFootnotePages { return cached }
         var out: [Int: [Int]] = [:]
         if let storage = textView.textStorage, storage.length > 0,
-           let lm = textView.layoutManager, pageBandDelegate.isActive {
+           let lm = textView.layoutManager, pageBandDelegate.paginates {
             let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
                                              band: pageBandDelegate.band)
             if pitch > 0 {
@@ -2076,11 +2096,21 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// printing, which must not put a table row in a margin just because the asynchronous settle had
     /// not finished yet. Bounded for the same reason the asynchronous one is (see `pagedTableSettles`).
     func settlePagedTablesFully() {
-        guard pageBandDelegate.isActive, let lm = textView.layoutManager,
+        // `paginates`, not `isActive`: a footnote's own reservation is what turns `isActive` on, so
+        // asking for it here settles on "no work to do" for exactly the documents that need this
+        // most — every footnote-citing document with no running head. Same reason `footnotePages`
+        // and `settleFootnoteBands` ask the weaker question.
+        guard pageBandDelegate.paginates, let lm = textView.layoutManager,
               let tc = textView.textContainer else { return }
         for _ in 0..<maxPagedTableSettles {
             lm.ensureLayout(for: tc)
-            if !settlePagedTables() { return }
+            // BOTH, in the same loop and in this order, matching the screen's own settle
+            // (`layoutStep`): a table that moves changes which page cites a note, and a note band
+            // that grows changes where a table overruns. Settling one to a fixpoint and then the
+            // other settles neither. `||` short-circuits, so the notes are asked only once the
+            // tables have stopped moving — the cheaper question is not asked while the answer is
+            // still changing underneath it.
+            if !(settlePagedTables() || settleFootnoteBands()) { return }
         }
         lm.ensureLayout(for: tc)
     }
@@ -2150,7 +2180,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// out again — either because the rule asked for another round, or because it has just fixed a
     /// reservation the current layout was not built against.
     func settleFootnoteBands() -> Bool {
-        guard !footnotes.isEmpty, pageBandDelegate.isActive, !footnoteBandsSettled else { return false }
+        guard !footnotes.isEmpty, pageBandDelegate.paginates, !footnoteBandsSettled else { return false }
         let proposed = proposedNoteBands()
         switch FootnoteBandSettle.step(proposed: proposed, history: footnoteBandHistory,
                                        cap: maxPagedTableSettles) {
@@ -2158,14 +2188,33 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             footnoteBandHistory.append(bands)
             pageBandDelegate.noteBands = bands
             cachedFootnotePages = nil
+            invalidateForNoteBands()
             return true
         case let .stop(bands, _):
             footnoteBandsSettled = true
             guard pageBandDelegate.noteBands != bands else { return false }
             pageBandDelegate.noteBands = bands
             cachedFootnotePages = nil
+            invalidateForNoteBands()
             return true
         }
+    }
+
+    /// Throw away the layout the new reservation invalidates — the same thing `settlePagedTables`
+    /// does for the same reason, and for a stronger one here.
+    ///
+    /// A note band is the ONLY reservation that does not exist when the first layout runs: it is
+    /// derived FROM that layout. `PageBandLayoutDelegate.isActive` is therefore false while the
+    /// first pass typesets a document whose only band is its notes, so not one line was shifted —
+    /// and `ensureLayout` will not redo work it considers valid. Without this the reservation is
+    /// perfectly correct, the painter draws into it, and the body is still sitting on top of the
+    /// notes: measured on a real 5-note document, whose PDF interleaved note text with body text
+    /// line by line.
+    private func invalidateForNoteBands() {
+        guard let lm = textView.layoutManager, let storage = textView.textStorage else { return }
+        pageBandDelegate.resetOpenedBoundaries()
+        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
+                            actualCharacterRange: nil)
     }
 
     /// Visible character range grown by `margin` screenfuls above and below — the region whose

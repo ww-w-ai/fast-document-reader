@@ -192,7 +192,18 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// with pageContentHeight (and at least one header or footer) paginates") checked against real
     /// numbers rather than against `DocumentWindowController.isPaged`, so this class stays testable
     /// and reusable on its own — a caller sets these two numbers and everything else follows.
-    var isActive: Bool { pageContentHeight > 0 && band > 0 }
+    var isActive: Bool { pageContentHeight > 0 && (band > 0 || !noteBands.isEmpty) }
+
+    /// Whether this document has SHEETS at all — the weaker half of the gate above, and the one the
+    /// footnote path must ask instead.
+    ///
+    /// `isActive` answers "is there anything to reserve", which cannot decide whether a footnote
+    /// gets placed: a note's reservation is what makes the answer yes, so gating the reservation on
+    /// it is circular and settles on "no". Measured on the 637-document corpus: 17 of the 22
+    /// footnote-citing documents declare neither a running head nor a foot, and every one of them
+    /// lost its notes entirely — the exporter lifts a note out of the body flow, and with the band
+    /// inert nothing drew it back (invariant 99's known limitation, now closed).
+    var paginates: Bool { pageContentHeight > 0 }
 
     /// How many line fragments this delegate has actually shifted, matching the shape of
     /// `DocumentWindowController.pageZoomChangeCount`/`layoutStepCount` — a test can assert

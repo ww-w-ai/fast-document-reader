@@ -1,0 +1,82 @@
+From 8e48d7d5ba33a0ec9c3922fc297921205b2155e5 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 21:17:54 +0900
+Subject: [PATCH 41/41] Count how many footnote-citing documents declare a
+ running head
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The reader gates its whole footnote path on the page band, and that band exists
+only for a header or footer — so this number decides whether the gate has to
+widen. It does: 17 of the 22 are neither.
+---
+ examples/scan_footnotes.rs | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/examples/scan_footnotes.rs b/examples/scan_footnotes.rs
+index 58ee8685..9a6b073f 100644
+--- a/examples/scan_footnotes.rs
++++ b/examples/scan_footnotes.rs
+@@ -41,6 +41,12 @@ struct Counts {
+     sep_line_type: BTreeMap<u8, usize>,
+     docs_with_inline_after_text: usize,
+     footnote_samples: Vec<(u64, String, usize)>,
++    /// Of the documents that cite a footnote, how many ALSO declare a running head or foot. The
++    /// reader gates its whole footnote path on the page band being active, and that band exists
++    /// only for a header/footer — so a footnote-citing document with neither is one the reader
++    /// currently cannot place a note in at all. This number decides whether that gate has to widen.
++    fn_docs_with_head_or_foot: usize,
++    fn_docs_with_neither: usize,
+ }
+ 
+ fn walk_paragraphs(paras: &[Paragraph], c: &mut Counts, doc_fn: &mut usize, doc_en: &mut usize,
+@@ -88,6 +94,15 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
+     }
+ }
+ 
++/// Whether these paragraphs declare a running head or foot. Top level only — a header lives on the
++/// section's own paragraphs, never inside a table cell, so the recursion `walk_paragraphs` needs
++/// would only cost time here.
++fn declares_head_or_foot(paras: &[Paragraph]) -> bool {
++    paras.iter().any(|p| {
++        p.controls.iter().any(|c| matches!(c, Control::Header(_) | Control::Footer(_)))
++    })
++}
++
+ fn main() {
+     let root = std::env::args().nth(1).unwrap_or_else(|| "samples".to_string());
+     let mut files = Vec::new();
+@@ -102,7 +117,9 @@ fn main() {
+         let doc = core.document();
+         let (mut doc_fn, mut doc_en) = (0usize, 0usize);
+         let mut doc_inline = false;
++        let mut doc_head_or_foot = false;
+         for section in &doc.sections {
++            if declares_head_or_foot(&section.paragraphs) { doc_head_or_foot = true; }
+             walk_paragraphs(&section.paragraphs, &mut c, &mut doc_fn, &mut doc_en, false);
+             for (shape, _kind) in [(&section.section_def.footnote_shape, "footnote"),
+                                    (&section.section_def.endnote_shape, "endnote")] {
+@@ -129,6 +146,8 @@ fn main() {
+         }
+         if doc_fn > 0 {
+             c.docs_with_footnote += 1;
++            if doc_head_or_foot { c.fn_docs_with_head_or_foot += 1; }
++            else { c.fn_docs_with_neither += 1; }
+             // rhwp's OWN repo samples, not private material — the path is reportable here, and it is
+             // how a sprint picks its smoke document. Still no document TEXT, ever.
+             let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+@@ -144,6 +163,10 @@ fn main() {
+     println!("footnotes       : {}", c.footnotes);
+     println!("endnotes        : {}", c.endnotes);
+     println!("notes in cells  : {}   (S15 territory)", c.notes_in_cells);
++    println!("fn docs w/ head|foot : {}   (reader's band is active -> notes CAN be placed)",
++             c.fn_docs_with_head_or_foot);
++    println!("fn docs w/ neither   : {}   (band inert -> notes are placed nowhere today)",
++             c.fn_docs_with_neither);
+     println!("shapes declared : {}", c.shapes);
+     println!("inline-after-text: {} shapes / {} docs", c.inline_after_text,
+              c.docs_with_inline_after_text);
+-- 
+2.50.1 (Apple Git-155)
+
