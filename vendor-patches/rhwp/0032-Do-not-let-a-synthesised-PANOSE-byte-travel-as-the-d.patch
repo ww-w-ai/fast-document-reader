@@ -1,0 +1,195 @@
+From 609763f6e2ec8741bcdb8d072fc17a65e41290f8 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 13:26:16 +0900
+Subject: [PATCH 32/32] Do not let a synthesised PANOSE byte travel as the
+ document's own word
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+panose/defaultName now gate on source_format == FileFormat::Hwp (the CFB/OLE
+binary path) and are omitted entirely on every other path, instead of passing
+through whatever Font.type_info/default_name happens to hold.
+
+Why the gate has to be on FORMAT, not on emptiness: on HWP5, both fields are
+copied straight from file bytes (parser/doc_info.rs, no interpretation). On
+HWPX, neither is trustworthy as "the document's own PANOSE" — default_name
+never reads the file at all (rhwp's own hwp5_default_font_name lookup table),
+and type_info's byte 1 (serif style) is rhwp's synthesize_serif_type name
+guess, since HWPX's <hh:typeInfo> has no attribute for that byte. Byte 0
+(familyType) DOES come from a real XML attribute, but font_family_type_to_u8
+renumbers Hancom's FCAT_MYUNGJO/FCAT_GOTHIC/... strings 1-7 in declaration
+order, which is not standard PANOSE bFamilyType (0 Any/1 No Fit/2 Latin
+Text/3 Script/4 Decorative/5 Pictorial) - so even the "real" byte doesn't
+mean what a PANOSE-literate consumer would assume. A consumer that ranked
+this above its own morpheme-based inference, believing it was honouring the
+document, would in fact be laundering the parser's guess above rhwp's own
+guess-with-measurement (invariant 57).
+
+Whole-block omission loses nothing actionable: whether an HWPX document had
+no <hh:typeInfo> at all or one this exporter cannot trust, the intended
+downstream behaviour is identical - fall back to morpheme inference. Format
+is decided once per document (detect_format, magic bytes: CFB/OLE -> Hwp,
+ZIP -> Hwpx), not by extension, so an .hwpx-named file whose bytes are
+actually HWP5 binary correctly keeps its real PANOSE - verified against 5
+such fixtures under samples/issue1891, samples/task1768, samples/task2097.
+
+export_s2_font_table_fields updated: HWP5 sample still asserts real bytes:
+the 2025 행정업무운영 편람(최종) HWPX edition now asserts panose/defaultName
+are BOTH absent, not present-with-a-different-value.
+
+Verified with a recursive scan of every .hwpx under samples/ (254 files):
+zero leak panose or defaultName after this change.
+---
+ src/document_core/queries/document_json.rs | 83 +++++++++++++++-------
+ 1 file changed, 58 insertions(+), 25 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index f207a2d6..16932a2e 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -219,19 +219,28 @@ struct FontFaceDto {
+     embedded: bool,
+     #[serde(rename = "binDataId", skip_serializing_if = "Option::is_none")]
+     bin_data_id: Option<u16>,
+-    /// 같은 글꼴의 또 다른 이름(HWP5 FACE_NAME "기본 글꼴 이름"). `altName` 과 달리 대체가
+-    /// 아니라 **같은 글꼴**을 가리키는 두 번째 표기다. HWP5 는 파일이 적은 그대로이고, HWPX 는
+-    /// rhwp 자신의 고정 대응표(`hwp5_default_font_name`, `parser/hwpx/header.rs`)로 만든 값이라
+-    /// 문서가 말한 사실이 아니다 — 두 근원이 이름은 같아도 신뢰도는 다르다.
++    /// 같은 글꼴의 또 다른 이름(HWP5 FACE_NAME "기본 글꼴 이름") — **HWP5 문서에서만** 실린다.
++    /// `altName` 과 달리 대체가 아니라 같은 글꼴을 가리키는 두 번째 표기다. HWPX 는 이 필드를
++    /// 파일에서 읽지 않고 rhwp 자신의 고정 대응표(`hwp5_default_font_name`,
++    /// `parser/hwpx/header.rs`)로 채운다 — 문서가 말한 사실이 아니라 파서의 지식이므로, HWPX
++    /// 경로에서는 모델에 값이 있어도 내보내지 않는다(0 도 빈 문자열도 아니라 키 자체가 생략).
+     #[serde(rename = "defaultName", skip_serializing_if = "Option::is_none")]
+     default_name: Option<String>,
+-    /// 글꼴 유형 정보 원본 10바이트(HWP5 FACE_NAME type info, PANOSE 형식) 그대로 — 0번 바이트가
+-    /// 계열(본문/필기/장식/기호), 1번이 세리프 유무. HWP5 는 파일 바이트를 그대로 옮긴 값이고,
+-    /// HWPX 는 0번 바이트만 `<hh:typeInfo familyType>` 속성을 옮긴 것이며 **1번은 rhwp 자신이
+-    /// 글꼴 이름 형태소로 추정해 채운 값**이다(`synthesize_serif_type`, `parser/hwpx/header.rs`) —
+-    /// XML 에 그 속성 자체가 없다. `None` = 이 레코드 자체가 없음. `Some([0;10])` = 문서(혹은
+-    /// rhwp)가 10바이트를 다 0으로 적음(PANOSE "Any") — 실제 값이라 없음과 같지 않다. 해석은
+-    /// 여기서 하지 않는다.
++    /// 글꼴 유형 정보 원본 10바이트(HWP5 FACE_NAME type info, PANOSE 형식) — **HWP5 문서에서만**
++    /// 실린다. 파일 바이트를 그대로 옮긴 값이라 진짜 PANOSE다. HWPX 의 `<hh:typeInfo>` 는 같은
++    /// Rust 필드에 값을 채우지만 두 바이트 다 내보내지 않을 이유가 있다: 0번(`familyType`)은
++    /// XML 속성에서 읽긴 하지만, 한컴 고유 분류(`FCAT_MYUNGJO`/`FCAT_GOTHIC`/…)를
++    /// `font_family_type_to_u8` 가 1~7 로 순서대로 번호매김한 것뿐이라 표준 PANOSE 0번
++    /// (Any/No Fit/Latin Text/Script/Decorative/Pictorial)과 값의 의미 자체가 다른 축이고, 1번
++    /// (세리프 유무)은 XML 에 대응 속성이 아예 없어 rhwp 자신의 `synthesize_serif_type` 이름
++    /// 형태소 추정치다(`parser/hwpx/header.rs`) — 같은 원고를 HWP5/HWPX 두 판으로 내보내면 1번이
++    /// 11 대 0 으로 갈리는 것이 그 증거다. 문서가 말한 값과 파서가 지어낸 값을 구분 없이 실으면
++    /// 소비자가 "문서의 PANOSE"로 믿고 형태소 추정보다 우선시킬 위험이 있다(invariant 57) — 그
++    /// 위험을 파일 바이트가 아닌 경로 전체를 생략하는 것으로 없앤다. 다운스트림에서는 이 쪽이
++    /// 어차피 형태소 추정으로 폴백하므로("레코드 없음"과 "신뢰 못 할 경로"를 더 나누지 않아도)
++    /// 잃는 정보가 없다. `None` = 이 문서에서 신뢰할 수 있는 PANOSE 가 없음(레코드가 없거나,
++    /// 있어도 HWP5 가 아닌 경로에서 옴). `Some([0;10])` = 문서가 10바이트를 다 0 으로 적음
++    /// (PANOSE "Any") — 실제 값이라 없음과 같지 않다. 해석은 여기서 하지 않는다.
+     #[serde(rename = "panose", skip_serializing_if = "Option::is_none")]
+     panose: Option<[u8; 10]>,
+     /// HWPX `<hh:substFont>` 가 지정한 대체 글꼴 자신의 유형(0 알 수 없음 / 1 TTF / 2 HFT) — 위
+@@ -242,7 +251,12 @@ struct FontFaceDto {
+     subst_type: Option<u8>,
+ }
+ 
+-fn build_font_faces(doc_info: &DocInfo) -> Vec<Vec<FontFaceDto>> {
++/// `is_hwp5_source` gates `defaultName`/`panose`: both fields are read straight from the file ONLY
++/// on the HWP5 binary path (`parser/doc_info.rs`). On every other path the SAME `Font.default_name`/
++/// `Font.type_info` are filled by rhwp itself — a fixed name lookup and a name-morpheme guess,
++/// respectively, not anything the file states — so this exporter does not send them there. See the
++/// two fields' own doc comments on `FontFaceDto` for the measurement behind that call.
++fn build_font_faces(doc_info: &DocInfo, is_hwp5_source: bool) -> Vec<Vec<FontFaceDto>> {
+     doc_info
+         .font_faces
+         .iter()
+@@ -259,8 +273,12 @@ fn build_font_faces(doc_info: &DocInfo) -> Vec<Vec<FontFaceDto>> {
+                     font_type: f.alt_type,
+                     embedded: f.is_embedded,
+                     bin_data_id: f.resolved_bin_data_id,
+-                    default_name: f.default_name.clone().filter(|s| !s.trim().is_empty()),
+-                    panose: f.type_info,
++                    default_name: if is_hwp5_source {
++                        f.default_name.clone().filter(|s| !s.trim().is_empty())
++                    } else {
++                        None
++                    },
++                    panose: if is_hwp5_source { f.type_info } else { None },
+                     subst_type: f.subst_font.as_ref().map(|s| s.font_type),
+                 })
+                 .collect()
+@@ -2387,7 +2405,10 @@ impl DocumentCore {
+             page_margin_top: geometry.as_ref().map(|g| g.margin_top),
+             page_margin_bottom: geometry.as_ref().map(|g| g.margin_bottom),
+             char_shapes: build_char_shapes(&self.document.doc_info),
+-            font_faces: build_font_faces(&self.document.doc_info),
++            font_faces: build_font_faces(
++                &self.document.doc_info,
++                matches!(self.source_format, crate::parser::FileFormat::Hwp),
++            ),
+             char_shape_decor: build_char_shape_decor(&self.document.doc_info),
+             border_fills: build_border_fills(&self.document.doc_info),
+             body_section: body_section_index(&self.document),
+@@ -2471,13 +2492,19 @@ mod tests {
+     }
+ 
+     /// s2 산출물: `Font.type_info`(panose) / `Font.default_name` / `SubstFont.font_type` 가 실
+-    /// 샘플에서 값으로 실린다는 증거. HWP5 는 세 값 모두(단 `substFont` 는 개념 자체가 없어 항상
+-    /// 없음) 파일 바이트 그대로이고, HWPX 는 panose 의 0번 바이트(familyType)만 XML 속성을 옮긴
+-    /// 값이며 1번(세리프 유무)은 rhwp 자신의 `synthesize_serif_type` 추정치다 — 같은 원고의
+-    /// HWP5/HWPX 두 판에서 실제로 갈리는 값(11 대 0)으로 그 차이를 직접 보여준다.
++    /// 샘플에서 값으로 실린다는 증거, 그리고 HWP5 전용 게이팅이 실제로 지켜진다는 증거.
++    ///
++    /// panose/defaultName 은 **HWP5 문서에서만** 나간다. HWPX 의 `<hh:typeInfo>`/`default_name`
++    /// 은 같은 Rust 필드를 채우지만 문서가 말한 값이 아니다: panose 1번(세리프 유무)은 XML 에
++    /// 대응 속성이 없어 rhwp 자신의 이름-형태소 추정치이고(`synthesize_serif_type`), 0번도 한컴
++    /// 고유 분류를 rhwp 가 임의로 1~7 번호매김한 것이라 표준 PANOSE 값이 아니다 — 같은 원고를
++    /// HWP5/HWPX 두 판으로 내보내면 1번이 11 대 0 으로 갈리는 것이 그 증거. defaultName 은 파일을
++    /// 아예 안 읽고 rhwp 의 고정 대응표에서 나온다. 둘 다 "문서가 말한 값"으로 오인되면
++    /// invariant 57 을 어기므로, 신뢰 못 할 경로에서는 키 자체를 생략한다(0 도 아니고 그
++    /// 추정값도 아님).
+     #[test]
+     fn export_s2_font_table_fields() {
+-        // HWP5: 파일이 직접 적은 panose 10바이트 + 기본 글꼴 이름.
++        // HWP5: 파일이 직접 적은 panose 10바이트 + 기본 글꼴 이름 — 그대로 실린다.
+         let j5 = export("samples/143E433F503322BD33.hwp");
+         assert!(
+             j5.contains("\"panose\":[2,11,6"),
+@@ -2493,8 +2520,8 @@ mod tests {
+             "HWP5 has no substFont concept — the key must be absent, not a default 0"
+         );
+ 
+-        // 같은 원고의 HWP5/HWPX 두 판: 각 판의 첫 panose 항목을 나란히 대조하면, HWPX 의 세리프
+-        // 바이트(1번)가 파일이 아니라 rhwp 자신의 이름-형태소 추정치라는 사실이 실측으로 드러난다.
++        // 같은 원고의 HWP5/HWPX 두 판: HWP5 는 싣고, HWPX 는 panose/defaultName 둘 다 생략해야
++        // rhwp 자신의 추정치가 "문서의 값"으로 둔갑하는 일이 없다.
+         let j5b = export("samples/2025 행정업무운영 편람(최종).hwp");
+         let jx = export("samples/2025 행정업무운영 편람(최종).hwpx");
+         assert!(
+@@ -2502,11 +2529,16 @@ mod tests {
+             "HWP5 edition should carry the file's own serif byte"
+         );
+         assert!(
+-            jx.contains("\"panose\":[2,0,"),
+-            "HWPX edition's serif byte is rhwp's own guess and can legitimately differ from HWP5's"
++            !jx.contains("\"panose\""),
++            "HWPX's typeInfo is not file-native PANOSE — the key must be absent, not a guessed value"
++        );
++        assert!(
++            !jx.contains("\"defaultName\""),
++            "HWPX's default_name comes from rhwp's own lookup table, not the file — must be absent"
+         );
+ 
+-        // HWPX 전용: substFont 자신의 유형은 부모 글꼴의 type 과 독립적으로 실린다.
++        // HWPX 전용: substFont 자신의 유형은 부모 글꼴의 type 과 독립적으로 실린다. 이 값은 XML
++        // 의 `type` 속성을 그대로 옮긴 것이라(합성이 아님) 게이팅 대상이 아니다.
+         assert!(
+             jx.contains("\"substType\":1"),
+             "expected the HWPX substFont's own TTF type, independent of the parent font's type"
+@@ -2695,3 +2727,4 @@ mod placement_tests {
+         assert_eq!(cover["vertAlign"], "center");
+     }
+ }
++
+-- 
+2.50.1 (Apple Git-155)
+

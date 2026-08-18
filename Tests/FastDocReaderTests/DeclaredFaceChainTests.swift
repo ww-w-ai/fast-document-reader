@@ -7,55 +7,39 @@ import XCTest
 /// order is by how DIRECTLY the document said it, and the app's own inference is asked LAST.
 final class DeclaredFaceChainTests: XCTestCase {
 
-    // MARK: - PANOSE: a kind the document STATED
+    // MARK: - The declared-kind block, and why it is not read
 
-    /// PANOSE byte 0 = family kind (2 = Latin Text), byte 1 = serif style (2-10 serif, 11-13 sans).
+    /// Ten bytes as a font table would carry them. Named `panose` because that is what it is on the
+    /// HWP5 path; on the HWPX path byte 0 is an `FCAT_*` enum instead, which is the whole problem.
     private func panose(kind: UInt8, serifStyle: UInt8) -> [UInt8] {
         [kind, serifStyle, 0, 0, 0, 0, 0, 0, 0, 0]
     }
 
-    /// The serif-style byte is deliberately NOT read, and this is the test that keeps it that way.
-    /// On an HWPX file that byte is rhwp's own `synthesize_serif_type` guess rather than anything the
-    /// XML states — rhwp's export test shows the same manuscript reporting 11 from its HWP5 form and 0
-    /// from its HWPX one — and nothing in the export says which path a value took. Reading it would
-    /// rank another tool's inference above our own measured rules while calling it the document's word.
-    func testTheSerifStyleByteIsNotTrustedBecauseOnOnePathItIsAGuess() {
-        XCTAssertNil(DeclaredFace(typeInfo: panose(kind: 2, serifStyle: 2)).declaredKind,
-                     "a Latin Text face states no KIND we can trust; the name rules answer instead")
-        XCTAssertNil(DeclaredFace(typeInfo: panose(kind: 2, serifStyle: 11)).declaredKind)
-    }
-
-    /// Byte 0 IS the document's on both paths, and it is the one that settles the residue the name
-    /// rules leave alone.
-    func testTheFamilyKindByteIsRead() {
-        XCTAssertEqual(DeclaredFace(typeInfo: panose(kind: 5, serifStyle: 0)).declaredKind, .symbol)
-        XCTAssertEqual(DeclaredFace(typeInfo: panose(kind: 3, serifStyle: 0)).declaredKind, .unclassified)
-    }
-
-    /// A hand-written or decorative face is a kind in its own right, and the honest answer for it is
-    /// the same one a display NAME gets: no text face substitutes for it. Reached here from the
-    /// document's own statement rather than from the spelling of its name.
-    func testAHandwrittenOrDecorativeDeclarationIsNotForcedIntoSerifOrSans() {
-        for kind: UInt8 in [3, 4] {
-            XCTAssertEqual(DeclaredFace(typeInfo: panose(kind: kind, serifStyle: 2)).declaredKind,
-                           .unclassified)
+    /// Ten bytes on a font-table entry, and this reader reads none of them. The reason is a finding,
+    /// not an omission: **byte 0 carries a different vocabulary depending on which format the file was
+    /// saved in, and nothing in the export says which.** HWP5 copies the file's own PANOSE bytes
+    /// (`parser/doc_info.rs:281`) where 3 = Hand Written and 5 = Symbol; HWPX writes an OWPML `FCAT_*`
+    /// enum into the same byte (`parser/hwpx/header.rs:474`) where 3 = FCAT_SSERIF (sans!) and
+    /// 5 = FCAT_DECORATIVE. Picking either reading is wrong for every file saved the other way.
+    ///
+    /// This test is what stops that from being quietly re-added: every value that means something
+    /// different under the two readings must produce NO claim.
+    func testTheDeclaredKindBlockIsNotReadWhileItsMeaningDependsOnTheFileFormat() {
+        for byte0: UInt8 in 0...7 {
+            XCTAssertNil(DeclaredFace(typeInfo: panose(kind: byte0, serifStyle: 2)).declaredKind,
+                         "byte 0 = \(byte0) means one thing in a HWP5 file and another in a HWPX one; "
+                         + "until the exporter says which, this reader must make no claim from it")
         }
-        XCTAssertNil(DeclaredFace(typeInfo: panose(kind: 5, serifStyle: 0)).declaredKind?.systemFamily,
-                     "a symbol face must be offered nothing")
+        XCTAssertNil(DeclaredFace(typeInfo: nil).declaredKind)
     }
 
-    /// "The document said nothing" and "the document said any" are different facts, and collapsing
-    /// them is how a measurement of how often documents fill this in becomes meaningless.
-    func testSayingNothingIsNotTheSameAsSayingAny() {
-        XCTAssertNil(DeclaredFace(typeInfo: nil).declaredKind, "absent")
-        XCTAssertNil(DeclaredFace(typeInfo: panose(kind: 0, serifStyle: 0)).declaredKind, "PANOSE any")
-        XCTAssertNil(DeclaredFace(typeInfo: panose(kind: 2, serifStyle: 1)).declaredKind, "no fit")
-        XCTAssertNotEqual(DeclaredFace(typeInfo: nil), DeclaredFace(typeInfo: panose(kind: 0, serifStyle: 0)))
-    }
-
-    func testATruncatedTypeInfoBlockIsNotGuessedAt() {
-        XCTAssertNil(DeclaredFace(typeInfo: [2]).declaredKind)
-        XCTAssertNil(DeclaredFace(typeInfo: []).declaredKind)
+    /// The value is still CARRIED, so a later sprint can consume it once the exporter normalises the
+    /// two vocabularies. Dropping it from the type would make that sprint re-do the export.
+    func testTheBlockIsStillCarriedEvenThoughItIsNotRead() {
+        let face = DeclaredFace(typeInfo: panose(kind: 1, serifStyle: 11))
+        XCTAssertEqual(face.typeInfo?.count, 10, "the bytes are kept for a sprint that can read them")
+        XCTAssertNotEqual(DeclaredFace(typeInfo: nil), face,
+                          "and 'said nothing' stays distinguishable from 'said something'")
     }
 
     // MARK: - The order, end to end through the real resolver
@@ -103,20 +87,19 @@ final class DeclaredFaceChainTests: XCTestCase {
                        "the name says sans; the document nominated a serif face and the document wins")
     }
 
-    /// A kind the document DECLARED beats the one its name implies — shown with the byte we DO trust.
-    /// A face the document calls decorative gets no text substitute even though its name says sans.
-    func testADeclaredKindBeatsWhatTheNameImplies() {
-        let faces = ["HY중고딕": DeclaredFace(typeInfo: panose(kind: 4, serifStyle: 0))]
-        let resolved = resolvedFont(paragraph(font: "HY중고딕"), faces: faces)
-        // The span still ends up with a face — the ordinary cascade runs as it always did. What must
-        // NOT happen is our map choosing it. The two are told apart by the leading dot: CoreText's
-        // cascade hands back a PRIVATE face (".AppleSDGothicNeoI-Regular"), while anything this map
-        // proposes is a public family ("AppleSDGothicNeo-Regular"). So the assertion is not "nothing
-        // happened" but "the map kept out of it", which is the actual claim.
-        XCTAssertNotNil(resolved)
-        XCTAssertTrue(resolved!.hasPrefix("."),
-                      "the name says sans and the document says decorative — the document wins, so the "
-                      + "map must propose nothing and leave the cascade to answer. Got \(resolved!)")
+    /// A declared-kind block must NOT change the outcome while it is unreadable. The name says sans,
+    /// the block says FCAT_BRUSHSCRIPT under one reading and Hand Written under the other — and the
+    /// answer has to be the same as if the block were absent, because this reader makes no claim from
+    /// it. Without this, a future change that starts reading the byte would pass silently.
+    func testAnUnreadableDeclaredKindBlockChangesNothing() {
+        let withBlock = resolvedFont(paragraph(font: "HY중고딕"),
+                                     faces: ["HY중고딕": DeclaredFace(typeInfo: panose(kind: 4, serifStyle: 0))])
+        let without = resolvedFont(paragraph(font: "HY중고딕"), faces: [:])
+        XCTAssertEqual(withBlock, without,
+                       "the block is carried, not consulted — it must not move the outcome")
+        XCTAssertNotNil(without)
+        XCTAssertTrue(without!.localizedCaseInsensitiveContains("Gothic"),
+                      "and the NAME still decides: 고딕 is sans. Got \(without!)")
     }
 
     /// A nomination this machine cannot resolve must not stop the chain — it falls through to the

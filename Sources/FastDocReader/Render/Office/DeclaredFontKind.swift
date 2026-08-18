@@ -148,37 +148,33 @@ struct DeclaredFace: Equatable {
     /// block of zeroes (PANOSE zero means "any", a real declaration).
     var typeInfo: [UInt8]?
 
-    /// The kind this face DECLARES, or `nil` when it declares none.
+    /// What kind the document's own font table states — **deliberately not read, and this is the
+    /// finding rather than an omission.**
     ///
-    /// **Only PANOSE byte 0 is read, and that narrowing is the point.** Byte 1 is the serif style —
-    /// exactly the question this reader would most like the document to answer, and the one byte we
-    /// cannot trust. On an HWP5 file both bytes are the file's own; on an HWPX file only byte 0 comes
-    /// from `<hh:typeInfo familyType>`, while **byte 1 is rhwp's own name-based guess**
-    /// (`synthesize_serif_type`), because the XML has no such attribute. rhwp's own export test shows
-    /// the split directly: the same manuscript saved both ways reports byte 1 as 11 from the HWP5 file
-    /// and 0 from the HWPX one.
+    /// The ten-byte block looked like the best evidence in this whole design: a kind the DOCUMENT
+    /// declared, outranking anything inferred from a family name. Tracing it into the parser showed
+    /// the opposite. **Byte 0 carries two different vocabularies depending on which format the file
+    /// was saved in, and nothing in the export says which:**
     ///
-    /// Consuming it would mean ranking another tool's inference ABOVE this reader's own morpheme
-    /// rules while believing we were honouring the document — the precise failure invariant 57 exists
-    /// to prevent. Nothing in the export says which path a value took, so the honest move is to read
-    /// only the byte that is the document's on BOTH, and let `classify` answer serif-versus-sans with
-    /// rules that are at least measured and openly ours.
+    /// - **HWP5** — genuine PANOSE, the file's own FACE_NAME bytes copied verbatim
+    ///   (`parser/doc_info.rs:281`). Family kind 2 = Latin Text, 3 = Hand Written, 5 = Symbol.
+    /// - **HWPX** — an OWPML `FCAT_*` enum written into the SAME byte
+    ///   (`parser/hwpx/header.rs:474`, `info[0] = font_family_type_to_u8`), where 1 = FCAT_MYUNGJO,
+    ///   2 = FCAT_GOTHIC, 3 = FCAT_SSERIF, 4 = FCAT_BRUSHSCRIPT, 5 = FCAT_DECORATIVE.
     ///
-    /// Byte 0 still earns its place: it settles the display and handwriting residue from the
-    /// document's own statement rather than from the spelling of a name.
-    var declaredKind: DeclaredFontKind? {
-        guard let familyKind = typeInfo?.first else { return nil }
-        // PANOSE family kind: 2 = Latin Text, 3 = Latin Hand Written, 4 = Latin Decorative,
-        // 5 = Latin Symbol. 0 ("any") and 1 ("no fit") state nothing.
-        switch familyKind {
-        case 5: return .symbol
-        // A hand-written or decorative face is a kind in its own right, and the honest answer for both
-        // is that no text face substitutes for one — the same answer the name-based rules give a
-        // display name, reached from the document's own statement instead of from its spelling.
-        case 3, 4: return .unclassified
-        // Latin Text, or nothing stated. Either way the byte that would say serif-or-sans is the one
-        // we do not trust, so `classify` answers from here.
-        default: return nil
-        }
-    }
+    /// The two disagree on almost every value that matters: `3` means hand-written under one reading
+    /// and SANS-SERIF under the other, `5` means symbol under one and DECORATIVE under the other, and
+    /// the two most useful HWPX values — 명조 and 고딕, stated outright — are not PANOSE family kinds
+    /// at all. A reader that picks one vocabulary is wrong for every file saved the other way.
+    ///
+    /// Byte 1 is worse: on HWPX it is rhwp's own `synthesize_serif_type` guess from the font NAME, and
+    /// no XML attribute backs it. The same manuscript saved both ways reports 11 from its HWP5 form
+    /// and 0 from its HWPX one.
+    ///
+    /// So this reader honours the declaration it can actually read — the family NAME, whose morphemes
+    /// are the document's own words and which `classify` covers for 97.5% of the font slots in a
+    /// 2,267-document corpus. The block stays CARRIED on this type so a later sprint can consume it
+    /// once the exporter normalises the two vocabularies into one field and says which it used;
+    /// reading it before then would be guessing while claiming to quote.
+    var declaredKind: DeclaredFontKind? { nil }
 }
