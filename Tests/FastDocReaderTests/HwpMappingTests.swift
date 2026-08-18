@@ -694,6 +694,29 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertNil(try edges("{\"v\":1,\(table(1))}"))               // parser predating the export
     }
 
+    // MARK: tab leaders — the dotted rule a table of contents is made of
+
+    /// A tab's fill arrives as HWP's own line-type code and becomes the reader's leader vocabulary.
+    /// 3,555 stops across 45 of 637 real documents declare one and every single one rendered as
+    /// blank space before this.
+    func testTabFillBecomesALeader() throws {
+        func leader(_ fill: String) throws -> TabLeader? {
+            let json = """
+            {"v":1,"blocks":[{"t":"para","spans":[{"text":"목차\\tp.1"}],
+              "tabStops":[{"posHwpUnit":20000,"kind":"right"\(fill)}]}]}
+            """
+            guard case let .paragraph(_, _, _, stops, _) = try HwpReader.mapJSON(json).blocks[0] else {
+                XCTFail("expected paragraph"); return nil
+            }
+            return stops.first?.leader
+        }
+        XCTAssertEqual(try leader(""), TabLeader.none)                 // absent = the ordinary tab
+        XCTAssertEqual(try leader(",\"fillType\":3"), .dot)            // 점선
+        XCTAssertEqual(try leader(",\"fillType\":2"), .hyphen)         // 파선
+        XCTAssertEqual(try leader(",\"fillType\":1"), .underscore)     // 실선
+        XCTAssertEqual(try leader(",\"fillType\":0"), TabLeader.none)  // 선 없음
+    }
+
     // MARK: cell diagonals — the rule a cell draws across ITSELF
 
     /// The three directions arrive as themselves. `cellDiagonal` is the parser's own resolved

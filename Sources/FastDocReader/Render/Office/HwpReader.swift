@@ -1152,7 +1152,8 @@ enum HwpReader {
                 case "decimal": alignment = .decimal
                 default: alignment = .left
                 }
-                return TabStop(position: position, alignment: alignment)
+                return TabStop(position: position, alignment: alignment,
+                               leader: tabLeader(stop.fillType))
             }
             let format = boxedFormat(base, para: p, shapes: shapes)
             // An EXPLICIT outline paragraph is a heading because the document said so — no second
@@ -1512,6 +1513,32 @@ enum HwpReader {
         let side = BorderSide(width: diagonalWidthPt(fill.diagonalWidth),
                               color: color(fill.diagonalColor), style: style)
         return CellDiagonal(direction: direction, side: side)
+    }
+
+    /// A tab's FILL — what a Korean document rules between a heading and its page number, which is
+    /// the dotted line every table of contents is made of. HWP states it in the SAME line-type enum
+    /// its cell edges and diagonals use (spec table 25), so this reads that vocabulary rather than
+    /// inventing a second one, and collapses it into the four leaders this reader can draw.
+    ///
+    /// Absent or `0` is the ordinary tab that fills with nothing.
+    ///
+    /// CARRIED, NOT YET REACHABLE — and measured, so nobody re-derives it. `markTabLeaders` marks
+    /// TAB CHARACTERS, and the exporter emits none: across all 637 corpus documents there are
+    /// 1,738,893 declared tab stops and 3,555 declared leaders, but **zero** U+0009 characters in
+    /// any span's text. The 편람 is the sharpest case — 3,553 stops, 327 of them dotted, and its
+    /// contents lines are ruled with U+2007 FIGURE SPACE by the author instead of tabs, so its PDF
+    /// is byte-identical with and without this mapping.
+    ///
+    /// So the tab axis's real first task is not this: it is making a tab ARRIVE as a character at
+    /// all (an exporter change), after which this mapping starts working with no further edit.
+    /// Until then every HWP tab stop — alignment as much as leader — is inert.
+    private static func tabLeader(_ fillType: Int?) -> TabLeader {
+        switch fillType ?? 0 {
+        case 0: return .none                        // 선 없음
+        case 2, 6: return .hyphen                   // 파선 · 긴 파선
+        case 3, 4, 5, 7: return .dot                // 점선 · 쇄선 · 원형 파선
+        default: return .underscore                 // 실선과 이중선·물결·3D 계열 — 이어진 선
+        }
     }
 
     /// HWP's 16-step border-width enum → points. The same ladder the parser applies to an EDGE's
@@ -1880,6 +1907,9 @@ private struct HwpSectionPage: Decodable {
 
 private struct HwpTabStop: Decodable {
     var posHwpUnit: Int
+    /// What the tab is FILLED with on its way to the stop — HWP's own line-type code, the same one
+    /// the four cell edges and a diagonal use. Absent = no fill, which is the ordinary tab.
+    var fillType: Int?
     var kind: String?
 }
 
