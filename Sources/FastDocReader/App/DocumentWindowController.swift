@@ -357,6 +357,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // This render replaces the storage, so where the section markers sit is about to change.
         cachedSectionStarts = nil
         cachedHiddenPageNumberPages = nil
+        cachedPageNumberRestarts = nil
         // Read from whatever text is installed RIGHT NOW, which is the right answer for the two
         // callers that reach here with the document already on screen — printing (which re-applies
         // the band and never calls `display(_:)` again) and a View-menu toggle.
@@ -430,6 +431,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                               documentDefaultFontSize: documentDefaultFontSize, pageContentWidth: pageContentWidth,
                               headerHeight: headerHeight, footerHeight: footerHeight,
                               leadingBand: leading, trailingBand: trailing,
+                              displayedPageNumber: { [weak self] in self?.displayedPageNumber($0) ?? $0 + 1 },
                               pageMarginTop: pagedMarginTop, pageMarginBottom: pagedMarginBottom,
                               headerDistance: pagedHeaderDistance, footerDistance: pagedFooterDistance)
             : nil
@@ -509,6 +511,54 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         cachedHiddenPageNumberPages = out
         return out
+    }
+
+    /// Where the document restarts its page counter, as PAGE index → the number that page shows.
+    /// Read from `MDAttr.pageNumberRestart` by the SAME arithmetic `hiddenPageNumberPages` uses, so
+    /// a restart and a veto can never disagree about which page a marker landed on.
+    private var cachedPageNumberRestarts: [Int: Int]?
+
+    var pageNumberRestarts: [Int: Int] {
+        if let cached = cachedPageNumberRestarts { return cached }
+        var out: [Int: Int] = [:]
+        if let storage = textView.textStorage, storage.length > 0,
+           let lm = textView.layoutManager, pageBandDelegate.isActive {
+            let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                             band: pageBandDelegate.band)
+            if pitch > 0 {
+                storage.enumerateAttribute(MDAttr.pageNumberRestart,
+                                           in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                    guard let first = (value as? NSNumber)?.intValue else { return }
+                    let glyph = lm.glyphIndexForCharacter(at: range.location)
+                    let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                    let page = PageBandLayoutDelegate.page(of: frag.minY,
+                                                           leadingBand: pageBandDelegate.leadingBand,
+                                                           pitch: pitch)
+                    // The FIRST restart on a page wins: two markers on one sheet would otherwise
+                    // depend on attribute-run order, which is not a document fact.
+                    if page >= 0, out[Int(page)] == nil { out[Int(page)] = first }
+                }
+            }
+        }
+        cachedPageNumberRestarts = out
+        return out
+    }
+
+    /// The number page `page` (0-based) actually SHOWS. Without a restart this is `page + 1`, which
+    /// is what every page showed before this existed. With one, it is that page's distance from the
+    /// most recent restart at or before it — so a 편람 whose body restarts at 1 numbers its front
+    /// matter separately instead of counting the cover as page 1.
+    func displayedPageNumber(_ page: Int) -> Int {
+        Self.displayedPageNumber(page, restarts: pageNumberRestarts)
+    }
+
+    /// The arithmetic alone, so it can be checked without a laid-out document. Pure by design: the
+    /// only hard part of a page-number restart is this sum, and it is the part a layout test cannot
+    /// see. A page BEFORE the first restart keeps its ordinary number — a document that renumbers
+    /// its body does not thereby renumber its front matter backwards.
+    static func displayedPageNumber(_ page: Int, restarts: [Int: Int]) -> Int {
+        guard let anchor = restarts.keys.filter({ $0 <= page }).max() else { return page + 1 }
+        return (restarts[anchor] ?? 1) + (page - anchor)
     }
 
     /// Every block the document keeps with what follows it, as character ranges — one per PARAGRAPH,

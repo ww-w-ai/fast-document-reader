@@ -34,6 +34,12 @@ struct PageBandContent {
     /// is the behaviour every existing test was written against and the right answer for a caller
     /// (or a test) that drives the painter without a layout pass.
     var openedBoundaries: Set<Int>?
+    /// The number a page SHOWS, which is `pageIndex + 1` unless the document restarted its counter
+    /// (HWP's NewNumber). A closure rather than a table because the restart is resolved from where a
+    /// marked character LANDS, which is only known after layout — the same reason
+    /// `MasterPagePainter.draw` takes its veto as one. The running head and the master page must
+    /// read the SAME answer, so both call into `DocumentWindowController.displayedPageNumber`.
+    var displayedPageNumber: (Int) -> Int = { $0 + 1 }
     /// WHERE each opened band is (`PageBandLayoutDelegate.openedBands`) — the position layout actually
     /// put the gap at, which is NOT `page × pitch + pageContentHeight` whenever a table overran its
     /// page. Consulted in preference to the arithmetic; absent for a page falls back to it.
@@ -396,7 +402,8 @@ enum PageBandPainter {
                                             documentDefaultFontSize: content.documentDefaultFontSize,
                                             pageContentWidth: content.pageContentWidth)
         guard built.length > 0 else { return }
-        let sub = substitutingPageFields(built, page: pageIndex + 1, totalPages: totalPages)
+        let sub = substitutingPageFields(built, page: content.displayedPageNumber(pageIndex),
+                                         totalPages: totalPages)
         let rect = NSRect(x: origin.x, y: top + origin.y, width: content.columnWidth, height: height)
         sub.draw(in: rect)
     }

@@ -291,6 +291,18 @@ enum HwpReader {
             guard case .para(let p) = block else { return nil }
             return p.spans.contains(where: { $0.pageHide?.hidePageNum == true }) ? index : nil
         }
+        // The author's own NewNumber('쪽 번호 새로 시작') — same span-level shape as PageHide, and
+        // read the same way. Only `numberType == "page"` is taken: a picture or table counter
+        // restart has no consumer here, because this reader never numbers a caption itself.
+        result.pageNumberRestartBlocks = envelope.blocks.enumerated().compactMap { index, block in
+            guard case .para(let p) = block else { return nil }
+            for span in p.spans {
+                if let restart = span.newNumber, restart.numberType == "page", let n = restart.number {
+                    return OfficePageNumberRestart(block: index, number: n)
+                }
+            }
+            return nil
+        }
         result.sections = (envelope.sections ?? []).map { section in
             OfficeSectionDeclaration(
                 pageBorder: section.pageBorder.map {
@@ -1964,12 +1976,24 @@ private struct HwpSpan: Decodable {
     /// bookmark or footnote-reference marker already arrives as.
     var pageHide: HwpPageHide?
 
+    /// `Control::NewNumber`('nwno') — "start numbering again from here". It can restart a picture,
+    /// table, footnote, endnote, equation or PAGE counter; only `page` is honoured, because those
+    /// are the only numbers this reader computes rather than replays from the document's own text.
+    var newNumber: HwpNewNumber?
+
     private enum CodingKeys: String, CodingKey {
         case text, bold, italic, underline, strike, color, size, font, link, bookmark, csId
-        case pageNumberField, pageHide
+        case pageNumberField, pageHide, newNumber
         case superscript = "super"
         case subscripted = "sub"
     }
+}
+
+/// `NewNumberDto` — which counter to restart, and at what. `numberType` is the parser's own name
+/// (`page`/`picture`/`table`/`footnote`/`endnote`/`equation`).
+private struct HwpNewNumber: Decodable {
+    var numberType: String?
+    var number: Int?
 }
 
 /// `PageHideDto` — only `hidePageNum` is read; see `OfficeReadResult.hidePageNumberBlocks` for why

@@ -694,6 +694,44 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertNil(try edges("{\"v\":1,\(table(1))}"))               // parser predating the export
     }
 
+    // MARK: NewNumber — "start the page numbering again here"
+
+    /// A page-counter restart is collected with the block that carries it. 103 of 637 corpus
+    /// documents declare one (260 in all), and the 편람 is the clearest case: its body restarts at 1
+    /// so the front matter is not counted as pages 1..n of the book.
+    func testPageNumberRestartIsCollected() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"para","spans":[{"text":"표지"}]},
+          {"t":"para","spans":[{"text":"","newNumber":{"numberType":"page","number":1}}]}]}
+        """
+        let result = try HwpReader.mapJSON(json)
+        XCTAssertEqual(result.pageNumberRestartBlocks,
+                       [OfficePageNumberRestart(block: 1, number: 1)])
+    }
+
+    /// Only the PAGE counter is honoured. A picture or table restart has no consumer — this reader
+    /// never numbers a caption itself — so taking it would mark a page that must not be renumbered.
+    func testOnlyThePageCounterRestartIsTaken() throws {
+        for kind in ["picture", "table", "footnote", "endnote", "equation"] {
+            let json = """
+            {"v":1,"blocks":[{"t":"para","spans":[
+              {"text":"","newNumber":{"numberType":"\(kind)","number":1}}]}]}
+            """
+            XCTAssertEqual(try HwpReader.mapJSON(json).pageNumberRestartBlocks, [],
+                           "\(kind) must not restart the page counter")
+        }
+    }
+
+    /// A restart with no number is not a restart — the reader must not invent 1, which would
+    /// renumber a page the document said nothing about.
+    func testARestartWithoutANumberIsIgnored() throws {
+        let json = """
+        {"v":1,"blocks":[{"t":"para","spans":[{"text":"","newNumber":{"numberType":"page"}}]}]}
+        """
+        XCTAssertEqual(try HwpReader.mapJSON(json).pageNumberRestartBlocks, [])
+    }
+
     // MARK: tab leaders — the dotted rule a table of contents is made of
 
     /// A tab's fill arrives as HWP's own line-type code and becomes the reader's leader vocabulary.
@@ -1740,5 +1778,32 @@ extension HwpMappingTests {
             return XCTFail("expected a paragraph")
         }
         XCTAssertEqual(spans, [Span(text: "Bold", bold: true, textColor: NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))])
+    }
+}
+
+/// The page-number restart arithmetic on its own — the part a layout test cannot see.
+final class PageNumberRestartArithmeticTests: XCTestCase {
+    func testNoRestartsKeepsOrdinaryNumbering() {
+        for page in 0..<5 {
+            XCTAssertEqual(DocumentWindowController.displayedPageNumber(page, restarts: [:]), page + 1)
+        }
+    }
+
+    /// The 편람's shape: front matter numbered normally, body restarting at 1 on page 4.
+    func testARestartCountsUpFromItsOwnPage() {
+        let restarts = [4: 1]
+        XCTAssertEqual(DocumentWindowController.displayedPageNumber(0, restarts: restarts), 1)
+        XCTAssertEqual(DocumentWindowController.displayedPageNumber(3, restarts: restarts), 4)
+        XCTAssertEqual(DocumentWindowController.displayedPageNumber(4, restarts: restarts), 1)
+        XCTAssertEqual(DocumentWindowController.displayedPageNumber(5, restarts: restarts), 2)
+        XCTAssertEqual(DocumentWindowController.displayedPageNumber(9, restarts: restarts), 6)
+    }
+
+    /// A second restart takes over from ITS page, and the one before it stops applying.
+    func testTheMostRecentRestartWins() {
+        let restarts = [2: 1, 6: 100]
+        XCTAssertEqual(DocumentWindowController.displayedPageNumber(5, restarts: restarts), 4)
+        XCTAssertEqual(DocumentWindowController.displayedPageNumber(6, restarts: restarts), 100)
+        XCTAssertEqual(DocumentWindowController.displayedPageNumber(8, restarts: restarts), 102)
     }
 }

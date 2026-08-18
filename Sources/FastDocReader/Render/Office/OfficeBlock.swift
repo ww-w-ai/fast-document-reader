@@ -321,6 +321,12 @@ struct Cell: Equatable {
     }
 }
 
+/// One "start the page numbering again here" instruction, resolved to the block that carries it.
+struct OfficePageNumberRestart: Equatable {
+    var block: Int
+    var number: Int
+}
+
 /// A cell's vertical alignment — docx `w:tcPr/w:vAlign/@w:val`. See `Cell.verticalAlignment`'s own
 /// doc comment for why this is a closed three-case vocabulary rather than AppKit's own
 /// `NSTextBlock.VerticalAlignment`.
@@ -1317,6 +1323,11 @@ struct OfficeReadResult: Equatable {
     /// place. Only the page-number bit is unique to this per-paragraph marker. Empty for a format
     /// or a parser that does not say.
     var hidePageNumberBlocks: [Int] = []
+    /// Where the document restarts its PAGE counter, as (block index, first number). HWP's
+    /// NewNumber; empty for every other format. A page's displayed number is its distance from the
+    /// most recent restart at or before it, which is arithmetic the reader has to do because it
+    /// computes the number rather than reading it out of the document's text.
+    var pageNumberRestartBlocks: [OfficePageNumberRestart] = []
 
     /// The section's LINE GRID pitch in points — Word's `w:sectPr/w:docGrid` with
     /// `@w:type="lines"`/`"linesAndChars"`, whose `@w:linePitch` is in twips.

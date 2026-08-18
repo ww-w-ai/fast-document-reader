@@ -161,6 +161,10 @@ enum MDAttr {
     /// arithmetic) is told to substitute its master page's `PAGE` field with an empty string rather
     /// than skip the whole master page — HWP suppresses the NUMBER, not the 바탕쪽's title/artwork.
     static let hidesPageNumber = NSAttributedString.Key("mdHidesPageNumber")
+    /// The page number this character's page starts counting from — HWP's NewNumber. Carried as an
+    /// `Int` (`NSNumber` on the wire, which is `Hashable`, invariant 67). Present only on the block
+    /// that declared the restart; every later page counts up from it.
+    static let pageNumberRestart = NSAttributedString.Key("mdPageNumberRestart")
 
     /// The anchored objects (an `[Int]` of indices into `OfficeReadResult.anchoredObjects`) that
     /// belong to THIS block — the marker that says which page a paper-pinned object is drawn on.

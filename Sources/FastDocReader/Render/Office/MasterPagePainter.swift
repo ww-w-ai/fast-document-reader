@@ -63,7 +63,8 @@ enum MasterPagePainter {
     /// every caller that has no such veto (docx/odt, and every HWP page that never declared one).
     static func draw(_ content: MasterPageContent, sheets: [CGRect], totalPages: Int,
                      visibleRect: NSRect, sectionOfPage: (Int) -> Int? = { _ in nil },
-                     hidesPageNumber: (Int) -> Bool = { _ in false }) {
+                     hidesPageNumber: (Int) -> Bool = { _ in false },
+                     displayedPageNumber: (Int) -> Int = { $0 + 1 }) {
         guard !content.pages.isEmpty, !sheets.isEmpty else { return }
         for (index, sheet) in sheets.enumerated() where sheet.intersects(visibleRect) {
             let section = sectionOfPage(index)
@@ -75,7 +76,8 @@ enum MasterPagePainter {
             for object in page.objects {
                 draw(object, onSheet: sheet, pageIndex: index, totalPages: totalPages,
                      content: content, visibleRect: visibleRect,
-                     pageNumberHidden: hidesPageNumber(index))
+                     pageNumberHidden: hidesPageNumber(index),
+                     shownPageNumber: displayedPageNumber(index))
             }
         }
     }
@@ -85,7 +87,7 @@ enum MasterPagePainter {
     /// WHICH pages they appear on; where they go on a page, and how they are drawn, is one rule.
     static func draw(_ object: OfficeMasterObject, onSheet sheet: CGRect, pageIndex: Int,
                      totalPages: Int, content: MasterPageContent, visibleRect: NSRect,
-                     pageNumberHidden: Bool = false) {
+                     pageNumberHidden: Bool = false, shownPageNumber: Int? = nil) {
         let rect = NSRect(x: sheet.minX + object.frame.minX, y: sheet.minY + object.frame.minY,
                           width: object.frame.width, height: object.frame.height)
         guard rect.intersects(visibleRect) else { return }
@@ -121,7 +123,7 @@ enum MasterPagePainter {
                                                 documentDefaultFontSize: content.documentDefaultFontSize,
                                                 pageContentWidth: content.pageContentWidth)
             guard built.length > 0 else { return }
-            PageBandPainter.substitutingPageFields(built, page: pageIndex + 1,
+            PageBandPainter.substitutingPageFields(built, page: shownPageNumber ?? (pageIndex + 1),
                                                    totalPages: totalPages,
                                                    hidesPageNumber: pageNumberHidden).draw(in: rect)
         }

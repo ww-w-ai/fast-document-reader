@@ -134,6 +134,7 @@ enum OfficeTextBuilder {
                       pageBreakBlocks: [Int] = [],
                       keepWithNextBlocks: [Int] = [],
                       hidePageNumberBlocks: [Int] = [],
+                      pageNumberRestartBlocks: [OfficePageNumberRestart] = [],
                       anchoredObjects: [Int: [Int]] = [:]) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var blockSeq = 0
@@ -166,6 +167,8 @@ enum OfficeTextBuilder {
         let breaksPage = Set(pageBreakBlocks)
         let keepsWithNext = Set(keepWithNextBlocks)
         let hidesPageNumber = Set(hidePageNumberBlocks)
+        let restartsNumbering = Dictionary(pageNumberRestartBlocks.map { ($0.block, $0.number) },
+                                           uniquingKeysWith: { first, _ in first })
 
         func tagBlock(from start: Int, index: Int) {
             let r = NSRange(location: start, length: result.length - start)
@@ -203,6 +206,12 @@ enum OfficeTextBuilder {
             // sits in the laid-out text, exactly as `sectionIndex` is.
             if hidesPageNumber.contains(index) {
                 result.addAttribute(MDAttr.hidesPageNumber, value: true, range: r)
+            }
+            // Where the document restarts its page counter. Marked on the block's own range for the
+            // same reason the veto above is: which PAGE it lands on is a layout answer, resolved
+            // later from where the marked character actually sits.
+            if let first = restartsNumbering[index] {
+                result.addAttribute(MDAttr.pageNumberRestart, value: first, range: r)
             }
         }
 
