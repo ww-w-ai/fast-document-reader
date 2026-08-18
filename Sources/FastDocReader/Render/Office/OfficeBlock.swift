@@ -268,6 +268,12 @@ struct Cell: Equatable {
     /// single `padding` value above, unaffected — this field did not exist before it, so a
     /// non-paged document renders byte-identical whether or not its reader populates this.
     var edgePadding: EdgePadding? = nil
+    /// The cell's own DIAGONAL, when the document drew one across it. `nil` = no diagonal, which is
+    /// every cell of every other format this reader opens — only HWP states one, and the decision of
+    /// whether a declaration IS a drawn diagonal is made by the parser (`BorderFill::cell_diagonal`),
+    /// never re-derived here. Two thirds of the raw declarations are not diagonals at all, so a
+    /// reader that judged them itself would rule lines across cells the document left plain.
+    var diagonal: CellDiagonal? = nil
 
     /// The cell's shading RESOLVED from the table's named STYLE (docx `w:tbl/w:tblPr/w:tblStyle`
     /// cascaded through that style's `w:tblStylePr` conditional blocks for this cell's grid
@@ -298,7 +304,7 @@ struct Cell: Equatable {
          borderColor: NSColor? = nil, borderWidth: CGFloat? = nil,
          edgeBorders: EdgeBorders? = nil,
          width: CGFloat? = nil, verticalAlignment: CellVAlign? = nil, padding: CGFloat? = nil,
-         edgePadding: EdgePadding? = nil) {
+         edgePadding: EdgePadding? = nil, diagonal: CellDiagonal? = nil) {
         self.blocks = blocks
         self.rowSpan = rowSpan
         self.colSpan = colSpan
@@ -311,6 +317,7 @@ struct Cell: Equatable {
         self.verticalAlignment = verticalAlignment
         self.padding = padding
         self.edgePadding = edgePadding
+        self.diagonal = diagonal
     }
 }
 
@@ -335,6 +342,29 @@ enum CellVAlign: Equatable {
 /// an edge that is drawn — "the document turned this edge off" and "the document never mentioned
 /// this edge" are two further states, and they are carried by `BorderDecl`/`EdgeBorders` below, not
 /// by this struct's presence or absence.
+/// A rule drawn ACROSS a cell rather than around it — the line a Korean document puts through a
+/// cell to mean "this box is deliberately empty" (해당 없음), and the `X` it puts through a table's
+/// corner header cell.
+///
+/// Not an `EdgeBorders` case: an edge is a boundary BETWEEN two cells and is resolved against its
+/// neighbour, while a diagonal belongs to one cell alone and never participates in border collapse.
+/// Folding it into the edge vocabulary would have put it through that resolution and let a
+/// neighbour's declaration erase it.
+///
+/// Measured before it was built: of 637 real documents, 47 draw one and they hold 208 such cells —
+/// rare enough that it is a decoration rather than a defect, common enough that the reader was
+/// silently dropping a mark the document made on purpose. Every one of the three directions occurs.
+struct CellDiagonal: Equatable {
+    /// Which way the line runs, from the reader's point of view — `slash` is bottom-left to
+    /// top-right (`/`), `backslash` top-left to bottom-right (`\`), `both` is the `X`.
+    enum Direction: Equatable { case slash, backslash, both }
+    var direction: Direction
+    /// The line's own width, colour and dash — the SAME vocabulary an edge uses, because HWP states
+    /// a diagonal's type in the same 18-value enum it states an edge's in. Reusing `BorderSide` is
+    /// what gives a dotted diagonal its dots for free.
+    var side: BorderSide
+}
+
 struct BorderSide: Equatable {
     var width: CGFloat
     var color: NSColor?

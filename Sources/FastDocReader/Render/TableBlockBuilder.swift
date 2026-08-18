@@ -235,6 +235,9 @@ enum TableBlockBuilder {
         /// whose reader didn't populate it) leaves the single `padding` value above governing,
         /// byte-identical to before this existed.
         var edgePadding: EdgePadding? = nil
+        /// Mirrors `Cell.diagonal` — the rule this cell draws ACROSS itself. `nil` for markdown and
+        /// for every format but HWP, and for the great majority of HWP cells too.
+        var diagonal: CellDiagonal? = nil
     }
 
     /// - Parameters:
@@ -785,6 +788,9 @@ enum TableBlockBuilder {
             // but never drawn (invariant 97 names this shape — carried, not applied).
             if let background = me.background { block.backgroundColor = background }
             block.backgroundImage = placement.cell?.backgroundImage
+            // Only the cell's own declaration — a diagonal is never inherited from the table or a
+            // named style, because it marks THIS box rather than describing the grid.
+            block.diagonal = placement.cell?.diagonal
             switch placement.cell?.verticalAlignment ?? .top {
             case .top: block.verticalAlignment = .topAlignment
             case .center: block.verticalAlignment = .middleAlignment

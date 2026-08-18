@@ -1384,7 +1384,8 @@ enum OfficeTextBuilder {
                                                       padding: cell.padding, styleShading: cell.styleShading,
                                                       styleBorderColor: cell.styleBorderColor,
                                                       styleBorderWidth: cell.styleBorderWidth,
-                                                      edgeBorders: cell.edgeBorders, edgePadding: cell.edgePadding)
+                                                      edgeBorders: cell.edgeBorders, edgePadding: cell.edgePadding,
+                                                      diagonal: cell.diagonal)
             }
         }
         let tableStart = result.length

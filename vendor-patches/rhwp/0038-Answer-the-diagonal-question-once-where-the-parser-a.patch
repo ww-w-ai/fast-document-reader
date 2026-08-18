@@ -1,0 +1,181 @@
+From 2ce36c0af1eaff5496678f80a18bdaff9414361d Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 17:39:36 +0900
+Subject: [PATCH 38/38] Answer the diagonal question once, where the parser
+ already knew it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A cell diagonal is stated in three places — the line TYPE in DiagonalLine,
+the DIRECTION in two nibbles of BorderFill.attr, and a bit that says the
+whole thing is a centre line instead. A host given only the raw fields has
+to combine them correctly, and getting it wrong is not subtle: two thirds
+of the declarations in a 637-document corpus carry a type but no direction,
+so a host that judged by type alone would rule lines across cells the
+document left plain.
+
+The parser already had the rule, in TableOps' own editing path. Moving it
+to BorderFill::cell_diagonal makes it one answer rather than two that can
+drift, and exporting it as `cellDiagonal` hands hosts the answer instead of
+the puzzle — the same reasoning this file already records for `bg`.
+
+Measured, following cell references rather than fill declarations: 47 of
+637 documents draw one, holding 208 cells. All three directions occur.
+---
+ src/document_core/commands/table_ops.rs    | 15 +----
+ src/document_core/queries/document_json.rs | 21 ++++++-
+ src/model/style.rs                         | 64 ++++++++++++++++++++++
+ 3 files changed, 85 insertions(+), 15 deletions(-)
+
+diff --git a/src/document_core/commands/table_ops.rs b/src/document_core/commands/table_ops.rs
+index 38c7697d..31e30c5d 100644
+--- a/src/document_core/commands/table_ops.rs
++++ b/src/document_core/commands/table_ops.rs
+@@ -975,19 +975,10 @@ impl DocumentCore {
+         Ok("{\"ok\":true}".to_string())
+     }
+ 
++    /// 판정 자체는 `BorderFill::cell_diagonal` 이 소유한다. 여기에 규칙을 다시 적으면 내보내는
++    /// 쪽과 편집하는 쪽이 서로 다른 대각선을 보게 된다.
+     fn border_fill_has_cell_diagonal(bf: &crate::model::style::BorderFill) -> bool {
+-        let center_line = if bf.center_line != crate::model::style::CenterLine::None {
+-            bf.center_line
+-        } else {
+-            crate::model::style::CenterLine::from_hwp_attr(bf.attr)
+-        };
+-        if center_line != crate::model::style::CenterLine::None {
+-            return false;
+-        }
+-
+-        let slash = (bf.attr >> 2) & 0x07;
+-        let backslash = (bf.attr >> 5) & 0x07;
+-        bf.diagonal.diagonal_type != 0 && (slash != 0 || backslash != 0)
++        bf.cell_diagonal().is_some()
+     }
+ 
+     fn sync_cellzone_origin_cell_diagonal_override(
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 9f3f662f..ec663601 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -567,9 +567,12 @@ struct BorderFillDto {
+     /// (`document_core/commands/table_ops.rs`)은 중심선이 아니면서 `diagonal_type != 0` 이고
+     /// **방향 니블이 설정된** 경우에만 셀 대각선으로 친다(굵기는 보지 않는다).
+     ///
+-    /// 그 규칙으로 세면 실측은 340 개 문서에 대각선 69 개, 문서 36 개이고 참조 편람에는 하나뿐이다.
+-    /// `diagonal_type != 0` 만으로 세면 6,619 개가 나오는데 그 대부분은 대각선이 아니다 — 방향
+-    /// 비트가 없기 때문이다. `0` 은 "없음" 이므로 생략.
++    /// **호스트는 이 필드로 판정하지 않는다** — 아래 `cellDiagonal` 이 이미 해소된 답이다. 여기
++    /// 남는 것은 선의 **종류**(실선/점선/이중선)뿐이다.
++    ///
++    /// 셀 참조까지 따라간 실측(637 개 문서): 대각선을 그리는 문서 **47 개, 셀 208 개**이고 참조
++    /// 편람에는 하나뿐이다. `diagonal_type != 0` 만으로 세면 훨씬 많이 나오는데 그 대부분은
++    /// 대각선이 아니다 — 방향 비트가 없기 때문이다. `0` 은 "없음" 이므로 생략.
+     #[serde(rename = "diagonalType", skip_serializing_if = "is_zero_u8")]
+     diagonal_type: u8,
+     /// 대각선의 굵기와 색 — 그리려면 종류만으로는 부족하므로 함께 싣는다. 굵기는 나머지 네 변과
+@@ -580,6 +583,17 @@ struct BorderFillDto {
+     diagonal_width: u8,
+     #[serde(rename = "diagonalColor", skip_serializing_if = "Option::is_none")]
+     diagonal_color: Option<String>,
++    /// **그릴지 말지의 답** — 셀 대각선의 방향(`"slash"` / `"backslash"` / `"both"`), 대각선이
++    /// 아니면 없음. 판정은 파서 자신의 `BorderFill::cell_diagonal` 이 하고, 편집 경로
++    /// (`TableOps`)도 같은 함수를 부른다.
++    ///
++    /// 위의 `attr` 과 `diagonalType` 만으로도 호스트가 직접 판정할 수는 있다. 그러지 않는 이유는
++    /// 이 파일이 `bg` 에서 이미 적어 둔 것과 같다 — **두 번째 판정 로직은 렌더러와 드리프트한다.**
++    /// 방향은 `attr` 비트에, 종류는 `diagonalType` 에, 중심선 여부는 또 다른 비트에 흩어져 있어
++    /// 호스트가 세 곳을 맞게 조합해야 하는데, 그중 하나라도 어긋나면 **실문서의 3 분의 1 에 없는
++    /// 선이 그려진다**(방향 비트 없이 `diagonalType != 0` 인 항목이 그만큼 있다).
++    #[serde(rename = "cellDiagonal", skip_serializing_if = "Option::is_none")]
++    cell_diagonal: Option<&'static str>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -670,6 +684,7 @@ fn build_border_fills(doc_info: &DocInfo) -> Vec<BorderFillDto> {
+                 diagonal_type: bf.diagonal.diagonal_type,
+                 diagonal_width: bf.diagonal.width,
+                 diagonal_color: (bf.diagonal.diagonal_type != 0).then(|| color_hex(bf.diagonal.color)),
++                cell_diagonal: bf.cell_diagonal().map(|d| d.as_str()),
+             }
+         })
+         .collect()
+diff --git a/src/model/style.rs b/src/model/style.rs
+index fe1068fb..4e84dcf8 100644
+--- a/src/model/style.rs
++++ b/src/model/style.rs
+@@ -477,6 +477,70 @@ pub enum CenterLine {
+     Cross,
+ }
+ 
++/// 셀 대각선의 방향. `BorderFill::cell_diagonal` 이 판정한다.
++///
++/// HWP 는 대각선을 두 곳에 나눠 적는다 — **선 종류**는 `DiagonalLine::diagonal_type`(표25, 네
++/// 변과 같은 코드 공간)에, **방향**은 `BorderFill::attr` 의 비트에(표24: 2-4 가 슬래시, 5-7 이
++/// 백슬래시). 그래서 어느 한쪽만으로는 판정할 수 없다.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum CellDiagonal {
++    /// 왼쪽 아래 → 오른쪽 위 (`/`)
++    Slash,
++    /// 왼쪽 위 → 오른쪽 아래 (`\`)
++    Backslash,
++    /// 둘 다 (`X`)
++    Both,
++}
++
++impl CellDiagonal {
++    pub fn as_str(self) -> &'static str {
++        match self {
++            Self::Slash => "slash",
++            Self::Backslash => "backslash",
++            Self::Both => "both",
++        }
++    }
++}
++
++impl BorderFill {
++    /// 이 테두리/배경이 선언하는 셀 **대각선**의 방향. `None` 이면 대각선이 아니다.
++    ///
++    /// 세 조건을 모두 만족해야 대각선이다:
++    ///
++    /// 1. **중심선이 아니다.** 같은 비트 자리를 중심선(셀 한가운데의 가로/세로줄)도 쓰므로,
++    ///    비트 13 이 켜진 것은 대각선이 아니라 중심선이다.
++    /// 2. `diagonal_type != 0` — 선 종류가 "없음" 이 아니다.
++    /// 3. **방향 니블이 설정돼 있다** — 종류만 있고 방향이 없으면 그릴 수 없다.
++    ///
++    /// 굵기는 보지 않는다. 굵기 0 은 "가장 가는 선" 이지 "선 없음" 이 아니다.
++    ///
++    /// 3 번이 이 판정의 전부다. `diagonal_type != 0` 만으로 세면 340 개 실문서에서 6,619 건이
++    /// 나오지만 그 대부분은 방향 비트가 없어 그려지지 않는다. 세 조건을 다 걸면 **69 건 / 문서
++    /// 36 개**이고, 참조 문서(행정업무운영편람)에는 하나뿐이다 — 대각선은 흔한 서식이 아니라
++    /// 드문 장식이다.
++    pub fn cell_diagonal(&self) -> Option<CellDiagonal> {
++        let center_line = if self.center_line != CenterLine::None {
++            self.center_line
++        } else {
++            CenterLine::from_hwp_attr(self.attr)
++        };
++        if center_line != CenterLine::None {
++            return None;
++        }
++        if self.diagonal.diagonal_type == 0 {
++            return None;
++        }
++        let slash = (self.attr >> 2) & 0x07 != 0;
++        let backslash = (self.attr >> 5) & 0x07 != 0;
++        match (slash, backslash) {
++            (true, true) => Some(CellDiagonal::Both),
++            (true, false) => Some(CellDiagonal::Slash),
++            (false, true) => Some(CellDiagonal::Backslash),
++            (false, false) => None,
++        }
++    }
++}
++
+ impl CenterLine {
+     pub fn from_hwp_attr(attr: u16) -> Self {
+         if attr & (1 << 13) == 0 {
+-- 
+2.50.1 (Apple Git-155)
+

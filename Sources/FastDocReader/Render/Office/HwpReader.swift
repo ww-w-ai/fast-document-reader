@@ -1407,7 +1407,8 @@ enum HwpReader {
                     backgroundColor: shading,
                     backgroundImage: fillImage,
                     edgeBorders: edgeBorders(forFillId: c.borderFillId, in: borderFills),
-                    verticalAlignment: vAlign, edgePadding: edges)
+                    verticalAlignment: vAlign, edgePadding: edges,
+                    diagonal: cellDiagonal(fill))
     }
 
     /// One exported path → the renderer's own vocabulary, converting HWPUNIT to points as it goes.
@@ -1488,6 +1489,63 @@ enum HwpReader {
         if edge.type == "none" { return .suppressed }
         let width = (edge.widthPt).flatMap { $0 > 0 ? CGFloat($0) : nil } ?? 1
         return .drawn(BorderSide(width: width, color: color(edge.color), style: lineStyle(edge.type)))
+    }
+
+    /// A fill's DIAGONAL, when the parser resolved one. The direction is taken verbatim — an
+    /// unrecognised string is treated as no diagonal rather than guessed into one, so a future
+    /// parser value cannot make this reader draw something it does not understand.
+    ///
+    /// The line is drawn at the same width the four edges would use for that step. HWP stores a
+    /// diagonal's width as its 16-step enum rather than resolved points (which is what an edge
+    /// gets), so this reuses the edge's own resolved width when the document gave one and falls
+    /// back to the 1pt every undeclared rule in this reader uses.
+    private static func cellDiagonal(_ fill: HwpBorderFill?) -> CellDiagonal? {
+        guard let fill, let raw = fill.cellDiagonal else { return nil }
+        let direction: CellDiagonal.Direction
+        switch raw {
+        case "slash": direction = .slash
+        case "backslash": direction = .backslash
+        case "both": direction = .both
+        default: return nil
+        }
+        let style = fill.diagonalType.map { lineStyle(hwpLineTypeName($0)) } ?? .solid
+        let side = BorderSide(width: diagonalWidthPt(fill.diagonalWidth),
+                              color: color(fill.diagonalColor), style: style)
+        return CellDiagonal(direction: direction, side: side)
+    }
+
+    /// HWP's 16-step border-width enum → points. The same ladder the parser applies to an EDGE's
+    /// width before exporting it as `widthPt`; a diagonal's width arrives raw, so the reader climbs
+    /// the ladder itself here rather than shipping a diagonal at a width no document declared.
+    /// Step 0 is 0.1mm — the finest line HWP can state, and never zero.
+    private static func diagonalWidthPt(_ step: Int?) -> CGFloat {
+        // 0.1 / 0.12 / 0.15 / 0.2 / 0.25 / 0.3 / 0.4 / 0.5 / 0.6 / 0.7 / 1.0 / 1.5 / 2.0 / 3.0 / 4.0 / 5.0 mm
+        let mm: [CGFloat] = [0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5,
+                             0.6, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0]
+        let idx = min(max(step ?? 0, 0), mm.count - 1)
+        return mm[idx] * 72.0 / 25.4
+    }
+
+    /// HWP's line-type CODE → the name the four edges arrive under, so one mapping table serves
+    /// both. The parser exports an edge's type by name and a diagonal's by code; this is the bridge,
+    /// and an unknown code stays `"solid"`, which is what an unrecognised edge does too.
+    private static func hwpLineTypeName(_ code: Int) -> String {
+        switch code {
+        case 1: return "solid"
+        case 2: return "dash"
+        case 3: return "dot"
+        case 4: return "dashDot"
+        case 5: return "dashDotDot"
+        case 6: return "longDash"
+        case 7: return "circle"
+        case 8: return "double"
+        case 9: return "thinThickDouble"
+        case 10: return "thickThinDouble"
+        case 11: return "thinThickThinTriple"
+        case 12: return "wave"
+        case 13: return "doubleWave"
+        default: return "solid"
+        }
     }
 
     /// HWP's 18-value line type (spec table 27, exported by name) → the four this reader paints.
@@ -1911,6 +1969,23 @@ private struct HwpBorderFill: Decodable {
     /// A GRADIENT fill's stops and angle. Painted as a linear gradient; a single stop degrades to a
     /// plain fill, which is what it is.
     var bgGradient: HwpGradient?
+    /// THE ANSWER, already resolved by the parser: `"slash"` / `"backslash"` / `"both"` when this
+    /// fill declares a drawn cell diagonal, absent when it does not.
+    ///
+    /// HWP splits a diagonal across three places — the line TYPE in `diagonalType`, the DIRECTION in
+    /// bits of `attr`, and a separate bit saying the whole thing is a centre line instead. The
+    /// reader does not combine them: `BorderFill::cell_diagonal` in the parser does, and the
+    /// parser's own table editor calls the same function, so there is one answer rather than two
+    /// that can drift. Judging it here instead would rule lines across cells that carry a type but
+    /// no direction — two thirds of the raw declarations in the measured corpus.
+    var cellDiagonal: String?
+    /// The diagonal's own line type, in the SAME 18-value enum the four edges use, so `lineStyle`
+    /// maps it without a second table. Only meaningful when `cellDiagonal` is present.
+    var diagonalType: Int?
+    /// The diagonal's width in HWP's 16-step enum — NOT points, unlike an edge's `widthPt`, because
+    /// the parser resolves an edge's width and leaves a diagonal's raw. Absent = the finest step.
+    var diagonalWidth: Int?
+    var diagonalColor: String?
 }
 
 private struct HwpGradient: Decodable {

@@ -114,10 +114,17 @@ final class GridTextTableBlock: NSTextTableBlock {
     /// on the desk between them.
     var backgroundImage: NSImage?
 
+    /// The rule this cell draws ACROSS itself, when the document drew one. Painted per SEGMENT like
+    /// everything else here, so a diagonal in a cell a page break crosses appears on each sheet and
+    /// never on the desk between them — and, because it is drawn per segment, each piece's diagonal
+    /// spans that piece rather than the whole original box, which is the only reading that stays
+    /// inside the paper.
+    var diagonal: CellDiagonal?
+
     /// True when any edge needs a stroke this class has to draw itself. `super` paints solid bars, so
     /// only a non-solid edge forces the override on a cell no page break crosses.
     var hasStyledEdge: Bool {
-        edgeStyles.values.contains { $0 != .solid } || !declaredWidths.isEmpty
+        edgeStyles.values.contains { $0 != .solid } || !declaredWidths.isEmpty || diagonal != nil
     }
 
     /// The thickness this edge's rule is DRAWN at, and where inside its reserved band it sits.
@@ -210,5 +217,36 @@ final class GridTextTableBlock: NSTextTableBlock {
                 }
             }
         }
+        drawDiagonal(in: rect)
+    }
+
+    /// The cell's diagonal, drawn corner to corner of the segment.
+    ///
+    /// AFTER the edges, deliberately: the two meet at the corners, and a diagonal drawn first has
+    /// its ends buried under the frame, which reads as a line that stops short of the corner. The
+    /// edges are bars the layout already reserved, so painting over their inner half costs nothing.
+    ///
+    /// A dash pattern is scaled by the line's own width, the same rule the edges use — a fixed
+    /// pattern turns a hairline into a dotted trace and a 3pt line into a chain.
+    private func drawDiagonal(in rect: NSRect) {
+        guard let diagonal, rect.width > 0.5, rect.height > 0.5 else { return }
+        let path = NSBezierPath()
+        if diagonal.direction != .backslash {                        // slash: ↙ → ↗
+            path.move(to: NSPoint(x: rect.minX, y: rect.minY))
+            path.line(to: NSPoint(x: rect.maxX, y: rect.maxY))
+        }
+        if diagonal.direction != .slash {                            // backslash: ↖ → ↘
+            path.move(to: NSPoint(x: rect.minX, y: rect.maxY))
+            path.line(to: NSPoint(x: rect.maxX, y: rect.minY))
+        }
+        let thickness = max(diagonal.side.width, 0.25)
+        path.lineWidth = thickness
+        switch diagonal.side.style {
+        case .dashed: path.setLineDash([thickness * 4, thickness * 2], count: 2, phase: 0)
+        case .dotted: path.setLineDash([thickness, thickness * 2], count: 2, phase: 0)
+        case .solid, .double: break
+        }
+        (diagonal.side.color ?? .clear).setStroke()
+        path.stroke()
     }
 }

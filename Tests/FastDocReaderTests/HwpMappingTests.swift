@@ -694,6 +694,106 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertNil(try edges("{\"v\":1,\(table(1))}"))               // parser predating the export
     }
 
+    // MARK: cell diagonals — the rule a cell draws across ITSELF
+
+    /// The three directions arrive as themselves. `cellDiagonal` is the parser's own resolved
+    /// ANSWER, so the reader takes it verbatim rather than re-deriving it from `attr` + type.
+    func testEachDiagonalDirectionArrives() throws {
+        func direction(_ raw: String) throws -> CellDiagonal.Direction? {
+            let json = """
+            {"v":1,"borderFills":[
+               {"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},
+                "bottom":{"type":"none"},"cellDiagonal":"\(raw)","diagonalType":1}
+             ],
+             "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+               "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+            """
+            guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+                XCTFail("expected table"); return nil
+            }
+            return rows[0][0].diagonal?.direction
+        }
+        XCTAssertEqual(try direction("slash"), .slash)
+        XCTAssertEqual(try direction("backslash"), .backslash)
+        XCTAssertEqual(try direction("both"), .both)
+    }
+
+    /// A fill that declares a diagonal TYPE but no direction is NOT a diagonal — the parser omits
+    /// `cellDiagonal` for it, and the reader must not invent one from the type alone. Two thirds of
+    /// the raw declarations in the measured corpus are exactly this shape, so a reader that judged
+    /// for itself would rule lines across cells the document left plain.
+    func testATypeWithoutTheParsersAnswerDrawsNothing() throws {
+        let json = """
+        {"v":1,"borderFills":[
+           {"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},
+            "bottom":{"type":"none"},"diagonalType":1,"attr":8,"diagonalWidth":3}
+         ],
+         "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+           "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+        """
+        guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected table")
+        }
+        XCTAssertNil(rows[0][0].diagonal)
+    }
+
+    /// An unrecognised direction is treated as NO diagonal rather than guessed into one, so a future
+    /// parser value cannot make this reader draw something it does not understand.
+    func testAnUnknownDirectionDrawsNothing() throws {
+        let json = """
+        {"v":1,"borderFills":[
+           {"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},
+            "bottom":{"type":"none"},"cellDiagonal":"zigzag","diagonalType":1}
+         ],
+         "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+           "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+        """
+        guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected table")
+        }
+        XCTAssertNil(rows[0][0].diagonal)
+    }
+
+    /// The line's own width, colour and dash — HWP states a diagonal's type in the SAME enum it
+    /// states an edge's in, so a dotted diagonal gets its dots from the same mapping. The width
+    /// arrives as HWP's 16-step enum (unlike an edge's resolved `widthPt`), so the reader climbs
+    /// that ladder itself: step 10 is 1.0mm = 2.835pt.
+    func testDiagonalCarriesItsOwnWidthColourAndDash() throws {
+        let json = """
+        {"v":1,"borderFills":[
+           {"left":{"type":"none"},"right":{"type":"none"},"top":{"type":"none"},
+            "bottom":{"type":"none"},"cellDiagonal":"slash","diagonalType":3,
+            "diagonalWidth":10,"diagonalColor":"FF0000"}
+         ],
+         "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+           "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+        """
+        guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected table")
+        }
+        guard let diagonal = rows[0][0].diagonal else { return XCTFail("no diagonal") }
+        XCTAssertEqual(diagonal.side.width, 1.0 * 72.0 / 25.4, accuracy: 0.001)
+        XCTAssertEqual(diagonal.side.color, NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
+        XCTAssertEqual(diagonal.side.style, .dotted)   // type 3 = dot
+    }
+
+    /// A cell with no diagonal keeps `nil`, which is every cell of every other format this reader
+    /// opens and the great majority of HWP cells too — the field must not become "always present".
+    func testAnOrdinaryCellHasNoDiagonal() throws {
+        let json = """
+        {"v":1,"borderFills":[
+           {"left":{"type":"solid","widthPt":1},"right":{"type":"none"},
+            "top":{"type":"none"},"bottom":{"type":"none"}}
+         ],
+         "blocks":[{"t":"table","cols":1,"colWidths":[2000],"borderFillId":0,
+           "rows":[[{"colSpan":1,"rowSpan":1,"borderFillId":1,"blocks":[]}]]}]}
+        """
+        guard case let .table(rows, _, _, _) = try HwpReader.mapJSON(json).blocks[0] else {
+            return XCTFail("expected table")
+        }
+        XCTAssertNil(rows[0][0].diagonal)
+    }
+
     /// A table's own border-fill is its BACKGROUND. rhwp's renderer passes the table's fill to
     /// `render_cell_background` and nowhere else, and a page measured against its SVG carries no
     /// stroke at all where the table's fill declares four solid edges — every rule on screen comes

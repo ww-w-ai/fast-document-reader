@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 96a8c2656f065e9341be22107cbe4c11350588b2
+rhwp commit   : 2ce36c0af1eaff5496678f80a18bdaff9414361d
 rhwp branch   : HEAD
-rhwp subject  : The parser already knew what the diagonal byte means
+rhwp subject  : Answer the diagonal question once, where the parser already knew it
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 59179376
-library sha256: c09923f8cf35f053f9fcba8de375a32917c33b6c86c6919e6760746ac3095722
+library bytes : 59105808
+library sha256: 06d66e634ec5c97be51c8d2ca1ced04f08716e7293e2d483c13a93ba40bbb976
