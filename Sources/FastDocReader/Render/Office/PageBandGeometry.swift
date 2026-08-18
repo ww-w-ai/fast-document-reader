@@ -112,23 +112,55 @@ enum PageBandGeometry {
         // entries are one section's.
         var tallest: CGFloat = 0
         for entry in entries where !entry.blocks.isEmpty {
-            let attr = OfficeTextBuilder.build(entry.blocks, theme: theme,
-                                               columnWidth: columnWidth,
+            tallest = max(tallest, builtHeight(of: entry.blocks, theme: theme, columnWidth: columnWidth,
                                                documentDefaultFontSize: documentDefaultFontSize,
-                                               pageContentWidth: pageContentWidth)
-            guard attr.length > 0, drawsSomething(entry.blocks, built: attr) else { continue }
-            let storage = NSTextStorage(attributedString: attr)
-            let layout = NSLayoutManager()
-            layout.allowsNonContiguousLayout = false
-            storage.addLayoutManager(layout)
-            let container = NSTextContainer(size: NSSize(width: columnWidth, height: .greatestFiniteMagnitude))
-            container.widthTracksTextView = false
-            container.lineFragmentPadding = 0
-            layout.addTextContainer(container)
-            layout.ensureLayout(for: container)
-            tallest = max(tallest, layout.usedRect(for: container).height)
+                                               pageContentWidth: pageContentWidth))
         }
         return tallest
+    }
+
+    /// How much a page must keep clear at its foot for the notes cited on it: the separator's own
+    /// allowance, the notes themselves, and the document's spacing BETWEEN them.
+    ///
+    /// Pure arithmetic over already-measured heights, so the fixpoint (invariant 98) can be driven
+    /// and tested without laying anything out. A page citing no note reserves nothing — not a
+    /// minimum, not a separator: the rule must reduce to today's layout for the 615 of 637 corpus
+    /// documents that never cite a footnote at all.
+    static func footnoteBandHeight(noteHeights: [CGFloat], separatorAllowance: CGFloat,
+                                   noteSpacing: CGFloat) -> CGFloat {
+        let drawn = noteHeights.filter { $0 > 0 }
+        guard !drawn.isEmpty else { return 0 }
+        let between = noteSpacing * CGFloat(drawn.count - 1)
+        return max(0, separatorAllowance) + drawn.reduce(0, +) + max(0, between)
+    }
+
+    /// How tall this run of blocks is once BUILT and laid out at `columnWidth` — the one place that
+    /// answers it, for a running head and for a footnote alike.
+    ///
+    /// Measured through a throwaway TextKit stack rather than estimated from font sizes, because
+    /// that is the only thing that agrees with what the reader will actually draw: a two-line header
+    /// and a header that wraps to two lines are the same height, and no arithmetic over the spans
+    /// can tell them apart. Blocks that build to nothing measure `0` (`drawsSomething`) — 28% of the
+    /// real documents that declare a header declare an EMPTY one, and reserving space for those
+    /// would put a gap on every page of a quarter of the corpus.
+    static func builtHeight(of blocks: [OfficeBlock], theme: RenderTheme, columnWidth: CGFloat,
+                            documentDefaultFontSize: CGFloat, pageContentWidth: CGFloat?) -> CGFloat {
+        guard !blocks.isEmpty, columnWidth.isFinite, columnWidth > 0 else { return 0 }
+        let attr = OfficeTextBuilder.build(blocks, theme: theme,
+                                           columnWidth: columnWidth,
+                                           documentDefaultFontSize: documentDefaultFontSize,
+                                           pageContentWidth: pageContentWidth)
+        guard attr.length > 0, drawsSomething(blocks, built: attr) else { return 0 }
+        let storage = NSTextStorage(attributedString: attr)
+        let layout = NSLayoutManager()
+        layout.allowsNonContiguousLayout = false
+        storage.addLayoutManager(layout)
+        let container = NSTextContainer(size: NSSize(width: columnWidth, height: .greatestFiniteMagnitude))
+        container.widthTracksTextView = false
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        layout.ensureLayout(for: container)
+        return layout.usedRect(for: container).height
     }
 
     /// Does this ONE entry have anything for the reader to put in a band — the question every gate

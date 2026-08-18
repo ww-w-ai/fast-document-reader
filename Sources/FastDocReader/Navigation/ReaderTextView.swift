@@ -111,6 +111,22 @@ final class ReaderTextView: NSTextView {
                                  documentHeight: lm.usedRect(for: tc).height,
                                  visibleRect: visibleRect, origin: textContainerOrigin,
                                  sectionOfPage: { wc.sectionOfPage($0) })
+            // Then the notes, into the room the body was kept out of. Drawn after the running head
+            // because they are the same ink on the same page and the later one wins any overlap —
+            // and a note is the thing the reader is actually reading.
+            //
+            // KNOWN LIMIT: this rides on `pageBandContent`, so a document with notes but NO running
+            // header or footer reserves nothing and draws none — `PageBandLayoutDelegate.isActive`
+            // needs a band to exist before it will place anything on a page at all. Widening that
+            // is a layout change, not a painting one.
+            FootnotePainter.draw(notes: wc.footnotes, pages: wc.footnotePages,
+                                 noteBands: wc.pageBandDelegate.noteBands,
+                                 separatorForPage: { wc.footnoteSeparator(forPage: $0) },
+                                 delegate: wc.pageBandDelegate, theme: content.theme,
+                                 columnWidth: content.columnWidth,
+                                 documentDefaultFontSize: content.documentDefaultFontSize,
+                                 pageContentWidth: content.pageContentWidth,
+                                 visibleRect: visibleRect, origin: textContainerOrigin)
         }
     }
 

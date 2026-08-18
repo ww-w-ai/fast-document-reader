@@ -352,7 +352,7 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
                 // yet. So the cheap, correct approximation: if this first line would sit in the
                 // LAST line-height of its page, the block starts the next page instead.
                 let page = ((rect.minY - leadingBand) / pitch).rounded(.down)
-                let textBottom = page * pitch + pageContentHeight
+                let textBottom = self.textBottom(ofPage: page)
                 if (rect.maxY - leadingBand) > textBottom - rect.height {
                     let target = (page + 1) * pitch + leadingBand
                     let shift = target - rect.minY
@@ -388,7 +388,7 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
             }
         }
         let page = ((rect.minY - leadingBand) / pitch).rounded(.down)
-        let textBottom = page * pitch + pageContentHeight
+        let textBottom = self.textBottom(ofPage: page)
         guard (rect.maxY - leadingBand) > textBottom else { return false }
         let target = (page + 1) * pitch + leadingBand
         let shift = target - rect.minY
@@ -441,7 +441,7 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         // merged cell can push down by an arbitrary amount.
         let visualTop = rect.minY - metrics.topInset
         let page = PageBandLayoutDelegate.page(of: visualTop, leadingBand: leadingBand, pitch: pitch)
-        let textBottom = page * pitch + pageContentHeight
+        let textBottom = self.textBottom(ofPage: page)
         // Already fits where it stands: nothing to do, and this is what makes the rule idempotent —
         // a table that was moved once lands at a page top and then declines to move again.
         guard (visualTop - leadingBand + metrics.height) > textBottom else { return false }
@@ -461,6 +461,28 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// `5051.279999999` against a pitch product of `5051.28`, so a bare `floor` called it page 5 and
     /// the rule then judged it against page 5's bottom — a piece that had just been moved correctly
     /// read as still overrunning, and the settle could not converge.
+    /// Height reserved at the FOOT of a page for the footnotes cited on it, keyed by page — empty
+    /// for every document that cites none, which leaves every number below exactly what it was.
+    ///
+    /// Set by the settle loop, never by layout: which notes a page cites is only knowable once the
+    /// page has been laid out, and reserving room for them moves the very markers that decided it
+    /// (invariant 98). `FootnoteBandSettle` owns when that stops.
+    var noteBands: [Int: CGFloat] = [:]
+
+    /// THE lowest a body line may reach on a given page — its sheet's text bottom, less whatever
+    /// that page reserves for notes.
+    ///
+    /// One definition for all three rules that ask (the keep-with-next check, the between-page
+    /// shift, and the table push). They were three copies of `page × pitch + pageContentHeight`
+    /// before a note band could shorten any of them, and three copies of a number that now VARIES
+    /// per page is three chances to disagree about where a page ends — which shows up as a line
+    /// drawn over a footnote rather than as a failed check.
+    func textBottom(ofPage page: CGFloat) -> CGFloat {
+        let full = page * (pageContentHeight + band) + pageContentHeight
+        guard !noteBands.isEmpty, page >= 0 else { return full }
+        return full - (noteBands[Int(page)] ?? 0)
+    }
+
     static func page(of y: CGFloat, leadingBand: CGFloat, pitch: CGFloat) -> CGFloat {
         (((y - leadingBand) / pitch) + 1e-6).rounded(.down)
     }

@@ -1,7 +1,7 @@
 From 98843f151ec4178e936b1dffa5eacff05efd58bf Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 16:02:05 +0900
-Subject: [PATCH 35/39] Say how thick a cell diagonal is, not just that one was
+Subject: [PATCH 35/40] Say how thick a cell diagonal is, not just that one was
  declared
 
 A diagonal type alone cannot tell a consumer whether to draw: measured over

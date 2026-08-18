@@ -347,6 +347,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// and it is now updated, but a future test calling the old two-argument form still compiles and
     /// still means "no header/footer content").
     func configurePageBand(pageContentHeight: CGFloat?, band: CGFloat,
+                            footnotes: [OfficeFootnote] = [], footnoteHeights: [Int: CGFloat] = [:],
+                            footnoteSeparators: [Int: OfficeFootnoteSeparator] = [:],
                             headers: [OfficeHeaderFooter] = [], footers: [OfficeHeaderFooter] = [],
                             theme: RenderTheme = .current(size: 11), columnWidth: CGFloat = 0,
                             documentDefaultFontSize: CGFloat = 11, pageContentWidth: CGFloat? = nil,
@@ -354,10 +356,20 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                             separatesPages: Bool = false, deskGap: CGFloat? = nil) {
         pageBandDelegate.pageContentHeight = pageContentHeight ?? 0
         pageBandDelegate.band = band
+        // A fresh render starts the fixpoint over: the notes, their heights and the reservation the
+        // last render settled on are all about to be re-decided, and carrying any of them across
+        // would reserve room on a page of a layout that no longer exists.
+        self.footnotes = footnotes
+        self.footnoteHeights = footnoteHeights
+        self.footnoteSeparators = footnoteSeparators
+        footnoteBandHistory = []
+        footnoteBandsSettled = false
+        pageBandDelegate.noteBands = [:]
         // This render replaces the storage, so where the section markers sit is about to change.
         cachedSectionStarts = nil
         cachedHiddenPageNumberPages = nil
         cachedPageNumberRestarts = nil
+        cachedFootnotePages = nil
         // Read from whatever text is installed RIGHT NOW, which is the right answer for the two
         // callers that reach here with the document already on screen — printing (which re-applies
         // the band and never calls `display(_:)` again) and a View-menu toggle.
@@ -510,6 +522,47 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             }
         }
         cachedHiddenPageNumberPages = out
+        return out
+    }
+
+    /// WHICH FOOTNOTES ARE CITED ON EACH PAGE, as page index → the note numbers whose markers
+    /// landed there, in the order the text cites them.
+    ///
+    /// The same arithmetic `hiddenPageNumberPages` and `pageNumberRestarts` use, deliberately — all
+    /// three ask "which page did this marked character land on", and three different answers to
+    /// that would put a note on a page whose number is drawn by another rule.
+    ///
+    /// This is one HALF of the fixpoint invariant 98 describes: the answer here decides how tall
+    /// each page's band is, and the band decides where the markers land. Nothing may cache the
+    /// result across a re-layout, which is why it is cleared beside the other two.
+    private var cachedFootnotePages: [Int: [Int]]?
+
+    var footnotePages: [Int: [Int]] {
+        if let cached = cachedFootnotePages { return cached }
+        var out: [Int: [Int]] = [:]
+        if let storage = textView.textStorage, storage.length > 0,
+           let lm = textView.layoutManager, pageBandDelegate.isActive {
+            let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                             band: pageBandDelegate.band)
+            if pitch > 0 {
+                storage.enumerateAttribute(MDAttr.footnoteRef,
+                                           in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                    guard let number = (value as? NSNumber)?.intValue else { return }
+                    let glyph = lm.glyphIndexForCharacter(at: range.location)
+                    let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                    let page = PageBandLayoutDelegate.page(of: frag.minY,
+                                                           leadingBand: pageBandDelegate.leadingBand,
+                                                           pitch: pitch)
+                    guard page >= 0 else { return }
+                    // A document may cite the same note twice; it is drawn once, on the first page
+                    // that cites it, because two copies of one note is worse than a distant one.
+                    if !out.values.contains(where: { $0.contains(number) }) {
+                        out[Int(page), default: []].append(number)
+                    }
+                }
+            }
+        }
+        cachedFootnotePages = out
         return out
     }
 
@@ -1756,7 +1809,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // — so this is where "no table may print in the margin" is decided. If one has to move,
             // the whole walk runs again with that recorded; `settlePagedTables`' own doc explains why
             // it cannot be decided while the first pass is still typesetting.
-            if pagedTableSettles < maxPagedTableSettles, settlePagedTables() {
+            // Two settles share one budget, and the note band is checked SECOND: a table that has
+            // to move changes which page a marker sits on, so asking the notes first would measure
+            // a layout that is about to move anyway. `||` short-circuits deliberately — when a
+            // table moved, the notes are re-asked on the next round rather than against a layout
+            // that is already stale.
+            if pagedTableSettles < maxPagedTableSettles, settlePagedTables() || settleFootnoteBands() {
                 pagedTableSettles += 1
                 precomputeLayout(then: then)
                 return
@@ -2039,6 +2097,76 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// — the loop would still finish, just on a state one half of the settle never saw.
     var maxPagedTableSettles: Int { FootnoteBandSettle.maxRounds }
     private var pagedTableSettles = 0
+
+    /// The notes this render is drawing and how tall each one is, measured once by
+    /// `MarkdownDocument` at the column they will be drawn at (`configurePageBand`).
+    private(set) var footnotes: [OfficeFootnote] = []
+    private var footnoteHeights: [Int: CGFloat] = [:]
+    /// What each SECTION said about the rule above its notes, keyed by section index — only the
+    /// sections that said something (`OfficeFootnoteSeparator.isDeclared`), so a page that resolves
+    /// to a silent section falls back to the reader's own minimum rather than to a zeroed struct.
+    private var footnoteSeparators: [Int: OfficeFootnoteSeparator] = [:]
+
+    /// The separator a given PAGE draws — its own section's, resolved the same way a running head
+    /// and a 바탕쪽 resolve theirs (invariant 78), so three per-section declarations cannot disagree
+    /// about which section a page belongs to.
+    func footnoteSeparator(forPage page: Int) -> OfficeFootnoteSeparator? {
+        guard !footnoteSeparators.isEmpty else { return nil }
+        if let section = sectionOfPage(page), let sep = footnoteSeparators[section] { return sep }
+        return footnoteSeparators.count == 1 ? footnoteSeparators.first?.value : nil
+    }
+    /// Every reservation this render has proposed so far, oldest first — what `FootnoteBandSettle`
+    /// needs to tell a settling document from an oscillating one (invariant 98).
+    private var footnoteBandHistory: [[Int: CGFloat]] = []
+    /// Set once the rule has RULED. A settled render may still need one more walk to lay out
+    /// against the reservation it just fixed, and that walk must not start the argument again.
+    private var footnoteBandsSettled = false
+
+    /// What this layout says each page should reserve for the notes cited on it — the proposal half
+    /// of the fixpoint. Clamped per page, so a note taller than its own sheet cannot reserve the
+    /// page out of existence (`FootnoteBandSettle.clamped`).
+    private func proposedNoteBands() -> [Int: CGFloat] {
+        guard !footnotes.isEmpty else { return [:] }
+        let content = pageBandDelegate.pageContentHeight
+        var out: [Int: CGFloat] = [:]
+        for (page, numbers) in footnotePages {
+            let heights = numbers.compactMap { footnoteHeights[$0] }
+            // Separator allowance and the gap between notes are the document's own declarations
+            // (`FootnoteShape`) and are not decoded yet — S14's remaining rows. Zero here means the
+            // band is exactly the notes, which is the honest under-estimate: it reserves what is
+            // certainly needed and nothing invented.
+            let sep = footnoteSeparator(forPage: page)
+            let raw = PageBandGeometry.footnoteBandHeight(
+                noteHeights: heights,
+                separatorAllowance: FootnotePainter.separatorAllowance(sep),
+                noteSpacing: sep?.noteSpacingPt ?? 0)
+            let band = FootnoteBandSettle.clamped(raw, pageContentHeight: content)
+            if band > 0 { out[page] = band }
+        }
+        return out
+    }
+
+    /// Run one round of the note-band fixpoint. Returns `true` when the caller must lay the document
+    /// out again — either because the rule asked for another round, or because it has just fixed a
+    /// reservation the current layout was not built against.
+    func settleFootnoteBands() -> Bool {
+        guard !footnotes.isEmpty, pageBandDelegate.isActive, !footnoteBandsSettled else { return false }
+        let proposed = proposedNoteBands()
+        switch FootnoteBandSettle.step(proposed: proposed, history: footnoteBandHistory,
+                                       cap: maxPagedTableSettles) {
+        case let .retry(bands):
+            footnoteBandHistory.append(bands)
+            pageBandDelegate.noteBands = bands
+            cachedFootnotePages = nil
+            return true
+        case let .stop(bands, _):
+            footnoteBandsSettled = true
+            guard pageBandDelegate.noteBands != bands else { return false }
+            pageBandDelegate.noteBands = bands
+            cachedFootnotePages = nil
+            return true
+        }
+    }
 
     /// Visible character range grown by `margin` screenfuls above and below — the region whose
     /// images/diagrams should stay loaded. (Also lays that region out, which smooths scrolling.)

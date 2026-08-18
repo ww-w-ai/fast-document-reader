@@ -53,7 +53,7 @@ enum HeadlessExtract {
                 let result = try DocumentTypes.isHwp(ext)
                     ? HwpReader.read(data)
                     : DocumentTypes.readOffice(try ZipArchive(data: data), extension: ext)
-                let body = OfficeMarkdownSerializer.serialize(result.blocks)
+                let body = OfficeMarkdownSerializer.serialize(result.blocks, footnotes: result.footnotes)
                 out(header(for: url.lastPathComponent, body: body) + body)
                 return 0
             } catch {

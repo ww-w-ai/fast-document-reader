@@ -1,7 +1,7 @@
 From 64d9bbdfacb8a75c83abe56ab06e658900ee49bc Mon Sep 17 00:00:00 2001
 From: FastDocReader <taekim@ww-w.ai>
 Date: Tue, 18 Aug 2026 02:18:21 +0900
-Subject: [PATCH 27/39] Say where a paragraph allows its lines to break
+Subject: [PATCH 27/40] Say where a paragraph allows its lines to break
 
 A host that re-typesets the text rather than replaying HWP's own line
 segmentation has to decide where a line may break, and the document

@@ -1,0 +1,356 @@
+From 04f33667281a6d3c2c8a8ee2862e3b5562f1a6b8 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 20:37:00 +0900
+Subject: [PATCH 40/40] Send a footnote out on its own, so a reader can put it
+ where it belongs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A note's body was appended to the flow after the section that cited it, and
+its reference marker was a bare superscript number — so a host had no way to
+tell a note from stray body text, and no way to tell which marker pointed at
+which note. Both are now said out loud: the marker carries the number and the
+kind, and footnote bodies leave the flow for a document-level array shaped
+like the running heads already are.
+
+Endnotes deliberately keep arriving exactly as before. Measured over the 637
+samples: 1,832 endnotes across 33 documents are already in the right place —
+the end of their section — against 333 footnotes across 22 documents that are
+not. Moving both to fix one would have broken the larger, correct half.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ examples/scan_footnotes.rs                 | 164 +++++++++++++++++++++
+ src/document_core/queries/document_json.rs |  63 +++++++-
+ 2 files changed, 220 insertions(+), 7 deletions(-)
+ create mode 100644 examples/scan_footnotes.rs
+
+diff --git a/examples/scan_footnotes.rs b/examples/scan_footnotes.rs
+new file mode 100644
+index 00000000..58ee8685
+--- /dev/null
++++ b/examples/scan_footnotes.rs
+@@ -0,0 +1,164 @@
++// S14 — what a real corpus actually declares about footnotes.
++//
++// The sprint reserves a band at the foot of the page a note is CITED on. Three numbers decide
++// whether that is worth building, and one of them can cancel half of it:
++//
++//   1. how many documents cite a note at all;
++//   2. how tall a note is (paragraph counts — the band's own height);
++//   3. how many declare `print_inline_after_text`, which says "print the note straight after the
++//      body text" rather than at the foot of the sheet. A corpus that mostly says that does not
++//      want a band.
++//
++// PRIVACY: counts only. No document text, no filename, no path is ever printed — the corpus is the
++// owner's real material and this file is deliberately incapable of emitting any of it.
++
++use rhwp::model::control::Control;
++use rhwp::model::footnote::{FootnoteNumbering, FootnotePlacement};
++use rhwp::model::paragraph::Paragraph;
++use rhwp::model::table::Table;
++use rhwp::DocumentCore;
++use std::collections::BTreeMap;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++#[derive(Default)]
++struct Counts {
++    files_read: usize,
++    files_failed: usize,
++    docs_with_footnote: usize,
++    docs_with_endnote: usize,
++    footnotes: usize,
++    endnotes: usize,
++    notes_in_cells: usize,
++    /// note paragraph count → how many notes had it
++    note_paras: BTreeMap<usize, usize>,
++    fn_paras: BTreeMap<usize, usize>,
++    /// section-level shape declarations
++    placement: BTreeMap<&'static str, usize>,
++    numbering: BTreeMap<&'static str, usize>,
++    inline_after_text: usize,
++    shapes: usize,
++    sep_line_type: BTreeMap<u8, usize>,
++    docs_with_inline_after_text: usize,
++    footnote_samples: Vec<(u64, String, usize)>,
++}
++
++fn walk_paragraphs(paras: &[Paragraph], c: &mut Counts, doc_fn: &mut usize, doc_en: &mut usize,
++                   in_cell: bool) {
++    for p in paras {
++        for ctrl in &p.controls {
++            match ctrl {
++                Control::Footnote(f) => {
++                    c.footnotes += 1;
++                    *doc_fn += 1;
++                    if in_cell { c.notes_in_cells += 1; }
++                    *c.fn_paras.entry(f.paragraphs.len()).or_default() += 1;
++                }
++                Control::Endnote(e) => {
++                    c.endnotes += 1;
++                    *doc_en += 1;
++                    if in_cell { c.notes_in_cells += 1; }
++                    *c.note_paras.entry(e.paragraphs.len()).or_default() += 1;
++                }
++                Control::Table(t) => walk_table(t, c, doc_fn, doc_en),
++                _ => {}
++            }
++        }
++    }
++}
++
++fn walk_table(t: &Table, c: &mut Counts, doc_fn: &mut usize, doc_en: &mut usize) {
++    for cell in &t.cells {
++        walk_paragraphs(&cell.paragraphs, c, doc_fn, doc_en, true);
++    }
++}
++
++fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
++    let Ok(entries) = fs::read_dir(dir) else { return };
++    for e in entries.flatten() {
++        let path = e.path();
++        if path.is_dir() {
++            collect(&path, out);
++        } else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
++            let ext = ext.to_ascii_lowercase();
++            if ext == "hwp" || ext == "hwpx" {
++                out.push(path);
++            }
++        }
++    }
++}
++
++fn main() {
++    let root = std::env::args().nth(1).unwrap_or_else(|| "samples".to_string());
++    let mut files = Vec::new();
++    collect(Path::new(&root), &mut files);
++    files.sort();
++
++    let mut c = Counts::default();
++    for path in &files {
++        let Ok(bytes) = fs::read(path) else { c.files_failed += 1; continue };
++        let Ok(core) = DocumentCore::from_bytes(&bytes) else { c.files_failed += 1; continue };
++        c.files_read += 1;
++        let doc = core.document();
++        let (mut doc_fn, mut doc_en) = (0usize, 0usize);
++        let mut doc_inline = false;
++        for section in &doc.sections {
++            walk_paragraphs(&section.paragraphs, &mut c, &mut doc_fn, &mut doc_en, false);
++            for (shape, _kind) in [(&section.section_def.footnote_shape, "footnote"),
++                                   (&section.section_def.endnote_shape, "endnote")] {
++                c.shapes += 1;
++                let place = match shape.placement {
++                    FootnotePlacement::EachColumn => "eachColumn",
++                    FootnotePlacement::BelowText => "belowText",
++                    FootnotePlacement::RightColumn => "rightColumn",
++                };
++                let numb = match shape.numbering {
++                    FootnoteNumbering::Continue => "continue",
++                    FootnoteNumbering::RestartSection => "restartSection",
++                    FootnoteNumbering::RestartPage => "restartPage",
++                };
++                *c.placement.entry(if _kind == "footnote" { "fn/" } else { "en/" }).or_default() += 0;
++                *c.placement.entry(Box::leak(format!("{_kind}/{place}").into_boxed_str())).or_default() += 1;
++                *c.numbering.entry(Box::leak(format!("{_kind}/{numb}").into_boxed_str())).or_default() += 1;
++                *c.sep_line_type.entry(shape.separator_line_type).or_default() += 1;
++                if shape.print_inline_after_text {
++                    c.inline_after_text += 1;
++                    doc_inline = true;
++                }
++            }
++        }
++        if doc_fn > 0 {
++            c.docs_with_footnote += 1;
++            // rhwp's OWN repo samples, not private material — the path is reportable here, and it is
++            // how a sprint picks its smoke document. Still no document TEXT, ever.
++            let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
++            c.footnote_samples.push((size, path.display().to_string(), doc_fn));
++        }
++        if doc_en > 0 { c.docs_with_endnote += 1; }
++        if doc_inline { c.docs_with_inline_after_text += 1; }
++    }
++
++    println!("files read      : {} (failed {})", c.files_read, c.files_failed);
++    println!("docs citing fn  : {}", c.docs_with_footnote);
++    println!("docs citing en  : {}", c.docs_with_endnote);
++    println!("footnotes       : {}", c.footnotes);
++    println!("endnotes        : {}", c.endnotes);
++    println!("notes in cells  : {}   (S15 territory)", c.notes_in_cells);
++    println!("shapes declared : {}", c.shapes);
++    println!("inline-after-text: {} shapes / {} docs", c.inline_after_text,
++             c.docs_with_inline_after_text);
++    println!("placement       : {:?}", c.placement);
++    println!("numbering       : {:?}", c.numbering);
++    println!("separator type  : {:?}", c.sep_line_type);
++    c.footnote_samples.sort();
++    println!("--- smallest footnote-citing samples ---");
++    for (size, path, notes) in c.footnote_samples.iter().take(5) {
++        println!("  {size:>8} bytes  {notes:>3} notes  {path}");
++    }
++    let mut fp: Vec<_> = c.fn_paras.iter().collect();
++    fp.sort();
++    println!("FOOTNOTE paragraphs : {:?}", fp);
++    let mut ep: Vec<_> = c.note_paras.iter().collect();
++    ep.sort();
++    println!("endnote paragraphs  : {:?}", ep);
++}
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 675c550b..cbb8d8d4 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -132,6 +132,15 @@ struct DocumentJson {
+     headers: Vec<HeaderFooterEntry>,
+     /// 문서 전 구역에서 수집한 꼬리말('foot' 컨트롤). `headers`와 동일한 계약.
+     footers: Vec<HeaderFooterEntry>,
++    /// 문서 전 구역에서 수집한 각주 본문('fn  ' 컨트롤), 문서 순서대로 — `headers`/`footers`와
++    /// 같은 모양(문서 수준 배열 + `build_blocks` 재사용)이다.
++    ///
++    /// 미주와 달리 여기서 따로 뗀다: 미주는 구역/문서 끝에 놓이는 것이 맞아 본문 블록 흐름에
++    /// 그대로 이어붙여도 위치가 맞지만(현재도 그렇게 하고, 그대로 둔다), 각주는 그 마커가
++    /// 박힌 쪽의 발밑에 그려야 한다 — 평평한 흐름에 이어붙이면 그 문단들이 각주 하나 전체인지
++    /// 본문의 계속인지 호스트가 구분할 수 없다. 각 항목의 `number`는 참조 마커 span 의
++    /// `noteRef`와 같은 값이라 뷰어가 둘을 맞춰 찾는다.
++    footnotes: Vec<FootnoteEntry>,
+     /// HWPML(HML) 문서의 스키마 버전(`DocInfo.hwpml_version`) — 그 형식이 아니면 없음.
+     #[serde(rename = "hwpmlVersion", skip_serializing_if = "Option::is_none")]
+     hwpml_version: Option<String>,
+@@ -317,6 +326,14 @@ struct HeaderFooterEntry {
+     blocks: Vec<Block>,
+ }
+ 
++/// 각주 본문 하나 — 번호, 속한 구역, 본문 블록. `HeaderFooterEntry`와 같은 모양이다.
++#[derive(Serialize)]
++struct FootnoteEntry {
++    number: u16,
++    section: usize,
++    blocks: Vec<Block>,
++}
++
+ /// `CharShape` 마다 7개 슬롯의 글꼴 이름을 해소해 문서 수준 테이블로 만든다.
+ ///
+ /// 인덱스는 `doc_info.char_shapes` 의 인덱스를 그대로 쓴다(중복 제거하지 않는다) — span 이
+@@ -1373,6 +1390,17 @@ struct Span {
+     page_number_prefix_char: Option<String>,
+     #[serde(rename = "pageNumberSuffixChar", skip_serializing_if = "Option::is_none")]
+     page_number_suffix_char: Option<String>,
++    /// 이 span 이 본문에 박힌 각주/미주 참조 마커일 때, 그것이 가리키는 노트의 번호. `text`가
++    /// 이미 같은 숫자를 사람이 읽는 형태로 담고 있지만, 위첨자 숫자와 지수를 구분할 길이
++    /// 없었다 — 이 필드가 있으면 뷰어는 `footnotes[]`(또는 미주는 여전히 본문 흐름에 이어붙는
++    /// 블록들 중) 같은 번호를 찾아 그 노트를 쪽 발밑에(또는 문서 끝에) 그릴 수 있다. 일반
++    /// 텍스트 런에는 없다.
++    #[serde(rename = "noteRef", skip_serializing_if = "Option::is_none")]
++    note_ref: Option<u16>,
++    /// `noteRef`가 가리키는 노트가 각주인지 미주인지 — `"footnote"` / `"endnote"`. `noteRef`가
++    /// 없으면 이 필드도 없다.
++    #[serde(rename = "noteRefKind", skip_serializing_if = "Option::is_none")]
++    note_ref_kind: Option<&'static str>,
+     /// 각주/미주 참조 마커(번호 텍스트 span)에서만 채워지는, 그 컨트롤 자신의 앞/뒤 장식 문자와
+     /// 번호 모양(HWP5 CTRL_FOOTNOTE payload, Task #1050) — 구역 전체 기본값인 `FootnoteShape`
+     /// 와는 별개로 컨트롤 인스턴스가 스스로 들고 있는 값이다.
+@@ -2313,10 +2341,10 @@ fn build_spans(doc: &Document, para: &Paragraph) -> Vec<Span> {
+                 markers.push((pos, anchor_span(Some(bm.name.clone()))));
+             }
+             Control::Footnote(fnote) => {
+-                markers.push((pos, note_marker_span(fnote.number)));
++                markers.push((pos, note_marker_span(fnote.number, "footnote")));
+             }
+             Control::Endnote(en) => {
+-                markers.push((pos, note_marker_span(en.number)));
++                markers.push((pos, note_marker_span(en.number, "endnote")));
+             }
+             // 쪽번호. `AutoNumber` 는 각주·그림·표 번호에도 쓰이므로 `Page` 만 골라낸다 —
+             // 나머지는 이미 위 두 갈래가 처리하거나 본문에 글자로 들어가 있어, 여기서 또 넣으면
+@@ -2532,6 +2560,8 @@ fn anchor_span(bookmark: Option<String>) -> Span {
+         page_number_user_symbol: None,
+         page_number_prefix_char: None,
+         page_number_suffix_char: None,
++        note_ref: None,
++        note_ref_kind: None,
+         note_before_char: None,
+         note_after_char: None,
+         note_number_shape: None,
+@@ -2547,11 +2577,14 @@ fn anchor_span(bookmark: Option<String>) -> Span {
+     }
+ }
+ 
+-/// 각주/미주 참조 마커 span (위첨자 번호).
+-fn note_marker_span(number: u16) -> Span {
++/// 각주/미주 참조 마커 span (위첨자 번호). `kind`는 `"footnote"`/`"endnote"` — 뷰어가
++/// 이 마커를 지수(exponent)와 구분하고, 어느 노트 배열에서 몸체를 찾을지 판단하는 근거다.
++fn note_marker_span(number: u16, kind: &'static str) -> Span {
+     let mut span = anchor_span(None);
+     span.text = number.to_string();
+     span.superscript = true;
++    span.note_ref = Some(number);
++    span.note_ref_kind = Some(kind);
+     span
+ }
+ 
+@@ -2590,6 +2623,8 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+                 page_number_user_symbol: None,
+                 page_number_prefix_char: None,
+                 page_number_suffix_char: None,
++                note_ref: None,
++                note_ref_kind: None,
+                 note_before_char: None,
+                 note_after_char: None,
+                 note_number_shape: None,
+@@ -2625,6 +2660,8 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+             page_number_user_symbol: None,
+             page_number_prefix_char: None,
+             page_number_suffix_char: None,
++            note_ref: None,
++            note_ref_kind: None,
+             note_before_char: None,
+             note_after_char: None,
+             note_number_shape: None,
+@@ -3846,7 +3883,7 @@ fn build_note_blocks(doc: &Document, note: &Control) -> Vec<Block> {
+     let mut blocks = build_blocks(doc, paragraphs);
+ 
+     // 번호 접두 span (예: "1) ") 을 첫 Para 블록 앞에 삽입.
+-    let mut prefix = note_marker_span(number);
++    let mut prefix = note_marker_span(number, if is_endnote { "endnote" } else { "footnote" });
+     prefix.text = format!("{}) ", number);
+     prefix.superscript = false;
+     // 이 컨트롤 인스턴스 자신이 들고 있는 장식/번호 모양 — 구역 전체 기본값(FootnoteShape)과는
+@@ -3925,14 +3962,25 @@ impl DocumentCore {
+         let mut section_starts = Vec::new();
+         let mut header_ctrls: Vec<(usize, &Control)> = Vec::new();
+         let mut footer_ctrls: Vec<(usize, &Control)> = Vec::new();
++        let mut footnote_entries: Vec<FootnoteEntry> = Vec::new();
+         for (section_index, section) in self.document.sections.iter().enumerate() {
+             section_starts.push(blocks.len());
+             blocks.extend(build_blocks(&self.document, &section.paragraphs));
+-            // 각주/미주 본문을 구역 본문 뒤에 붙인다 (참조 마커는 본문 내 super span).
++            // 미주 본문은 구역 본문 뒤에 그대로 붙인다(참조 마커는 본문 내 super span) — 미주는
++            // 구역/문서 끝에 놓이는 것이 맞는 위치라 평평한 이어붙임이 정확하다. 각주는 반대로
++            // 그 마커가 박힌 쪽의 발밑에 그려야 하므로, 본문 흐름에서 떼어 `footnotes`(문서
++            // 수준 배열)로 보낸다 — 위 `note_marker_span`이 남긴 `noteRef`로 서로를 찾는다.
+             let mut notes = Vec::new();
+             collect_notes(&section.paragraphs, &mut notes);
+             for note in notes {
+-                blocks.extend(build_note_blocks(&self.document, note));
++                match note {
++                    Control::Footnote(f) => footnote_entries.push(FootnoteEntry {
++                        number: f.number,
++                        section: section_index,
++                        blocks: build_note_blocks(&self.document, note),
++                    }),
++                    _ => blocks.extend(build_note_blocks(&self.document, note)),
++                }
+             }
+             // 머리말/꼬리말은 본문 흐름에 섞지 않고 문서 수준 배열로 따로 모은다.
+             let (mut heads, mut foots) = (Vec::new(), Vec::new());
+@@ -3964,6 +4012,7 @@ impl DocumentCore {
+             sections: build_sections(&self.document),
+             headers: build_header_footer_entries(&self.document, &header_ctrls),
+             footers: build_header_footer_entries(&self.document, &footer_ctrls),
++            footnotes: footnote_entries,
+             hwpml_version: self.document.doc_info.hwpml_version.clone(),
+             is_hwp3_variant: self.document.is_hwp3_variant,
+             is_hwpx_variant: self.document.is_hwpx_variant,
+-- 
+2.50.1 (Apple Git-155)
+

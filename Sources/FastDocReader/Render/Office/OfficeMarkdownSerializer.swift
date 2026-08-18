@@ -23,7 +23,15 @@ enum OfficeMarkdownSerializer {
     static let rawOpen = "<raw>"
     static let rawClose = "</raw>"
 
-    static func serialize(_ blocks: [OfficeBlock]) -> String {
+    /// `footnotes` are appended as a trailing section, because they are no longer IN `blocks`.
+    ///
+    /// This is a data-loss guard, not a formatting choice. S14 lifted footnote bodies out of the
+    /// body flow so they could be drawn at the foot of their own page; a serializer that only ever
+    /// sees `blocks` would then silently drop them, and `--extract` exists precisely so a tool can
+    /// read a document WITHOUT the reader — losing a third of a scholarly page's content there is
+    /// the worst kind of failure, because nothing reports it. Endnotes need no such handling: they
+    /// are still ordinary trailing blocks.
+    static func serialize(_ blocks: [OfficeBlock], footnotes: [OfficeFootnote] = []) -> String {
         var pieces: [(text: String, isList: Bool)] = []
         for block in blocks {
             let rendered = render(block)
@@ -38,6 +46,16 @@ enum OfficeMarkdownSerializer {
                 out += (p.isList && pieces[i - 1].isList) ? "\n" : "\n\n"
             }
             out += p.text
+        }
+        guard !footnotes.isEmpty else { return out }
+        // Markdown's own footnote spelling, so a tool reading this gets the association back rather
+        // than a loose list of numbered lines. The body's marker is a superscript digit run and is
+        // left as it is — rewriting it in place would mean editing spans the reader also draws.
+        for note in footnotes {
+            let body = serialize(note.blocks)
+            guard !body.isEmpty else { continue }
+            if !out.isEmpty { out += "\n\n" }
+            out += "[^\(note.number)]: " + body.replacingOccurrences(of: "\n", with: "\n    ")
         }
         return out
     }

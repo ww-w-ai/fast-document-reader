@@ -85,7 +85,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 98 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 99 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -110,7 +110,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | fonts, per-script slots, substitution | 52, 53, 93, 95 |
 | the comments panel | 38 |
 | paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62, 77, 78 |
-| footnotes — the band fixpoint, where a note lands, the settle's round budget | 98 |
+| footnotes — the band fixpoint, where a note lands, the settle's round budget | 98, 99 |
 | printing, `--pdf`, `--extract`, anything headless | 40, 59, 66, 70 |
 | a table that crosses a page boundary | 61, 64, 72, 96 |
 | memory, image caches, document lifetime, crashes | 63, 65 |

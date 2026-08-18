@@ -155,6 +155,20 @@ enum MDAttr {
     /// document, which puts one chapter's running title on every other chapter's pages.
     static let sectionIndex = NSAttributedString.Key("mdSectionIndex")
 
+    /// WHICH FOOTNOTE this run is the reference marker for (an `Int`, the note's own number) — set
+    /// on the superscript marker in the BODY, never on the note's text.
+    ///
+    /// A marker is a superscript number and nothing about its glyphs distinguishes it from an
+    /// exponent, so without this the reader cannot tell which run cites a note, or which note it
+    /// cites. Carried as the note's number rather than an index because that is the only identifier
+    /// both sides already share (`OfficeFootnote.number`), and because a document may cite the same
+    /// number twice.
+    ///
+    /// Only FOOTNOTE markers carry it. An endnote's marker deliberately does not: its note stays in
+    /// the body flow where it already belongs (`OfficeReadResult.footnotes`), so nothing needs to
+    /// find it.
+    static let footnoteRef = NSAttributedString.Key("mdFootnoteRef")
+
     /// Set (value `true`) on a block the DOCUMENT vetoes a page number for (HWP's `Control::
     /// PageHide`'s `hidePageNum`) — see `OfficeReadResult.hidePageNumberBlocks`. A page resolved
     /// from where this marker sits in the laid-out text (`DocumentWindowController`'s section-page

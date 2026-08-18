@@ -374,6 +374,20 @@ enum HwpReader {
         }
         result.sections = (envelope.sections ?? []).map { section in
             OfficeSectionDeclaration(
+                footnoteSeparator: section.footnoteShape.map { shape in
+                    // Every length is the document's own HWPUNIT, through the SAME `points`
+                    // conversion every other authored length in this reader goes through — a
+                    // separator measured differently from the margins around it would drift.
+                    OfficeFootnoteSeparator(
+                        lineType: shape.separatorLineType ?? 0,
+                        lineWidthPt: shape.separatorLineWidth.flatMap {
+                            $0 > 0 ? diagonalWidthPt($0) : nil } ?? 0,
+                        color: shape.separatorColor.flatMap { color($0) },
+                        lengthPt: shape.separatorLengthHwpUnit.map { points($0) },
+                        marginTopPt: points(shape.separatorMarginTopHwpUnit ?? 0),
+                        marginBottomPt: points(shape.separatorMarginBottomHwpUnit ?? 0),
+                        noteSpacingPt: points(shape.noteSpacingHwpUnit ?? 0))
+                },
                 pageBorder: section.pageBorder.map {
                     OfficePageBorder(
                         borders: edgeBorders(forFillId: $0.borderFillId, in: borderFills),
@@ -483,6 +497,11 @@ enum HwpReader {
             mapHeaderFooterEntry($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
                                  slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
                                  paged: pageWidth != nil)
+        }
+        result.footnotes = (envelope.footnotes ?? []).map {
+            mapFootnote($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize,
+                        slotFonts: slotFonts, borderFills: borderFills, shapes: shapes,
+                        paged: pageWidth != nil)
         }
         // EVERY section's template is kept, and the painter picks per page (`sectionStartBlocks`).
         // Keeping only the body section's — the rule a running head needs (invariant 77) — put that
@@ -636,6 +655,23 @@ enum HwpReader {
     ) -> OfficeHeaderFooter {
         OfficeHeaderFooter(
             appliesTo: mapHeaderFooterApplyTo(entry.applyTo),
+            blocks: entry.blocks.map {
+                mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
+                         borderFills: borderFills, shapes: shapes, paged: paged)
+            },
+            section: entry.section)
+    }
+
+    /// Every section's footnotes are kept, unfiltered — unlike a running head, which belongs to one
+    /// section (invariant 77). A footnote is drawn on the page that CITES it, and that page is found
+    /// from its marker rather than from any section rule, so filtering by section here could only
+    /// throw away a note whose marker is still in the text.
+    private static func mapFootnote(
+        _ entry: HwpFootnoteEntry, pageWidth: CGFloat?, defaultBodySize: CGFloat,
+        slotFonts: [HwpSlotFonts], borderFills: [HwpBorderFill], shapes: MediaContext, paged: Bool
+    ) -> OfficeFootnote {
+        OfficeFootnote(
+            number: entry.number,
             blocks: entry.blocks.map {
                 mapBlock($0, pageWidth: pageWidth, defaultBodySize: defaultBodySize, slotFonts: slotFonts,
                          borderFills: borderFills, shapes: shapes, paged: paged)
@@ -851,6 +887,9 @@ enum HwpReader {
         span.underlineStyle = ulStyle
         span.strikethrough = s.strike ?? false
         span.superscript = s.superscript ?? false
+        // ONLY a footnote's marker is carried. An endnote's marker is left bare: its note is still
+        // in the block flow where it belongs, so nothing has to find it.
+        if s.noteRefKind == "footnote", let ref = s.noteRef { span.footnoteRef = Int(ref) }
         span.subscripted = s.subscripted ?? false
         span.textColor = color(s.color)
         // size is a base_size in HWPUNIT; ÷100 = points. 0/absent → unspecified (theme decides).
@@ -1736,6 +1775,7 @@ private struct HwpEnvelope: Decodable {
     /// unchanged from before this field existed (invariant 37's contract, restated for HWP).
     let headers: [HwpHeaderFooterEntry]?
     let footers: [HwpHeaderFooterEntry]?
+    let footnotes: [HwpFootnoteEntry]?
     /// The section this document is typeset on (the one holding the most paragraphs, the same choice
     /// `pageContentWidth` comes from). Running heads are kept ONLY from this section: measured on a
     /// real manual, exactly one of 14 sections declares any — a five-paragraph landscape insert —
@@ -1787,6 +1827,30 @@ private struct HwpMasterObject: Decodable {
 /// (`{"applyTo":"both"|"even"|"odd","blocks":[…]}`) — `blocks` are the SAME `HwpBlock` the document
 /// body decodes, so mapping one is exactly `mapBlock`, called nowhere differently than the body's own
 /// blocks are.
+/// One footnote, lifted out of the body flow by the exporter so it can be drawn at the foot of the
+/// page its marker sits on. Shaped like `HwpHeaderFooterEntry` because it is drawn by the same
+/// machinery — see `OfficeFootnote`. ENDNOTES never arrive here: they stay in the block flow, which
+/// is already where an endnote belongs.
+/// A section's own footnote/endnote shape — `FootnoteShape` in the format, exported per section.
+/// Only the SEPARATOR half is read: numbering and placement are decided elsewhere (the corpus
+/// declares one value for both across all 1,622 shapes, and `placement` is meaningless for an
+/// endnote by the format's own definition).
+private struct HwpFootnoteShape: Decodable {
+    var separatorLineType: Int?
+    var separatorLineWidth: Int?
+    var separatorColor: String?
+    var separatorLengthHwpUnit: Int?
+    var separatorMarginTopHwpUnit: Int?
+    var separatorMarginBottomHwpUnit: Int?
+    var noteSpacingHwpUnit: Int?
+}
+
+private struct HwpFootnoteEntry: Decodable {
+    var number: Int
+    var section: Int?
+    var blocks: [HwpBlock]
+}
+
 private struct HwpHeaderFooterEntry: Decodable {
     var applyTo: String
     /// Which section declared it. A running head belongs to its own section — see the envelope's
@@ -1953,6 +2017,7 @@ private struct HwpLineHeight: Decodable {
 /// export, and then every section reads as declaring nothing, which is how this reader always
 /// behaved.
 private struct HwpSection: Decodable {
+    var footnoteShape: HwpFootnoteShape?
     var page: HwpSectionPage?
     var pageBorder: HwpPageBorder?
     var hideHeader: Bool?
@@ -2025,6 +2090,11 @@ private struct HwpSpan: Decodable {
     var underline: String?
     var strike: Bool?
     var superscript: Bool?      // JSON key "super" (a Swift keyword) — remapped below
+    /// Which note this run references, and of which kind (`"footnote"`/`"endnote"`). Absent on
+    /// every run that is not a note marker — a marker's glyphs are a superscript number and say
+    /// nothing on their own.
+    var noteRef: Int?
+    var noteRefKind: String?
     var subscripted: Bool?      // JSON key "sub"
     var color: String?
     var size: Int?

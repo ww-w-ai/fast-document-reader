@@ -34,6 +34,12 @@ struct Span: Equatable {
     var link: String? = nil
     var strikethrough: Bool = false
     var superscript: Bool = false
+    /// Set on the superscript run that REFERENCES a footnote, to that note's own number — the only
+    /// link between a marker and its note (`OfficeFootnote.number`), since the glyphs of a marker
+    /// are indistinguishable from an exponent's. Becomes `MDAttr.footnoteRef` on the built text.
+    /// `nil` on every other run, including an ENDNOTE's marker: an endnote stays in the body flow
+    /// and nothing needs to go looking for it.
+    var footnoteRef: Int? = nil
     /// Named `subscripted`, not `subscript` — that spelling is a Swift keyword and would need
     /// backticks at every call site (`` `subscript` ``). `superscript`/`subscripted` reads a little
     /// unevenly next to each other, but stays typeable everywhere without ceremony.
@@ -930,6 +936,27 @@ struct OfficeHeaderFooter: Equatable {
     var section: Int? = nil
 }
 
+/// One footnote, ready to be laid out somewhere other than where it arrived.
+///
+/// Shaped exactly like `OfficeHeaderFooter` — blocks plus the section that declared them — because
+/// it is drawn by the same machinery: a flow, built by `OfficeTextBuilder` and painted into a band
+/// the reader reserved. The one thing that differs is HOW its page is chosen. A running head is
+/// picked by the page's parity; a footnote is picked by where its own reference marker landed,
+/// which is not known until the document has been laid out, and which the reservation then changes.
+/// That circularity is why `FootnoteBandSettle` exists (invariant 98) and why this type carries no
+/// page of its own — nothing may cache one.
+struct OfficeFootnote: Equatable {
+    /// The number the document gave it, and the SAME number its reference marker carries
+    /// (`MDAttr.footnoteRef`). This is the only link between the two: a marker is a superscript
+    /// number and nothing about its glyphs says which note it points at.
+    var number: Int
+    var blocks: [OfficeBlock]
+    /// WHICH SECTION declared it, for the format that says so (HWP) — a footnote's numbering and
+    /// separator are section-level declarations, so a host that flattened the document into one
+    /// flow would otherwise have no way back to them. `nil` = the format did not say.
+    var section: Int? = nil
+}
+
 /// One object of a 바탕쪽 (master page), already resolved into something drawable and positioned on
 /// the PAPER — `frame` is in points from the sheet's top-left corner, not from the reading column.
 ///
@@ -1104,7 +1131,42 @@ struct OfficePageBorder: Equatable {
     }
 }
 
+/// What a section says about the rule above its footnotes, and the air around them.
+///
+/// Every length arrives as the document's own measurement in points, `nil`/`0` meaning the document
+/// declared nothing and the reader's own minimum stands. Kept as a value on the SECTION rather than
+/// on the document because HWP declares it per section — the corpus happens to agree section to
+/// section today, but throwing that away would be inventing an answer the format actually gives.
+struct OfficeFootnoteSeparator: Equatable {
+    /// `1` = solid and so on, in the SAME code space as a border edge's line type — `DiagonalLine`'s
+    /// own comment says the spaces are shared, which is what let the diagonal work reuse it. `0`
+    /// means the document declared no line at all.
+    var lineType: Int = 0
+    /// Already in POINTS — HWP states it as a 16-step enum and the reader resolves it exactly the
+    /// way a cell diagonal's is resolved (`HwpReader.diagonalWidthPt`), so a separator and a border
+    /// drawn from the same step cannot come out different weights.
+    var lineWidthPt: CGFloat = 0
+    var color: NSColor? = nil
+    /// How long the rule is. The format's own "full width" sentinel is far outside any real page, so
+    /// a value that exceeds the column is read as "all of it" rather than clamped silently.
+    var lengthPt: CGFloat? = nil
+    var marginTopPt: CGFloat = 0
+    var marginBottomPt: CGFloat = 0
+    /// The gap the document wants BETWEEN two notes — HWP's own UI calls it "주석 사이".
+    var noteSpacingPt: CGFloat = 0
+
+    /// Did the document say anything at all? A section that declared nothing must not make the
+    /// reader reserve or draw differently from one that has no notes.
+    var isDeclared: Bool {
+        lineType != 0 || lineWidthPt != 0 || color != nil || lengthPt != nil
+            || marginTopPt != 0 || marginBottomPt != 0 || noteSpacingPt != 0
+    }
+}
+
 struct OfficeSectionDeclaration: Equatable {
+    /// The rule above this section's footnotes — see `OfficeFootnoteSeparator`. `nil` for every
+    /// format but HWP, and for an HWP section that declared none.
+    var footnoteSeparator: OfficeFootnoteSeparator? = nil
     /// The frame this section rules around its page, when it declares one. CARRIED, NOT YET PAINTED.
     var pageBorder: OfficePageBorder? = nil
     /// The sheet THIS section declared. `nil` = the section stated no page of its own, and the
@@ -1279,6 +1341,15 @@ struct OfficeReadResult: Equatable {
     /// always meant: no running header/footer captured.
     var headers: [OfficeHeaderFooter] = []
     var footers: [OfficeHeaderFooter] = []
+    /// The document's FOOTNOTES, lifted out of the body flow so they can be drawn at the foot of the
+    /// page each one is cited on rather than trailing the section that cites them.
+    ///
+    /// ENDNOTES ARE NOT HERE, deliberately. An endnote belongs at the end of the section or the
+    /// document, which is exactly where the flat body flow already puts it — measured on the
+    /// 637-document corpus, 1,832 endnotes across 33 documents are correct today and only the 333
+    /// footnotes across 22 documents are in the wrong place. Moving both to fix one would be a net
+    /// loss, so an endnote stays an ordinary trailing block and never appears in this array.
+    var footnotes: [OfficeFootnote] = []
 
     /// Every 바탕쪽 the document declares, each naming its own section — the reader picks per PAGE,
     /// through `sectionStartBlocks`. Empty for docx and odt, which have no equivalent mechanism, and

@@ -501,6 +501,11 @@ enum OfficeTextBuilder {
             // `superscript`/`subscripted` are mutually exclusive in every real document, but if a
             // parser ever set both, superscript wins (checked first) rather than the two offsets
             // cancelling into something illegible.
+            // The marker that cites a footnote is tagged where it is BUILT, because that is the only
+            // moment the span model and the laid-out text are the same thing. Everything downstream
+            // — which page the note lands on, how tall that page's band is — is found from where
+            // this attribute ends up after layout (invariant 98).
+            if let ref = span.footnoteRef { attrs[MDAttr.footnoteRef] = ref }
             if span.superscript {
                 let raised = font.pointSize * 0.35
                 font = fontScaled(font, by: 0.7)

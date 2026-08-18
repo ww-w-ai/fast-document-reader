@@ -35,6 +35,11 @@ final class MarkdownDocument: NSDocument {
     private(set) var officeHeaders: [OfficeHeaderFooter] = []
     private(set) var officeFooters: [OfficeHeaderFooter] = []
 
+    /// Footnotes the source declares, lifted OUT of `officeBlocks` so they can be drawn at the foot
+    /// of the page each is cited on (invariant 98). Endnotes are deliberately absent — they are
+    /// still ordinary blocks, which is where an endnote belongs.
+    private(set) var officeFootnotes: [OfficeFootnote] = []
+
     /// Objects the source pins to the paper — see `OfficeAnchoredObject`. Empty for every format
     /// but HWP.
     private(set) var officeAnchoredObjects: [OfficeAnchoredObject] = []
@@ -189,6 +194,7 @@ final class MarkdownDocument: NSDocument {
         officePageFooterDistance = nil
         officeHeaders = []
         officeFooters = []
+        officeFootnotes = []
         officeMasterPages = []
         officeSectionStartBlocks = []
         officeHidePageNumberBlocks = []
@@ -355,6 +361,7 @@ final class MarkdownDocument: NSDocument {
                 pageHeaderDistance: result.pageHeaderDistance,
                 pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
+                footnotes: result.footnotes,
                 masterPages: result.masterPages,
                 sectionStartBlocks: result.sectionStartBlocks,
                 pageBreakBlocks: result.pageBreakBlocks,
@@ -379,6 +386,7 @@ final class MarkdownDocument: NSDocument {
                 pageHeaderDistance: result.pageHeaderDistance,
                 pageFooterDistance: result.pageFooterDistance,
                 headers: result.headers, footers: result.footers,
+                footnotes: result.footnotes,
                 masterPages: result.masterPages,
                 sectionStartBlocks: result.sectionStartBlocks,
                 pageBreakBlocks: result.pageBreakBlocks,
@@ -404,6 +412,7 @@ final class MarkdownDocument: NSDocument {
         pageMarginTop: CGFloat? = nil, pageMarginBottom: CGFloat? = nil,
         pageHeaderDistance: CGFloat? = nil, pageFooterDistance: CGFloat? = nil,
         headers: [OfficeHeaderFooter] = [], footers: [OfficeHeaderFooter] = [],
+        footnotes: [OfficeFootnote] = [],
         masterPages: [OfficeMasterPage] = [],
         sectionStartBlocks: [Int] = [],
         pageBreakBlocks: [Int] = [],
@@ -429,6 +438,7 @@ final class MarkdownDocument: NSDocument {
         self.officePageFooterDistance = pageFooterDistance
         self.officeHeaders = headers
         self.officeFooters = footers
+        self.officeFootnotes = footnotes
         self.officeMasterPages = masterPages
         self.officeSectionStartBlocks = sectionStartBlocks
         self.officePageBreakBlocks = pageBreakBlocks
@@ -547,6 +557,7 @@ final class MarkdownDocument: NSDocument {
                                  pageContentHeight: result.pageContentHeight,
                                  pageMarginTop: result.pageMarginTop, pageMarginBottom: result.pageMarginBottom,
                                  headers: result.headers, footers: result.footers,
+                footnotes: result.footnotes,
                                  masterPages: result.masterPages,
                                  sectionStartBlocks: result.sectionStartBlocks,
                                  pageBreakBlocks: result.pageBreakBlocks,
@@ -1330,7 +1341,23 @@ final class MarkdownDocument: NSDocument {
                                        separatesPages: options.separatesPages,
                                        deskGap: forPrinting ? 0 : nil)
             : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
+        // Each note's own height, measured ONCE per render at the column it will be drawn at. The
+        // settle loop then adds up whichever notes a page turns out to cite (invariant 98) without
+        // re-building any of them — it runs up to eight times, and re-typesetting every note on
+        // every round is the one cost that would make the fixpoint too expensive to have.
+        let footnoteHeights: [Int: CGFloat] = officeFootnotes.reduce(into: [:]) { out, note in
+            out[note.number] = PageBandGeometry.builtHeight(
+                of: note.blocks, theme: theme, columnWidth: bandColumn,
+                documentDefaultFontSize: officeDefaultBodyFontSize,
+                pageContentWidth: officePageContentWidth)
+        }
         wc.configurePageBand(pageContentHeight: officePageContentHeight, band: sides.band,
+                             footnotes: officeFootnotes, footnoteHeights: footnoteHeights,
+                             footnoteSeparators: officeSections.enumerated().reduce(into: [:]) {
+                                 if let sep = $1.element.footnoteSeparator, sep.isDeclared {
+                                     $0[$1.offset] = sep
+                                 }
+                             },
                              headers: headers, footers: footers, theme: theme,
                              columnWidth: bandColumn, documentDefaultFontSize: officeDefaultBodyFontSize,
                              pageContentWidth: officePageContentWidth,

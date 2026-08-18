@@ -1,7 +1,7 @@
 From ed512f86b1f2a5d079e3218cde98989de6a61399 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 19:07:28 +0900
-Subject: [PATCH 39/39] Say how big a picture's original is, so a crop can be
+Subject: [PATCH 39/40] Say how big a picture's original is, so a crop can be
  read
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
