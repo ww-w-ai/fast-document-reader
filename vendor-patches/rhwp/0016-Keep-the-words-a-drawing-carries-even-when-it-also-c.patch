@@ -1,7 +1,7 @@
 From 770a1785292dd79ebd42750cd432d9ba470ff87f Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 08:40:03 +0900
-Subject: [PATCH 16/41] Keep the words a drawing carries, even when it also
+Subject: [PATCH 16/42] Keep the words a drawing carries, even when it also
  carries a picture
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

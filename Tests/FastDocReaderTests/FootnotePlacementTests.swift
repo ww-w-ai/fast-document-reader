@@ -149,6 +149,54 @@ final class FootnotePlacementTests: XCTestCase {
         XCTAssertEqual(found, [7])
     }
 
+    /// The marker prints what the DOCUMENT says goes around its number, not a bare digit.
+    ///
+    /// Measured on the 637-sample corpus: 791 of 811 shape declarations close the number with `)`
+    /// and NONE opens it, so a reader drawing `1` where the document wrote `1)` is wrong on almost
+    /// every document that has notes. The decoration is assembled in the reader rather than carried
+    /// as more fields on `Span`, because what is printed around a number is a per-format convention.
+    func testAMarkerPrintsTheDecorationTheDocumentDeclared() throws {
+        let json = """
+        {"v":1,"blocks":[{"t":"para","spans":[\
+        {"text":"3","super":true,"noteRef":3,"noteRefKind":"footnote","noteAfterChar":")"}]}]}
+        """
+        guard case let .paragraph(spans, _, _, _, _)? = try HwpReader.mapJSON(json).blocks.first else {
+            return XCTFail("expected one paragraph")
+        }
+        XCTAssertEqual(spans.map(\.text).joined(), "3)")
+    }
+
+    /// A note's BODY carries the same `noteRef` on its own leading number run — and that run is the
+    /// note introducing itself (`3) `, already spelled out by the exporter), not a citation of it.
+    /// Only the SUPERSCRIPT one is a marker. Treating both as markers printed the decoration twice
+    /// and made the extraction emit a reference where the note's text belongs.
+    func testANotesOwnLeadingNumberIsNotAMarker() throws {
+        let json = """
+        {"v":1,"blocks":[{"t":"para","spans":[\
+        {"text":"3) ","super":false,"noteRef":3,"noteRefKind":"footnote","noteAfterChar":")"},\
+        {"text":"the note"}]}]}
+        """
+        guard case let .paragraph(spans, _, _, _, _)? = try HwpReader.mapJSON(json).blocks.first else {
+            return XCTFail("expected one paragraph")
+        }
+        XCTAssertEqual(spans.map(\.text).joined(), "3) the note", "no second `)`")
+        XCTAssertTrue(spans.allSatisfy { $0.footnoteRef == nil }, "and nothing here is a marker")
+    }
+
+    /// `--extract` keeps every note's PLACE, not just its text. Without the reference the extraction
+    /// carries five notes and no way to tell what any of them annotates — the reader that lifted
+    /// them out of the body flow is the only thing that knows which sentence called them.
+    func testExtractMarksWhereEachNoteWasCited() {
+        var marker = Span(text: "3)")
+        marker.superscript = true
+        marker.footnoteRef = 3
+        let out = OfficeMarkdownSerializer.serialize(
+            [.paragraph(spans: [Span(text: "body"), marker])],
+            footnotes: [OfficeFootnote(number: 3, blocks: [.paragraph(spans: [Span(text: "the note")])])])
+        XCTAssertTrue(out.contains("body[^3]"), "the citation is where it was cited: \(out)")
+        XCTAssertTrue(out.contains("[^3]: the note"), "and the note itself is still emitted")
+    }
+
     // MARK: the gate that decides whether a note is placed at all
 
     /// A document with notes and NO running head still paginates for them.

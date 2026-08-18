@@ -1,0 +1,138 @@
+From 97a7f4d8629f95cc23773ffe53fa573b39035005 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 21:35:28 +0900
+Subject: [PATCH 42/42] Let a footnote marker carry the characters printed
+ around its number
+
+The decoration was exported on the note's BODY run and not on the marker, so a
+viewer could only draw the bare digit where the document wrote `1)`. Measured
+over 637 samples: 791 of 811 shape declarations close the number, none opens it.
+---
+ examples/scan_footnotes.rs                 | 28 ++++++++++++++++++++++
+ src/document_core/queries/document_json.rs | 27 ++++++++++++++-------
+ 2 files changed, 47 insertions(+), 8 deletions(-)
+
+diff --git a/examples/scan_footnotes.rs b/examples/scan_footnotes.rs
+index 9a6b073f..db241bb4 100644
+--- a/examples/scan_footnotes.rs
++++ b/examples/scan_footnotes.rs
+@@ -47,6 +47,15 @@ struct Counts {
+     /// currently cannot place a note in at all. This number decides whether that gate has to widen.
+     fn_docs_with_head_or_foot: usize,
+     fn_docs_with_neither: usize,
++    /// S15's own material: how a note's NUMBER is written, and what is printed around it.
++    number_format: BTreeMap<String, usize>,
++    start_number: BTreeMap<u16, usize>,
++    prefix_suffix: BTreeMap<String, usize>,
++    user_char: BTreeMap<String, usize>,
++    /// Per NOTE (not per shape) — the decoration letters and number shape each note carries.
++    note_decor: BTreeMap<String, usize>,
++    note_number_shape: BTreeMap<u32, usize>,
++    shape_attr: BTreeMap<u32, usize>,
+ }
+ 
+ fn walk_paragraphs(paras: &[Paragraph], c: &mut Counts, doc_fn: &mut usize, doc_en: &mut usize,
+@@ -59,6 +68,10 @@ fn walk_paragraphs(paras: &[Paragraph], c: &mut Counts, doc_fn: &mut usize, doc_
+                     *doc_fn += 1;
+                     if in_cell { c.notes_in_cells += 1; }
+                     *c.fn_paras.entry(f.paragraphs.len()).or_default() += 1;
++                    *c.note_decor.entry(format!("{:?}/{:?}",
++                        char::from_u32(f.before_decoration_letter as u32).unwrap_or('?'),
++                        char::from_u32(f.after_decoration_letter as u32).unwrap_or('?'))).or_default() += 1;
++                    *c.note_number_shape.entry(f.number_shape).or_default() += 1;
+                 }
+                 Control::Endnote(e) => {
+                     c.endnotes += 1;
+@@ -138,6 +151,13 @@ fn main() {
+                 *c.placement.entry(Box::leak(format!("{_kind}/{place}").into_boxed_str())).or_default() += 1;
+                 *c.numbering.entry(Box::leak(format!("{_kind}/{numb}").into_boxed_str())).or_default() += 1;
+                 *c.sep_line_type.entry(shape.separator_line_type).or_default() += 1;
++                if _kind == "footnote" {
++                    *c.number_format.entry(format!("{:?}", shape.number_format)).or_default() += 1;
++                    *c.start_number.entry(shape.start_number).or_default() += 1;
++                    *c.prefix_suffix.entry(format!("{:?}/{:?}", shape.prefix_char, shape.suffix_char)).or_default() += 1;
++                    *c.user_char.entry(format!("{:?}", shape.user_char)).or_default() += 1;
++                    *c.shape_attr.entry(shape.attr).or_default() += 1;
++                }
+                 if shape.print_inline_after_text {
+                     c.inline_after_text += 1;
+                     doc_inline = true;
+@@ -173,6 +193,14 @@ fn main() {
+     println!("placement       : {:?}", c.placement);
+     println!("numbering       : {:?}", c.numbering);
+     println!("separator type  : {:?}", c.sep_line_type);
++    println!("-- S15 material --");
++    println!("number_format   : {:?}", c.number_format);
++    println!("start_number    : {:?}", c.start_number);
++    println!("prefix/suffix   : {:?}", c.prefix_suffix);
++    println!("user_char       : {:?}", c.user_char);
++    println!("shape attr      : {:?}", c.shape_attr);
++    println!("note decor (b/a): {:?}", c.note_decor);
++    println!("note num shape  : {:?}", c.note_number_shape);
+     c.footnote_samples.sort();
+     println!("--- smallest footnote-citing samples ---");
+     for (size, path, notes) in c.footnote_samples.iter().take(5) {
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index cbb8d8d4..37ddccbb 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -2341,10 +2341,14 @@ fn build_spans(doc: &Document, para: &Paragraph) -> Vec<Span> {
+                 markers.push((pos, anchor_span(Some(bm.name.clone()))));
+             }
+             Control::Footnote(fnote) => {
+-                markers.push((pos, note_marker_span(fnote.number, "footnote")));
++                markers.push((pos, note_marker_span(fnote.number, "footnote",
++                                                    fnote.before_decoration_letter,
++                                                    fnote.after_decoration_letter)));
+             }
+             Control::Endnote(en) => {
+-                markers.push((pos, note_marker_span(en.number, "endnote")));
++                markers.push((pos, note_marker_span(en.number, "endnote",
++                                                    en.before_decoration_letter,
++                                                    en.after_decoration_letter)));
+             }
+             // 쪽번호. `AutoNumber` 는 각주·그림·표 번호에도 쓰이므로 `Page` 만 골라낸다 —
+             // 나머지는 이미 위 두 갈래가 처리하거나 본문에 글자로 들어가 있어, 여기서 또 넣으면
+@@ -2579,12 +2583,19 @@ fn anchor_span(bookmark: Option<String>) -> Span {
+ 
+ /// 각주/미주 참조 마커 span (위첨자 번호). `kind`는 `"footnote"`/`"endnote"` — 뷰어가
+ /// 이 마커를 지수(exponent)와 구분하고, 어느 노트 배열에서 몸체를 찾을지 판단하는 근거다.
+-fn note_marker_span(number: u16, kind: &'static str) -> Span {
++fn note_marker_span(number: u16, kind: &'static str,
++                    before: u16, after: u16) -> Span {
+     let mut span = anchor_span(None);
+     span.text = number.to_string();
+     span.superscript = true;
+     span.note_ref = Some(number);
+     span.note_ref_kind = Some(kind);
++    // 마커가 스스로 들고 있는 장식 문자. 노트 본문 span 에만 실려 있었고 마커에는 없었기 때문에,
++    // 뷰어는 문서가 `1)` 이라고 선언한 마커를 `1` 로만 그릴 수밖에 없었다. 표본 637개 실측:
++    // 811개 shape 선언 중 791개가 닫는 `)` 를 쓰고, 여는 문자를 쓰는 것은 하나도 없다.
++    // `0` = 선언 없음 이므로 그때는 키 자체를 보내지 않는다(뷰어의 "없음"과 같은 뜻).
++    span.note_before_char = wchar_field(before);
++    span.note_after_char = wchar_field(after);
+     span
+ }
+ 
+@@ -3883,13 +3894,13 @@ fn build_note_blocks(doc: &Document, note: &Control) -> Vec<Block> {
+     let mut blocks = build_blocks(doc, paragraphs);
+ 
+     // 번호 접두 span (예: "1) ") 을 첫 Para 블록 앞에 삽입.
+-    let mut prefix = note_marker_span(number, if is_endnote { "endnote" } else { "footnote" });
+-    prefix.text = format!("{}) ", number);
+-    prefix.superscript = false;
+     // 이 컨트롤 인스턴스 자신이 들고 있는 장식/번호 모양 — 구역 전체 기본값(FootnoteShape)과는
+     // 별개다(Task #1050). WCHAR 0 은 "지정 없음"이라 생략한다.
+-    prefix.note_before_char = wchar_field(before_char);
+-    prefix.note_after_char = wchar_field(after_char);
++    let mut prefix = note_marker_span(number,
++                                      if is_endnote { "endnote" } else { "footnote" },
++                                      before_char, after_char);
++    prefix.text = format!("{}) ", number);
++    prefix.superscript = false;
+     prefix.note_number_shape = Some(number_shape as i32);
+     if let Some(Block::Para(pb)) = blocks.iter_mut().find(|b| matches!(b, Block::Para(_))) {
+         pb.spans.insert(0, prefix);
+-- 
+2.50.1 (Apple Git-155)
+

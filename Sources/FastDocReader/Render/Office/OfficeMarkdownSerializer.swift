@@ -194,7 +194,8 @@ enum OfficeMarkdownSerializer {
         var out: [Span] = []
         out.reserveCapacity(spans.count)
         for s in spans {
-            if let last = out.last, sameMarkdownIdentity(last, s) {
+            if let last = out.last, last.footnoteRef == nil, s.footnoteRef == nil,
+               sameMarkdownIdentity(last, s) {
                 out[out.count - 1].text += s.text
             } else {
                 out.append(s)
@@ -228,6 +229,13 @@ enum OfficeMarkdownSerializer {
     }
 
     private static func span(_ s: Span, inCell: Bool) -> String {
+        // A footnote marker becomes the markdown reference that points at the note this serializer
+        // already emits at the end (`[^3]: …`). Without it the extraction keeps every note's TEXT
+        // and loses every note's PLACE: the reader that lifted the note out of the body flow is the
+        // only thing that knows which sentence called it, so a tool reading the extraction would
+        // see five notes and no way to tell what any of them annotates. The marker's own glyphs
+        // (`3)`) are dropped deliberately — markdown writes the reference itself.
+        if let ref = s.footnoteRef { return "[^\(ref)]" }
         guard !s.text.isEmpty else { return "" }
         if s.code {
             // Inline code is verbatim — no other Markdown applies inside it. Bump the fence past any

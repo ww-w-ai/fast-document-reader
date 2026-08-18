@@ -889,7 +889,21 @@ enum HwpReader {
         span.superscript = s.superscript ?? false
         // ONLY a footnote's marker is carried. An endnote's marker is left bare: its note is still
         // in the block flow where it belongs, so nothing has to find it.
-        if s.noteRefKind == "footnote", let ref = s.noteRef { span.footnoteRef = Int(ref) }
+        // SUPERSCRIPT is what makes it a marker. A note's own BODY carries the same `noteRef` on
+        // its leading number run — that run is the note introducing itself (`1) `, already spelled
+        // out by the exporter), not a citation of it. Treating both as markers printed the
+        // decoration twice (`1) )`) and made the extraction emit a reference where the note's text
+        // should be (`[^1]: [^1] …`).
+        if s.noteRefKind == "footnote", s.superscript == true, let ref = s.noteRef {
+            span.footnoteRef = Int(ref)
+            // The marker's glyphs are ASSEMBLED here rather than carried as three more fields on
+            // `Span`: what is printed around a number is a per-format convention (HWP states it on
+            // the note's own control; a docx puts it in the numbering definition), while `Span` is
+            // the format-neutral vocabulary. Measured on the 637-sample corpus: 791 of 811 shape
+            // declarations print a closing `)` and NONE prints anything before the number, so a
+            // reader that draws the bare digit is wrong on 97% of the documents that have notes.
+            span.text = (s.noteBeforeChar ?? "") + span.text + (s.noteAfterChar ?? "")
+        }
         span.subscripted = s.subscripted ?? false
         span.textColor = color(s.color)
         // size is a base_size in HWPUNIT; ÷100 = points. 0/absent → unspecified (theme decides).
@@ -2095,6 +2109,10 @@ private struct HwpSpan: Decodable {
     /// nothing on their own.
     var noteRef: Int?
     var noteRefKind: String?
+    /// What the note's own control says is printed around its number — `1` vs `1)`. Declared per
+    /// INSTANCE, not just per section, so it is read here rather than from the section's shape.
+    var noteBeforeChar: String?
+    var noteAfterChar: String?
     var subscripted: Bool?      // JSON key "sub"
     var color: String?
     var size: Int?
@@ -2141,7 +2159,7 @@ private struct HwpSpan: Decodable {
         // run and the footnote path found nothing to place. Same failure shape as a stale binary
         // (invariant 45): the field is in the model, the value is on the wire, and the reader
         // never sees it. Anything added above must be added here too.
-        case noteRef, noteRefKind
+        case noteRef, noteRefKind, noteBeforeChar, noteAfterChar
         case superscript = "super"
         case subscripted = "sub"
     }
