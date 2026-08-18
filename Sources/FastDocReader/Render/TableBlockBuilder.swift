@@ -33,6 +33,30 @@ final class GridTextTable: NSTextTable {
     /// table back out to the column (invariant 48's "build and resizeTables must use the IDENTICAL
     /// formula": both now call the same `edges(forWidth:)`, which applies this clamp internally).
     var maxWidth: CGFloat? = nil
+    /// The table OBJECT's own LEFT/RIGHT outer margin (`TableFormat.outerMargin`, threaded through
+    /// `build`'s `tableOuterMargin` parameter) — the horizontal gap between the table and what
+    /// surrounds it, distinct from a cell's padding/border (inside the grid). Consulted ONLY by
+    /// `edges(forWidth:)`, which is the ONE place this margin is expressed: it narrows the usable
+    /// grid AND shifts every edge's starting point to `outerMarginLeft` (see that function's own
+    /// doc for why a SECOND box — `NSTextBlock`'s `.margin` on the perimeter cells — was tried and
+    /// measured wrong: it double-charged the same margin and clipped real text). A LATER reflow
+    /// (`resizeTables`, called with the full, unmargined reading column) re-derives the identical
+    /// narrowed grid rather than the margin quietly evaporating on resize — invariant 48's "build
+    /// and resizeTables must use the IDENTICAL formula" via the one shared function both call.
+    ///
+    /// HORIZONTAL ONLY, deliberately. `TableFormat.outerMargin.top`/`.bottom` carry the document's
+    /// declared value but are NEVER APPLIED to the built table — a shape invariant 97 already names
+    /// (carried on the model, not drawn, same as six of a char shape's sixteen decorations). A
+    /// `.minY`/`.maxY` `NSTextBlock` margin box on the first/last row was built, measured against
+    /// the real 편람 (545 pages), and REMOVED: 38 pages lost glyphs and several — 105, 118, 120,
+    /// 174, 177, 185 among them — rendered COMPLETELY EMPTY, because a table crossing a page
+    /// boundary lands its first/last row at the top or bottom of a SHEET, and the reserved band,
+    /// the page-break arithmetic and the table's own mid-page splitting (`GridTextTableBlock`,
+    /// invariants 61/64/72/96) all read a cell's box geometry — a margin box is not a shape that
+    /// machinery was built to absorb. Re-adopting a vertical margin box needs new evidence against
+    /// those four invariants first, not a retry of this shape.
+    var outerMarginLeft: CGFloat = 0
+    var outerMarginRight: CGFloat = 0
     /// `width`, capped to `maxWidth` when the table declared a narrower authored one — the ONE
     /// place this clamp is expressed, so every caller (`edges(forWidth:)` below, and
     /// `OfficeTextBuilder.appendTable`'s own pre-clamp for the picture-scale/image-clamp math that
@@ -58,8 +82,35 @@ final class GridTextTable: NSTextTable {
     /// the container would clip. With collapsing off there is no shared rule left to protect against
     /// double-counting, so the slack is gone and the table lands exactly on `width`, not `width - 1`.
     func edges(forWidth width: CGFloat) -> [CGFloat] {
-        let usable = max(1, Self.clampedWidth(width, maxWidth: maxWidth))
-        var out: [CGFloat] = [0]
+        // Shrink by the table's own outer margin FIRST — before the `maxWidth` clamp, so a table
+        // that declares BOTH an authored width and an outer margin still fits the margin inside
+        // whichever is narrower, exactly as a paragraph's own indent narrows the space its own
+        // width then wraps inside.
+        let margined = width - outerMarginLeft - outerMarginRight
+        let usable = max(1, Self.clampedWidth(margined, maxWidth: maxWidth))
+        // The grid begins at `outerMarginLeft`, not `0` — floored to an integer, invariant 42's own
+        // discipline — so the ONE place that narrows the grid for the table's own outer margin is
+        // this array, not a second `NSTextBlock` `.margin` box on the perimeter cells. That second
+        // box was tried and MEASURED WRONG: `build`'s per-cell content width is already computed
+        // from THIS narrowed grid, so a `.margin` box on top of it charged the same margin again —
+        // AppKit reserves a block's margin/border/padding/content OUT OF the column's own
+        // proportion-derived slot rather than growing the table to fit them, so the doubled charge
+        // left real text with less room than `setContentWidth` had promised and TextKit clipped it:
+        // 74,513 glyphs (1.4%) missing from a real 545-page manual, confirmed through `--pdf`.
+        // `edges[c1] - edges[c0]` is unaffected by this shift (every caller reads a DIFFERENCE, never
+        // `edges[0]` itself — `build` at `let edges = table.edges(forWidth: width)` and
+        // `resizeTables` identically), so this line does not, on its own, move a block's rendered
+        // POSITION: AppKit positions a table's columns from `columnProportions` against the
+        // container's own line width, which this array never touches. What it does do, and the only
+        // thing that was broken, is stop a second box from re-charging space this grid already gave
+        // up — the table now renders NARROWER by the full declared margin, without clipping anything
+        // inside it. A true leftward visual inset would need AppKit to honour it from the block's own
+        // box (`.margin`, `.border` or a paragraph's `headIndent`); measured before this shipped, none
+        // of those three moves an `NSTextTableBlock`'s position — only `.margin` moves its FOOTPRINT
+        // (additively, confirmed empirically), and that additive growth is exactly what caused the
+        // double-charge here once combined with a grid already narrowed by the same amount.
+        let left = outerMarginLeft.rounded(.down)
+        var out: [CGFloat] = [left]
         var cum: CGFloat = 0
         for (i, p) in columnProportions.enumerated() {
             cum += p
@@ -71,9 +122,9 @@ final class GridTextTable: NSTextTable {
                 // type's own doc comment above). Every earlier edge still rounds normally — unaffected,
                 // and still lands on the same integer whichever row reads a given boundary back — only
                 // the table's own OUTER right edge is ever at risk of rounding past its target.
-                out.append(min((usable * cum).rounded(), usable.rounded(.down)))
+                out.append(left + min((usable * cum).rounded(), usable.rounded(.down)))
             } else {
-                out.append((usable * cum).rounded())
+                out.append(left + (usable * cum).rounded())
             }
         }
         return out
@@ -225,6 +276,7 @@ enum TableBlockBuilder {
                        tableBorderWidth: CGFloat? = nil, tableShading: NSColor? = nil,
                        tableEdges: EdgeBorders? = nil, tablePadding: EdgePadding? = nil,
                        tableBackgroundImage: NSImage? = nil,
+                       tableOuterMargin: EdgePadding? = nil,
                        paged: Bool = false, maxWidth: CGFloat? = nil,
                        width: CGFloat = Self.initialColumnWidth) -> NSAttributedString {
         let result = NSMutableAttributedString()
@@ -319,6 +371,17 @@ enum TableBlockBuilder {
         // own doc for why this is stored on the table object rather than applied only here.
         table.maxWidth = maxWidth
         table.backgroundImage = tableBackgroundImage
+        // HORIZONTAL only. The VERTICAL pair (`tableOuterMargin?.top`/`.bottom`) is intentionally
+        // never read here — see this file's own `outerMargin` doc (near `GridTextTable`) for why a
+        // `.minY`/`.maxY` `NSTextBlock` margin box on the first/last row was built, measured on the
+        // real 편람, and REMOVED: 38 pages lost glyphs and several (105, 118, 120, 174, 177, 185…)
+        // rendered EMPTY once a table carrying it crossed a page boundary — the reserved band, the
+        // page-break arithmetic and the table's own splitting (invariants 61/64/72/96) all read a
+        // cell's box geometry, and a margin box is not a shape that area was built to absorb.
+        let marginLeft = tableOuterMargin?.left ?? 0
+        let marginRight = tableOuterMargin?.right ?? 0
+        table.outerMarginLeft = marginLeft
+        table.outerMarginRight = marginRight
         // Collapsing is OFF. With it on, two adjacent cells can each independently draw a different
         // border and AppKit — not this code — silently picks which one shows, which is why a
         // vertically merged cell used to change which rule it drew every time its neighbour changed
@@ -710,6 +773,16 @@ enum TableBlockBuilder {
             }
             block.setContentWidth(max(1, cellWidth - effLeft - effRight - leftWidth - rightWidth),
                                   type: .absoluteValueType)
+            // The table's own OUTER margin, HORIZONTAL half only: reserved ENTIRELY by
+            // `edges(forWidth:)` narrowing the grid — never a SECOND `.margin` box on the left/right
+            // perimeter cells. That second box was tried and measured wrong: AppKit charges a
+            // block's margin/border/padding/content OUT OF the column's own proportion-derived
+            // slot, so a `.margin` box on a cell whose content width was ALREADY computed from the
+            // narrowed grid charged the same margin twice and clipped real text. There is no
+            // VERTICAL counterpart here at all — see `GridTextTable.outerMarginLeft`'s own doc for
+            // why a `.minY`/`.maxY` box on the first/last row was tried, measured, and removed too:
+            // it is `TableFormat.outerMargin.top`/`.bottom` that stops here, carried on the format
+            // but never drawn (invariant 97 names this shape — carried, not applied).
             if let background = me.background { block.backgroundColor = background }
             block.backgroundImage = placement.cell?.backgroundImage
             switch placement.cell?.verticalAlignment ?? .top {

@@ -669,6 +669,15 @@ enum HwpReader {
     /// HWPUNIT (NOT 2×), so ÷100 (confirmed against rhwp `hwpunit_to_px` + `base_size`/`common.width`).
     private static func points(_ hwpunit: Int) -> CGFloat { CGFloat(hwpunit) / 100 }
 
+    /// A raw HWPUNIT EXTENT that is `nil`/absent when unspecified (unlike `points`, whose callers
+    /// already hold a non-optional `Int`) — `nonZeroPoints` cannot be reused here: `outer_margin_*`
+    /// is a plain EXTENT (÷100, confirmed against `hwpunit_to_px` — the rust source's own `outer_margin:
+    /// i16 = 283 // ~1mm` is exactly `283 / 100 = 2.83pt = 1mm`), NOT a 2×-stored paragraph metric.
+    private static func extentPoints(_ hwpunit: Int?) -> CGFloat? {
+        guard let v = hwpunit, v != 0 else { return nil }
+        return points(v)
+    }
+
     /// "RRGGBB" (6 hex digits, optional leading '#') → sRGB colour; anything else → nil (theme
     /// decides — invariant 37). Mirrors `DocxReader.colorFromHex`.
     private static func color(_ hex: String?) -> NSColor? {
@@ -1207,6 +1216,17 @@ enum HwpReader {
             // is the only way a table that crosses a page keeps its column labels on page two.
             format.repeatHeaderRows = t.repeatHeader
             format.pageBreakPolicy = t.pageBreak.flatMap(tablePageBreakPolicy)
+            // The table OBJECT's own outer margin — the gap to what surrounds it, not a cell's
+            // padding. Left `nil` (the whole `EdgePadding`, not just its fields) when the source
+            // declared none of the four, so a table with no outer margin at all costs nothing.
+            let outerMargin = EdgePadding(top: extentPoints(t.outerMarginTop),
+                                          left: extentPoints(t.outerMarginLeft),
+                                          bottom: extentPoints(t.outerMarginBottom),
+                                          right: extentPoints(t.outerMarginRight))
+            if outerMargin.top != nil || outerMargin.left != nil || outerMargin.bottom != nil
+                || outerMargin.right != nil {
+                format.outerMargin = outerMargin
+            }
             return .table(rows: rows, headerRows: max(0, t.headerRows ?? 0),
                           columnWidths: columnWidths, format: format)
         case .image(let im):
@@ -1922,6 +1942,13 @@ private struct HwpTable: Decodable {
     /// `"none"` / `"cell"` / `"row"` — where the document allows this table to be split when it
     /// reaches the foot of a page. Absent for a parser predating the export.
     var pageBreak: String?
+    /// The table OBJECT's own outer margin (HWPUNIT), zero-omitted at the wire (`document_json.rs`'s
+    /// `skip_serializing_if = "is_zero_i32"`) — so a declared `0` and "never declared" already look
+    /// identical here, both decoding to `nil`. Absent for a parser predating the export.
+    var outerMarginLeft: Int?
+    var outerMarginRight: Int?
+    var outerMarginTop: Int?
+    var outerMarginBottom: Int?
 }
 
 private struct HwpCell: Decodable {

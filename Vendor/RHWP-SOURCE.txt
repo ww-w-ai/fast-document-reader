@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 98843f151ec4178e936b1dffa5eacff05efd58bf
+rhwp commit   : 15bbb60329ad9e094fde66bf217295aa2a55e07a
 rhwp branch   : HEAD
-rhwp subject  : Say how thick a cell diagonal is, not just that one was declared
+rhwp subject  : Do not claim to know what the diagonal byte means
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
 library bytes : 59179376
-library sha256: 71205ed728b9a5927b351e968d59abdd61cd24f7f04d0fb186191dd2045558ff
+library sha256: c09923f8cf35f053f9fcba8de375a32917c33b6c86c6919e6760746ac3095722

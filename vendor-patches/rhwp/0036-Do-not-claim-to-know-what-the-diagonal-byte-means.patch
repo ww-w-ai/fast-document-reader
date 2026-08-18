@@ -1,0 +1,45 @@
+From 15bbb60329ad9e094fde66bf217295aa2a55e07a Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 16:19:08 +0900
+Subject: [PATCH 36/36] Do not claim to know what the diagonal byte means
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The field comment asserted this byte shares the four edges' line-style code
+space. The spec carried in this tree gives two readings of the same byte —
+표25 line style, 표27 direction — and the corpus points at the second: of 2,522
+drawable diagonals, 2,514 hold value 1, while the attr bits that would
+otherwise carry direction are set on 38. Under the line-style reading, 98.5%
+of real diagonals would have no direction at all.
+
+Settling it needs a real file opened in Hancom' own app. Until then the byte
+travels uninterpreted, and the comment says so.
+---
+ src/document_core/queries/document_json.rs | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 048b027c..8163c5ac 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -561,8 +561,14 @@ struct BorderFillDto {
+     /// 로 해소한 것 이상(대각선 유무, 중심선 방향 등)이 필요해질 때를 위한 원본.
+     #[serde(rename = "attr", skip_serializing_if = "is_zero_u16")]
+     attr: u16,
+-    /// `BorderFill.diagonal.diagonal_type` — 셀을 가로지르는 대각선의 종류 코드, 나머지 네 변과
+-    /// 같은 `BorderLineType` 코드 공간. `0` 은 그 공간에서 "없음" 이므로 생략.
++    /// `BorderFill.diagonal.diagonal_type` — 셀을 가로지르는 대각선의 코드. **이 바이트가 무엇을
++    /// 뜻하는지는 아직 확정되지 않았다**: 공식 스펙(`mydocs/tech/한글문서파일형식_5.0_revision1.3.md`)
++    /// 표25 는 네 변과 같은 선 종류(실선/점선/이중선)로, 표27 은 방향(0 Slash / 1 BackSlash /
++    /// 2 CrookedSlash)으로 읽는다. 실측은 표27 쪽이다 — 그릴 수 있는 대각선 2,522 개 중 2,514 개
++    /// (99.7%)가 값 1 이고, 선 종류라면 그 전부가 "실선"이면서 방향은 어디에도 없다는 뜻이 된다
++    /// (방향을 담는다는 attr 비트 2-4/5-7 은 그중 38 개, 1.5% 에서만 설정돼 있다). 확정하려면 실제
++    /// 파일을 한컴 앱으로 열어 눈으로 봐야 하므로, 여기서는 **해석하지 않고 코드 그대로** 싣는다.
++    /// `0` 은 어느 표에서도 "없음" 이므로 생략.
+     #[serde(rename = "diagonalType", skip_serializing_if = "is_zero_u8")]
+     diagonal_type: u8,
+     /// 대각선의 굵기와 색. 종류만으로는 **그릴지 말지를 판정할 수 없다** — `diagonal_type` 이
+-- 
+2.50.1 (Apple Git-155)
+

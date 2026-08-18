@@ -1357,9 +1357,17 @@ enum OfficeTextBuilder {
         let requestedWidth = tableWidth ?? columnWidth
         let maxWidth: CGFloat? = paged ? tableFormat.sourceWidth : nil
         let solvedWidth = GridTextTable.clampedWidth(requestedWidth, maxWidth: maxWidth)
+        // The GRID this table's columns actually solve across — `solvedWidth` narrowed by the
+        // table's own outer margin, mirroring `GridTextTable.edges(forWidth:)`'s own subtraction
+        // (`TableBlockBuilder.build`, called below, applies the identical shrink internally via
+        // `table.outerMarginLeft`/`Right`). `anchorContentWidths` only feeds a build-time cell-IMAGE
+        // clamp, not the real grid — an estimate on the wider, unmargined width would clamp a
+        // picture generously wide for a table with declared margins, so this keeps the two in step.
+        let marginedWidth = solvedWidth - (tableFormat.outerMargin?.left ?? 0)
+            - (tableFormat.outerMargin?.right ?? 0)
         let cellContentWidths = TableBlockBuilder.anchorContentWidths(spans: spanGrid,
                                                                       columnWidths: columnWidths,
-                                                                      width: solvedWidth)
+                                                                      width: marginedWidth)
         let cellRows: [[TableBlockBuilder.CellContent]] = rows.enumerated().map { r, anchors in
             let isHeader = r < headerRows
             return anchors.enumerated().map { i, cell in
@@ -1388,6 +1396,7 @@ enum OfficeTextBuilder {
                                               tableEdges: tableFormat.edgeBorders,
                                               tablePadding: tableFormat.defaultPadding,
                                               tableBackgroundImage: tableFormat.backgroundImage,
+                                              tableOuterMargin: tableFormat.outerMargin,
                                               paged: paged, maxWidth: maxWidth,
                                               width: solvedWidth))
         // The document's own answer to "may this be cut at the foot of a page". Stamped only when

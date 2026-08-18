@@ -177,6 +177,57 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertEqual(headerRows, 0, "never invent a header — a wrongly bolded row is a lie (invariant: OfficeBlock.table)")
     }
 
+    // MARK: table outer margin (`Table.outer_margin_*`, HWPUNIT ÷100 = pt — a plain EXTENT,
+    // NOT the 2×-stored paragraph metrics `nonZeroPoints` halves)
+
+    func testATablesOuterMarginArrivesInPointsOnAllFourEdges() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"table","cols":1,"colWidths":[1000],
+           "outerMarginLeft":140,"outerMarginRight":141,"outerMarginTop":283,"outerMarginBottom":285,
+           "rows":[[{"colSpan":1,"rowSpan":1,"blocks":[]}]]}
+        ]}
+        """
+        guard case .table(_, _, _, let format)? = try HwpReader.mapJSON(json).blocks.first else {
+            return XCTFail("expected a table")
+        }
+        let margin = try XCTUnwrap(format.outerMargin, "four declared edges must not read as nil")
+        XCTAssertEqual(try XCTUnwrap(margin.left), CGFloat(1.40), accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(margin.right), CGFloat(1.41), accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(margin.top), CGFloat(2.83), accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(margin.bottom), CGFloat(2.85), accuracy: 0.001)
+    }
+
+    func testATableThatDeclaresNoOuterMarginStaysNil() throws {
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"table","cols":1,"colWidths":[1000],
+           "rows":[[{"colSpan":1,"rowSpan":1,"blocks":[]}]]}
+        ]}
+        """
+        guard case .table(_, _, _, let format)? = try HwpReader.mapJSON(json).blocks.first else {
+            return XCTFail("expected a table")
+        }
+        XCTAssertNil(format.outerMargin, "absent must not read as a declared zero margin")
+    }
+
+    func testATablesDeclaredZeroOuterMarginIsIndistinguishableFromAbsent() throws {
+        // rhwp itself never serialises a zero (`skip_serializing_if = "is_zero_i32"`), so a wire
+        // envelope that DOES carry an explicit 0 must still read as "no declaration" — the same
+        // discipline `EdgePadding`/`BorderDecl` apply everywhere else in this vocabulary.
+        let json = """
+        {"v":1,"blocks":[
+          {"t":"table","cols":1,"colWidths":[1000],
+           "outerMarginLeft":0,"outerMarginRight":0,"outerMarginTop":0,"outerMarginBottom":0,
+           "rows":[[{"colSpan":1,"rowSpan":1,"blocks":[]}]]}
+        ]}
+        """
+        guard case .table(_, _, _, let format)? = try HwpReader.mapJSON(json).blocks.first else {
+            return XCTFail("expected a table")
+        }
+        XCTAssertNil(format.outerMargin, "a declared zero on every edge is not a margin declaration")
+    }
+
     func testASectionsOwnDeclarationsArrive() throws {
         let json = """
         {"v":1,"sections":[

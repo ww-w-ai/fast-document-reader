@@ -497,6 +497,29 @@ struct TableFormat: Equatable {
     /// own three-way answer (`Table.page_break`), whose docx cousin is `w:trPr/w:cantSplit` on each
     /// row. `nil` = the source said nothing, and the reader's own policy stands (invariant 92).
     var pageBreakPolicy: TablePageBreakPolicy? = nil
+    /// The gap between the TABLE OBJECT ITSELF and what surrounds it — HWP's own
+    /// `Table.outer_margin_left/right/top/bottom` — distinct from `defaultPadding` (inside a
+    /// cell's border) and from any paragraph's own spacing/indent (there is no such paragraph; a
+    /// table has no wrapper of its own in this vocabulary). `nil` per edge = the source said
+    /// nothing, same discipline as every other field here; a genuinely-declared `0` is carried as
+    /// `0`, not `nil` — HWP's own export already drops a zero at the wire (see `HwpReader`), so on
+    /// this side the two are indistinguishable and both read as "no gap", which is correct either
+    /// way. Docx/ODT never populate this (docx tables have no equivalent field close enough to
+    /// reuse honestly; ODT's page-flow default paragraph spacing is a different declaration this
+    /// reader does not thread through the table path) — `mapJSON` and every other reader leave it
+    /// `nil`, unchanged behaviour.
+    ///
+    /// ALL FOUR edges are decoded and carried here, but only `.left`/`.right` are ever APPLIED —
+    /// `TableBlockBuilder.build` narrows the grid by them (`GridTextTable.outerMarginLeft`/`Right`).
+    /// `.top`/`.bottom` are read by nothing downstream: a `.minY`/`.maxY` `NSTextBlock` margin box
+    /// on the first/last row was built, measured against a real 545-page manual, and REMOVED — 38
+    /// pages lost glyphs and several rendered completely empty, because a table crossing a page
+    /// boundary lands its first/last row at the top or bottom of a SHEET, where the page-band and
+    /// mid-table-split machinery (invariants 61/64/72/96) reads that same box geometry and was never
+    /// built to absorb a margin there. This is the same shape invariant 97 already names for six of
+    /// a char shape's sixteen decorations: carried on the model because the source declares it and a
+    /// future reader may need it, deliberately not drawn because the one place that tried is unsafe.
+    var outerMargin: EdgePadding? = nil
 }
 
 /// What a document permits when its table meets a page boundary — see `TableFormat.pageBreakPolicy`.
