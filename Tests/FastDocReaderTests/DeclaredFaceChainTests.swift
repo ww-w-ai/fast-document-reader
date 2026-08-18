@@ -189,3 +189,39 @@ extension DeclaredFaceChainTests {
                        + "current design was built to remove")
     }
 }
+
+/// The half the synthetic tests above cannot prove: that a REAL document's font table actually reaches
+/// the resolver in production. Every other test in this file hands `plan(for:declaredFaces:)` a table
+/// it built itself, which verifies the chain's logic and nothing about the wiring — if
+/// `HwpReader` never filled `OfficeReadResult.declaredFaces`, all of them would still pass and the
+/// document's own nominations would silently never be consulted.
+///
+///     FMD_HWP_SAMPLE=<a .hwp with a font table> \
+///     DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+///     swift test --filter DeclaredFacesReachTheResolverTests
+final class DeclaredFacesReachTheResolverTests: XCTestCase {
+
+    func testARealDocumentsFontTableReachesTheReadResult() throws {
+        guard let path = ProcessInfo.processInfo.environment["FMD_HWP_SAMPLE"] else {
+            throw XCTSkip("set FMD_HWP_SAMPLE to a .hwp/.hwpx path to run this")
+        }
+        let result = try HwpReader.read(Data(contentsOf: URL(fileURLWithPath: path)))
+
+        XCTAssertFalse(result.declaredFaces.isEmpty,
+                       "the document's font table did not reach OfficeReadResult — the chain's "
+                       + "document-stated links would never fire in production, and no synthetic test "
+                       + "in this file would notice")
+
+        // Every entry must be keyed by the name a span would actually carry, or the lookup misses.
+        for (name, _) in result.declaredFaces {
+            XCTAssertFalse(name.isEmpty, "an empty key can never match a span's fontName")
+        }
+
+        let named = result.declaredFaces.count
+        let nominating = result.declaredFaces.values.filter { $0.nominatedSubstitute != nil }.count
+        let embedding = result.declaredFaces.values.filter { $0.isEmbedded }.count
+        let stating = result.declaredFaces.values.filter { $0.typeInfo != nil }.count
+        print("DECLAREDFACES faces=\(named) nominating=\(nominating) embedding=\(embedding) "
+              + "carryingTypeInfo=\(stating)")
+    }
+}

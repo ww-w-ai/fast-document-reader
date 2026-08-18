@@ -1698,16 +1698,23 @@ struct HwpFontFace: Decodable, Equatable {
     var type: Int?
     var embedded: Bool?
     var binDataId: Int?
-    /// A second name for this SAME face (not a substitute). For an HWP5 file this is what the file
-    /// itself wrote; for an HWPX file rhwp fills it from its own fixed lookup table of well-known
-    /// Korean font names, so it is the parser's own knowledge rather than the document's, on that path.
+    /// A second name for this SAME face (not a substitute) — the file's own bytes, always. The
+    /// exporter sends this ONLY on the HWP5 binary path; on every other path (HWPX included) the
+    /// same Rust field is filled from rhwp's own fixed lookup table rather than the file, so the
+    /// exporter omits the key entirely there rather than sending the parser's guess as the
+    /// document's word (`document_json.rs`'s `FontFaceDto.default_name`). `nil` here therefore means
+    /// either "no such record" or "not on a path this reader can trust" — never "the parser guessed
+    /// and we sent it anyway".
     var defaultName: String?
     /// The raw 10-byte PANOSE block (HWP5 FACE_NAME type info), undecoded — byte 0 is family kind,
-    /// byte 1 is serif style. On an HWP5 file both bytes came from the file; on an HWPX file byte 0
-    /// came from `<hh:typeInfo familyType>` but byte 1 is rhwp's OWN name-based guess
-    /// (`synthesize_serif_type`), not something the XML states — treat HWPX byte 1 accordingly.
-    /// `nil` means the document carries no such record at all; ten zeroes is PANOSE "Any", a real
-    /// value, not the same as absent.
+    /// byte 1 is serif style — the file's own bytes, always. Sent ONLY on the HWP5 binary path, for
+    /// the same reason as `defaultName`: on HWPX the same Rust field is filled from values this
+    /// reader cannot trust as the document's statement (byte 1 is a name-morpheme guess with no XML
+    /// attribute behind it at all; byte 0, though read from a real attribute, is Hancom's own face
+    /// category renumbered 1-7, not standard PANOSE `bFamilyType`) — so the exporter omits the whole
+    /// block there rather than let either byte be mistaken for what the document said. `nil` means
+    /// either no such record, or a path this reader does not trust for this field; ten zeroes is
+    /// PANOSE "Any", a real value, not the same as absent.
     var panose: [Int]?
     /// The type (`0` unknown / `1` TTF / `2` HFT) of the SUBSTITUTE face nominated in `altName`,
     /// independent of this font's own `type` above. `nil` when the document nominates no substitute.

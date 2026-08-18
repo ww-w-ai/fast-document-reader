@@ -46,6 +46,36 @@ final class HwpParserRebuildParityTests: XCTestCase {
         }
     }
 
+    /// `FMD_HWP_JSON_DUMP` = one or more document paths, colon-separated. Dumps rhwp's RAW structured
+    /// JSON (`HwpReader.exportDocumentJSON`, the string BEFORE `mapJSON` decodes it) rather than the
+    /// mapped `OfficeReadResult` — this is the only way to see a JSON key `HwpReader` does not yet
+    /// consume, because `JSONDecoder` silently ignores unknown keys and a green `read(_:)` proves
+    /// nothing about a field the mapper never asked for. Exists for exactly the state-B export rounds
+    /// (`document_json.rs`'s own numbered comments) where a field is meant to arrive and sit unread
+    /// until a later sprint adopts it — a green `testSpanDumpForRealDocuments` cannot tell that
+    /// apart from the field never having been serialized at all. `FMD_HWP_JSON_DUMP_OUT` = a
+    /// directory to write one `.json` file per document into.
+    func testRawJSONDumpForRealDocuments() throws {
+        guard let list = ProcessInfo.processInfo.environment["FMD_HWP_JSON_DUMP"], !list.isEmpty else {
+            throw XCTSkip("set FMD_HWP_JSON_DUMP to colon-separated .hwp/.hwpx paths to run this")
+        }
+        let outDir = ProcessInfo.processInfo.environment["FMD_HWP_JSON_DUMP_OUT"]
+        for path in list.split(separator: ":").map(String.init) {
+            let url = URL(fileURLWithPath: path)
+            let data = try Data(contentsOf: url)
+            guard let json = HwpReader.exportDocumentJSON(data) else {
+                XCTFail("rhwp could not parse \(url.lastPathComponent)")
+                continue
+            }
+            if let outDir {
+                let name = url.deletingPathExtension().lastPathComponent + "." + url.pathExtension + ".json"
+                try json.write(to: URL(fileURLWithPath: outDir).appendingPathComponent(name),
+                               atomically: true, encoding: .utf8)
+            }
+            print("JSONDUMP \(url.lastPathComponent): \(json.count) chars")
+        }
+    }
+
     /// How often a real HWP actually declares DIFFERENT families in its seven slots — the question
     /// step 2 of `docs/per-script-font-design.md` lives or dies on, asked of a corpus rather than
     /// assumed from the format's shape. `FMD_HWP_SLOT_SURVEY` = a colon-separated list of

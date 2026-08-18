@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 609763f6e2ec8741bcdb8d072fc17a65e41290f8
+rhwp commit   : f5c48434dc045467187c578a533c72686393d5e9
 rhwp branch   : fastdocreader/charshape-export
-rhwp subject  : Do not let a synthesised PANOSE byte travel as the document's own word
+rhwp subject  : Carry the sibling fields the exporter already had the record open for
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 58905848
-library sha256: a23f97ee413132a748f7dc784b77e4d493f61347fc6fcd38823f662f7cd0c649
+library bytes : 59037088
+library sha256: 2e5bf4f07590f007cf9eed0ed70cb4ed25bd2d59f0e2f20ad1522cd9960cf37f

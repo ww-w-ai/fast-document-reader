@@ -54,6 +54,9 @@ Applied on top of upstream **`8d3bfa4b92174b16bac587fe1409975cf34ba566`** (just 
 | 0028 | The document's OWN font table (`fontFaces`) — what it named before rhwp's substitution table rewrote it, what it nominates when that name is absent, and whether the bytes are embedded. 99.5% of 1.55M font references name a face the host does not have (invariant 95) |
 | 0029 | `repeatHeader` and `pageBreak` on a table — the author's 제목 줄 반복 switch, and whether the table may be cut at a page boundary at all. 5,878 of 18,616 real tables forbid it (invariant 96) |
 | 0030 | `charShapeDecor` — everything a char shape does beyond bold/italic/underline/colour/size: the two decorations' colours and line shapes, character shading, outline, shadow, emboss, engrave, emphasis dots, kerning, and the per-script width/spacing/size/offset arrays (invariant 97) |
+| 0031 | `fontFaces` gains `panose`, `defaultName`, `substType` — what the document's own font table says about a face beyond its name |
+| 0032 | `panose`/`defaultName` gated to the HWP5 binary path only — HWPX's `<hh:typeInfo>` fills the SAME Rust fields with rhwp's own synthesis (a name-morpheme serif guess, a fixed lookup-table name), not anything the file states, so this exporter omits the keys entirely on that path rather than letting a guess travel as a document fact |
+| 0033 | The S3 batch — 95 fields across 33 types the exporter already reached (a sibling field of each was already being read on the same struct), added as flat/nested fields on the existing DTOs. No new parsing branch, no renderer change. Nine related fields were left out on purpose — not silently dropped, see `document_json.rs`'s own commit message for which and why |
 
 The set is regenerated wholesale — `git format-patch <base>..HEAD -o vendor-patches/rhwp/` from the
 fork — so it never drifts behind the submodule again (it had: 0005–0007 existed only as commits).

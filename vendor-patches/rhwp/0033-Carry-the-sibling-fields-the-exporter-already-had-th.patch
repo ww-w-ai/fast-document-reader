@@ -1,0 +1,1309 @@
+From f5c48434dc045467187c578a533c72686393d5e9 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 13:44:54 +0900
+Subject: [PATCH 33/33] Carry the sibling fields the exporter already had the
+ record open for
+
+The S3 batch: 95 fields across 33 types the exporter already reaches (it
+reads a sibling field of each on the same struct, in the same function),
+just never read this particular one. Decode-and-carry only - no renderer
+behaviour changed, no new parsing branch opened.
+
+By area:
+
+- Equation: baseline, versionInfo (EquationBlock).
+- AutoNumber (page-number control only): pageNumberFormat/Superscript/
+  UserSymbol/PrefixChar/SuffixChar (Span, set only in the existing
+  AutoNumberType::Page arm of build_spans).
+- Document/DocInfo: hwpmlVersion, isHwp3Variant, isHwpxVariant,
+  extraStreamPaths, hwpxAuxEntryPaths (new top-level DocumentJson fields;
+  the last two carry PATHS only, not the opaque roundtrip bytes - a reader
+  can neither decode nor render them, and inlining would bloat the envelope
+  for zero benefit).
+- SectionDef: flags, columnSpacingHwpUnit, defaultTabSpacingHwpUnit,
+  pageNumType, pictureNumStart, tableNumStart, equationNumStart, hideBorder,
+  hideFill, hideEmptyLine (SectionDto).
+- Footnote/Endnote (shared Span fields, set per-instance in
+  build_note_blocks): noteBeforeChar, noteAfterChar, noteNumberShape.
+- Header/Footer: listAttr, textWidthHwpUnit (HeaderFooterEntry, shared).
+- MasterPage: isExtension, overlap, replaceBase, textWidthHwpUnit,
+  textHeightHwpUnit (MasterPageDto).
+- Picture/ImageAttr: borderX, borderY, brightness, contrast, effect,
+  transparency, externalPath (ImageBlock).
+- PageDef: marginHeader, marginFooter, marginGutter,
+  paginationBottomTolerance, binding (PageGeometry - both the document-level
+  one and each section's own).
+- Paragraph/ParaShape/TabDef/Style/TextBox (ParaBlock): tabExtended,
+  borderSpacing, tabDefAttr, autoTabLeft, autoTabRight, styleType, and the
+  box* text-box fields (boxListAttr, boxVerticalAll, boxMargin{Left,Right,
+  Top,Bottom}, boxMaxWidth) alongside the existing boxX/Y/W/H.
+- CommonObjAttr (Placement, propagated to ImageBlock and ShapeBlock alike -
+  read from the SAME outermost object every other Placement field comes
+  from, never a group child's defaulted copy): objAttr, preventPageBreak,
+  description.
+- DrawingObjAttr: shadowAlpha (ShapeBlock).
+- Numbering/NumberingHead/Bullet (ListInfo): numberingDefaultStart,
+  numberingHeadAttr, numberingHeadTextDistance, bulletAttr,
+  bulletTextDistance, bulletImageData.
+- TabItem: fillType (TabStopDto).
+- BorderFill: attr (BorderFillDto).
+- Fill/SolidFill/GradientFill/ImageFill (ShapePath, gated the SAME way the
+  existing `fill` hex is - an open path is not a filled figure, so none of
+  these travel for one either): fillAlpha, patternColor, patternType, a
+  nested `gradient` object, a nested `imageFill` object.
+- ShapeBorderLine: outlineStyle (ShapeStrokeDto).
+- Table: cellSpacingHwpUnit, rowSizes, outerMargin{Left,Right,Top,Bottom}
+  (TableBlock).
+- Cell: listHeaderWidthRef, textDirection, applyInnerMargin, fieldName
+  (CellDto).
+
+Nine fields from the manifest were NOT added, and are not silently dropped -
+they don't fit the "decode and carry" shape:
+
+- Table.dirty and local_resize_{rows,cols,cell_widths,cell_heights}: rhwp's
+  own in-memory editing-session state. No parser file ever assigns them -
+  only table_ops.rs/object_ops/table.rs/html_table_import.rs (editing and
+  import commands) touch them, always initialising to false/empty. For the
+  parse-then-export path this FFI actually runs, they are always
+  false/empty - there is no document fact here to carry.
+- Table.cell_grid: indexes into `table.cells` in ITS raw linear order, which
+  this exporter never emits (rows/cols use row-major anchor cells with
+  col_span/row_span instead). Exporting the raw indices would be an
+  orphaned reference with nothing to resolve them against, and the
+  occupancy they'd describe is already reconstructable from each cell's
+  row/col + spans.
+- Field.properties, extra_properties, ctrl_data_name: Control::Field is
+  reached in this file only inside build_spans' hyperlink filter (`if
+  f.field_type == FieldType::Hyperlink`), where ctrl_data_name in
+  particular is almost always None - it is meaningful mainly for
+  ClickHere/form fields, which nothing here currently loops over. A useful
+  export needs a new loop over all Field controls regardless of type - a
+  new branch, not a field add.
+
+Placement lost its Copy/Clone derive (it now carries a String) - the two
+call sites that used it more than once now take `&Placement`; behaviour is
+unchanged.
+
+New test: export_s3_b_tier_fields_reach_the_corpus scans every .hwp/.hwpx
+under samples/ (340 files) and counts how many times each of 77 distinct
+new JSON key strings appears (several of the 95 fields share a key name by
+design, e.g. Header/Footer/MasterPage all emit textWidthHwpUnit). 60 of 77
+were observed with real values; the 17 that were not are individually
+explained in the test's own run output as corpus rarities rather than
+wiring gaps (sibling fields from the SAME construction site - e.g.
+patternColor/patternType/gradient alongside fillAlpha/imageFill, both from
+collect_shape_paths's fill-detail block - DID fire, which is why an absent
+sibling reads as "this document never set it" rather than "this code path
+never runs"). Gate: fewer than half of the 77 keys missing across the
+corpus, which would indicate a wiring bug rather than corpus rarity.
+
+cargo check --lib and --tests: 0 errors, 0 warnings.
+---
+ src/document_core/queries/document_json.rs | 816 +++++++++++++++++++--
+ 1 file changed, 756 insertions(+), 60 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 16932a2e..b500eee4 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -132,6 +132,24 @@ struct DocumentJson {
+     headers: Vec<HeaderFooterEntry>,
+     /// 문서 전 구역에서 수집한 꼬리말('foot' 컨트롤). `headers`와 동일한 계약.
+     footers: Vec<HeaderFooterEntry>,
++    /// HWPML(HML) 문서의 스키마 버전(`DocInfo.hwpml_version`) — 그 형식이 아니면 없음.
++    #[serde(rename = "hwpmlVersion", skip_serializing_if = "Option::is_none")]
++    hwpml_version: Option<String>,
++    /// [Task #1001] HWP3 → HWP5 변환본으로 파서가 식별했는가(`Document.is_hwp3_variant`,
++    /// 휴리스틱). 변환본은 ParaShape 간격/여백이 원본의 2배 단위로 저장돼 있다.
++    #[serde(rename = "isHwp3Variant", skip_serializing_if = "std::ops::Not::not")]
++    is_hwp3_variant: bool,
++    /// rhwp 가 HWPX 에서 변환한 HWP5 인가(`Document.is_hwpx_variant`, 마커 스트림 감지).
++    #[serde(rename = "isHwpxVariant", skip_serializing_if = "std::ops::Not::not")]
++    is_hwpx_variant: bool,
++    /// 파서가 모델링하지 않는 추가 CFB 스트림의 경로(`Document.extra_streams`) — 라운드트립
++    /// 보존용으로 파서가 원문 그대로 들고 있는 바이트는, 뷰어가 해독할 수도 그릴 수도 없으므로
++    /// 싣지 않는다. 경로만으로도 "파서가 놓친 구간이 있다"는 사실은 전해진다.
++    #[serde(rename = "extraStreamPaths", skip_serializing_if = "Vec::is_empty")]
++    extra_stream_paths: Vec<String>,
++    /// HWPX 원본 보조 ZIP 엔트리의 경로(`Document.hwpx_aux_entries`) — 같은 이유로 경로만.
++    #[serde(rename = "hwpxAuxEntryPaths", skip_serializing_if = "Vec::is_empty")]
++    hwpx_aux_entry_paths: Vec<String>,
+     blocks: Vec<Block>,
+ }
+ 
+@@ -147,6 +165,19 @@ struct MasterPageDto {
+     /// `both` / `odd` / `even`, the same vocabulary a header carries.
+     #[serde(rename = "applyTo")]
+     apply_to: &'static str,
++    /// 확장 바탕쪽인가(마지막 쪽/임의 쪽 — 두 번째 이후 항상 both).
++    #[serde(rename = "isExtension", skip_serializing_if = "std::ops::Not::not")]
++    is_extension: bool,
++    /// 확장 바탕쪽이 기존 기본 바탕쪽 위에 겹쳐 표시되는가.
++    #[serde(rename = "overlap", skip_serializing_if = "std::ops::Not::not")]
++    overlap: bool,
++    /// 렌더링 시 기존 기본 바탕쪽을 대체하는가(마지막 쪽 전용 바탕쪽 등).
++    #[serde(rename = "replaceBase", skip_serializing_if = "std::ops::Not::not")]
++    replace_base: bool,
++    #[serde(rename = "textWidthHwpUnit", skip_serializing_if = "is_zero_i32")]
++    text_width: i32,
++    #[serde(rename = "textHeightHwpUnit", skip_serializing_if = "is_zero_i32")]
++    text_height: i32,
+     objects: Vec<MasterObjectDto>,
+ }
+ 
+@@ -190,6 +221,13 @@ struct HeaderFooterEntry {
+     /// the TOP of every even page and the BOTTOM of every odd one, for 400 pages. rhwp itself draws
+     /// neither: on a body page both bands are empty and the number comes from the 바탕쪽.
+     section: usize,
++    /// HWPX subList 의 `list_attr` materialization 값 원본 — 이 라운드에서는 아직 어느 비트도
++    /// 개별 필드로 풀지 않는다.
++    #[serde(rename = "listAttr", skip_serializing_if = "is_zero_u32")]
++    list_attr: u32,
++    /// HWPX subList 의 텍스트 영역 폭(HWPUNIT).
++    #[serde(rename = "textWidthHwpUnit", skip_serializing_if = "is_zero_i32")]
++    text_width: i32,
+     blocks: Vec<Block>,
+ }
+ 
+@@ -341,6 +379,18 @@ fn is_zero_i8(v: &i8) -> bool {
+     *v == 0
+ }
+ 
++fn is_zero_u16(v: &u16) -> bool {
++    *v == 0
++}
++
++fn is_zero_u32(v: &u32) -> bool {
++    *v == 0
++}
++
++fn is_zero_i32_quad(v: &[i32; 4]) -> bool {
++    *v == [0, 0, 0, 0]
++}
++
+ /// 색은 "쓰지 않음"과 검정을 구별할 수 없다(둘 다 0x000000). 그래서 그것을 쓰는 장식이 켜져
+ /// 있을 때만 색을 싣는다 — 켜지지 않은 색을 실으면 호스트가 온 문서를 검정 음영으로 칠한다.
+ fn decor_color(on: bool, c: crate::model::ColorRef) -> Option<String> {
+@@ -421,6 +471,10 @@ struct BorderFillDto {
+     /// cannot draw a gradient can still take the first stop; one that can, draws it.
+     #[serde(rename = "bgGradient", skip_serializing_if = "Option::is_none")]
+     background_gradient: Option<GradientDto>,
++    /// `BorderFill.attr` 원본 비트 플래그 — 위 네 변/배경이 이미 `resolve_single_border_style`
++    /// 로 해소한 것 이상(대각선 유무, 중심선 방향 등)이 필요해질 때를 위한 원본.
++    #[serde(rename = "attr", skip_serializing_if = "is_zero_u16")]
++    attr: u16,
+ }
+ 
+ #[derive(Serialize)]
+@@ -507,6 +561,7 @@ fn build_border_fills(doc_info: &DocInfo) -> Vec<BorderFillDto> {
+                     colors: g.colors.iter().map(|c| color_hex(*c)).collect(),
+                     angle: g.angle as i32,
+                 }),
++                attr: bf.attr,
+             }
+         })
+         .collect()
+@@ -552,6 +607,23 @@ struct PageGeometry {
+     margin_top: f64,
+     #[serde(rename = "marginBottom")]
+     margin_bottom: f64,
++    /// `PageDef` 의 원본 여백 선언 — 위 네 `margin*` 이 이미 해소한 본문 영역의 위치가 아니라,
++    /// 문서가 그대로 적은 값이다. 머리말/꼬리말 "밴드"의 두께를 알려면 이게 필요하다: 본문은
++    /// `margin_header + margin_top` 에서 시작하므로, 머리말 밴드 자체의 두께는 `margin_top`(그
++    /// 위 여백)이 아니라 이 `marginHeader`(용지 위에서 머리말 시작까지)다.
++    #[serde(rename = "marginHeader")]
++    margin_header: f64,
++    #[serde(rename = "marginFooter")]
++    margin_footer: f64,
++    /// 제본 여백 — 맞쪽 편집(`DuplexSided`)에서 짝수 쪽마다 안쪽으로 더해지는 폭.
++    #[serde(rename = "marginGutter")]
++    margin_gutter: f64,
++    /// margin_bottom 을 건드리지 않고 페이지네이터에게만 허용하는 추가 하단 여유.
++    #[serde(rename = "paginationBottomTolerance")]
++    pagination_bottom_tolerance: f64,
++    /// 제책 방법 — `single`(한쪽 편집) / `duplex`(맞쪽, 짝수 쪽 좌우 여백 교대) /
++    /// `topFlip`(위로 넘기기).
++    binding: &'static str,
+ }
+ 
+ /// 문서의 페이지 지오메트리(pt)를 구한다 — 본문 폭·높이 + 네 여백.
+@@ -606,7 +678,8 @@ fn page_geometry_pt(document: &Document) -> Option<PageGeometry> {
+ /// 쓴다 — 대표값은 이 함수를 한 구역에 대해 부른 것일 뿐이다. 두 벌로 나뉘면 대표 쪽과 구역 쪽이
+ /// 서로 다른 종이를 말하게 된다.
+ fn section_geometry_pt(section: &crate::model::document::Section) -> Option<PageGeometry> {
+-    let areas = PageAreas::from_page_def(&section.section_def.page_def);
++    let page_def = &section.section_def.page_def;
++    let areas = PageAreas::from_page_def(page_def);
+     let body = &areas.body_area;
+     let content_width = body.width();
+     let content_height = body.height();
+@@ -620,9 +693,24 @@ fn section_geometry_pt(section: &crate::model::document::Section) -> Option<Page
+         margin_right: (areas.paper_width as i32 - body.right) as f64 / 100.0,
+         margin_top: body.top as f64 / 100.0,
+         margin_bottom: (areas.paper_height as i32 - body.bottom) as f64 / 100.0,
++        margin_header: page_def.margin_header as f64 / 100.0,
++        margin_footer: page_def.margin_footer as f64 / 100.0,
++        margin_gutter: page_def.margin_gutter as f64 / 100.0,
++        pagination_bottom_tolerance: page_def.pagination_bottom_tolerance as f64 / 100.0,
++        binding: binding_str(page_def.binding),
+     })
+ }
+ 
++/// `BindingMethod` → 호스트 어휘.
++fn binding_str(b: crate::model::page::BindingMethod) -> &'static str {
++    use crate::model::page::BindingMethod;
++    match b {
++        BindingMethod::SingleSided => "single",
++        BindingMethod::DuplexSided => "duplex",
++        BindingMethod::TopFlip => "topFlip",
++    }
++}
++
+ /// 블록 종류. `t` 태그로 판별. para/heading 은 한 종류(`para`), heading 필드로 구분.
+ #[derive(Serialize)]
+ #[serde(tag = "t", rename_all = "lowercase")]
+@@ -664,6 +752,16 @@ fn build_sections(document: &Document) -> Vec<SectionDto> {
+                 line_grid: (def.line_grid > 0).then(|| def.line_grid as i32),
+                 char_grid: (def.char_grid > 0).then(|| def.char_grid as i32),
+                 vertical_text: def.text_direction == 1,
++                flags: def.flags,
++                column_spacing: def.column_spacing as i32,
++                default_tab_spacing: def.default_tab_spacing as i32,
++                page_num_type: def.page_num_type,
++                picture_num_start: def.picture_num as i32,
++                table_num_start: def.table_num as i32,
++                equation_num_start: def.equation_num as i32,
++                hide_border: def.hide_border,
++                hide_fill: def.hide_fill,
++                hide_empty_line: def.hide_empty_line,
+             }
+         })
+         .collect()
+@@ -702,6 +800,34 @@ struct SectionDto {
+     /// 세로쓰기 구역인가(0 = 가로). 호스트가 세로 조판을 못 해도, 못 한다는 사실을 알 수 있다.
+     #[serde(rename = "verticalText", skip_serializing_if = "std::ops::Not::not")]
+     vertical_text: bool,
++    /// `SectionDef.flags` 원본 비트 플래그 — 여기 아래 개별 필드로 이미 풀린 것 이상의 비트가
++    /// 필요해질 때를 위한 원본.
++    #[serde(rename = "flags", skip_serializing_if = "is_zero_u32")]
++    flags: u32,
++    /// 단 간격(HWPUNIT). 다단(`ColumnDef`) 자체는 이 라운드에서 아직 실리지 않는다.
++    #[serde(rename = "columnSpacingHwpUnit", skip_serializing_if = "is_zero_i32")]
++    column_spacing: i32,
++    /// 기본 탭 간격(HWPUNIT) — 문단이 자기 `TabDef` 를 갖지 않을 때 쓰는 구역의 기본값.
++    #[serde(rename = "defaultTabSpacingHwpUnit", skip_serializing_if = "is_zero_i32")]
++    default_tab_spacing: i32,
++    /// 쪽 번호 종류(0 이어서/1 홀수/2 짝수) — `pageNumberStart` 가 사용자 지정 시작번호라면,
++    /// 이것은 그 번호를 홀/짝 어느 쪽 쪽에 앉히는지다.
++    #[serde(rename = "pageNumType", skip_serializing_if = "is_zero_u8")]
++    page_num_type: u8,
++    /// 그림/표/수식의 이 구역 시작 번호. 0 = 앞 구역에 이어서.
++    #[serde(rename = "pictureNumStart", skip_serializing_if = "is_zero_i32")]
++    picture_num_start: i32,
++    #[serde(rename = "tableNumStart", skip_serializing_if = "is_zero_i32")]
++    table_num_start: i32,
++    #[serde(rename = "equationNumStart", skip_serializing_if = "is_zero_i32")]
++    equation_num_start: i32,
++    #[serde(rename = "hideBorder", skip_serializing_if = "std::ops::Not::not")]
++    hide_border: bool,
++    #[serde(rename = "hideFill", skip_serializing_if = "std::ops::Not::not")]
++    hide_fill: bool,
++    /// 쪽 시작의 빈 줄 2개까지를 높이 0 으로 감추는가.
++    #[serde(rename = "hideEmptyLine", skip_serializing_if = "std::ops::Not::not")]
++    hide_empty_line: bool,
+ }
+ 
+ #[derive(Serialize)]
+@@ -791,6 +917,44 @@ struct ParaBlock {
+     box_w: Option<i32>,
+     #[serde(rename = "boxH", skip_serializing_if = "Option::is_none")]
+     box_h: Option<i32>,
++    /// `Style.style_type`(0 문단/1 글자) — 문단이 참조하는 스타일이 있을 때만. `styleName`/
++    /// `styleLocalName` 과 같은 `style` 조회에서 나온 세 번째 사실이다.
++    #[serde(rename = "styleType", skip_serializing_if = "Option::is_none")]
++    style_type: Option<u8>,
++    /// 문단 테두리 간격(좌·우·상·하, `ParaShape.border_spacing`, HWPUNIT) — 문단 테두리선과
++    /// 글자 사이 여백. 넷 다 0 이면 생략.
++    #[serde(rename = "borderSpacing", skip_serializing_if = "is_zero_i32_quad")]
++    border_spacing: [i32; 4],
++    /// 이 문단의 TAB 확장 데이터(`Paragraph.tab_extended`) 원본 — 탭 문자 하나당 7개 code unit
++    /// (너비·리더·종류)이 `text` 안의 `\t` 순서와 1:1 대응한다. 라운드트립 전용 원본이라 조판
++    /// 규칙(예: 우측 탭의 결과 위치 부호화)을 재해석하지 않고 그대로 싣는다.
++    #[serde(rename = "tabExtended", skip_serializing_if = "Vec::is_empty")]
++    tab_extended: Vec<[i32; 7]>,
++    /// 이 문단이 참조하는 `TabDef` 의 원본 속성 비트와, 왼쪽/오른쪽 끝 자동 탭 유무. 문단이
++    /// 자기 탭 정의를 갖지 않으면(`tabStops` 도 비어 있을 때) 생략.
++    #[serde(rename = "tabDefAttr", skip_serializing_if = "is_zero_u32")]
++    tab_def_attr: u32,
++    #[serde(rename = "autoTabLeft", skip_serializing_if = "std::ops::Not::not")]
++    auto_tab_left: bool,
++    #[serde(rename = "autoTabRight", skip_serializing_if = "std::ops::Not::not")]
++    auto_tab_right: bool,
++    /// 이 문단이 글상자 안에 있을 때(`boxX`/`boxY`/`boxW`/`boxH` 가 있을 때), 그 `TextBox` 자신의
++    /// 나머지 속성 — LIST_HEADER `list_attr` 원본, 세로쓰기 전체(`vertical_all`) 여부, 네 안
++    /// 여백(HWPUNIT), 텍스트 최대 폭(HWPUNIT). 본문 문단이면 전부 없음.
++    #[serde(rename = "boxListAttr", skip_serializing_if = "Option::is_none")]
++    box_list_attr: Option<u32>,
++    #[serde(rename = "boxVerticalAll", skip_serializing_if = "Option::is_none")]
++    box_vertical_all: Option<bool>,
++    #[serde(rename = "boxMarginLeft", skip_serializing_if = "Option::is_none")]
++    box_margin_left: Option<i32>,
++    #[serde(rename = "boxMarginRight", skip_serializing_if = "Option::is_none")]
++    box_margin_right: Option<i32>,
++    #[serde(rename = "boxMarginTop", skip_serializing_if = "Option::is_none")]
++    box_margin_top: Option<i32>,
++    #[serde(rename = "boxMarginBottom", skip_serializing_if = "Option::is_none")]
++    box_margin_bottom: Option<i32>,
++    #[serde(rename = "boxMaxWidth", skip_serializing_if = "Option::is_none")]
++    box_max_width: Option<i32>,
+ }
+ 
+ /// 한 구역의 쪽 테두리/배경. 간격은 HWPUNIT, 기준은 그 간격을 **어디서부터** 재는가다:
+@@ -817,6 +981,9 @@ struct TabStopDto {
+     #[serde(rename = "posHwpUnit")]
+     pos: i32,
+     kind: &'static str,
++    /// 채움 종류(`TabItem.fill_type`) — 리더 문자(점선/실선 등)의 코드. 0(없음)이면 생략.
++    #[serde(rename = "fillType", skip_serializing_if = "is_zero_u8")]
++    fill_type: u8,
+ }
+ 
+ #[derive(Serialize)]
+@@ -839,6 +1006,23 @@ struct ListInfo {
+     /// `hanjaNumber`(一·二·三). 형식 문자열의 `^N` 을 어떤 글자로 채울지 정한다.
+     #[serde(rename = "numberFormat", skip_serializing_if = "Option::is_none")]
+     number_format: Option<&'static str>,
++    /// `Numbering.start_number` — 이 번호 매기기 정의 자신의 시작 번호. `startNumber`(위)는
++    /// 이 수준에 대한 오버라이드값이라 서로 다른 사실이다.
++    #[serde(rename = "numberingDefaultStart", skip_serializing_if = "Option::is_none")]
++    numbering_default_start: Option<i32>,
++    /// 이 수준의 `NumberingHead` 원본 — 속성 비트와 본문과의 거리(HWPUNIT).
++    #[serde(rename = "numberingHeadAttr", skip_serializing_if = "Option::is_none")]
++    numbering_head_attr: Option<u32>,
++    #[serde(rename = "numberingHeadTextDistance", skip_serializing_if = "Option::is_none")]
++    numbering_head_text_distance: Option<i32>,
++    /// 글머리표 자신의 나머지 사실 — 속성 비트, 본문과의 거리(HWPUNIT), 이미지 글머리표 데이터
++    /// (대비·밝기·효과·ID 4바이트, 전부 0이면 문자 글머리표라 생략).
++    #[serde(rename = "bulletAttr", skip_serializing_if = "Option::is_none")]
++    bullet_attr: Option<u32>,
++    #[serde(rename = "bulletTextDistance", skip_serializing_if = "Option::is_none")]
++    bullet_text_distance: Option<i32>,
++    #[serde(rename = "bulletImageData", skip_serializing_if = "Option::is_none")]
++    bullet_image_data: Option<[u8; 4]>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -878,6 +1062,29 @@ struct Span {
+     /// 실제로 그리는 쪽의 번호로 바꿔 넣을 수 있게 한다(docx `PAGE` 필드와 같은 계약).
+     #[serde(rename = "pageNumberField", skip_serializing_if = "Option::is_none")]
+     page_number_field: Option<&'static str>,
++    /// `pageNumberField` 가 실린 span 에서만 채워지는, HWP 표 145 나머지 절반(`AutoNumber` 의
++    /// format/superscript/기호 세 글자). `format` 코드는 원문 그대로 싣는다 — 이 파일이 이미
++    /// 아는 `number_format_str` 은 표 134 값 19 개 중 8 개만 다뤄, 재사용하면 나머지가 조용히
++    /// "decimal" 로 뭉개진다. WCHAR 세 필드는 '\0' 이면 "지정 없음"이라 생략한다.
++    #[serde(rename = "pageNumberFormat", skip_serializing_if = "is_zero_u8")]
++    page_number_format: u8,
++    #[serde(rename = "pageNumberSuperscript", skip_serializing_if = "std::ops::Not::not")]
++    page_number_superscript: bool,
++    #[serde(rename = "pageNumberUserSymbol", skip_serializing_if = "Option::is_none")]
++    page_number_user_symbol: Option<String>,
++    #[serde(rename = "pageNumberPrefixChar", skip_serializing_if = "Option::is_none")]
++    page_number_prefix_char: Option<String>,
++    #[serde(rename = "pageNumberSuffixChar", skip_serializing_if = "Option::is_none")]
++    page_number_suffix_char: Option<String>,
++    /// 각주/미주 참조 마커(번호 텍스트 span)에서만 채워지는, 그 컨트롤 자신의 앞/뒤 장식 문자와
++    /// 번호 모양(HWP5 CTRL_FOOTNOTE payload, Task #1050) — 구역 전체 기본값인 `FootnoteShape`
++    /// 와는 별개로 컨트롤 인스턴스가 스스로 들고 있는 값이다.
++    #[serde(rename = "noteBeforeChar", skip_serializing_if = "Option::is_none")]
++    note_before_char: Option<String>,
++    #[serde(rename = "noteAfterChar", skip_serializing_if = "Option::is_none")]
++    note_after_char: Option<String>,
++    #[serde(rename = "noteNumberShape", skip_serializing_if = "Option::is_none")]
++    note_number_shape: Option<i32>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -904,6 +1111,24 @@ struct TableBlock {
+     /// 호스트는 모든 표에 같은 정책을 적용하게 된다.
+     #[serde(rename = "pageBreak")]
+     page_break: &'static str,
++    /// 셀 사이 간격(`Table.cell_spacing`, HWPUNIT) — 인접 셀 테두리 사이에 벌어지는 여백(0이면
++    /// 셀들이 맞닿음).
++    #[serde(rename = "cellSpacingHwpUnit", skip_serializing_if = "is_zero_i32")]
++    cell_spacing: i32,
++    /// 행별 셀 수 원본(`Table.row_sizes`, HWP 스펙 UINT16[NRows]) — 라운드트립 전용 원본,
++    /// 비어 있으면 생략.
++    #[serde(rename = "rowSizes", skip_serializing_if = "Vec::is_empty")]
++    row_sizes: Vec<i32>,
++    /// 표 바깥 여백 네 축(`Table.outer_margin_*`, HWPUNIT) — 표 개체 자체와 그 주변 사이.
++    /// `CommonObjAttr.margin`(문단 흐름 안 개체의 바깥 여백)과 별개의 필드다.
++    #[serde(rename = "outerMarginLeft", skip_serializing_if = "is_zero_i32")]
++    outer_margin_left: i32,
++    #[serde(rename = "outerMarginRight", skip_serializing_if = "is_zero_i32")]
++    outer_margin_right: i32,
++    #[serde(rename = "outerMarginTop", skip_serializing_if = "is_zero_i32")]
++    outer_margin_top: i32,
++    #[serde(rename = "outerMarginBottom", skip_serializing_if = "is_zero_i32")]
++    outer_margin_bottom: i32,
+ }
+ 
+ /// `TablePageBreak` 를 호스트 어휘로. 알 수 없는 값은 없다(열거형이 셋뿐).
+@@ -941,6 +1166,20 @@ struct CellDto {
+     #[serde(rename = "padBottom")]
+     pad_bottom: f64,
+     blocks: Vec<Block>,
++    /// LIST_HEADER 의 텍스트 영역 폭 참조 원본(`Cell.list_header_width_ref`, 라운드트립 전용).
++    #[serde(rename = "listHeaderWidthRef", skip_serializing_if = "is_zero_u16")]
++    list_header_width_ref: u16,
++    /// 텍스트 방향(0 가로/1 세로) — 표 전체가 아니라 이 셀만의 방향(세로쓰기 표의 헤더 셀 등).
++    #[serde(rename = "textDirection", skip_serializing_if = "is_zero_u8")]
++    text_direction: u8,
++    /// 안 여백을 셀 고유값으로 지정했는가(list_attr bit 16) — `padLeft`/`Right`/`Top`/`Bottom`
++    /// 은 이미 `Cell::effective_padding` 이 이 플래그를 반영해 해소한 값이니, 이 필드는 "어떤
++    /// 규칙으로 그 값이 나왔는지"를 밝히는 것이지 새 여백 값이 아니다.
++    #[serde(rename = "applyInnerMargin", skip_serializing_if = "std::ops::Not::not")]
++    apply_inner_margin: bool,
++    /// 셀 필드 이름(한컴 셀 속성 → 필드 → 필드 이름). 지정 안 하면 없음.
++    #[serde(rename = "fieldName", skip_serializing_if = "Option::is_none")]
++    field_name: Option<String>,
+ }
+ 
+ #[derive(Serialize)]
+@@ -977,6 +1216,37 @@ struct ImageBlock {
+     offset_x: i32,
+     #[serde(rename = "offsetY")]
+     offset_y: i32,
++    /// 그림 테두리의 네 꼭짓점 좌표(`Picture.border_x`/`border_y`, HWPUNIT) — 그림 자신의
++    /// 사각형 밖으로 벗어난 회전/기울임 테두리를 그릴 때 쓴다. 넷 다 0 이면 생략.
++    #[serde(rename = "borderX", skip_serializing_if = "is_zero_i32_quad")]
++    border_x: [i32; 4],
++    #[serde(rename = "borderY", skip_serializing_if = "is_zero_i32_quad")]
++    border_y: [i32; 4],
++    /// 밝기/명암(`ImageAttr.brightness`/`.contrast`, -100~100). 워터마크 식별
++    /// (`ImageAttr::is_watermark`)이 바로 이 둘의 조합이므로, 함께 실어야 판정이 재현된다.
++    #[serde(rename = "brightness", skip_serializing_if = "is_zero_i8")]
++    brightness: i8,
++    #[serde(rename = "contrast", skip_serializing_if = "is_zero_i8")]
++    contrast: i8,
++    /// 그림 효과(`ImageAttr.effect`) — 원본 그대로/회색조/흑백/8x8 패턴. 기본값(원본 그대로)이면
++    /// 생략.
++    #[serde(rename = "effect", skip_serializing_if = "Option::is_none")]
++    effect: Option<&'static str>,
++    /// 그림 개체 전체 투명도(`ImageAttr.transparency`, 0=불투명~100=완전투명).
++    #[serde(rename = "transparency", skip_serializing_if = "is_zero_u8")]
++    transparency: u8,
++    /// [Task #741] 외부 파일 참조 그림의 경로(`ImageAttr.external_path`) — 내부 임베드 그림이면
++    /// 없음. binary 데이터가 없는 HWP3 외부 링크 그림의 placeholder 표시에 쓸 수 있다.
++    #[serde(rename = "externalPath", skip_serializing_if = "Option::is_none")]
++    external_path: Option<String>,
++    /// 이 개체의 `CommonObjAttr` 원본 비트 플래그 — `Placement` 가 이미 개별 필드로 푼 것
++    /// 이상이 필요해질 때를 위한 원본.
++    #[serde(rename = "objAttr", skip_serializing_if = "is_zero_u32")]
++    obj_attr: u32,
++    #[serde(rename = "preventPageBreak", skip_serializing_if = "std::ops::Not::not")]
++    prevent_page_break: bool,
++    #[serde(rename = "description", skip_serializing_if = "String::is_empty")]
++    description: String,
+ }
+ 
+ #[derive(Serialize)]
+@@ -987,6 +1257,13 @@ struct EquationBlock {
+     script: String,
+     w: i32,
+     h: i32,
++    /// 기준선 오프셋(`Equation.baseline`) — 수식을 문단의 글줄 기준선에서 얼마나 올리거나
++    /// 내리는지. 항상 실린다(레코드 자체가 이미 존재하는 EquationBlock 안이라 0 도 문서가
++    /// 실제로 오프셋 없음을 말한 값이다).
++    baseline: i32,
++    /// 수식 버전 정보 문자열(`Equation.version_info`) — 비어 있으면 생략.
++    #[serde(rename = "versionInfo", skip_serializing_if = "String::is_empty")]
++    version_info: String,
+ }
+ 
+ /// A drawing object, FLATTENED TO PATHS. rhwp's own renderer reduces every shape kind — line,
+@@ -1041,6 +1318,18 @@ struct ShapeBlock {
+     #[serde(rename = "horzAlign")]
+     horz_align: &'static str,
+     paths: Vec<ShapePath>,
++    /// Same trio `ImageBlock` carries, from the SAME outermost `Placement` — see its own doc
++    /// comment for why a group child's copy would be a plausible-looking lie instead.
++    #[serde(rename = "objAttr", skip_serializing_if = "is_zero_u32")]
++    obj_attr: u32,
++    #[serde(rename = "preventPageBreak", skip_serializing_if = "std::ops::Not::not")]
++    prevent_page_break: bool,
++    #[serde(rename = "description", skip_serializing_if = "String::is_empty")]
++    description: String,
++    /// 그림자 투명도(`DrawingObjAttr.shadow_alpha`) — 그림자 종류/색/오프셋은 아직 실리지
++    /// 않으므로(다음 라운드), 이 값 하나로는 그림자를 그릴 수 없다. 원본 사실만 미리 싣는다.
++    #[serde(rename = "shadowAlpha", skip_serializing_if = "is_zero_u8")]
++    shadow_alpha: u8,
+ }
+ 
+ #[derive(Serialize)]
+@@ -1058,6 +1347,45 @@ struct ShapePath {
+     arrow_start: bool,
+     #[serde(rename = "arrowEnd", skip_serializing_if = "std::ops::Not::not")]
+     arrow_end: bool,
++    /// `Fill.alpha` — 이 경로가 닫혔을 때만(`fill` 과 같은 게이팅), 채우기 전체 불투명도
++    /// (0=완전투명/미설정 ~ 255=불투명). 모델 자신의 doc comment 도 0 을 두 뜻 다로 적으므로
++    /// 여기서 더 나누지 않는다.
++    #[serde(rename = "fillAlpha", skip_serializing_if = "is_zero_u8")]
++    fill_alpha: u8,
++    /// 단색 채우기의 무늬 정보(`SolidFill.pattern_color`/`.pattern_type`) — `fill` 이 이미
++    /// 배경색을 hex 로 냈지만, 무늬가 덧씌워지는지는 여기서만 알 수 있다.
++    #[serde(rename = "patternColor", skip_serializing_if = "Option::is_none")]
++    pattern_color: Option<String>,
++    #[serde(rename = "patternType", skip_serializing_if = "Option::is_none")]
++    pattern_type: Option<i32>,
++    /// 그러데이션 채우기의 나머지 원본 수치(`GradientFill`) — 색상 목록·각도는 아직 싣지
++    /// 않으므로(다음 라운드), 이것만으로는 그러데이션을 그릴 수 없다.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    gradient: Option<ShapeGradientDto>,
++    /// 이미지 채우기의 원본 보정값(`ImageFill.brightness`/`.contrast`/`.effect`) —
++    /// `binDataId` 는 아직 싣지 않으므로 이것만으로는 이미지 채우기를 그릴 수 없다.
++    #[serde(rename = "imageFill", skip_serializing_if = "Option::is_none")]
++    image_fill: Option<ShapeImageFillDto>,
++}
++
++/// 그러데이션 채우기의 유형·중심·번짐 원본 수치. `GradientFill.gradient_type` 은 1=줄무늬
++/// 2=원형 3=원뿔형 4=사각형.
++#[derive(Serialize)]
++struct ShapeGradientDto {
++    #[serde(rename = "type")]
++    kind: i16,
++    #[serde(rename = "centerX")]
++    center_x: i16,
++    #[serde(rename = "centerY")]
++    center_y: i16,
++    blur: i16,
++}
++
++#[derive(Serialize)]
++struct ShapeImageFillDto {
++    brightness: i8,
++    contrast: i8,
++    effect: u8,
+ }
+ 
+ #[derive(Serialize)]
+@@ -1069,6 +1397,9 @@ struct ShapeStrokeDto {
+     /// from the line-type bits 0–5 with rhwp's own mapping (`layout/utils.rs`).
+     #[serde(rename = "type")]
+     kind: &'static str,
++    /// `ShapeBorderLine.outline_style` — 0 normal / 1 outer / 2 inner. 0 이면 생략.
++    #[serde(rename = "outlineStyle", skip_serializing_if = "is_zero_u8")]
++    outline_style: u8,
+ }
+ 
+ #[derive(Serialize)]
+@@ -1114,6 +1445,24 @@ fn color_hex(c: u32) -> String {
+     format!("{:02X}{:02X}{:02X}", r, g, b)
+ }
+ 
++/// WCHAR 필드(0 = 지정 없음)를 문자열로 — `Footnote`/`Endnote` 의 장식 문자가 이 표현이다.
++/// 유효하지 않은 코드포인트는 조용히 생략한다(값이 아니라 결측으로 취급).
++fn wchar_field(code: u16) -> Option<String> {
++    if code == 0 {
++        return None;
++    }
++    char::from_u32(code as u32).map(|c| c.to_string())
++}
++
++/// `char` 필드(HWP 의 WCHAR 를 파서가 이미 `char` 로 해소한 것, `'\0'` = 지정 없음)를 문자열로.
++fn char_field(c: char) -> Option<String> {
++    if c == '\0' {
++        None
++    } else {
++        Some(c.to_string())
++    }
++}
++
+ /// 하이퍼링크 URL 을 정규화한다. hancom command 형식 = `URL;flag;...` 이고
+ /// URL 안의 특수문자(`: ; # \`)는 `\` 로 이스케이프되어 있다. 첫 번째 **비-이스케이프**
+ /// `;` 까지를 URL 로 보고, 이스케이프를 풀어 깨끗한 URL 을 만든다.
+@@ -1188,6 +1537,11 @@ fn build_spans(doc_info: &DocInfo, para: &Paragraph) -> Vec<Span> {
+                 };
+                 let mut span = build_span(doc_info, shape, shown.to_string(), None);
+                 span.page_number_field = Some("page");
++                span.page_number_format = an.format;
++                span.page_number_superscript = an.superscript;
++                span.page_number_user_symbol = char_field(an.user_symbol);
++                span.page_number_prefix_char = char_field(an.prefix_char);
++                span.page_number_suffix_char = char_field(an.suffix_char);
+                 markers.push((pos, span));
+             }
+             _ => {}
+@@ -1269,6 +1623,14 @@ fn anchor_span(bookmark: Option<String>) -> Span {
+         bookmark,
+         cs_id: None,
+         page_number_field: None,
++        page_number_format: 0,
++        page_number_superscript: false,
++        page_number_user_symbol: None,
++        page_number_prefix_char: None,
++        page_number_suffix_char: None,
++        note_before_char: None,
++        note_after_char: None,
++        note_number_shape: None,
+     }
+ }
+ 
+@@ -1310,6 +1672,14 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+                 // `char_shapes.get()` 이 Some 이었으므로 이 id 는 `charShapes` 범위 안이다.
+                 cs_id: Some(char_shape_id),
+                 page_number_field: None,
++                page_number_format: 0,
++                page_number_superscript: false,
++                page_number_user_symbol: None,
++                page_number_prefix_char: None,
++                page_number_suffix_char: None,
++                note_before_char: None,
++                note_after_char: None,
++                note_number_shape: None,
+             }
+         }
+         None => Span {
+@@ -1328,6 +1698,14 @@ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option
+             // id 가 `char_shapes` 범위 밖 → `charShapes` 에 대응 행이 없으므로 내보내지 않는다.
+             cs_id: None,
+             page_number_field: None,
++            page_number_format: 0,
++            page_number_superscript: false,
++            page_number_user_symbol: None,
++            page_number_prefix_char: None,
++            page_number_suffix_char: None,
++            note_before_char: None,
++            note_after_char: None,
++            note_number_shape: None,
+         },
+     }
+ }
+@@ -1357,43 +1735,63 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+ 
+     let (heading, list) = match ps.map(|p| (p.head_type, p.para_level)) {
+         Some((HeadType::Outline, level)) => (Some(level as i32 + 1), None),
+-        Some((HeadType::Number, level)) => (
+-            None,
+-            Some(ListInfo {
+-                level: level as i32,
+-                ordered: true,
+-                // 저자가 고른 번호 형식(예: `^1.`, 가./나./다.)과 시작 번호. 이걸 안 보내면
+-                // 호스트는 자기 글머리 규칙을 지어내고, 문서가 정한 번호 체계는 사라진다.
+-                marker: ps
+-                    .and_then(|p| doc_info.numberings.get(p.numbering_id.wrapping_sub(1) as usize))
+-                    .and_then(|n| n.level_formats.get(level as usize))
+-                    .map(|f| f.trim().to_string())
+-                    .filter(|f| !f.is_empty()),
+-                start_number: ps
+-                    .and_then(|p| doc_info.numberings.get(p.numbering_id.wrapping_sub(1) as usize))
+-                    .and_then(|n| n.level_start_numbers.get(level as usize).copied())
+-                    .filter(|n| *n > 1)
+-                    .map(|n| n as i32),
+-                number_format: ps
+-                    .and_then(|p| doc_info.numberings.get(p.numbering_id.wrapping_sub(1) as usize))
+-                    .and_then(|n| n.heads.get(level as usize))
+-                    .map(|h| number_format_str(h.number_format)),
+-            }),
+-        ),
+-        Some((HeadType::Bullet, level)) => (
+-            None,
+-            Some(ListInfo {
+-                level: level as i32,
+-                ordered: false,
+-                // 글머리표 문자 그대로 — ▶ 를 쓴 문서가 ● 로 읽히지 않게.
+-                marker: ps
+-                    .and_then(|p| doc_info.bullets.get(p.numbering_id.wrapping_sub(1) as usize))
+-                    .map(|b| b.bullet_char.to_string())
+-                    .filter(|c| !c.trim().is_empty() && c != "\u{0}"),
+-                start_number: None,
+-                number_format: None,
+-            }),
+-        ),
++        Some((HeadType::Number, level)) => {
++            // 세 번 재조회하지 않도록 이 수준의 Numbering/NumberingHead 를 한 번만 찾는다.
++            let numbering = ps
++                .and_then(|p| doc_info.numberings.get(p.numbering_id.wrapping_sub(1) as usize));
++            let head = numbering.and_then(|n| n.heads.get(level as usize));
++            (
++                None,
++                Some(ListInfo {
++                    level: level as i32,
++                    ordered: true,
++                    // 저자가 고른 번호 형식(예: `^1.`, 가./나./다.)과 시작 번호. 이걸 안 보내면
++                    // 호스트는 자기 글머리 규칙을 지어내고, 문서가 정한 번호 체계는 사라진다.
++                    marker: numbering
++                        .and_then(|n| n.level_formats.get(level as usize))
++                        .map(|f| f.trim().to_string())
++                        .filter(|f| !f.is_empty()),
++                    start_number: numbering
++                        .and_then(|n| n.level_start_numbers.get(level as usize).copied())
++                        .filter(|n| *n > 1)
++                        .map(|n| n as i32),
++                    number_format: head.map(|h| number_format_str(h.number_format)),
++                    numbering_default_start: numbering
++                        .map(|n| n.start_number as i32)
++                        .filter(|n| *n > 0),
++                    numbering_head_attr: head.map(|h| h.attr),
++                    numbering_head_text_distance: head.map(|h| h.text_distance as i32),
++                    bullet_attr: None,
++                    bullet_text_distance: None,
++                    bullet_image_data: None,
++                }),
++            )
++        }
++        Some((HeadType::Bullet, level)) => {
++            let bullet = ps
++                .and_then(|p| doc_info.bullets.get(p.numbering_id.wrapping_sub(1) as usize));
++            (
++                None,
++                Some(ListInfo {
++                    level: level as i32,
++                    ordered: false,
++                    // 글머리표 문자 그대로 — ▶ 를 쓴 문서가 ● 로 읽히지 않게.
++                    marker: bullet
++                        .map(|b| b.bullet_char.to_string())
++                        .filter(|c| !c.trim().is_empty() && c != "\u{0}"),
++                    start_number: None,
++                    number_format: None,
++                    numbering_default_start: None,
++                    numbering_head_attr: None,
++                    numbering_head_text_distance: None,
++                    bullet_attr: bullet.map(|b| b.attr),
++                    bullet_text_distance: bullet.map(|b| b.text_distance as i32),
++                    bullet_image_data: bullet
++                        .map(|b| b.image_data)
++                        .filter(|d| *d != [0, 0, 0, 0]),
++                }),
++            )
++        }
+         _ => (None, None),
+     };
+ 
+@@ -1425,6 +1823,22 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+             ),
+         };
+ 
++    // 문단이 참조하는 탭 정의 — 탭 정지 목록과, TabDef 자신의 원본 속성/자동 탭 플래그를
++    // 같은 조회에서 함께 낸다(재조회하면 두 번째 계산이 드리프트할 수 있다).
++    let tab_def = ps.and_then(|p| doc_info.tab_defs.get(p.tab_def_id as usize));
++    let tab_stops = tab_def
++        .map(|def| {
++            def.tabs
++                .iter()
++                .map(|t| TabStopDto {
++                    pos: t.position as i32,
++                    kind: tab_kind_str(t.tab_type),
++                    fill_type: t.fill_type,
++                })
++                .collect()
++        })
++        .unwrap_or_default();
++
+     ParaBlock {
+         base_size_pt,
+         heading,
+@@ -1457,18 +1871,26 @@ fn build_para_block(doc: &Document, para: &Paragraph) -> ParaBlock {
+         box_y: None,
+         box_w: None,
+         box_h: None,
+-        tab_stops: ps
+-            .and_then(|p| doc_info.tab_defs.get(p.tab_def_id as usize))
+-            .map(|def| {
+-                def.tabs
+-                    .iter()
+-                    .map(|t| TabStopDto {
+-                        pos: t.position as i32,
+-                        kind: tab_kind_str(t.tab_type),
+-                    })
+-                    .collect()
+-            })
+-            .unwrap_or_default(),
++        tab_stops,
++        style_type: style.map(|s| s.style_type),
++        border_spacing: ps
++            .map(|p| p.border_spacing.map(|v| v as i32))
++            .unwrap_or([0; 4]),
++        tab_extended: para
++            .tab_extended
++            .iter()
++            .map(|units| units.map(|u| u as i32))
++            .collect(),
++        tab_def_attr: tab_def.map(|def| def.attr).unwrap_or(0),
++        auto_tab_left: tab_def.map(|def| def.auto_tab_left).unwrap_or(false),
++        auto_tab_right: tab_def.map(|def| def.auto_tab_right).unwrap_or(false),
++        box_list_attr: None,
++        box_vertical_all: None,
++        box_margin_left: None,
++        box_margin_right: None,
++        box_margin_top: None,
++        box_margin_bottom: None,
++        box_max_width: None,
+     }
+ }
+ 
+@@ -1530,6 +1952,10 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {
+                     pad_top: pad.top as f64 / 100.0,
+                     pad_bottom: pad.bottom as f64 / 100.0,
+                     blocks: build_blocks(doc, &cell.paragraphs),
++                    list_header_width_ref: cell.list_header_width_ref,
++                    text_direction: cell.text_direction,
++                    apply_inner_margin: cell.apply_inner_margin,
++                    field_name: cell.field_name.clone(),
+                 }
+             })
+             .collect();
+@@ -1543,11 +1969,17 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {
+         header_rows: table.leading_header_rows().len() as i32,
+         repeat_header: table.repeat_header,
+         page_break: table_page_break_str(table.page_break),
++        cell_spacing: table.cell_spacing as i32,
++        row_sizes: table.row_sizes.iter().map(|v| *v as i32).collect(),
++        outer_margin_left: table.outer_margin_left as i32,
++        outer_margin_right: table.outer_margin_right as i32,
++        outer_margin_top: table.outer_margin_top as i32,
++        outer_margin_bottom: table.outer_margin_bottom as i32,
+     })
+ }
+ 
+ fn build_image_block(doc: &Document, pic: &crate::model::image::Picture,
+-                     placement: Placement) -> Block {
++                     placement: &Placement) -> Block {
+     let bin_data_id = pic.image_attr.bin_data_id;
+     // A picture that lives INSIDE a drawing object often states no size of its own — the size is on
+     // the shape component that holds it (`current_width`/`current_height`). Emitting the zero made
+@@ -1576,6 +2008,16 @@ fn build_image_block(doc: &Document, pic: &crate::model::image::Picture,
+         horz_align: placement.horz_align,
+         offset_x: placement.offset_x,
+         offset_y: placement.offset_y,
++        border_x: pic.border_x,
++        border_y: pic.border_y,
++        brightness: pic.image_attr.brightness,
++        contrast: pic.image_attr.contrast,
++        effect: image_effect_str(pic.image_attr.effect),
++        transparency: pic.image_attr.transparency,
++        external_path: pic.image_attr.external_path.clone(),
++        obj_attr: placement.attr,
++        prevent_page_break: placement.prevent_page_break,
++        description: placement.description.clone(),
+     })
+ }
+ 
+@@ -1597,7 +2039,6 @@ fn build_image_block(doc: &Document, pic: &crate::model::image::Picture,
+ /// So placement is read ONCE, from the object the document placed, and handed to everything that
+ /// object emits — at any nesting depth, because the depth never changes the answer. A caller cannot
+ /// forget: every block that carries an anchor takes this value rather than an object to read it off.
+-#[derive(Clone, Copy)]
+ struct Placement {
+     as_char: bool,
+     wraps_text: bool,
+@@ -1607,6 +2048,12 @@ struct Placement {
+     horz_align: &'static str,
+     offset_x: i32,
+     offset_y: i32,
++    /// `CommonObjAttr.attr` raw bits, `.prevent_page_break` and `.description` — read from the SAME
++    /// outermost object every other `Placement` field comes from (never a group child's defaulted
++    /// `common`), for the same reason: a child's copy is a plausible-looking lie.
++    attr: u32,
++    prevent_page_break: bool,
++    description: String,
+ }
+ 
+ impl Placement {
+@@ -1622,6 +2069,9 @@ impl Placement {
+             horz_align: horz_align_str(common.horz_align),
+             offset_x: common.horizontal_offset as i32,
+             offset_y: common.vertical_offset as i32,
++            attr: common.attr,
++            prevent_page_break: common.prevent_page_break != 0,
++            description: common.description.clone(),
+         }
+     }
+ }
+@@ -1679,6 +2129,18 @@ fn size_criterion_str(c: crate::model::shape::SizeCriterion) -> &'static str {
+     }
+ }
+ 
++/// `ImageAttr.effect` → 호스트 어휘. 기본값(원본 그대로)이면 생략해 대부분의 그림에서
++/// 빈 필드가 되게 한다.
++fn image_effect_str(e: crate::model::image::ImageEffect) -> Option<&'static str> {
++    use crate::model::image::ImageEffect;
++    match e {
++        ImageEffect::RealPic => None,
++        ImageEffect::GrayScale => Some("grayScale"),
++        ImageEffect::BlackWhite => Some("blackWhite"),
++        ImageEffect::Pattern8x8 => Some("pattern8x8"),
++    }
++}
++
+ /// 수식 컨트롤을 `Block::Equation` 으로 변환한다. 스크립트를 tokenize→parse→to_latex
+ /// 로 LaTeX 화하고, 파싱이 빈 결과이면 `Unsupported` 로 정직하게 폴백한다.
+ fn build_equation_block(e: &crate::model::control::Equation) -> Block {
+@@ -1694,6 +2156,8 @@ fn build_equation_block(e: &crate::model::control::Equation) -> Block {
+                 script: e.script.clone(),
+                 w,
+                 h,
++                baseline: e.baseline as i32,
++                version_info: e.version_info.clone(),
+             });
+         }
+     }
+@@ -1724,7 +2188,7 @@ fn append_control_blocks(doc: &Document, para: &Paragraph, out: &mut Vec<Block>)
+             Control::Table(t) => out.push(build_table_block(doc, t)),
+             Control::Picture(p) => {
+                 let placement = Placement::of(&p.common);
+-                out.push(build_image_block(doc, p, placement))
++                out.push(build_image_block(doc, p, &placement))
+             }
+             Control::Equation(e) => out.push(build_equation_block(e)),
+             Control::Shape(s) => push_shape_blocks(doc, s, out),
+@@ -1758,7 +2222,7 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+     collect_shape_pictures(shape, &mut pictures);
+     if !pictures.is_empty() {
+         for picture in pictures {
+-            out.push(build_image_block(doc, picture, placement));
++            out.push(build_image_block(doc, picture, &placement));
+         }
+         // …and the WORDS the same object carries, which returning here used to throw away. A cover
+         // page is one group holding the artwork AND the title, and a foreword page is a group whose
+@@ -1770,6 +2234,7 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+     let mut paths = Vec::new();
+     collect_shape_paths(shape, 0, 0, &mut paths);
+     if !paths.is_empty() {
++        let shadow_alpha = shape_drawing(shape).map(|d| d.shadow_alpha).unwrap_or(0);
+         out.push(Block::Shape(ShapeBlock {
+             w: common.width as i32,
+             h: common.height as i32,
+@@ -1783,6 +2248,10 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)
+             vert_align: placement.vert_align,
+             horz_align: placement.horz_align,
+             paths,
++            obj_attr: placement.attr,
++            prevent_page_break: placement.prevent_page_break,
++            description: placement.description.clone(),
++            shadow_alpha,
+         }));
+     }
+     push_shape_text_boxes(doc, shape, out);
+@@ -1841,9 +2310,17 @@ fn push_shape_text_boxes_in_group(
+ ) {
+     if let Some(text) = shape_text_box(shape) {
+         let mut blocks = build_blocks(doc, &text.paragraphs);
+-        if let Some((x, y, w, h)) = frame {
+-            for block in blocks.iter_mut() {
+-                if let Block::Para(para) = block {
++        for block in blocks.iter_mut() {
++            if let Block::Para(para) = block {
++                // The TextBox's own facts — independent of whether we could resolve a frame.
++                para.box_list_attr = Some(text.list_attr);
++                para.box_vertical_all = Some(text.vertical_all);
++                para.box_margin_left = Some(text.margin_left as i32);
++                para.box_margin_right = Some(text.margin_right as i32);
++                para.box_margin_top = Some(text.margin_top as i32);
++                para.box_margin_bottom = Some(text.margin_bottom as i32);
++                para.box_max_width = Some(text.max_width as i32);
++                if let Some((x, y, w, h)) = frame {
+                     para.box_x = Some(x);
+                     para.box_y = Some(y);
+                     para.box_w = Some(w);
+@@ -2036,12 +2513,39 @@ fn collect_shape_paths(shape: &ShapeObject, dx: i32, dy: i32, out: &mut Vec<Shap
+     // documents — and painting it turns a connector into a white bar that erases the text under it
+     // (measured: it wiped a table's own column label). Only a path that closes is filled.
+     let closed = d.iter().any(|cmd| cmd.first().and_then(|v| v.as_str()) == Some("Z"));
++    // The rest of the fill's own raw facts, gated the SAME way `fill` itself is — an open path
++    // (a connector, a line) is not a filled figure, so none of these travel for one either.
++    let (fill_alpha, pattern_color, pattern_type, gradient, image_fill) =
++        match if closed { drawing } else { None } {
++            Some(d) => (
++                d.fill.alpha,
++                d.fill.solid.map(|s| color_hex(s.pattern_color)),
++                d.fill.solid.map(|s| s.pattern_type),
++                d.fill.gradient.as_ref().map(|g| ShapeGradientDto {
++                    kind: g.gradient_type,
++                    center_x: g.center_x,
++                    center_y: g.center_y,
++                    blur: g.blur,
++                }),
++                d.fill.image.as_ref().map(|img| ShapeImageFillDto {
++                    brightness: img.brightness,
++                    contrast: img.contrast,
++                    effect: img.effect,
++                }),
++            ),
++            None => (0, None, None, None, None),
++        };
+     out.push(ShapePath {
+         d,
+         stroke,
+         fill: if closed { drawing.and_then(shape_fill_hex) } else { None },
+         arrow_start,
+         arrow_end,
++        fill_alpha,
++        pattern_color,
++        pattern_type,
++        gradient,
++        image_fill,
+     });
+ }
+ 
+@@ -2094,6 +2598,7 @@ fn shape_stroke(drawing: &DrawingObjAttr) -> (Option<ShapeStrokeDto>, bool, bool
+         color: color_hex(border.color),
+         width_pt,
+         kind,
++        outline_style: border.outline_style,
+     });
+     (stroke, arrows.0, arrows.1)
+ }
+@@ -2213,6 +2718,11 @@ fn build_master_pages(document: &Document) -> Vec<MasterPageDto> {
+             out.push(MasterPageDto {
+                 section: section_index,
+                 apply_to: header_footer_apply_str(master.apply_to),
++                is_extension: master.is_extension,
++                overlap: master.overlap,
++                replace_base: master.replace_base,
++                text_width: master.text_width as i32,
++                text_height: master.text_height as i32,
+                 objects,
+             });
+         }
+@@ -2296,11 +2806,15 @@ fn build_header_footer_entries(
+             Control::Header(h) => HeaderFooterEntry {
+                 apply_to: header_footer_apply_str(h.apply_to),
+                 section: *section,
++                list_attr: h.list_attr,
++                text_width: h.text_width as i32,
+                 blocks: build_blocks(doc, &h.paragraphs),
+             },
+             Control::Footer(f) => HeaderFooterEntry {
+                 apply_to: header_footer_apply_str(f.apply_to),
+                 section: *section,
++                list_attr: f.list_attr,
++                text_width: f.text_width as i32,
+                 blocks: build_blocks(doc, &f.paragraphs),
+             },
+             _ => unreachable!("collect_headers_footers only ever pushes Header/Footer controls"),
+@@ -2311,9 +2825,23 @@ fn build_header_footer_entries(
+ /// 각주/미주 본문을 블록으로 변환하고, 첫 문단에 번호 접두 span 을 붙여
+ /// 리더가 노트를 구분할 수 있게 한다.
+ fn build_note_blocks(doc: &Document, note: &Control) -> Vec<Block> {
+-    let (paragraphs, number, is_endnote) = match note {
+-        Control::Footnote(f) => (&f.paragraphs, f.number, false),
+-        Control::Endnote(e) => (&e.paragraphs, e.number, true),
++    let (paragraphs, number, is_endnote, before_char, after_char, number_shape) = match note {
++        Control::Footnote(f) => (
++            &f.paragraphs,
++            f.number,
++            false,
++            f.before_decoration_letter,
++            f.after_decoration_letter,
++            f.number_shape,
++        ),
++        Control::Endnote(e) => (
++            &e.paragraphs,
++            e.number,
++            true,
++            e.before_decoration_letter,
++            e.after_decoration_letter,
++            e.number_shape,
++        ),
+         _ => return Vec::new(),
+     };
+     let mut blocks = build_blocks(doc, paragraphs);
+@@ -2322,6 +2850,11 @@ fn build_note_blocks(doc: &Document, note: &Control) -> Vec<Block> {
+     let mut prefix = note_marker_span(number);
+     prefix.text = format!("{}) ", number);
+     prefix.superscript = false;
++    // 이 컨트롤 인스턴스 자신이 들고 있는 장식/번호 모양 — 구역 전체 기본값(FootnoteShape)과는
++    // 별개다(Task #1050). WCHAR 0 은 "지정 없음"이라 생략한다.
++    prefix.note_before_char = wchar_field(before_char);
++    prefix.note_after_char = wchar_field(after_char);
++    prefix.note_number_shape = Some(number_shape as i32);
+     if let Some(Block::Para(pb)) = blocks.iter_mut().find(|b| matches!(b, Block::Para(_))) {
+         pb.spans.insert(0, prefix);
+     } else {
+@@ -2366,6 +2899,19 @@ fn minimal_note_para(span: Span) -> ParaBlock {
+         box_y: None,
+         box_w: None,
+         box_h: None,
++        style_type: None,
++        border_spacing: [0; 4],
++        tab_extended: Vec::new(),
++        tab_def_attr: 0,
++        auto_tab_left: false,
++        auto_tab_right: false,
++        box_list_attr: None,
++        box_vertical_all: None,
++        box_margin_left: None,
++        box_margin_right: None,
++        box_margin_top: None,
++        box_margin_bottom: None,
++        box_max_width: None,
+     }
+ }
+ 
+@@ -2417,6 +2963,21 @@ impl DocumentCore {
+             sections: build_sections(&self.document),
+             headers: build_header_footer_entries(&self.document, &header_ctrls),
+             footers: build_header_footer_entries(&self.document, &footer_ctrls),
++            hwpml_version: self.document.doc_info.hwpml_version.clone(),
++            is_hwp3_variant: self.document.is_hwp3_variant,
++            is_hwpx_variant: self.document.is_hwpx_variant,
++            extra_stream_paths: self
++                .document
++                .extra_streams
++                .iter()
++                .map(|(path, _)| path.clone())
++                .collect(),
++            hwpx_aux_entry_paths: self
++                .document
++                .hwpx_aux_entries
++                .iter()
++                .map(|(path, _)| path.clone())
++                .collect(),
+             blocks,
+         };
+         serde_json::to_string(&dto).map_err(|error| {
+@@ -2670,6 +3231,141 @@ mod tests {
+             println!("=== {path} ({} bytes) ===\n{head}\n", json.len());
+         }
+     }
++
++    /// s3 산출물: 이 라운드가 실은 95개 JSON 키가 samples/ 코퍼스 어딘가에서 실제 값으로
++    /// 도달하는지를 증명한다. 문자열 스캔인 이유: 95개 필드 각각을 구조로 파고들어 단언하면
++    /// 이 테스트 자체가 이 라운드만큼 커진다 — 대신 각 키가 최소 한 번은 등장하는지, 그리고
++    /// 몇 번 등장하는지를 코퍼스 전체에서 센다. 흔한 단어(`type`)처럼 애매한 키는 뺐다.
++    #[test]
++    fn export_s3_b_tier_fields_reach_the_corpus() {
++        // JSON 키 → 원본 Rust 필드(들), 참고용 주석.
++        let keys: &[(&str, &str)] = &[
++            ("\"baseline\":", "Equation.baseline"),
++            ("\"versionInfo\":", "Equation.version_info"),
++            ("\"pageNumberFormat\":", "AutoNumber.format"),
++            ("\"pageNumberSuperscript\":", "AutoNumber.superscript"),
++            ("\"pageNumberUserSymbol\":", "AutoNumber.user_symbol"),
++            ("\"pageNumberPrefixChar\":", "AutoNumber.prefix_char"),
++            ("\"pageNumberSuffixChar\":", "AutoNumber.suffix_char"),
++            ("\"noteBeforeChar\":", "Footnote/Endnote.before_decoration_letter"),
++            ("\"noteAfterChar\":", "Footnote/Endnote.after_decoration_letter"),
++            ("\"noteNumberShape\":", "Footnote/Endnote.number_shape"),
++            ("\"hwpmlVersion\":", "DocInfo.hwpml_version"),
++            ("\"isHwp3Variant\":", "Document.is_hwp3_variant"),
++            ("\"isHwpxVariant\":", "Document.is_hwpx_variant"),
++            ("\"extraStreamPaths\":", "Document.extra_streams"),
++            ("\"hwpxAuxEntryPaths\":", "Document.hwpx_aux_entries"),
++            ("\"columnSpacingHwpUnit\":", "SectionDef.column_spacing"),
++            ("\"defaultTabSpacingHwpUnit\":", "SectionDef.default_tab_spacing"),
++            ("\"pageNumType\":", "SectionDef.page_num_type"),
++            ("\"pictureNumStart\":", "SectionDef.picture_num"),
++            ("\"tableNumStart\":", "SectionDef.table_num"),
++            ("\"equationNumStart\":", "SectionDef.equation_num"),
++            ("\"hideBorder\":", "SectionDef.hide_border"),
++            ("\"hideFill\":", "SectionDef.hide_fill"),
++            ("\"hideEmptyLine\":", "SectionDef.hide_empty_line"),
++            ("\"listAttr\":", "Header/Footer.list_attr"),
++            ("\"textWidthHwpUnit\":", "Header/Footer/MasterPage.text_width"),
++            ("\"textHeightHwpUnit\":", "MasterPage.text_height"),
++            ("\"isExtension\":", "MasterPage.is_extension"),
++            ("\"replaceBase\":", "MasterPage.replace_base"),
++            ("\"borderX\":", "Picture.border_x"),
++            ("\"borderY\":", "Picture.border_y"),
++            ("\"transparency\":", "ImageAttr.transparency"),
++            ("\"externalPath\":", "ImageAttr.external_path"),
++            ("\"objAttr\":", "CommonObjAttr.attr"),
++            ("\"preventPageBreak\":", "CommonObjAttr.prevent_page_break"),
++            ("\"shadowAlpha\":", "DrawingObjAttr.shadow_alpha"),
++            ("\"marginHeader\":", "PageDef.margin_header"),
++            ("\"marginFooter\":", "PageDef.margin_footer"),
++            ("\"marginGutter\":", "PageDef.margin_gutter"),
++            ("\"paginationBottomTolerance\":", "PageDef.pagination_bottom_tolerance"),
++            ("\"binding\":", "PageDef.binding"),
++            ("\"styleType\":", "Style.style_type"),
++            ("\"borderSpacing\":", "ParaShape.border_spacing"),
++            ("\"tabExtended\":", "Paragraph.tab_extended"),
++            ("\"tabDefAttr\":", "TabDef.attr"),
++            ("\"autoTabLeft\":", "TabDef.auto_tab_left"),
++            ("\"autoTabRight\":", "TabDef.auto_tab_right"),
++            ("\"boxListAttr\":", "TextBox.list_attr"),
++            ("\"boxVerticalAll\":", "TextBox.vertical_all"),
++            ("\"boxMarginLeft\":", "TextBox.margin_left"),
++            ("\"boxMarginRight\":", "TextBox.margin_right"),
++            ("\"boxMarginTop\":", "TextBox.margin_top"),
++            ("\"boxMarginBottom\":", "TextBox.margin_bottom"),
++            ("\"boxMaxWidth\":", "TextBox.max_width"),
++            ("\"numberingDefaultStart\":", "Numbering.start_number"),
++            ("\"numberingHeadAttr\":", "NumberingHead.attr"),
++            ("\"numberingHeadTextDistance\":", "NumberingHead.text_distance"),
++            ("\"bulletAttr\":", "Bullet.attr"),
++            ("\"bulletTextDistance\":", "Bullet.text_distance"),
++            ("\"bulletImageData\":", "Bullet.image_data"),
++            ("\"fillType\":", "TabItem.fill_type"),
++            ("\"fillAlpha\":", "Fill.alpha"),
++            ("\"patternColor\":", "SolidFill.pattern_color"),
++            ("\"patternType\":", "SolidFill.pattern_type"),
++            ("\"gradient\":", "GradientFill (nested: type/centerX/centerY/blur)"),
++            ("\"imageFill\":", "ImageFill (nested: brightness/contrast/effect)"),
++            ("\"outlineStyle\":", "ShapeBorderLine.outline_style"),
++            ("\"cellSpacingHwpUnit\":", "Table.cell_spacing"),
++            ("\"rowSizes\":", "Table.row_sizes"),
++            ("\"outerMarginLeft\":", "Table.outer_margin_left"),
++            ("\"outerMarginRight\":", "Table.outer_margin_right"),
++            ("\"outerMarginTop\":", "Table.outer_margin_top"),
++            ("\"outerMarginBottom\":", "Table.outer_margin_bottom"),
++            ("\"listHeaderWidthRef\":", "Cell.list_header_width_ref"),
++            ("\"textDirection\":", "Cell.text_direction / SectionDef.text_direction"),
++            ("\"applyInnerMargin\":", "Cell.apply_inner_margin"),
++            ("\"fieldName\":", "Cell.field_name"),
++        ];
++        let mut counts = vec![0usize; keys.len()];
++        let mut scanned = 0usize;
++        let entries = std::fs::read_dir("samples").expect("read samples dir");
++        let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
++        paths.sort();
++        for path in paths {
++            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
++            if ext != "hwp" && ext != "hwpx" {
++                continue;
++            }
++            let p = path.to_string_lossy().to_string();
++            let json = match std::panic::catch_unwind(|| export(&p)) {
++                Ok(j) => j,
++                Err(_) => continue,
++            };
++            scanned += 1;
++            for (i, (key, _)) in keys.iter().enumerate() {
++                counts[i] += json.matches(key).count();
++            }
++        }
++        assert!(scanned > 100, "expected a real corpus scan, only reached {scanned} files");
++
++        let mut missing: Vec<&str> = Vec::new();
++        for ((key, source), count) in keys.iter().zip(counts.iter()) {
++            println!("S3-FIELD {key:<32} <- {source:<55} count={count}");
++            if *count == 0 {
++                missing.push(source);
++            }
++        }
++        println!(
++            "S3-FIELD SUMMARY: {} keys scanned across {} files, {} never observed: {:?}",
++            keys.len(),
++            scanned,
++            missing.len(),
++            missing
++        );
++        // 코퍼스가 모든 희귀 필드(HML 버전, 미주 장식, 확장 바탕쪽 등)를 담는다는 보장은 없다 —
++        // 이 게이트는 "배선이 끊어졌다"를 잡는 것이지 "코퍼스가 모든 값을 갖는다"를 요구하지
++        // 않는다. 절반 넘게 비어 있으면 필드 이름/직렬화 자체가 잘못됐을 확률이 훨씬 높다.
++        assert!(
++            missing.len() * 2 < keys.len(),
++            "more than half of the {} new S3 keys were never observed across {} files — \
++             likely a wiring bug, not corpus rarity: {:?}",
++            keys.len(),
++            scanned,
++            missing
++        );
++    }
+ }
+ 
+ #[cfg(test)]
+-- 
+2.50.1 (Apple Git-155)
+
