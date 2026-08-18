@@ -31,6 +31,18 @@ struct PageGrid: Equatable {
         /// The repeat distance this page occupies — its content height plus the band the reader
         /// reserves for a running header/footer, exactly as `PagePagination.pitch` composes them.
         var pitch: CGFloat
+        /// Height at the FOOT of this page reserved for notes cited ON it — 0 on every page that
+        /// cites none, which is every page of every document until S14 fills this in.
+        ///
+        /// DELIBERATELY NOT part of `pitch`. A note does not make the sheet taller; it takes room
+        /// away from the body of a sheet whose size the document already declared, which is what
+        /// Word and HWP both do. Keeping the pitch uniform is what lets every existing consumer —
+        /// the page derivation, printing, the margin numbers, the anchored-object pass — stay
+        /// exactly as it is, and it is what keeps `PageBandLayoutDelegate`'s derive-from-the-rect
+        /// rule idempotent: the page a line sits on still comes from one division that no note can
+        /// move. What a note DOES move is the floor the body may reach, which is
+        /// `textTop + pitch - band - noteBand` rather than the sheet's own bottom.
+        var noteBand: CGFloat = 0
         /// The top of this page's TEXT, measured from the top of the first page's text.
         var textTop: CGFloat
     }
@@ -63,7 +75,8 @@ struct PageGrid: Equatable {
     /// changing that is a layout change, not a pagination one.
     static func build(pageCount: Int, band: CGFloat, documentPaper: PaperGeometry,
                       sections: [OfficeSectionDeclaration],
-                      sectionOfPage: (Int) -> Int?) -> PageGrid {
+                      sectionOfPage: (Int) -> Int?,
+                      noteBandOfPage: (Int) -> CGFloat = { _ in 0 }) -> PageGrid {
         var pages: [Page] = []
         var top: CGFloat = 0
         for index in 0..<max(0, pageCount) {
@@ -71,10 +84,27 @@ struct PageGrid: Equatable {
             let declared = section.flatMap { sections.indices.contains($0) ? sections[$0].paper : nil }
             let paper = declared ?? documentPaper
             let pitch = PagePagination.pitch(pageContentHeight: paper.contentHeight, band: band)
-            pages.append(Page(section: section ?? 0, paper: paper, pitch: pitch, textTop: top))
+            let note = FootnoteBandSettle.clamped(noteBandOfPage(index),
+                                                  pageContentHeight: paper.contentHeight)
+            pages.append(Page(section: section ?? 0, paper: paper, pitch: pitch,
+                              noteBand: note, textTop: top))
             top += pitch
         }
         return PageGrid(pages: pages)
+    }
+
+    /// The lowest a page's BODY may reach — its sheet's own content bottom, less whatever this page
+    /// reserves for notes. This is the number an overrun check asks for, and the ONLY place a note
+    /// band changes an answer: page tops, the pitch and the page a point falls on are all untouched
+    /// (see `Page.noteBand`).
+    ///
+    /// Out of range extends the last page the same way `textTop` does, so a caller walking off the
+    /// end gets the strip the next sheet WOULD have rather than nothing.
+    func bodyBottom(ofPage page: Int) -> CGFloat {
+        guard !pages.isEmpty else { return 0 }
+        let index = min(max(0, page), pages.count - 1)
+        let p = pages[index]
+        return textTop(ofPage: page) + p.paper.contentHeight - p.noteBand
     }
 
     /// The top of page `page`'s TEXT, from the top of the first page's text. Out of range extends the

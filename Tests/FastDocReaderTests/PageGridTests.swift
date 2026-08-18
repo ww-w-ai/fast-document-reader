@@ -112,4 +112,59 @@ final class PageGridTests: XCTestCase {
         XCTAssertEqual(grid.page(containing: 999), 0)
         XCTAssertTrue(grid.isUniform)
     }
+
+    // MARK: note bands (S13) — what they may and may not move
+
+    /// The whole safety argument for putting note bands on this table: a document that cites no note
+    /// is IDENTICAL to one built before they existed. Same tops, same pitch, same page derivation.
+    func testAPageThatCitesNoNoteIsUntouched() {
+        let body = paper(555.59)
+        let pitch = PagePagination.pitch(pageContentHeight: body.contentHeight, band: band)
+        let grid = PageGrid.build(pageCount: 4, band: band, documentPaper: body,
+                                  sections: [OfficeSectionDeclaration(paper: body)],
+                                  sectionOfPage: { _ in 0 })
+        for page in 0..<4 {
+            XCTAssertEqual(grid.pages[page].noteBand, 0)
+            XCTAssertEqual(grid.textTop(ofPage: page), CGFloat(page) * pitch, accuracy: 0.001)
+            XCTAssertEqual(grid.bodyBottom(ofPage: page),
+                           CGFloat(page) * pitch + body.contentHeight, accuracy: 0.001)
+        }
+    }
+
+    /// A note band takes room from the BODY and nothing else — the sheet does not grow, so page
+    /// tops and the page a point falls on are the same numbers they were. This is what keeps
+    /// `PageBandLayoutDelegate`'s derive-from-the-rect rule idempotent.
+    func testANoteBandMovesTheBodyFloorButNotThePageItself() {
+        let body = paper(555.59)
+        let pitch = PagePagination.pitch(pageContentHeight: body.contentHeight, band: band)
+        let grid = PageGrid.build(pageCount: 4, band: band, documentPaper: body,
+                                  sections: [OfficeSectionDeclaration(paper: body)],
+                                  sectionOfPage: { _ in 0 },
+                                  noteBandOfPage: { $0 == 1 ? 60 : 0 })
+        // The sheet is untouched.
+        for page in 0..<4 {
+            XCTAssertEqual(grid.textTop(ofPage: page), CGFloat(page) * pitch, accuracy: 0.001,
+                           "a note must not move page \(page)'s top")
+        }
+        XCTAssertEqual(grid.page(containing: pitch * 2 + 1), 2,
+                       "a note must not change which page a point falls on")
+        // Only the floor of the page that cites it moved, and by exactly the band.
+        XCTAssertEqual(grid.bodyBottom(ofPage: 1),
+                       pitch + body.contentHeight - 60, accuracy: 0.001)
+        XCTAssertEqual(grid.bodyBottom(ofPage: 0), body.contentHeight, accuracy: 0.001)
+    }
+
+    /// The termination guard reaches the table itself: a note taller than its page cannot reserve
+    /// the page out of existence, or the marker it belongs to is pushed forward forever.
+    func testANoteTallerThanItsPageIsClampedByTheGrid() {
+        let body = paper(555.59)
+        let grid = PageGrid.build(pageCount: 2, band: band, documentPaper: body,
+                                  sections: [OfficeSectionDeclaration(paper: body)],
+                                  sectionOfPage: { _ in 0 },
+                                  noteBandOfPage: { _ in 10_000 })
+        XCTAssertEqual(grid.pages[0].noteBand,
+                       body.contentHeight * FootnoteBandSettle.maxBandFraction, accuracy: 0.001)
+        XCTAssertGreaterThan(grid.bodyBottom(ofPage: 0), grid.textTop(ofPage: 0),
+                             "the body must keep positive height on every page")
+    }
 }

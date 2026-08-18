@@ -2031,7 +2031,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// table is only ever moved once (the rule that moves it declines to move it again once it sits at
     /// a page top), so this terminates on its own — the cap is a backstop against a future change
     /// breaking that, not the mechanism.
-    private let maxPagedTableSettles = 8
+    ///
+    /// Taken from `FootnoteBandSettle.maxRounds` rather than written here, because the round budget
+    /// stops being a backstop the moment a SECOND varying quantity shares the loop: a note band can
+    /// genuinely oscillate (see that type), so for it the cap is load-bearing. Two numbers that must
+    /// agree and are written in two places eventually disagree, and this one would disagree silently
+    /// — the loop would still finish, just on a state one half of the settle never saw.
+    var maxPagedTableSettles: Int { FootnoteBandSettle.maxRounds }
     private var pagedTableSettles = 0
 
     /// Visible character range grown by `margin` screenfuls above and below — the region whose
