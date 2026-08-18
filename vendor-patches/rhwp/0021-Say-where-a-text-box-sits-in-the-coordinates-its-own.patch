@@ -1,7 +1,7 @@
 From e463c156f62ccc1b52a218b366c4d41c312e1b99 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sat, 15 Aug 2026 12:09:35 +0900
-Subject: [PATCH 21/36] Say where a text box sits in the coordinates its own
+Subject: [PATCH 21/37] Say where a text box sits in the coordinates its own
  drawing uses
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

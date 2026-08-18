@@ -1,0 +1,65 @@
+From 96a8c2656f065e9341be22107cbe4c11350588b2 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 16:58:14 +0900
+Subject: [PATCH 37/37] The parser already knew what the diagonal byte means
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+I read the byte two ways off the spec and could not choose, then measured a
+number (6,619 declarations, 2,522 with a width) that made neither reading fit.
+The predicate was in this tree the whole time: border_fill_has_cell_diagonal
+in table_ops.rs counts a cell diagonal only when the fill is not a centre line,
+the type byte is non-zero, AND a direction nibble is set in attr. Width is
+never consulted.
+
+So the byte is the line STYLE and attr carries the direction, and by that rule
+the corpus holds 69 diagonals across 36 of 340 documents — one in the reference
+manual, not 377. The comments now say that, and say not to use width as the
+test.
+---
+ src/document_core/queries/document_json.rs | 26 +++++++++++-----------
+ 1 file changed, 13 insertions(+), 13 deletions(-)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 8163c5ac..9f3f662f 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -561,21 +561,21 @@ struct BorderFillDto {
+     /// 로 해소한 것 이상(대각선 유무, 중심선 방향 등)이 필요해질 때를 위한 원본.
+     #[serde(rename = "attr", skip_serializing_if = "is_zero_u16")]
+     attr: u16,
+-    /// `BorderFill.diagonal.diagonal_type` — 셀을 가로지르는 대각선의 코드. **이 바이트가 무엇을
+-    /// 뜻하는지는 아직 확정되지 않았다**: 공식 스펙(`mydocs/tech/한글문서파일형식_5.0_revision1.3.md`)
+-    /// 표25 는 네 변과 같은 선 종류(실선/점선/이중선)로, 표27 은 방향(0 Slash / 1 BackSlash /
+-    /// 2 CrookedSlash)으로 읽는다. 실측은 표27 쪽이다 — 그릴 수 있는 대각선 2,522 개 중 2,514 개
+-    /// (99.7%)가 값 1 이고, 선 종류라면 그 전부가 "실선"이면서 방향은 어디에도 없다는 뜻이 된다
+-    /// (방향을 담는다는 attr 비트 2-4/5-7 은 그중 38 개, 1.5% 에서만 설정돼 있다). 확정하려면 실제
+-    /// 파일을 한컴 앱으로 열어 눈으로 봐야 하므로, 여기서는 **해석하지 않고 코드 그대로** 싣는다.
+-    /// `0` 은 어느 표에서도 "없음" 이므로 생략.
++    /// `BorderFill.diagonal.diagonal_type` — 대각선의 **선 종류**(공식 스펙 표25, 네 변과 같은
++    /// 코드 공간). 방향은 이 바이트가 아니라 `attr` 의 비트에 있다: 2-4 가 슬래시, 5-7 이
++    /// 백슬래시(표24). 파서 자신의 판정이 그것을 말한다 — `TableOps::border_fill_has_cell_diagonal`
++    /// (`document_core/commands/table_ops.rs`)은 중심선이 아니면서 `diagonal_type != 0` 이고
++    /// **방향 니블이 설정된** 경우에만 셀 대각선으로 친다(굵기는 보지 않는다).
++    ///
++    /// 그 규칙으로 세면 실측은 340 개 문서에 대각선 69 개, 문서 36 개이고 참조 편람에는 하나뿐이다.
++    /// `diagonal_type != 0` 만으로 세면 6,619 개가 나오는데 그 대부분은 대각선이 아니다 — 방향
++    /// 비트가 없기 때문이다. `0` 은 "없음" 이므로 생략.
+     #[serde(rename = "diagonalType", skip_serializing_if = "is_zero_u8")]
+     diagonal_type: u8,
+-    /// 대각선의 굵기와 색. 종류만으로는 **그릴지 말지를 판정할 수 없다** — `diagonal_type` 이
+-    /// 0 이 아니어도 굵기가 0 이면 선은 그려지지 않으므로, 종류만 내보내면 "선언한 셀"과
+-    /// "실제로 선이 있는 셀"을 소비자가 구분할 방법이 없다. 굵기는 나머지 네 변과 같은 코드
+-    /// 공간(`resolve_single_border_style` 이 pt 로 바꾸는 그 값)이고, 색은 종류가 0 이 아닐
+-    /// 때만 뜻이 있으므로 그때만 싣는다.
++    /// 대각선의 굵기와 색 — 그리려면 종류만으로는 부족하므로 함께 싣는다. 굵기는 나머지 네 변과
++    /// 같은 코드 공간(`resolve_single_border_style` 이 pt 로 바꾸는 그 값)이고, 색은 종류가 0 이
++    /// 아닐 때만 뜻이 있으므로 그때만 싣는다. **그릴지 말지의 판정에는 쓰지 말 것** — 파서는
++    /// 굵기를 보지 않고 `attr` 의 방향 비트로 판정한다(위 `diagonal_type` 주석 참조).
+     #[serde(rename = "diagonalWidth", skip_serializing_if = "is_zero_u8")]
+     diagonal_width: u8,
+     #[serde(rename = "diagonalColor", skip_serializing_if = "Option::is_none")]
+-- 
+2.50.1 (Apple Git-155)
+

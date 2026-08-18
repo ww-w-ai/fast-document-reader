@@ -1,7 +1,7 @@
 From 84f98c22ec15e10ed5fec7d1eecc3c549e665f43 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 14:48:57 +0900
-Subject: [PATCH 34/36] feat(export): wire 21 new state-C branches into the
+Subject: [PATCH 34/37] feat(export): wire 21 new state-C branches into the
  structured JSON exporter
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

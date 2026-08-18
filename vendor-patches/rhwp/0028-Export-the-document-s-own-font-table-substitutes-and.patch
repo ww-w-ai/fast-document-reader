@@ -1,7 +1,7 @@
 From 01c7aa6a28d54c114166729039827dd733729eb7 Mon Sep 17 00:00:00 2001
 From: FastDocReader <taekim@ww-w.ai>
 Date: Tue, 18 Aug 2026 02:34:28 +0900
-Subject: [PATCH 28/36] Export the document's own font table, substitutes and
+Subject: [PATCH 28/37] Export the document's own font table, substitutes and
  all
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

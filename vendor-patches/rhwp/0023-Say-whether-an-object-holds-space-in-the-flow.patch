@@ -1,7 +1,7 @@
 From 7b212ea76645b86c857dd14441f8e106d5ddce5f Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sun, 16 Aug 2026 12:28:51 +0900
-Subject: [PATCH 23/36] Say whether an object holds space in the flow
+Subject: [PATCH 23/37] Say whether an object holds space in the flow
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
