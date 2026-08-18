@@ -1,0 +1,105 @@
+From d376ef544bce0295a9b0f3eeef5b5141579162a5 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 18 Aug 2026 22:47:36 +0900
+Subject: [PATCH 45/45] Count how often a corpus embeds a form control, and
+ which kinds
+
+---
+ examples/scan_forms.rs | 85 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 85 insertions(+)
+ create mode 100644 examples/scan_forms.rs
+
+diff --git a/examples/scan_forms.rs b/examples/scan_forms.rs
+new file mode 100644
+index 00000000..fd06899b
+--- /dev/null
++++ b/examples/scan_forms.rs
+@@ -0,0 +1,85 @@
++// S18 — does a real corpus use HWP's form controls at all?
++//
++// A form object is a button/checkbox/combo/edit field embedded in the document. The sprint would
++// teach the reader to DRAW them. One number decides whether that is worth anything: how many
++// documents contain one.
++//
++// PRIVACY: counts only. No document text, no filename, no path is ever printed.
++
++use rhwp::model::control::Control;
++use rhwp::model::paragraph::Paragraph;
++use rhwp::model::table::Table;
++use rhwp::DocumentCore;
++use std::collections::BTreeMap;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++#[derive(Default)]
++struct Counts {
++    files_read: usize,
++    files_failed: usize,
++    docs_with_forms: usize,
++    forms: usize,
++    kinds: BTreeMap<String, usize>,
++    samples: Vec<(u64, String, usize)>,
++}
++
++fn walk(paras: &[Paragraph], c: &mut Counts, doc: &mut usize) {
++    for p in paras {
++        for ctrl in &p.controls {
++            match ctrl {
++                Control::Form(f) => {
++                    c.forms += 1;
++                    *doc += 1;
++                    *c.kinds.entry(format!("{:?}", f.form_type)).or_default() += 1;
++                }
++                Control::Table(t) => walk_table(t, c, doc),
++                _ => {}
++            }
++        }
++    }
++}
++
++fn walk_table(t: &Table, c: &mut Counts, doc: &mut usize) {
++    for cell in &t.cells { walk(&cell.paragraphs, c, doc); }
++}
++
++fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
++    let Ok(entries) = fs::read_dir(dir) else { return };
++    for e in entries.flatten() {
++        let path = e.path();
++        if path.is_dir() { collect(&path, out); }
++        else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
++            let ext = ext.to_ascii_lowercase();
++            if ext == "hwp" || ext == "hwpx" { out.push(path); }
++        }
++    }
++}
++
++fn main() {
++    let root = std::env::args().nth(1).unwrap_or_else(|| "samples".to_string());
++    let mut files = Vec::new();
++    collect(Path::new(&root), &mut files);
++    files.sort();
++    let mut c = Counts::default();
++    for path in &files {
++        let Ok(bytes) = fs::read(path) else { c.files_failed += 1; continue };
++        let Ok(core) = DocumentCore::from_bytes(&bytes) else { c.files_failed += 1; continue };
++        c.files_read += 1;
++        let mut doc = 0usize;
++        for section in &core.document().sections { walk(&section.paragraphs, &mut c, &mut doc); }
++        if doc > 0 {
++            c.docs_with_forms += 1;
++            let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
++            c.samples.push((size, path.display().to_string(), doc));
++        }
++    }
++    println!("files read      : {} (failed {})", c.files_read, c.files_failed);
++    println!("docs with forms : {}", c.docs_with_forms);
++    println!("form objects    : {}", c.forms);
++    println!("kinds           : {:?}", c.kinds);
++    c.samples.sort();
++    for (size, path, n) in c.samples.iter().take(3) {
++        println!("  {size:>8} bytes  {n:>3} forms  {path}");
++    }
++}
+-- 
+2.50.1 (Apple Git-155)
+

@@ -40,6 +40,9 @@ struct Span: Equatable {
     /// `nil` on every other run, including an ENDNOTE's marker: an endnote stays in the body flow
     /// and nothing needs to go looking for it.
     var footnoteRef: Int? = nil
+    /// A form control the document embedded — a checkbox, a radio button, a button, a field.
+    /// `nil` on every ordinary run.
+    var formControl: OfficeFormControl? = nil
     /// Where the document switches how many columns its text flows through, carried on the run the
     /// declaration sits at. A declaration is a POSITION, not a property of a section: HWP puts it in
     /// the text, so one document can go to two columns and back. Becomes `MDAttr.columnLayout`.
@@ -1427,4 +1430,65 @@ struct OfficeReadResult: Equatable {
     /// today. It is a FLOOR, never a ceiling — a paragraph that states its own larger spacing keeps
     /// it, exactly as Word does.
     var lineGridPitch: CGFloat? = nil
+}
+
+/// A form control embedded in a document — HWP's `FormObject`.
+///
+/// This reader is a VIEWER, so a control is something to read, never something to operate: a
+/// checkbox says whether it is ticked and a button says what it is labelled, and neither responds
+/// to a click. Measured over the 637-sample corpus (`examples/scan_forms.rs`): 12 documents (1.9%)
+/// embed one, but they hold 406 controls between them and **365 of those (90%) are checkboxes** —
+/// so a document that has any tends to be a form, where the controls ARE the content. One such
+/// sample renders as a completely blank page today, which is the state this replaces.
+struct OfficeFormControl: Hashable {
+    enum Kind: String, Hashable {
+        case checkBox, radioButton, pushButton, comboBox, edit, listBox, scrollBar, unknown
+
+        init(exported: String?) {
+            self = Kind(rawValue: exported ?? "") ?? .unknown
+        }
+    }
+
+    var kind: Kind
+    /// The control's own label (a button's face, a checkbox's text).
+    var caption: String = ""
+    /// What an editable control currently holds.
+    var text: String = ""
+    /// Non-zero when a checkbox or radio button is ticked.
+    var value: Int = 0
+    /// A control the document greyed out. Drawn dimmed rather than hidden — it is part of the form.
+    var enabled: Bool = true
+
+    var isTicked: Bool { value != 0 }
+
+    /// What the reader puts on the page for this control.
+    ///
+    /// TEXT, not a drawn widget, and deliberately: a glyph run is found by ⌘F, copied with the
+    /// selection, carried into `--extract` and measured by the same typesetter as everything around
+    /// it, all of which a custom-drawn box would have to re-earn one at a time. The characters are
+    /// the ones the format itself is drawn with in every Korean form — a ticked box reads as ticked
+    /// without a legend.
+    var displayText: String {
+        switch kind {
+        case .checkBox:
+            return join(isTicked ? "☒" : "☐", caption)
+        case .radioButton:
+            return join(isTicked ? "◉" : "○", caption)
+        case .pushButton:
+            return "[ " + (caption.isEmpty ? " " : caption) + " ]"
+        case .comboBox:
+            return "[ " + (text.isEmpty ? caption : text) + " ▾ ]"
+        case .edit:
+            // An empty field is a RULE, not nothing: a blank form still has to show where the
+            // answers go, which is the whole point of printing one.
+            return text.isEmpty ? "[________]" : "[ " + text + " ]"
+        case .listBox, .scrollBar, .unknown:
+            let label = text.isEmpty ? caption : text
+            return label.isEmpty ? "" : "[ " + label + " ]"
+        }
+    }
+
+    private func join(_ mark: String, _ label: String) -> String {
+        label.isEmpty ? mark : mark + " " + label
+    }
 }

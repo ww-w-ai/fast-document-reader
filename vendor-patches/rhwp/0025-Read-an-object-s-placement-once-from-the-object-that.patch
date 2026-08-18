@@ -1,7 +1,7 @@
 From 87bceab8b1cb425422230f1c205426770e5d868e Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sun, 16 Aug 2026 22:25:05 +0900
-Subject: [PATCH 25/44] Read an object's placement once, from the object that
+Subject: [PATCH 25/45] Read an object's placement once, from the object that
  was placed
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

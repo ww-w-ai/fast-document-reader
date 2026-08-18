@@ -925,6 +925,18 @@ enum HwpReader {
             span.text = (s.noteBeforeChar ?? "") + span.text + (s.noteAfterChar ?? "")
         }
         if let cd = s.columnDef { span.columnLayout = columnLayout(cd) }
+        if let f = s.form {
+            let control = OfficeFormControl(kind: .init(exported: f.formType),
+                                            caption: f.caption ?? "",
+                                            text: f.text ?? "",
+                                            value: f.value ?? 0,
+                                            enabled: f.enabled ?? true)
+            span.formControl = control
+            // The control's own glyphs ARE its text. A form control arrives on a zero-width anchor
+            // span (like a bookmark or a note marker), so without this the run has nothing to draw
+            // and the document renders blank — which is exactly what a corpus form sample did.
+            if span.text.isEmpty { span.text = control.displayText }
+        }
         span.subscripted = s.subscripted ?? false
         span.textColor = color(s.color)
         // size is a base_size in HWPUNIT; ÷100 = points. 0/absent → unspecified (theme decides).
@@ -2118,6 +2130,16 @@ private struct HwpList: Decodable {
     var bulletTextDistance: Int?
 }
 
+/// A form control embedded in the text — `FormObject` in the format.
+private struct HwpForm: Decodable {
+    var formType: String?
+    var name: String?
+    var caption: String?
+    var text: String?
+    var value: Int?
+    var enabled: Bool?
+}
+
 /// What a section's text says about the columns it flows through — `ColumnDef` in the format.
 private struct HwpColumnDef: Decodable {
     var columnCount: Int
@@ -2151,6 +2173,8 @@ private struct HwpSpan: Decodable {
     /// `Control::ColumnDef`('cold') — "from here on, N columns". A zero-width anchor span, the same
     /// shape a bookmark or a note marker arrives as.
     var columnDef: HwpColumnDef?
+    /// `Control::Form`('form') — a checkbox/button/field the document embedded.
+    var form: HwpForm?
     var subscripted: Bool?      // JSON key "sub"
     var color: String?
     var size: Int?
@@ -2197,7 +2221,7 @@ private struct HwpSpan: Decodable {
         // run and the footnote path found nothing to place. Same failure shape as a stale binary
         // (invariant 45): the field is in the model, the value is on the wire, and the reader
         // never sees it. Anything added above must be added here too.
-        case noteRef, noteRefKind, noteBeforeChar, noteAfterChar, columnDef
+        case noteRef, noteRefKind, noteBeforeChar, noteAfterChar, columnDef, form
         case superscript = "super"
         case subscripted = "sub"
     }

@@ -1,7 +1,7 @@
 From 6e09a6b273471141f5c1e4abb8716524dca61c3c Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 02:23:41 +0900
-Subject: [PATCH 15/44] Say where each section begins in the flat block stream
+Subject: [PATCH 15/45] Say where each section begins in the flat block stream
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
