@@ -694,6 +694,51 @@ final class HwpMappingTests: XCTestCase {
         XCTAssertNil(try edges("{\"v\":1,\(table(1))}"))               // parser predating the export
     }
 
+    // MARK: list geometry — the gap the document put between a marker and its text
+
+    /// A numbered level takes its head's distance; a bullet level takes the bullet's. They are the
+    /// same fact in two records and a level has exactly one of them, so `ordered` picks.
+    func testListTextDistanceIsTakenFromTheMatchingRecord() throws {
+        func distance(ordered: Bool, head: Int?, bullet: Int?) throws -> CGFloat? {
+            let fields = [head.map { "\"numberingHeadTextDistance\":\($0)" },
+                          bullet.map { "\"bulletTextDistance\":\($0)" }].compactMap { $0 }
+            let extra = fields.isEmpty ? "" : "," + fields.joined(separator: ",")
+            let json = """
+            {"v":1,"blocks":[{"t":"para","spans":[{"text":"항목"}],
+              "list":{"level":0,"ordered":\(ordered),"marker":"^1."\(extra)}}]}
+            """
+            guard case let .listItem(_, _, _, _, _, _, _, format, _) =
+                    try HwpReader.mapJSON(json).blocks[0] else {
+                XCTFail("expected list item"); return nil
+            }
+            return format.listTextDistance
+        }
+        // 2000 HWPUNIT = 20pt
+        XCTAssertEqual(try XCTUnwrap(distance(ordered: true, head: 2000, bullet: nil)), 20, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(distance(ordered: false, head: nil, bullet: 1500)), 15, accuracy: 0.001)
+        // A numbered level ignores a bullet distance and vice versa — one level, one record.
+        XCTAssertNil(try distance(ordered: true, head: nil, bullet: 1500))
+        XCTAssertNil(try distance(ordered: false, head: 2000, bullet: nil))
+    }
+
+    /// No declaration, and a declared ZERO, both leave the reader's own hanging indent alone —
+    /// a zero gap would print the text on top of its own marker.
+    func testAnAbsentOrZeroDistanceLeavesTheDefault() throws {
+        func distance(_ extra: String) throws -> CGFloat? {
+            let json = """
+            {"v":1,"blocks":[{"t":"para","spans":[{"text":"항목"}],
+              "list":{"level":0,"ordered":true,"marker":"^1."\(extra)}}]}
+            """
+            guard case let .listItem(_, _, _, _, _, _, _, format, _) =
+                    try HwpReader.mapJSON(json).blocks[0] else {
+                XCTFail("expected list item"); return nil
+            }
+            return format.listTextDistance
+        }
+        XCTAssertNil(try distance(""))
+        XCTAssertNil(try distance(",\"numberingHeadTextDistance\":0"))
+    }
+
     // MARK: NewNumber — "start the page numbering again here"
 
     /// A page-counter restart is collected with the block that carries it. 103 of 637 corpus

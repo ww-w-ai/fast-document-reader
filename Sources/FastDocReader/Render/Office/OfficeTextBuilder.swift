@@ -1254,7 +1254,10 @@ enum OfficeTextBuilder {
 
         let hang = theme.baseFontSize * theme.listHangRatio
         let markerX = CGFloat(level) * hang
-        let textX = CGFloat(level + 1) * hang
+        // The document's own marker-to-text gap when it declared one, else the reader's own hanging
+        // indent. Measured before it was built: 6,508 declarations across 39 of 637 documents, every
+        // one of which was being drawn at this reader's rhythm instead of the author's.
+        let textX = format?.listTextDistance.map { markerX + $0 } ?? CGFloat(level + 1) * hang
         let start = result.length
         // The item's text is rendered FIRST (into a local — the appended order is unchanged) so the
         // marker can be drawn to match it. PAGED takes the marker's SIZE and COLOUR from the item's

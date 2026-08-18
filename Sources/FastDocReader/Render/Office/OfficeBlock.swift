@@ -643,6 +643,14 @@ struct ParagraphFormat: Equatable {
     /// Space before/after the paragraph, in POINTS (docx `w:pPr/w:spacing/@w:before`/`@w:after` are
     /// TWIPS — a reader converts twips→points before constructing this; ODT `fo:margin-top`/
     /// `fo:margin-bottom` are already points). `nil` leaves the builder's own theme spacing in place.
+    /// How far a LIST item's text sits from its own marker, in POINTS, when the document said so
+    /// (HWP's `NumberingHead.text_distance` for a numbered head, `Bullet.text_distance` for a
+    /// bullet). `nil` — every other format, and most HWP paragraphs — leaves the builder's own
+    /// hanging indent (`theme.listHangRatio` × the base size) exactly as it was.
+    ///
+    /// This is the gap between the MARKER and the TEXT, not the item's indent: how far the whole
+    /// item sits from the margin is `indentStart`, which the reader already honours.
+    var listTextDistance: CGFloat? = nil
     var spacingBefore: CGFloat? = nil
     var spacingAfter: CGFloat? = nil
     /// The paragraph's line-spacing mode — see `LineHeight` above. `nil` leaves whatever line

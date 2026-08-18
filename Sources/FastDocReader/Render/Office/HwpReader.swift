@@ -1185,6 +1185,14 @@ enum HwpReader {
                 }
             }
             if let list = p.list {
+                var format = format
+                // The document's own gap between a marker and its text. `ordered` picks which of the
+                // two the level actually has — a numbered head and a bullet are the same fact in two
+                // records, and a level is one or the other.
+                if let raw = list.ordered ? list.numberingHeadTextDistance : list.bulletTextDistance,
+                   raw > 0 {
+                    format.listTextDistance = points(raw)
+                }
                 return .listItem(level: list.level, ordered: list.ordered, spans: spans, marker: list.marker,
                                  rtl: false, alignment: align, tabStops: tabStops, format: format,
                                  numbering: ListNumbering(
@@ -1935,6 +1943,10 @@ private struct HwpList: Decodable {
     var startNumber: Int?
     /// Which glyphs the number is written in (HWP's own table 43), named — see `ListNumbering.Glyphs`.
     var numberFormat: String?
+    /// How far this level's TEXT sits from its own head, in HWPUNIT — the numbered-head form and the
+    /// bullet form of the same fact, only one of which a given level has.
+    var numberingHeadTextDistance: Int?
+    var bulletTextDistance: Int?
 }
 
 private struct HwpSpan: Decodable {
