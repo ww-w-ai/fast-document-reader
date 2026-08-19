@@ -131,19 +131,35 @@ private struct AttributedBuilder: MarkupWalker {
     private let bodyPS: NSParagraphStyle
     private let quotePS: NSParagraphStyle
     private let imagePS: NSParagraphStyle   // no max line height, so the line grows to fit an image
-    private let source: String              // original markdown, for block→source mapping
+    /// The raw markdown, held as an `NSString` rather than a `String`.
+    ///
+    /// Everything this builder asks the source is a UTF-16 question — `lineStarts` are UTF-16
+    /// offsets, `sourceOffsets` returns an `NSRange`, and a block id is a range into the same
+    /// coordinates. A native Swift string stores UTF-8, so each of those reads transcoded the range
+    /// again: the line scan below is one `character(at:)` per character (2.8 M of them on a 3.5 MB
+    /// file), `scanMathSpans` takes a substring per LINE (54,795 of them), and `sourceOffsets` runs
+    /// once per BLOCK. MEASURED by `sample`: this initialiser was 705 of 6,029 first-paint samples.
+    ///
+    /// One `NSString` up front is one transcode and every read after it is an indexed one — worth
+    /// **4.48 s → 4.35 s** of first paint on a 3.5 MB file, three runs each at a load average of 3.2.
+    /// Less than the sample share suggests, because `NSString(string:)` COPIES (5.6 MB of UTF-16)
+    /// where `source as NSString` was a free wrapper — the per-access transcode is traded for one
+    /// bulk copy rather than removed. Measure any replacement the same way, on a QUIET machine: the
+    /// same build measured 7.5 s at a load average of 12–17, which is the number that nearly got
+    /// this change credited with three times its worth.
+    private let sourceNS: NSString
     private let lineStarts: [Int]           // UTF-16 offset of each source line start
     private let mathSpans: [(range: NSRange, tex: String)]
     private var emittedMath = Set<Int>()    // span starts already turned into a formula
 
     init(theme: RenderTheme, source: String) {
         self.theme = theme
-        self.source = source
+        let sns = NSString(string: source)
+        self.sourceNS = sns
         var ls = [0]
-        let sns = source as NSString
         for i in 0..<sns.length where sns.character(at: i) == 10 { ls.append(i + 1) }
         self.lineStarts = ls
-        self.mathSpans = AttributedBuilder.scanMathSpans(source, lineStarts: ls)
+        self.mathSpans = AttributedBuilder.scanMathSpans(sns, lineStarts: ls)
         let b = theme.baseFontSize
         let style = MarkdownStyle(theme: theme)
         // All spacing is derived from the base font size with ABSOLUTE line heights, so it
@@ -197,7 +213,7 @@ private struct AttributedBuilder: MarkupWalker {
         let endLine = srcRange.upperBound.line
         guard startLine >= 1, startLine <= lineStarts.count else { return nil }
         let startOff = lineStarts[startLine - 1]
-        let sns = source as NSString
+        let sns = sourceNS
         var endOff = (endLine >= 1 && endLine < lineStarts.count) ? lineStarts[endLine] - 1 : sns.length
         // Some blocks (e.g. lists) report a range that runs one line long; trim trailing newlines
         // so the span hugs the block's own text and a replacement can't swallow block separators.
@@ -402,8 +418,7 @@ private struct AttributedBuilder: MarkupWalker {
     /// and no node-level test can put it back together — claiming the span from the source first is
     /// the only order that works. (Measured: `\begin{pmatrix} … \\ = \\ … \end{pmatrix}` arrived as
     /// a heading plus a paragraph, and rendered as a giant title.)
-    private static func scanMathSpans(_ source: String, lineStarts: [Int]) -> [(range: NSRange, tex: String)] {
-        let ns = source as NSString
+    private static func scanMathSpans(_ ns: NSString, lineStarts: [Int]) -> [(range: NSRange, tex: String)] {
         var out: [(range: NSRange, tex: String)] = []
         var openLine: Int?
         for i in 0..<lineStarts.count {
