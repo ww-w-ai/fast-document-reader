@@ -275,10 +275,23 @@ final class MarkdownDocument: NSDocument {
     /// instant, and splitting it would spend an extra storage edit to save nothing.
     private static let progressiveSourceFloor = 300_000   // UTF-16 units
 
-    /// How much of the tail arrives per run-loop turn. `.max` is ONE remainder chunk — the
-    /// two-phase shape the design doc asks to measure first, before paying for the surrounding
-    /// features many chunks would need (docs/02-planned/markdown-progressive-first-paint.md §7).
-    private static let progressiveTailBlocks = Int.max
+    /// How many turns the tail may take after the window is up.
+    ///
+    /// It used to be ONE, and that turn was a **3,728 ms** freeze the reader could not scroll
+    /// through — the whole point of painting early, spent (measured on a 3.5 MB file that paints at
+    /// ~1,000 ms). The work cannot move off the main thread: invariant 55 measured that and
+    /// rejected it, because `NSTextTable`/`NSParagraphStyle` construction is not documented as
+    /// thread-safe. So it is divided instead, one piece per run-loop turn, and the reader can
+    /// scroll between them.
+    ///
+    /// Divided by COUNT, not by a time budget. A budget was built and measured first and it lost in
+    /// both directions at once: every piece carries a fixed cost (copy the delta, run the two range
+    /// passes over it, append it to the storage, let the view invalidate), so more pieces cost more
+    /// in total — 8.3 s to finish against 3.8 s undivided, and worse again at 9.7 s and 11.1 s when
+    /// the budget was widened — while the worst turn stayed stubborn anyway, because one oversized
+    /// block can outlast any budget. Twenty is the tail cut into pieces the reader can scroll
+    /// between, without paying that fixed cost hundreds of times.
+    private static let progressiveTailTurns = 20
 
     // While the up-front measure pass is rendering uncached diagrams, their exact size isn't known
     // yet — reconcileMedia must NOT load them (that would resize under the reader). Cleared once the
@@ -1553,13 +1566,17 @@ final class MarkdownDocument: NSDocument {
     /// actually is one — in particular the walk, which invariant 55(a) records is not optional:
     /// arriving at an unlaid region costs 69,460 and 80,008 ms against 3.2 ms when it has run.
     private func appendProgressiveTail(into wc: DocumentWindowController, generation: Int) {
-        guard progressiveRender != nil, wc.textStorageRef != nil else { return }
+        guard let render = progressiveRender, wc.textStorageRef != nil else { return }
         let anchor = wc.readingAnchor()
+        let tailBlocksPerTurn = max(1, Int((Double(render.remainingBlocks)
+                                            / Double(Self.progressiveTailTurns)).rounded(.up)))
 
         func appendNext() {
             guard renderGeneration == generation, let render = progressiveRender,
                   let storage = wc.textStorageRef else { return }
-            let piece = render.nextChunk(blocks: Self.progressiveTailBlocks)
+            // Sized ONCE from what was left when the window went up, so the pieces are even and
+            // the count is the promise: at most `progressiveTailTurns` turns, whatever the document.
+            let piece = render.nextChunk(blocks: tailBlocksPerTurn)
             storage.beginEditing()
             storage.append(piece)
             storage.endEditing()

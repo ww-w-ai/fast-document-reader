@@ -796,6 +796,10 @@ final class ProgressiveMarkdownRender {
 
     var isFinished: Bool { next >= children.count }
     var blockCount: Int { children.count }
+    /// Top-level blocks not yet visited — what a caller divides into the turns it is willing to take.
+    var remainingBlocks: Int { children.count - next }
+    /// How many pieces have been handed over, so a probe can report turns instead of guessing at them.
+    private(set) var chunksHandedOut = 0
 
     /// Visit up to `blocks` more top-level children and return the text they produced.
     func nextChunk(blocks: Int) -> NSAttributedString {
@@ -804,10 +808,17 @@ final class ProgressiveMarkdownRender {
         // real document, in the append turn no probe ever reached.
         let take = max(1, blocks)
         let end = take >= children.count - next ? children.count : next + take
-        while next < end {
+        return chunk { self.next >= end }
+    }
+
+    /// Visit children until `stop` says so, then take everything those visits added.
+    private func chunk(_ stop: () -> Bool) -> NSAttributedString {
+        while next < children.count {
             builder.visit(children[next])
             next += 1
+            if stop() { break }
         }
+        chunksHandedOut += 1
         let full = builder.result
         let delta = NSMutableAttributedString(attributedString:
             full.attributedSubstring(from: NSRange(location: mark, length: full.length - mark)))
