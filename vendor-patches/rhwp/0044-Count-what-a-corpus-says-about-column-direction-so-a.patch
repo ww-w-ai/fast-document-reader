@@ -1,7 +1,7 @@
 From 42ea1c460d69257331a84a010bae5c14882d5054 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 22:38:02 +0900
-Subject: [PATCH 44/45] Count what a corpus says about column direction, so a
+Subject: [PATCH 44/46] Count what a corpus says about column direction, so a
  sprint can rule it out
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

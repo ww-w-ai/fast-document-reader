@@ -19,7 +19,17 @@ import AppKit
 /// measurement that stopped that feature from being re-proposed.
 ///
 /// Measured, not reasoned: this file makes the same claim invariant 58's own spike does, in the
-/// opposite direction.
+/// opposite direction — and then measures the thing that claim does NOT cover, which is what
+/// actually decided the design.
+///
+/// **What the first version of this spike got wrong.** It asserted only that SOME lines ended up in
+/// the left column and SOME in the right, which a rule that moves one line per column break also
+/// satisfies. Built against a real document, that rule drew a narrow single column: the typesetter
+/// carries a moved line's `y` to the following lines but re-derives their `x` from the paragraph, so
+/// every line after the first returned to the left edge — 32 lines moved and 1,200 stayed on
+/// `samples/basic/shortcut.hwp`. `testTheTypesetterDoesNotCarryAMovedLinesX` below is that finding,
+/// asserted directly, and it is why columns are placed from a character-keyed map
+/// (`ColumnGeometry.placements`) rather than by a rule that reads the laid-out page.
 final class ColumnFlowSpikeTests: XCTestCase {
 
     /// Two equal columns of a fixed height, in one container, moving lines only.
@@ -121,6 +131,31 @@ final class ColumnFlowSpikeTests: XCTestCase {
                           "the second column starts above where the first one ended")
         XCTAssertLessThan(highestRight, 20, "and it starts near the TOP of the body")
         _ = (tc, storage)
+    }
+
+    /// THE finding that decided the design: a moved line's `x` is NOT inherited by the line after it.
+    ///
+    /// The delegate above moves a line into column 2 and leaves the following lines alone (its rule
+    /// only fires for lines whose flow offset is past the first column). If the typesetter carried
+    /// `x` the way it carries `y`, those following lines would arrive already at column 2's left
+    /// edge. They do not: they come back at 0, which means a rule cannot read a line's column off
+    /// the page it is being laid out into.
+    func testTheTypesetterDoesNotCarryAMovedLinesX() {
+        let columns = ColumnGeometry.columns(inWidth: 420,
+                                             layout: OfficeColumnLayout(count: 2, spacing: 20))
+        let (storage, lm, _, delegate) = layout(columnHeight: 120, columnWidth: columns[0].width,
+                                                columns: columns)
+        var lefts: [CGFloat] = []
+        lm.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: lm.numberOfGlyphs)) {
+            rect, _, _, _, _ in lefts.append(rect.minX)
+        }
+        let moved = lefts.filter { abs($0 - columns[1].x) < 0.5 }.count
+        XCTAssertEqual(moved, delegate.moved,
+                       "exactly the lines this rule touched are in column 2 — no line inherited the x")
+        XCTAssertLessThan(moved, lefts.count / 2,
+                          "and most lines are still at the left edge, which is what a page of this "
+                          + "rule's output actually looks like")
+        _ = storage
     }
 
     /// Idempotence, the property invariant 58 says a counter cannot have: laying the same text out

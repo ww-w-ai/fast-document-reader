@@ -1,0 +1,72 @@
+From 001fd0bfbb9c21af5393051963ee76dee625c7ec Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Wed, 19 Aug 2026 09:25:59 +0900
+Subject: [PATCH 46/46] Say where a column declaration sits and how many tables
+ sit under one
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Both numbers decide how a viewer has to build columns: 47% of declarations are in
+the first tenth of their document but the rest are scattered, so a run can start
+anywhere — and 244 tables sit inside one, which is why the text has to be
+typeset at the column's width rather than moved afterwards.
+---
+ examples/scan_columns.rs | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/examples/scan_columns.rs b/examples/scan_columns.rs
+index 0272f526..c078d33f 100644
+--- a/examples/scan_columns.rs
++++ b/examples/scan_columns.rs
+@@ -33,10 +33,17 @@ struct Counts {
+     multi_decls_per_doc: BTreeMap<usize, usize>,
+     samples: Vec<(u64, String, u16)>,
+     text_direction: BTreeMap<String, usize>,
++    /// 다단 선언이 문서의 어느 지점에 오나 — 문단 인덱스를 전체 문단 수로 나눈 십분위.
++    decl_decile: BTreeMap<usize, usize>,
++    /// 다단 구간 안에 표/그림이 몇 개나 있나 — 그것들은 자기 폭을 갖고 있어 열 폭을 따르지 않는다.
++    tables_under_columns: usize,
++    /// 선언이 하나뿐이고 그것이 문서의 앞 10%에 있는 문서 = "문서 전체가 다단"
++    whole_doc_multi: usize,
+ }
+ 
+ fn walk(paras: &[Paragraph], c: &mut Counts, doc_multi: &mut usize, active_cols: &mut u16) {
+-    for p in paras {
++    let total = paras.len().max(1);
++    for (pi, p) in paras.iter().enumerate() {
+         c.paras_total += 1;
+         for ctrl in &p.controls {
+             match ctrl {
+@@ -44,6 +51,7 @@ fn walk(paras: &[Paragraph], c: &mut Counts, doc_multi: &mut usize, active_cols:
+                     *c.counts.entry(cd.column_count).or_default() += 1;
+                     if cd.column_count > 1 {
+                         *doc_multi += 1;
++                        *c.decl_decile.entry(pi * 10 / total).or_default() += 1;
+                         *active_cols = cd.column_count;
+                         *c.same_width.entry(cd.same_width).or_default() += 1;
+                         *c.proportional.entry(cd.proportional_widths).or_default() += 1;
+@@ -53,7 +61,10 @@ fn walk(paras: &[Paragraph], c: &mut Counts, doc_multi: &mut usize, active_cols:
+                         *active_cols = 1;
+                     }
+                 }
+-                Control::Table(t) => walk_table(t, c, doc_multi, active_cols),
++                Control::Table(t) => {
++                    if *active_cols > 1 { c.tables_under_columns += 1; }
++                    walk_table(t, c, doc_multi, active_cols)
++                }
+                 _ => {}
+             }
+         }
+@@ -117,6 +128,8 @@ fn main() {
+     println!("direction         : {:?}", c.direction);
+     println!("section text dir  : {:?}", c.text_direction);
+     println!("multi decls/doc   : {:?}", c.multi_decls_per_doc);
++    println!("decl decile       : {:?}", c.decl_decile);
++    println!("tables under cols : {}", c.tables_under_columns);
+     c.samples.sort();
+     println!("--- smallest multi-column samples ---");
+     for (size, path, cols) in c.samples.iter().take(4) {
+-- 
+2.50.1 (Apple Git-155)
+

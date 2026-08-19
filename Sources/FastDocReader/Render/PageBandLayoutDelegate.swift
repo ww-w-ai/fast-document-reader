@@ -299,6 +299,15 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
                         baselineOffset: UnsafeMutablePointer<CGFloat>,
                         in textContainer: NSTextContainer,
                         forGlyphRange glyphRange: NSRange) -> Bool {
+        guard isActive || !columnPlacements.isEmpty else { return false }
+        // COLUMNS FIRST, and then nothing else for that line. A line inside a multi-column run is
+        // placed by a different rule from the one below — the between-page rule pushes a line DOWN
+        // to the next sheet, while a column break sends it back UP and across — and letting both
+        // touch one line would make the result depend on which ran last.
+        if !columnPlacements.isEmpty,
+           placeInColumn(layoutManager, glyphRange, lineFragmentRect, lineFragmentUsedRect) {
+            return true
+        }
         guard isActive else { return false }
         // A line inside an `NSTextTableBlock` owns its geometry through the table (invariants 39/50)
         // and is never shifted where it stands — SPLITTING a table at a page boundary was measured and
@@ -480,6 +489,23 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// (invariant 98). `FootnoteBandSettle` owns when that stops.
     var noteBands: [Int: CGFloat] = [:]
 
+    /// The character ranges this document typesets in columns, and what each says.
+    ///
+    /// Keyed by CHARACTER range rather than by a `y`, deliberately: a column transform rewrites the
+    /// very coordinate a `y`-keyed lookup would use, so the run a line belongs to has to be decided
+    /// by something the transform cannot move. It also means these need no settling — unlike a note
+    /// band (invariant 98), which document text is in columns is known before any layout runs.
+    var columnRuns: [(range: NSRange, layout: OfficeColumnLayout)] = []
+    /// How many lines the column rule has moved — the same shape as `shiftCount`, so a test can
+    /// assert something DID happen without hand-deriving where every line went.
+    private(set) var columnMoveCount = 0
+
+    /// The column declaration in force at a character location, if any.
+    func columnLayout(atCharacter location: Int) -> OfficeColumnLayout? {
+        guard !columnRuns.isEmpty else { return nil }
+        return columnRuns.first { NSLocationInRange(location, $0.range) }?.layout
+    }
+
     /// THE lowest a body line may reach on a given page — its sheet's text bottom, less whatever
     /// that page reserves for notes.
     ///
@@ -493,6 +519,40 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         guard !noteBands.isEmpty, page >= 0 else { return full }
         return full - (noteBands[Int(page)] ?? 0)
     }
+
+    /// Put this line where the column map says it goes. Returns whether the line was moved.
+    ///
+    /// A pure lookup by CHARACTER LOCATION — see `ColumnGeometry.placements` for why the column
+    /// cannot be re-derived from the laid-out rect, and why that makes this idempotent for free.
+    private func placeInColumn(_ layoutManager: NSLayoutManager, _ glyphRange: NSRange,
+                               _ lineFragmentRect: UnsafeMutablePointer<NSRect>,
+                               _ lineFragmentUsedRect: UnsafeMutablePointer<NSRect>) -> Bool {
+        guard !columnPlacements.isEmpty, glyphRange.length > 0 else { return false }
+        let chars = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        guard let target = columnPlacements[chars.location] else { return false }
+        let rect = lineFragmentRect.pointee
+        guard abs(rect.minX - target.x) > 0.01 || abs(rect.minY - target.y) > 0.01 else { return false }
+        let dx = target.x - rect.minX
+        lineFragmentRect.pointee.origin.x = target.x
+        lineFragmentRect.pointee.origin.y = target.y
+        lineFragmentUsedRect.pointee.origin.x += dx
+        lineFragmentUsedRect.pointee.origin.y = target.y
+        columnMoveCount += 1
+        return true
+    }
+
+    /// Where each line of a columned run goes, keyed by the line's first character.
+    ///
+    /// Measured once from the run laid out as a single tall stack (`DocumentWindowController.
+    /// settleColumnPlacements`) and then fixed: what a line's column IS cannot be read back out of
+    /// the page once the lines have been moved, because the typesetter re-derives `x` per line and
+    /// so erases the only evidence.
+    var columnPlacements: [Int: (x: CGFloat, y: CGFloat)] = [:]
+
+    /// The width the columns are measured across — the body width this document is laid out in.
+    /// Set beside the other page numbers; `0` disables the column rule entirely, which is what a
+    /// document with no column declaration wants anyway.
+    var columnBodyWidth: CGFloat = 0
 
     static func page(of y: CGFloat, leadingBand: CGFloat, pitch: CGFloat) -> CGFloat {
         (((y - leadingBand) / pitch) + 1e-6).rounded(.down)

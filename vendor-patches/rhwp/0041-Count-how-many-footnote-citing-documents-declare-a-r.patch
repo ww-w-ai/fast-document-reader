@@ -1,7 +1,7 @@
 From 8e48d7d5ba33a0ec9c3922fc297921205b2155e5 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 21:17:54 +0900
-Subject: [PATCH 41/45] Count how many footnote-citing documents declare a
+Subject: [PATCH 41/46] Count how many footnote-citing documents declare a
  running head
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

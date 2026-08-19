@@ -111,6 +111,61 @@ enum ColumnGeometry {
         return out
     }
 
+    /// Where each line of a columned run belongs, worked out from ONE measurement of the run laid
+    /// out as a single tall stack.
+    ///
+    /// **Why a map and not a rule.** The obvious design — look at the line about to be set, see that
+    /// it has run past the foot of its column, move it — was built and measured, and it is wrong for
+    /// a reason nothing in the page-band machinery hints at: `shouldSetLineFragmentRect` can move a
+    /// line's `x`, but the typesetter does NOT carry that `x` to the following line. It carries the
+    /// `y` (which is what invariant 58's spike measured, and why the page band works) and re-derives
+    /// `x` from the paragraph every time. So the first line of column 2 lands correctly and every
+    /// line after it returns to column 1's left edge: measured on `samples/basic/shortcut.hwp`, 32
+    /// lines moved and 1,200 stayed, which draws as a narrow single column, not as two.
+    ///
+    /// With `x` unable to carry the state, the column a line belongs to cannot be read back out of
+    /// the laid-out page at all — so it is decided ONCE, from the flow, and keyed by the line's own
+    /// CHARACTER LOCATION, which no transform can move. That also makes the whole thing idempotent
+    /// by construction rather than by argument: re-laying out asks the map, and the map does not
+    /// change.
+    ///
+    /// The flow is a single stack `columnHeight` tall per column, `count` columns per page: reading
+    /// down column 1 of a sheet, then column 2, then the next sheet.
+    static func placements(lines: [(location: Int, top: CGFloat, height: CGFloat)],
+                           runOrigin: CGFloat, firstPage: CGFloat,
+                           columns: [Column], columnHeight: CGFloat,
+                           pitch: CGFloat, leadingBand: CGFloat) -> [Int: (x: CGFloat, y: CGFloat)] {
+        guard columns.count > 1, columnHeight > 0, pitch > 0 else { return [:] }
+        let perPage = columnHeight * CGFloat(columns.count)
+        var out: [Int: (x: CGFloat, y: CGFloat)] = [:]
+        for line in lines {
+            let d = line.top - runOrigin
+            guard d >= -0.01 else { continue }
+            let pageOffset = ((d / perPage) + 1e-6).rounded(.down)
+            let withinPage = d - pageOffset * perPage
+            var columnIndex = Int(((withinPage / columnHeight) + 1e-6).rounded(.down))
+            columnIndex = max(0, min(columns.count - 1, columnIndex))
+            let withinColumn = withinPage - CGFloat(columnIndex) * columnHeight
+            // A line taller than what is left of its column would be drawn across the foot of the
+            // page. Pushing it whole to the next column is the same answer the page band gives a
+            // line that would straddle a sheet boundary, and for the same reason.
+            var page = firstPage + pageOffset
+            var top = withinColumn
+            if withinColumn + line.height > columnHeight + 0.01 {
+                if columnIndex + 1 < columns.count {
+                    columnIndex += 1
+                } else {
+                    columnIndex = 0
+                    page += 1
+                }
+                top = 0
+            }
+            out[line.location] = (columns[columnIndex].x,
+                                  page * pitch + leadingBand + top)
+        }
+        return out
+    }
+
     /// Which column a point sits in, and how far down that column it is.
     ///
     /// The text flows down column 0 to the bottom of the body, then to the TOP of column 1, and so

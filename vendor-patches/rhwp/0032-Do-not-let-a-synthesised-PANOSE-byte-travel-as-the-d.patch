@@ -1,7 +1,7 @@
 From 609763f6e2ec8741bcdb8d072fc17a65e41290f8 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 13:26:16 +0900
-Subject: [PATCH 32/45] Do not let a synthesised PANOSE byte travel as the
+Subject: [PATCH 32/46] Do not let a synthesised PANOSE byte travel as the
  document's own word
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8

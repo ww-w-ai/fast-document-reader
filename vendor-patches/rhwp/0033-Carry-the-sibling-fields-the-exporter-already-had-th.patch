@@ -1,7 +1,7 @@
 From f5c48434dc045467187c578a533c72686393d5e9 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 13:44:54 +0900
-Subject: [PATCH 33/45] Carry the sibling fields the exporter already had the
+Subject: [PATCH 33/46] Carry the sibling fields the exporter already had the
  record open for
 
 The S3 batch: 95 fields across 33 types the exporter already reaches (it

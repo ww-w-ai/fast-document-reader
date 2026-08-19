@@ -371,6 +371,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                             separatesPages: Bool = false, deskGap: CGFloat? = nil) {
         pageBandDelegate.pageContentHeight = pageContentHeight ?? 0
         pageBandDelegate.band = band
+        // The width the columns are measured across — the page BODY, which for a columned document
+        // is wider than the `columnWidth` the text was built at (that one is already one column's).
+        pageBandDelegate.columnBodyWidth = pageContentWidth ?? columnWidth
         // A fresh render starts the fixpoint over: the notes, their heights and the reservation the
         // last render settled on are all about to be re-decided, and carrying any of them across
         // would reserve room on a page of a layout that no longer exists.
@@ -1753,6 +1756,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // layout is asked for below, so the first pass already breaks where the author did.
         pageBandDelegate.documentPageBreaks = documentPageBreakLocations()
         pageBandDelegate.keepWithNextRanges = keepWithNextRanges()
+        // WHICH TEXT IS IN COLUMNS, read the same way and at the same moment. Character ranges, not
+        // positions in the laid-out page: the column rule rewrites the very `y` a position-keyed
+        // lookup would use, so what a line belongs to has to be something the rule cannot move.
+        columnRunsSettled = false
+        pageBandDelegate.columnPlacements = [:]
         textView.recomputeHeadingOffsets()
         reloadOutline()
         reloadCommentPanel()
@@ -1834,7 +1842,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // a layout that is about to move anyway. `||` short-circuits deliberately — when a
             // table moved, the notes are re-asked on the next round rather than against a layout
             // that is already stale.
-            if pagedTableSettles < maxPagedTableSettles, settlePagedTables() || settleFootnoteBands() {
+            if pagedTableSettles < maxPagedTableSettles, settlePagedTables() || settleFootnoteBands() || settleColumnPlacements() {
                 pagedTableSettles += 1
                 precomputeLayout(then: then)
                 return
@@ -2110,7 +2118,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // other settles neither. `||` short-circuits, so the notes are asked only once the
             // tables have stopped moving — the cheaper question is not asked while the answer is
             // still changing underneath it.
-            if !(settlePagedTables() || settleFootnoteBands()) { return }
+            if !(settlePagedTables() || settleFootnoteBands() || settleColumnPlacements()) { return }
         }
         lm.ensureLayout(for: tc)
     }
@@ -2215,6 +2223,95 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         pageBandDelegate.resetOpenedBoundaries()
         lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
                             actualCharacterRange: nil)
+    }
+
+    /// Measure the columned runs from a layout that has not been columned yet, and fix where every
+    /// one of their lines goes. Returns `true` when the caller must lay the document out again.
+    ///
+    /// One pass, not a fixpoint: the line BREAKS were already decided at the column's width when the
+    /// text was built (`OfficeTextBuilder.columnWidthPerBlock`), so moving a line into its column
+    /// changes where it is drawn and never how it wraps. That is the whole reason this can be
+    /// measured once — unlike a note band, whose reservation changes the very layout it is measured
+    /// from (invariant 98).
+    func settleColumnPlacements() -> Bool {
+        guard !columnRunsSettled else { return false }
+        let runs = columnRunRanges()
+        guard !runs.isEmpty, let lm = textView.layoutManager, let tc = textView.textContainer,
+              let storage = textView.textStorage, storage.length > 0 else {
+            columnRunsSettled = true
+            return false
+        }
+        let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                         band: pageBandDelegate.band)
+        guard pitch > 0, pageBandDelegate.pageContentHeight > 0 else {
+            columnRunsSettled = true
+            return false
+        }
+        lm.ensureLayout(for: tc)
+
+        var placements: [Int: (x: CGFloat, y: CGFloat)] = [:]
+        for run in runs {
+            let columns = ColumnGeometry.columns(inWidth: pageBandDelegate.columnBodyWidth,
+                                                 layout: run.layout)
+            guard columns.count > 1 else { continue }
+            var lines: [(location: Int, top: CGFloat, height: CGFloat)] = []
+            let glyphs = lm.glyphRange(forCharacterRange: run.range, actualCharacterRange: nil)
+            lm.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, glyphRange, _ in
+                let chars = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+                lines.append((chars.location, rect.minY, rect.height))
+            }
+            guard let first = lines.first else { continue }
+            // The run starts at the top of a PAGE. A column that began halfway down a sheet would
+            // have to treat the remaining height as its column height and the next sheet's full
+            // height as the following one's — two different column heights inside one run — and HWP
+            // itself starts a column run at a section break, i.e. at a page top, in the documents
+            // this was measured against.
+            let startPage = PageBandLayoutDelegate.page(of: first.top,
+                                                        leadingBand: pageBandDelegate.leadingBand,
+                                                        pitch: pitch)
+            let pageTop = startPage * pitch + pageBandDelegate.leadingBand
+            let origin = max(first.top, pageTop)
+            let height = pageBandDelegate.textBottom(ofPage: startPage) - (origin - pageBandDelegate.leadingBand)
+            guard height > 0 else { continue }
+            placements.merge(ColumnGeometry.placements(lines: lines, runOrigin: origin,
+                                                       firstPage: startPage, columns: columns,
+                                                       columnHeight: height, pitch: pitch,
+                                                       leadingBand: pageBandDelegate.leadingBand)) { a, _ in a }
+        }
+        columnRunsSettled = true
+        guard !placements.isEmpty else { return false }
+        pageBandDelegate.columnPlacements = placements
+        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
+                            actualCharacterRange: nil)
+        return true
+    }
+
+    /// Set once the column map has been measured for this render — it is measured from a layout
+    /// that has NOT been columned, so it must never be measured again from one that has.
+    private var columnRunsSettled = false
+
+    /// The character ranges this document typesets in columns.
+    ///
+    /// A declaration is a POSITION (`MDAttr.columnLayout`, set on the run it sat at), and it holds
+    /// until the next one — including a declaration of ONE column, which is how a document returns
+    /// to a single column and is therefore an END rather than a run of its own.
+    func columnRunRanges() -> [(range: NSRange, layout: OfficeColumnLayout)] {
+        guard let storage = textView.textStorage, storage.length > 0 else { return [] }
+        var declarations: [(at: Int, layout: OfficeColumnLayout)] = []
+        storage.enumerateAttribute(MDAttr.columnLayout,
+                                   in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard let layout = value as? OfficeColumnLayout else { return }
+            declarations.append((range.location, layout))
+        }
+        guard !declarations.isEmpty else { return [] }
+        var out: [(range: NSRange, layout: OfficeColumnLayout)] = []
+        for (i, d) in declarations.enumerated() {
+            guard d.layout.splitsText else { continue }
+            let end = i + 1 < declarations.count ? declarations[i + 1].at : storage.length
+            guard end > d.at else { continue }
+            out.append((NSRange(location: d.at, length: end - d.at), d.layout))
+        }
+        return out
     }
 
     /// Visible character range grown by `margin` screenfuls above and below — the region whose

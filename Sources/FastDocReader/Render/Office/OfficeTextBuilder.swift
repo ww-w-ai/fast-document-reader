@@ -215,8 +215,26 @@ enum OfficeTextBuilder {
             }
         }
 
+        // A multi-column run is typeset at the COLUMN's width, not the page's — the line has to
+        // break at the column edge before anything can move it there, and a table or an image
+        // carries its own width and would otherwise stay page-wide inside a narrow column (244 of
+        // the corpus's tables sit under a column declaration). Resolved for every block up front
+        // because the declaration is a POSITION: what a block is typeset at depends on which
+        // declaration is still in force above it.
+        let blockColumnWidths = columnWidthPerBlock(blocks, bodyWidth: columnWidth)
+        let blockColumnLayouts = columnLayoutPerBlock(blocks)
         for (index, block) in blocks.enumerated() {
             let start = result.length
+            let colW = blockColumnWidths[index]
+            // The layout is stamped over the whole BLOCK once it is built (below), not onto the run
+            // that declared it: that run is a zero-width anchor with no text of its own, so there is
+            // no character for an attribute to live on — the same shape a bookmark arrives as.
+            defer {
+                if let layout = blockColumnLayouts[index], result.length > start {
+                    result.addAttribute(MDAttr.columnLayout, value: layout,
+                                        range: NSRange(location: start, length: result.length - start))
+                }
+            }
             // P2's `w:contextualSpacing` adjacency rule (spec area 5): suppress THIS paragraph's
             // spacing-before when the PREVIOUS block is the same style (its `ParagraphFormat` is
             // EQUAL — the vocabulary carries no style id, so equal resolved format is the proxy),
@@ -245,7 +263,7 @@ enum OfficeTextBuilder {
                                                                   alignment: alignment, tabStops: tabStops,
                                                                   format: format, fontSizeScale: fontSizeScale,
                                                                   paged: paged, lineGridPitch: lineGridPitch,
-                                                                  columnWidth: columnWidth),
+                                                                  columnWidth: colW),
                                     range: headingRange)
                 if let info = OfficeTextBuilder.fillMarginTabInfo(from: tabStops) {
                     result.addAttribute(MDAttr.fillMarginTab, value: info, range: headingRange)
@@ -263,7 +281,7 @@ enum OfficeTextBuilder {
                                                                tabStops: tabStops, format: format,
                                                                fontSizeScale: fontSizeScale,
                                                                paged: paged, lineGridPitch: lineGridPitch,
-                                                               columnWidth: columnWidth),
+                                                               columnWidth: colW),
                                     range: paragraphRange)
                 if let info = OfficeTextBuilder.fillMarginTabInfo(from: tabStops) {
                     result.addAttribute(MDAttr.fillMarginTab, value: info, range: paragraphRange)
@@ -287,14 +305,14 @@ enum OfficeTextBuilder {
                                        .paragraphStyle: bodyParagraphStyle(theme: theme, format: format,
                                                                            fontSizeScale: fontSizeScale,
                                                                            paged: paged, lineGridPitch: lineGridPitch,
-                                                                           columnWidth: columnWidth),
+                                                                           columnWidth: colW),
                                        MDAttr.deferredTable: index],
                                       range: NSRange(location: 0, length: standIn.length))
                 result.append(standIn)
 
             case let .table(rows, headerRows, columnWidths, tableFormat):
                 appendTable(rows, headerRows: headerRows, columnWidths: columnWidths, tableFormat: tableFormat,
-                            into: result, theme: theme, fontSizeScale: fontSizeScale, columnWidth: columnWidth,
+                            into: result, theme: theme, fontSizeScale: fontSizeScale, columnWidth: colW,
                             // A cell picture is measured against the table's own source width when the
                             // format stated one, else it falls back to the page — never left unscaled.
                             graphicBasis: tableFormat.sourceWidth ?? pageBasis,
@@ -302,12 +320,12 @@ enum OfficeTextBuilder {
                             tableWidth: tableWidth)
 
             case let .image(id, size, alignment):
-                appendImage(id: id, size: size, columnWidth: columnWidth, basis: pageBasis,
+                appendImage(id: id, size: size, columnWidth: colW, basis: pageBasis,
                             scale: scale(basis: pageBasis), alignment: alignment, insideCell: false,
                             bleed: bleed, into: result)
 
             case let .unsupportedGraphic(label, size, alignment):
-                appendUnsupportedGraphic(label: label, size: size, columnWidth: columnWidth, basis: pageBasis,
+                appendUnsupportedGraphic(label: label, size: size, columnWidth: colW, basis: pageBasis,
                                          scale: scale(basis: pageBasis), alignment: alignment, insideCell: false,
                                          bleed: bleed, into: result)
 
@@ -372,6 +390,52 @@ enum OfficeTextBuilder {
 
     /// The `format` carried by a heading/paragraph/list-item block — `nil` for every other case
     /// (table/image/unsupportedGraphic/formula), which carries no `ParagraphFormat` at all.
+    /// The width each block is typeset at, once the column declarations above it are taken into
+    /// account.
+    ///
+    /// A declaration is carried on a RUN inside a paragraph (`Span.columnLayout`), so the state has
+    /// to be rolled forward from the start of the document: a block is in whatever column layout the
+    /// nearest declaration above it asked for, and a declaration of ONE column ends the run. The
+    /// width returned is the first column's — every column of a run this reader lays out is typeset
+    /// at the same width, and an unequal declaration's own widths are honoured when the columns are
+    /// PLACED (`ColumnGeometry`), which is where the difference between them can actually be seen.
+    static func columnLayoutPerBlock(_ blocks: [OfficeBlock]) -> [OfficeColumnLayout?] {
+        var out = [OfficeColumnLayout?](repeating: nil, count: blocks.count)
+        var active: OfficeColumnLayout?
+        for (i, block) in blocks.enumerated() {
+            // The declaration takes effect from the block it sits in, which is how a document that
+            // opens in two columns gets two columns on its first paragraph rather than its second.
+            if let declared = declaredColumnLayout(in: block) {
+                active = declared.splitsText ? declared : nil
+            }
+            out[i] = active
+        }
+        return out
+    }
+
+    /// The width each block is typeset at, given the layout in force above it.
+    static func columnWidthPerBlock(_ blocks: [OfficeBlock], bodyWidth: CGFloat) -> [CGFloat] {
+        let layouts = columnLayoutPerBlock(blocks)
+        return layouts.map { layout in
+            guard let layout, bodyWidth < .greatestFiniteMagnitude,
+                  let first = ColumnGeometry.columns(inWidth: bodyWidth, layout: layout).first
+            else { return bodyWidth }
+            return first.width
+        }
+    }
+
+    /// The column declaration this block carries, if any.
+    private static func declaredColumnLayout(in block: OfficeBlock) -> OfficeColumnLayout? {
+        switch block {
+        case let .paragraph(spans, _, _, _, _), let .heading(_, spans, _, _, _, _):
+            return spans.compactMap(\.columnLayout).first
+        case let .listItem(_, _, spans, _, _, _, _, _, _):
+            return spans.compactMap(\.columnLayout).first
+        default:
+            return nil
+        }
+    }
+
     private static func paragraphFormat(of block: OfficeBlock) -> ParagraphFormat? {
         switch block {
         case let .heading(_, _, _, _, _, format): return format

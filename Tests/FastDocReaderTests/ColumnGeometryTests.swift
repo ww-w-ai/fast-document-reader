@@ -135,6 +135,122 @@ final class ColumnGeometryTests: XCTestCase {
         XCTAssertNil(ColumnGeometry.column(atFlowOffset: 10, columnHeight: 0, count: 2))
     }
 
+    // MARK: what width each block is typeset at
+
+    private func para(_ text: String, layout: OfficeColumnLayout? = nil) -> OfficeBlock {
+        var span = Span(text: text)
+        span.columnLayout = layout
+        return .paragraph(spans: [span])
+    }
+
+    /// A run is typeset at the COLUMN's width, not the page's — the line has to break at the column
+    /// edge before anything can place it there, and a table would otherwise stay page-wide inside a
+    /// narrow column (244 of the corpus's tables sit under a column declaration).
+    func testBlocksUnderADeclarationAreTypesetAtTheColumnWidth() {
+        let blocks = [para("before"),
+                      para("first of the run", layout: OfficeColumnLayout(count: 2, spacing: 20)),
+                      para("still in the run")]
+        let widths = OfficeTextBuilder.columnWidthPerBlock(blocks, bodyWidth: 420)
+        XCTAssertEqual(widths[0], 420, "nothing above the declaration is narrowed")
+        XCTAssertEqual(widths[1], 200, accuracy: 0.001, "the declaration takes effect where it sits")
+        XCTAssertEqual(widths[2], 200, accuracy: 0.001, "and holds for what follows")
+    }
+
+    /// A declaration of ONE column is how a document goes back to a single column — an END, not a
+    /// run. Dropping it would leave the previous declaration in force to the end of the document.
+    func testADeclarationOfOneColumnEndsTheRun() {
+        let blocks = [para("a", layout: OfficeColumnLayout(count: 2, spacing: 20)),
+                      para("b"),
+                      para("c", layout: OfficeColumnLayout(count: 1)),
+                      para("d")]
+        let widths = OfficeTextBuilder.columnWidthPerBlock(blocks, bodyWidth: 420)
+        XCTAssertEqual(widths[1], 200, accuracy: 0.001)
+        XCTAssertEqual(widths[2], 420, "back to the full width")
+        XCTAssertEqual(widths[3], 420)
+    }
+
+    /// A document with no declaration anywhere is byte-for-byte what it was — the property that
+    /// makes this invisible to the 90% of the corpus that never asks for columns.
+    func testADocumentWithNoDeclarationIsUnchanged() {
+        let widths = OfficeTextBuilder.columnWidthPerBlock([para("x"), para("y")], bodyWidth: 420)
+        XCTAssertEqual(widths, [420, 420])
+    }
+
+    // MARK: where every line of a run goes
+
+    private func line(_ loc: Int, _ top: CGFloat, _ h: CGFloat = 15)
+        -> (location: Int, top: CGFloat, height: CGFloat) { (loc, top, h) }
+
+    /// The flow reads down column 1 of a sheet, then column 2, then the next sheet — which is the
+    /// whole behaviour, stated as one assertion.
+    func testAFlowFillsColumnOneThenColumnTwoThenTheNextPage() {
+        let columns = ColumnGeometry.columns(inWidth: 420,
+                                             layout: OfficeColumnLayout(count: 2, spacing: 20))
+        let h: CGFloat = 300
+        let pitch: CGFloat = 320
+        let lines = [line(0, 0), line(10, 150), line(20, 300), line(30, 450),
+                     line(40, 600), line(50, 750)]
+        let out = ColumnGeometry.placements(lines: lines, runOrigin: 0, firstPage: 0,
+                                            columns: columns, columnHeight: h,
+                                            pitch: pitch, leadingBand: 0)
+        XCTAssertEqual(out[0]?.x, 0);              XCTAssertEqual(out[0]?.y, 0)
+        XCTAssertEqual(out[10]?.x, 0);             XCTAssertEqual(out[10]?.y, 150)
+        // 300 into the flow = the top of column 2, same sheet.
+        XCTAssertEqual(out[20]?.x, columns[1].x);  XCTAssertEqual(out[20]?.y, 0)
+        XCTAssertEqual(out[30]?.x, columns[1].x);  XCTAssertEqual(out[30]?.y, 150)
+        // 600 = both columns full, so the next SHEET's first column.
+        XCTAssertEqual(out[40]?.x, 0);             XCTAssertEqual(out[40]?.y, pitch)
+        XCTAssertEqual(out[50]?.x, 0);             XCTAssertEqual(out[50]?.y, pitch + 150)
+    }
+
+    /// Three columns, to prove nothing is hard-coded for two.
+    func testThreeColumnsFillInOrder() {
+        let columns = ColumnGeometry.columns(inWidth: 320,
+                                             layout: OfficeColumnLayout(count: 3, spacing: 10))
+        let out = ColumnGeometry.placements(lines: [line(0, 0), line(1, 100), line(2, 200), line(3, 300)],
+                                            runOrigin: 0, firstPage: 0, columns: columns,
+                                            columnHeight: 100, pitch: 120, leadingBand: 0)
+        XCTAssertEqual(out[0]?.x, columns[0].x)
+        XCTAssertEqual(out[1]?.x, columns[1].x)
+        XCTAssertEqual(out[2]?.x, columns[2].x)
+        XCTAssertEqual(out[3]?.x, columns[0].x, "past the last column is the next page")
+        XCTAssertEqual(out[3]?.y, 120)
+    }
+
+    /// A line that would hang off the foot of its column is carried whole to the next one — the same
+    /// answer the page band gives a line that would straddle a sheet boundary.
+    func testALineThatWouldOverhangIsCarriedToTheNextColumn() {
+        let columns = ColumnGeometry.columns(inWidth: 420,
+                                             layout: OfficeColumnLayout(count: 2, spacing: 20))
+        let out = ColumnGeometry.placements(lines: [line(0, 290, 30)], runOrigin: 0, firstPage: 0,
+                                            columns: columns, columnHeight: 300,
+                                            pitch: 320, leadingBand: 0)
+        XCTAssertEqual(out[0]?.x, columns[1].x, "not left hanging over the foot of column 1")
+        XCTAssertEqual(out[0]?.y, 0)
+    }
+
+    /// The run's own origin and page are honoured — a run does not have to start at the document's
+    /// first line, and the leading band shifts every answer by the same amount.
+    func testARunIsPlacedRelativeToItsOwnStart() {
+        let columns = ColumnGeometry.columns(inWidth: 420,
+                                             layout: OfficeColumnLayout(count: 2, spacing: 20))
+        let out = ColumnGeometry.placements(lines: [line(0, 1000), line(1, 1300)],
+                                            runOrigin: 1000, firstPage: 3, columns: columns,
+                                            columnHeight: 300, pitch: 320, leadingBand: 12)
+        XCTAssertEqual(out[0]?.y, 3 * 320 + 12)
+        XCTAssertEqual(out[1]?.x, columns[1].x)
+        XCTAssertEqual(out[1]?.y, 3 * 320 + 12, "column 2 of the SAME page starts at that page's top")
+    }
+
+    /// A single column places nothing: there is no column to move a line into, and every document
+    /// that declares none must be left exactly as it was.
+    func testASingleColumnPlacesNothing() {
+        let one = ColumnGeometry.columns(inWidth: 420, layout: OfficeColumnLayout(count: 1))
+        XCTAssertTrue(ColumnGeometry.placements(lines: [line(0, 0), line(1, 500)], runOrigin: 0,
+                                                firstPage: 0, columns: one, columnHeight: 300,
+                                                pitch: 320, leadingBand: 0).isEmpty)
+    }
+
     // MARK: what the declaration itself says
 
     func testADeclarationOfOneColumnDoesNotSplitAnything() {
