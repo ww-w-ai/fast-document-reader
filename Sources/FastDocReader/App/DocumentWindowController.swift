@@ -1856,6 +1856,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                 return
             }
             pagedTableSettles = 0
+            // Same step as the synchronous twin, at the same point: the settle chain is done, so the
+            // layout has caught up to the bands it ended on and the assignment can be taken from it.
+            refreshFootnoteAssignment()
             applyTrailingFooterBand()
             // Whichever walk gets to the end applies a pending anchor — see `pendingAnchor`.
             if let anchor = pendingAnchor {
@@ -2156,6 +2159,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             }
             if !tablesMoved && !notesMoved { break }
         }
+        // The bands are final; let the layout catch up to them and take the assignment from THAT.
+        lm.ensureLayout(for: tc)
+        refreshFootnoteAssignment()
         // Columns last because they are placed from a flow neither of the others changes.
         lm.ensureLayout(for: tc)
         if settleColumnPlacements() { lm.ensureLayout(for: tc) }
@@ -2197,6 +2203,53 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Set once the rule has RULED. A settled render may still need one more walk to lay out
     /// against the reservation it just fixed, and that walk must not start the argument again.
     private var footnoteBandsSettled = false
+
+    /// The ruling's BANDS are final and its ASSIGNMENT is not yet — see `refreshFootnoteAssignment`.
+    private var footnoteAssignmentNeedsRefresh = false
+
+    /// RE-TAKE WHICH PAGE CITES WHICH NOTE, from the layout the settled bands actually produced.
+    ///
+    /// Freezing the assignment with the bands is what stops the two drifting while the fixpoint is
+    /// still running, and the measurement behind that is real (invariant 98: re-deriving it every
+    /// round drew half a document's notes nowhere). But a stop on a CYCLE ends on the pointwise
+    /// maximum over the states visited — a vector no round proposed, so no layout was ever built
+    /// against it. Applying it as the ruling's last act moves the markers the assignment was taken
+    /// from, and the two end a group apart.
+    ///
+    /// So: bands final, assignment taken once more from the caught-up layout, and adopted ONLY if
+    /// every page it names already reserves enough for what it names. That guard is what keeps this
+    /// from being the re-derivation invariant 98 rejected — it can move a note ONTO the page that
+    /// cites it and can never move one onto a page with no room, because the bands do not move with
+    /// it. It changes no layout, only what the painter draws, so it costs no further round.
+    ///
+    /// MEASURED over the 31-document footnote corpus, notes drawn on the page that cites them:
+    /// **242 of 420 without this, 259 of 420 with it**. It is not the whole answer — a document
+    /// whose tables move after the notes have latched still ends up with its own assignment out of
+    /// reach of the frozen bands, and the guard correctly declines those.
+    @discardableResult
+    func refreshFootnoteAssignment() -> Bool {
+        guard footnoteAssignmentNeedsRefresh else { return false }
+        footnoteAssignmentNeedsRefresh = false
+        let frozen = settledFootnotePages
+        settledFootnotePages = nil
+        cachedFootnotePages = nil
+        let fresh = footnotePages
+        let bands = pageBandDelegate.noteBands
+        let covered = fresh.allSatisfy { page, numbers in
+            let sep = footnoteSeparator(forPage: page)
+            let need = PageBandGeometry.footnoteBandHeight(
+                noteHeights: numbers.compactMap { footnoteHeights[$0] },
+                separatorAllowance: FootnotePainter.separatorAllowance(sep),
+                noteSpacing: sep?.noteSpacingPt ?? 0)
+            return need <= (bands[page] ?? 0) + 0.5
+        }
+        settledFootnotePages = covered ? fresh : frozen
+        cachedFootnotePages = nil
+        let changed = covered && fresh != frozen
+        if changed { textView.needsDisplay = true }
+        return changed
+    }
+
 
     /// The page-to-notes assignment the settled bands were measured from, held so the two cannot
     /// drift apart. Cleared with every other per-render footnote state.
@@ -2245,6 +2298,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // The assignment these bands were computed from is frozen WITH them — see `footnotePages`.
             settledFootnotePages = footnotePages
             guard pageBandDelegate.noteBands != bands else { return false }
+            // THE BANDS ARE FINAL AND THIS LAYOUT HAS NEVER SEEN THEM. A stop on a CYCLE resolves to
+            // the pointwise MAXIMUM over the states visited, which is a vector no round proposed and
+            // therefore no layout was ever built against — applying it moves the very markers the
+            // assignment on the line above was just taken from. The assignment is re-taken once the
+            // layout has caught up; `refreshFootnoteAssignment` is that step.
+            footnoteAssignmentNeedsRefresh = true
             pageBandDelegate.noteBands = bands
             cachedFootnotePages = nil
             invalidateForNoteBands()

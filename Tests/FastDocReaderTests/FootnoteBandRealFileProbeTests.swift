@@ -77,6 +77,38 @@ final class FootnoteBandRealFileProbeTests: XCTestCase {
                             "page \(page) cites notes \(numbers) and reserves nothing for them")
         }
 
+        // IS EACH NOTE ON THE PAGE THAT CITES IT? The drawn assignment is the one the ruling froze;
+        // the true one is where the markers ACTUALLY ended up in the layout that shipped. Derived
+        // here from the definition rather than by calling back into the code under test, and by the
+        // same arithmetic every other rule uses (`PageBandLayoutDelegate.page(of:leadingBand:pitch:)`).
+        do {
+            let lm = try XCTUnwrap(wc.textView.layoutManager)
+            let storage = try XCTUnwrap(wc.textView.textStorage)
+            let pitch = PagePagination.pitch(pageContentHeight: delegate.pageContentHeight,
+                                             band: delegate.band)
+            if pitch > 0 {
+                var truth: [Int: Int] = [:]      // note number -> page its marker landed on
+                var seen = Set<Int>()
+                storage.enumerateAttribute(MDAttr.footnoteRef,
+                                           in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+                    guard let n = (value as? NSNumber)?.intValue, !seen.contains(n) else { return }
+                    let glyph = lm.glyphIndexForCharacter(at: range.location)
+                    let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                    let page = PageBandLayoutDelegate.page(of: frag.minY,
+                                                           leadingBand: delegate.leadingBand, pitch: pitch)
+                    guard page >= 0 else { return }
+                    seen.insert(n)
+                    truth[n] = Int(page)
+                }
+                var drawn: [Int: Int] = [:]
+                for (page, numbers) in wc.footnotePages { for n in numbers { drawn[n] = page } }
+                let judged = truth.keys.filter { drawn[$0] != nil }
+                let onOwnPage = judged.filter { truth[$0] == drawn[$0] }
+                print("PROBE notes with a located marker=\(truth.count) drawn=\(drawn.count) " +
+                      "judged=\(judged.count) onItsOwnPage=\(onOwnPage.count)")
+            }
+        }
+
         let lm = try XCTUnwrap(wc.textView.layoutManager)
         let container = try XCTUnwrap(wc.textView.textContainer)
         lm.ensureLayout(for: container)
