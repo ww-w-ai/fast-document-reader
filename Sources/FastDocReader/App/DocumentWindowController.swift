@@ -382,6 +382,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         self.footnoteSeparators = footnoteSeparators
         footnoteBandHistory = []
         footnoteBandsSettled = false
+        settledFootnotePages = nil
         pageBandDelegate.noteBands = [:]
         // This render replaces the storage, so where the section markers sit is about to change.
         cachedSectionStarts = nil
@@ -561,6 +562,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     private var cachedFootnotePages: [Int: [Int]]?
 
     var footnotePages: [Int: [Int]] {
+        // ONCE THE BAND HAS RULED, THE ASSIGNMENT IS PART OF THE RULING. A band's height is a
+        // function of which notes a page cites, so the two are one answer, not two — and re-deriving
+        // the assignment against a layout the band has since changed lets them disagree. Measured on
+        // a 30-note document: three successive rounds assigned notes to pages {0,1,3,5,6,7,8},
+        // {0,1,2,4,5,6,7} and {0,1,3,4,5,6,7,8}, so pages with a reserved band cited nothing and
+        // pages citing notes had no band — half the notes were drawn nowhere.
+        if let settled = settledFootnotePages { return settled }
         if let cached = cachedFootnotePages { return cached }
         var out: [Int: [Int]] = [:]
         if let storage = textView.textStorage, storage.length > 0,
@@ -2110,17 +2118,23 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // and `settleFootnoteBands` ask the weaker question.
         guard pageBandDelegate.paginates, let lm = textView.layoutManager,
               let tc = textView.textContainer else { return }
+        // ONE BUDGET EACH, not one budget between them. Sharing it was measured and is wrong: the
+        // tables spend the rounds, the note band's own rule never reaches a STOP, and because the
+        // band is only frozen at that stop the assignment keeps being re-derived — pages that
+        // reserved a band cited nothing and pages citing notes had none. On a 30-note document that
+        // drew half the notes nowhere. Tables first because a table that moves changes which page
+        // cites a note; notes second because a band only shortens the body it was measured against;
+        // columns last because they are placed from a flow neither of the others changes.
         for _ in 0..<maxPagedTableSettles {
             lm.ensureLayout(for: tc)
-            // BOTH, in the same loop and in this order, matching the screen's own settle
-            // (`layoutStep`): a table that moves changes which page cites a note, and a note band
-            // that grows changes where a table overruns. Settling one to a fixpoint and then the
-            // other settles neither. `||` short-circuits, so the notes are asked only once the
-            // tables have stopped moving — the cheaper question is not asked while the answer is
-            // still changing underneath it.
-            if !(settlePagedTables() || settleFootnoteBands() || settleColumnPlacements()) { return }
+            if !settlePagedTables() { break }
+        }
+        for _ in 0..<maxPagedTableSettles {
+            lm.ensureLayout(for: tc)
+            if !settleFootnoteBands() { break }
         }
         lm.ensureLayout(for: tc)
+        if settleColumnPlacements() { lm.ensureLayout(for: tc) }
     }
 
     /// How many times ONE render may re-solve its tables. Each round moves at least one table and a
@@ -2159,6 +2173,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Set once the rule has RULED. A settled render may still need one more walk to lay out
     /// against the reservation it just fixed, and that walk must not start the argument again.
     private var footnoteBandsSettled = false
+    /// The page-to-notes assignment the settled bands were measured from, held so the two cannot
+    /// drift apart. Cleared with every other per-render footnote state.
+    private var settledFootnotePages: [Int: [Int]]?
 
     /// What this layout says each page should reserve for the notes cited on it — the proposal half
     /// of the fixpoint. Clamped per page, so a note taller than its own sheet cannot reserve the
@@ -2200,6 +2217,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             return true
         case let .stop(bands, _):
             footnoteBandsSettled = true
+            // The assignment these bands were computed from is frozen WITH them — see `footnotePages`.
+            settledFootnotePages = footnotePages
             guard pageBandDelegate.noteBands != bands else { return false }
             pageBandDelegate.noteBands = bands
             cachedFootnotePages = nil
