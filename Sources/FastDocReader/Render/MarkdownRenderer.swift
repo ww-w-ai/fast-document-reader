@@ -57,6 +57,10 @@ enum MarkdownRenderer {
         // copies it into Swift storage (UTF-16 → UTF-8), and handing that back to an NSString API
         // converts it straight back. `mutableString` IS the store, so `copy()` is a UTF-16 memcpy of
         // a snapshot and `as String` on the immutable result wraps it rather than copying again.
+        //
+        // Worth **6.15 s → 4.48 s** of first paint on that file, three runs each at a load average
+        // of 3.2. MEASURE ON A QUIET MACHINE: the same two builds read 10.1 s and 7.5 s at a load
+        // average of 12–17, which is a different claim about the same change.
         let ns = s.mutableString.copy() as! NSString
         let str = ns as String
         let linkAttrs: [NSAttributedString.Key: Any] = [
