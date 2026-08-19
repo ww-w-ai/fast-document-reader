@@ -515,9 +515,8 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// per page is three chances to disagree about where a page ends — which shows up as a line
     /// drawn over a footnote rather than as a failed check.
     func textBottom(ofPage page: CGFloat) -> CGFloat {
-        let full = page * (pageContentHeight + band) + pageContentHeight
-        guard !noteBands.isEmpty, page >= 0 else { return full }
-        return full - (noteBands[Int(page)] ?? 0)
+        PagePagination.textBottom(ofPage: page, pageContentHeight: pageContentHeight,
+                                  band: band, noteBands: noteBands)
     }
 
     /// Put this line where the column map says it goes. Returns whether the line was moved.

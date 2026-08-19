@@ -25,6 +25,37 @@ enum PagePagination {
         pageContentHeight + band
     }
 
+    /// THE lowest a body line may reach on a given page — its sheet's text bottom, less whatever
+    /// that page reserves for the footnotes cited on it.
+    ///
+    /// ONE definition, because FOUR rules ask it and a fourth copy is what this exists to stop.
+    /// `PageBandLayoutDelegate` already held three of them together (the keep-with-next check, the
+    /// between-page shift and the table push) once a note band could shorten a page. The table
+    /// PAGINATION rules were the fourth, and they were still asking the flat `page × pitch +
+    /// pageContentHeight` — so a table that fitted the whole page but not the body a note band left
+    /// it was judged as fitting, registered nowhere, and drawn straight over its own footnotes.
+    /// MEASURED on a 30-note fiscal report: sheet 3's table ran to y=802 on an 841.9pt sheet whose
+    /// body ends at 771, interleaved line for line with the four note lines beneath it.
+    ///
+    /// A document that cites no footnote passes an EMPTY `noteBands` and gets the identical number
+    /// it got before this existed — which is what keeps the corpus provably unaffected.
+    static func textBottom(ofPage page: CGFloat, pageContentHeight: CGFloat, band: CGFloat,
+                           noteBands: [Int: CGFloat]) -> CGFloat {
+        let full = page * (pageContentHeight + band) + pageContentHeight
+        guard !noteBands.isEmpty, page >= 0 else { return full }
+        return full - (noteBands[Int(page)] ?? 0)
+    }
+
+    /// How much BODY a given page actually offers — the same subtraction as `textBottom`, expressed
+    /// as a HEIGHT because that is what "does this piece fit" asks. Never negative: a band clamped
+    /// to three quarters of its page (`FootnoteBandSettle.maxBandFraction`) cannot reach here, but a
+    /// caller passing an unclamped one must not get a negative page out of it.
+    static func bodyHeight(ofPage page: CGFloat, pageContentHeight: CGFloat,
+                           noteBands: [Int: CGFloat]) -> CGFloat {
+        guard !noteBands.isEmpty, page >= 0 else { return pageContentHeight }
+        return max(0, pageContentHeight - (noteBands[Int(page)] ?? 0))
+    }
+
     /// How far above a page's first line its own sheet begins.
     ///
     /// The document's declared top margin whenever it stated one. When it did not, HALF the band —
@@ -190,18 +221,25 @@ enum PagePagination {
     static func tablesToPush(_ tables: [LaidOutTable],
                              pageContentHeight: CGFloat, band: CGFloat, leadingBand: CGFloat,
                              splitTables: Bool = false,
-                             alreadyPushed: [Int: TableMetrics] = [:]) -> [Int: TableMetrics] {
+                             alreadyPushed: [Int: TableMetrics] = [:],
+                             noteBands: [Int: CGFloat] = [:]) -> [Int: TableMetrics] {
         let pitch = pageContentHeight + band
         guard pitch > 0, pageContentHeight > 0 else { return alreadyPushed }
         var out = alreadyPushed
 
-        /// Does this span, sitting here, run past the bottom of the page it starts on?
+        /// Which page a `y` starts on, with the hair of tolerance the layout rule uses — see
+        /// `PageBandLayoutDelegate.page(of:leadingBand:pitch:)`. The two must agree exactly or the
+        /// decision keeps asking for a move the rule has already made.
+        func pageOf(_ top: CGFloat) -> CGFloat {
+            (((top - leadingBand) / pitch) + 1e-6).rounded(.down)
+        }
+
+        /// Does this span, sitting here, run past the bottom of the page it starts on — where
+        /// "bottom" is the body that page actually offers, notes taken out (`textBottom`)?
         func overruns(top: CGFloat, bottom: CGFloat) -> Bool {
-            // Same tolerance as the layout rule, and for the same measured reason — see
-            // `PageBandLayoutDelegate.page(of:leadingBand:pitch:)`. The two must agree exactly or the
-            // decision keeps asking for a move the rule has already made.
-            let page = (((top - leadingBand) / pitch) + 1e-6).rounded(.down)
-            return (bottom - leadingBand) > page * pitch + pageContentHeight + 0.01
+            let bound = textBottom(ofPage: pageOf(top), pageContentHeight: pageContentHeight,
+                                   band: band, noteBands: noteBands)
+            return (bottom - leadingBand) > bound + 0.01
         }
 
         for t in tables {
@@ -218,7 +256,15 @@ enum PagePagination {
             let groups = unbreakableGroups(t.rows)
             let known = out[t.firstChar] != nil || groups.contains { out[$0.firstChar] != nil }
             guard known || overruns(top: t.visualTop, bottom: t.bottom) else { continue }
-            let fitsOnAPage = height <= pageContentHeight
+            // WHERE IT WOULD LAND, not where it stands. Carrying moves a table to the NEXT page,
+            // so "can it be carried" is a question about that page's body — and with notes the two
+            // pages can offer different amounts. Judging by the page it sits on would carry a table
+            // onto a sheet that cannot hold it either, and the record would march it forward one
+            // sheet per round until the settle's cap stopped it.
+            let landingPage = pageOf(t.visualTop) + 1
+            let landingBody = bodyHeight(ofPage: landingPage, pageContentHeight: pageContentHeight,
+                                         noteBands: noteBands)
+            let fitsOnAPage = height <= landingBody
             // BREAK IT — always when it is taller than a page (there is no whole page to move it to,
             // and the owner's rule is that such a table must be split), and by preference when the
             // reader has asked for breaking. Every row that may safely start a page is registered;
@@ -237,9 +283,9 @@ enum PagePagination {
                     // layout rule asks `pushedTables` first, so registering both would move the piece
                     // to the next page and only then start filling — the empty page this exists to
                     // avoid.
-                    let tableExceedsAPage = height > pageContentHeight
-                    for g in groups where g.height <= pageContentHeight
-                        && !tableExceedsAPage && !brokenInPlace(g, pageContentHeight) {
+                    let tableExceedsAPage = height > landingBody
+                    for g in groups where g.height <= landingBody
+                        && !tableExceedsAPage && !brokenInPlace(g, landingBody) {
                         out[g.firstChar] = TableMetrics(height: g.height, topInset: g.topInset)
                     }
                     continue
@@ -270,14 +316,24 @@ enum PagePagination {
     /// re-deriving from the new layout could flip the answer back and forth and the settle would never
     /// stop. The record only grows, and there are finitely many pieces.
     static func oversizedPieces(_ tables: [LaidOutTable], pageContentHeight: CGFloat,
+                                band: CGFloat = 0, leadingBand: CGFloat = 0,
+                                noteBands: [Int: CGFloat] = [:],
                                 alreadyOversized: [Int: Int] = [:]) -> [Int: Int] {
         guard pageContentHeight > 0 else { return alreadyOversized }
         var out = alreadyOversized
+        let pitch = pageContentHeight + band
         for t in tables {
+            // "Taller than a page" is measured against the body this table's OWN page offers. A
+            // note band takes that body away, and a table judged against the whole sheet is then
+            // declared to fit, carried nowhere, and drawn over the notes it cites. With no notes
+            // this is `pageContentHeight` exactly, so every other document is unchanged.
+            let onPage = pitch > 0 ? (((t.visualTop - leadingBand) / pitch) + 1e-6).rounded(.down) : 0
+            let body = bodyHeight(ofPage: onPage, pageContentHeight: pageContentHeight,
+                                  noteBands: noteBands)
             let groups = unbreakableGroups(t.rows)
             guard !groups.isEmpty else {
                 // No rows were measured, so the whole table is the only piece there is.
-                if t.bottom - t.visualTop > pageContentHeight, t.lastChar > t.firstChar {
+                if t.bottom - t.visualTop > body, t.lastChar > t.firstChar {
                     out[t.firstChar] = t.lastChar
                 }
                 continue
@@ -285,9 +341,9 @@ enum PagePagination {
             // The owner's rule is about the TABLE: *"표 자체가 한페이지 넘기면"* it is broken where it
             // stands, cell middles and all — only a run of three lines or fewer is moved on
             // (`pullToNextPage`). A table that FITS on a page keeps the menu's carry/break choice.
-            let tableExceedsAPage = t.bottom - t.visualTop > pageContentHeight
+            let tableExceedsAPage = t.bottom - t.visualTop > body
             for (i, g) in groups.enumerated()
-                where tableExceedsAPage || brokenInPlace(g, pageContentHeight) {
+                where tableExceedsAPage || brokenInPlace(g, body) {
                 let end = i + 1 < groups.count ? groups[i + 1].firstChar : t.lastChar
                 if end > g.firstChar { out[g.firstChar] = end }
             }

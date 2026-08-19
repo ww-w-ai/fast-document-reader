@@ -2089,9 +2089,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                                                band: pageBandDelegate.band,
                                                leadingBand: pageBandDelegate.leadingBand,
                                                splitTables: PageViewOptionsStore.current.splitTables,
-                                               alreadyPushed: pageBandDelegate.pushedTables)
+                                               alreadyPushed: pageBandDelegate.pushedTables,
+                                               noteBands: pageBandDelegate.noteBands)
         let oversized = PagePagination.oversizedPieces(tables,
                                                        pageContentHeight: pageBandDelegate.pageContentHeight,
+                                                       band: pageBandDelegate.band,
+                                                       leadingBand: pageBandDelegate.leadingBand,
+                                                       noteBands: pageBandDelegate.noteBands,
                                                        alreadyOversized: pageBandDelegate.oversizedPieces)
         let orphans = pageBandDelegate.pullToNextPage
             .union(orphanRunStarts(in: oversized))
@@ -2122,17 +2126,37 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // tables spend the rounds, the note band's own rule never reaches a STOP, and because the
         // band is only frozen at that stop the assignment keeps being re-derived — pages that
         // reserved a band cited nothing and pages citing notes had none. On a 30-note document that
-        // drew half the notes nowhere. Tables first because a table that moves changes which page
-        // cites a note; notes second because a band only shortens the body it was measured against;
-        // columns last because they are placed from a flow neither of the others changes.
+        // drew half the notes nowhere.
+        //
+        // ALTERNATING, not two passes in a row. Running the tables once and then the notes reads as
+        // an ordering ("a table that moves changes which page cites a note") and it settles the
+        // tables against a page that is about to shrink: at the moment the table pass runs, nothing
+        // has reserved a band yet, so every table is judged against the WHOLE sheet, and a table
+        // that fits 700pt but not the 414pt a five-note band leaves is declared to fit and left
+        // where it stands — drawn straight over its own footnotes. MEASURED on a 30-note fiscal
+        // report: sheet 3's table ran to y=802 of an 841.9pt sheet, line for line through the note
+        // band beneath it, while the asynchronous settle (whose `||` chain re-asks the tables every
+        // round) got the same document right. So the two are re-asked until neither moves.
+        //
+        // This terminates on its own: the note rule latches at its own STOP and answers `false`
+        // ever after (invariant 98), so at most one outer round can be spent on it, and a table is
+        // only ever moved once. The outer cap is the same backstop the inner ones are.
         for _ in 0..<maxPagedTableSettles {
-            lm.ensureLayout(for: tc)
-            if !settlePagedTables() { break }
+            var tablesMoved = false
+            for _ in 0..<maxPagedTableSettles {
+                lm.ensureLayout(for: tc)
+                if !settlePagedTables() { break }
+                tablesMoved = true
+            }
+            var notesMoved = false
+            for _ in 0..<maxPagedTableSettles {
+                lm.ensureLayout(for: tc)
+                if !settleFootnoteBands() { break }
+                notesMoved = true
+            }
+            if !tablesMoved && !notesMoved { break }
         }
-        for _ in 0..<maxPagedTableSettles {
-            lm.ensureLayout(for: tc)
-            if !settleFootnoteBands() { break }
-        }
+        // Columns last because they are placed from a flow neither of the others changes.
         lm.ensureLayout(for: tc)
         if settleColumnPlacements() { lm.ensureLayout(for: tc) }
     }
@@ -2173,6 +2197,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Set once the rule has RULED. A settled render may still need one more walk to lay out
     /// against the reservation it just fixed, and that walk must not start the argument again.
     private var footnoteBandsSettled = false
+
     /// The page-to-notes assignment the settled bands were measured from, held so the two cannot
     /// drift apart. Cleared with every other per-render footnote state.
     private var settledFootnotePages: [Int: [Int]]?
@@ -2280,22 +2305,31 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                 lines.append((chars.location, rect.minY, rect.height))
             }
             guard let first = lines.first else { continue }
-            // The run starts at the top of a PAGE. A column that began halfway down a sheet would
-            // have to treat the remaining height as its column height and the next sheet's full
-            // height as the following one's — two different column heights inside one run — and HWP
-            // itself starts a column run at a section break, i.e. at a page top, in the documents
-            // this was measured against.
+            // A run does NOT have to begin at a page top — HWP puts the declaration in the text, so
+            // a document can go to two columns halfway down a sheet (invariant 100). Such a run has
+            // TWO column heights: what is left of the sheet it starts on, and the whole body of
+            // every sheet after. Handing the leftover down as the only height made every later sheet
+            // as short as the first, so the columns stopped partway down the page and the run spilled
+            // onto sheets it did not need.
             let startPage = PageBandLayoutDelegate.page(of: first.top,
                                                         leadingBand: pageBandDelegate.leadingBand,
                                                         pitch: pitch)
             let pageTop = startPage * pitch + pageBandDelegate.leadingBand
             let origin = max(first.top, pageTop)
-            let height = pageBandDelegate.textBottom(ofPage: startPage) - (origin - pageBandDelegate.leadingBand)
-            guard height > 0 else { continue }
+            let firstHeight = pageBandDelegate.textBottom(ofPage: startPage)
+                - (origin - pageBandDelegate.leadingBand)
+            // Every LATER sheet's own body. Taken from the sheet after the start rather than from
+            // `pageContentHeight` flat, so a note band on it is honoured by the same one definition
+            // every other rule now asks (`PagePagination.textBottom`).
+            let laterHeight = PagePagination.bodyHeight(ofPage: startPage + 1,
+                                                        pageContentHeight: pageBandDelegate.pageContentHeight,
+                                                        noteBands: pageBandDelegate.noteBands)
+            guard firstHeight > 0, laterHeight > 0 else { continue }
             placements.merge(ColumnGeometry.placements(lines: lines, runOrigin: origin,
                                                        firstPage: startPage, columns: columns,
-                                                       columnHeight: height, pitch: pitch,
-                                                       leadingBand: pageBandDelegate.leadingBand)) { a, _ in a }
+                                                       columnHeight: laterHeight, pitch: pitch,
+                                                       leadingBand: pageBandDelegate.leadingBand,
+                                                       firstColumnHeight: firstHeight)) { a, _ in a }
         }
         columnRunsSettled = true
         guard !placements.isEmpty else { return false }
