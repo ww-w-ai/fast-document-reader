@@ -249,6 +249,37 @@ final class MarkdownDocument: NSDocument {
     /// because at the top every version of this looks perfect.
     private var hasPaintedOnce = false
 
+    /// A markdown render still handing over its tail, or `nil` when the storage holds the whole
+    /// document. Read by `HeadlessPDF.waitForRenderToSettle` for the same reason `deferredTables`
+    /// is: a headless run must not print a document that is still arriving (invariant 66).
+    private(set) var progressiveRender: ProgressiveMarkdownRender?
+    var isProgressiveRenderPending: Bool { progressiveRender != nil }
+
+    /// How much of a large markdown file is built before the window is shown. Top-level blocks, not
+    /// characters — the unit the walk is sliced by. Comfortably more than a screenful so the reader
+    /// can begin reading (and page down once) before the tail lands.
+    private static let progressiveHeadBlocks = 120
+
+    /// Whether a long markdown file may be painted front-first at all. The one switch
+    /// `ProgressivePrintParityProbeTests` flips to print the SAME document both ways.
+    ///
+    /// It stays ON for a headless print, which is the same answer invariant 55 gave for the giant
+    /// table it defers: the settle loop waits for the document to be whole (`isProgressiveRenderPending`
+    /// joins `deferredTables` in its quiet test) rather than the render path knowing what it is being
+    /// rendered for. MEASURED on the 3.5 MB file this feature was built for, both ways in one
+    /// process: 2,797,110 characters either way, 6.2 s whole against 5.7 s front-first. Turning it
+    /// off there was written first and deleted — it fixed nothing that was happening.
+    static var progressiveFirstPaintEnabled = true
+
+    /// Below this the whole document is built at once. A small file's first paint is already
+    /// instant, and splitting it would spend an extra storage edit to save nothing.
+    private static let progressiveSourceFloor = 300_000   // UTF-16 units
+
+    /// How much of the tail arrives per run-loop turn. `.max` is ONE remainder chunk — the
+    /// two-phase shape the design doc asks to measure first, before paying for the surrounding
+    /// features many chunks would need (docs/02-planned/markdown-progressive-first-paint.md §7).
+    private static let progressiveTailBlocks = Int.max
+
     // While the up-front measure pass is rendering uncached diagrams, their exact size isn't known
     // yet — reconcileMedia must NOT load them (that would resize under the reader). Cleared once the
     // pass finishes and every diagram has been sized. `prerenderToken` cancels a stale pass when a
@@ -1396,7 +1427,20 @@ final class MarkdownDocument: NSDocument {
         let attr: NSAttributedString
         switch kind {
         case .plainText: attr = PlainTextRenderer.render(text, theme: theme)
-        case .markdown: attr = MarkdownRenderer.render(text, theme: theme)
+        // Long markdown is painted front first and finished afterwards — same trade as invariant
+        // 55's giant table (the work is MOVED, not saved) and the same rule about WHEN: first paint
+        // only, never ⌘+/⌘−/⌘R, because an anchor taken against the full document cannot survive
+        // being clamped to a shorter string (invariant 55(b), measured at 9,038 ms / 181 turns).
+        case .markdown:
+            if !hasPaintedOnce, Self.progressiveFirstPaintEnabled,
+               text.utf16.count >= Self.progressiveSourceFloor {
+                let render = MarkdownRenderer.renderProgressive(text, theme: theme)
+                attr = render.nextChunk(blocks: Self.progressiveHeadBlocks)
+                progressiveRender = render.isFinished ? nil : render
+            } else {
+                attr = MarkdownRenderer.render(text, theme: theme)
+            }
+            hasPaintedOnce = true
         // Rebuilt from blocks every render, not cached: ⌘R (and, for a document with no page width,
         // ⌘+/⌘−) must reflow office text exactly like markdown does — a finished string would
         // freeze the document at whatever size it was first opened at.
@@ -1478,6 +1522,13 @@ final class MarkdownDocument: NSDocument {
             // the guarantee the splice below needs: it may not edit under a running walk, and a
             // superseded render must not splice at all.
             let generation = self.renderGeneration
+            // A progressive markdown render owns the rest of this pipeline: the walk, the anchor and
+            // the media passes all have to wait until the document is whole, or they measure a
+            // length that is about to change under them.
+            if self.progressiveRender != nil {
+                self.appendProgressiveTail(into: wc, generation: generation)
+                return
+            }
             wc.precomputeLayout { [weak self, weak wc] in
                 guard let self, let wc, self.renderGeneration == generation else { return }
                 self.spliceDeferredTables(into: wc, generation: generation)
@@ -1491,6 +1542,52 @@ final class MarkdownDocument: NSDocument {
             // is known before it lands. Docs with no remote images skip this.
             self.measureRemoteImages(in: wc)
         }
+    }
+
+    /// Appends the rest of a progressively-rendered markdown document, one chunk per run-loop turn,
+    /// after the front of it is already on screen.
+    ///
+    /// Every append lands at the END of the storage, so unlike `spliceDeferredTables` no character
+    /// the reader is looking at ever moves and the anchor needs no shifting. The completion work is
+    /// the SAME work `render(into:)` schedules for a whole document, just held until the document
+    /// actually is one — in particular the walk, which invariant 55(a) records is not optional:
+    /// arriving at an unlaid region costs 69,460 and 80,008 ms against 3.2 ms when it has run.
+    private func appendProgressiveTail(into wc: DocumentWindowController, generation: Int) {
+        guard progressiveRender != nil, wc.textStorageRef != nil else { return }
+        let anchor = wc.readingAnchor()
+
+        func appendNext() {
+            guard renderGeneration == generation, let render = progressiveRender,
+                  let storage = wc.textStorageRef else { return }
+            let piece = render.nextChunk(blocks: Self.progressiveTailBlocks)
+            storage.beginEditing()
+            storage.append(piece)
+            storage.endEditing()
+            if render.isFinished {
+                finish()
+            } else {
+                DispatchQueue.main.async { appendNext() }
+            }
+        }
+
+        func finish() {
+            guard renderGeneration == generation else { return }
+            progressiveRender = nil
+            // Anything that reads offsets out of the text has been reading a short document until
+            // now (invariant 23's rule: whatever changes the text ends here).
+            wc.refreshAfterMutation()
+            wc.reloadOutline()
+            presizeKnownMedia(in: wc)
+            // Restored FROM the walk's completion, never before it: `restore` clamps to the height
+            // that is actually laid out, and until the walk has run that is only the head
+            // (invariant 24, and the same trap `spliceDeferredTables` records).
+            wc.precomputeLayout { [weak wc] in wc?.restore(anchor) }
+            reconcileMedia(in: wc)
+            prerenderAllDiagrams(in: wc)
+            measureRemoteImages(in: wc)
+        }
+
+        DispatchQueue.main.async { appendNext() }
     }
 
     /// Puts each giant table's grid back, one per run-loop turn, after the document has already

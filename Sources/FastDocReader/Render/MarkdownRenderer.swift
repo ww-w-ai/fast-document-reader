@@ -16,12 +16,37 @@ enum MarkdownRenderer {
         }
         var builder = AttributedBuilder(theme: theme, source: markdown)
         builder.visit(document)
-        autolink(builder.result)
+        finishPasses(builder.result)
+        return builder.result
+    }
+
+    /// The two range-based passes every rendered run must go through before it is shown. Factored
+    /// out because a progressive render runs them on each PIECE rather than once on the whole
+    /// string, and both are safe that way: a top-level block boundary cannot fall inside a URL, a
+    /// fence or a word, so no match straddles two chunks.
+    fileprivate static func finishPasses(_ s: NSMutableAttributedString) {
+        autolink(s)
         // The theme names one font for everything, and it has no Hangul — so without this AppKit
         // fixes the string per character and cuts a run at every word boundary (invariant 52's own
         // rule, applied to the path that has no document to declare a face).
-        FontSubstitutionResolver.applySubstitutions(to: builder.result)
-        return builder.result
+        FontSubstitutionResolver.applySubstitutions(to: s)
+    }
+
+    /// Begin a render that is handed over in pieces instead of all at once.
+    ///
+    /// The document is PARSED whole (it has to be — a link definition at the end of the file binds
+    /// text at the start), and only the walk over its top-level children is sliced. See
+    /// `docs/02-planned/markdown-progressive-first-paint.md`.
+    static func renderProgressive(_ markdown: String, theme: RenderTheme) -> ProgressiveMarkdownRender {
+        let document: Document
+        if let m = parseMemo, m.text == markdown {
+            document = m.doc
+        } else {
+            document = Document(parsing: markdown)
+            parseMemo = (markdown, document)
+        }
+        return ProgressiveMarkdownRender(builder: AttributedBuilder(theme: theme, source: markdown),
+                                         children: Array(document.children))
     }
 
     /// After rendering, detect bare URLs and file paths in the prose and make them clickable
@@ -745,5 +770,49 @@ private struct AttributedBuilder: MarkupWalker {
         result.append(TableBlockBuilder.build(rows: rows, headerRows: 1, theme: theme))
         newline()
         tagBlock(from: start, src: table.range)
+    }
+}
+
+
+/// One markdown render, handed out front to back.
+///
+/// ONE builder for the whole document, deliberately: its `init` scans the source (line starts, math
+/// spans) and was 16% of first paint on a 3.5 MB file, so re-creating it per chunk would pay that
+/// again every time. Block ids also keep counting up across chunks, which is what invariant 19 asks
+/// for — two neighbours sharing an id read as one stop for the reading cursor.
+///
+/// Each call returns only what the blocks it just visited ADDED, already through
+/// `MarkdownRenderer.finishPasses`, ready to be appended to the storage as-is.
+final class ProgressiveMarkdownRender {
+    private var builder: AttributedBuilder
+    private let children: [Markup]
+    private var next = 0    // index of the next top-level child to visit
+    private var mark = 0    // how much of `builder.result` has already been handed out
+
+    fileprivate init(builder: AttributedBuilder, children: [Markup]) {
+        self.builder = builder
+        self.children = children
+    }
+
+    var isFinished: Bool { next >= children.count }
+    var blockCount: Int { children.count }
+
+    /// Visit up to `blocks` more top-level children and return the text they produced.
+    func nextChunk(blocks: Int) -> NSAttributedString {
+        // Clamped by SUBTRACTING from what is left, never by adding to `next`: `blocks` is allowed
+        // to be `Int.max` ("all of it"), and `next + blocks` overflows — which trapped on the first
+        // real document, in the append turn no probe ever reached.
+        let take = max(1, blocks)
+        let end = take >= children.count - next ? children.count : next + take
+        while next < end {
+            builder.visit(children[next])
+            next += 1
+        }
+        let full = builder.result
+        let delta = NSMutableAttributedString(attributedString:
+            full.attributedSubstring(from: NSRange(location: mark, length: full.length - mark)))
+        mark = full.length
+        MarkdownRenderer.finishPasses(delta)
+        return delta
     }
 }

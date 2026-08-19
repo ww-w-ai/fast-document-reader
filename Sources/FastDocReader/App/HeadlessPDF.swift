@@ -221,7 +221,8 @@ enum HeadlessPDF {
             layoutFully()
             let height = wc.textView.frame.height
             let generation = doc.renderGeneration
-            let quiet = doc.deferredTables.isEmpty && height == lastHeight && generation == lastGeneration
+            let quiet = doc.deferredTables.isEmpty && !doc.isProgressiveRenderPending
+                && height == lastHeight && generation == lastGeneration
             lastHeight = height
             lastGeneration = generation
             quietPolls = quiet ? quietPolls + 1 : 0
