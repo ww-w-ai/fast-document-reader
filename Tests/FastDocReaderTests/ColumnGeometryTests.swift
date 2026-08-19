@@ -231,15 +231,73 @@ final class ColumnGeometryTests: XCTestCase {
 
     /// The run's own origin and page are honoured — a run does not have to start at the document's
     /// first line, and the leading band shifts every answer by the same amount.
+    ///
+    /// `runOrigin` is 28pt BELOW page 3's own top here, which is a run that begins partway down a
+    /// sheet: the lines above it belong to the single-column flow. Its columns therefore start where
+    /// the RUN starts, not where the page does — placing them at the page top draws the run over
+    /// text that is already there.
     func testARunIsPlacedRelativeToItsOwnStart() {
         let columns = ColumnGeometry.columns(inWidth: 420,
                                              layout: OfficeColumnLayout(count: 2, spacing: 20))
         let out = ColumnGeometry.placements(lines: [line(0, 1000), line(1, 1300)],
                                             runOrigin: 1000, firstPage: 3, columns: columns,
                                             columnHeight: 300, pitch: 320, leadingBand: 12)
-        XCTAssertEqual(out[0]?.y, 3 * 320 + 12)
+        XCTAssertEqual(out[0]?.y, 1000, "the run's first line stays where the run begins")
         XCTAssertEqual(out[1]?.x, columns[1].x)
-        XCTAssertEqual(out[1]?.y, 3 * 320 + 12, "column 2 of the SAME page starts at that page's top")
+        XCTAssertEqual(out[1]?.y, 1000, "column 2 of the SAME sheet begins where column 1 did")
+    }
+
+    /// A run beginning partway down a sheet has TWO column heights: what is left of the sheet it
+    /// starts on, and the whole body of every sheet after it. Passing only the leftover made every
+    /// later sheet as short as the first, so the columns stopped partway down the page and the run
+    /// spilled onto sheets it did not need.
+    ///
+    /// Page 3's body is 300 tall and the run starts 100 into it, so its first sheet holds 200 per
+    /// column (400 of flow) and every later sheet 300 per column (600).
+    func testALaterSheetGetsItsWholeBodyNotTheFirstSheetsLeftover() {
+        let columns = ColumnGeometry.columns(inWidth: 420,
+                                             layout: OfficeColumnLayout(count: 2, spacing: 20))
+        let origin: CGFloat = 3 * 320 + 12 + 100
+        let out = ColumnGeometry.placements(
+            lines: [line(0, origin), line(1, origin + 200), line(2, origin + 400),
+                    line(3, origin + 700), line(4, origin + 1000)],
+            runOrigin: origin, firstPage: 3, columns: columns,
+            columnHeight: 300, pitch: 320, leadingBand: 12, firstColumnHeight: 200)
+        // The short first sheet: 0…200 is column 1, 200…400 column 2, both starting at the run.
+        XCTAssertEqual(out[0]?.x, columns[0].x)
+        XCTAssertEqual(out[0]?.y, origin)
+        XCTAssertEqual(out[1]?.x, columns[1].x, "200 into a 200-tall first column is the next column")
+        XCTAssertEqual(out[1]?.y, origin)
+        // 400 of flow fills that sheet, so the next line opens sheet 4 AT ITS TOP with a FULL column.
+        XCTAssertEqual(out[2]?.x, columns[0].x)
+        XCTAssertEqual(out[2]?.y, 4 * 320 + 12, "a later sheet starts at its own top")
+        let sheet4Top: CGFloat = 4 * 320 + 12
+        XCTAssertEqual(out[3]?.x, columns[1].x, "300 into sheet 4's 300-tall column 1 is column 2")
+        XCTAssertEqual(out[3]?.y, sheet4Top)
+        // 400 (first sheet) + 600 (sheet 4) of flow is exactly the start of the sheet after it.
+        XCTAssertEqual(out[4]?.x, columns[0].x)
+        XCTAssertEqual(out[4]?.y, 5 * 320 + 12, "a full later sheet holds 600, so 1000 opens sheet 5")
+    }
+
+    /// …and when the run DOES begin at a page top the two heights are equal and every answer is the
+    /// one this function gave before it could tell them apart. This is what keeps every run that
+    /// already worked provably untouched.
+    func testEqualHeightsReduceToTheOriginalArithmetic() {
+        let columns = ColumnGeometry.columns(inWidth: 420,
+                                             layout: OfficeColumnLayout(count: 2, spacing: 20))
+        let lines = (0..<9).map { line($0, CGFloat($0) * 155) }
+        let withDefault = ColumnGeometry.placements(lines: lines, runOrigin: 0, firstPage: 0,
+                                                    columns: columns, columnHeight: 300,
+                                                    pitch: 320, leadingBand: 0)
+        let spelledOut = ColumnGeometry.placements(lines: lines, runOrigin: 0, firstPage: 0,
+                                                   columns: columns, columnHeight: 300,
+                                                   pitch: 320, leadingBand: 0,
+                                                   firstColumnHeight: 300)
+        XCTAssertEqual(withDefault.count, spelledOut.count)
+        for (k, v) in withDefault {
+            XCTAssertEqual(v.x, spelledOut[k]?.x, "line \(k) x")
+            XCTAssertEqual(v.y, spelledOut[k]?.y, "line \(k) y")
+        }
     }
 
     /// A single column places nothing: there is no column to move a line into, and every document

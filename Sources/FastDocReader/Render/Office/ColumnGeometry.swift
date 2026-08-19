@@ -131,37 +131,75 @@ enum ColumnGeometry {
     ///
     /// The flow is a single stack `columnHeight` tall per column, `count` columns per page: reading
     /// down column 1 of a sheet, then column 2, then the next sheet.
+    ///
+    /// **TWO COLUMN HEIGHTS, because a run does not have to begin at a page top.** HWP puts a column
+    /// declaration in the TEXT, so a document can go to two columns halfway down a sheet. That run's
+    /// first page offers only what is LEFT of it, and every page after offers the whole body — one
+    /// run, two heights. Passing the leftover as the only height (which is what this took before)
+    /// makes every later sheet as short as the first, so the columns stop a third of the way down
+    /// the page and the run spills onto sheets it did not need. `firstColumnHeight` defaults to
+    /// `columnHeight`, and when a run DOES begin at a page top the two are equal and every number
+    /// below reduces algebraically to what it was — which is what keeps the runs that already
+    /// worked provably untouched.
+    ///
+    /// `runOrigin` is where the run's own first column starts, which is NOT a page top for such a
+    /// run: the lines above it belong to the single-column flow and must not be drawn over.
     static func placements(lines: [(location: Int, top: CGFloat, height: CGFloat)],
                            runOrigin: CGFloat, firstPage: CGFloat,
                            columns: [Column], columnHeight: CGFloat,
-                           pitch: CGFloat, leadingBand: CGFloat) -> [Int: (x: CGFloat, y: CGFloat)] {
-        guard columns.count > 1, columnHeight > 0, pitch > 0 else { return [:] }
-        let perPage = columnHeight * CGFloat(columns.count)
+                           pitch: CGFloat, leadingBand: CGFloat,
+                           firstColumnHeight: CGFloat? = nil) -> [Int: (x: CGFloat, y: CGFloat)] {
+        let firstHeight = firstColumnHeight ?? columnHeight
+        guard columns.count > 1, columnHeight > 0, firstHeight > 0, pitch > 0 else { return [:] }
+        let count = CGFloat(columns.count)
+        let perPage = columnHeight * count
+        let firstPerPage = firstHeight * count
         var out: [Int: (x: CGFloat, y: CGFloat)] = [:]
         for line in lines {
             let d = line.top - runOrigin
             guard d >= -0.01 else { continue }
-            let pageOffset = ((d / perPage) + 1e-6).rounded(.down)
-            let withinPage = d - pageOffset * perPage
-            var columnIndex = Int(((withinPage / columnHeight) + 1e-6).rounded(.down))
+            // Which sheet of the run this line falls on. The first sheet is measured separately
+            // because it is the short one; every later sheet is the same full one, so the rest is
+            // the original division shifted by that first sheet — the same `1e-6` of tolerance, for
+            // the same measured reason as `column(atFlowOffset:)`.
+            let onFirstPage = (d / firstPerPage) + 1e-6 < 1
+            let pageOffset: CGFloat
+            let withinPage: CGFloat
+            let height: CGFloat
+            if onFirstPage {
+                pageOffset = 0
+                withinPage = d
+                height = firstHeight
+            } else {
+                let rest = d - firstPerPage
+                pageOffset = ((rest / perPage) + 1e-6).rounded(.down) + 1
+                withinPage = rest - (pageOffset - 1) * perPage
+                height = columnHeight
+            }
+            var columnIndex = Int(((withinPage / height) + 1e-6).rounded(.down))
             columnIndex = max(0, min(columns.count - 1, columnIndex))
-            let withinColumn = withinPage - CGFloat(columnIndex) * columnHeight
+            let withinColumn = withinPage - CGFloat(columnIndex) * height
+            var page = firstPage + pageOffset
+            // Where THIS sheet's columns begin. The run's own first sheet begins where the run does;
+            // every later one at its page top.
+            var columnTop = pageOffset == 0 ? runOrigin : page * pitch + leadingBand
             // A line taller than what is left of its column would be drawn across the foot of the
             // page. Pushing it whole to the next column is the same answer the page band gives a
             // line that would straddle a sheet boundary, and for the same reason.
-            var page = firstPage + pageOffset
             var top = withinColumn
-            if withinColumn + line.height > columnHeight + 0.01 {
+            if withinColumn + line.height > height + 0.01 {
                 if columnIndex + 1 < columns.count {
                     columnIndex += 1
                 } else {
                     columnIndex = 0
                     page += 1
+                    // A sheet reached by overflowing is a LATER sheet, so it starts at its own top
+                    // even when the line came off the run's short first one.
+                    columnTop = page * pitch + leadingBand
                 }
                 top = 0
             }
-            out[line.location] = (columns[columnIndex].x,
-                                  page * pitch + leadingBand + top)
+            out[line.location] = (columns[columnIndex].x, columnTop + top)
         }
         return out
     }
