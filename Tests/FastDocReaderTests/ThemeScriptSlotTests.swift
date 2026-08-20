@@ -83,3 +83,72 @@ final class ThemeScriptSlotTests: XCTestCase {
         }
     }
 }
+
+/// The size a substituted run comes out at (invariant 93, the half about SIZES).
+///
+/// The markdown and plain-text paths hand the resolved `NSFont` straight to the storage, so the
+/// substitute's POINT SIZE is what reaches the screen — unlike the office path, which rebuilds the
+/// resolved name at the span's own authored size and so can never be wrong about it. Two things
+/// downstream of `CTFontCreateForString` are keyed on a face's NAME alone, and a heading, a
+/// sub-heading and a table header are all `.systemFont(weight: .semibold)` under three different
+/// sizes — one name, three sizes. These assert that each keeps its own.
+final class SubstitutedRunSizeTests: XCTestCase {
+    private func size(of string: NSAttributedString, containing needle: String) -> CGFloat? {
+        var found: CGFloat?
+        let ns = string.string as NSString
+        string.enumerateAttribute(.font, in: NSRange(location: 0, length: string.length), options: []) {
+            value, range, _ in
+            guard ns.substring(with: range).contains(needle), let font = value as? NSFont else { return }
+            found = font.pointSize
+        }
+        return found
+    }
+
+    /// One face, three sizes: a Korean H1, H2 and table header in one document must not collapse
+    /// onto whichever size was resolved first.
+    func testOneFaceAtThreeSizesKeepsThreeSizes() {
+        let string = NSMutableAttributedString()
+        for (text, size) in [("큰제목", 30.0), ("가운데", 24.0), ("화면", 16.0)] {
+            string.append(NSAttributedString(string: text + "\n", attributes:
+                [.font: NSFont.systemFont(ofSize: size, weight: .semibold)]))
+        }
+        FontSubstitutionResolver.applySubstitutions(to: string)
+
+        XCTAssertEqual(size(of: string, containing: "큰제목"), 30)
+        XCTAssertEqual(size(of: string, containing: "가운데"), 24)
+        XCTAssertEqual(size(of: string, containing: "화면"), 16)
+    }
+
+    /// The SAME defect's other half, and the one a synthetic fixture hides: `substituteFont`'s memo
+    /// is keyed on the declared FACE without its size, so a size that resolves second gets handed the
+    /// first one's font — at the first one's point size. It only fires when both sizes pick the SAME
+    /// sample character, which three differently-worded headings never do and a real report, whose
+    /// headings repeat the same words, does constantly.
+    func testTwoSizesOfOneFaceSharingASampleCharacterKeepTheirSizes() {
+        let string = NSMutableAttributedString()
+        for size in [30.0, 24.0] {
+            string.append(NSAttributedString(string: "사건관리 대시보드\n", attributes:
+                [.font: NSFont.systemFont(ofSize: size, weight: .semibold)]))
+        }
+        var sizes: [CGFloat] = []
+        FontSubstitutionResolver.applySubstitutions(to: string)
+        string.enumerateAttribute(.font, in: NSRange(location: 0, length: string.length), options: []) {
+            v, _, _ in if let f = v as? NSFont, f.fontName.contains("SDGothic") { sizes.append(f.pointSize) }
+        }
+        XCTAssertEqual(Set(sizes), [30, 24],
+                       "one face, two sizes, one sample character — each keeps its own size")
+    }
+
+    /// The same rule across WEIGHTS, which is the shape a real report has: semibold headings over
+    /// regular body text, every one of them Korean.
+    func testBodyKeepsItsSizeWhenAHeadingResolvesTheSameScript() {
+        let string = NSMutableAttributedString(string: "사건관리 대시보드\n",
+            attributes: [.font: NSFont.systemFont(ofSize: 30, weight: .semibold)])
+        string.append(NSAttributedString(string: "기획안의 항목을 그대로 담습니다",
+            attributes: [.font: NSFont.systemFont(ofSize: 16)]))
+        FontSubstitutionResolver.applySubstitutions(to: string)
+
+        XCTAssertEqual(size(of: string, containing: "대시보드"), 30)
+        XCTAssertEqual(size(of: string, containing: "기획안"), 16)
+    }
+}

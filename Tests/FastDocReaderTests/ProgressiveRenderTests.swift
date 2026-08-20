@@ -66,7 +66,7 @@ final class ProgressiveRenderTests: XCTestCase {
     /// `NSTextBlock` compares by object identity, and every render builds fresh table blocks — so
     /// even the same document rendered twice comes out "different". Descriptions with their
     /// pointers stripped compare what the two strings actually SAY.
-    private static func firstAttributeDifference(_ a: NSAttributedString, _ b: NSAttributedString)
+    static func firstAttributeDifference(_ a: NSAttributedString, _ b: NSAttributedString)
         -> (at: Int, mine: [String: String], theirs: [String: String])? {
         let pointer = try! NSRegularExpression(pattern: "0x[0-9a-f]+")
         func described(_ d: [NSAttributedString.Key: Any]) -> [String: String] {
@@ -165,5 +165,75 @@ final class ProgressiveRenderTests: XCTestCase {
         let storage = try XCTUnwrap(wc.textStorageRef)
         let fresh = MarkdownRenderer.render(doc.text, theme: RenderTheme.current(size: doc.readingSize))
         XCTAssertEqual(storage.string, fresh.string)
+    }
+}
+
+/// The chunked walk on a KOREAN document, which is the only shape that reaches font substitution.
+///
+/// `ProgressiveRenderTests`' own fixture is Latin-only, so its attribute-parity check passes without
+/// the substitution pass ever firing — and that pass is decided PER CHUNK, from a histogram of the
+/// text in that chunk alone and a cache that lives only as long as the call. Two chunks are free to
+/// answer differently unless something asserts they do not.
+final class ProgressiveKoreanRenderTests: XCTestCase {
+    private func koreanSource() -> String {
+        var out = "# 개발 작업 보고\n\n"
+        for i in 0..<600 {
+            out += """
+            ## \(i)절 사건관리 대시보드
+
+            기획안의 항목을 그대로 담습니다 — 사건번호·구분·고객사, **굵게** 표시한 부분과 `code` 포함.
+
+            | 화면 | 하는 일 |
+            |---|---|
+            | 사건 목록 | 열일곱 개 항목을 담습니다 |
+
+            """
+        }
+        return out
+    }
+
+    private func runs(_ s: NSAttributedString) -> Set<String> {
+        var out: Set<String> = []
+        s.enumerateAttribute(.font, in: NSRange(location: 0, length: s.length), options: []) { v, _, _ in
+            if let f = v as? NSFont { out.insert("\(f.fontName)|\(f.pointSize)") }
+        }
+        return out
+    }
+
+    func testAKoreanDocumentChunksToTheSameAttributesAsOnePass() {
+        let source = koreanSource()
+        let theme = RenderTheme.current(size: 16)
+        let progressive = MarkdownRenderer.renderProgressive(source, theme: theme)
+        let assembled = NSMutableAttributedString()
+        var chunks = 0
+        while !progressive.isFinished {
+            assembled.append(progressive.nextChunk(blocks: 37))
+            chunks += 1
+        }
+        XCTAssertGreaterThan(chunks, 5, "the walk was not actually sliced")
+
+        let fresh = MarkdownRenderer.render(source, theme: theme)
+        // The gate this test exists for: assert the pass under test actually RAN, before asserting
+        // anything about its output. A Latin-only fixture reaches none of this.
+        XCTAssertTrue(runs(fresh).contains { $0.contains("SDGothic") },
+                      "the theme font draws no Hangul — substitution must have fired")
+        XCTAssertEqual(assembled.string, fresh.string, "text")
+        if let (at, mine, theirs) = ProgressiveRenderTests.firstAttributeDifference(assembled, fresh) {
+            XCTFail("attributes diverge at \(at): sliced \(mine) vs whole \(theirs)")
+        }
+    }
+
+    /// Each heading level and the table header keep their OWN size through the chunked walk — the
+    /// defect that shipped was three sizes collapsing onto one, and it is size, not face, that a
+    /// reader sees.
+    func testEachLevelKeepsItsOwnSizeThroughTheChunkedWalk() {
+        let progressive = MarkdownRenderer.renderProgressive(koreanSource(), theme: RenderTheme.current(size: 16))
+        let assembled = NSMutableAttributedString()
+        while !progressive.isFinished { assembled.append(progressive.nextChunk(blocks: 37)) }
+
+        let korean = runs(assembled).filter { $0.contains("SDGothic") && $0.contains("SemiBold") }
+        XCTAssertEqual(Set(korean.map { $0.split(separator: "|").last.map(String.init) ?? "" }),
+                       ["30.0", "24.0", "16.0"],
+                       "H1 30 / H2 24 / table header 16 — one face, three sizes")
     }
 }

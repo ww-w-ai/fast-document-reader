@@ -396,8 +396,16 @@ enum FontSubstitutionResolver {
             guard !cache.covers(declared, sample) else { continue }
             let substitute = cache.substituteFont(declared: declared, scalar: sample)
             guard substitute.fontName != noSubstituteFontName else { continue }
-            substitutes[key] = substitute
-            byFamily[substitute.fontName] = substitute
+            // SIZED to the font it replaces, and grouped by face AND size. This path hands the
+            // resolved `NSFont` straight to the storage — unlike `OfficeTextBuilder`, which rebuilds
+            // the resolved NAME at the span's own authored size and so cannot be wrong about this —
+            // and two things upstream answer by face name alone: `substituteFont`'s memo is keyed on
+            // the declared face without its size, and this map used to be too. A theme's H1, H2 and
+            // table header are one face (`.systemFont(weight: .semibold)`) at three sizes, so both
+            // collapsed them onto whichever size happened to be resolved first.
+            let sized = NSFont(descriptor: substitute.fontDescriptor, size: declared.pointSize) ?? substitute
+            substitutes[key] = sized
+            byFamily[fontKey(sized)] = sized
         }
         guard !substitutes.isEmpty else { return 0 }
 
@@ -421,7 +429,7 @@ enum FontSubstitutionResolver {
                                                 // opposite, a positive statement that the theme font
                                                 // draws this script, and it must break so the Latin
                                                 // keeps the face the theme chose for it.
-                                                family: { substitutes[SlotKey(font: key, script: $0)]?.fontName ?? font.fontName }) {
+                                                family: { substitutes[SlotKey(font: key, script: $0)].map(fontKey) ?? fontKey(font) }) {
                 let length = String(part.text).utf16.count
                 if let family = part.family, let substitute = byFamily[family] {
                     edits.append((NSRange(location: offset, length: length), substitute))
