@@ -30,3 +30,4 @@ docs
 /testdocs/
 /testdocs
 docs/.doc-sync-state.json
+__pycache__/

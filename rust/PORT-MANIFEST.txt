@@ -1,0 +1,47 @@
+# Swift engine layer in scope for the Rust transliteration (phase A).
+# Host-resident files are listed at the bottom, excluded with a reason.
+
+Render/Office/OfficeBlock.swift
+Render/RenderTheme.swift
+Render/MDAttr.swift
+Render/Office/DeclaredFontKind.swift
+Render/Office/OdfScriptType.swift
+
+Render/Office/ZipArchive.swift
+Render/Office/PagePagination.swift
+Render/Office/PageGrid.swift
+Render/Office/PageBandGeometry.swift
+Render/Office/ColumnGeometry.swift
+Render/Office/FootnoteBandSettle.swift
+
+Render/Office/FontSubstitutionResolver.swift
+Render/Office/WordFontSlots.swift
+Render/Office/HwpFontSlots.swift
+Render/Office/Script/UnicodeScript.swift
+Render/Office/Script/ScriptRanges.swift
+Render/Office/Script/ScriptRunSplitter.swift
+
+Render/Office/DocxReader.swift
+Render/Office/OdtReader.swift
+Render/Office/HwpReader.swift
+
+Render/Office/OfficeTextBuilder.swift
+Render/TableBlockBuilder.swift
+Render/GridTextTableBlock.swift
+
+Render/MarkdownRenderer.swift
+Render/PlainTextRenderer.swift
+Render/CodeHighlighter.swift
+Render/Office/OfficeMarkdownSerializer.swift
+
+# EXCLUDED — host-resident (AppKit drawing or a TextKit delegate). 1,892 lines.
+# Render/ holds 20,464 lines of Swift; 20,464 - 1,892 = 18,572 in scope here.
+#   Render/PageBandLayoutDelegate.swift   573  NSLayoutManager delegate
+#   Render/Office/PageBandPainter.swift   410  draws the running header/footer
+#   Render/CodeCardLayoutManager.swift    249  NSLayoutManager subclass
+#   Render/WebBlockRenderer.swift         178  WebKit
+#   Render/Office/HwpShapeRenderer.swift  133  NSBezierPath drawing
+#   Render/Office/MasterPagePainter.swift 131  draws the 바탕쪽
+#   Render/Office/FootnotePainter.swift   101  draws the footnote rule
+#   Render/SizedAttachmentCell.swift       77  NSTextAttachmentCell
+#   Render/WebBlock.swift                  40  WebKit vocabulary
