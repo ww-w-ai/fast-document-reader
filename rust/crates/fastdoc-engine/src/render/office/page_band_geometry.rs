@@ -1,6 +1,7 @@
 //! swift: Render/Office/PageBandGeometry.swift
 //! swift-range: 1-2
 
+use std::collections::HashMap;
 use swiftshim::{CGFloat, NSAttributedString, NSLayoutManager, NSSize, NSTextContainer, NSTextStorage};
 use crate::render::office::office_block::OfficeBlock;
 use crate::render::office::office_text_builder::OfficeTextBuilder;
@@ -135,7 +136,7 @@ impl PageBandGeometry {
         // invariant 57(e)'s invented constant returning). It is NOT printed: `PagePagination` takes
         // it back off, so the paper is exactly the document's own sheet.
         let band = Self::declared_band(page_margin_top, page_margin_bottom).max(h + f)
-            + desk_gap.unwrap_or(if separates_pages { RenderTheme::page_desk_gap() } else { 0.0 });
+            + desk_gap.unwrap_or(if separates_pages { RenderTheme::PAGE_DESK_GAP } else { 0.0 });
         Sides { header: h, footer: f, band }
     }
 
@@ -205,12 +206,29 @@ impl PageBandGeometry {
         if blocks.is_empty() || !(column_width.is_finite() && column_width > 0.0) {
             return 0.0;
         }
-        let attr = OfficeTextBuilder::build(blocks, theme, column_width, document_default_font_size, page_content_width);
+        let attr = OfficeTextBuilder::build(
+            blocks,
+            theme,
+            column_width,
+            document_default_font_size,
+            page_content_width,
+            None,
+            None,
+            None,
+            &[],
+            &std::collections::HashSet::new(),
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &HashMap::new(),
+        );
         if !(attr.length() > 0) || !Self::draws_something(blocks, &attr) {
             return 0.0;
         }
-        let storage = NSTextStorage::withAttributedString(&attr);
-        let layout = NSLayoutManager::new();
+        let mut storage = NSTextStorage::withAttributedString(&attr);
+        let mut layout = NSLayoutManager::new();
         layout.set_allows_non_contiguous_layout(false);
         storage.addLayoutManager(&layout);
         let container = NSTextContainer::new(NSSize::new(column_width, CGFloat::MAX));
@@ -218,7 +236,7 @@ impl PageBandGeometry {
         container.set_line_fragment_padding(0.0);
         layout.addTextContainer(&container);
         layout.ensure_layout(&container);
-        layout.used_rect(&container).height
+        layout.used_rect(&container).height()
     }
 
     /// Does this ONE entry have anything for the reader to put in a band — the question every gate
@@ -237,7 +255,24 @@ impl PageBandGeometry {
         if entry.blocks.is_empty() || !(column_width.is_finite() && column_width > 0.0) {
             return false;
         }
-        let built = OfficeTextBuilder::build(&entry.blocks, theme, column_width, document_default_font_size, page_content_width);
+        let built = OfficeTextBuilder::build(
+            &entry.blocks,
+            theme,
+            column_width,
+            document_default_font_size,
+            page_content_width,
+            None,
+            None,
+            None,
+            &[],
+            &std::collections::HashSet::new(),
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &HashMap::new(),
+        );
         Self::draws_something(&entry.blocks, &built)
     }
 
@@ -261,7 +296,7 @@ impl PageBandGeometry {
         }
         blocks.iter().any(|block| match block {
             OfficeBlock::Paragraph { format, .. } | OfficeBlock::Heading { format, .. } => {
-                format.shading.is_some() || !format.border_edges.is_empty()
+                format.shading.is_some() || format.border_edges.raw_value != 0
             }
             _ => true,
         })

@@ -69,6 +69,43 @@ impl NSColor {
         NSColor::srgb(0.0, 0.0, 0.0, 0.0)
     }
 
+    /// swift: NSColor.black — a literal color constant, alongside `.clear` above.
+    pub fn black() -> NSColor {
+        NSColor::srgb(0.0, 0.0, 0.0, 1.0)
+    }
+
+    /// swift: the reader's own `NSColor(rgb:alpha:)` extension (RenderTheme.swift:5) — packs a
+    /// 24-bit hex triplet (`0xRRGGBB`) the way every literal in `RenderTheme.swift`'s palette is
+    /// written, rather than three separate 0-1 components like `srgb` above.
+    pub fn rgb(hex: u32, alpha: CGFloat) -> NSColor {
+        let r = ((hex >> 16) & 0xFF) as CGFloat / 255.0;
+        let g = ((hex >> 8) & 0xFF) as CGFloat / 255.0;
+        let b = (hex & 0xFF) as CGFloat / 255.0;
+        NSColor::srgb(r, g, b, alpha)
+    }
+
+    /// swift: .getHue(_:saturation:_:brightness:_:alpha:_:) — reads this color back as HSBA.
+    /// Real conversion math (not deferred): it is pure arithmetic over the four components already
+    /// stored, the same reasoning `redComponent`/`usingColorSpaceDeviceRGB` above rest on.
+    pub fn get_hsba(&self) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
+        let (r, g, b, a) = (self.red, self.green, self.blue, self.alpha);
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let delta = max - min;
+        let brightness = max;
+        let saturation = if max == 0.0 { 0.0 } else { delta / max };
+        let hue = if delta == 0.0 {
+            0.0
+        } else if max == r {
+            60.0 * (((g - b) / delta).rem_euclid(6.0))
+        } else if max == g {
+            60.0 * ((b - r) / delta + 2.0)
+        } else {
+            60.0 * ((r - g) / delta + 4.0)
+        } / 360.0;
+        (hue, saturation, brightness, a)
+    }
+
     /// swift: .setFill() — makes this color the active fill color in the current graphics
     /// context. Needs a live context, so `todo!()`; kept as a real method (not folded into
     /// `NSBezierPath`/`CGRect`'s own drawing calls) because the reader always calls it as its
@@ -118,15 +155,35 @@ pub mod system_colors {
 /// swift: NSFont — call sites read `.pointSize`/`.fontName`/`.familyName`/`.fontDescriptor` and
 /// construct with `NSFont(name:size:)`, `NSFont(descriptor:size:)`, `.systemFont(ofSize:)`,
 /// `.systemFont(ofSize:weight:)`, `.monospacedSystemFont(ofSize:weight:)`.
+///
+/// Fields are private with accessor methods of the same Swift-property names (`pointSize()`,
+/// `fontName()`, `fontDescriptor()`) rather than public fields — matching how every other
+/// Swift-property read in this crate is mirrored (`NSColor.redComponent()`,
+/// `NSFontDescriptor.symbolicTraits()` below), and how the in-scope call sites
+/// (FontSubstitutionResolver.swift, OfficeTextBuilder.swift) actually call them: as messages,
+/// not field reads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NSFont {
-    pub fontName: String,
-    pub familyName: Option<String>,
-    pub pointSize: CGFloat,
-    pub fontDescriptor: NSFontDescriptor,
+    fontName: String,
+    familyName: Option<String>,
+    pointSize: CGFloat,
+    fontDescriptor: NSFontDescriptor,
 }
 
 impl NSFont {
+    pub fn fontName(&self) -> String {
+        self.fontName.clone()
+    }
+    pub fn familyName(&self) -> Option<String> {
+        self.familyName.clone()
+    }
+    pub fn pointSize(&self) -> CGFloat {
+        self.pointSize
+    }
+    pub fn fontDescriptor(&self) -> NSFontDescriptor {
+        self.fontDescriptor.clone()
+    }
+
     pub fn named(_name: &str, _size: CGFloat) -> Option<Self> {
         todo!("swift: NSFont(name:size:) — phase B (needs CoreText)")
     }
@@ -178,10 +235,17 @@ impl NSFontWeight {
 /// (`NSFontDescriptor.FeatureKey`) for small caps.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NSFontDescriptor {
-    pub symbolicTraits: NSFontDescriptorSymbolicTraits,
+    symbolicTraits: NSFontDescriptorSymbolicTraits,
 }
 
 impl NSFontDescriptor {
+    /// swift: .symbolicTraits — a method rather than a public field (see `NSFont`'s own fields
+    /// above for why); `withSymbolicTraits` below is the copy-and-replace Apple actually exposes,
+    /// this crate has no in-scope caller left that needs to mutate one in place.
+    pub fn symbolicTraits(&self) -> NSFontDescriptorSymbolicTraits {
+        self.symbolicTraits
+    }
+
     pub fn addingAttributes(&self, _attributes: Vec<(NSFontFeatureKey, i64)>) -> Self {
         todo!("swift: NSFontDescriptor.addingAttributes(_:) — phase B")
     }
@@ -189,6 +253,13 @@ impl NSFontDescriptor {
         Self {
             symbolicTraits: traits,
         }
+    }
+
+    /// swift: .postscriptName — needs the real installed font's metadata (CoreText), which this
+    /// shim has no backend for yet; matches the `size_with_attributes`/`draw_string_at` precedent
+    /// in `drawing_misc.rs` for "font metrics — see CROSS-PLATFORM.md §6".
+    pub fn postscriptName(&self) -> Option<String> {
+        todo!("swift: NSFontDescriptor.postscriptName — phase B (needs CoreText, see CROSS-PLATFORM.md §6)")
     }
 }
 
@@ -239,7 +310,7 @@ pub enum NSFontFeatureKey {
 
 /// swift: NSImage — call sites construct with `NSImage(data:)` and `NSImage(size:)` /
 /// `NSImage(size:flipped:drawingHandler:)`, and read `.size`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NSImage {
     pub size: crate::geometry::CGSize,
 }
@@ -250,6 +321,25 @@ impl NSImage {
     }
     pub fn withSize(size: crate::geometry::CGSize) -> Self {
         Self { size }
+    }
+
+    /// swift: `NSImage(size:flipped:drawingHandler:)` — the drawing handler is called by AppKit
+    /// with a live graphics context and a `CGRect` to draw into, returning whether it drew;
+    /// needs that live context, so `todo!()` like every other drawing call in this crate.
+    pub fn with_drawing(
+        size: crate::geometry::CGSize,
+        _flipped: bool,
+        _drawing_handler: impl FnMut(crate::geometry::CGRect) -> bool,
+    ) -> Self {
+        let _ = size;
+        todo!("swift: NSImage(size:flipped:drawingHandler:) — phase B (needs a live graphics context)")
+    }
+
+    /// swift: `.draw(in:from:operation:fraction:respectFlipped:hints:)` — the 3-argument
+    /// convenience shape (`rect`, source point, `.sourceOver` implied by a bare `bool`) the
+    /// in-scope table-drawing call sites use in place of the full 6-argument `draw` below.
+    pub fn draw_in(&self, _rect: crate::geometry::CGRect, _from: crate::geometry::CGPoint, _source_over: bool) {
+        todo!("swift: NSImage.draw(in:from:operation:fraction:respectFlipped:hints:) — phase B")
     }
 }
 

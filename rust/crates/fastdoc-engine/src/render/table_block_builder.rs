@@ -29,8 +29,7 @@ use std::collections::{HashMap, HashSet};
 
 use swiftshim::{
     CGFloat, NSAttributedString, NSAttributedStringKey, NSColor, NSImage, NSLayoutManager,
-    NSMutableAttributedString, NSMutableParagraphStyle, NSParagraphStyle, NSRange, NSRectEdge,
-    NSTextStorage, NSTextTable, NSTextTableBlock,
+    NSMutableAttributedString, NSRange, NSRectEdge, NSTextStorage, NSTextTable, NSTextTableBlock,
 };
 
 use crate::render::grid_text_table_block::GridTextTableBlock;
@@ -127,9 +126,21 @@ impl GridTextTable {
         char_range: NSRange,
         layout_manager: &NSLayoutManager,
     ) {
-        self.base.drawBackground(frame_rect, control_view, char_range, layout_manager);
+        // BLOCKED ON SHIM: `NSTextTable.drawBackground(forBlock:rect:in:characterRange:
+        // layoutManager:)` — the TABLE-level override `super.drawBackground(...)` calls here —
+        // has no member in swiftshim's `text_table.rs` (only `NSTextTableBlock.drawBackground`
+        // exists there, a different AppKit method with a different signature). Reported to
+        // b-shim; phase B (needs a live graphics context, same as every other drawing call).
+        let _ = (&self.base, frame_rect, control_view, char_range, layout_manager);
         if let Some(image) = &self.background_image {
-            image.draw_in(frame_rect, swiftshim::NSPoint::zero(), /* .source_over */ true);
+            image.draw(
+                frame_rect,
+                swiftshim::CGRect::fromOriginSize(swiftshim::CGPoint::zero(), image.size),
+                swiftshim::NSCompositingOperation::SourceOver,
+                1.0,
+                true,
+                None,
+            );
         }
     }
 
@@ -490,7 +501,7 @@ impl TableBlockBuilder {
             column_percentages.iter().map(|p| p / 100.0).collect()
         };
         let mut table = GridTextTable::default();
-        table.base.numberOfColumns = ncol;
+        table.base.numberOfColumns = ncol as i32;
         table.column_proportions = proportions;
         // Job 2: a PAGED table with a known authored width never grows past it, even on a LATER
         // reflow that asks `edges(forWidth:)` for the full column — see `GridTextTable.maxWidth`'s
@@ -605,7 +616,7 @@ impl TableBlockBuilder {
                 .and_then(|c| c.border_width)
                 .or(table_border_width)
                 .or_else(|| cell.and_then(|c| c.style_border_width))
-                .unwrap_or(RenderTheme::table_border_width());
+                .unwrap_or(RenderTheme::TABLE_BORDER_WIDTH);
             let background: Option<NSColor> = if let Some(bg) = cell.and_then(|c| c.background_color) {
                 Some(bg)
             } else if let Some(ts) = table_shading {
@@ -930,11 +941,11 @@ impl TableBlockBuilder {
             // paint itself in pieces, with no rule at the cut (see that class).
             let block = GridTextTableBlock {
                 base: NSTextTableBlock::new(
-                    &table.base,
-                    placement.row,
-                    placement.row_span,
-                    placement.col,
-                    placement.col_span,
+                    table.base.clone(),
+                    placement.row as i32,
+                    placement.row_span as i32,
+                    placement.col as i32,
+                    placement.col_span as i32,
                 ),
                 edge_styles: HashMap::new(),
                 declared_widths: HashMap::new(),
@@ -962,7 +973,7 @@ impl TableBlockBuilder {
                 .filter_map(|(e, s)| s.filter(|s| s.width > 0.0).map(|s| (e, s)))
                 .collect();
             if !nonzero.is_empty() {
-                block.base.setBorderColor(me.border_color);
+                block.base.setBorderColor(me.border_color.unwrap_or_else(swiftshim::NSColor::clear));
                 for (edge, side) in &nonzero {
                     block.base.set_width_border(Self::laid_out_border_width(side.width), *edge);
                     if let Some(c) = side.color {
@@ -1032,7 +1043,10 @@ impl TableBlockBuilder {
                 eff_right = effective_padding;
                 block.base.set_padding_all(effective_padding);
             }
-            block.base.setContentWidth((1.0 as CGFloat).max(cell_width - eff_left - eff_right - left_width - right_width));
+            block.base.setContentWidth(
+                (1.0 as CGFloat).max(cell_width - eff_left - eff_right - left_width - right_width),
+                swiftshim::NSTextBlockValueType::AbsoluteValueType,
+            );
             // The table's own OUTER margin, HORIZONTAL half only: reserved ENTIRELY by
             // `edges(forWidth:)` narrowing the grid — never a SECOND `.margin` box on the left/right
             // perimeter cells. That second box was tried and measured wrong: AppKit charges a

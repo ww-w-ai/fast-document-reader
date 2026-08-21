@@ -6,13 +6,14 @@ use crate::render::office::office_block::{
     OfficeBlock, Span, Cell, EdgeBorders, BorderSide, BorderDecl, BorderLineStyle, EdgePadding,
     CellVAlign, TabStop, TabAlignment, TabLeader, ParagraphFormat, LineHeight, UnderlineStyle,
     OfficeReadResult, OfficeHeaderFooter, HeaderFooterApplicability, OfficeComment, PageNumberField,
+    TableFormat,
 };
 use crate::render::office::zip_archive::ZipArchive;
 use crate::render::office::odf_script_type::OdfScriptType;
 // swift: Render/Office/OdtReader.swift — cross-file dependency, out of the phase-A manifest
 // (rust/PORT-MANIFEST.txt has no entry for Script/ScriptRunSplitter.swift). Referenced by name;
 // see `appendMerging`'s `todo!()` below and this file's `notes` in the worker's return.
-use crate::render::office::script::script_run_splitter::ScriptRunSplitter;
+use crate::render::office::script::script_run_splitter::{ScriptRunSplitter, Piece};
 
 /// `.odt` bytes → `[OfficeBlock]`. An ODT is a ZIP holding `content.xml` (the body, required) and
 /// optionally `styles.xml` — this reader consults BOTH for `text:list-style` (bullet vs number per
@@ -394,7 +395,7 @@ impl OdtReader {
             ) {
                 let Some(node) = XMLNode::child(master_page, tag) else { return };
                 let blocks = OdtReader::parse_body(&node, styles, archive, &NoteCollector::new(), 0);
-                list.push(OfficeHeaderFooter { applies_to, blocks });
+                list.push(OfficeHeaderFooter { applies_to, blocks, section: None });
             }
             append(master_page, "style:header", HeaderFooterApplicability::DefaultPages, &mut headers, styles, archive);
             append(master_page, "style:header-first", HeaderFooterApplicability::FirstPage, &mut headers, styles, archive);
@@ -501,7 +502,7 @@ impl OdtReader {
             // guards against a malformed file recursing forever — it is discarded, never merged
             // back into the outer one.
             let mut blocks = Self::parse_body(&entry.1, styles, archive, &NoteCollector::new(), 0);
-            let marker = Span { text: entry.0.clone(), superscript: true, ..Default::default() };
+            let marker = Span { text: entry.0.clone().into(), superscript: true, ..Default::default() };
             if let Some(first) = blocks.first().cloned() {
                 if let Some(marked_first) = Self::prepending_marker(marker.clone(), &first) {
                     blocks[0] = marked_first;
@@ -509,10 +510,10 @@ impl OdtReader {
                     // Empty note body, or one that opens with a table/image — neither has a `[Span]` to
                     // splice into, so the marker becomes its own small leading paragraph instead of
                     // being silently dropped.
-                    blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], ..Default::default() });
+                    blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
                 }
             } else {
-                blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], ..Default::default() });
+                blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
             }
             blocks
         }).collect()
@@ -530,7 +531,7 @@ impl OdtReader {
     /// and matches what docx already shows.
     // swift: Render/Office/OdtReader.swift:424
     fn note_marker_separator() -> Span {
-        Span { text: "\t".to_string(), ..Default::default() }
+        Span { text: "\t".to_string().into(), ..Default::default() }
     }
 
     /// `nil` for `.table`/`.image` — there is no `[Span]` inside either to prepend into.
@@ -553,13 +554,13 @@ impl OdtReader {
                     tab_stops: tab_stops.clone(), format: format.clone(),
                 })
             }
-            OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, .. } => {
+            OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, numbering } => {
                 let mut new_spans = vec![marker, Self::note_marker_separator()];
                 new_spans.extend(spans.clone());
                 Some(OfficeBlock::ListItem {
                     level: *level, ordered: *ordered, spans: new_spans, marker: item_marker.clone(),
                     rtl: rtl.clone(), alignment: alignment.clone(), tab_stops: tab_stops.clone(),
-                    format: format.clone(), diagonal: Default::default(),
+                    format: format.clone(), numbering: numbering.clone(),
                 })
             }
             OfficeBlock::Table { .. } | OfficeBlock::Image { .. } | OfficeBlock::UnsupportedGraphic { .. }
@@ -1217,7 +1218,7 @@ impl OdtReader {
             if !have.shading { if let Some(v) = decl.shading.clone() { result.format.shading = Some(v); have.shading = true; } }
             if !have.border_color { if let Some(v) = decl.border_color.clone() { result.format.border_color = Some(v); have.border_color = true; } }
             if !have.border_width { if let Some(v) = decl.border_width { result.format.border_width = Some(v); have.border_width = true; } }
-            if !have.contextual_spacing { if let Some(v) = decl.contextual_spacing { result.format.contextual_spacing = Some(v); have.contextual_spacing = true; } }
+            if !have.contextual_spacing { if let Some(v) = decl.contextual_spacing { result.format.contextual_spacing = v; have.contextual_spacing = true; } }
             current_name = decl.parent.clone();
         }
         result.alignment = Self::resolve_alignment(alignment_raw.as_deref(), result.rtl);
@@ -1511,7 +1512,7 @@ impl OdtReader {
                     blocks.extend(Self::paragraph_like_blocks(
                         &child,
                         Box::new(move |spans| OfficeBlock::Heading {
-                            level, spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
+                            level: level as i64, spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
                             tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(),
                         }),
                         styles, archive, notes,
@@ -1529,7 +1530,7 @@ impl OdtReader {
                         blocks.extend(Self::paragraph_like_blocks(
                             &child,
                             Box::new(move |spans| OfficeBlock::Heading {
-                                level, spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
+                                level: level as i64, spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
                                 tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(),
                             }),
                             styles, archive, notes,
@@ -1590,9 +1591,9 @@ impl OdtReader {
                         blocks.extend(Self::paragraph_like_blocks(
                             &item,
                             Box::new(move |spans| OfficeBlock::ListItem {
-                                level, ordered, spans, marker: None, rtl: resolved.rtl,
+                                level: level as i64, ordered, spans, marker: None, rtl: resolved.rtl,
                                 alignment: resolved.alignment.clone(), tab_stops: resolved.tab_stops.clone(),
-                                format: resolved.format.clone(), diagonal: Default::default(),
+                                format: resolved.format.clone(), numbering: None,
                             }),
                             styles, archive, notes,
                         ));
@@ -1728,9 +1729,9 @@ impl OdtReader {
                         blocks.extend(Self::paragraph_like_blocks(
                             &child,
                             Box::new(move |spans| OfficeBlock::ListItem {
-                                level, ordered, spans, marker: None, rtl: resolved.rtl,
+                                level: level as i64, ordered, spans, marker: None, rtl: resolved.rtl,
                                 alignment: resolved.alignment.clone(), tab_stops: resolved.tab_stops.clone(),
-                                format: resolved.format.clone(), diagonal: Default::default(),
+                                format: resolved.format.clone(), numbering: None,
                             }),
                             styles, archive, notes,
                         ));
@@ -1776,8 +1777,9 @@ impl OdtReader {
             }
         }
         OfficeBlock::Table {
-            rows, header_rows,
+            rows, header_rows: header_rows as i64,
             column_widths: Self::resolved_grid_column_widths(table, &styles.table_column_styles),
+            format: TableFormat::default(),
         }
     }
 
@@ -1900,7 +1902,7 @@ impl OdtReader {
                         let column_default = column_default_cell_styles.get(column_index).cloned().flatten();
                         let cell_style = own_style.clone().or_else(|| row_default_style.clone()).or_else(|| column_default.clone());
                         let mut cell = Cell {
-                            blocks: blocks.clone(), row_span, col_span,
+                            blocks: blocks.clone(), row_span: row_span as i64, col_span: col_span as i64,
                             background_color: cell_style.as_ref().and_then(|s| s.background_color.clone()),
                             border_color: cell_style.as_ref().and_then(|s| s.border_color.clone()),
                             border_width: cell_style.as_ref().and_then(|s| s.border_width),
@@ -1988,7 +1990,7 @@ impl OdtReader {
                     blocks.extend(Self::paragraph_like_blocks(
                         &child,
                         Box::new(move |spans| OfficeBlock::Heading {
-                            level, spans, rtl: resolved.rtl, alignment: resolved.alignment.clone(),
+                            level: level as i64, spans, rtl: resolved.rtl, alignment: resolved.alignment.clone(),
                             tab_stops: resolved.tab_stops.clone(), format: resolved.format.clone(),
                         }),
                         styles, archive, notes,
@@ -2003,7 +2005,7 @@ impl OdtReader {
                         blocks.extend(Self::paragraph_like_blocks(
                             &child,
                             Box::new(move |spans| OfficeBlock::Heading {
-                                level, spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
+                                level: level as i64, spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
                                 tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(),
                             }),
                             styles, archive, notes,
@@ -2026,7 +2028,7 @@ impl OdtReader {
                 "table:table" => {
                     let spans = Self::flatten_nested_table(&child, &styles.text_styles, notes);
                     if !spans.is_empty() {
-                        blocks.push(OfficeBlock::Paragraph { spans, ..Default::default() });
+                        blocks.push(OfficeBlock::Paragraph { spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
                     }
                 }
                 _ => continue,
@@ -2078,11 +2080,11 @@ impl OdtReader {
             for cell in XMLNode::children(&row).into_iter().filter(|c| XMLNode::name(c) == "table:table-cell") {
                 let cell_spans = Self::collect_cell_spans(&cell, text_styles, notes);
                 if cell_spans.is_empty() { continue; }
-                if row_has_content { spans.push(Span { text: "\t".to_string(), ..Default::default() }); }
+                if row_has_content { spans.push(Span { text: "\t".to_string().into(), ..Default::default() }); }
                 spans.extend(cell_spans);
                 row_has_content = true;
             }
-            if row_has_content { spans.push(Span { text: "\n".to_string(), ..Default::default() }); }
+            if row_has_content { spans.push(Span { text: "\n".to_string().into(), ..Default::default() }); }
         }
         spans
     }
@@ -2123,7 +2125,7 @@ impl OdtReader {
                 height.unwrap_or(Self::unresolved_frame_size().height),
             );
             let href = XMLNode::attributes(&image).get("xlink:href").cloned();
-            Some(OfficeBlock::Image { id: Self::resolve_image_id(href.as_deref(), archive), size, ..Default::default() })
+            Some(OfficeBlock::Image { id: Self::resolve_image_id(href.as_deref(), archive).into(), size, alignment: None })
         }).collect()
     }
 
@@ -2162,12 +2164,12 @@ impl OdtReader {
                         let level = raw_level.max(1).min(6);
                         let spans = Self::collect_spans(&child, &TextStyle::default(), text_styles, notes);
                         if spans.is_empty() { continue; }
-                        blocks.push(OfficeBlock::Heading { level, spans, ..Default::default() });
+                        blocks.push(OfficeBlock::Heading { level: level as i64, spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
                     }
                     "text:p" => {
                         let spans = Self::collect_spans(&child, &TextStyle::default(), text_styles, notes);
                         if spans.is_empty() { continue; }
-                        blocks.push(OfficeBlock::Paragraph { spans, ..Default::default() });
+                        blocks.push(OfficeBlock::Paragraph { spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
                     }
                     _ => continue,
                 }
@@ -2276,7 +2278,7 @@ impl OdtReader {
         }
         let attrs = XMLNode::attributes(props);
         let all = attrs.get("fo:border").and_then(|s| decl(s));
-        let mut out = EdgeBorders { top: all.clone(), left: all.clone(), bottom: all.clone(), right: all };
+        let mut out = EdgeBorders { top: all.clone(), left: all.clone(), bottom: all.clone(), right: all, inside_h: None, inside_v: None };
         if let Some(raw) = attrs.get("fo:border-top") { out.top = decl(raw); }
         if let Some(raw) = attrs.get("fo:border-bottom") { out.bottom = decl(raw); }
         if let Some(raw) = attrs.get("fo:border-left") { out.left = decl(raw); }
@@ -2354,12 +2356,13 @@ impl OdtReader {
             *pending_page_number_field.borrow_mut() = None;
             if !bookmarks.is_empty() || !comment_ids.is_empty() || field.is_some() {
                 spans.borrow_mut().push(Span {
-                    text: text.to_string(), bold: style.bold, italic: style.italic, underline: style.underline,
+                    text: text.to_string().into(), bold: style.bold, italic: style.italic, underline: style.underline,
                     underline_style: style.underline_style, caps: style.caps, small_caps: style.small_caps,
-                    link: link.map(String::from), strikethrough: style.strikethrough, superscript: style.superscript,
-                    subscripted: style.subscripted, bookmarks, comment_ids, text_color: style.text_color.clone(),
+                    link: link.map(|s| s.to_string().into()), strikethrough: style.strikethrough, superscript: style.superscript,
+                    subscripted: style.subscripted, bookmarks: bookmarks.into_iter().map(Into::into).collect(),
+                    comment_ids: comment_ids.into_iter().map(Into::into).collect(), text_color: style.text_color.clone(),
                     highlight_color: style.highlight_color.clone(), font_size: style.font_size,
-                    font_name: family.map(String::from), page_number_field: field,
+                    font_name: family.map(|s| s.to_string().into()), page_number_field: field,
                     ..Default::default()
                 });
                 return;
@@ -2401,12 +2404,12 @@ impl OdtReader {
                 spans_mut[idx].text.push_str(text);
             } else {
                 spans_mut.push(Span {
-                    text: text.to_string(), bold: style.bold, italic: style.italic, underline: style.underline,
+                    text: text.to_string().into(), bold: style.bold, italic: style.italic, underline: style.underline,
                     underline_style: style.underline_style, caps: style.caps, small_caps: style.small_caps,
-                    link: link.map(String::from), strikethrough: style.strikethrough, superscript: style.superscript,
+                    link: link.map(|s| s.to_string().into()), strikethrough: style.strikethrough, superscript: style.superscript,
                     subscripted: style.subscripted, text_color: style.text_color.clone(),
                     highlight_color: style.highlight_color.clone(), font_size: style.font_size,
-                    font_name: family.map(String::from),
+                    font_name: family.map(|s| s.to_string().into()),
                     ..Default::default()
                 });
             }
@@ -2437,8 +2440,8 @@ impl OdtReader {
             }
             // swift: Render/Office/OdtReader.swift:2035-2036 — cross-file dependency, out of the
             // phase-A manifest (see this file's `notes` in the worker's return).
-            let pieces: Vec<ScriptRunPiece> = ScriptRunSplitter::split(
-                text, |scalar| crate::render::office::odf_script_type::OdfScriptTable::slot_for(scalar), |t| style.fonts.family(t),
+            let pieces: Vec<Piece> = ScriptRunSplitter::split(
+                text, |scalar| crate::render::office::odf_script_type::OdfScriptTable::slot(scalar), |t| style.fonts.family(t),
             );
             // A run in which NOTHING classified — a tab, a stretch of spaces, a line of en dashes,
             // all of them table 22 gaps — states no script type at all, and the splitter rightly
@@ -2455,14 +2458,14 @@ impl OdtReader {
             if pieces.len() == 1 && pieces[0].family.is_none() {
                 let neighbour = spans.borrow().last().and_then(|s| s.font_name.clone());
                 if let Some(neighbour) = neighbour {
-                    if !text.chars().any(|c| crate::render::office::odf_script_type::OdfScriptTable::slot_for(c).is_some()) {
-                        append_piece(text, style, Some(&neighbour), link, spans, pending_bookmarks, pending_page_number_field, notes);
+                    if !text.chars().any(|c| crate::render::office::odf_script_type::OdfScriptTable::slot(c).is_some()) {
+                        append_piece(text, style, Some(neighbour.as_str()), link, spans, pending_bookmarks, pending_page_number_field, notes);
                         return;
                     }
                 }
             }
             for piece in pieces {
-                append_piece(&piece.text, style, piece.family.as_deref(), link, spans, pending_bookmarks, pending_page_number_field, notes);
+                append_piece(piece.text, style, piece.family.as_deref(), link, spans, pending_bookmarks, pending_page_number_field, notes);
             }
         }
 
@@ -2610,7 +2613,10 @@ impl OdtReader {
                         let name = attrs.get("office:name").cloned();
                         let number = *notes.comment_number_counter.borrow();
                         let id = name.clone().unwrap_or_else(|| format!("odt-comment-{}", number));
-                        let comment = OfficeComment { id, author, date_iso, text, number };
+                        let comment = OfficeComment {
+                            id: id.into(), author: author.map(Into::into), date_iso: date_iso.map(Into::into),
+                            text: text.into(), number: number as i64,
+                        };
                         *notes.comment_number_counter.borrow_mut() += 1;
                         notes.comments.borrow_mut().push(comment);
                         if let Some(name) = name { notes.active_comment_ids.borrow_mut().push(name); }
@@ -2632,7 +2638,8 @@ impl OdtReader {
             }
         }
         walk(node, style, None, &spans, &pending_bookmarks, &pending_page_number_field, text_styles, notes);
-        spans.borrow().clone()
+        let result = spans.borrow().clone();
+        result
     }
 
     // MARK: Generic XML tree — text threaded in as ordered `"#text"` pseudo-children
@@ -2642,7 +2649,7 @@ impl OdtReader {
         let delegate = XMLTreeBuilder::new();
         // swift: Render/Office/OdtReader.swift:2200-2202 — `XMLParser`/`XMLParserDelegate` are
         // Foundation, not yet in swiftshim (shim addition: `swiftshim::XMLParser`).
-        let root = todo!("swift:2199-2206 XMLParser(data:).parse() driving XMLTreeBuilder's delegate callbacks");
+        let root: Option<Ref<XMLNode>> = todo!("swift:2199-2206 XMLParser(data:).parse() driving XMLTreeBuilder's delegate callbacks");
         #[allow(unreachable_code)]
         {
             let _ = delegate;
@@ -2700,14 +2707,6 @@ impl NoteCollector {
     }
 }
 
-/// Swift: `ScriptRunSplitter.split`'s per-piece return element (`(text: Substring, family:
-/// String?)`), named here since the splitter itself lives outside the phase-A manifest
-/// (`Script/ScriptRunSplitter.swift` — see this file's cross-file-dependency note at the top).
-// swift: Render/Office/Script/ScriptRunSplitter.swift (out of manifest scope)
-struct ScriptRunPiece {
-    text: String,
-    family: Option<String>,
-}
 
 // MARK: Generic XML tree — text threaded in as ordered `"#text"` pseudo-children
 

@@ -19,7 +19,7 @@
 //! the distinction, derive the membership from a real property rather than extending a hand list.
 
 // swift: Render/Office/Script/UnicodeScript.swift:17-29
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ScriptClass {
     Latin = 0,

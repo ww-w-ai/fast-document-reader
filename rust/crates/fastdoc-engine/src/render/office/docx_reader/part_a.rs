@@ -16,7 +16,7 @@
 //! ported by other workers when this file was written. Referenced by their Swift names.
 
 // swift: Render/Office/DocxReader.swift:1-3
-use swiftshim::{CGFloat, Data, NSColor, NSTextAlignment};
+use swiftshim::{CGFloat, NSColor, NSTextAlignment};
 
 use crate::render::office::zip_archive::ZipArchive;
 // OfficeBlock.swift's vocabulary — not yet known to exist as a module member list, referenced by
@@ -95,9 +95,10 @@ impl DocxReader {
             return Err(DocxReaderReadError::MissingDocumentXML);
         }
         let document_root = Self::build_tree(
-            archive
+            &archive
                 .data_for("word/document.xml")
-                .map_err(|_| DocxReaderReadError::MalformedXML("word/document.xml".to_string()))?,
+                .map_err(|_| DocxReaderReadError::MalformedXML("word/document.xml".to_string()))?
+                .0,
         )
         .map_err(|_| DocxReaderReadError::MalformedXML("word/document.xml".to_string()))?;
         let theme_colors = Self::parse_theme_colors(archive);
@@ -162,6 +163,7 @@ impl DocxReader {
             headers,
             footers,
             line_grid_pitch: Self::line_grid_pitch(&body),
+            ..Default::default()
         })
     }
 
@@ -204,8 +206,8 @@ impl DocxReader {
     ///
     /// A single-section document — the overwhelming majority — has exactly one candidate, so this
     /// returns precisely what `children.last` returned before it existed.
-    fn typeset_section_properties(body: &XMLNode) -> Option<XMLNode> {
-        let mut sections: Vec<(XMLNode, i32)> = Vec::new();
+    fn typeset_section_properties(body: &XMLNode) -> Option<&XMLNode> {
+        let mut sections: Vec<(&XMLNode, i32)> = Vec::new();
         let mut paragraphs = 0;
         for child in body.children.iter() {
             match child.name.as_str() {
@@ -221,7 +223,7 @@ impl DocxReader {
                     paragraphs += 1;
                 }
                 "w:sectPr" => {
-                    sections.push((child.clone(), paragraphs));
+                    sections.push((child, paragraphs));
                     paragraphs = 0;
                 }
                 _ => continue,
@@ -232,10 +234,10 @@ impl DocxReader {
         }
         // `max(by:)` returns the LAST maximum, which would silently prefer the later section on a
         // tie — the same trap invariant 73 names for HWP's `max_by_key`.
-        let mut best = sections[0].clone();
+        let mut best = sections[0];
         for section in sections.iter().skip(1) {
             if section.1 > best.1 {
-                best = section.clone();
+                best = *section;
             }
         }
         Some(best.0)
@@ -357,7 +359,7 @@ impl DocxReader {
             return 10.0;
         }
         let Ok(data) = archive.data_for("word/styles.xml") else { return 10.0 };
-        let Ok(root) = Self::build_tree(data) else { return 10.0 };
+        let Ok(root) = Self::build_tree(&data.0) else { return 10.0 };
         let Some(sz_val) = root
             .child("w:docDefaults")
             .and_then(|n| n.child("w:rPrDefault"))
@@ -401,21 +403,21 @@ struct PageGeometry {
 /// `numberCommentReferences`), from first-appearance order of `w:commentRangeStart` in the body.
 // swift: Render/Office/DocxReader.swift:262-268
 pub struct CommentRangeTracking {
-    number_by_id: std::collections::HashMap<String, i32>,
-    active_ids: std::cell::RefCell<Vec<String>>,
+    pub(crate) number_by_id: std::collections::HashMap<String, i32>,
+    pub(crate) active_ids: std::cell::RefCell<Vec<String>>,
 }
 
 impl CommentRangeTracking {
-    fn new(number_by_id: std::collections::HashMap<String, i32>) -> Self {
+    pub(crate) fn new(number_by_id: std::collections::HashMap<String, i32>) -> Self {
         CommentRangeTracking { number_by_id, active_ids: std::cell::RefCell::new(Vec::new()) }
     }
-    fn start(&self, id: String) {
+    pub(crate) fn start(&self, id: String) {
         self.active_ids.borrow_mut().push(id);
     }
-    fn end(&self, id: &str) {
+    pub(crate) fn end(&self, id: &str) {
         self.active_ids.borrow_mut().retain(|x| x != id);
     }
-    fn active_ids_snapshot(&self) -> Vec<String> {
+    pub(crate) fn active_ids_snapshot(&self) -> Vec<String> {
         self.active_ids.borrow().clone()
     }
 }
@@ -464,7 +466,7 @@ impl DocxReader {
             return vec![];
         }
         let Ok(data) = archive.data_for("word/comments.xml") else { return vec![] };
-        let Ok(root) = Self::build_tree(data) else { return vec![] };
+        let Ok(root) = Self::build_tree(&data.0) else { return vec![] };
         let mut result: Vec<OfficeComment> = Vec::new();
         let mut next_trailing_number = number_by_id.values().copied().max().unwrap_or(0) + 1;
         for node in root.children.iter().filter(|n| n.name == "w:comment") {
@@ -485,7 +487,13 @@ impl DocxReader {
                 next_trailing_number += 1;
                 n
             };
-            result.push(OfficeComment { id, author, date_iso, text, number });
+            result.push(OfficeComment {
+                id: id.into(),
+                author: author.map(Into::into),
+                date_iso: date_iso.map(Into::into),
+                text: text.into(),
+                number: number as i64,
+            });
         }
         result.sort_by_key(|c| c.number);
         result
@@ -535,7 +543,7 @@ impl DocxReader {
             return std::collections::HashMap::new();
         }
         let Ok(data) = archive.data_for(part) else { return std::collections::HashMap::new() };
-        let Ok(root) = Self::build_tree(data) else { return std::collections::HashMap::new() };
+        let Ok(root) = Self::build_tree(&data.0) else { return std::collections::HashMap::new() };
         let mut map: std::collections::HashMap<String, XMLNode> = std::collections::HashMap::new();
         for note in root.children.iter().filter(|n| n.name == note_element_name) {
             let Some(id) = note.attributes.get("w:id").cloned() else { continue };
@@ -563,8 +571,8 @@ enum NoteKind {
 // swift: Render/Office/DocxReader.swift:377-380
 #[derive(Debug, Clone, Default)]
 pub struct NoteNumbering {
-    footnote: std::collections::HashMap<String, i32>,
-    endnote: std::collections::HashMap<String, i32>,
+    pub(crate) footnote: std::collections::HashMap<String, i32>,
+    pub(crate) endnote: std::collections::HashMap<String, i32>,
 }
 
 impl DocxReader {
@@ -656,7 +664,7 @@ impl DocxReader {
                 // Never fabricated — this is the SAME marker text emitted at the citation point
                 // (`collectSpans`'s `w:footnoteReference`/`w:endnoteReference` case), so a reader can
                 // visually match a note back to where it was cited.
-                let marker = Span::superscript_text(format!("{}", number));
+                let marker = Span { text: format!("{}", number).into(), superscript: true, ..Default::default() };
                 if let Some(first) = blocks.first().cloned() {
                     if let Some(marked_first) = Self::prepending_marker(marker.clone(), first) {
                         blocks[0] = marked_first;
@@ -664,10 +672,10 @@ impl DocxReader {
                         // Empty note body, or one that opens with a table/image — neither has anywhere to
                         // splice a span into, so the marker becomes its own small leading paragraph instead
                         // of being silently dropped.
-                        blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], ..Default::default() });
+                        blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
                     }
                 } else {
-                    blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], ..Default::default() });
+                    blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
                 }
                 blocks
             })
@@ -689,12 +697,12 @@ impl DocxReader {
                 new_spans.extend(spans);
                 Some(OfficeBlock::Heading { level, spans: new_spans, rtl, alignment, tab_stops, format })
             }
-            OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, .. } => {
+            OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, numbering } => {
                 let mut new_spans = vec![marker];
                 new_spans.extend(spans);
                 Some(OfficeBlock::ListItem {
                     level, ordered, spans: new_spans, marker: item_marker, rtl, alignment, tab_stops,
-                    format, ..Default::default()
+                    format, numbering,
                 })
             }
             OfficeBlock::Table { .. }
@@ -822,13 +830,13 @@ pub struct StyleInfo {
     /// this struct's OWN `runProps` were already resolved against it. Empty when
     /// `word/theme/theme1.xml` is absent or malformed — every theme-colour lookup then simply
     /// misses, degrading to "no colour" (`resolvedColorElement`), never a crash.
-    theme_colors: std::collections::HashMap<String, NSColor>,
+    pub(crate) theme_colors: std::collections::HashMap<String, NSColor>,
     /// The document's theme FONT scheme (`word/theme/theme1.xml`'s `a:fontScheme`), carried here
     /// for the same reason `themeColors` is — every `w:asciiTheme`/`w:eastAsiaTheme` lookup, at
     /// any level of the cascade, needs it and every call site already holds a `StyleInfo`. Empty
     /// when the theme part is absent or malformed, which makes every theme reference resolve to
     /// `nil`, i.e. the reader's own body font — the same answer as a document that named no font.
-    theme_fonts: WordThemeFonts,
+    pub(crate) theme_fonts: WordThemeFonts,
     /// styleId → the TABLE style it declares (`w:style w:type="table"`) — P5's table-STYLE
     /// shading/border cascade (`w:tblStylePr` conditional formatting). Only styles that
     /// declare a whole-table default OR at least one conditional region are present; a
@@ -842,11 +850,11 @@ pub struct StyleInfo {
     /// It carries nothing but the cell margin, and dropping it is what made every table in a
     /// document that never wrote its own `w:tblCellMar` fall back to the reader's own 7pt on
     /// all four edges while the document had explicitly said `top=0 bottom=0`.
-    table_cell_margins: std::collections::HashMap<String, EdgePadding>,
+    pub(crate) table_cell_margins: std::collections::HashMap<String, EdgePadding>,
     /// `w:style w:type="table" w:default="1"` — the table style a table that names none of its
     /// own inherits from, the table-side twin of `defaultParagraphStyleId`. Word writes exactly
     /// one; a malformed document marking several keeps the first, matching that field's rule.
-    default_table_style_id: Option<String>,
+    pub(crate) default_table_style_id: Option<String>,
     /// styleId → its own `w:pPr/w:numPr` — see `WordNumPr`'s own doc for why this exists at
     /// all: a numbered HEADING style. Only styles that declare a `w:numPr` are present;
     /// resolved through the SAME `w:basedOn` chain as every other per-style property here
@@ -939,12 +947,12 @@ impl DocxReader {
             return info;
         }
         let Ok(data) = archive.data_for("word/styles.xml") else { return info };
-        let Ok(root) = Self::build_tree(data) else { return info };
+        let Ok(root) = Self::build_tree(&data.0) else { return info };
         info.doc_defaults_para_props = Self::parse_para_style_props(
-            root.child("w:docDefaults").and_then(|n| n.child("w:pPrDefault")).and_then(|n| n.child("w:pPr")).as_ref(),
+            root.child("w:docDefaults").and_then(|n| n.child("w:pPrDefault")).and_then(|n| n.child("w:pPr")),
         );
         info.doc_defaults_r_fonts = Self::parse_r_fonts(
-            root.child("w:docDefaults").and_then(|n| n.child("w:rPrDefault")).and_then(|n| n.child("w:rPr")).as_ref(),
+            root.child("w:docDefaults").and_then(|n| n.child("w:rPrDefault")).and_then(|n| n.child("w:rPr")),
         );
         for style in root.children.iter().filter(|s| s.name == "w:style") {
             let Some(id) = style.attributes.get("w:styleId").cloned() else { continue };
@@ -964,17 +972,17 @@ impl DocxReader {
             if let Some(parent) = style.child("w:basedOn").and_then(|n| n.attributes.get("w:val").cloned()) {
                 info.based_on.insert(id.clone(), parent);
             }
-            let run_props = Self::parse_run_style_props(style.child("w:rPr").as_ref(), theme_colors);
+            let run_props = Self::parse_run_style_props(style.child("w:rPr"), theme_colors);
             if run_props.color.is_some() || run_props.highlight.is_some() || run_props.font_size.is_some()
                 || run_props.bold.is_some() || run_props.italic.is_some()
             {
                 info.run_props.insert(id.clone(), run_props);
             }
-            let r_fonts = Self::parse_r_fonts(style.child("w:rPr").as_ref());
+            let r_fonts = Self::parse_r_fonts(style.child("w:rPr"));
             if !r_fonts.is_empty() {
                 info.r_fonts.insert(id.clone(), r_fonts);
             }
-            let para_props = Self::parse_para_style_props(style.child("w:pPr").as_ref());
+            let para_props = Self::parse_para_style_props(style.child("w:pPr"));
             if para_props.alignment.is_some() || para_props.tab_stops.is_some() || para_props.spacing_before.is_some()
                 || para_props.spacing_after.is_some() || para_props.line_height.is_some() || para_props.indent_start.is_some()
                 || para_props.indent_end.is_some() || para_props.first_line_indent.is_some() || para_props.hanging_indent.is_some()
@@ -998,7 +1006,7 @@ impl DocxReader {
                     info.default_table_style_id = Some(id.clone());
                 }
                 if let Some(margins) = Self::cell_edge_padding(
-                    style.child("w:tblPr").and_then(|n| n.child("w:tblCellMar")).as_ref(),
+                    style.child("w:tblPr").and_then(|n| n.child("w:tblCellMar")),
                 ) {
                     info.table_cell_margins.insert(id.clone(), margins);
                 }
@@ -1041,12 +1049,12 @@ impl DocxReader {
                 result.shading = Self::color_from_hex(&fill);
             }
         }
-        let cell_border = Self::resolve_border(tc_pr.as_ref().and_then(|n| n.child("w:tcBorders")).as_ref());
+        let cell_border = Self::resolve_border(tc_pr.as_ref().and_then(|n| n.child("w:tcBorders")));
         if cell_border.0.is_some() || cell_border.1.is_some() {
             result.border_color = cell_border.0;
             result.border_width = cell_border.1;
         } else {
-            let table_border = Self::resolve_border(tbl_pr.as_ref().and_then(|n| n.child("w:tblBorders")).as_ref());
+            let table_border = Self::resolve_border(tbl_pr.as_ref().and_then(|n| n.child("w:tblBorders")));
             result.border_color = table_border.0;
             result.border_width = table_border.1;
         }
@@ -1063,7 +1071,7 @@ impl DocxReader {
     /// style is active and a cell's resolved style format collapses to the whole-table default
     /// alone (see `resolveCellTableStyle`).
     #[allow(dead_code)]
-    fn parse_tbl_look(tbl_pr: Option<&XMLNode>) -> TblLook {
+    pub(crate) fn parse_tbl_look(tbl_pr: Option<&XMLNode>) -> TblLook {
         let mut look = TblLook::default();
         let Some(node) = tbl_pr.and_then(|n| n.child("w:tblLook")) else { return look };
         let attr_keys = ["w:firstRow", "w:lastRow", "w:firstColumn", "w:lastColumn", "w:noHBand", "w:noVBand"];
@@ -1146,7 +1154,7 @@ impl DocxReader {
     /// the second, alternating from there; `look.noHBand`/`.noVBand` disables the corresponding
     /// axis entirely rather than just skipping the alternation.
     #[allow(dead_code, clippy::too_many_arguments)]
-    fn resolve_cell_table_style(
+    pub(crate) fn resolve_cell_table_style(
         style_id: &str, style_info: &StyleInfo, look: &TblLook, row: i32, col: i32, row_count: i32,
         col_count: i32, header_rows: i32,
     ) -> (Option<NSColor>, Option<NSColor>, Option<CGFloat>) {
@@ -1192,7 +1200,7 @@ impl DocxReader {
         r_pr: Option<&XMLNode>, theme_colors: &std::collections::HashMap<String, NSColor>,
     ) -> RunStyleProps {
         let mut props = RunStyleProps::default();
-        props.color = Self::resolved_color_element(r_pr.and_then(|n| n.child("w:color")).as_ref(), theme_colors);
+        props.color = Self::resolved_color_element(r_pr.and_then(|n| n.child("w:color")), theme_colors);
         if let Some(val) = r_pr.and_then(|n| n.child("w:highlight")).and_then(|n| n.attributes.get("w:val").cloned()) {
             props.highlight = Self::highlight_color(&val);
         }
@@ -1211,7 +1219,7 @@ impl DocxReader {
     /// level says nothing), present and on (`true`), present and explicitly off (`false`). `isOn` —
     /// which every direct-run read uses — collapses the last two, which is right for a run's own
     /// properties but wrong for a style CHAIN, where "off" has to stop the climb.
-    fn toggle_state(r_pr: Option<&XMLNode>, name: &str) -> Option<bool> {
+    pub(crate) fn toggle_state(r_pr: Option<&XMLNode>, name: &str) -> Option<bool> {
         let node = r_pr.and_then(|n| n.child(name))?;
         let Some(val) = node.attributes.get("w:val") else { return Some(true) }; // bare <w:b/> means on
         Some(!(val == "0" || val == "false" || val == "off"))
@@ -1235,7 +1243,7 @@ impl DocxReader {
     /// and — worse — block the level below it from being consulted at all. That is the exact shape
     /// of the live ODT defect recorded in `docs/per-script-font-design.md` §5.2, which cost that
     /// format its inheritance; there is no reason to re-earn it here.
-    fn parse_r_fonts(r_pr: Option<&XMLNode>) -> WordRFonts {
+    pub(crate) fn parse_r_fonts(r_pr: Option<&XMLNode>) -> WordRFonts {
         let mut decl = WordRFonts::default();
         let Some(node) = r_pr.and_then(|n| n.child("w:rFonts")) else { return decl };
         let read = |literal: &str, theme_attributes: &[&str]| -> Option<WordFontDecl> {
@@ -1406,7 +1414,7 @@ impl DocxReader {
     /// emit. Anything else (`"center"` aside, every value here) that ISN'T one of these seven is
     /// left unresolved (`nil`) — the paragraph then falls back to whatever `rtl`/the theme's own
     /// default decides, exactly as an absent `w:jc` already does.
-    fn alignment_from_jc(val: &str) -> Option<NSTextAlignment> {
+    pub(crate) fn alignment_from_jc(val: &str) -> Option<NSTextAlignment> {
         match val {
             "left" | "start" => Some(NSTextAlignment::Left),
             "right" | "end" => Some(NSTextAlignment::Right),
@@ -1434,7 +1442,7 @@ impl DocxReader {
     /// `@w:leader` is read into `TabStop.leader` (`"dot"`/`"hyphen"`/`"underscore"` → their cases,
     /// everything else, including absent, → `.none`) and carried through UNDRAWN this sprint — see
     /// `TabLeader`'s own doc.
-    fn parse_tab_stops(tabs_node: &XMLNode) -> Vec<TabStop> {
+    pub(crate) fn parse_tab_stops(tabs_node: &XMLNode) -> Vec<TabStop> {
         tabs_node
             .children
             .iter()
@@ -1472,7 +1480,7 @@ impl DocxReader {
     /// climbing past it rather than stopping. This is what makes "direct run wins over style, style
     /// wins over its ancestors" hold per-PROPERTY, not per-style: a style can set `w:sz` and leave
     /// colour to ITS ancestor, and this walk still finds the ancestor's colour.
-    fn walk_style_chain<T>(
+    pub(crate) fn walk_style_chain<T>(
         p_style_id: Option<String>, style_info: &StyleInfo, resolve: impl Fn(&str) -> Option<T>,
     ) -> Option<T> {
         let mut current_id = p_style_id?;
@@ -1492,13 +1500,13 @@ impl DocxReader {
 
     // swift: Render/Office/DocxReader.swift:1127-1129
     #[allow(dead_code)]
-    fn resolved_color(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSColor> {
+    pub(crate) fn resolved_color(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSColor> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.color.clone())
     }
 
     // swift: Render/Office/DocxReader.swift:1131-1133
     #[allow(dead_code)]
-    fn resolved_highlight(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSColor> {
+    pub(crate) fn resolved_highlight(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSColor> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.highlight.clone())
     }
 
@@ -1514,19 +1522,19 @@ impl DocxReader {
     /// Returns `nil` when nothing in the chain mentions the toggle, so the caller can tell "the
     /// document never said" from "the document said off".
     #[allow(dead_code)]
-    fn resolved_bold(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<bool> {
+    pub(crate) fn resolved_bold(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<bool> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.bold)
     }
 
     // swift: Render/Office/DocxReader.swift:1149-1151
     #[allow(dead_code)]
-    fn resolved_italic(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<bool> {
+    pub(crate) fn resolved_italic(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<bool> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.italic)
     }
 
     // swift: Render/Office/DocxReader.swift:1153-1155
     #[allow(dead_code)]
-    fn resolved_font_size(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<CGFloat> {
+    pub(crate) fn resolved_font_size(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<CGFloat> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.font_size)
     }
 
@@ -1551,13 +1559,13 @@ impl DocxReader {
     /// runs (0.23%) in this project's corpus. Adding them would change colour and size as well as
     /// fonts, so it belongs to whichever change measures those, not to this one.
     #[allow(dead_code)]
-    fn resolved_r_fonts(p_style_id: Option<String>, style_info: &StyleInfo, direct: &WordRFonts) -> WordRFonts {
+    pub(crate) fn resolved_r_fonts(p_style_id: Option<String>, style_info: &StyleInfo, direct: &WordRFonts) -> WordRFonts {
         let style_id = p_style_id.or_else(|| style_info.default_paragraph_style_id.clone());
         let mut out = WordRFonts::default();
-        for slot in WordFontSlot::all_cases() {
-            let value = direct.get(slot).clone().or_else(|| {
-                Self::walk_style_chain(style_id.clone(), style_info, |id| style_info.r_fonts.get(id)?.get(slot).clone())
-            }).or_else(|| style_info.doc_defaults_r_fonts.get(slot).clone());
+        for slot in WordFontSlot::ALL {
+            let value = direct.get(slot).cloned().or_else(|| {
+                Self::walk_style_chain(style_id.clone(), style_info, |id| style_info.r_fonts.get(id)?.get(slot).cloned())
+            }).or_else(|| style_info.doc_defaults_r_fonts.get(slot).cloned());
             out.set(slot, value);
         }
         out.hint = direct.hint.clone()
@@ -1580,7 +1588,7 @@ impl DocxReader {
     /// it, matching every other numPr read in this file (`parseParagraph`'s own `.listItem`
     /// branch). `nil` means neither the paragraph nor any style in its chain declared numbering.
     #[allow(dead_code)]
-    fn resolved_num_pr(
+    pub(crate) fn resolved_num_pr(
         p_pr: Option<&XMLNode>, p_style_id: Option<String>, style_info: &StyleInfo,
     ) -> Option<(Option<String>, i32)> {
         if let Some(own_num_pr) = p_pr.and_then(|n| n.child("w:numPr")) {
@@ -1594,13 +1602,13 @@ impl DocxReader {
 
     // swift: Render/Office/DocxReader.swift:1215-1217
     #[allow(dead_code)]
-    fn resolved_alignment(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSTextAlignment> {
+    pub(crate) fn resolved_alignment(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSTextAlignment> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.alignment.clone())
     }
 
     // swift: Render/Office/DocxReader.swift:1219-1221
     #[allow(dead_code)]
-    fn resolved_tab_stops(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<Vec<TabStop>> {
+    pub(crate) fn resolved_tab_stops(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<Vec<TabStop>> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.tab_stops.clone())
     }
 
@@ -1662,7 +1670,7 @@ impl DocxReader {
     /// and taking the last setter — see its own doc), then this paragraph's own direct `w:pPr` —
     /// the first non-nil wins. `contextualSpacing`'s final "still unset" case defaults to `false`
     /// (`ParagraphFormat`'s own default), matching every property this cascade never touches.
-    fn resolved_paragraph_format(p_pr: Option<&XMLNode>, p_style_id: Option<String>, style_info: &StyleInfo) -> ParagraphFormat {
+    pub(crate) fn resolved_paragraph_format(p_pr: Option<&XMLNode>, p_style_id: Option<String>, style_info: &StyleInfo) -> ParagraphFormat {
         let direct = Self::parse_para_style_props(p_pr);
         let defaults = &style_info.doc_defaults_para_props;
         let mut format = ParagraphFormat::default();
@@ -1702,7 +1710,7 @@ impl DocxReader {
             return std::collections::HashMap::new();
         }
         let Ok(data) = archive.data_for("word/theme/theme1.xml") else { return std::collections::HashMap::new() };
-        let Ok(root) = Self::build_tree(data) else { return std::collections::HashMap::new() };
+        let Ok(root) = Self::build_tree(&data.0) else { return std::collections::HashMap::new() };
         let Some(clr_scheme) = root.first_descendant("a:clrScheme") else { return std::collections::HashMap::new() };
         let mut colors: std::collections::HashMap<String, NSColor> = std::collections::HashMap::new();
         for slot in clr_scheme.children.iter().filter(|s| s.name.starts_with("a:")) {
@@ -1744,7 +1752,7 @@ impl DocxReader {
             return WordThemeFonts::default();
         }
         let Ok(data) = archive.data_for("word/theme/theme1.xml") else { return WordThemeFonts::default() };
-        let Ok(root) = Self::build_tree(data) else { return WordThemeFonts::default() };
+        let Ok(root) = Self::build_tree(&data.0) else { return WordThemeFonts::default() };
         let Some(font_scheme) = root.first_descendant("a:fontScheme") else { return WordThemeFonts::default() };
         fn scheme(font_scheme: &XMLNode, name: &str) -> crate::render::office::word_font_slots::WordThemeScheme {
             let mut out = crate::render::office::word_font_slots::WordThemeScheme::default();
@@ -1810,7 +1818,7 @@ impl DocxReader {
     /// algorithm operates in HSL, not a flat per-channel blend), and getting that wrong would be
     /// worse than the brief's own explicitly offered fallback: resolve the base slot colour, as
     /// authored, and leave it there.
-    fn resolved_color_element(
+    pub(crate) fn resolved_color_element(
         color_node: Option<&XMLNode>, theme_colors: &std::collections::HashMap<String, NSColor>,
     ) -> Option<NSColor> {
         let color_node = color_node?;
@@ -1837,7 +1845,7 @@ impl DocxReader {
     /// another project's lookup table (this project's licence rule forbids that; see
     /// `mappedSymbolCharacter`'s doc for the same reasoning applied to `w:sym`). `"none"` and
     /// anything unrecognized both return `nil` — no highlight — never a guessed colour.
-    fn highlight_color(name: &str) -> Option<NSColor> {
+    pub(crate) fn highlight_color(name: &str) -> Option<NSColor> {
         let hex: Option<&str> = match name {
             "black" => Some("000000"),
             "blue" => Some("0000FF"),
@@ -1865,7 +1873,7 @@ impl DocxReader {
     /// `NSColor`. `nil` for anything that isn't exactly 6 hex digits (a malformed document, or —
     /// for `w:fill` specifically — the literal string `"auto"`, already filtered by every caller
     /// before it reaches here).
-    fn color_from_hex(hex: &str) -> Option<NSColor> {
+    pub(crate) fn color_from_hex(hex: &str) -> Option<NSColor> {
         let mut digits = hex.to_string();
         if let Some(stripped) = digits.strip_prefix('#') {
             digits = stripped.to_string();
@@ -1934,7 +1942,7 @@ impl DocxReader {
     /// no style at all) or from its style, INCLUDING one inherited through `w:basedOn`. The emitted
     /// level is clamped to 1–6 — the vocabulary `OfficeBlock` offers — so an `outlineLvl` of 6, 7 or
     /// 8 all render as level 6 rather than being refused.
-    fn heading_level(p_pr: Option<&XMLNode>, p_style_id: Option<String>, style_info: &StyleInfo) -> Option<i32> {
+    pub(crate) fn heading_level(p_pr: Option<&XMLNode>, p_style_id: Option<String>, style_info: &StyleInfo) -> Option<i32> {
         if let Some(own_val) = p_pr.and_then(|n| n.child("w:outlineLvl")).and_then(|n| n.attributes.get("w:val").cloned()) {
             if let Ok(own_level) = own_val.parse::<i32>() {
                 if own_level <= 8 {
@@ -1961,7 +1969,7 @@ impl DocxReader {
 /// numId). `start` defaults to 1 — Word omits `w:start` whenever a level simply starts there.
 // swift: Render/Office/DocxReader.swift:1511-1528
 #[derive(Debug, Clone)]
-struct AbstractLevel {
+pub(crate) struct AbstractLevel {
     num_fmt: String,
     lvl_text: Option<String>,
     start: i32,
@@ -1977,7 +1985,7 @@ struct AbstractLevel {
     /// ONLY by the heading-numbering path this field was added for (`parseParagraph`'s heading
     /// branch): the pre-existing `.listItem` path spaces its marker `OfficeTextBuilder`'s own
     /// way and must keep doing so byte-for-byte, so nothing there reads this field.
-    suff: String,
+    pub(crate) suff: String,
 }
 
 /// A single level's per-numId override, from `w:num/w:lvlOverride`: `startOverride` resets
@@ -2011,7 +2019,7 @@ impl DocxReader {
             return NumberingInfo::default();
         }
         let Ok(data) = archive.data_for("word/numbering.xml") else { return NumberingInfo::default() };
-        let Ok(root) = Self::build_tree(data) else { return NumberingInfo::default() };
+        let Ok(root) = Self::build_tree(&data.0) else { return NumberingInfo::default() };
         let mut info = NumberingInfo::default();
         for child in root.children.iter() {
             match child.name.as_str() {
@@ -2086,7 +2094,7 @@ impl DocxReader {
     /// even without a replacement — resetting where a shared, unmodified level starts for just
     /// this one list). `nil` when the numId itself doesn't resolve to any abstract definition, or
     /// that abstract definition never declared this level at all.
-    fn resolved_level(num_id: &str, ilvl: i32, info: &NumberingInfo) -> Option<AbstractLevel> {
+    pub(crate) fn resolved_level(num_id: &str, ilvl: i32, info: &NumberingInfo) -> Option<AbstractLevel> {
         let abstract_id = info.abstract_num_id_by_num_id.get(num_id)?;
         let mut level = info.abstract_levels_by_id.get(abstract_id).and_then(|m| m.get(&ilvl)).cloned();
         if let Some(override_) = info.num_id_level_overrides.get(num_id).and_then(|m| m.get(&ilvl)) {
@@ -2129,7 +2137,7 @@ impl DocxReader {
     /// when a `bullet`/`none` item at `ilvl` breaks any ordered run AT that level too (self and
     /// deeper: `from: ilvl`). Scoped to `numId` alone — an unrelated list sharing the same `ilvl`
     /// must never see its counters disturbed by this one.
-    fn clear_counters(num_id: &str, from_level: i32, state: &swiftshim::Ref<ListNumberingState>) {
+    pub(crate) fn clear_counters(num_id: &str, from_level: i32, state: &swiftshim::Ref<ListNumberingState>) {
         state.borrow_mut().counters.retain(|key, _| !(key.num_id == num_id && key.level >= from_level));
     }
 
@@ -2140,7 +2148,7 @@ impl DocxReader {
     /// OUTER `nil` means `numId="0"` — Word's own sentinel for "this paragraph carries `w:numPr`
     /// but is explicitly NOT numbered" — the caller must emit a plain `.paragraph`, never a
     /// `.listItem`, for that case.
-    fn numbered_list_info(
+    pub(crate) fn numbered_list_info(
         num_id: Option<String>, ilvl: i32, info: &NumberingInfo, state: &swiftshim::Ref<ListNumberingState>,
     ) -> Option<(bool, Option<String>)> {
         let Some(num_id) = num_id else { return Some((false, None)) };
@@ -2377,18 +2385,18 @@ impl DocxReader {
 // MARK: word/_rels/document.xml.rels — relationship id → target
 
 // swift: Render/Office/DocxReader.swift:1855-1861
-struct Relationship {
+pub(crate) struct Relationship {
     /// Embedded: the archive entry path (`"word/media/image1.png"`) `ZipArchive.data(for:)`
     /// can read directly. External: the raw `Target` (a `file:///…` URL) — never a path into
     /// THIS archive, since the bytes live outside it.
-    target: String,
-    external: bool,
+    pub(crate) target: String,
+    pub(crate) external: bool,
 }
 
 // swift: Render/Office/DocxReader.swift:1863-1865
 #[derive(Debug, Clone, Default)]
 pub struct Relationships {
-    by_id: std::collections::HashMap<String, Relationship>,
+    pub(crate) by_id: std::collections::HashMap<String, Relationship>,
 }
 
 impl Clone for Relationship {
@@ -2438,7 +2446,7 @@ impl DocxReader {
             return Relationships::default();
         }
         let Ok(data) = archive.data_for(&rels_part) else { return Relationships::default() };
-        let Ok(root) = Self::build_tree(data) else { return Relationships::default() };
+        let Ok(root) = Self::build_tree(&data.0) else { return Relationships::default() };
         let mut rels = Relationships::default();
         // A relationship's Target is relative to the PART's own directory, not always "word/" — a
         // header/footer part's rels live in "word/_rels/", and its embedded targets are relative to
@@ -2516,7 +2524,7 @@ impl DocxReader {
                 continue;
             }
             let Ok(data) = archive.data_for(&target.target) else { continue };
-            let Ok(part_root) = Self::build_tree(data) else { continue };
+            let Ok(part_root) = Self::build_tree(&data.0) else { continue };
             // Every part gets its OWN fresh footnote/comment/list-numbering state — a header/footer
             // in real documents carries none of these, and starting fresh (rather than threading the
             // body's own, still-live state into a part the body never actually contains) keeps this
@@ -2531,15 +2539,15 @@ impl DocxReader {
         }
         let mut entries: Vec<OfficeHeaderFooter> = Vec::new();
         if let Some(blocks) = blocks_by_type.get("default") {
-            entries.push(OfficeHeaderFooter { applies_to: HeaderFooterApplicability::DefaultPages, blocks: blocks.clone() });
+            entries.push(OfficeHeaderFooter { applies_to: HeaderFooterApplicability::DefaultPages, blocks: blocks.clone(), section: None });
         }
         if let Some(blocks) = blocks_by_type.get("even") {
-            entries.push(OfficeHeaderFooter { applies_to: HeaderFooterApplicability::EvenPages, blocks: blocks.clone() });
+            entries.push(OfficeHeaderFooter { applies_to: HeaderFooterApplicability::EvenPages, blocks: blocks.clone(), section: None });
         }
         if let Some(blocks) = blocks_by_type.get("first") {
-            entries.push(OfficeHeaderFooter { applies_to: HeaderFooterApplicability::FirstPage, blocks: blocks.clone() });
+            entries.push(OfficeHeaderFooter { applies_to: HeaderFooterApplicability::FirstPage, blocks: blocks.clone(), section: None });
         } else if title_pg {
-            entries.push(OfficeHeaderFooter { applies_to: HeaderFooterApplicability::FirstPage, blocks: vec![] });
+            entries.push(OfficeHeaderFooter { applies_to: HeaderFooterApplicability::FirstPage, blocks: vec![], section: None });
         }
         entries
     }

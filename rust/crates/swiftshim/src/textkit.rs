@@ -11,16 +11,74 @@ use crate::foundation::NSRange;
 use crate::geometry::{CGPoint, CGSize};
 
 /// swift: NSLayoutManager
-#[derive(Debug, Clone, Default)]
-pub struct NSLayoutManager;
+#[derive(Clone, Default)]
+pub struct NSLayoutManager {
+    /// swift: `.delegate as? PageBandLayoutDelegate` — the reader's page-band gap detection reads
+    /// its layout manager's delegate back through this downcast. Modeled as a trait object rather
+    /// than `Any` + a downcast, so the accessor below is concrete (no turbofish/inference needed
+    /// at the call site) and the crate boundary is respected: `fastdoc-engine` depends on
+    /// `swiftshim`, not the reverse, so `PageBandDelegate` is declared here and the engine's real
+    /// delegate type implements it there.
+    page_band_delegate: Option<std::rc::Rc<dyn PageBandDelegate>>,
+}
+
+impl std::fmt::Debug for NSLayoutManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NSLayoutManager")
+            .field("page_band_delegate", &self.page_band_delegate.is_some())
+            .finish()
+    }
+}
 
 impl NSLayoutManager {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
-    pub fn addTextContainer(&mut self, _container: NSTextContainer) {
+    pub fn addTextContainer(&mut self, _container: &NSTextContainer) {
         todo!("swift: NSLayoutManager.addTextContainer(_:) — phase B (host-resident)")
     }
+
+    /// swift: `.allowsNonContiguousLayout = _` — TextKit's incremental-layout opt-in; needs a
+    /// live layout manager to have any effect, so `todo!()` like the rest of this file.
+    pub fn set_allows_non_contiguous_layout(&self, _allows: bool) {
+        todo!("swift: NSLayoutManager.allowsNonContiguousLayout — phase B (host-resident)")
+    }
+
+    /// swift: `.ensureLayout(for:)` — forces TextKit to lay out a container; needs a live layout
+    /// pass.
+    pub fn ensure_layout(&self, _container: &NSTextContainer) {
+        todo!("swift: NSLayoutManager.ensureLayout(for:) — phase B (host-resident)")
+    }
+
+    /// swift: `.usedRect(for:)` — the laid-out size of a container; needs a live layout pass.
+    pub fn used_rect(&self, _container: &NSTextContainer) -> crate::geometry::CGRect {
+        todo!("swift: NSLayoutManager.usedRect(for:) — phase B (host-resident)")
+    }
+
+    /// swift: `.delegate = _` — sets the delegate any later `page_band_delegate()` read returns.
+    pub fn set_page_band_delegate(&mut self, delegate: std::rc::Rc<dyn PageBandDelegate>) {
+        self.page_band_delegate = Some(delegate);
+    }
+
+    /// swift: `.delegate as? PageBandLayoutDelegate` — see the field doc above.
+    pub fn page_band_delegate(&self) -> Option<std::rc::Rc<dyn PageBandDelegate>> {
+        self.page_band_delegate.clone()
+    }
+}
+
+/// swift: `PageBandLayoutDelegate` (Render/Office/PageBandLayoutDelegate.swift, in scope) — the
+/// one member `GridTextTableBlock.swift`'s gap-crossing math reads off it. Declared here (not in
+/// `fastdoc-engine`) purely so `NSLayoutManager` can hold a reference to it without a reverse
+/// dependency; the engine's real delegate type implements this trait.
+pub trait PageBandDelegate {
+    fn opened_bands(&self) -> Vec<OpenedBand>;
+}
+
+/// swift: the `(top, height)` shape `PageBandLayoutDelegate.openedBands` yields per band.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OpenedBand {
+    pub top: crate::geometry::CGFloat,
+    pub height: crate::geometry::CGFloat,
 }
 
 /// swift: NSTextStorage
@@ -30,10 +88,12 @@ pub struct NSTextStorage {
 }
 
 impl NSTextStorage {
-    pub fn withAttributedString(attributedString: NSAttributedString) -> Self {
-        Self { attributedString }
+    pub fn withAttributedString(attributedString: &NSAttributedString) -> Self {
+        Self {
+            attributedString: attributedString.clone(),
+        }
     }
-    pub fn addLayoutManager(&mut self, _layout_manager: NSLayoutManager) {
+    pub fn addLayoutManager(&mut self, _layout_manager: &NSLayoutManager) {
         todo!("swift: NSTextStorage.addLayoutManager(_:) — phase B (host-resident)")
     }
 
@@ -64,6 +124,16 @@ pub struct NSTextContainer {
 impl NSTextContainer {
     pub fn new(size: CGSize) -> Self {
         Self { size }
+    }
+
+    /// swift: `.widthTracksTextView = _` — needs a live text view to have any effect.
+    pub fn set_width_tracks_text_view(&self, _tracks: bool) {
+        todo!("swift: NSTextContainer.widthTracksTextView — phase B (host-resident)")
+    }
+
+    /// swift: `.lineFragmentPadding = _` — needs a live layout pass to have any effect.
+    pub fn set_line_fragment_padding(&self, _padding: crate::geometry::CGFloat) {
+        todo!("swift: NSTextContainer.lineFragmentPadding — phase B (host-resident)")
     }
 }
 

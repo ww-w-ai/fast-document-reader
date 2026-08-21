@@ -16,6 +16,28 @@ use std::sync::OnceLock;
 pub struct CodeHighlighter;
 
 // swift: Render/CodeHighlighter.swift:12-21
+/// swift: `NSString.enumerateSubstrings(in:options:[.byLines],using:)` — `swiftshim::SwiftString`
+/// carries the primitive that method would be built from (`getLineStart(_:end:contentsEnd:for:)`)
+/// but not the by-lines walk itself, so it is done locally with that primitive rather than
+/// widening the shim for this one call site (`diff_highlight`'s line-at-a-time colouring).
+fn enumerate_substrings_by_lines(
+    ns: &swiftshim::SwiftString,
+    in_range: swiftshim::NSRange,
+    mut body: impl FnMut(swiftshim::NSRange, &mut bool),
+) {
+    let mut stop = false;
+    let mut loc = in_range.location;
+    let end = in_range.maxRange();
+    while loc < end && !stop {
+        let mut line_end = 0usize;
+        let mut contents_end = 0usize;
+        ns.getLineStart(None, &mut line_end, &mut contents_end, swiftshim::NSRange::new(loc, 0));
+        let range = swiftshim::NSRange::new(loc, contents_end.saturating_sub(loc));
+        body(range, &mut stop);
+        loc = if line_end > loc { line_end } else { loc + 1 };
+    }
+}
+
 struct Palette {
     keyword: swiftshim::NSColor,
     r#type: swiftshim::NSColor,
@@ -30,13 +52,13 @@ impl Default for Palette {
     fn default() -> Self {
         // swift: Render/CodeHighlighter.swift:13-19
         Self {
-            keyword: swiftshim::NSColor::systemPink(),
-            r#type: swiftshim::NSColor::systemTeal(),
-            string: swiftshim::NSColor::systemRed(),
-            number: swiftshim::NSColor::systemOrange(),
-            comment: swiftshim::NSColor::secondaryLabelColor(),
-            added: swiftshim::NSColor::systemGreen(),
-            removed: swiftshim::NSColor::systemRed(),
+            keyword: swiftshim::system_colors::systemPink(),
+            r#type: swiftshim::system_colors::systemTeal(),
+            string: swiftshim::system_colors::systemRed(),
+            number: swiftshim::system_colors::systemOrange(),
+            comment: swiftshim::system_colors::secondaryLabelColor(),
+            added: swiftshim::system_colors::systemGreen(),
+            removed: swiftshim::system_colors::systemRed(),
         }
     }
 }
@@ -709,7 +731,8 @@ impl CodeHighlighter {
         ns: &swiftshim::SwiftString,
         p: &Palette,
     ) -> swiftshim::NSMutableAttributedString {
-        ns.enumerate_substrings_by_lines(
+        enumerate_substrings_by_lines(
+            ns,
             swiftshim::NSRange::new(0, ns.length()),
             |range, _stop| {
                 if range.length == 0 {

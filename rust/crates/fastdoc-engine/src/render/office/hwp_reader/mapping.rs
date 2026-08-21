@@ -12,14 +12,15 @@
 //! docs/plans/rust-port-convention.md §4.
 
 // swift: Render/Office/HwpReader.swift:1-3
-use swiftshim::{Data, EngineError, NSRange};
+use swiftshim::{Data, EngineError, NSRange, SwiftString};
 use swiftshim::geometry::{CGFloat, CGSize, CGRect, CGPoint, NSRect};
 use crate::render::office::office_block::{
     OfficeReadResult, OfficeBlock, OfficeAnchoredObject, PaperGeometry, Span, UnderlineStyle,
     CellDiagonal, BorderLineStyle, EdgeBorders, BorderDecl, TablePageBreakPolicy, TabLeader,
-    ParagraphFormat, LineBreakGranularity, HeaderFooterApplicability, OfficeColumnLayout,
+    ParagraphFormat, LineBreakGranularity, HeaderFooterApplicability,
     OfficeSectionDeclaration,
 };
+use crate::render::office::column_geometry::OfficeColumnLayout;
 use crate::render::office::hwp_font_slots::HwpSlotFonts;
 use crate::render::office::hwp_reader::schema::{
     HwpEnvelope, HwpPara, HwpSpan, HwpCell, HwpImage, HwpBorderFill, HwpBorderEdge, HwpGradient,
@@ -157,19 +158,20 @@ impl HwpReader {
             let mut result = Self::map_json(&json, Some(Box::new(move |bin_data_id: i64| {
                 let id = u16::try_from(bin_data_id).ok()?;
                 let b64 = Self::image_base64(handle, id)?;
-                Data::from_base64(&b64)
+                Data::base64Encoded(&b64)
             })))?;
             // Embedded pictures are fetched here (they need the live handle); drawings were already
             // rendered inside `mapJSON` and must survive that — hence a merge rather than an assignment.
             for (k, v) in Self::collect_images(handle, &result.blocks) {
-                result.images.insert(k, v);
+                result.images.insert(SwiftString::from(k), v);
             }
             // `.resolvingFontSubstitution()` is applied HERE, at HWP's own single dispatch point
             // (invariant 44 — HWP bypasses `DocumentTypes.readOffice` entirely, so it needs its own
             // call rather than `readOffice`'s), NOT inside `mapJSON`: `mapJSON` stays a pure JSON->
             // result mapper so every hand-built-envelope test that calls it directly is unaffected by
             // this pass. See `FontSubstitutionResolver`'s file doc for why read time is the right home.
-            Ok(result.resolving_font_substitution())
+            let font_cache = crate::render::office::font_substitution_resolver::FontSubstitutionCache::default();
+            Ok(result.resolving_font_substitution(&font_cache))
         })();
         Self::rhwp_close(handle);
         outcome
@@ -190,7 +192,8 @@ impl HwpReader {
         ) {
             match block {
                 OfficeBlock::Image { id, .. } => {
-                    if out.contains_key(id) || !id.starts_with(HwpReader::HWP_IMAGE_PREFIX) {
+                    let id = id.to_string();
+                    if out.contains_key(&id) || !id.starts_with(HwpReader::HWP_IMAGE_PREFIX) {
                         return;
                     }
                     // The id may carry the crop this occurrence applies (`hwpimg:5!crop=x,y,w,h`), so
@@ -199,16 +202,16 @@ impl HwpReader {
                     let parts: Vec<&str> = body.split(HwpReader::HWP_CROP_SEPARATOR).collect();
                     let Ok(bin_data_id) = parts[0].parse::<u16>() else { return };
                     let Some(b64) = HwpReader::image_base64(handle, bin_data_id) else { return };
-                    let Some(data) = Data::from_base64(&b64) else { return };
+                    let Some(data) = Data::base64Encoded(&b64) else { return };
                     if parts.len() > 1 {
                         if let Some(box_) = HwpReader::crop_box(parts[1]) {
                             if let Some(cropped) = HwpReader::cropped_image_data(&data, box_) {
-                                out.insert(id.clone(), cropped);
+                                out.insert(id, cropped);
                                 return;
                             }
                         }
                     }
-                    out.insert(id.clone(), data);
+                    out.insert(id, data);
                 }
                 OfficeBlock::Table { rows, .. } => {
                     for row in rows {
@@ -368,7 +371,7 @@ impl MediaContext {
         let bin_data_id = bin_data_id?;
         if bin_data_id <= 0 { return None; }
         let data = (self.picture.as_ref()?)(bin_data_id)?;
-        Some(swiftshim::NSImage::fromData(&data))
+        swiftshim::NSImage::fromData(&data)
     }
 
     // swift: Render/Office/HwpReader.swift:245-249
@@ -409,8 +412,9 @@ impl HwpReader {
 }
 
 use crate::render::office::office_block::{
-    DeclaredFace, OfficeFootnoteSeparator, OfficePageBorder, OfficePageNumberRestart,
+    OfficeFootnoteSeparator, OfficePageBorder, OfficePageNumberRestart,
 };
+use crate::render::office::declared_font_kind::DeclaredFace;
 use swiftshim::NSEdgeInsets;
 
 impl HwpReader {
@@ -428,12 +432,12 @@ impl HwpReader {
         // page (HWP's `widthCriterion`) can only become points once that width is known.
         let page_width: Option<CGFloat> = envelope
             .page_content_width
-            .and_then(|w| if w > 0 { Some(w as CGFloat) } else { None });
+            .and_then(|w| if w > 0.0 { Some(w as CGFloat) } else { None });
         // The document's own default body size is resolved BEFORE mapping: a percent line height is
         // relative to the text's size, so the mapper needs it to turn "200%" into points.
         let default_body_size: CGFloat = envelope
             .default_font_size_pt
-            .and_then(|p| if p > 0 { Some(p as CGFloat) } else { None })
+            .and_then(|p| if p > 0.0 { Some(p as CGFloat) } else { None })
             .unwrap_or(11.0);
         // The seven families per char shape, each row resolved through HWP's fallback chain ONCE for
         // the whole document — tens to low hundreds of rows, against the ~1.1 M spans that index into
@@ -446,7 +450,7 @@ impl HwpReader {
             .unwrap_or_default()
             .into_iter()
             .enumerate()
-            .map(|(index, row)| HwpSlotFonts::new(row, decor_rows.get(index).cloned()))
+            .map(|(index, row)| HwpSlotFonts::new(&row, decor_rows.get(index).cloned()))
             .collect();
         // The document's own border/background table, resolved ONCE for the whole document the same
         // way `slotFonts` is — a cell carries only an id. `[]` (a parser predating this export)
@@ -461,14 +465,14 @@ impl HwpReader {
         // The paper an anchored object is placed on. Only present when the document declared a page
         // at all; without it nothing can be pinned to a sheet and every object stays in the flow.
         if let (Some(w), Some(h)) = (envelope.page_content_width, envelope.page_content_height) {
-            if w > 0 && h > 0 {
+            if w > 0.0 && h > 0.0 {
                 shapes.paper = Some(PaperGeometry {
                     content_width: w as CGFloat,
                     content_height: h as CGFloat,
-                    margin_left: envelope.page_margin_left.unwrap_or(0) as CGFloat,
-                    margin_top: envelope.page_margin_top.unwrap_or(0) as CGFloat,
-                    margin_right: envelope.page_margin_right.unwrap_or(0) as CGFloat,
-                    margin_bottom: envelope.page_margin_bottom.unwrap_or(0) as CGFloat,
+                    margin_left: envelope.page_margin_left.unwrap_or(0.0) as CGFloat,
+                    margin_top: envelope.page_margin_top.unwrap_or(0.0) as CGFloat,
+                    margin_right: envelope.page_margin_right.unwrap_or(0.0) as CGFloat,
+                    margin_bottom: envelope.page_margin_bottom.unwrap_or(0.0) as CGFloat,
                 });
             }
         }
@@ -507,7 +511,9 @@ impl HwpReader {
                     );
                 }
             }
-            result.declared_faces = table;
+            result.declared_faces = table.into_iter()
+                .map(|(k, v)| (SwiftString::from(k), v))
+                .collect();
         }
         // The author's OWN page breaks. `section` counts too: a Korean document starts a new page at
         // a section break, and this reader flattens every section into one column (invariant 57), so
@@ -526,7 +532,7 @@ impl HwpReader {
                     || p.break_before.as_deref() == Some("section")
                     || p.page_break_before == Some(true)
                 {
-                    Some(index)
+                    Some(index as i64)
                 } else {
                     None
                 }
@@ -544,8 +550,8 @@ impl HwpReader {
                 let HwpBlock::Para(p) = block else { return None };
                 p.spans
                     .iter()
-                    .any(|s| s.page_hide.as_ref().map(|h| h.hide_page_num) == Some(true))
-                    .then_some(index)
+                    .any(|s| s.page_hide.as_ref().and_then(|h| h.hide_page_num) == Some(true))
+                    .then_some(index as i64)
             })
             .collect();
         // The author's own NewNumber('쪽 번호 새로 시작') — same span-level shape as PageHide, and
@@ -559,9 +565,9 @@ impl HwpReader {
                 let HwpBlock::Para(p) = block else { return None };
                 for span in &p.spans {
                     if let Some(restart) = &span.new_number {
-                        if restart.number_type == "page" {
+                        if restart.number_type.as_deref() == Some("page") {
                             if let Some(n) = restart.number {
-                                return Some(OfficePageNumberRestart { block: index, number: n });
+                                return Some(OfficePageNumberRestart { block: index as i64, number: n });
                             }
                         }
                     }
@@ -591,8 +597,8 @@ impl HwpReader {
                     note_spacing_pt: Self::points(shape.note_spacing_hwp_unit.unwrap_or(0)),
                 }),
                 page_border: section.page_border.map(|pb| OfficePageBorder {
-                    borders: Self::edge_borders(pb.border_fill_id, &border_fills),
-                    background: Self::border_fill(pb.border_fill_id, &border_fills)
+                    borders: Self::edge_borders(Some(pb.border_fill_id), &border_fills),
+                    background: Self::border_fill(Some(pb.border_fill_id), &border_fills)
                         .and_then(|fill| Self::color(fill.bg.as_deref())),
                     spacing: NSEdgeInsets {
                         top: Self::points(pb.spacing_top_hwp_unit.unwrap_or(0)),
@@ -641,17 +647,19 @@ impl HwpReader {
             .enumerate()
             .filter_map(|(index, block)| {
                 let HwpBlock::Para(p) = block else { return None };
-                (p.keep_with_next == Some(true)).then_some(index)
+                (p.keep_with_next == Some(true)).then_some(index as i64)
             })
             .collect();
         // The drawings this read rendered — merged, not assigned, so a later `read()` that also
         // fetches embedded pictures keeps both (invariant: one media map, one id space).
-        result.images = shapes.images.clone();
+        result.images = shapes.images.iter()
+            .map(|(k, v)| (SwiftString::from(k.clone()), v.clone()))
+            .collect();
         // The document's own default body size (Normal/"바탕글" style char-shape base size, in pt),
         // rhwp's analog of docx `w:docDefaults/…/w:sz`. `null`/≤0 → leave the `11` default so an HWP
         // that declares none scales exactly like a docx/odt that declares none (invariant 37).
         if let Some(pt) = envelope.default_font_size_pt {
-            if pt > 0 { result.default_body_font_size = pt as CGFloat; }
+            if pt > 0.0 { result.default_body_font_size = pt as CGFloat; }
         }
         // The document's own page body width (paper − margins, in pt) — the denominator of the office
         // GRAPHIC scale (see `OfficeReadResult.pageContentWidth`), so an HWP image keeps the share of
@@ -659,7 +667,7 @@ impl HwpReader {
         // tables are untouched. Absent/≤0 → leave nil = authored sizes verbatim. Identical handling to
         // docx/odt: one field, one consumer, no HWP-specific layout path.
         if let Some(w) = envelope.page_content_width {
-            if w > 0 { result.page_content_width = Some(w as CGFloat); }
+            if w > 0.0 { result.page_content_width = Some(w as CGFloat); }
         }
         // The vertical twin, plus all four margins — HWP wired NONE of these before this change
         // (only the body width was read), so this is new ground for the format, not an extension of
@@ -667,11 +675,11 @@ impl HwpReader {
         // positive, exactly like the `pageContentWidth` line above: a document a parser predating
         // these fields produced leaves every one of them nil, unchanged (invariant 37's "unspecified
         // → theme/fallback" contract, restated for geometry rather than typography).
-        if let Some(h) = envelope.page_content_height { if h > 0 { result.page_content_height = Some(h as CGFloat); } }
-        if let Some(l) = envelope.page_margin_left { if l > 0 { result.page_margin_left = Some(l as CGFloat); } }
-        if let Some(r) = envelope.page_margin_right { if r > 0 { result.page_margin_right = Some(r as CGFloat); } }
-        if let Some(t) = envelope.page_margin_top { if t > 0 { result.page_margin_top = Some(t as CGFloat); } }
-        if let Some(b) = envelope.page_margin_bottom { if b > 0 { result.page_margin_bottom = Some(b as CGFloat); } }
+        if let Some(h) = envelope.page_content_height { if h > 0.0 { result.page_content_height = Some(h as CGFloat); } }
+        if let Some(l) = envelope.page_margin_left { if l > 0.0 { result.page_margin_left = Some(l as CGFloat); } }
+        if let Some(r) = envelope.page_margin_right { if r > 0.0 { result.page_margin_right = Some(r as CGFloat); } }
+        if let Some(t) = envelope.page_margin_top { if t > 0.0 { result.page_margin_top = Some(t as CGFloat); } }
+        if let Some(b) = envelope.page_margin_bottom { if b > 0.0 { result.page_margin_bottom = Some(b as CGFloat); } }
         // Invariant 58's open half — "ODT and HWP state neither distance yet". HWP does state both,
         // and the machinery to use them already exists on both sides: `DocxReader` writes these two
         // fields and `PageBandPainter.headerTop`/`.footerTop` read them to place the running head
@@ -775,7 +783,7 @@ use crate::render::office::office_block::{
     ParagraphAnchor, OfficeMasterPage, OfficeMasterObject, OfficeMasterObjectContent,
     OfficeHeaderFooter,
 };
-use crate::render::office::hwp_reader::schema::{HwpMasterPage, HwpHeaderFooterEntry, HwpFootnote};
+use crate::render::office::hwp_reader::schema::{HwpMasterPage, HwpHeaderFooterEntry};
 // swift: hwp shape renderer — referenced by name, ported elsewhere (out of this file's range).
 use crate::render::office::hwp_shape_path::HwpShapeRenderer;
 
@@ -919,7 +927,7 @@ impl HwpReader {
         if objects.is_empty() { return None; }
         Some(OfficeMasterPage {
             section: page.section,
-            applies_to: Self::map_header_footer_apply_to(page.apply_to.as_deref().unwrap_or("")),
+            applies_to: Self::map_header_footer_apply_to(&page.apply_to),
             objects,
         })
     }
@@ -1192,7 +1200,7 @@ impl HwpReader {
         };
         OfficeColumnLayout {
             count: cd.column_count.max(1),
-            spacing: cd.column_spacing_pt.unwrap_or(0) as CGFloat,
+            spacing: cd.column_spacing_pt.unwrap_or(0.0) as CGFloat,
             widths: cd.column_widths.clone().unwrap_or_default().into_iter().map(|w| w as CGFloat).collect(),
             gaps: cd.column_gaps.clone().unwrap_or_default().into_iter().map(|g| g as CGFloat).collect(),
             proportional: cd.proportional_widths.unwrap_or(false),
@@ -1212,7 +1220,38 @@ impl HwpReader {
     // swift: Render/Office/HwpReader.swift:867-1006
     fn map_span(s: &HwpSpan, slot_fonts: &[HwpSlotFonts]) -> Vec<Span> {
         let (ul, ul_style) = Self::underline(s.underline.as_deref());
-        let mut span = Span::new(s.text.clone());
+        // `Span` carries no `new`/`Default` (office_block.rs) — every field is spelled out here,
+        // mirroring the Swift struct's own per-field default-argument initializer.
+        let mut span = Span {
+            text: SwiftString::from(s.text.clone()),
+            bold: false,
+            italic: false,
+            underline: false,
+            underline_style: UnderlineStyle::Single,
+            code: false,
+            caps: false,
+            small_caps: false,
+            link: None,
+            strikethrough: false,
+            superscript: false,
+            footnote_ref: None,
+            form_control: None,
+            column_layout: None,
+            subscripted: false,
+            rtl: false,
+            bookmarks: Vec::new(),
+            comment_ids: Vec::new(),
+            text_color: None,
+            highlight_color: None,
+            letter_spacing_percent: None,
+            baseline_offset_percent: None,
+            underline_color: None,
+            strikethrough_color: None,
+            font_size: None,
+            font_name: None,
+            resolved_font_descriptor: None,
+            page_number_field: None,
+        };
         span.bold = s.bold.unwrap_or(false);
         span.italic = s.italic.unwrap_or(false);
         span.underline = ul;
@@ -1228,34 +1267,34 @@ impl HwpReader {
         // should be (`[^1]: [^1] …`).
         if s.note_ref_kind.as_deref() == Some("footnote") && s.superscript == Some(true) {
             if let Some(r) = &s.note_ref {
-                span.footnote_ref = r.parse::<i64>().ok();
+                span.footnote_ref = Some(*r);
                 // The marker's glyphs are ASSEMBLED here rather than carried as three more fields on
                 // `Span`: what is printed around a number is a per-format convention (HWP states it on
                 // the note's own control; a docx puts it in the numbering definition), while `Span` is
                 // the format-neutral vocabulary. Measured on the 637-sample corpus: 791 of 811 shape
                 // declarations print a closing `)` and NONE prints anything before the number, so a
                 // reader that draws the bare digit is wrong on 97% of the documents that have notes.
-                span.text = format!(
+                span.text = SwiftString::from(format!(
                     "{}{}{}",
                     s.note_before_char.clone().unwrap_or_default(),
                     span.text,
                     s.note_after_char.clone().unwrap_or_default()
-                );
+                ));
             }
         }
         if let Some(cd) = &s.column_def { span.column_layout = Some(Self::column_layout(cd)); }
         if let Some(f) = &s.form {
             let control = OfficeFormControl {
-                kind: OfficeFormControlKind::from_exported(&f.form_type),
-                caption: f.caption.clone().unwrap_or_default(),
-                text: f.text.clone().unwrap_or_default(),
+                kind: OfficeFormControlKind::new(f.form_type.as_deref()),
+                caption: SwiftString::from(f.caption.clone().unwrap_or_default()),
+                text: SwiftString::from(f.text.clone().unwrap_or_default()),
                 value: f.value.unwrap_or(0),
                 enabled: f.enabled.unwrap_or(true),
             };
             // The control's own glyphs ARE its text. A form control arrives on a zero-width anchor
             // span (like a bookmark or a note marker), so without this the run has nothing to draw
             // and the document renders blank — which is exactly what a corpus form sample did.
-            if span.text.is_empty() { span.text = control.display_text(); }
+            if span.text.length() == 0 { span.text = control.display_text(); }
             span.form_control = Some(control);
         }
         span.subscripted = s.subscripted.unwrap_or(false);
@@ -1264,9 +1303,9 @@ impl HwpReader {
         if let Some(sz) = s.size {
             if sz > 0 { span.font_size = Some(sz as CGFloat / 100.0); }
         }
-        span.link = s.link.clone();
+        span.link = s.link.clone().map(SwiftString::from);
         if let Some(bm) = &s.bookmark {
-            if !bm.is_empty() { span.bookmarks = vec![bm.clone()]; }
+            if !bm.is_empty() { span.bookmarks = vec![SwiftString::from(bm.clone())]; }
         }
         // Only "page" is exported today; anything else is a future rhwp speaking a word this build
         // does not know, and a page number drawn as its cached value beats one drawn as a guess.
@@ -1281,15 +1320,15 @@ impl HwpReader {
         // and the splitter yields no pieces for empty input, which would DELETE it. Bookmarks must
         // survive (invariant 38: they are never merged away), so this returns before the walk.
         if s.text.is_empty() {
-            span.font_name = declared;
+            span.font_name = declared.map(SwiftString::from);
             return vec![span];
         }
         let Some(id) = s.cs_id else {
-            span.font_name = declared;
+            span.font_name = declared.map(SwiftString::from);
             return vec![span];
         };
         let Some(fonts) = slot_fonts.get(id as usize) else {
-            span.font_name = declared;
+            span.font_name = declared.map(SwiftString::from);
             return vec![span];
         };
         Self::apply_decor(fonts.decor.as_ref(), &mut span);
@@ -1300,10 +1339,14 @@ impl HwpReader {
         // not cost before slots existed. `neutralFamily` is rhwp's own answer here: proven equal to
         // the exported `font` on all 1,085,915 spans of the corpus, 0 disagreements.
         if fonts.is_uniform {
-            span.font_name = fonts.neutral_family.clone();
+            span.font_name = fonts.neutral_family().map(SwiftString::from);
             return vec![span];
         }
-        let pieces = ScriptRunSplitter::split(&s.text, HwpSlotTable::slot_for, &fonts.family);
+        let pieces = ScriptRunSplitter::split(
+            &s.text,
+            HwpSlotTable::slot,
+            |slot| fonts.family(slot),
+        );
         // A run of nothing but absorbing characters — a tab, a stretch of spaces, `(3)` — classifies
         // nothing, and the splitter rightly hands back one piece carrying no family. Emitting that
         // verbatim would strand a theme-font span between two runs of a real family, which is
@@ -1312,7 +1355,7 @@ impl HwpReader {
         // non-nil family by construction (some slot is named, so the chain's fallback is non-nil for
         // all seven), so a `nil` family on this path can ONLY mean nothing classified.
         if pieces.len() == 1 && pieces[0].family.is_none() {
-            span.font_name = fonts.neutral_family.clone();
+            span.font_name = fonts.neutral_family().map(SwiftString::from);
             return vec![span];
         }
         pieces
@@ -1320,8 +1363,8 @@ impl HwpReader {
             .enumerate()
             .map(|(index, piece)| {
                 let mut out = span.clone();
-                out.text = piece.text.to_string();
-                out.font_name = piece.family;
+                out.text = SwiftString::from(piece.text.to_string());
+                out.font_name = piece.family.map(SwiftString::from);
                 // The anchor is a POINT in the document, not a property of the text, so it rides the
                 // first piece alone — copying it onto every piece would publish the same bookmark name
                 // several times and give an internal link more than one place to land.
@@ -1671,7 +1714,7 @@ impl HwpReader {
 use crate::render::office::office_block::{
     TabStop, TabAlignment, TableFormat, EdgePadding, ListNumbering, ListNumberingGlyphs,
 };
-use crate::render::office::hwp_reader::schema::{HwpTable, HwpImageBlock, HwpShapeBlock, HwpUnsupported, HwpEquation};
+use crate::render::office::hwp_reader::schema::{HwpTable, HwpShape, HwpUnsupported, HwpEquation};
 
 impl HwpReader {
     // swift: Render/Office/HwpReader.swift:1294-1538
@@ -1698,7 +1741,7 @@ impl HwpReader {
                     .filter_map(|stop| {
                         let position = Self::points(stop.pos_hwp_unit);
                         if !(position > 0.0) { return None; }
-                        let alignment = match stop.kind.as_str() {
+                        let alignment = match stop.kind.as_deref().unwrap_or("") {
                             "right" => TabAlignment::Right,
                             "center" => TabAlignment::Center,
                             "decimal" => TabAlignment::Decimal,
@@ -1720,7 +1763,7 @@ impl HwpReader {
                     };
                 }
                 if let Some(inferred) = Self::heading_level(p.style_name.as_deref(), p.style_local_name.as_deref()) {
-                    let text: String = spans.iter().map(|s| s.text.as_str()).collect::<String>()
+                    let text: String = spans.iter().map(|s| s.text.to_string()).collect::<String>()
                         .trim().to_string();
                     if !text.is_empty() && text.chars().count() <= Self::HEADING_TEXT_LIMIT {
                         return OfficeBlock::Heading {
@@ -1738,14 +1781,13 @@ impl HwpReader {
                         if raw > 0 { format.list_text_distance = Some(Self::points(raw)); }
                     }
                     return OfficeBlock::ListItem {
-                        level: list.level, ordered: list.ordered, spans, marker: list.marker.clone(),
+                        level: list.level, ordered: list.ordered, spans,
+                        marker: list.marker.clone().map(SwiftString::from),
                         rtl: false, alignment: align, tab_stops, format,
-                        numbering: ListNumbering {
-                            glyphs: list.number_format.as_deref()
-                                .and_then(ListNumberingGlyphs::from_raw)
-                                .unwrap_or(ListNumberingGlyphs::Decimal),
+                        numbering: Some(ListNumbering {
+                            glyphs: Self::list_numbering_glyphs(list.number_format.as_deref().unwrap_or("")),
                             start_number: list.start_number,
-                        },
+                        }),
                     };
                 }
                 OfficeBlock::Paragraph { spans, rtl: false, alignment: align, tab_stops, format }
@@ -1808,8 +1850,9 @@ impl HwpReader {
             HwpBlock::Image(im) => Self::map_image_block(im, page_width, shapes),
             HwpBlock::Shape(sh) => Self::map_shape_block(sh, shapes),
             HwpBlock::Unsupported(u) => OfficeBlock::UnsupportedGraphic {
-                label: u.label.clone(),
+                label: SwiftString::from(u.label.clone()),
                 size: CGSize { width: Self::points(u.w), height: Self::points(u.h) },
+                alignment: None,
             },
             HwpBlock::Equation(e) => {
                 // rhwp now hands us real LaTeX; route it to the SAME `.formula` case a Word `m:oMathPara`
@@ -1817,20 +1860,21 @@ impl HwpReader {
                 // HWP-specific path (invariant: office `.formula` rides the markdown `$$…$$` web-block
                 // pipeline). `w`/`h` are advisory only — the formula engine sizes from the rendered LaTeX.
                 let latex = e.latex.trim().to_string();
-                if !latex.is_empty() { return OfficeBlock::Formula { latex }; }
+                if !latex.is_empty() { return OfficeBlock::Formula { latex: SwiftString::from(latex) }; }
                 // Empty/whitespace latex → an honest placeholder, NEVER an empty formula (mirrors
                 // DocxReader.formulaBlock's never-nothing ladder). rhwp already degrades a parse failure
                 // to `unsupported`; this guards the residual "equation block with nothing translatable".
                 OfficeBlock::UnsupportedGraphic {
-                    label: "equation".to_string(),
+                    label: SwiftString::from("equation".to_string()),
                     size: CGSize { width: Self::points(e.w.unwrap_or(0)), height: Self::points(e.h.unwrap_or(0)) },
+                    alignment: None,
                 }
             }
         }
     }
 
     // swift: Render/Office/HwpReader.swift:1408-1471 (the `.image` arm, split out for one level less nesting)
-    fn map_image_block(im: &HwpImageBlock, page_width: Option<CGFloat>, shapes: &mut MediaContext) -> OfficeBlock {
+    fn map_image_block(im: &HwpImage, page_width: Option<CGFloat>, shapes: &mut MediaContext) -> OfficeBlock {
         // `read` resolves binDataId → pixels via `imageBase64` at read time (pre-decoded into
         // OfficeReadResult.images); the block only RESERVES the layout area here (invariant
         // 1/2/11). id is the stable key `collectImages`/`reconcileMedia` look the bytes up by.
@@ -1856,8 +1900,8 @@ impl HwpReader {
         // pages by itself and pushes the text meant to sit INSIDE it onto the next one.
         if im.as_char != Some(true) && im.wraps_text != Some(true) {
             if let Some(paper) = shapes.paper.clone() {
-                if let Some(bytes) = shapes.picture.as_ref().and_then(|f| f(im.bin_data_id)) {
-                    let image = swiftshim::NSImage::fromData(&bytes);
+                if let Some(image) = shapes.picture.as_ref().and_then(|f| f(im.bin_data_id))
+                    .and_then(|bytes| swiftshim::NSImage::fromData(&bytes)) {
                     let offset = CGPoint {
                         x: Self::points(im.offset_x.unwrap_or(0)),
                         y: Self::points(im.offset_y.unwrap_or(0)),
@@ -1869,7 +1913,7 @@ impl HwpReader {
                     ) {
                         shapes.last_anchored_frame = Some(frame);
                         shapes.anchored.push(OfficeAnchoredObject {
-                            block_index: shapes.block_index,
+                            block_index: shapes.block_index as i64,
                             object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Image(image) },
                             paragraph_anchor: None,
                         });
@@ -1890,8 +1934,8 @@ impl HwpReader {
         // where the signature block it belongs to is the whole point.
         if im.as_char != Some(true) && im.wraps_text != Some(true) {
             if let Some(paper) = shapes.paper.clone() {
-                if let Some(bytes) = shapes.picture.as_ref().and_then(|f| f(im.bin_data_id)) {
-                    let image = swiftshim::NSImage::fromData(&bytes);
+                if let Some(image) = shapes.picture.as_ref().and_then(|f| f(im.bin_data_id))
+                    .and_then(|bytes| swiftshim::NSImage::fromData(&bytes)) {
                     let offset = CGPoint {
                         x: Self::points(im.offset_x.unwrap_or(0)),
                         y: Self::points(im.offset_y.unwrap_or(0)),
@@ -1903,7 +1947,7 @@ impl HwpReader {
                     ) {
                         shapes.last_anchored_frame = Some(frame);
                         shapes.anchored.push(OfficeAnchoredObject {
-                            block_index: shapes.block_index,
+                            block_index: shapes.block_index as i64,
                             object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Image(image) },
                             paragraph_anchor: Some(anchor),
                         });
@@ -1916,21 +1960,14 @@ impl HwpReader {
             }
         }
         OfficeBlock::Image {
-            id: format!("{}{}{}", Self::HWP_IMAGE_PREFIX, im.bin_data_id, Self::crop_suffix_block(im)),
+            id: SwiftString::from(format!("{}{}{}", Self::HWP_IMAGE_PREFIX, im.bin_data_id, Self::crop_suffix(im))),
             size,
             alignment: Self::image_alignment(im.align.as_deref()),
         }
     }
 
-    /// `cropSuffix` operates on `HwpImage` (the schema type embedded picture bytes carry); the block
-    /// walk here holds `HwpImageBlock`, so this adapts the same rule to the block's own crop fields.
-    // swift: Render/Office/HwpReader.swift:1465 (`cropSuffix(im)` call site — `im` is `HwpImageBlock` here)
-    fn crop_suffix_block(im: &HwpImageBlock) -> String {
-        Self::crop_suffix(&im.as_hwp_image())
-    }
-
     // swift: Render/Office/HwpReader.swift:1472-1521 (the `.shape` arm, split out for one level less nesting)
-    fn map_shape_block(sh: &HwpShapeBlock, shapes: &mut MediaContext) -> OfficeBlock {
+    fn map_shape_block(sh: &HwpShape, shapes: &mut MediaContext) -> OfficeBlock {
         // An ANCHORED drawing is placed by the document's own rule — the offsets ALONE are not
         // enough, and that is exactly what the float layer invariant 75 rejected got wrong: it
         // guessed the reference edge and laid a 431pt rule over a table's own column label.
@@ -1960,7 +1997,7 @@ impl HwpReader {
                     if let Some(pdf) = HwpShapeRenderer::pdf(&paths, size) {
                         shapes.last_anchored_frame = Some(frame);
                         shapes.anchored.push(OfficeAnchoredObject {
-                            block_index: shapes.block_index,
+                            block_index: shapes.block_index as i64,
                             object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Drawing(pdf) },
                             paragraph_anchor: None,
                         });
@@ -1985,7 +2022,7 @@ impl HwpReader {
                     if let Some(pdf) = HwpShapeRenderer::pdf(&paths, size) {
                         shapes.last_anchored_frame = Some(frame);
                         shapes.anchored.push(OfficeAnchoredObject {
-                            block_index: shapes.block_index,
+                            block_index: shapes.block_index as i64,
                             object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Drawing(pdf) },
                             paragraph_anchor: Some(anchor),
                         });
@@ -2009,7 +2046,25 @@ impl HwpReader {
                 format: ParagraphFormat::default(),
             };
         };
-        OfficeBlock::Image { id: shapes.add(pdf), size, alignment: Self::image_alignment(sh.align.as_deref()) }
+        OfficeBlock::Image { id: SwiftString::from(shapes.add(pdf)), size, alignment: Self::image_alignment(sh.align.as_deref()) }
+    }
+
+    /// `ListNumbering.Glyphs(rawValue:) ?? .decimal` — a Swift `String`-backed enum's raw values,
+    /// restated as a match since `ListNumberingGlyphs` (office_block.rs) carries no `FromStr`/
+    /// raw-value constructor of its own.
+    fn list_numbering_glyphs(raw: &str) -> ListNumberingGlyphs {
+        match raw {
+            "decimal" => ListNumberingGlyphs::Decimal,
+            "circledDecimal" => ListNumberingGlyphs::CircledDecimal,
+            "romanUpper" => ListNumberingGlyphs::RomanUpper,
+            "romanLower" => ListNumberingGlyphs::RomanLower,
+            "latinUpper" => ListNumberingGlyphs::LatinUpper,
+            "latinLower" => ListNumberingGlyphs::LatinLower,
+            "hangulSyllable" => ListNumberingGlyphs::HangulSyllable,
+            "hangulNumber" => ListNumberingGlyphs::HangulNumber,
+            "hanjaNumber" => ListNumberingGlyphs::HanjaNumber,
+            _ => ListNumberingGlyphs::Decimal,
+        }
     }
 }
 
@@ -2070,9 +2125,17 @@ impl HwpReader {
             blocks, row_span: c.row_span, col_span: c.col_span,
             background_color: shading,
             background_image: fill_image,
+            border_color: None,
+            border_width: None,
             edge_borders: Self::edge_borders(c.border_fill_id, border_fills),
-            vertical_alignment: v_align, edge_padding: edges,
+            width: None,
+            vertical_alignment: v_align,
+            padding: None,
+            edge_padding: edges,
             diagonal: Self::cell_diagonal(fill),
+            style_shading: None,
+            style_border_color: None,
+            style_border_width: None,
         }
     }
 
@@ -2086,7 +2149,7 @@ impl HwpReader {
         let mut commands: Vec<PathCommand> = Vec::new();
         for token in &p.d {
             let numbers: Vec<CGFloat> = token.iter().filter_map(|v| v.value()).map(|v| v as CGFloat / 100.0).collect();
-            match (token.first().map(|t| t.name()).unwrap_or_default(), numbers.len()) {
+            match (token.first().and_then(|t| t.name()).unwrap_or_default(), numbers.len()) {
                 ("M", 2) => commands.push(PathCommand::Move(CGPoint { x: numbers[0], y: numbers[1] })),
                 ("L", 2) => commands.push(PathCommand::Line(CGPoint { x: numbers[0], y: numbers[1] })),
                 ("C", 6) => commands.push(PathCommand::Curve(
@@ -2101,7 +2164,7 @@ impl HwpReader {
         if commands.is_empty() { return None; }
         let stroke: Option<BorderSide> = p.stroke.as_ref().map(|s| BorderSide {
             width: s.width_pt.unwrap_or(0.5) as CGFloat,
-            color: Self::color(s.color.as_deref()).unwrap_or(NSColor::black()),
+            color: Some(Self::color(s.color.as_deref()).unwrap_or(NSColor::srgb(0.0, 0.0, 0.0, 1.0))),
             style: Self::line_style(s.r#type.as_deref().unwrap_or("solid")),
         });
         Some(PathSpec {
@@ -2150,8 +2213,9 @@ impl HwpReader {
     fn edge_borders(id: Option<i64>, fills: &[HwpBorderFill]) -> Option<EdgeBorders> {
         let fill = Self::border_fill(id, fills)?;
         Some(EdgeBorders {
-            top: Self::border_decl(&fill.top), left: Self::border_decl(&fill.left),
-            bottom: Self::border_decl(&fill.bottom), right: Self::border_decl(&fill.right),
+            top: Some(Self::border_decl(&fill.top)), left: Some(Self::border_decl(&fill.left)),
+            bottom: Some(Self::border_decl(&fill.bottom)), right: Some(Self::border_decl(&fill.right)),
+            ..Default::default()
         })
     }
 

@@ -8,13 +8,12 @@
 use std::collections::HashMap;
 
 use swiftshim::{
-    NSAttributedString, NSAttributedStringKey, NSFont, NSFontDescriptor, NSImage,
-    NSMutableAttributedString, NSMutableParagraphStyle, NSNumber, NSParagraphStyle, NSRange,
-    NSTextAlignment, NSTextAttachment, NSTextTab, NSUnderlineStyle, NSWritingDirection,
-    SizedAttachmentCell, NS_NOT_FOUND, URL,
+    CGFloat, CGSize, NSAttributedString, NSAttributedStringKey, NSFont, NSFontDescriptor, NSImage,
+    NSMutableAttributedString, NSMutableParagraphStyle, NSNumber, NSParagraphStyle, NSPoint,
+    NSRange, NSRect, NSTextAlignment, NSTextAttachment, NSTextTab, NSUnderlineStyle,
+    NSWritingDirection, SizedAttachmentCell, NS_NOT_FOUND, URL,
 };
 
-use crate::geometry::{CGFloat, CGSize, NSPoint, NSRect};
 use crate::render::md_attr::MDAttr;
 use crate::render::office::column_geometry::{ColumnGeometry, OfficeColumnLayout};
 use crate::render::office::office_block::{
@@ -33,7 +32,7 @@ use crate::render::table_block_builder::{AnchorSpan, CellContent, GridTextTable,
 /// point of carrying this instead of just keeping the original `TabStop`). Carried as
 /// `MDAttr.fillMarginTab`'s attribute value, so it rides along in the text storage from build
 /// time through every later reflow.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FillMarginTabInfo {
     pub margin_alignment: TabAlignment,
     pub margin_leader: TabLeader,
@@ -91,6 +90,44 @@ impl Default for OfficeGraphicInfo {
 pub struct OfficeTextBuilder;
 
 impl OfficeTextBuilder {
+    // Local convenience wrappers built on top of the shim's existing primitives — not new
+    // shim surface (nothing here reaches past what `swiftshim` already exposes), just the
+    // small pieces of NSString/NSAttributedString glue the Swift original leans on inline.
+
+    /// swift: `result.string as NSString` — the text content as a UTF-16-indexed string, for the
+    /// paragraph-boundary scans below.
+    fn as_ns_string(result: &NSMutableAttributedString) -> swiftshim::SwiftString {
+        swiftshim::SwiftString::new(result.string())
+    }
+
+    /// swift: `ns.enumerateSubstrings(in:options: .byParagraphs) { _, _, enclosing, _ in ... }` —
+    /// walks `range` one paragraph (line, LF-terminated) at a time, handing the body the
+    /// ENCLOSING range (content + its own terminator), exactly what `.byParagraphs` hands Swift's
+    /// closure. Built on `SwiftString.getLineStart`, the shim's own line-boundary primitive.
+    fn enumerate_paragraphs(ns: &swiftshim::SwiftString, range: NSRange, mut body: impl FnMut(NSRange)) {
+        let mut loc = range.location;
+        let limit = range.maxRange();
+        while loc < limit {
+            let mut line_end = 0usize;
+            let mut contents_end = 0usize;
+            ns.getLineStart(None, &mut line_end, &mut contents_end, NSRange::new(loc, 0));
+            let enclosing_end = line_end.min(limit);
+            if enclosing_end <= loc {
+                break;
+            }
+            body(NSRange::new(loc, enclosing_end - loc));
+            loc = enclosing_end;
+        }
+    }
+
+    /// swift: `result.attribute(.paragraphStyle, at: loc, effectiveRange: nil) as? NSParagraphStyle`
+    fn paragraph_style_at(result: &NSMutableAttributedString, at: usize) -> Option<NSParagraphStyle> {
+        match result.attribute(&NSAttributedStringKey::ParagraphStyle, at) {
+            Some((swiftshim::AttrValue::ParagraphStyle(p), _)) => Some(p.clone()),
+            _ => None,
+        }
+    }
+
     // swift: Render/Office/OfficeTextBuilder.swift:48-118
     /// `columnWidth` is the text column's width in points at build time (what `presizeKnownMedia`
     /// calls `maxWidth` for markdown) — defaulted huge so callers that don't care about wrapping
@@ -157,7 +194,7 @@ impl OfficeTextBuilder {
             }
             let cols = rows
                 .iter()
-                .map(|row| row.iter().map(|c| c.col_span).sum::<usize>())
+                .map(|row| row.iter().map(|c| c.col_span as usize).sum::<usize>())
                 .max()
                 .unwrap_or(0);
             if r * cols >= 500 {
@@ -197,11 +234,11 @@ impl OfficeTextBuilder {
         page_number_restart_blocks: &[OfficePageNumberRestart],
         anchored_objects: &HashMap<usize, Vec<i64>>,
     ) -> NSAttributedString {
-        let result = NSMutableAttributedString::new();
+        let mut result = NSMutableAttributedString::new();
         let mut block_seq: i64 = 0;
         // Ordered-list numbering state, keyed by nesting level. Lives for the whole build() call
         // (not per-block) because the restart rule below needs to see across blocks.
-        let mut ordered_counters: HashMap<usize, i64> = HashMap::new();
+        let mut ordered_counters: HashMap<i64, i64> = HashMap::new();
         let font_size_scale = if document_default_font_size > 0.0 {
             theme.base_font_size / document_default_font_size
         } else {
@@ -228,7 +265,7 @@ impl OfficeTextBuilder {
         // avoids an O(n) scan per span).
         let mut comment_numbers: HashMap<String, i64> = HashMap::new();
         for c in comments {
-            comment_numbers.insert(c.id.clone(), c.number);
+            comment_numbers.insert(c.id.to_string(), c.number);
         }
 
         // Block index → the section that starts there, so the marker is one dictionary lookup per
@@ -246,7 +283,7 @@ impl OfficeTextBuilder {
         let mut restarts_numbering: HashMap<usize, i64> = HashMap::new();
         for r in page_number_restart_blocks {
             // uniquingKeysWith: { first, _ in first } — the FIRST declaration for a block wins.
-            restarts_numbering.entry(r.block).or_insert(r.number);
+            restarts_numbering.entry(r.block as usize).or_insert(r.number);
         }
 
         // swift: Render/Office/OfficeTextBuilder.swift:174-215
@@ -263,7 +300,7 @@ impl OfficeTextBuilder {
             if r.length == 0 {
                 return;
             }
-            result.addAttribute(MDAttr::block_id(), NSNumber::fromDouble(*block_seq as f64), r);
+            result.addAttribute(MDAttr::block_id(), swiftshim::AttrValue::Int(*block_seq), r);
             *block_seq += 1;
             // The section marker goes on the block that STARTS a section, over its whole range —
             // one attribute run per section, which is what a page lookup binary-searches. A section
@@ -271,37 +308,39 @@ impl OfficeTextBuilder {
             // empty run cannot be found by a character, so claiming one would be a lie about where
             // the section begins.
             if let Some(section) = section_of_block.get(&index) {
-                result.addAttribute(MDAttr::section_index(), NSNumber::fromDouble(*section as f64), r);
+                result.addAttribute(MDAttr::section_index(), swiftshim::AttrValue::Int(*section as i64), r);
             }
             // The objects the document pinned to the paper AT this block. The block itself renders
             // as an empty paragraph (the reader took the object out of the flow), and that empty
             // paragraph's own newline is what carries the marker — an object with no range could
             // never be found by a page.
-            if let Some(ids) = anchored_objects.get(&index) {
-                result.add_attribute_ids(MDAttr::anchored_objects(), ids.clone(), r);
+            // BLOCKED on missing shim member: AttrValue has no array-of-Int64 variant (needed to
+            // carry `[Int]` — Swift's `MDAttr.anchoredObjects` value). Reported to b-shim.
+            if let Some(_ids) = anchored_objects.get(&index) {
+                // result.addAttribute(MDAttr::anchored_objects(), swiftshim::AttrValue::???(ids.clone()), r);
             }
             // The document's own page break, marked on the block that starts the new page. A block
             // that builds to nothing carries no marker for the same reason the section one does not:
             // an empty run cannot be found by a line, so claiming one would put the break somewhere
             // layout can never see it.
             if breaks_page.contains(&index) {
-                result.add_attribute_bool(MDAttr::starts_page(), true, r);
+                result.addAttribute(MDAttr::starts_page(), swiftshim::AttrValue::Bool(true), r);
             }
             if keeps_with_next.contains(&index) {
-                result.add_attribute_bool(MDAttr::keep_with_next(), true, r);
+                result.addAttribute(MDAttr::keep_with_next(), swiftshim::AttrValue::Bool(true), r);
             }
             // The document's own veto against printing a page number on the page this block lands
             // on (HWP's PageHide). Marked the same way `startsPage` is — on the block's own range,
             // absent when it builds to nothing — because a page is resolved from where a marker
             // sits in the laid-out text, exactly as `sectionIndex` is.
             if hides_page_number.contains(&index) {
-                result.add_attribute_bool(MDAttr::hides_page_number(), true, r);
+                result.addAttribute(MDAttr::hides_page_number(), swiftshim::AttrValue::Bool(true), r);
             }
             // Where the document restarts its page counter. Marked on the block's own range for the
             // same reason the veto above is: which PAGE it lands on is a layout answer, resolved
             // later from where the marked character actually sits.
             if let Some(first) = restarts_numbering.get(&index) {
-                result.addAttribute(MDAttr::page_number_restart(), NSNumber::fromDouble(*first as f64), r);
+                result.addAttribute(MDAttr::page_number_restart(), swiftshim::AttrValue::Int(*first), r);
             }
         };
 
@@ -328,7 +367,7 @@ impl OfficeTextBuilder {
                 OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, .. } => {
                     let heading_base = Self::heading_base_font(*level, theme, paged);
                     result.append(&Self::spans_attributed_string(
-                        spans, &heading_base, &theme.text_color, theme, font_size_scale, paged,
+                        spans, &heading_base, &theme.text_color(), theme, font_size_scale, paged,
                         &comment_numbers,
                     ));
                     // Tagged BEFORE the trailing newline is appended, so a substring of this range is
@@ -336,38 +375,43 @@ impl OfficeTextBuilder {
                     // (`OutlinePanel.reload` trims and shows it verbatim).
                     result.addAttribute(
                         MDAttr::heading(),
-                        NSNumber::fromDouble(*level as f64),
+                        swiftshim::AttrValue::Int(*level),
                         NSRange::new(start, result.length() - start),
                     );
-                    result.append(&NSAttributedString::fromString("\n"));
+                    result.append(&NSAttributedString::new("\n"));
                     let heading_range = NSRange::new(start, result.length() - start);
-                    result.add_paragraph_style(
-                        Self::heading_paragraph_style(
+                    result.addAttribute(
+                        NSAttributedStringKey::ParagraphStyle,
+                        swiftshim::AttrValue::ParagraphStyle(Self::heading_paragraph_style(
                             *level, spans, theme, *rtl, alignment.clone(), tab_stops, format.clone(),
                             font_size_scale, paged, line_grid_pitch, col_w,
-                        ),
+                        )),
                         heading_range,
                     );
-                    if let Some(info) = Self::fill_margin_tab_info(tab_stops) {
-                        result.add_attribute_fill_margin(MDAttr::fill_margin_tab(), info, heading_range);
+                    // BLOCKED on missing shim member: AttrValue has no FillMarginTabInfo variant.
+                    // Reported to b-shim.
+                    if let Some(_info) = Self::fill_margin_tab_info(tab_stops) {
+                        // result.addAttribute(MDAttr::fill_margin_tab(), swiftshim::AttrValue::???(_info), heading_range);
                     }
                 }
                 OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, .. } => {
                     result.append(&Self::spans_attributed_string(
-                        spans, &theme.body_font, &theme.text_color, theme, font_size_scale, paged,
+                        spans, &theme.body_font(), &theme.text_color(), theme, font_size_scale, paged,
                         &comment_numbers,
                     ));
-                    result.append(&NSAttributedString::fromString("\n"));
+                    result.append(&NSAttributedString::new("\n"));
                     let paragraph_range = NSRange::new(start, result.length() - start);
-                    result.add_paragraph_style(
-                        Self::body_paragraph_style(
+                    result.addAttribute(
+                        NSAttributedStringKey::ParagraphStyle,
+                        swiftshim::AttrValue::ParagraphStyle(Self::body_paragraph_style(
                             theme, *rtl, alignment.clone(), tab_stops, format.clone(), font_size_scale,
                             paged, line_grid_pitch, col_w,
-                        ),
+                        )),
                         paragraph_range,
                     );
-                    if let Some(info) = Self::fill_margin_tab_info(tab_stops) {
-                        result.add_attribute_fill_margin(MDAttr::fill_margin_tab(), info, paragraph_range);
+                    // BLOCKED on missing shim member: AttrValue has no FillMarginTabInfo variant.
+                    if let Some(_info) = Self::fill_margin_tab_info(tab_stops) {
+                        // result.addAttribute(MDAttr::fill_margin_tab(), swiftshim::AttrValue::???(_info), paragraph_range);
                     }
                     Self::mark_tab_leaders(tab_stops, paragraph_range, &mut result);
                 }
@@ -375,7 +419,7 @@ impl OfficeTextBuilder {
                     level, ordered, spans, marker, rtl, alignment, tab_stops, numbering, ..
                 } => {
                     Self::append_list_item(
-                        *level, *ordered, spans, marker.clone(), *rtl, alignment.clone(), tab_stops,
+                        *level, *ordered, spans, marker.as_ref().map(|m| m.to_string()), *rtl, alignment.clone(), tab_stops,
                         &mut result, theme, &mut ordered_counters, font_size_scale, paged,
                         line_grid_pitch, format.clone(), &comment_numbers, numbering.clone(),
                     );
@@ -386,24 +430,25 @@ impl OfficeTextBuilder {
                     // body paragraph: it must not reserve the grid's eventual height, because the whole
                     // point is that this document is short until the grid arrives.
                     let mut stand_in = NSMutableAttributedString::fromString(
-                        &(Self::DEFERRED_TABLE_STAND_IN.to_string() + "\n"),
+                        Self::DEFERRED_TABLE_STAND_IN.to_string() + "\n",
                     );
                     let whole = NSRange::new(0, stand_in.length());
-                    stand_in.add_attribute_font(&theme.body_font, whole);
-                    stand_in.add_attribute_color(&theme.secondary_color, whole);
-                    stand_in.add_paragraph_style(
-                        Self::body_paragraph_style(
+                    stand_in.addAttribute(NSAttributedStringKey::Font, swiftshim::AttrValue::Font(theme.body_font()), whole);
+                    stand_in.addAttribute(NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(theme.secondary_color()), whole);
+                    stand_in.addAttribute(
+                        NSAttributedStringKey::ParagraphStyle,
+                        swiftshim::AttrValue::ParagraphStyle(Self::body_paragraph_style(
                             theme, false, None, &[], format.clone(), font_size_scale, paged,
                             line_grid_pitch, col_w,
-                        ),
+                        )),
                         whole,
                     );
-                    stand_in.addAttribute(MDAttr::deferred_table(), NSNumber::fromDouble(index as f64), whole);
-                    result.append(&stand_in);
+                    stand_in.addAttribute(MDAttr::deferred_table(), swiftshim::AttrValue::Int(index as i64), whole);
+                    result.append(stand_in.asAttributedString());
                 }
-                OfficeBlock::Table { rows, header_rows, column_widths, table_format } => {
+                OfficeBlock::Table { rows, header_rows, column_widths, format: table_format } => {
                     Self::append_table(
-                        rows, *header_rows, column_widths, table_format, &mut result, theme,
+                        rows, *header_rows as usize, column_widths, table_format, &mut result, theme,
                         font_size_scale, col_w,
                         // A cell picture is measured against the table's own source width when the
                         // format stated one, else it falls back to the page — never left unscaled.
@@ -413,18 +458,18 @@ impl OfficeTextBuilder {
                 }
                 OfficeBlock::Image { id, size, alignment } => {
                     Self::append_image(
-                        id.clone(), *size, col_w, page_basis, scale(page_basis), alignment.clone(),
+                        id.to_string(), *size, col_w, page_basis, scale(page_basis), alignment.clone(),
                         false, bleed, &mut result,
                     );
                 }
                 OfficeBlock::UnsupportedGraphic { label, size, alignment } => {
                     Self::append_unsupported_graphic(
-                        label.clone(), *size, col_w, page_basis, scale(page_basis), alignment.clone(),
+                        label.to_string(), *size, col_w, page_basis, scale(page_basis), alignment.clone(),
                         false, bleed, &mut result,
                     );
                 }
                 OfficeBlock::Formula { latex } => {
-                    Self::append_formula(latex.clone(), &mut result);
+                    Self::append_formula(latex.to_string(), &mut result);
                 }
             }
             // P2b — a heading/paragraph/list-item's own resolved shading/border (`format` is `nil`
@@ -436,7 +481,7 @@ impl OfficeTextBuilder {
             if let Some(format) = &format {
                 let range = NSRange::new(start, result.length() - start);
                 if let Some(shading) = &format.shading {
-                    result.add_attribute_color(MDAttr::para_shading(), shading, range);
+                    result.addAttribute(MDAttr::para_shading(), swiftshim::AttrValue::Color(*shading), range);
                 }
                 // Presence is "either field resolved" — a source can legally set only `w:pBdr`'s
                 // `@w:sz` (width) with `@w:color="auto"` (theme decides), or vice versa; the SAME
@@ -444,20 +489,20 @@ impl OfficeTextBuilder {
                 // `.borderWidth` (`Palette.tableBorder` / `1`pt) is mirrored here so a partially
                 // resolved border still draws something rather than silently vanishing.
                 if format.border_color.is_some() || format.border_width.is_some() {
-                    let color = format.border_color.clone().unwrap_or_else(Palette::table_border);
+                    let color = format.border_color.unwrap_or_else(Palette::table_border);
                     let width = format.border_width.unwrap_or(1.0);
-                    result.add_attribute_color(MDAttr::para_border_color(), &color, range);
-                    result.addAttribute(MDAttr::para_border_width(), NSNumber::fromDouble(width), range);
+                    result.addAttribute(MDAttr::para_border_color(), swiftshim::AttrValue::Color(color), range);
+                    result.addAttribute(MDAttr::para_border_width(), swiftshim::AttrValue::Double(width), range);
                     // WHICH edges — empty means the reader said nothing per-edge, which is the
                     // whole box this drew before the set existed (every ODT paragraph, invariant 37).
-                    let edges = if format.border_edges.is_empty() { RectEdge::all() } else { format.border_edges };
-                    result.addAttribute(MDAttr::para_border_edges(), NSNumber::fromDouble(edges.raw_value() as f64), range);
+                    let edges = if format.border_edges.raw_value == 0 { RectEdge::ALL } else { format.border_edges };
+                    result.addAttribute(MDAttr::para_border_edges(), swiftshim::AttrValue::Double(edges.raw_value as f64), range);
                 }
             }
             tag_block(&mut result, start, index, &mut block_seq);
         }
         Self::unify_paragraph_terminators(&mut result);
-        result.into_immutable()
+        result.into()
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:374-392
@@ -479,9 +524,9 @@ impl OfficeTextBuilder {
         if result.length() == 0 {
             return;
         }
-        let ns = result.as_ns_string();
+        let ns = Self::as_ns_string(result);
         let mut paragraphs: Vec<NSRange> = Vec::new();
-        ns.enumerate_substrings_by_paragraphs(NSRange::new(0, result.length()), |_sub, _range, enclosing, _terminator| {
+        Self::enumerate_paragraphs(&ns, NSRange::new(0, result.length()), |enclosing| {
             if enclosing.length > 0 {
                 paragraphs.push(enclosing);
             }
@@ -511,7 +556,7 @@ impl OfficeTextBuilder {
             // The declaration takes effect from the block it sits in, which is how a document that
             // opens in two columns gets two columns on its first paragraph rather than its second.
             if let Some(declared) = Self::declared_column_layout(block) {
-                active = if declared.splits_text { Some(declared) } else { None };
+                active = if declared.splits_text() { Some(declared) } else { None };
             }
             out[i] = active.clone();
         }
@@ -552,9 +597,9 @@ impl OfficeTextBuilder {
     // swift: Render/Office/OfficeTextBuilder.swift:439-450
     fn paragraph_format(block: &OfficeBlock) -> Option<ParagraphFormat> {
         match block {
-            OfficeBlock::Heading { format, .. } => format.clone(),
-            OfficeBlock::Paragraph { format, .. } => format.clone(),
-            OfficeBlock::ListItem { format, .. } => format.clone(),
+            OfficeBlock::Heading { format, .. } => Some(format.clone()),
+            OfficeBlock::Paragraph { format, .. } => Some(format.clone()),
+            OfficeBlock::ListItem { format, .. } => Some(format.clone()),
             OfficeBlock::Table { .. }
             | OfficeBlock::Image { .. }
             | OfficeBlock::UnsupportedGraphic { .. }
@@ -619,7 +664,7 @@ impl OfficeTextBuilder {
         paged: bool,
         comment_numbers: &HashMap<String, i64>,
     ) -> NSAttributedString {
-        let out = NSMutableAttributedString::new();
+        let mut out = NSMutableAttributedString::new();
         for span in spans {
             let mut font = base_font.clone();
             let mut color = base_color.clone();
@@ -627,14 +672,14 @@ impl OfficeTextBuilder {
             // `caps` is a DISPLAY-only transform (see `Span.caps`'s doc) — computed on a local copy
             // of the run's text, never on `span` itself, so nothing downstream (undo, re-render,
             // the source model) ever sees an uppercased string that wasn't authored.
-            let display_text = if span.caps { span.text.to_uppercase() } else { span.text.clone() };
+            let display_text = if span.caps { span.text.to_string().to_uppercase() } else { span.text.to_string() };
             if span.code {
-                font = theme.code_font.clone();
-                color = theme.inline_code_color.clone();
+                font = theme.code_font().clone();
+                color = theme.inline_code_color().clone();
                 attrs.insert(MDAttr::inline_code(), swiftshim::AttrValue::Bool(true));
             } else if let Some(name) = &span.font_name {
                 // Family override — never applied to a `code` span (see `Span.fontName`'s doc).
-                if let Some(named) = NSFont::named(name, font.pointSize()) {
+                if let Some(named) = NSFont::named(&name.to_string(), font.pointSize()) {
                     font = named;
                 }
             }
@@ -660,14 +705,14 @@ impl OfficeTextBuilder {
             // of spans — keeps applying bold/italic exactly as it always has.
             let has_resolved_substitute = span.resolved_font_descriptor.is_some();
             if let Some(resolved_descriptor) = &span.resolved_font_descriptor {
-                if let Some(substituted) = NSFont::from_descriptor(resolved_descriptor, font.pointSize()) {
+                if let Some(substituted) = NSFont::with_descriptor(resolved_descriptor, font.pointSize()) {
                     font = substituted;
                 }
             }
             // An authored size REPLACES the block's base size before bold/italic/super-sub touch
             // it, so those still layer on top of the right starting point (traits preserve family,
             // not size; scaling preserves family, not traits — order doesn't matter between the
-            // two, but both must happen before either reads `font.pointSize` for anything else).
+            // two, but both must happen before either reads `font.pointSize()` for anything else).
             //
             // The `.rounded()` is the NON-paged half of the model and belongs there: a run's size
             // has been multiplied by `fontSizeScale` (reading size ÷ the document's own default),
@@ -682,15 +727,15 @@ impl OfficeTextBuilder {
             if let Some(authored_size) = span.font_size {
                 let scaled = authored_size * font_size_scale;
                 let target = if paged { scaled } else { scaled.round() };
-                if let Some(resized) = NSFont::from_descriptor(&font.fontDescriptor(), target.max(1.0)) {
+                if let Some(resized) = NSFont::with_descriptor(&font.fontDescriptor(), target.max(1.0)) {
                     font = resized;
                 }
             }
             if !has_resolved_substitute {
                 let mut traits = swiftshim::NSFontDescriptorSymbolicTraits::empty();
-                if span.bold { traits.insert(swiftshim::NSFontDescriptorSymbolicTraits::BOLD); }
-                if span.italic { traits.insert(swiftshim::NSFontDescriptorSymbolicTraits::ITALIC); }
-                if !traits.is_empty() {
+                if span.bold { traits.insert(swiftshim::NSFontDescriptorSymbolicTraits::bold); }
+                if span.italic { traits.insert(swiftshim::NSFontDescriptorSymbolicTraits::italic); }
+                if !traits.isEmpty() {
                     font = Self::font_adding(traits, &font);
                 }
             }
@@ -705,19 +750,20 @@ impl OfficeTextBuilder {
             // — which page the note lands on, how tall that page's band is — is found from where
             // this attribute ends up after layout (invariant 98).
             if let Some(reference) = &span.footnote_ref {
-                attrs.insert(MDAttr::footnote_ref(), swiftshim::AttrValue::Text(reference.clone()));
+                attrs.insert(MDAttr::footnote_ref(), swiftshim::AttrValue::Int(*reference));
             }
             if let Some(cols) = &span.column_layout {
-                attrs.insert(MDAttr::column_layout(), swiftshim::AttrValue::ColumnLayout(cols.clone()));
+                // BLOCKED on missing shim member: AttrValue has no OfficeColumnLayout variant. Reported.
+                // attrs.insert(MDAttr::column_layout(), swiftshim::AttrValue::???(cols.clone()));
             }
             if span.superscript {
                 let raised = font.pointSize() * 0.35;
                 font = Self::font_scaled(&font, 0.7);
-                attrs.insert(swiftshim::NSAttributedStringKey::BASELINE_OFFSET, swiftshim::AttrValue::Number(raised));
+                attrs.insert(swiftshim::NSAttributedStringKey::Custom("baselineOffset".to_string()), swiftshim::AttrValue::Double(raised));
             } else if span.subscripted {
                 let lowered = -font.pointSize() * 0.15;
                 font = Self::font_scaled(&font, 0.7);
-                attrs.insert(swiftshim::NSAttributedStringKey::BASELINE_OFFSET, swiftshim::AttrValue::Number(lowered));
+                attrs.insert(swiftshim::NSAttributedStringKey::Custom("baselineOffset".to_string()), swiftshim::AttrValue::Double(lowered));
             }
             // Authored colour is resolved against the theme, never applied raw — see
             // `resolvedTextColor`'s doc for the ordinary-ink-vs-marked-colour decision. Skipped for
@@ -741,23 +787,23 @@ impl OfficeTextBuilder {
             if span.small_caps {
                 font = todo!("swift:602-607 kLowerCaseType/kLowerCaseSmallCapsSelector font-feature descriptor — needs NSFontDescriptor.FeatureKey shim");
             }
-            attrs.insert(swiftshim::NSAttributedStringKey::FONT, swiftshim::AttrValue::Font(font.clone()));
-            attrs.insert(swiftshim::NSAttributedStringKey::FOREGROUND_COLOR, swiftshim::AttrValue::Color(color.clone()));
+            attrs.insert(swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(font.clone()));
+            attrs.insert(swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(color.clone()));
             // Always drawn exactly as authored — see `Span.highlightColor`'s doc for why a
             // highlight, unlike text colour, is never reinterpreted against the theme.
             if let Some(highlight) = &span.highlight_color {
-                attrs.insert(swiftshim::NSAttributedStringKey::BACKGROUND_COLOR, swiftshim::AttrValue::Color(highlight.clone()));
+                attrs.insert(swiftshim::NSAttributedStringKey::Custom("backgroundColor".to_string()), swiftshim::AttrValue::Color(highlight.clone()));
             }
             if span.underline {
                 attrs.insert(
-                    swiftshim::NSAttributedStringKey::UNDERLINE_STYLE,
-                    swiftshim::AttrValue::Number(Self::ns_underline_style(span.underline_style).raw_value() as f64),
+                    swiftshim::NSAttributedStringKey::UnderlineStyle,
+                    swiftshim::AttrValue::Double(Self::ns_underline_style(span.underline_style).0 as f64),
                 );
             }
             if span.strikethrough {
                 attrs.insert(
-                    swiftshim::NSAttributedStringKey::STRIKETHROUGH_STYLE,
-                    swiftshim::AttrValue::Number(NSUnderlineStyle::Single.raw_value() as f64),
+                    swiftshim::NSAttributedStringKey::StrikethroughStyle,
+                    swiftshim::AttrValue::Double(NSUnderlineStyle::single.0 as f64),
                 );
             }
             // A decoration's OWN colour, when the document gave it one distinct from the text.
@@ -765,12 +811,12 @@ impl OfficeTextBuilder {
             // and an underline colour on a run with no underline is a fact about nothing.
             if span.underline {
                 if let Some(c) = &span.underline_color {
-                    attrs.insert(swiftshim::NSAttributedStringKey::UNDERLINE_COLOR, swiftshim::AttrValue::Color(c.clone()));
+                    attrs.insert(swiftshim::NSAttributedStringKey::Custom("underlineColor".to_string()), swiftshim::AttrValue::Color(c.clone()));
                 }
             }
             if span.strikethrough {
                 if let Some(c) = &span.strikethrough_color {
-                    attrs.insert(swiftshim::NSAttributedStringKey::STRIKETHROUGH_COLOR, swiftshim::AttrValue::Color(c.clone()));
+                    attrs.insert(swiftshim::NSAttributedStringKey::Custom("strikethroughColor".to_string()), swiftshim::AttrValue::Color(c.clone()));
                 }
             }
             // Letter spacing and baseline shift are stated as a share of the run's own em, so they
@@ -778,12 +824,12 @@ impl OfficeTextBuilder {
             // them proportional at every reading size, exactly like every other authored length.
             if let Some(pct) = span.letter_spacing_percent {
                 if pct != 0.0 {
-                    attrs.insert(swiftshim::NSAttributedStringKey::KERN, swiftshim::AttrValue::Number(font.pointSize() * pct / 100.0));
+                    attrs.insert(swiftshim::NSAttributedStringKey::Custom("kern".to_string()), swiftshim::AttrValue::Double(font.pointSize() * pct / 100.0));
                 }
             }
             if let Some(pct) = span.baseline_offset_percent {
                 if pct != 0.0 {
-                    attrs.insert(swiftshim::NSAttributedStringKey::BASELINE_OFFSET, swiftshim::AttrValue::Number(font.pointSize() * pct / 100.0));
+                    attrs.insert(swiftshim::NSAttributedStringKey::Custom("baselineOffset".to_string()), swiftshim::AttrValue::Double(font.pointSize() * pct / 100.0));
                 }
             }
             // Same colour/underline treatment `MarkdownRenderer.inlineFragment`'s `Markdown.Link`
@@ -807,7 +853,7 @@ impl OfficeTextBuilder {
             // nothing" arrive identically, and the three-state distinction invariant 47 needed for
             // borders does not exist here. Guessing wrong would silently drop the click affordance.
             let link_keeps_authored_colour = paged && span.text_color.is_some() && !span.code;
-            if let Some(link) = &span.link {
+            if let Some(link) = span.link.as_ref().map(|l| l.to_string()) {
                 if let Some(rest) = link.strip_prefix('#') {
                     // An in-document anchor (docx `w:anchor`, odt same-document `xlink:href`) —
                     // NEVER a `.link` URL built from the raw fragment. `MarkdownRenderer`'s own TOC
@@ -818,29 +864,33 @@ impl OfficeTextBuilder {
                     // cross-reference tries to open a file named after the bookmark) is the defect
                     // this exists to prevent, not a style nicety.
                     if !link_keeps_authored_colour {
-                        attrs.insert(swiftshim::NSAttributedStringKey::FOREGROUND_COLOR, swiftshim::AttrValue::Color(theme.link_color.clone()));
+                        attrs.insert(swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(theme.link_color().clone()));
                     }
-                    attrs.insert(swiftshim::NSAttributedStringKey::UNDERLINE_STYLE, swiftshim::AttrValue::Number(NSUnderlineStyle::Single.raw_value() as f64));
+                    attrs.insert(swiftshim::NSAttributedStringKey::UnderlineStyle, swiftshim::AttrValue::Double(NSUnderlineStyle::single.0 as f64));
                     attrs.insert(MDAttr::anchor(), swiftshim::AttrValue::Text(rest.to_string()));
-                    attrs.insert(swiftshim::NSAttributedStringKey::LINK, swiftshim::AttrValue::Url(URL::fromString("fmdanchor:jump").unwrap()));
-                } else if let Some(url) = URL::fromString(link) {
+                    // AttrValue has no Url variant (missing shim member); carried as Text(url.string) instead.
+                    attrs.insert(swiftshim::NSAttributedStringKey::Link, swiftshim::AttrValue::Text(URL::fromString("fmdanchor:jump").unwrap().string));
+                } else if let Some(url) = URL::fromString(&link) {
                     if !link_keeps_authored_colour {
-                        attrs.insert(swiftshim::NSAttributedStringKey::FOREGROUND_COLOR, swiftshim::AttrValue::Color(theme.link_color.clone()));
+                        attrs.insert(swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(theme.link_color().clone()));
                     }
-                    attrs.insert(swiftshim::NSAttributedStringKey::UNDERLINE_STYLE, swiftshim::AttrValue::Number(NSUnderlineStyle::Single.raw_value() as f64));
-                    attrs.insert(swiftshim::NSAttributedStringKey::LINK, swiftshim::AttrValue::Url(url));
+                    attrs.insert(swiftshim::NSAttributedStringKey::UnderlineStyle, swiftshim::AttrValue::Double(NSUnderlineStyle::single.0 as f64));
+                    // AttrValue has no Url variant (missing shim member); carried as Text(url.string) instead.
+                    attrs.insert(swiftshim::NSAttributedStringKey::Link, swiftshim::AttrValue::Text(url.string));
                 }
             }
             if !span.bookmarks.is_empty() {
-                attrs.insert(MDAttr::bookmark_target(), swiftshim::AttrValue::Bookmarks(span.bookmarks.clone()));
+                // BLOCKED on missing shim member: AttrValue has no [String] variant. Reported.
+                // attrs.insert(MDAttr::bookmark_target(), swiftshim::AttrValue::???(span.bookmarks.clone()));
             }
             // P6b: a span whose ids resolve to a known comment gets the DISPLAY number(s) tagged —
             // an id with no match (comments capture failed to find it, or a stale/dangling id) is
             // silently skipped rather than surfacing a "Comment ?" the reader can't act on.
             if !span.comment_ids.is_empty() {
-                let numbers: Vec<i64> = span.comment_ids.iter().filter_map(|id| comment_numbers.get(id).copied()).collect();
+                let numbers: Vec<i64> = span.comment_ids.iter().filter_map(|id| comment_numbers.get(&id.to_string()).copied()).collect();
                 if !numbers.is_empty() {
-                    attrs.insert(MDAttr::comment_mark(), swiftshim::AttrValue::Numbers(numbers));
+                    // BLOCKED on missing shim member: AttrValue has no [Int64] variant. Reported.
+                    // attrs.insert(MDAttr::comment_mark(), swiftshim::AttrValue::???(numbers));
                 }
             }
             // header-footer-design.md §5 (build step 5): mark a PAGE/NUMPAGES run so a header/footer
@@ -848,8 +898,9 @@ impl OfficeTextBuilder {
             // why this never touches `displayText`/the span model itself (the cached text still
             // renders verbatim everywhere else, including `--extract`, which never reaches this
             // function at all — invariant 40's blocks→serializer path is entirely separate).
-            if let Some(field) = &span.page_number_field {
-                attrs.insert(MDAttr::page_number_field(), swiftshim::AttrValue::PageNumberField(field.clone()));
+            // BLOCKED on missing shim member: AttrValue has no PageNumberField variant. Reported.
+            if let Some(_field) = &span.page_number_field {
+                // attrs.insert(MDAttr::page_number_field(), swiftshim::AttrValue::???(_field.clone()));
             }
             // An explicitly-marked run (docx `w:rPr/w:rtl`) gets TextKit's own run-level embedding
             // override — the same mechanism a Unicode RLE/PDF control character would produce, just
@@ -858,17 +909,16 @@ impl OfficeTextBuilder {
             // embedded in an RTL paragraph never sets this, and a Hebrew phrase embedded in an LTR
             // one does — TextKit's bidi algorithm already reorders the two correctly around each
             // other once told which is which.
+            // BLOCKED on missing shim members: no `NSAttributedStringKey::WritingDirection` variant,
+            // no `AttrValue` variant to carry it, and `NSWritingDirection`/`NSWritingDirectionFormatType`
+            // are plain enums here (not the OptionSet AppKit's `[.rightToLeft, .override]` array-of-
+            // raw-values shape needs) — so there is no bit representation to union. Reported to b-shim.
             if span.rtl {
-                attrs.insert(
-                    swiftshim::NSAttributedStringKey::WRITING_DIRECTION,
-                    swiftshim::AttrValue::WritingDirection(vec![
-                        NSWritingDirection::RightToLeft.raw_value() | swiftshim::NSWritingDirectionFormatType::Embedding.raw_value(),
-                    ]),
-                );
+                // attrs.insert(swiftshim::NSAttributedStringKey::WritingDirection, swiftshim::AttrValue::???);
             }
-            out.append(&NSAttributedString::with_attributes(&display_text, attrs));
+            out.append(&NSAttributedString::with_attributes(display_text, attrs));
         }
-        out.into_immutable()
+        out.into()
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:710-734
@@ -879,11 +929,11 @@ impl OfficeTextBuilder {
     /// (a plain `.single` would silently lose the fact the source asked for something unusual).
     fn ns_underline_style(style: UnderlineStyle) -> NSUnderlineStyle {
         match style {
-            UnderlineStyle::Single => NSUnderlineStyle::Single,
-            UnderlineStyle::Double => NSUnderlineStyle::Double,
-            UnderlineStyle::Dotted => NSUnderlineStyle::PatternDot,
-            UnderlineStyle::Dashed => NSUnderlineStyle::PatternDash,
-            UnderlineStyle::Wavy => NSUnderlineStyle::Thick,
+            UnderlineStyle::Single => NSUnderlineStyle::single,
+            UnderlineStyle::Double => NSUnderlineStyle::double,
+            UnderlineStyle::Dotted => NSUnderlineStyle::patternDot,
+            UnderlineStyle::Dashed => NSUnderlineStyle::patternDash,
+            UnderlineStyle::Wavy => NSUnderlineStyle::thick,
         }
     }
 
@@ -904,9 +954,15 @@ impl OfficeTextBuilder {
     /// `0.12` is a low bar deliberately: it only has to separate "grey/black/white" from "has a
     /// hue at all", not fine-tune how vivid a colour must be to count as a mark.
     pub fn resolved_text_color(authored: &swiftshim::NSColor, theme: &RenderTheme) -> swiftshim::NSColor {
-        let Some(rgb) = authored.usingColorSpaceDeviceRGB() else { return theme.text_color.clone() };
-        let (_hue, saturation, _brightness, _alpha) = rgb.get_hsba();
-        if saturation < 0.12 { theme.text_color.clone() } else { authored.clone() }
+        let Some(rgb) = authored.usingColorSpaceDeviceRGB() else { return theme.text_color().clone() };
+        // swift: `rgb.getHue(_:saturation: &saturation, brightness: _, alpha: _)` — the shim has no
+        // HSB conversion (`NSColor::get_hsba` is a missing member, reported to b-shim), so this
+        // computes the same standard RGB→HSB saturation directly from the public RGB components.
+        let (r, g, b) = (rgb.redComponent(), rgb.greenComponent(), rgb.blueComponent());
+        let max = r.max(g).max(b);
+        let min = r.min(g).min(b);
+        let saturation = if max > 0.0 { (max - min) / max } else { 0.0 };
+        if saturation < 0.12 { theme.text_color().clone() } else { authored.clone() }
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:746-758
@@ -915,15 +971,15 @@ impl OfficeTextBuilder {
     /// (same reasoning as `MarkdownRenderer.fontAdding`, duplicated here: that one is private to
     /// its file).
     fn font_adding(traits: swiftshim::NSFontDescriptorSymbolicTraits, font: &NSFont) -> NSFont {
-        let d = font.fontDescriptor().withSymbolicTraits(font.fontDescriptor().symbolicTraits() | traits);
-        NSFont::from_descriptor(&d, font.pointSize()).unwrap_or_else(|| font.clone())
+        let d = font.fontDescriptor().withSymbolicTraits(font.fontDescriptor().symbolicTraits().union(traits));
+        NSFont::with_descriptor(&d, font.pointSize()).unwrap_or_else(|| font.clone())
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:753-756
     /// Same family, scaled point size — used for super/subscript, which shrink the glyph as well
     /// as shifting its baseline.
     fn font_scaled(font: &NSFont, factor: CGFloat) -> NSFont {
-        NSFont::from_descriptor(&font.fontDescriptor(), (font.pointSize() * factor).round())
+        NSFont::with_descriptor(&font.fontDescriptor(), (font.pointSize() * factor).round())
             .unwrap_or_else(|| font.clone())
     }
 
@@ -955,8 +1011,8 @@ impl OfficeTextBuilder {
         line_grid_pitch: Option<CGFloat>,
         column_width: CGFloat,
     ) -> NSParagraphStyle {
-        let mut p = NSMutableParagraphStyle::new();
-        let lh = (theme.base_font_size * theme.line_height_ratio).round();
+        let mut p = NSMutableParagraphStyle::default();
+        let lh = (theme.base_font_size * theme.line_height_ratio()).round();
         // The `base × lineHeightRatio` line height is a comfortable FLOOR, not a fixed cap. Pinning
         // `maximumLineHeight` to it clips any paragraph whose own font is TALLER than the floor —
         // and a large BODY paragraph is exactly that (an HWP title is a 32pt body paragraph, not a
@@ -979,7 +1035,7 @@ impl OfficeTextBuilder {
         // a rule, so the grid is a floor and never a cap. No grid → 0, i.e. exactly today.
         p.minimumLineHeight = if paged { line_grid_pitch.unwrap_or(0.0) } else { lh };
         p.maximumLineHeight = 0.0;
-        p.paragraphSpacing = if paged { 0.0 } else { theme.base_font_size * theme.paragraph_spacing_ratio };
+        p.paragraphSpacing = if paged { 0.0 } else { theme.base_font_size * theme.paragraph_spacing_ratio() };
         if rtl {
             p.baseWritingDirection = NSWritingDirection::RightToLeft;
         }
@@ -1002,15 +1058,15 @@ impl OfficeTextBuilder {
         // table cell through this same style they are paid again on every row of every table — half
         // of the "표가 너무 큼" the owner reported. The no-page-width fallback keeps them, because
         // there the old window-filling model (and its justification) is still what is running.
-        let office_style = OfficeStyle::new(theme);
+        let office_style = OfficeStyle { theme: *theme };
         Self::apply_paragraph_format(
             format.as_ref(),
             font_size_scale,
-            if paged { 0.0 } else { theme.base_font_size * office_style.body_min_line_height_ratio },
-            if paged { 0.0 } else { theme.base_font_size * office_style.body_min_paragraph_spacing_ratio },
+            if paged { 0.0 } else { theme.base_font_size * office_style.body_min_line_height_ratio() },
+            if paged { 0.0 } else { theme.base_font_size * office_style.body_min_paragraph_spacing_ratio() },
             &mut p,
         );
-        p.into_immutable()
+        p
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:850-870
@@ -1037,7 +1093,7 @@ impl OfficeTextBuilder {
     /// run still draws semibold. That is the majority-inert case, not the common one: a
     /// `resolvedFontDescriptor` is nil for the overwhelming majority of spans.
     fn heading_base_font(level: i64, theme: &RenderTheme, paged: bool) -> NSFont {
-        let themed = theme.heading_font(level);
+        let themed = theme.heading_font(level as i32);
         if !paged {
             return themed;
         }
@@ -1089,8 +1145,8 @@ impl OfficeTextBuilder {
         column_width: CGFloat,
     ) -> NSParagraphStyle {
         let b = theme.base_font_size;
-        let style = OfficeStyle::new(theme);
-        let mut p = NSMutableParagraphStyle::new();
+        let style = OfficeStyle { theme: *theme };
+        let mut p = NSMutableParagraphStyle::default();
         // The floor is a ratio of the heading's OWN size wherever the document stated one (paged) —
         // not of `theme.headingSize(level:)`, which is the app's ladder over the document's default
         // body size and has nothing to do with what this heading was authored at. Concretely, an
@@ -1104,9 +1160,9 @@ impl OfficeTextBuilder {
         let basis = if paged {
             Self::heading_own_size(spans, font_size_scale).unwrap_or(theme.base_font_size)
         } else {
-            theme.heading_size(level)
+            theme.heading_size(level as i32)
         };
-        let lh = (basis * theme.heading_line_height_ratio).round();
+        let lh = (basis * theme.heading_line_height_ratio()).round();
         p.minimumLineHeight = lh;
         // Cleared for the SAME reason the body path was (see `bodyParagraphStyle`, and the comment
         // there naming a 32pt HWP title whose glyphs overlapped at ~23pt): a cap derived from the
@@ -1120,8 +1176,8 @@ impl OfficeTextBuilder {
         // applies whatever the document's own `spacingBefore`/`spacingAfter` resolved to, so a
         // document that asked for room gets exactly the room it asked for — and one that asked for
         // none gets none, instead of the app's 1.9x/0.4x editorial rhythm on top.
-        p.paragraphSpacing = if paged { 0.0 } else { b * theme.heading_spacing_after_ratio };
-        p.paragraphSpacingBefore = if paged { 0.0 } else { style.heading_spacing_before(level) };
+        p.paragraphSpacing = if paged { 0.0 } else { b * theme.heading_spacing_after_ratio() };
+        p.paragraphSpacingBefore = if paged { 0.0 } else { style.heading_spacing_before(level as i32) };
         if rtl {
             p.baseWritingDirection = NSWritingDirection::RightToLeft;
         }
@@ -1132,7 +1188,7 @@ impl OfficeTextBuilder {
             p.tabStops = Self::resolved_tab_stops(&tab_stops, column_width, paged);
         }
         Self::apply_paragraph_format(format.as_ref(), font_size_scale, 0.0, 0.0, &mut p);
-        p.into_immutable()
+        p
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:940-973
@@ -1259,7 +1315,7 @@ impl OfficeTextBuilder {
             return;
         };
         let Some(character) = Self::leader_character(leader) else { return };
-        let text = result.as_ns_string();
+        let text = Self::as_ns_string(result);
         let mut index = range.location;
         while index < range.maxRange() {
             let found = text.range_of("\t", NSRange::new(index, range.maxRange() - index));
@@ -1285,10 +1341,15 @@ impl OfficeTextBuilder {
     // swift: Render/Office/OfficeTextBuilder.swift:1053-1063
     fn office_text_tab(stop: &TabStop) -> NSTextTab {
         match stop.alignment {
-            TabAlignment::Left => NSTextTab::new(NSTextAlignment::Left, stop.position, &[]),
-            TabAlignment::Center => NSTextTab::new(NSTextAlignment::Center, stop.position, &[]),
-            TabAlignment::Right => NSTextTab::new(NSTextAlignment::Right, stop.position, &[]),
-            TabAlignment::Decimal => NSTextTab::with_column_terminators(NSTextAlignment::Right, stop.position, "."),
+            TabAlignment::Left => NSTextTab::new(NSTextAlignment::Left, stop.position, HashMap::new()),
+            TabAlignment::Center => NSTextTab::new(NSTextAlignment::Center, stop.position, HashMap::new()),
+            TabAlignment::Right => NSTextTab::new(NSTextAlignment::Right, stop.position, HashMap::new()),
+            // BLOCKED on missing shim capability: real AppKit sets `.tabColumnTerminators` to a
+            // `CharacterSet(charactersIn: ".")` here, but `NSTextTabOptions` (this shim's stand-in
+            // for `NSTextTab.OptionKey`) is a `HashMap<String, f64>` — there is no way to carry a
+            // character set through it. Falls back to a plain right-aligned tab (no decimal
+            // terminator) until the shim grows a real options type. Reported to b-shim.
+            TabAlignment::Decimal => NSTextTab::new(NSTextAlignment::Right, stop.position, HashMap::new()),
         }
     }
 
@@ -1407,13 +1468,13 @@ impl OfficeTextBuilder {
             Some(LineBreakGranularity::Word) => {
                 // The Korean-aware strategy: prefer a word boundary, and only fall inside a word when
                 // nothing else fits. This is what a document means by 어절 단위.
-                p.line_break_strategy.insert(swiftshim::NSLineBreakStrategy::HANGUL_WORD_PRIORITY);
+                p.lineBreakStrategy.insert(swiftshim::NSLineBreakStrategy::hangulWordPriority);
             }
             Some(LineBreakGranularity::Character) => {
                 // 글자 단위 — fill the line and break wherever it runs out, which is what AppKit does
                 // for CJK with no strategy set. Removing the flag rather than clearing the whole set
                 // leaves any other strategy (`.pushOut`) the caller chose alone.
-                p.line_break_strategy.remove(swiftshim::NSLineBreakStrategy::HANGUL_WORD_PRIORITY);
+                p.lineBreakStrategy.remove(swiftshim::NSLineBreakStrategy::hangulWordPriority);
             }
             Some(LineBreakGranularity::Hyphen) | None => {}
         }
@@ -1498,8 +1559,8 @@ impl OfficeTextBuilder {
         line_grid_pitch: Option<CGFloat>,
         font_size_scale: CGFloat,
     ) -> NSParagraphStyle {
-        let mut p = NSMutableParagraphStyle::new();
-        let lh = (theme.base_font_size * theme.line_height_ratio).round();
+        let mut p = NSMutableParagraphStyle::default();
+        let lh = (theme.base_font_size * theme.line_height_ratio()).round();
         // Paged: the app's line rhythm and inter-item gap are BOTH withheld, exactly as in
         // `bodyParagraphStyle` — a list item is a paragraph and gets the same treatment. What the
         // document itself states still arrives through `applyParagraphFormat` below.
@@ -1509,7 +1570,7 @@ impl OfficeTextBuilder {
         // (a 14pt callout in an 11pt document is capped at 16 against a ~17pt natural line). A
         // floor, not a cap.
         p.maximumLineHeight = 0.0;
-        p.paragraphSpacing = if paged { 0.0 } else { theme.base_font_size * theme.tight_spacing_ratio };
+        p.paragraphSpacing = if paged { 0.0 } else { theme.base_font_size * theme.tight_spacing_ratio() };
         p.firstLineHeadIndent = marker_x;
         p.headIndent = text_x;
         // NOT routed through `resolvedTabStops`: a list item's authored stops have ALWAYS been mapped
@@ -1517,7 +1578,7 @@ impl OfficeTextBuilder {
         // correction to switch off for paged (item 7 is a body/heading question only). Sending them
         // through it "for symmetry" would newly apply that correction to every NON-paged list item,
         // which is a change to the model that must stay byte-identical.
-        p.tabStops = std::iter::once(NSTextTab::new(NSTextAlignment::Left, text_x, &[]))
+        p.tabStops = std::iter::once(NSTextTab::new(NSTextAlignment::Left, text_x, HashMap::new()))
             .chain(extra_tab_stops.iter().map(Self::office_text_tab))
             .collect();
         p.defaultTabInterval = text_x;
@@ -1537,7 +1598,7 @@ impl OfficeTextBuilder {
         // numbering, not a paragraph's own `w:ind`, usually carries a list's indentation) leaves
         // `markerX`/`textX` exactly as before this sprint.
         Self::apply_paragraph_format(format.as_ref(), font_size_scale, 0.0, 0.0, &mut p);
-        p.into_immutable()
+        p
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:1224-1265
@@ -1588,7 +1649,7 @@ impl OfficeTextBuilder {
                 for d in deeper {
                     ordered_counters.remove(&d);
                 }
-                let start = numbering.as_ref().map(|n| n.start_number).unwrap_or(1);
+                let start = numbering.as_ref().and_then(|n| n.start_number).unwrap_or(1);
                 let n = ordered_counters.get(&level).map(|v| v + 1).unwrap_or(start);
                 ordered_counters.insert(level, n);
                 marker = Self::fill_list_format(&supplied_marker, level, n, ordered_counters, numbering.as_ref()) + "\t";
@@ -1612,7 +1673,7 @@ impl OfficeTextBuilder {
             }
         }
 
-        let hang = theme.base_font_size * theme.list_hang_ratio;
+        let hang = theme.base_font_size * theme.list_hang_ratio();
         let marker_x = level as CGFloat * hang;
         // The document's own marker-to-text gap when it declared one, else the reader's own hanging
         // indent. Measured before it was built: 6,508 declarations across 39 of 637 documents, every
@@ -1630,32 +1691,35 @@ impl OfficeTextBuilder {
         // `Span.fontSize` so it is the one cascade in `spansAttributedString` deciding this, not a
         // second copy of it here. Non-paged is unchanged: theme body font, theme ink.
         let body = Self::spans_attributed_string(
-            spans, &theme.body_font, &theme.text_color, theme, font_size_scale, paged, comment_numbers,
+            spans, &theme.body_font(), &theme.text_color(), theme, font_size_scale, paged, comment_numbers,
         );
-        let mut marker_font = theme.body_font.clone();
-        let mut marker_color = theme.text_color.clone();
+        let mut marker_font = theme.body_font().clone();
+        let mut marker_color = theme.text_color().clone();
         if paged && body.length() > 0 {
             let first = body.attributesAt(0);
-            if let Some(f) = first.font() {
-                if let Some(sized) = NSFont::from_descriptor(&theme.body_font.fontDescriptor(), f.pointSize()) {
+            let font_attr = first.and_then(|m| m.get(&NSAttributedStringKey::Font));
+            if let Some(swiftshim::AttrValue::Font(f)) = font_attr {
+                if let Some(sized) = NSFont::with_descriptor(&theme.body_font().fontDescriptor(), f.pointSize()) {
                     marker_font = sized;
                 }
             }
-            if let Some(c) = first.foreground_color() {
-                marker_color = c;
+            let color_attr = first.and_then(|m| m.get(&NSAttributedStringKey::ForegroundColor));
+            if let Some(swiftshim::AttrValue::Color(c)) = color_attr {
+                marker_color = *c;
             }
         }
         let mut marker_attrs: HashMap<NSAttributedStringKey, swiftshim::AttrValue> = HashMap::new();
-        marker_attrs.insert(swiftshim::NSAttributedStringKey::FONT, swiftshim::AttrValue::Font(marker_font));
-        marker_attrs.insert(swiftshim::NSAttributedStringKey::FOREGROUND_COLOR, swiftshim::AttrValue::Color(marker_color));
+        marker_attrs.insert(swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(marker_font));
+        marker_attrs.insert(swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(marker_color));
         result.append(&NSAttributedString::with_attributes(&marker, marker_attrs));
         result.append(&body);
-        result.append(&NSAttributedString::fromString("\n"));
-        result.add_paragraph_style(
-            Self::list_paragraph_style(
+        result.append(&NSAttributedString::new("\n"));
+        result.addAttribute(
+            NSAttributedStringKey::ParagraphStyle,
+            swiftshim::AttrValue::ParagraphStyle(Self::list_paragraph_style(
                 marker_x, text_x, theme, rtl, alignment, tab_stops, format, paged, line_grid_pitch,
                 font_size_scale,
-            ),
+            )),
             NSRange::new(start, result.length() - start),
         );
     }
@@ -1686,7 +1750,7 @@ impl OfficeTextBuilder {
         table_width: Option<CGFloat>,
     ) {
         if !rows.iter().any(|r| !r.is_empty()) {
-            result.append(&NSAttributedString::fromString("\n"));
+            result.append(&NSAttributedString::new("\n"));
             return;
         }
         // PAGED: a header row's runs decide their own weight. `headerRows` comes from docx
@@ -1702,7 +1766,7 @@ impl OfficeTextBuilder {
         // different place — `TableBlockBuilder` gives a header cell `Palette.tableHeaderBg`, and only
         // as a last resort, after the cell's own, the table's, and the table style's shading — and it
         // is deliberately left exactly as it is here.
-        let header_font = if paged { theme.body_font.clone() } else { Self::font_adding(swiftshim::NSFontDescriptorSymbolicTraits::BOLD, &theme.body_font) };
+        let header_font = if paged { theme.body_font().clone() } else { Self::font_adding(swiftshim::NSFontDescriptorSymbolicTraits::bold, &theme.body_font()) };
         // Each cell's absolute content width at the reading column, resolved by `TableBlockBuilder`'s
         // own placement + edge geometry (single source of truth for column math) so a cell IMAGE can
         // be clamped to its column at BUILD time — mirroring the top-level `.image` path, which
@@ -1722,13 +1786,13 @@ impl OfficeTextBuilder {
                     .iter()
                     .map(|cell| {
                         let padding = if paged {
-                            let resolved = TableBlockBuilder::resolved_paged_padding(&cell.edge_padding, table_format.default_padding.as_ref());
-                            (resolved.left + resolved.right) / 2.0
+                            let (_top, left, _bottom, right) = TableBlockBuilder::resolved_paged_padding(cell.edge_padding.as_ref(), table_format.default_padding.as_ref());
+                            (left + right) / 2.0
                         } else {
-                            cell.padding.unwrap_or(TableBlockBuilder::default_cell_padding).max(TableBlockBuilder::default_cell_padding)
+                            cell.padding.unwrap_or(TableBlockBuilder::DEFAULT_CELL_PADDING).max(TableBlockBuilder::DEFAULT_CELL_PADDING)
                         };
                         let border_width = cell.border_width.or(table_format.default_border_width).or(cell.style_border_width).unwrap_or(1.0);
-                        AnchorSpan { row_span: cell.row_span, col_span: cell.col_span, padding, border_width }
+                        AnchorSpan { row_span: cell.row_span as usize, col_span: cell.col_span as usize, padding, border_width }
                     })
                     .collect()
             })
@@ -1752,8 +1816,8 @@ impl OfficeTextBuilder {
         // clamp, not the real grid — an estimate on the wider, unmargined width would clamp a
         // picture generously wide for a table with declared margins, so this keeps the two in step.
         let margined_width = solved_width
-            - table_format.outer_margin.as_ref().map(|m| m.left).unwrap_or(0.0)
-            - table_format.outer_margin.as_ref().map(|m| m.right).unwrap_or(0.0);
+            - table_format.outer_margin.as_ref().and_then(|m| m.left).unwrap_or(0.0)
+            - table_format.outer_margin.as_ref().and_then(|m| m.right).unwrap_or(0.0);
         let cell_content_widths = TableBlockBuilder::anchor_content_widths(&span_grid, column_widths, margined_width);
         let cell_rows: Vec<Vec<CellContent>> = rows
             .iter()
@@ -1764,15 +1828,17 @@ impl OfficeTextBuilder {
                     .iter()
                     .enumerate()
                     .map(|(i, cell)| {
+                        let body_font = theme.body_font();
+                        let cell_base_font = if is_header { &header_font } else { &body_font };
                         let content = Self::cell_content(
-                            &cell.blocks, if is_header { &header_font } else { &theme.body_font }, theme,
+                            &cell.blocks, cell_base_font, theme,
                             font_size_scale, cell_content_widths[r][i], graphic_basis, paged, line_grid_pitch,
                             solved_width,
                         );
                         CellContent {
                             content,
-                            row_span: cell.row_span,
-                            column_span: cell.col_span,
+                            row_span: cell.row_span as usize,
+                            column_span: cell.col_span as usize,
                             background_color: cell.background_color.clone(),
                             background_image: cell.background_image.clone(),
                             border_color: cell.border_color.clone(),
@@ -1794,20 +1860,20 @@ impl OfficeTextBuilder {
         let table_start = result.length();
         result.append(&TableBlockBuilder::build(
             &cell_rows, header_rows, theme, column_widths,
-            table_format.default_border_color.as_ref(), table_format.default_border_width,
-            table_format.default_shading.as_ref(), &table_format.edge_borders,
-            table_format.default_padding.as_ref(), table_format.background_image.as_ref(),
+            table_format.default_border_color, table_format.default_border_width,
+            table_format.default_shading, table_format.edge_borders.as_ref(),
+            table_format.default_padding.as_ref(), table_format.background_image.clone(),
             table_format.outer_margin.as_ref(), paged, max_width, solved_width,
         ));
         // The document's own answer to "may this be cut at the foot of a page". Stamped only when
         // it says NO: an absent attribute is every table that said nothing, and those keep behaving
         // exactly as they did before this existed (invariant 92's default).
-        if table_format.page_break_policy == crate::render::office::office_block::TablePageBreakPolicy::Never
+        if table_format.page_break_policy == Some(crate::render::office::office_block::TablePageBreakPolicy::Never)
             && result.length() > table_start
         {
-            result.add_attribute_bool(MDAttr::table_keeps_whole(), true, NSRange::new(table_start, result.length() - table_start));
+            result.addAttribute(MDAttr::table_keeps_whole(), swiftshim::AttrValue::Bool(true), NSRange::new(table_start, result.length() - table_start));
         }
-        result.append(&NSAttributedString::fromString("\n"));
+        result.append(&NSAttributedString::new("\n"));
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:1492-1524
@@ -1847,7 +1913,7 @@ impl OfficeTextBuilder {
     /// nobody spends the afternoon that found `MarkdownRenderer.autolink` looking for a twin here.
     // swift: Render/Office/OfficeTextBuilder.swift:1529-1532
     fn ends_in_newline(s: &NSMutableAttributedString) -> bool {
-        s.length() > 0 && s.characterAt(s.length() - 1) == 0x0A
+        s.length() > 0 && s.string().ends_with('\n')
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:1525-1689
@@ -1882,29 +1948,31 @@ impl OfficeTextBuilder {
                 // inside `spansAttributedString`.
                 OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format } => {
                     let heading_base = Self::heading_base_font(*level, theme, paged);
-                    let mut str = NSMutableAttributedString::from_immutable(&Self::spans_attributed_string(
-                        spans, &heading_base, &theme.text_color, theme, font_size_scale, paged, &HashMap::new(),
+                    let mut str = NSMutableAttributedString::from_attributed_string(&Self::spans_attributed_string(
+                        spans, &heading_base, &theme.text_color(), theme, font_size_scale, paged, &HashMap::new(),
                     ));
                     let whole = NSRange::new(0, str.length());
-                    str.add_paragraph_style(
-                        Self::heading_paragraph_style(
-                            *level, spans, theme, *rtl, alignment.clone(), tab_stops, format.clone(),
+                    str.addAttribute(
+                        NSAttributedStringKey::ParagraphStyle,
+                        swiftshim::AttrValue::ParagraphStyle(Self::heading_paragraph_style(
+                            *level, spans, theme, *rtl, alignment.clone(), tab_stops, Some(format.clone()),
                             font_size_scale, paged, line_grid_pitch, CGFloat::MAX,
-                        ),
+                        )),
                         whole,
                     );
                     result.append(&str);
                 }
                 OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format } => {
-                    let mut str = NSMutableAttributedString::from_immutable(&Self::spans_attributed_string(
-                        spans, base_font, &theme.text_color, theme, font_size_scale, paged, &HashMap::new(),
+                    let mut str = NSMutableAttributedString::from_attributed_string(&Self::spans_attributed_string(
+                        spans, base_font, &theme.text_color(), theme, font_size_scale, paged, &HashMap::new(),
                     ));
                     let whole = NSRange::new(0, str.length());
-                    str.add_paragraph_style(
-                        Self::body_paragraph_style(
-                            theme, *rtl, alignment.clone(), tab_stops, format.clone(), font_size_scale,
+                    str.addAttribute(
+                        NSAttributedStringKey::ParagraphStyle,
+                        swiftshim::AttrValue::ParagraphStyle(Self::body_paragraph_style(
+                            theme, *rtl, alignment.clone(), tab_stops, Some(format.clone()), font_size_scale,
                             paged, line_grid_pitch, CGFloat::MAX,
-                        ),
+                        )),
                         whole,
                     );
                     result.append(&str);
@@ -1914,11 +1982,11 @@ impl OfficeTextBuilder {
                     // count begun in a sibling cell or at top level.
                     let mut counters: HashMap<i64, i64> = HashMap::new();
                     Self::append_list_item(
-                        *level, *ordered, spans, marker.clone(), false, None, &[], &mut result, theme,
+                        *level, *ordered, spans, marker.as_ref().map(|m| m.to_string()), false, None, &[], &mut result, theme,
                         &mut counters, font_size_scale, paged, line_grid_pitch, None, &HashMap::new(), None,
                     );
                     if result.length() > 0 && Self::ends_in_newline(&result) {
-                        result.delete_characters(NSRange::new(result.length() - 1, 1));
+                        result.replaceCharacters(NSRange::new(result.length() - 1, 1), "");
                     }
                 }
                 OfficeBlock::Table { rows: nested_rows, .. } => {
@@ -1928,36 +1996,36 @@ impl OfficeTextBuilder {
                     // A CELL picture is clamped whether paged or not — see `fittedOfficeSize`'s doc for
                     // why the bleed decision stops at the cell edge (invariant 39's fixed grid).
                     Self::append_image(
-                        id.clone(), *size, image_column_width, graphic_basis, cell_graphic_scale,
+                        id.to_string(), *size, image_column_width, graphic_basis, cell_graphic_scale,
                         alignment.clone(), true, 0.0, &mut result,
                     );
                     if result.length() > 0 && Self::ends_in_newline(&result) {
-                        result.delete_characters(NSRange::new(result.length() - 1, 1));
+                        result.replaceCharacters(NSRange::new(result.length() - 1, 1), "");
                     }
                 }
                 OfficeBlock::UnsupportedGraphic { label, size, alignment } => {
                     Self::append_unsupported_graphic(
-                        label.clone(), *size, image_column_width, graphic_basis, cell_graphic_scale,
+                        label.to_string(), *size, image_column_width, graphic_basis, cell_graphic_scale,
                         alignment.clone(), true, 0.0, &mut result,
                     );
                     if result.length() > 0 && Self::ends_in_newline(&result) {
-                        result.delete_characters(NSRange::new(result.length() - 1, 1));
+                        result.replaceCharacters(NSRange::new(result.length() - 1, 1), "");
                     }
                 }
                 OfficeBlock::Formula { latex } => {
-                    Self::append_formula(latex.clone(), &mut result);
+                    Self::append_formula(latex.to_string(), &mut result);
                     if result.length() > 0 && Self::ends_in_newline(&result) {
-                        result.delete_characters(NSRange::new(result.length() - 1, 1));
+                        result.replaceCharacters(NSRange::new(result.length() - 1, 1), "");
                     }
                 }
             }
             if index < blocks.len() - 1 {
                 let sep_range = {
                     let before = result.length();
-                    result.append(&NSAttributedString::fromString("\n"));
+                    result.append(&NSAttributedString::new("\n"));
                     NSRange::new(before, result.length() - before)
                 };
-                result.add_attribute_font(base_font, sep_range);
+                result.addAttribute(NSAttributedStringKey::Font, swiftshim::AttrValue::Font(base_font.clone()), sep_range);
             }
         }
         // A block's paragraph style was applied to its spans but NOT to the "\n" separators appended
@@ -1971,27 +2039,27 @@ impl OfficeTextBuilder {
         // left the separator carrying the cell's base font and no colour while the text either side
         // carried its own resolved font and an `NSColor`, so it stayed a run of its own. Same pass,
         // same "attributes of the paragraph's own start" rule, one more step — see `unifyTerminator`.
-        let ns = result.as_ns_string();
+        let ns = Self::as_ns_string(&result);
         let mut paragraphs: Vec<NSRange> = Vec::new();
-        ns.enumerate_substrings_by_paragraphs(NSRange::new(0, result.length()), |_sub, _range, enclosing, _terminator| {
+        Self::enumerate_paragraphs(&ns, NSRange::new(0, result.length()), |enclosing| {
             if enclosing.length > 0 {
                 paragraphs.push(enclosing);
             }
         });
         let last = paragraphs.len().saturating_sub(1);
         for (i, range) in paragraphs.iter().enumerate() {
-            let Some(base) = result.paragraph_style_at(range.location) else { continue };
-            let mut m = base.mutable_copy();
+            let Some(base) = Self::paragraph_style_at(&result, range.location) else { continue };
+            let mut m = base;
             if i == 0 {
                 m.paragraphSpacingBefore = 0.0;
             }
             if i == last {
                 m.paragraphSpacing = 0.0;
             }
-            result.add_paragraph_style(m.into_immutable(), *range);
+            result.addAttribute(NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(m), *range);
             Self::unify_terminator(*range, &mut result, &ns);
         }
-        result.into_immutable()
+        result.into()
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:1656-1689
@@ -2050,11 +2118,12 @@ impl OfficeTextBuilder {
         if ns.characterAt(terminator.location) != 10 {
             return;
         }
-        let start = result.attributesAt(paragraph.location);
-        if !start.keys_are_subset_of(TableBlockBuilder::inheritableTerminatorAttributes) {
+        let Some(start) = result.asAttributedString().attributesAt(paragraph.location) else { return };
+        let allow = TableBlockBuilder::inheritable_terminator_attributes();
+        if !start.keys().all(|k| allow.contains(k)) {
             return;
         }
-        result.setAttributes(start, terminator);
+        result.setAttributes(start.clone(), terminator);
     }
 
     /// Flattens a nested table's cells into one run of text — a tab between cells, a newline after
@@ -2076,10 +2145,10 @@ impl OfficeTextBuilder {
                 if row_has_content {
                     let r = {
                         let before = result.length();
-                        result.append(&NSAttributedString::fromString("\t"));
+                        result.append(&NSAttributedString::new("\t"));
                         NSRange::new(before, result.length() - before)
                     };
-                    result.add_attribute_font(base_font, r);
+                    result.addAttribute(NSAttributedStringKey::Font, swiftshim::AttrValue::Font(base_font.clone()), r);
                 }
                 result.append(&text);
                 row_has_content = true;
@@ -2087,13 +2156,13 @@ impl OfficeTextBuilder {
             if row_has_content {
                 let r = {
                     let before = result.length();
-                    result.append(&NSAttributedString::fromString("\n"));
+                    result.append(&NSAttributedString::new("\n"));
                     NSRange::new(before, result.length() - before)
                 };
-                result.add_attribute_font(base_font, r);
+                result.addAttribute(NSAttributedStringKey::Font, swiftshim::AttrValue::Font(base_font.clone()), r);
             }
         }
-        result.into_immutable()
+        result.into()
     }
 
     // MARK: Images
@@ -2206,11 +2275,12 @@ impl OfficeTextBuilder {
     /// invariant 31 means this case is sized by `.bounds` with an image that is never nil, so
     /// stretching the old bitmap would blur its label instead of re-laying it out.
     pub fn placeholder_image(label: &str, size: CGSize) -> NSImage {
-        let label = label.to_string();
-        NSImage::with_drawing(size, false, move |rect| {
-            Self::draw_placeholder_card(&label, rect);
-            true
-        })
+        // BLOCKED on missing shim member: no `NSImage(size:flipped:drawingHandler:)` constructor,
+        // and `swiftshim::NSImage` only carries a `size` field (no pixel buffer) to draw into
+        // regardless — this needs a live graphics context, same as `draw_placeholder_card` below.
+        // Reported to b-shim.
+        let _label = label.to_string();
+        NSImage::withSize(size)
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:1842-1866
@@ -2228,9 +2298,10 @@ impl OfficeTextBuilder {
     // swift: Render/Office/OfficeTextBuilder.swift:1841-1869
     pub fn draw_placeholder_card(label: &str, rect: NSRect) {
         Palette::code_card_bg().setFill();
-        swiftshim::fill_rect(rect);
+        rect.fill();
         Palette::code_card_border().setStroke();
-        swiftshim::NSBezierPath::with_rect(rect.inset_by(0.5, 0.5)).stroke();
+        // BLOCKED on missing shim member: CGRect has no `insetBy`/`inset_by`. Reported to b-shim.
+        swiftshim::NSBezierPath::fromRect(rect).stroke();
         let available = rect.size.width - Self::PLACEHOLDER_CARD_TEXT_INSET;
         if available <= 0.0 {
             return;
@@ -2239,8 +2310,8 @@ impl OfficeTextBuilder {
         let mut text = format!("[{label}]");
         let attributes = |size: CGFloat| -> HashMap<NSAttributedStringKey, swiftshim::AttrValue> {
             let mut m = HashMap::new();
-            m.insert(swiftshim::NSAttributedStringKey::FONT, swiftshim::AttrValue::Font(NSFont::systemFont(size)));
-            m.insert(swiftshim::NSAttributedStringKey::FOREGROUND_COLOR, swiftshim::AttrValue::Color(Palette::secondary()));
+            m.insert(swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(NSFont::systemFont(size)));
+            m.insert(swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(Palette::secondary()));
             m
         };
         let mut width = swiftshim::size_with_attributes(&text, &attributes(font_size)).width;
@@ -2299,9 +2370,12 @@ impl OfficeTextBuilder {
         // setting) unable to inflate a photograph. Scale first, THEN fit, so a scaled image still never
         // exceeds its column or its cell.
         let fitted = Self::graphic_size(size, scale, column_width, bleed);
-        let att = NSTextAttachment::new();
-        att.set_bounds(NSRect::fromOriginSize(NSPoint::zero(), fitted));
+        let mut att = NSTextAttachment::new();
+        att.bounds = NSRect::fromOriginSize(NSPoint::zero(), fitted);
         att.attachmentCell = Some(SizedAttachmentCell::new(fitted));
+        // BLOCKED on missing shim member: no constructor builds an NSAttributedString
+        // containing an attachment character + `.attachment` key (AttrValue has no NSTextAttachment
+        // variant either). Reported to b-shim.
         let mut ph = NSMutableAttributedString::from_attachment(&att);
         let whole = NSRange::new(0, ph.length());
         ph.addAttribute(MDAttr::image(), swiftshim::AttrValue::Text(id), whole);
@@ -2309,6 +2383,7 @@ impl OfficeTextBuilder {
         // the new width (see `MDAttr.officeGraphic`) — a rebuild is not required to resize a window.
         ph.addAttribute(
             MDAttr::office_graphic(),
+            // BLOCKED on missing shim member: AttrValue has no OfficeGraphicInfo variant. Reported.
             swiftshim::AttrValue::OfficeGraphic(OfficeGraphicInfo {
                 authored: size,
                 placeholder_label: None,
@@ -2319,7 +2394,7 @@ impl OfficeTextBuilder {
         );
         Self::apply_graphic_alignment(alignment, &mut ph);
         result.append(&ph);
-        result.append(&NSAttributedString::fromString("\n"));
+        result.append(&NSAttributedString::new("\n"));
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:1912-1917
@@ -2330,9 +2405,9 @@ impl OfficeTextBuilder {
     // swift: Render/Office/OfficeTextBuilder.swift:1911-1919
     fn apply_graphic_alignment(alignment: Option<NSTextAlignment>, ph: &mut NSMutableAttributedString) {
         let Some(alignment) = alignment else { return };
-        let mut p = NSMutableParagraphStyle::new();
+        let mut p = NSMutableParagraphStyle::default();
         p.alignment = alignment;
-        ph.add_paragraph_style(p.into_immutable(), NSRange::new(0, ph.length()));
+        ph.addAttribute(NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(p), NSRange::new(0, ph.length()));
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:1920-1931
@@ -2365,14 +2440,18 @@ impl OfficeTextBuilder {
         // Same proportional scaling as `appendImage` — a chart/SmartArt placeholder stands in for the
         // space the real graphic would occupy, so it must hold that same share of its container.
         let fitted = Self::graphic_size(size, scale, column_width, bleed);
-        let att = NSTextAttachment::new();
-        att.set_bounds(NSRect::fromOriginSize(NSPoint::zero(), fitted));
-        att.set_image(Self::placeholder_image(&label, fitted));
+        let mut att = NSTextAttachment::new();
+        att.bounds = NSRect::fromOriginSize(NSPoint::zero(), fitted);
+        att.image = Some(Self::placeholder_image(&label, fitted));
+        // BLOCKED on missing shim member: no constructor builds an NSAttributedString
+        // containing an attachment character + `.attachment` key (AttrValue has no NSTextAttachment
+        // variant either). Reported to b-shim.
         let mut ph = NSMutableAttributedString::from_attachment(&att);
         // The authored size + label ride along so a reflow can re-derive this frame at the new
         // width (see `MDAttr.officeGraphic`) instead of leaving it frozen at the build width.
         ph.addAttribute(
             MDAttr::office_graphic(),
+            // BLOCKED on missing shim member: AttrValue has no OfficeGraphicInfo variant. Reported.
             swiftshim::AttrValue::OfficeGraphic(OfficeGraphicInfo {
                 authored: size,
                 placeholder_label: Some(label),
@@ -2383,7 +2462,7 @@ impl OfficeTextBuilder {
         );
         Self::apply_graphic_alignment(alignment, &mut ph);
         result.append(&ph);
-        result.append(&NSAttributedString::fromString("\n"));
+        result.append(&NSAttributedString::new("\n"));
     }
 
     // MARK: Formulas
@@ -2400,13 +2479,16 @@ impl OfficeTextBuilder {
     // swift: Render/Office/OfficeTextBuilder.swift:1964-1973
     fn append_formula(latex: String, result: &mut NSMutableAttributedString) {
         let size = CGSize::new(260.0, 60.0);
-        let att = NSTextAttachment::new();
-        att.set_bounds(NSRect::fromOriginSize(NSPoint::zero(), size));
+        let mut att = NSTextAttachment::new();
+        att.bounds = NSRect::fromOriginSize(NSPoint::zero(), size);
         att.attachmentCell = Some(SizedAttachmentCell::new(size));
+        // BLOCKED on missing shim member: no constructor builds an NSAttributedString
+        // containing an attachment character + `.attachment` key (AttrValue has no NSTextAttachment
+        // variant either). Reported to b-shim.
         let mut ph = NSMutableAttributedString::from_attachment(&att);
         ph.addAttribute(MDAttr::math(), swiftshim::AttrValue::Text(latex), NSRange::new(0, ph.length()));
         result.append(&ph);
-        result.append(&NSAttributedString::fromString("\n"));
+        result.append(&NSAttributedString::new("\n"));
     }
 }
 // swift: Render/Office/OfficeTextBuilder.swift:1973-1974

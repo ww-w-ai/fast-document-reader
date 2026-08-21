@@ -10,7 +10,7 @@ use crate::color_font::NSImage;
 use crate::geometry::{CGFloat, CGPoint, CGRect, NSSize};
 
 /// swift: NSTextAttachment
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct NSTextAttachment {
     pub image: Option<NSImage>,
     pub bounds: CGRect,
@@ -41,6 +41,17 @@ impl NSTextAttachment {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// swift: `.bounds = _` — a plain field assignment (Swift property syntax), spelled as a
+    /// setter here because the in-scope call sites invoke it as a message, not `att.bounds = _`.
+    pub fn set_bounds(&mut self, bounds: CGRect) {
+        self.bounds = bounds;
+    }
+
+    /// swift: `.image = _`
+    pub fn set_image(&mut self, image: NSImage) {
+        self.image = Some(image);
+    }
 }
 
 /// swift: NSBezierPath — the reader's few in-scope path-drawing call sites (rules under a
@@ -60,6 +71,14 @@ impl NSBezierPath {
 
     /// swift: NSBezierPath(rect:) — GridTextTableBlock.swift's whole-point-width rule fill.
     pub fn fromRect(rect: CGRect) -> Self {
+        Self::with_rect(rect)
+    }
+
+    /// swift: NSBezierPath(rect:) — same initializer as `fromRect` above, under this crate's own
+    /// documented convention for a Swift initializer (a label list, not an identifier): a
+    /// snake_case Rust-only name (`with_attributes`/`with_descriptor` set the precedent this
+    /// follows; `fromRect` predates that convention and is kept only for its existing caller).
+    pub fn with_rect(rect: CGRect) -> Self {
         Self {
             points: vec![
                 CGPoint::new(rect.minX(), rect.minY()),
@@ -77,6 +96,12 @@ impl NSBezierPath {
 
     pub fn lineTo(&mut self, point: CGPoint) {
         self.points.push(point);
+    }
+
+    /// swift: `.lineWidth = _` — spelled as a setter (see `NSTextAttachment.set_bounds` above)
+    /// because the in-scope call sites invoke it as a message.
+    pub fn set_line_width(&mut self, width: CGFloat) {
+        self.lineWidth = width;
     }
 
     pub fn close(&mut self) {

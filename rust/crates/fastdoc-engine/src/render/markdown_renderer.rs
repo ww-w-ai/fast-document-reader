@@ -241,6 +241,16 @@ use markdown::{
 };
 
 // swift: Render/MarkdownRenderer.swift:4-8
+/// swift: `NSMutableAttributedString(attachment:)` — swiftshim's `attributed_string.rs` has no
+/// notion of an attachment run at all (`AttrValue` is a closed enum of font/color/paragraph-style/
+/// range/int/double/bool/text/underline — none of which can hold an `NSTextAttachment`), so this
+/// stands in with the Unicode OBJECT REPLACEMENT CHARACTER real AppKit itself inserts for an
+/// attachment run's placeholder text, until swiftshim grows attachment support (blocked on shim,
+/// reported to b-shim — see `swiftshim::NSTextAttachment`).
+fn attributed_string_with_attachment(_att: swiftshim::NSTextAttachment) -> swiftshim::NSMutableAttributedString {
+    swiftshim::NSMutableAttributedString::fromString("\u{FFFC}")
+}
+
 pub struct MarkdownRenderer;
 
 impl MarkdownRenderer {
@@ -274,7 +284,10 @@ impl MarkdownRenderer {
         // The theme names one font for everything, and it has no Hangul — so without this AppKit
         // fixes the string per character and cuts a run at every word boundary (invariant 52's own
         // rule, applied to the path that has no document to declare a face).
-        crate::render::office::font_substitution_resolver::FontSubstitutionResolver::apply_substitutions(s);
+        crate::render::office::font_substitution_resolver::FontSubstitutionResolver::apply_substitutions(
+            s,
+            &crate::render::office::font_substitution_resolver::FontSubstitutionCache::default(),
+        );
     }
 
     // swift: Render/MarkdownRenderer.swift:35-51
@@ -351,11 +364,11 @@ impl MarkdownRenderer {
                 ),
                 (
                     swiftshim::NSAttributedStringKey::UnderlineStyle,
-                    swiftshim::AttrValue::UnderlineStyle(swiftshim::NSUnderlineStyle::SINGLE),
+                    swiftshim::AttrValue::UnderlineStyle(swiftshim::NSUnderlineStyle::single),
                 ),
             ]);
 
-        if let Ok(det) = Self::linkDetector() {
+        if let Ok(det) = swiftshim::NSDataDetector::linkDetector() {
             if let Some(m) = det.firstMatch(&str_, full) {
                 if !Self::is_code(s.asAttributedString(), m.range.location)
                     && s.attribute(&swiftshim::NSAttributedStringKey::Link, m.range.location)
@@ -687,7 +700,7 @@ impl AttributedBuilder {
         // lives in Render/SizedAttachmentCell.swift (out of this sprint's scope), referenced by
         // Swift name; `attachment_cell` is a shim addition to `NSTextAttachment`.
         att.attachmentCell = Some(swiftshim::SizedAttachmentCell::new(ph));
-        let mut out = swiftshim::NSMutableAttributedString::with_attachment(att);
+        let mut out = attributed_string_with_attachment(att);
         let whole = swiftshim::NSRange::new(0, out.length());
         out.addAttribute(
             crate::render::md_attr::MDAttr::image(),
@@ -752,7 +765,7 @@ impl AttributedBuilder {
         let remainder = trimmed[close + 1..].to_string();
         if let Ok(re) = swiftshim::NSRegularExpression::new(
             r#"width\s*=\s*"?([0-9.]+%?(?:px)?)"?"#,
-            swiftshim::NSRegularExpressionOptions::CASE_INSENSITIVE,
+            swiftshim::NSRegularExpressionOptions::caseInsensitive,
         ) {
             if let Some(m) = re.firstMatch(inside, swiftshim::NSRange::new(0, inside.encode_utf16().count())) {
                 let r = m.range(1);
@@ -779,7 +792,7 @@ impl AttributedBuilder {
             let pattern = format!(r#"{}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#, name);
             let re = swiftshim::NSRegularExpression::new(
                 &pattern,
-                swiftshim::NSRegularExpressionOptions::CASE_INSENSITIVE,
+                swiftshim::NSRegularExpressionOptions::caseInsensitive,
             )
             .ok()?;
             let m = re.firstMatch(html, swiftshim::NSRange::new(0, html.encode_utf16().count()))?;
@@ -807,9 +820,9 @@ impl AttributedBuilder {
     /// (ascent/descent) don't change — otherwise a bold run shifts the baseline and line spacing
     /// looks jagged under a fixed line height.
     fn font_adding(&self, traits: swiftshim::NSFontDescriptorSymbolicTraits, font: &swiftshim::NSFont) -> swiftshim::NSFont {
-        let mut d = font.fontDescriptor.clone();
-        d.symbolicTraits = swiftshim::NSFontDescriptorSymbolicTraits(d.symbolicTraits.0 | traits.0);
-        swiftshim::NSFont::with_descriptor(&d, font.pointSize).unwrap_or_else(|| font.clone())
+        let d = font.fontDescriptor();
+        let d = d.withSymbolicTraits(d.symbolicTraits().union(traits));
+        swiftshim::NSFont::with_descriptor(&d, font.pointSize()).unwrap_or_else(|| font.clone())
     }
 
     // swift: Render/MarkdownRenderer.swift:362-414
@@ -823,11 +836,11 @@ impl AttributedBuilder {
                 swiftshim::NSAttributedString::with_attributes(&t.string, attrs)
             }
             Markup::Emphasis(e) => {
-                let f = self.font_adding(swiftshim::NSFontDescriptorSymbolicTraits::ITALIC, &font);
+                let f = self.font_adding(swiftshim::NSFontDescriptorSymbolicTraits::italic, &font);
                 self.inline_string(&Markup::Emphasis(e.clone()), f, color)
             }
             Markup::Strong(strong) => {
-                let f = self.font_adding(swiftshim::NSFontDescriptorSymbolicTraits::BOLD, &font);
+                let f = self.font_adding(swiftshim::NSFontDescriptorSymbolicTraits::bold, &font);
                 self.inline_string(&Markup::Strong(strong.clone()), f, color)
             }
             Markup::InlineCode(c) => {
@@ -847,7 +860,7 @@ impl AttributedBuilder {
                 let full = swiftshim::NSRange::new(0, m.length());
                 m.addAttribute(
                     swiftshim::NSAttributedStringKey::UnderlineStyle,
-                    swiftshim::AttrValue::UnderlineStyle(swiftshim::NSUnderlineStyle::SINGLE),
+                    swiftshim::AttrValue::UnderlineStyle(swiftshim::NSUnderlineStyle::single),
                     full,
                 );
                 if let Some(dest) = &link.destination {
@@ -898,7 +911,7 @@ impl AttributedBuilder {
                 let mut m = swiftshim::NSMutableAttributedString::from_attributed_string(&inner);
                 m.addAttribute(
                     swiftshim::NSAttributedStringKey::StrikethroughStyle,
-                    swiftshim::AttrValue::UnderlineStyle(swiftshim::NSUnderlineStyle::SINGLE),
+                    swiftshim::AttrValue::UnderlineStyle(swiftshim::NSUnderlineStyle::single),
                     swiftshim::NSRange::new(0, m.length()),
                 );
                 m.asAttributedString().clone()
@@ -1071,9 +1084,16 @@ impl AttributedBuilder {
         att.bounds = swiftshim::CGRect::new(0.0, 0.0, size.width, size.height);
         // owns size when image==nil
         att.attachmentCell = Some(swiftshim::SizedAttachmentCell::new(size));
-        let mut ph = swiftshim::NSMutableAttributedString::with_attachment(att);
+        let mut ph = attributed_string_with_attachment(att);
+        // swift: `engine.attribute` — `WebBlock.Engine` names the ONE `MDAttr` key its code lives
+        // under (`.mermaid`/`.math`); the two are matched out locally since `Engine` (web_block.rs,
+        // not this file's) carries no such method itself.
+        let engine_attribute = match engine {
+            crate::render::web_block::Engine::Mermaid => crate::render::md_attr::MDAttr::mermaid(),
+            crate::render::web_block::Engine::Math => crate::render::md_attr::MDAttr::math(),
+        };
         ph.addAttribute(
-            engine.attribute(),
+            engine_attribute,
             swiftshim::AttrValue::Text(code),
             swiftshim::NSRange::new(0, ph.length()),
         );
@@ -1120,10 +1140,10 @@ impl AttributedBuilder {
         // A nested code block ends with newline(2), leaving an empty QUOTED line below it (the
         // quote bar would extend past the content). Collapse trailing blank lines to a single \n.
         while self.result.length() > start + 1
-            && self.result.mutableString()[self.result.length() - 1..].starts_with('\n')
-            && self.result.mutableString()[self.result.length() - 2..self.result.length() - 1] == *"\n"
+            && self.result.string()[self.result.length() - 1..].starts_with('\n')
+            && &self.result.string()[self.result.length() - 2..self.result.length() - 1] == "\n"
         {
-            self.result.delete_characters(swiftshim::NSRange::new(self.result.length() - 1, 1));
+            self.result.replaceCharacters(swiftshim::NSRange::new(self.result.length() - 1, 1), "");
         }
         let range = swiftshim::NSRange::new(start, self.result.length() - start);
         if range.length > 0 {
@@ -1133,25 +1153,41 @@ impl AttributedBuilder {
             let code_indent = self.theme.base_font_size; // shift nested code right to sit inside the quote
             let quote_ps = self.quote_ps.clone();
             let secondary = self.theme.secondary_color();
-            self.result.enumerateAttribute(&crate::render::md_attr::MDAttr::code_block(), range, |code, sub, _stop| {
+            // Collected first, applied after: `NSMutableAttributedString` has no `enumerateAttribute`
+            // of its own (only the immutable `NSAttributedString` it wraps does), and mutating the
+            // string being enumerated is undefined even where it did exist — the same "collect first"
+            // discipline `FontSubstitutionResolver::apply_substitutions` uses for the identical reason.
+            enum QuoteEdit {
+                Attrs(swiftshim::NSRange, std::collections::HashMap<swiftshim::NSAttributedStringKey, swiftshim::AttrValue>),
+                Attr(swiftshim::NSRange, swiftshim::NSAttributedStringKey, swiftshim::AttrValue),
+            }
+            let mut edits: Vec<QuoteEdit> = Vec::new();
+            let snapshot = self.result.asAttributedString().clone();
+            snapshot.enumerateAttribute(&crate::render::md_attr::MDAttr::code_block(), range, |code, sub, _stop| {
                 if code.is_none() {
                     let attrs = std::collections::HashMap::from([
                         (swiftshim::NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(quote_ps.clone())),
                         (swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(secondary)),
                     ]);
-                    self.result.addAttributes(attrs, sub);
+                    edits.push(QuoteEdit::Attrs(sub, attrs));
                 } else {
                     // Nested code keeps its card style but is indented to align with the quote.
-                    self.result.addAttribute(crate::render::md_attr::MDAttr::code_inset(), swiftshim::AttrValue::Double(code_indent), sub);
-                    self.result.enumerateAttribute(&swiftshim::NSAttributedStringKey::ParagraphStyle, sub, |psv, s2, _stop2| {
+                    edits.push(QuoteEdit::Attr(sub, crate::render::md_attr::MDAttr::code_inset(), swiftshim::AttrValue::Double(code_indent)));
+                    snapshot.enumerateAttribute(&swiftshim::NSAttributedStringKey::ParagraphStyle, sub, |psv, s2, _stop2| {
                         let Some(swiftshim::AttrValue::ParagraphStyle(psv)) = psv else { return; };
                         let mut mm = psv.clone();
                         mm.headIndent += code_indent;
                         mm.firstLineHeadIndent += code_indent;
-                        self.result.addAttribute(swiftshim::NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(mm), s2);
+                        edits.push(QuoteEdit::Attr(s2, swiftshim::NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(mm)));
                     });
                 }
             });
+            for edit in edits {
+                match edit {
+                    QuoteEdit::Attrs(r, attrs) => self.result.addAttributes(attrs, r),
+                    QuoteEdit::Attr(r, k, v) => self.result.addAttribute(k, v, r),
+                }
+            }
             self.result.addAttribute(crate::render::md_attr::MDAttr::block_quote(), swiftshim::AttrValue::Bool(true), range); // bar spans the whole quote
         }
         self.tag_block(start, blockQuote.range); // overwrites inner ids: the quote is one block
@@ -1306,7 +1342,7 @@ impl AttributedBuilder {
         // Card look: padding inside (head/tail indent) and gaps outside (paragraph spacing).
         // No flat .backgroundColor — CodeCardLayoutManager draws the rounded card backdrop.
         // Slightly open code leading — a bit more air between lines than a raw terminal.
-        let code_lh = (self.theme.code_font().pointSize * self.theme.code_line_height_ratio()).round();
+        let code_lh = (self.theme.code_font().pointSize() * self.theme.code_line_height_ratio()).round();
         // The block is TWO paragraphs: a blank HEADER line (reserves room for the Copy / Wrap
         // buttons) and the CODE. Splitting them lets paragraphSpacingBefore on the code add a
         // real gap BELOW the buttons — a single \u{2028}-joined paragraph could not.

@@ -3,6 +3,28 @@
 
 use swiftshim::{CGFloat, NSColor, NSFont};
 
+/// swift: `NSColor(rgb:alpha:)` — a 0xRRGGBB literal to sRGB. `swiftshim::NSColor` has no such
+/// constructor (only `NSColor::srgb(red,green,blue,alpha)` on 0.0-1.0 components, see
+/// color_font.rs's own header), so this file keeps the hex-literal decode local rather than
+/// widening the shim for one call site.
+fn rgb(hex: u32, alpha: CGFloat) -> NSColor {
+    let r = ((hex >> 16) & 0xFF) as CGFloat / 255.0;
+    let g = ((hex >> 8) & 0xFF) as CGFloat / 255.0;
+    let b = (hex & 0xFF) as CGFloat / 255.0;
+    NSColor::srgb(r, g, b, alpha)
+}
+
+/// swift: `NSColor.dynamic(light:dark:)` resolves against the live `NSAppearance` at draw time
+/// in real AppKit. `swiftshim::NSColor::dynamic` has no appearance to resolve against (its own
+/// doc comment: "this shim has no notion of appearance, so it takes both variants and defers the
+/// choice"), returning `DynamicColor` rather than `NSColor`. Every call site here needs a
+/// concrete `NSColor` today (attribute values, `.setFill()`/`.setStroke()`), so this PHASE A
+/// stand-in resolves to the light variant until a host-side appearance signal exists to pick.
+fn dynamic(light: NSColor, dark: NSColor) -> NSColor {
+    let _ = dark;
+    light
+}
+
 // swift: Render/RenderTheme.swift:3-17
 // extension NSColor {
 //     /// sRGB from a 0xRRGGBB literal.
@@ -25,50 +47,50 @@ pub struct Palette;
 impl Palette {
     // swift: Render/RenderTheme.swift:24
     pub fn text() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x373530, 1.0), NSColor::rgb(0xD4D4D4, 1.0))
+        dynamic(rgb(0x373530, 1.0), rgb(0xD4D4D4, 1.0))
     }
     // swift: Render/RenderTheme.swift:25
     pub fn secondary() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x787774, 1.0), NSColor::rgb(0x9B9B9B, 1.0))
+        dynamic(rgb(0x787774, 1.0), rgb(0x9B9B9B, 1.0))
     }
     // swift: Render/RenderTheme.swift:26
     pub fn inline_code_text() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0xC4554D, 1.0), NSColor::rgb(0xBE524B, 1.0))
+        dynamic(rgb(0xC4554D, 1.0), rgb(0xBE524B, 1.0))
     }
     // swift: Render/RenderTheme.swift:27
     // warm neutral chip, both modes
     pub fn inline_code_bg() -> NSColor {
-        NSColor::rgb(0x878378, 0.15)
+        rgb(0x878378, 0.15)
     }
     // swift: Render/RenderTheme.swift:28
     pub fn code_card_bg() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0xF7F6F3, 1.0), NSColor::rgb(0x2F3437, 1.0))
+        dynamic(rgb(0xF7F6F3, 1.0), rgb(0x2F3437, 1.0))
     }
     // swift: Render/RenderTheme.swift:29-30
     pub fn code_card_border() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x000000, 0.09), NSColor::rgb(0xFFFFFF, 0.12))
+        dynamic(rgb(0x000000, 0.09), rgb(0xFFFFFF, 0.12))
     }
     // swift: Render/RenderTheme.swift:31-32
     pub fn hairline() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x37352F, 0.12), NSColor::rgb(0xFFFFFF, 0.14))
+        dynamic(rgb(0x37352F, 0.12), rgb(0xFFFFFF, 0.14))
     }
     // swift: Render/RenderTheme.swift:33-34
     pub fn quote_bar() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x37352F, 0.30), NSColor::rgb(0xFFFFFF, 0.30))
+        dynamic(rgb(0x37352F, 0.30), rgb(0xFFFFFF, 0.30))
     }
     // swift: Render/RenderTheme.swift:35
     pub fn link() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x2E7AB8, 1.0), NSColor::rgb(0x6CB0F5, 1.0))
+        dynamic(rgb(0x2E7AB8, 1.0), rgb(0x6CB0F5, 1.0))
     }
     // swift: Render/RenderTheme.swift:36-39
     // The band under the line the reading cursor sits on. Faint enough to be ambient, not read as a
     // selection — a touch of the link hue so it reads as "you are here", warm-neutral in both modes.
     pub fn reading_line() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x2E7AB8, 0.07), NSColor::rgb(0x6CB0F5, 0.10))
+        dynamic(rgb(0x2E7AB8, 0.07), rgb(0x6CB0F5, 0.10))
     }
     // swift: Render/RenderTheme.swift:40-41
     pub fn table_border() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x37352F, 0.16), NSColor::rgb(0xFFFFFF, 0.16))
+        dynamic(rgb(0x37352F, 0.16), rgb(0xFFFFFF, 0.16))
     }
     // swift: Render/RenderTheme.swift:42-65
     /// The colour a rule the DOCUMENT DREW takes when the document left the colour to us — Word's
@@ -94,12 +116,12 @@ impl Palette {
     /// drawn it), and every non-paged table — markdown, and office with no page width — which
     /// invariant 36's parity harness holds byte-identical.
     pub fn table_border_authored() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x37352F, 0.85), NSColor::rgb(0xFFFFFF, 0.70))
+        dynamic(rgb(0x37352F, 0.85), rgb(0xFFFFFF, 0.70))
     }
     // swift: Render/RenderTheme.swift:66
     // warm neutral, both modes
     pub fn table_header_bg() -> NSColor {
-        NSColor::rgb(0x878378, 0.10)
+        rgb(0x878378, 0.10)
     }
     // swift: Render/RenderTheme.swift:67-81
     /// The DESK a paged document's sheets lie on — drawn only where the page outline is on
@@ -116,7 +138,7 @@ impl Palette {
     /// indistinguishable from the paper, so the pages read as one continuous run with a hairline in it
     /// rather than as separate sheets.
     pub fn page_desk() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0xE9E9E8, 1.0), NSColor::rgb(0x141414, 1.0))
+        dynamic(rgb(0xE9E9E8, 1.0), rgb(0x141414, 1.0))
     }
     // swift: Render/RenderTheme.swift:82-87
     /// The sheet's own edge — and, when the outline is OFF but a band still exists, the page-break
@@ -124,7 +146,7 @@ impl Palette {
     /// rather than as a page ending: the reader sees a long blank stretch and a header floating in
     /// it, with nothing saying why.
     pub fn page_gap_edge() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0x37352F, 0.14), NSColor::rgb(0xFFFFFF, 0.10))
+        dynamic(rgb(0x37352F, 0.14), rgb(0xFFFFFF, 0.10))
     }
     // swift: Render/RenderTheme.swift:88-93
     // P6b: comment highlight — a faint amber wash behind a commented span (only drawn while the
@@ -132,16 +154,17 @@ impl Palette {
     // rather than the reading-line's blue tint so the two "you should look here" signals never read
     // as the same kind of thing.
     pub fn comment_highlight() -> NSColor {
-        NSColor::dynamic(NSColor::rgb(0xE9A23B, 0.16), NSColor::rgb(0xE9A23B, 0.22))
+        dynamic(rgb(0xE9A23B, 0.16), rgb(0xE9A23B, 0.22))
     }
     // swift: Render/RenderTheme.swift:94
     // solid amber, both modes
     pub fn comment_badge_bg() -> NSColor {
-        NSColor::rgb(0xE9A23B, 1.0)
+        rgb(0xE9A23B, 1.0)
     }
 }
 
 // swift: Render/RenderTheme.swift:97-120
+#[derive(Clone, Copy)]
 pub struct RenderTheme {
     pub base_font_size: CGFloat,
 }

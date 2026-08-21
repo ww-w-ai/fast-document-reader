@@ -2,7 +2,21 @@
 //! swift-range: 1-2
 
 use std::collections::{HashMap, HashSet};
-use swiftshim::{CGFloat, CGRect};
+use swiftshim::{CGFloat, CGPoint, CGRect, CGSize};
+
+/// swift: `CGRect.union(_:)` — swiftshim's `CGRect` has no drawing/geometry-op methods beyond
+/// the computed properties (min/max/mid), so the smallest enclosing rect is computed locally
+/// rather than added to the shim for one call site.
+fn union_rect(a: CGRect, b: CGRect) -> CGRect {
+    let min_x = a.minX().min(b.minX());
+    let min_y = a.minY().min(b.minY());
+    let max_x = a.maxX().max(b.maxX());
+    let max_y = a.maxY().max(b.maxY());
+    CGRect::fromOriginSize(
+        CGPoint::new(min_x, min_y),
+        CGSize::new(max_x - min_x, max_y - min_y),
+    )
+}
 
 /// Where each SHEET of a paged document sits in the text view's own coordinates — the one piece of
 /// arithmetic printing needs that the reader did not already have, kept pure and view-free so it is
@@ -138,7 +152,7 @@ impl PagePagination {
             // Boundary `page - 1` is the one between the previous sheet and this one.
             if page > 0 && !opened_boundaries.contains(&((page - 1) as i64)) {
                 if let Some(last) = out.pop() {
-                    out.push(last.union(*sheet));
+                    out.push(union_rect(last, *sheet));
                     continue;
                 }
             }

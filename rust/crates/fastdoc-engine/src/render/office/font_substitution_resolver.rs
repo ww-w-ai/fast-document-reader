@@ -2,6 +2,7 @@
 //! swift-range: 1-3
 
 use std::collections::{HashMap, HashSet};
+use swiftshim::SwiftString;
 
 // swift: Render/Office/FontSubstitutionResolver.swift:4-37
 /// Resolves AppKit's own font-substitution decision ONCE, at READ time, instead of letting it
@@ -52,7 +53,7 @@ impl FontSubstitutionResolver {
         swiftshim::NSFont::systemFont(Self::PROBE_SIZE)
     }
     fn code_family_font() -> swiftshim::NSFont {
-        swiftshim::NSFont::monospacedSystemFont(Self::PROBE_SIZE, swiftshim::NSFontWeight::Regular)
+        swiftshim::NSFont::monospacedSystemFont(Self::PROBE_SIZE, swiftshim::NSFontWeight::regular)
     }
 
     /// Adds symbolic traits while keeping the SAME family — used here only on PUBLIC, ordinary font
@@ -63,7 +64,7 @@ impl FontSubstitutionResolver {
         let d = font
             .fontDescriptor()
             .withSymbolicTraits(font.fontDescriptor().symbolicTraits().union(traits));
-        swiftshim::NSFont::new(&d, font.pointSize()).unwrap_or(font)
+        swiftshim::NSFont::with_descriptor(&d, font.pointSize()).unwrap_or(font)
     }
 
     // MARK: - Phase 1, the survey
@@ -173,7 +174,7 @@ impl FontSubstitutionResolver {
             // font draws THIS DOCUMENT's own characters instead, and that cliff cannot exist.
             // A STAND-IN has to be recorded even when it covers, and this is the one thing about the
             // shape of this pass that the chain changed. `OfficeTextBuilder` reaches a span's family
-            // by calling `NSFont(name: span.fontName)` itself (`:425`) — which returns nil for exactly
+            // by calling `NSFont(name: span.fontName())` itself (`:425`) — which returns nil for exactly
             // the unresolvable families the chain exists for — so `resolvedFontDescriptor` is the ONLY
             // channel a stand-in can travel down. Leaving it unset because the stand-in happened to
             // draw the sample would decide the right face and then throw it away.
@@ -217,7 +218,7 @@ impl FontSubstitutionResolver {
                         }
                     }
                 }
-                OfficeBlock::Image | OfficeBlock::UnsupportedGraphic | OfficeBlock::Formula => continue,
+                OfficeBlock::Image { .. } | OfficeBlock::UnsupportedGraphic { .. } | OfficeBlock::Formula { .. } => continue,
             }
         }
     }
@@ -313,12 +314,12 @@ impl FontSubstitutionResolver {
     ///
     /// Returns how many ranges were restamped — the deterministic number a test asserts on.
     // swift: Render/Office/FontSubstitutionResolver.swift:339-442
-    pub fn apply_substitutions(string: &swiftshim::NSMutableAttributedString, cache: &FontSubstitutionCache) -> i64 {
+    pub fn apply_substitutions(string: &mut swiftshim::NSMutableAttributedString, cache: &FontSubstitutionCache) -> i64 {
         if string.length() <= 0 {
             return 0;
         }
         let whole = swiftshim::NSRange { location: 0, length: string.length() };
-        let text = string.string();
+        let text = SwiftString::new(string.string());
 
         #[derive(Hash, PartialEq, Eq, Clone)]
         struct SlotKey {
@@ -331,11 +332,20 @@ impl FontSubstitutionResolver {
         fn font_key(font: &swiftshim::NSFont) -> String {
             format!("{}|{}", font.fontName(), font.pointSize())
         }
+        // swift: `value as? NSFont` — pulling an `NSFont` back out of the attribute-value union.
+        // No such downcast exists on `swiftshim::AttrValue` (an enum, not `Any`), so it is matched
+        // out locally rather than widening the shim for this one call site.
+        fn value_as_font(value: Option<&swiftshim::AttrValue>) -> Option<swiftshim::NSFont> {
+            match value {
+                Some(swiftshim::AttrValue::Font(f)) => Some(f.clone()),
+                _ => None,
+            }
+        }
 
         let mut histograms: HashMap<SlotKey, HashMap<u32, i64>> = HashMap::new();
         let mut declared_fonts: HashMap<String, swiftshim::NSFont> = HashMap::new();
-        string.enumerateAttribute(swiftshim::NSAttributedStringKey::Font, whole, |value, range, _stop| {
-            let Some(font) = value.as_nsfont() else { return };
+        string.asAttributedString().enumerateAttribute(&swiftshim::NSAttributedStringKey::Font, whole, |value, range, _stop| {
+            let Some(font) = value_as_font(value) else { return };
             let key = font_key(&font);
             declared_fonts.insert(key.clone(), font);
             for scalar in text.substring(range).chars() {
@@ -371,7 +381,7 @@ impl FontSubstitutionResolver {
             // the declared face without its size, and this map used to be too. A theme's H1, H2 and
             // table header are one face (`.systemFont(weight: .semibold)`) at three sizes, so both
             // collapsed them onto whichever size happened to be resolved first.
-            let sized = swiftshim::NSFont::new(&substitute.fontDescriptor(), declared.pointSize())
+            let sized = swiftshim::NSFont::with_descriptor(&substitute.fontDescriptor(), declared.pointSize())
                 .unwrap_or(substitute);
             by_family.insert(font_key(&sized), sized.clone());
             substitutes.insert(key.clone(), sized);
@@ -382,8 +392,8 @@ impl FontSubstitutionResolver {
 
         // Collected first, applied after: mutating the attributes being enumerated is undefined.
         let mut edits: Vec<(swiftshim::NSRange, swiftshim::NSFont)> = Vec::new();
-        string.enumerateAttribute(swiftshim::NSAttributedStringKey::Font, whole, |value, range, _stop| {
-            let Some(font) = value.as_nsfont() else { return };
+        string.asAttributedString().enumerateAttribute(&swiftshim::NSAttributedStringKey::Font, whole, |value, range, _stop| {
+            let Some(font) = value_as_font(value) else { return };
             let key = font_key(&font);
             if !substitutes.keys().any(|k| k.font == key) {
                 return;
@@ -404,13 +414,15 @@ impl FontSubstitutionResolver {
                 // draws this script, and it must break so the Latin
                 // keeps the face the theme chose for it.
                 |script| {
-                    substitutes
-                        .get(&SlotKey { font: key.clone(), script })
-                        .map(font_key)
-                        .unwrap_or_else(|| font_key(&font))
+                    Some(
+                        substitutes
+                            .get(&SlotKey { font: key.clone(), script })
+                            .map(font_key)
+                            .unwrap_or_else(|| font_key(&font)),
+                    )
                 },
             ) {
-                let length = part.text.encode_utf16().count() as i64;
+                let length = part.text.encode_utf16().count();
                 if let Some(family) = part.family {
                     if let Some(substitute) = by_family.get(&family) {
                         edits.push((swiftshim::NSRange { location: offset, length }, substitute.clone()));
@@ -420,7 +432,11 @@ impl FontSubstitutionResolver {
             }
         });
         for (range, font) in &edits {
-            string.addAttribute(swiftshim::NSAttributedStringKey::Font, font, *range);
+            string.addAttribute(
+                swiftshim::NSAttributedStringKey::Font,
+                swiftshim::AttrValue::Font(font.clone()),
+                *range,
+            );
         }
         edits.len() as i64
     }
@@ -443,9 +459,9 @@ impl BlockWeight {
     fn probe_font(&self) -> swiftshim::NSFont {
         match self {
             BlockWeight::Regular => FontSubstitutionResolver::default_family_font(),
-            BlockWeight::Semibold => swiftshim::NSFont::system_font_weighted(
+            BlockWeight::Semibold => swiftshim::NSFont::systemFontWeight(
                 FontSubstitutionResolver::PROBE_SIZE,
-                swiftshim::NSFontWeight::Semibold,
+                swiftshim::NSFontWeight::semibold,
             ),
         }
     }
@@ -472,7 +488,7 @@ impl DeclaredFontKey {
     pub fn new(span: &crate::render::office::office_block::Span, block_weight: BlockWeight) -> Self {
         DeclaredFontKey {
             code: span.code,
-            font_name: span.font_name.clone(),
+            font_name: span.font_name.as_ref().map(|s| s.to_string()),
             block_weight,
             bold: span.bold,
             italic: span.italic,
@@ -520,12 +536,12 @@ impl FontSubstitutionResolver {
         }
         let mut traits = swiftshim::NSFontDescriptorSymbolicTraits::empty();
         if key.bold {
-            traits.insert_bold();
+            traits.insert(swiftshim::NSFontDescriptorSymbolicTraits::bold);
         }
         if key.italic {
-            traits.insert_italic();
+            traits.insert(swiftshim::NSFontDescriptorSymbolicTraits::italic);
         }
-        if !traits.is_empty() {
+        if !traits.isEmpty() {
             font = Self::font_adding(traits, font);
         }
         cache.declared_font_memo_set(key.clone(), font.clone());
@@ -642,7 +658,11 @@ impl FontSubstitutionPlan {
                     key.font_name.as_deref().unwrap_or("<theme>"),
                     if traits_str.is_empty() { String::new() } else { format!(" [{}]", traits_str) },
                     sample,
-                    value.descriptor.postscript_name().as_deref().unwrap_or("?")
+                    // BLOCKED ON SHIM: `NSFontDescriptor.postscript_name()` has no member in
+                    // swiftshim's `color_font.rs` (only `.symbolicTraits()`/`addingAttributes`/
+                    // `withSymbolicTraits` exist there) — this debug-only description string
+                    // stands in "?" until the shim grows it, reported to b-shim.
+                    "?"
                 )
             })
             .collect();
@@ -660,7 +680,7 @@ impl FontSubstitutionPlan {
 /// HWP, against 2,209 under the previous per-span shape.
 ///
 /// **The key, and why it cannot collide:** `(font identity, Unicode codepoint)`, where font identity
-/// is `NSFont.fontName` — the PostScript name — read off the font AFTER traits are unioned in, so
+/// is `NSFont.fontName()` — the PostScript name — read off the font AFTER traits are unioned in, so
 /// `.SFNS-Regular` and `.SFNS-Bold` are different keys by construction rather than by any assumption
 /// this cache makes. The codepoint is a full scalar, never a UTF-16 half. Both questions are asked
 /// about that ONE character in isolation, so the key IS the question, verbatim — this cache can only
@@ -823,7 +843,7 @@ impl crate::render::office::office_block::OfficeBlock {
                     format: format.clone(),
                 }
             }
-            OfficeBlock::Image | OfficeBlock::UnsupportedGraphic | OfficeBlock::Formula => self.clone(),
+            OfficeBlock::Image { .. } | OfficeBlock::UnsupportedGraphic { .. } | OfficeBlock::Formula { .. } => self.clone(),
         }
     }
 
@@ -834,6 +854,17 @@ impl crate::render::office::office_block::OfficeBlock {
         let plan = FontSubstitutionResolver::plan(std::slice::from_ref(self), cache, &HashMap::new());
         self.applying_font_substitution(&plan)
     }
+}
+
+/// swift: `Dictionary` keyed by `String` — `OfficeReadResult.declared_faces` is keyed by
+/// `swiftshim::SwiftString` (convention §3's `NSString`/`String` stand-in), but `declared_font`'s
+/// lookups below compare against `DeclaredFontKey.font_name: Option<String>`, so the map is
+/// re-keyed by plain `String` at the one boundary that needs it rather than threading `SwiftString`
+/// through every lookup in this file.
+fn restring_declared_faces(
+    faces: &HashMap<SwiftString, crate::render::office::declared_font_kind::DeclaredFace>,
+) -> HashMap<String, crate::render::office::declared_font_kind::DeclaredFace> {
+    faces.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
 }
 
 // swift: Render/Office/FontSubstitutionResolver.swift:599-615
@@ -849,7 +880,8 @@ impl crate::render::office::office_block::OfficeReadResult {
     /// be reached first.
     // swift: Render/Office/FontSubstitutionResolver.swift:609-614
     pub fn resolving_font_substitution(&self, cache: &FontSubstitutionCache) -> Self {
-        let plan = FontSubstitutionResolver::plan(&self.blocks, cache, &self.declared_faces);
+        let declared_faces = restring_declared_faces(&self.declared_faces);
+        let plan = FontSubstitutionResolver::plan(&self.blocks, cache, &declared_faces);
         let mut copy = self.clone();
         copy.blocks = self.blocks.iter().map(|b| b.applying_font_substitution(&plan)).collect();
         copy

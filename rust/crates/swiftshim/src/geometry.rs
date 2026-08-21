@@ -126,7 +126,7 @@ impl NSEdgeInsets {
 
 /// swift: NSRectEdge — an OptionSet in AppKit (`.minX`, `.maxX`, `.minY`, `.maxY`); the reader's
 /// per-edge border logic (invariant 47) uses it as a case set, mirrored here as bit flags.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NSRectEdge {
     MinX,
     MinY,

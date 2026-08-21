@@ -90,15 +90,15 @@ impl OfficeMarkdownSerializer {
     fn render(block: &crate::render::office::office_block::OfficeBlock) -> (String, bool) {
         use crate::render::office::office_block::OfficeBlock;
         match block {
-            OfficeBlock::heading { level, spans, .. } => {
+            OfficeBlock::Heading { level, spans, .. } => {
                 let hashes = "#".repeat((*level).clamp(1, 6) as usize);
                 (
                     format!("{} {}", hashes, Self::inline(spans, false)),
                     false,
                 )
             }
-            OfficeBlock::paragraph { spans, .. } => (Self::inline(spans, false), false),
-            OfficeBlock::listItem {
+            OfficeBlock::Paragraph { spans, .. } => (Self::inline(spans, false), false),
+            OfficeBlock::ListItem {
                 level,
                 ordered,
                 spans,
@@ -111,9 +111,10 @@ impl OfficeMarkdownSerializer {
                     // clause number) literally rather than letting Markdown auto-number — a real number
                     // the reader shows must survive extraction.
                     if let Some(m) = marker {
+                        let m = m.to_string();
                         if !m.trim().is_empty() {
                             if m.ends_with(' ') {
-                                m.clone()
+                                m
                             } else {
                                 format!("{} ", m)
                             }
@@ -131,16 +132,16 @@ impl OfficeMarkdownSerializer {
                     true,
                 )
             }
-            OfficeBlock::table { rows, header_rows, .. } => {
-                (Self::render_table(rows, *header_rows), false)
+            OfficeBlock::Table { rows, header_rows, .. } => {
+                (Self::render_table(rows, *header_rows as i32), false)
             }
-            OfficeBlock::image { id, .. } => (format!("![image]({})", id), false),
-            OfficeBlock::unsupportedGraphic { label, .. } => {
+            OfficeBlock::Image { id, .. } => (format!("![image]({})", id), false),
+            OfficeBlock::UnsupportedGraphic { label, .. } => {
                 // The reader shows an honest placeholder for a chart/SmartArt with no picture fallback;
                 // extraction mirrors that rather than inventing text that was never there.
                 (format!("*[{}]*", label), false)
             }
-            OfficeBlock::formula { latex } => (format!("$$\n{}\n$$", latex), false),
+            OfficeBlock::Formula { latex } => (format!("$$\n{}\n$$", latex), false),
         }
     }
 
@@ -184,7 +185,7 @@ impl OfficeMarkdownSerializer {
                 }
                 for b in &cell.blocks {
                     match b {
-                        OfficeBlock::paragraph { .. } => continue,
+                        OfficeBlock::Paragraph { .. } => continue,
                         _ => return false,
                     }
                 }
@@ -242,7 +243,7 @@ impl OfficeMarkdownSerializer {
         use crate::render::office::office_block::OfficeBlock;
         let mut parts: Vec<String> = Vec::new();
         for b in &cell.blocks {
-            if let OfficeBlock::paragraph { spans, .. } = b {
+            if let OfficeBlock::Paragraph { spans, .. } = b {
                 let s = Self::inline(spans, true);
                 if !s.is_empty() {
                     parts.push(s);
@@ -422,16 +423,16 @@ impl OfficeMarkdownSerializer {
     fn plain_block(block: &crate::render::office::office_block::OfficeBlock) -> String {
         use crate::render::office::office_block::OfficeBlock;
         match block {
-            OfficeBlock::heading { spans, .. } => {
-                spans.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("")
+            OfficeBlock::Heading { spans, .. } => {
+                spans.iter().map(|s| s.text.to_string()).collect::<Vec<_>>().join("")
             }
-            OfficeBlock::paragraph { spans, .. } => {
-                spans.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("")
+            OfficeBlock::Paragraph { spans, .. } => {
+                spans.iter().map(|s| s.text.to_string()).collect::<Vec<_>>().join("")
             }
-            OfficeBlock::listItem { spans, .. } => {
-                spans.iter().map(|s| s.text.clone()).collect::<Vec<_>>().join("")
+            OfficeBlock::ListItem { spans, .. } => {
+                spans.iter().map(|s| s.text.to_string()).collect::<Vec<_>>().join("")
             }
-            OfficeBlock::table { rows, .. } => rows
+            OfficeBlock::Table { rows, .. } => rows
                 .iter()
                 .map(|row| {
                     row.iter()
@@ -441,9 +442,9 @@ impl OfficeMarkdownSerializer {
                 })
                 .collect::<Vec<_>>()
                 .join("\n"),
-            OfficeBlock::image { id, .. } => format!("[image {}]", id),
-            OfficeBlock::unsupportedGraphic { label, .. } => format!("[{}]", label),
-            OfficeBlock::formula { latex } => latex.clone(),
+            OfficeBlock::Image { id, .. } => format!("[image {}]", id),
+            OfficeBlock::UnsupportedGraphic { label, .. } => format!("[{}]", label),
+            OfficeBlock::Formula { latex } => latex.to_string(),
         }
     }
 }

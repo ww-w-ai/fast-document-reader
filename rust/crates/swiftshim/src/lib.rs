@@ -36,7 +36,7 @@ pub fn new_ref<T>(value: T) -> Ref<T> {
 
 // Flat re-export so callers write `swiftshim::NSColor`, matching how the Swift source names
 // these types with no module qualification.
-pub use attributed_string::{AttrValue, NSAttributedString, NSAttributedStringKey, NSMutableAttributedString};
+pub use attributed_string::{AttrKeysExt, AttrValue, NSAttributedString, NSAttributedStringKey, NSMutableAttributedString};
 pub use color_font::{
     system_colors, DynamicColor, NSBitmapImageRep, NSColor, NSFont, NSFontDescriptor,
     NSFontFeatureKey, NSFontDescriptorSymbolicTraits, NSFontWeight, NSGradient, NSImage,
@@ -60,4 +60,4 @@ pub use text_table::{
 };
 pub mod xml_parser;
 pub use xml_parser::{XMLParser, XMLParserDelegate};
-pub use textkit::{NSLayoutManager, NSScrollView, NSTextContainer, NSTextStorage, NSTextView, NSView};
+pub use textkit::{NSLayoutManager, NSScrollView, NSTextContainer, NSTextStorage, NSTextView, NSView, OpenedBand, PageBandDelegate};

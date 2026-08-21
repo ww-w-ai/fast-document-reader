@@ -20,7 +20,7 @@ use swiftshim::{
     NSRectEdge, NSTextTableBlock, NSView,
 };
 
-use crate::render::office::office_block::{BorderLineStyle, BorderSide, CellDiagonal};
+use crate::render::office::office_block::{BorderLineStyle, CellDiagonal};
 
 // swift: Render/GridTextTableBlock.swift:3-18
 // A table cell that knows a page can pass THROUGH it, and paints itself accordingly.
@@ -111,7 +111,7 @@ impl GridTextTableBlock {
         // drawn on the desk and a strip of paper left blank above the text that follows.
         let origin_y = control_view
             .asTextView()
-            .map(|tv| tv.textContainerOrigin().y)
+            .map(|tv| tv.textContainerOrigin.y)
             .unwrap_or(0.0);
         let gaps = Self::gaps_crossing(frame_rect, layout_manager, char_range, origin_y);
         // A styled edge has to be drawn by `paint` even on a cell no band crosses — `super` knows
@@ -222,7 +222,7 @@ impl GridTextTableBlock {
 
     // swift: Render/GridTextTableBlock.swift:146-221
     fn paint(&self, rect: NSRect, cut_above: bool, cut_below: bool) {
-        if let Some(background) = self.base.backgroundColor() {
+        if let Some(background) = &self.base.base.backgroundColor {
             background.setFill();
             rect.fill();
         }
@@ -324,7 +324,7 @@ impl GridTextTableBlock {
                         path.lineTo(NSPoint::new(x, bar.maxY()));
                     }
                     path.set_line_width(thickness);
-                    path.setLineDash(&pattern, 0.0);
+                    path.setLineDash(&pattern, 2, 0.0);
                     colour.setStroke();
                     path.stroke();
                 }
@@ -388,8 +388,8 @@ impl GridTextTableBlock {
         let thickness = diagonal.side.width.max(0.25);
         path.set_line_width(thickness);
         match diagonal.side.style {
-            BorderLineStyle::Dashed => path.setLineDash(&[thickness * 4.0, thickness * 2.0], 0.0),
-            BorderLineStyle::Dotted => path.setLineDash(&[thickness, thickness * 2.0], 0.0),
+            BorderLineStyle::Dashed => path.setLineDash(&[thickness * 4.0, thickness * 2.0], 2, 0.0),
+            BorderLineStyle::Dotted => path.setLineDash(&[thickness, thickness * 2.0], 2, 0.0),
             BorderLineStyle::Solid | BorderLineStyle::Double => {}
         }
         diagonal.side.color.unwrap_or(NSColor::clear()).setStroke();

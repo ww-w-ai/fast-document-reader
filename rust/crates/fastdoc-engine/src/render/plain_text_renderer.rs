@@ -99,7 +99,10 @@ impl PlainTextRenderer {
             line_start = end;
         }
         // Same reason as the markdown path — see `applySubstitutions`.
-        crate::render::office::font_substitution_resolver::FontSubstitutionResolver::apply_substitutions(&mut out);
+        crate::render::office::font_substitution_resolver::FontSubstitutionResolver::apply_substitutions(
+            &mut out,
+            &crate::render::office::font_substitution_resolver::FontSubstitutionCache::default(),
+        );
         out
     }
 }

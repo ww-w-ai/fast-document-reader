@@ -18,7 +18,9 @@
 
 use crate::render::office::docx_reader::part_a::*;
 use crate::render::office::office_block::*;
-use swiftshim::{CGFloat, CGSize, NSColor};
+use crate::render::office::script::script_run_splitter::ScriptRunSplitter;
+use crate::render::office::word_font_slots::{WordFontBlockTable, WordFontSlot};
+use swiftshim::{CGFloat, CGSize, NSColor, SwiftString};
 
 // Provenance for doc-comment / blank lines whose content is already carried by the doc
 // comment on the item immediately below in this file (the comment text was ported there,
@@ -138,8 +140,8 @@ impl super::DocxReader {
         numbering: &NumberingInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
-        list_state: &mut ListNumberingState,
+        comments: &CommentRangeTracking,
+        list_state: &swiftshim::Ref<ListNumberingState>,
         allow_graphic_placeholder: bool,
     ) -> Vec<OfficeBlock> {
         let mut blocks: Vec<OfficeBlock> = Vec::new();
@@ -150,8 +152,8 @@ impl super::DocxReader {
             numbering: &NumberingInfo,
             relationships: &Relationships,
             notes: &NoteNumbering,
-            comments: &mut CommentRangeTracking,
-            list_state: &mut ListNumberingState,
+            comments: &CommentRangeTracking,
+            list_state: &swiftshim::Ref<ListNumberingState>,
             allow_graphic_placeholder: bool,
             blocks: &mut Vec<OfficeBlock>,
         ) {
@@ -281,8 +283,9 @@ impl super::DocxReader {
         let cx: f64 = extent.attributes.get("cx")?.parse().ok()?;
         let cy: f64 = extent.attributes.get("cy")?.parse().ok()?;
         Some(OfficeBlock::UnsupportedGraphic {
-            label: label.to_string(),
+            label: label.into(),
             size: CGSize::new(Self::emu_to_points(cx), Self::emu_to_points(cy)),
+            alignment: None,
         })
     }
 
@@ -309,8 +312,8 @@ impl super::DocxReader {
         numbering: &NumberingInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
-        list_state: &mut ListNumberingState,
+        comments: &CommentRangeTracking,
+        list_state: &swiftshim::Ref<ListNumberingState>,
     ) -> Vec<OfficeBlock> {
         let mut blocks: Vec<OfficeBlock> = Vec::new();
         for txbx in node.all_descendants("w:txbxContent") {
@@ -388,8 +391,10 @@ impl super::DocxReader {
                             .or_else(|| blip.attributes.get("r:link"))
                             .cloned(),
                         relationships,
-                    ),
+                    )
+                    .into(),
                     size: whole_drawing_size,
+                    alignment: None,
                 })
                 .collect();
         };
@@ -476,8 +481,9 @@ impl super::DocxReader {
                         None => fallback_size,
                     };
                     images.push(OfficeBlock::Image {
-                        id: Self::resolve_id(rel_id, relationships),
+                        id: Self::resolve_id(rel_id, relationships).into(),
                         size,
+                        alignment: None,
                     });
                 }
                 _ => continue,
@@ -510,8 +516,9 @@ impl super::DocxReader {
             .and_then(|s| Self::parse_vml_style_size(Some(s)))
             .unwrap_or(Self::UNRESOLVED_VML_SIZE);
         Some(OfficeBlock::Image {
-            id: Self::resolve_id(imagedata.attributes.get("r:id").cloned(), relationships),
+            id: Self::resolve_id(imagedata.attributes.get("r:id").cloned(), relationships).into(),
             size,
+            alignment: None,
         })
     }
 
@@ -611,14 +618,14 @@ impl super::DocxReader {
     // ============================================================================================
 
     // swift: Render/Office/DocxReader.swift:2354-2364
-    fn parse_body(
+    pub(crate) fn parse_body(
         body: &XMLNode,
         style_info: &StyleInfo,
         numbering: &NumberingInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
-        list_state: &mut ListNumberingState,
+        comments: &CommentRangeTracking,
+        list_state: &swiftshim::Ref<ListNumberingState>,
     ) -> Vec<OfficeBlock> {
         body.children
             .iter()
@@ -639,14 +646,14 @@ impl super::DocxReader {
     /// a lock setting, …) is deliberately never read — the only thing needed from `w:sdt` is its
     /// content. Anything else at this level (the body's own trailing `w:sectPr`) is not a block.
     // swift: Render/Office/DocxReader.swift:2373-2402
-    fn parse_body_child(
+    pub(crate) fn parse_body_child(
         child: &XMLNode,
         style_info: &StyleInfo,
         numbering: &NumberingInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
-        list_state: &mut ListNumberingState,
+        comments: &CommentRangeTracking,
+        list_state: &swiftshim::Ref<ListNumberingState>,
     ) -> Vec<OfficeBlock> {
         match child.name.as_str() {
             "w:p" => Self::parse_paragraph(
@@ -684,8 +691,8 @@ impl super::DocxReader {
         numbering: &NumberingInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
-        list_state: &mut ListNumberingState,
+        comments: &CommentRangeTracking,
+        list_state: &swiftshim::Ref<ListNumberingState>,
     ) -> Vec<OfficeBlock> {
         let p_pr = p.child("w:pPr");
         // Read directly off THIS paragraph's own `w:pPr` — not resolved through the `w:basedOn`
@@ -712,7 +719,7 @@ impl super::DocxReader {
             .and_then(|n| n.attributes.get("w:val"))
             .and_then(|v| Self::alignment_from_jc(v))
             .or_else(|| {
-                Self::resolved_alignment(p_style_id_for_alignment.as_deref(), style_info)
+                Self::resolved_alignment(p_style_id_for_alignment.clone(), style_info)
             });
         let tab_stops: Vec<TabStop> = {
             let mut stops: Vec<TabStop> = Vec::new();
@@ -720,7 +727,7 @@ impl super::DocxReader {
                 stops = Self::parse_tab_stops(tabs_node);
             }
             if stops.is_empty() {
-                stops = Self::resolved_tab_stops(p_style_id_for_alignment.as_deref(), style_info)
+                stops = Self::resolved_tab_stops(p_style_id_for_alignment.clone(), style_info)
                     .unwrap_or_default();
             }
             stops
@@ -772,10 +779,10 @@ impl super::DocxReader {
         // resolved once per paragraph and reused for whichever of heading/listItem/paragraph this
         // turns out to be, exactly like `alignment`/`tabStops` above.
         let format =
-            Self::resolved_paragraph_format(p_pr, p_style_id.as_deref(), style_info);
+            Self::resolved_paragraph_format(p_pr, p_style_id.clone(), style_info);
         let skip_empty_text = spans.is_empty() && (!drawing_blocks.is_empty() || !formula_blocks.is_empty());
         let text_block: Option<OfficeBlock>;
-        if let Some(level) = Self::heading_level(p_pr, p_style_id.as_deref(), style_info) {
+        if let Some(level) = Self::heading_level(p_pr, p_style_id.clone(), style_info) {
             let mut heading_spans = spans.clone();
             // Prepend the heading's own numbering marker — resolved through `resolvedNumPr`
             // (paragraph's own `w:numPr` first, else the style chain) and formatted by the SAME
@@ -792,19 +799,19 @@ impl super::DocxReader {
             // hardcoded one.
             if !heading_spans.is_empty() {
                 if let Some((num_id, ilvl)) =
-                    Self::resolved_num_pr(p_pr, p_style_id.as_deref(), style_info)
+                    Self::resolved_num_pr(p_pr, p_style_id.clone(), style_info)
                 {
                     if let Some(num_id) = num_id {
-                        if let Some(info) = Self::numbered_list_info(
-                            Some(num_id.as_str()), ilvl, numbering, list_state,
+                        if let Some((_ordered, marker)) = Self::numbered_list_info(
+                            Some(num_id.clone()), ilvl, numbering, list_state,
                         ) {
-                            if let Some(marker) = info.marker {
+                            if let Some(marker) = marker {
                                 if !marker.is_empty() {
                                     let suff = Self::resolved_level(&num_id, ilvl, numbering)
                                         .map(|l| l.suff)
                                         .unwrap_or_else(|| "\t".to_string());
                                     let mut marker_span = heading_spans[0].clone();
-                                    marker_span.text = format!("{marker}{suff}");
+                                    marker_span.text = format!("{marker}{suff}").into();
                                     heading_spans.insert(0, marker_span);
                                 }
                             }
@@ -816,7 +823,7 @@ impl super::DocxReader {
                 None
             } else {
                 Some(OfficeBlock::Heading {
-                    level,
+                    level: level as i64,
                     spans: heading_spans,
                     rtl,
                     alignment,
@@ -837,21 +844,22 @@ impl super::DocxReader {
             // `numberedListInfo` returns `nil` only for Word's `numId="0"` sentinel — "carries
             // `w:numPr` but is explicitly NOT numbered" — which reads as an ordinary paragraph,
             // never a list item.
-            if let Some(info) =
-                Self::numbered_list_info(num_id.as_deref(), ilvl, numbering, list_state)
+            if let Some((ordered, marker)) =
+                Self::numbered_list_info(num_id.clone(), ilvl, numbering, list_state)
             {
                 text_block = if skip_empty_text {
                     None
                 } else {
                     Some(OfficeBlock::ListItem {
-                        level: ilvl,
-                        ordered: info.ordered,
+                        level: ilvl as i64,
+                        ordered,
                         spans: spans.clone(),
-                        marker: info.marker,
+                        marker: marker.map(SwiftString::from),
                         rtl,
                         alignment,
                         tab_stops: tab_stops.clone(),
                         format: format.clone(),
+                        numbering: None,
                     })
                 };
             } else {
@@ -927,12 +935,12 @@ impl super::DocxReader {
     fn formula_block(o_math: &XMLNode) -> OfficeBlock {
         let latex = OmmlTranslator::latex(o_math).trim().to_string();
         if !latex.is_empty() {
-            return OfficeBlock::Formula { latex };
+            return OfficeBlock::Formula { latex: latex.into() };
         }
         let text = OmmlTranslator::flatten_text(o_math).trim().to_string();
         if !text.is_empty() {
             return OfficeBlock::Paragraph {
-                spans: vec![Span::new(text)],
+                spans: vec![Span { text: text.into(), ..Default::default() }],
                 rtl: false,
                 alignment: None,
                 tab_stops: Vec::new(),
@@ -940,7 +948,7 @@ impl super::DocxReader {
             };
         }
         OfficeBlock::Paragraph {
-            spans: vec![Span::new("[equation]".to_string())],
+            spans: vec![Span { text: "[equation]".into(), ..Default::default() }],
             rtl: false,
             alignment: None,
             tab_stops: Vec::new(),
@@ -963,8 +971,8 @@ impl super::DocxReader {
         numbering: &NumberingInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
-        list_state: &mut ListNumberingState,
+        comments: &CommentRangeTracking,
+        list_state: &swiftshim::Ref<ListNumberingState>,
     ) -> OfficeBlock {
         let row_nodes: Vec<&XMLNode> = tbl.children.iter().filter(|n| n.name == "w:tr").collect();
         let tbl_pr = tbl.child("w:tblPr");
@@ -995,7 +1003,7 @@ impl super::DocxReader {
             tbl_pr.and_then(|n| n.child("w:tblCellMar")),
         )
         .or_else(|| {
-            Self::walk_style_chain(table_style_id.as_deref(), style_info, |id| {
+            Self::walk_style_chain(table_style_id.clone(), style_info, |id| {
                 style_info.table_cell_margins.get(id).cloned()
             })
         })
@@ -1066,14 +1074,20 @@ impl super::DocxReader {
                     let mut cell = Cell {
                         blocks,
                         row_span: 1,
-                        col_span: col_span as i32,
+                        col_span: col_span as i64,
                         background_color: Self::cell_shading(tc_pr),
+                        background_image: None,
                         border_color,
                         border_width,
+                        edge_borders: None,
                         width: Self::cell_width(tc_pr),
                         vertical_alignment: Self::cell_valign(tc_pr),
                         padding: resolved_margin,
-                        ..Default::default()
+                        edge_padding: None,
+                        diagonal: None,
+                        style_shading: None,
+                        style_border_color: None,
+                        style_border_width: None,
                     };
                     // The same node read per EDGE — this is what the renderer actually uses when the
                     // document states its edges individually (the uniform pair above stays as the
@@ -1114,12 +1128,12 @@ impl super::DocxReader {
         // entry's declared size.
         for r in 0..rows.len() {
             for c in 0..rows[r].len() {
-                rows[r][c].row_span = rows[r][c].row_span.min((row_nodes.len() - r) as i32);
+                rows[r][c].row_span = rows[r][c].row_span.min((row_nodes.len() - r) as i64);
             }
         }
         // Leading run only — a header row can never follow an ordinary one, and the source is
         // trusted over any guess (an un-marked table defaults to `headerRows: 0`, never 1).
-        let mut header_rows: i32 = 0;
+        let mut header_rows: i64 = 0;
         for row in &row_nodes {
             let is_header = row
                 .child("w:trPr")
@@ -1158,13 +1172,20 @@ impl super::DocxReader {
                     let look = Self::parse_tbl_look(tbl_pr);
                     for r in 0..rows.len() {
                         for c in 0..rows[r].len() {
-                            let resolved = Self::resolve_cell_table_style(
-                                tbl_style_id, style_info, &look,
-                                r, positions[r][c], row_nodes.len(), col_count, header_rows as usize,
-                            );
-                            rows[r][c].style_shading = resolved.shading;
-                            rows[r][c].style_border_color = resolved.border_color;
-                            rows[r][c].style_border_width = resolved.border_width;
+                            let (shading, style_border_color, style_border_width) =
+                                Self::resolve_cell_table_style(
+                                    tbl_style_id,
+                                    style_info,
+                                    &look,
+                                    r as i32,
+                                    positions[r][c] as i32,
+                                    row_nodes.len() as i32,
+                                    col_count as i32,
+                                    header_rows as i32,
+                                );
+                            rows[r][c].style_shading = shading;
+                            rows[r][c].style_border_color = style_border_color;
+                            rows[r][c].style_border_width = style_border_width;
                         }
                     }
                 }
@@ -1325,7 +1346,7 @@ impl super::DocxReader {
     }
 
     // swift: Render/Office/DocxReader.swift:2870-2878
-    fn resolve_border(borders: Option<&XMLNode>) -> (Option<NSColor>, Option<CGFloat>) {
+    pub(crate) fn resolve_border(borders: Option<&XMLNode>) -> (Option<NSColor>, Option<CGFloat>) {
         let Some(borders) = borders else { return (None, None) };
         for edge in ["w:top", "w:left", "w:bottom", "w:right"] {
             let Some(e) = borders.child(edge) else { continue };
@@ -1383,7 +1404,7 @@ impl super::DocxReader {
     /// twips = 5.4pt sides, EXPLICITLY zero top/bottom) survive as a real zero rather than being
     /// smeared with the left value the way `cellMargin`'s single-value model necessarily does.
     // swift: Render/Office/DocxReader.swift:2915-2928
-    fn cell_edge_padding(mar_node: Option<&XMLNode>) -> Option<EdgePadding> {
+    pub(crate) fn cell_edge_padding(mar_node: Option<&XMLNode>) -> Option<EdgePadding> {
         let mar_node = mar_node?;
         fn edge(node: Option<&XMLNode>) -> Option<CGFloat> {
             let w_str = node?.attributes.get("w:w")?;
@@ -1451,8 +1472,8 @@ impl super::DocxReader {
         numbering: &NumberingInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
-        list_state: &mut ListNumberingState,
+        comments: &CommentRangeTracking,
+        list_state: &swiftshim::Ref<ListNumberingState>,
     ) -> Vec<OfficeBlock> {
         let mut blocks: Vec<OfficeBlock> = Vec::new();
         for child in &tc.children {
@@ -1495,7 +1516,7 @@ impl super::DocxReader {
         style_info: &StyleInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
+        comments: &CommentRangeTracking,
     ) -> Vec<Span> {
         let mut spans: Vec<Span> = Vec::new();
         for child in &tc.children {
@@ -1531,7 +1552,7 @@ impl super::DocxReader {
         style_info: &StyleInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
+        comments: &CommentRangeTracking,
     ) -> Vec<Span> {
         let mut spans: Vec<Span> = Vec::new();
         for row in table.children.iter().filter(|n| n.name == "w:tr") {
@@ -1540,11 +1561,11 @@ impl super::DocxReader {
                 let cell_spans =
                     Self::collect_cell_spans(cell, style_info, relationships, notes, comments);
                 if cell_spans.is_empty() { continue; }
-                if row_has_content { spans.push(Span::new("\t".to_string())); }
+                if row_has_content { spans.push(Span { text: "\t".into(), ..Default::default() }); }
                 spans.extend(cell_spans);
                 row_has_content = true;
             }
-            if row_has_content { spans.push(Span::new("\n".to_string())); }
+            if row_has_content { spans.push(Span { text: "\n".into(), ..Default::default() }); }
         }
         spans
     }
@@ -1572,7 +1593,7 @@ impl super::DocxReader {
         style_info: &StyleInfo,
         relationships: &Relationships,
         notes: &NoteNumbering,
-        comments: &mut CommentRangeTracking,
+        comments: &CommentRangeTracking,
     ) -> Vec<Span> {
         // The paragraph's own style id, read off THIS node's `w:pPr` directly — every caller passes
         // the paragraph (`w:p`) itself as `node` (`parseParagraph`, `collectCellSpans`'s `w:p` case),
@@ -1608,7 +1629,7 @@ impl super::DocxReader {
             CollectingInstr(String),
             InResult(Option<PageNumberField>),
         }
-        let mut field_state = FieldState::None;
+        let field_state = FieldState::None;
 
         // `appendMerging` needs `&mut spans`, `&mut pending_bookmarks` and `&Comments` all at
         // once, and `walk` recurses while holding the same borrows — expressed as one recursive
@@ -1618,19 +1639,22 @@ impl super::DocxReader {
             spans: Vec<Span>,
             pending_bookmarks: Vec<String>,
             field_state: FieldState,
-            comments: &'a mut CommentRangeTracking,
+            comments: &'a CommentRangeTracking,
         }
 
         fn append_merging(ctx: &mut Ctx, mut span: Span) {
             if !ctx.pending_bookmarks.is_empty() {
-                span.bookmarks.extend(std::mem::take(&mut ctx.pending_bookmarks));
+                span.bookmarks.extend(
+                    std::mem::take(&mut ctx.pending_bookmarks).into_iter().map(SwiftString::from),
+                );
             }
             // Every span emitted while a `w:commentRangeStart…w:commentRangeEnd` range is open
             // carries that comment's id(s) — see `Span.commentIds`. A span can be inside more than
             // one open range at once (overlapping/nested comments), so this APPENDS every currently
             // active id rather than picking one.
-            if !ctx.comments.active_ids.is_empty() {
-                span.comment_ids.extend(ctx.comments.active_ids.iter().cloned());
+            let active_ids = ctx.comments.active_ids_snapshot();
+            if !active_ids.is_empty() {
+                span.comment_ids.extend(active_ids.into_iter().map(SwiftString::from));
             }
             // A span carrying a page-number field marker is never merged either — same reasoning as
             // bookmarks/commentIds right below: merging would smear the substitutable cached text
@@ -1678,7 +1702,8 @@ impl super::DocxReader {
             };
             if can_merge {
                 let idx = ctx.spans.len() - 1;
-                ctx.spans[idx].text.push_str(&span.text);
+                ctx.spans[idx].text =
+                    SwiftString::from(format!("{}{}", ctx.spans[idx].text, span.text));
             } else {
                 ctx.spans.push(span);
             }
@@ -1754,7 +1779,14 @@ impl super::DocxReader {
                     "m:oMath" => {
                         let text = OmmlTranslator::flatten_text(child);
                         if !text.is_empty() {
-                            append_merging(ctx, Span::with_link(text, link.map(str::to_string)));
+                            append_merging(
+                                ctx,
+                                Span {
+                                    text: text.into(),
+                                    link: link.map(SwiftString::from),
+                                    ..Default::default()
+                                },
+                            );
                         }
                     }
                     // The OTHER field encoding (header-footer-design.md §5): `w:fldSimple` is
@@ -1775,7 +1807,7 @@ impl super::DocxReader {
                         // marked, which also keeps it out of the merge (the guard excludes a marked span).
                         let outer_field_state = ctx.field_state.clone();
                         ctx.field_state = FieldState::InResult(
-                            child.attributes.get("w:instr").and_then(|i| Self::page_number_field_kind(i)),
+                            child.attributes.get("w:instr").and_then(|i| super::DocxReader::page_number_field_kind(i)),
                         );
                         walk(child, link, style_info, relationships, notes, p_style_id, ctx);
                         ctx.field_state = outer_field_state;
@@ -1786,7 +1818,7 @@ impl super::DocxReader {
                         // relationship id absent from `document.xml.rels`) still keeps its text — only
                         // the link itself is lost, never the content, so `target` falling through to
                         // the OUTER `link` (usually nil) rather than being forced is deliberate.
-                        let target = Self::hyperlink_target(child, relationships);
+                        let target = super::DocxReader::hyperlink_target(child, relationships);
                         let next_link = target.as_deref().or(link);
                         walk(child, next_link, style_info, relationships, notes, p_style_id, ctx);
                     }
@@ -1815,9 +1847,13 @@ impl super::DocxReader {
                                         if let Some(number) = notes.footnote.get(id) {
                                             append_merging(
                                                 ctx,
-                                                Span::superscript_marker(
-                                                    number.to_string(), link.map(str::to_string),
-                                                ),
+                                                Span {
+                                                    text: number.to_string().into(),
+                                                    superscript: true,
+                                                    footnote_ref: Some(*number as i64),
+                                                    link: link.map(SwiftString::from),
+                                                    ..Default::default()
+                                                },
                                             );
                                         }
                                     }
@@ -1827,9 +1863,13 @@ impl super::DocxReader {
                                         if let Some(number) = notes.endnote.get(id) {
                                             append_merging(
                                                 ctx,
-                                                Span::superscript_marker(
-                                                    number.to_string(), link.map(str::to_string),
-                                                ),
+                                                Span {
+                                                    text: number.to_string().into(),
+                                                    superscript: true,
+                                                    footnote_ref: Some(*number as i64),
+                                                    link: link.map(SwiftString::from),
+                                                    ..Default::default()
+                                                },
                                             );
                                         }
                                     }
@@ -1849,7 +1889,7 @@ impl super::DocxReader {
                                             // exactly as if the field weren't recognized at all.
                                             if let FieldState::CollectingInstr(instr) = &ctx.field_state {
                                                 ctx.field_state =
-                                                    FieldState::InResult(Self::page_number_field_kind(instr));
+                                                    FieldState::InResult(super::DocxReader::page_number_field_kind(instr));
                                             } else {
                                                 ctx.field_state = FieldState::InResult(None);
                                             }
@@ -1881,10 +1921,13 @@ impl super::DocxReader {
                             FieldState::InResult(kind) => *kind,
                             _ => None,
                         };
-                        for mut span in Self::build_spans(
-                            child, style_info, p_style_id, ctx.spans.last().and_then(|s| s.font_name.clone()),
+                        for mut span in super::DocxReader::build_spans(
+                            child,
+                            style_info,
+                            p_style_id,
+                            ctx.spans.last().and_then(|s| s.font_name.as_ref()).map(|f| f.to_string()),
                         ) {
-                            span.link = link.map(str::to_string);
+                            span.link = link.map(SwiftString::from);
                             span.page_number_field = field_kind;
                             append_merging(ctx, span);
                         }
@@ -2024,7 +2067,11 @@ impl super::DocxReader {
     ) -> Vec<Span> {
         let Some(template) = Self::build_span(run, style_info, p_style_id) else { return Vec::new() };
         let r_pr = run.child("w:rPr");
-        let r_fonts = Self::resolved_r_fonts(p_style_id, style_info, Self::parse_r_fonts(r_pr));
+        let r_fonts = Self::resolved_r_fonts(
+            p_style_id.map(|s| s.to_string()),
+            style_info,
+            &Self::parse_r_fonts(r_pr),
+        );
         // Run-level complex-script override, and the ONLY route to the `cs` slot: MS-OI29500
         // §17.3.2.26 — *"If the run has the cs element or the rtl element, then the cs (or cstheme)
         // font is used, REGARDLESS of the Unicode character values of the run's content."* Checked
@@ -2034,15 +2081,18 @@ impl super::DocxReader {
         // the app already ships right-to-left support.
         if Self::is_on(r_pr, "w:cs") || Self::is_on(r_pr, "w:rtl") {
             let mut span = template;
-            span.font_name = r_fonts.family(FontSlot::Cs, None, &style_info.theme_fonts);
+            span.font_name = r_fonts
+                .family(WordFontSlot::Cs, None, &style_info.theme_fonts)
+                .map(SwiftString::from);
             return vec![span];
         }
-        let hinted = r_fonts.hints_east_asia;
+        let hinted = r_fonts.hints_east_asia();
         let theme = &style_info.theme_fonts;
+        let template_text = template.text.to_string();
         let pieces = ScriptRunSplitter::split(
-            &template.text,
+            &template_text,
             |c| WordFontBlockTable::slot(c, hinted),
-            |piece| r_fonts.family(piece.slot, piece.script, theme),
+            |piece| r_fonts.family(piece.slot, piece.script.as_deref(), theme),
         );
         // A run with nothing but script-neutral characters in it — `2026`, `(3)`, a lone tab — has
         // no neighbour to absorb into, so the splitter hands back one piece with no family at all
@@ -2074,19 +2124,19 @@ impl super::DocxReader {
         // a paragraph — still asks the table, which is why `w:ascii="Georgia"` still draws a leading
         // `2026` in Georgia.
         if pieces.len() == 1 && pieces[0].family.is_none() {
-            if let Some(first) = template.text.chars().next() {
-                let none_classified = !template
-                    .text
-                    .chars()
-                    .any(|c| WordFontBlockTable::slot(c, hinted).is_some());
+            if let Some(first) = template_text.chars().next() {
+                let none_classified =
+                    !template_text.chars().any(|c| WordFontBlockTable::slot(c, hinted).is_some());
                 if none_classified {
                     let mut span = template;
-                    span.font_name = neighbour_family.or_else(|| {
-                        r_fonts.family(
-                            WordFontBlockTable::slot_for_value(first as u32, hinted),
-                            None,
-                            theme,
-                        )
+                    span.font_name = neighbour_family.map(SwiftString::from).or_else(|| {
+                        r_fonts
+                            .family(
+                                WordFontBlockTable::slot_for_value(first as u32, hinted),
+                                None,
+                                theme,
+                            )
+                            .map(SwiftString::from)
                     });
                     return vec![span];
                 }
@@ -2096,8 +2146,8 @@ impl super::DocxReader {
             .into_iter()
             .map(|piece| {
                 let mut span = template.clone();
-                span.text = piece.text;
-                span.font_name = piece.family;
+                span.text = piece.text.into();
+                span.font_name = piece.family.map(SwiftString::from);
                 span
             })
             .collect()
@@ -2152,18 +2202,18 @@ impl super::DocxReader {
         let direct_color = Self::resolved_color_element(
             r_pr.and_then(|n| n.child("w:color")), &style_info.theme_colors,
         );
-        let color = direct_color.or_else(|| Self::resolved_color(p_style_id, style_info));
+        let color = direct_color.or_else(|| Self::resolved_color(p_style_id.map(|s| s.to_string()), style_info));
         let direct_highlight = r_pr
             .and_then(|n| n.child("w:highlight"))
             .and_then(|n| n.attributes.get("w:val"))
             .and_then(|v| Self::highlight_color(v));
-        let highlight = direct_highlight.or_else(|| Self::resolved_highlight(p_style_id, style_info));
+        let highlight = direct_highlight.or_else(|| Self::resolved_highlight(p_style_id.map(|s| s.to_string()), style_info));
         let direct_font_size: Option<CGFloat> = r_pr
             .and_then(|n| n.child("w:sz"))
             .and_then(|n| n.attributes.get("w:val"))
             .and_then(|v| v.parse::<f64>().ok())
             .map(|v| v / 2.0);
-        let font_size = direct_font_size.or_else(|| Self::resolved_font_size(p_style_id, style_info));
+        let font_size = direct_font_size.or_else(|| Self::resolved_font_size(p_style_id.map(|s| s.to_string()), style_info));
         // `fontName` is deliberately left nil here — `buildSpans` resolves the four `w:rFonts` slots
         // per character and writes the family onto each piece it emits.
         // Direct run properties win; where the run says nothing, the paragraph style's own chain
@@ -2171,13 +2221,13 @@ impl super::DocxReader {
         // run's). `toggleState` keeps "explicitly off" distinct from "unstated" so a deliberately
         // un-bolded run does not inherit a bold ancestor.
         let bold = Self::toggle_state(r_pr, "w:b")
-            .or_else(|| Self::resolved_bold(p_style_id, style_info))
+            .or_else(|| Self::resolved_bold(p_style_id.map(|s| s.to_string()), style_info))
             .unwrap_or(false);
         let italic = Self::toggle_state(r_pr, "w:i")
-            .or_else(|| Self::resolved_italic(p_style_id, style_info))
+            .or_else(|| Self::resolved_italic(p_style_id.map(|s| s.to_string()), style_info))
             .unwrap_or(false);
         Some(Span {
-            text,
+            text: text.into(),
             bold,
             italic,
             underline: Self::is_on(r_pr, "w:u"),
@@ -2230,7 +2280,7 @@ impl super::DocxReader {
     // ============================================================================================
 
     // swift: Render/Office/DocxReader.swift:3572-3579
-    fn build_tree(data: &[u8]) -> Result<XMLNode, DocxReaderReadError> {
+    pub(crate) fn build_tree(data: &[u8]) -> Result<XMLNode, DocxReaderReadError> {
         let delegate_root = XMLTreeBuilder::parse(data);
         delegate_root.ok_or_else(|| DocxReaderReadError::MalformedXML("xml".to_string()))
     }
@@ -2580,6 +2630,7 @@ impl OmmlTranslator {
 /// file-private) — this one is `pub(crate)` only within `docx_reader`, never re-exported, so the
 /// two never collide.
 // swift: Render/Office/DocxReader.swift:3850-3859
+#[derive(Clone)]
 pub(crate) struct XMLNode {
     pub name: String,
     pub attributes: std::collections::HashMap<String, String>,

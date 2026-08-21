@@ -152,6 +152,37 @@ impl NSTextBlock {
     ) -> CGRect {
         todo!("swift: NSTextBlock.rectForContentSize(_:in:) — phase B (TextKit-driven)")
     }
+
+    /// swift: `.setWidth(_:type: .absolute, for: .border, edge:)` — a Rust-only convenience
+    /// collapsing the general 4-argument `setWidthForEdge` to the one shape the in-scope
+    /// table-border-drawing call sites actually use: an absolute border width on one edge.
+    pub fn set_width_border(&mut self, value: CGFloat, edge: NSRectEdge) {
+        self.setWidthForEdge(value, NSTextBlockValueType::AbsoluteValueType, NSTextBlockLayer::Border, edge);
+    }
+
+    /// swift: `.width(for: .border, edge:)` — the border-layer-fixed counterpart to
+    /// `set_width_border` above.
+    pub fn width_for_border(&self, edge: NSRectEdge) -> CGFloat {
+        self.width(NSTextBlockLayer::Border, edge)
+    }
+
+    /// swift: `.setWidth(_:type: .absolute, for: .padding, edge:)` — the padding-layer twin of
+    /// `set_width_border`.
+    pub fn set_padding_edge(&mut self, value: CGFloat, edge: NSRectEdge) {
+        self.setWidthForEdge(value, NSTextBlockValueType::AbsoluteValueType, NSTextBlockLayer::Padding, edge);
+    }
+
+    /// swift: `.setWidth(_:type: .absolute, for: .padding)` — the padding-layer twin of the
+    /// uniform `setWidth` above.
+    pub fn set_padding_all(&mut self, value: CGFloat) {
+        self.setWidth(value, NSTextBlockValueType::AbsoluteValueType, NSTextBlockLayer::Padding);
+    }
+
+    /// swift: `.setBorderColor(_:for:)` — the per-edge border-color setter under its Rust-only
+    /// convenience name (matches `set_width_border`/`set_padding_edge` above).
+    pub fn set_border_color_edge(&mut self, color: NSColor, edge: NSRectEdge) {
+        self.setBorderColorForEdge(color, edge);
+    }
 }
 
 /// swift: NSTextBlock.VerticalAlignment
@@ -200,6 +231,26 @@ impl NSTextTableBlock {
         _layout_manager: &crate::textkit::NSLayoutManager,
     ) {
         todo!("swift: NSTextTableBlock.drawBackground(withFrame:in:characterRange:layoutManager:) — phase B")
+    }
+}
+
+/// swift: `NSTextTableBlock : NSTextBlock` — Rust has no class inheritance, so the "is-a" relation
+/// is expressed the way this crate's own doc comment above already promises ("per convention §3's
+/// `extension T: P` → `impl P for T` mapping" extends the same way to subclassing): `Deref`/
+/// `DerefMut` onto the `base` field, so every `NSTextBlock` method (`width`, `borderColor`,
+/// `setWidth`, `setContentWidth`, the convenience wrappers above, …) is reachable directly on an
+/// `NSTextTableBlock` exactly as Swift's subclassing made them reachable on `NSTextTableBlock`
+/// there.
+impl std::ops::Deref for NSTextTableBlock {
+    type Target = NSTextBlock;
+    fn deref(&self) -> &NSTextBlock {
+        &self.base
+    }
+}
+
+impl std::ops::DerefMut for NSTextTableBlock {
+    fn deref_mut(&mut self) -> &mut NSTextBlock {
+        &mut self.base
     }
 }
 

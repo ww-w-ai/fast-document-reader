@@ -6,6 +6,27 @@ use swiftshim::{
     NSTextAlignment, SwiftString,
 };
 
+/// swift: `NSImage: Equatable` — Swift's `NSObject`-bridged `==` on `NSImage`. `swiftshim::NSImage`
+/// derives no `PartialEq` (color_font.rs's own header: "Everything past colour is `todo!()`"), so
+/// the handful of structs below that carry one implement `PartialEq` by hand rather than deriving
+/// it, comparing the one field the shim actually has (`.size`) — that is also the one field
+/// `SizedAttachmentCell`'s own doc comment says is load-bearing for identity here.
+fn image_eq(a: &Option<NSImage>, b: &Option<NSImage>) -> bool {
+    a.as_ref().map(|i| i.size) == b.as_ref().map(|i| i.size)
+}
+
+/// swift: `[String: T]: Equatable` — Swift's `Dictionary` equality needs only `Hashable` keys,
+/// which `String` gives it for free. `swiftshim::SwiftString` (convention §3's `NSString`/`String`
+/// stand-in) derives `PartialEq, Eq` but not `Hash`, so `HashMap<SwiftString, V>` cannot derive (or
+/// even call) `PartialEq` — `std::collections::HashMap`'s own impl requires `K: Eq + Hash`. Compared
+/// by linear scan instead, which needs only `PartialEq` on the key.
+fn map_eq<V: PartialEq>(
+    a: &std::collections::HashMap<SwiftString, V>,
+    b: &std::collections::HashMap<SwiftString, V>,
+) -> bool {
+    a.len() == b.len() && a.iter().all(|(k, v)| b.iter().any(|(k2, v2)| k2 == k && v2 == v))
+}
+
 // swift: Render/Office/OfficeBlock.swift:3-7
 /// A single formatted run of text — the smallest unit `OfficeTextBuilder` styles. Traits are
 /// independent flags, not mutually exclusive: a run can be bold AND italic AND underlined AND
@@ -218,6 +239,44 @@ pub struct Span {
     pub page_number_field: Option<PageNumberField>,
 }
 
+/// A plain, unformatted text run — every trait off, every optional unset. Requested by the docx/odt
+/// readers so `Span { text: ..., ..Default::default() }` can build a run without restating every
+/// field; matches the zero-value every `Span` had for a field before that field existed.
+impl Default for Span {
+    fn default() -> Self {
+        Span {
+            text: SwiftString::default(),
+            bold: false,
+            italic: false,
+            underline: false,
+            underline_style: UnderlineStyle::default(),
+            code: false,
+            caps: false,
+            small_caps: false,
+            link: None,
+            strikethrough: false,
+            superscript: false,
+            footnote_ref: None,
+            form_control: None,
+            column_layout: None,
+            subscripted: false,
+            rtl: false,
+            bookmarks: vec![],
+            comment_ids: vec![],
+            text_color: None,
+            highlight_color: None,
+            letter_spacing_percent: None,
+            baseline_offset_percent: None,
+            underline_color: None,
+            strikethrough_color: None,
+            font_size: None,
+            font_name: None,
+            resolved_font_descriptor: None,
+            page_number_field: None,
+        }
+    }
+}
+
 // swift: Render/Office/OfficeBlock.swift:185-189
 /// Which live page-number field a span stands in for — see `Span.page_number_field`'s own doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -245,6 +304,14 @@ pub enum UnderlineStyle {
     Wavy,
 }
 
+/// `Span.underline_style`'s own default value (see field doc: "Defaults to `.single`") — the
+/// value every span carried before this field existed.
+impl Default for UnderlineStyle {
+    fn default() -> Self {
+        UnderlineStyle::Single
+    }
+}
+
 // swift: Render/Office/OfficeBlock.swift:201-206
 /// One cell of a table row. Only ANCHOR cells — the top-left corner of a merge — appear in
 /// `OfficeBlock.table`'s `rows`; a grid position covered by another cell's `row_span`/`col_span` is
@@ -252,7 +319,7 @@ pub enum UnderlineStyle {
 /// positions land in at render time, the same way `NSTextTableBlock` itself only needs to be told
 /// about anchors. All-1 spans (this sprint's parsers emit nothing else yet) reproduce a plain
 /// rectangular grid exactly — one `Cell` per visible position, nothing skipped.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Cell {
     // swift: Render/Office/OfficeBlock.swift:208-216
     /// A cell's content is the SAME format-neutral block vocabulary as the top of a document —
@@ -362,6 +429,59 @@ pub struct Cell {
     /// `style_shading`'s doc — same lower-priority layer, same position-conditional resolution.
     pub style_border_color: Option<NSColor>,
     pub style_border_width: Option<CGFloat>,
+}
+
+impl PartialEq for Cell {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            blocks, row_span, col_span, background_color, background_image, border_color,
+            border_width, edge_borders, width, vertical_alignment, padding, edge_padding,
+            diagonal, style_shading, style_border_color, style_border_width,
+        } = self;
+        blocks == &other.blocks
+            && row_span == &other.row_span
+            && col_span == &other.col_span
+            && background_color == &other.background_color
+            && image_eq(background_image, &other.background_image)
+            && border_color == &other.border_color
+            && border_width == &other.border_width
+            && edge_borders == &other.edge_borders
+            && width == &other.width
+            && vertical_alignment == &other.vertical_alignment
+            && padding == &other.padding
+            && edge_padding == &other.edge_padding
+            && diagonal == &other.diagonal
+            && style_shading == &other.style_shading
+            && style_border_color == &other.style_border_color
+            && style_border_width == &other.style_border_width
+    }
+}
+
+/// An empty single-position cell — one blank block, unmerged, nothing shaded or bordered. Requested
+/// by the docx/odt readers so `Cell { blocks: vec![...], ..Default::default() }` can build a cell
+/// without restating every optional field; `row_span`/`col_span` default to `1` (the un-merged
+/// case), matching `Cell::new`/`Cell::new_with_spans`'s own defaults.
+impl Default for Cell {
+    fn default() -> Self {
+        Cell {
+            blocks: vec![],
+            row_span: 1,
+            col_span: 1,
+            background_color: None,
+            background_image: None,
+            border_color: None,
+            border_width: None,
+            edge_borders: None,
+            width: None,
+            vertical_alignment: None,
+            padding: None,
+            edge_padding: None,
+            diagonal: None,
+            style_shading: None,
+            style_border_color: None,
+            style_border_width: None,
+        }
+    }
 }
 
 impl Cell {
@@ -657,7 +777,7 @@ impl OfficeBlock {
 }
 
 // swift: Render/Office/OfficeBlock.swift:500-572
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct TableFormat {
     pub default_border_color: Option<NSColor>,
     pub default_border_width: Option<CGFloat>,
@@ -737,6 +857,26 @@ pub struct TableFormat {
     /// a char shape's sixteen decorations: carried on the model because the source declares it and a
     /// future reader may need it, deliberately not drawn because the one place that tried is unsafe.
     pub outer_margin: Option<EdgePadding>,
+}
+
+impl PartialEq for TableFormat {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            default_border_color, default_border_width, default_shading, background_image,
+            source_width, edge_borders, default_padding, repeat_header_rows, page_break_policy,
+            outer_margin,
+        } = self;
+        default_border_color == &other.default_border_color
+            && default_border_width == &other.default_border_width
+            && default_shading == &other.default_shading
+            && image_eq(background_image, &other.background_image)
+            && source_width == &other.source_width
+            && edge_borders == &other.edge_borders
+            && default_padding == &other.default_padding
+            && repeat_header_rows == &other.repeat_header_rows
+            && page_break_policy == &other.page_break_policy
+            && outer_margin == &other.outer_margin
+    }
 }
 
 // swift: Render/Office/OfficeBlock.swift:574-582
@@ -1001,6 +1141,57 @@ impl RectEdge {
     pub const ALL: RectEdge = RectEdge {
         raw_value: RectEdge::TOP.raw_value | RectEdge::LEFT.raw_value | RectEdge::BOTTOM.raw_value | RectEdge::RIGHT.raw_value,
     };
+
+    // swift: `RectEdge: OptionSet` (OfficeBlock.swift:746-753) — the rest of this surface is
+    // Swift's `OptionSet` protocol's own default implementation, not something this type declares
+    // itself, so it is given here rather than left for a call site to reinvent per-caller.
+
+    /// swift: `RectEdge()` — `OptionSet`'s parameterless init, the empty set.
+    pub fn empty() -> RectEdge {
+        RectEdge { raw_value: 0 }
+    }
+
+    /// swift: `.all` — kept as a lowercase alias so a call site written against the Swift static
+    /// member name (`RectEdge.all`) resolves without deciding case per caller.
+    pub fn all() -> RectEdge {
+        RectEdge::ALL
+    }
+
+    /// swift: `.isEmpty`
+    pub fn is_empty(&self) -> bool {
+        self.raw_value == 0
+    }
+
+    /// swift: `OptionSet.union(_:)`
+    pub fn union(self, other: RectEdge) -> RectEdge {
+        RectEdge { raw_value: self.raw_value | other.raw_value }
+    }
+
+    /// swift: `OptionSet.contains(_:)`
+    pub fn contains(&self, other: RectEdge) -> bool {
+        (self.raw_value & other.raw_value) == other.raw_value
+    }
+
+    /// swift: `OptionSet.insert(_:)`
+    pub fn insert(&mut self, other: RectEdge) {
+        self.raw_value |= other.raw_value;
+    }
+}
+
+/// swift: `|` on an `OptionSet` — `Self.union(_:)` via `SetAlgebra`'s own operator overload.
+impl std::ops::BitOr for RectEdge {
+    type Output = RectEdge;
+    fn bitor(self, rhs: RectEdge) -> RectEdge {
+        self.union(rhs)
+    }
+}
+
+/// swift: `|=` on an `OptionSet` — `formUnion(_:)` via `SetAlgebra`'s own operator overload,
+/// which is what `part_a.rs`'s `paragraph_border` (`edges |= edge`) needs.
+impl std::ops::BitOrAssign for RectEdge {
+    fn bitor_assign(&mut self, rhs: RectEdge) {
+        self.raw_value |= rhs.raw_value;
+    }
 }
 
 // swift: Render/Office/OfficeBlock.swift:756-759
@@ -1284,12 +1475,23 @@ pub struct OfficeMasterObject {
 /// body — and a text box arrives as ordinary blocks, so the page number inside it is the SAME
 /// `MDAttr.page_number_field` span a running header carries and `PageBandPainter.
 /// substitutingPageFields` already knows how to fill in.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum OfficeMasterObjectContent {
     // swift: Render/Office/OfficeBlock.swift:988-990
     Image(NSImage),
     Drawing(Data),
     Text(Vec<OfficeBlock>),
+}
+
+impl PartialEq for OfficeMasterObjectContent {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Image(a), Self::Image(b)) => a.size == b.size,
+            (Self::Drawing(a), Self::Drawing(b)) => a == b,
+            (Self::Text(a), Self::Text(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 // swift: Render/Office/OfficeBlock.swift:994-1005
@@ -1701,7 +1903,7 @@ pub struct OfficeMasterPage {
 /// exactly the kind of second, divergent path invariant 29 exists to prevent). `comments` defaults
 /// to `[]` so every pre-P6a construction site (tests building a bare `[OfficeBlock]` result) keeps
 /// compiling and means exactly what it always meant: no comments captured.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct OfficeReadResult {
     pub blocks: Vec<OfficeBlock>,
     pub comments: Vec<OfficeComment>,
@@ -1901,6 +2103,44 @@ pub struct OfficeReadResult {
     /// today. It is a FLOOR, never a ceiling — a paragraph that states its own larger spacing keeps
     /// it, exactly as Word does.
     pub line_grid_pitch: Option<CGFloat>,
+}
+
+impl PartialEq for OfficeReadResult {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            blocks, comments, images, default_body_font_size, declared_faces,
+            page_content_width, page_margin_left, page_margin_right, page_content_height,
+            page_margin_top, page_margin_bottom, page_header_distance, page_footer_distance,
+            headers, footers, footnotes, master_pages, sections, anchored_objects,
+            section_start_blocks, keep_with_next_blocks, page_break_blocks,
+            hide_page_number_blocks, page_number_restart_blocks, line_grid_pitch,
+        } = self;
+        blocks == &other.blocks
+            && comments == &other.comments
+            && map_eq(images, &other.images)
+            && default_body_font_size == &other.default_body_font_size
+            && map_eq(declared_faces, &other.declared_faces)
+            && page_content_width == &other.page_content_width
+            && page_margin_left == &other.page_margin_left
+            && page_margin_right == &other.page_margin_right
+            && page_content_height == &other.page_content_height
+            && page_margin_top == &other.page_margin_top
+            && page_margin_bottom == &other.page_margin_bottom
+            && page_header_distance == &other.page_header_distance
+            && page_footer_distance == &other.page_footer_distance
+            && headers == &other.headers
+            && footers == &other.footers
+            && footnotes == &other.footnotes
+            && master_pages == &other.master_pages
+            && sections == &other.sections
+            && anchored_objects == &other.anchored_objects
+            && section_start_blocks == &other.section_start_blocks
+            && keep_with_next_blocks == &other.keep_with_next_blocks
+            && page_break_blocks == &other.page_break_blocks
+            && hide_page_number_blocks == &other.hide_page_number_blocks
+            && page_number_restart_blocks == &other.page_number_restart_blocks
+            && line_grid_pitch == &other.line_grid_pitch
+    }
 }
 
 impl Default for OfficeReadResult {

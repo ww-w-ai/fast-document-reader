@@ -64,6 +64,12 @@ impl NSUnderlineStyle {
     pub fn union(self, other: NSUnderlineStyle) -> NSUnderlineStyle {
         NSUnderlineStyle(self.0 | other.0)
     }
+
+    /// swift: `OptionSet.rawValue` — every `OptionSet` has one; the in-scope call site reads it
+    /// back out to store as a plain integer attribute value.
+    pub fn rawValue(&self) -> u32 {
+        self.0
+    }
 }
 
 /// swift: NSTextTab.OptionKey — the `options:` dictionary `NSTextTab(textAlignment:location:

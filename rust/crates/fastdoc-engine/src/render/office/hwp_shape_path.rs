@@ -28,3 +28,23 @@ pub struct PathSpec {
     pub arrow_start: bool,
     pub arrow_end: bool,
 }
+
+/// swift: `HwpShapeRenderer.pdf(paths:size:)` — PDF bytes for one shape, or `None` when there is
+/// nothing to draw.
+///
+/// This is the rasterising half of the Swift file, and it is deliberately NOT implemented here.
+/// `docs/plans/rust-phase-b-worklist.md` §1.3 settled it: the engine hands the host a laid-out tree
+/// and the host paints, so these ten drawing call sites are replaced by `RenderTree` nodes rather
+/// than reimplemented. It exists as a signature because the mapping layer, transliterated from a
+/// Swift file that mixed both halves, still calls it at four sites; those calls go away with the
+/// node work, and until then this states the boundary instead of hiding it behind a fake return.
+///
+/// Note what it would take to keep it: a graphics context, a PDF writer, and the y-axis flip the
+/// Swift does once (HWP's y grows downward, PDF's upward). None of that is layout.
+pub struct HwpShapeRenderer;
+
+impl HwpShapeRenderer {
+    pub fn pdf(_paths: &[PathSpec], _size: swiftshim::CGSize) -> Option<swiftshim::Data> {
+        todo!("host paints — see docs/plans/rust-phase-b-worklist.md §1.3")
+    }
+}

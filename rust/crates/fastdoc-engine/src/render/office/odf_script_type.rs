@@ -82,8 +82,6 @@ pub struct OdfScriptTable;
 impl OdfScriptTable {
     /// One row of table 22, as the spec writes it: an inclusive range and the script type it maps to.
     // swift: Render/Office/OdfScriptType.swift:67-73
-    #[derive(Clone, Copy)]
-
     /// Table 22 itself — every range the spec lists, sorted by `first` so the lookup can binary
     /// search. Kept as the spec's 28 separate ranges rather than merged into the 26 they collapse to
     /// (`U+2C60..U+2C7F` and `U+2C80..U+2CE3` are adjacent and both latin; `U+2E80..U+31BF` and
@@ -204,6 +202,8 @@ impl OdfScriptTable {
 }
 
 
+// swift: Render/Office/OdfScriptType.swift:67-73
+#[derive(Clone, Copy)]
 struct Row {
     first: u32,
     last: u32,

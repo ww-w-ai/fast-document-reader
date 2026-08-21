@@ -1,7 +1,7 @@
 //! swift: Render/Office/ZipArchive.swift
 //! swift-range: 1-2
 
-use swiftshim::Data;
+use swiftshim::{Data, NSRange};
 
 /// A read-only ZIP container reader: parses just enough of the format to list and extract entries
 /// by name, which is all `.docx`/`.xlsx`/`.pptx` need (they are ZIP containers holding XML parts).
@@ -237,8 +237,8 @@ impl ZipArchive {
     }
 
     // swift: Render/Office/ZipArchive.swift:186-189
-    fn byte_range(offset: usize, length: usize, data: &Data) -> std::ops::Range<usize> {
-        (data.startIndex() + offset)..(data.startIndex() + offset + length)
+    fn byte_range(offset: usize, length: usize, data: &Data) -> NSRange {
+        NSRange::new(data.startIndex() + offset, length)
     }
 
     // MARK: Inflate
