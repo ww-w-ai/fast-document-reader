@@ -126,11 +126,15 @@ impl GridTextTable {
         char_range: NSRange,
         layout_manager: &NSLayoutManager,
     ) {
-        // BLOCKED ON SHIM: `NSTextTable.drawBackground(forBlock:rect:in:characterRange:
-        // layoutManager:)` — the TABLE-level override `super.drawBackground(...)` calls here —
-        // has no member in swiftshim's `text_table.rs` (only `NSTextTableBlock.drawBackground`
-        // exists there, a different AppKit method with a different signature). Reported to
-        // b-shim; phase B (needs a live graphics context, same as every other drawing call).
+        // BLOCKED ON SHIM: the Swift `super.drawBackground(withFrame:in:characterRange:
+        // layoutManager:)` this overrides is the SAME `NSTextBlock`-declared method already
+        // stubbed as `NSTextTableBlock::drawBackground` in swiftshim's `text_table.rs` — NOT a
+        // different `forBlock:rect:…` overload (that earlier comment named the wrong method).
+        // In real AppKit, `NSTextTable` — like `NSTextTableBlock` — is itself a direct subclass
+        // of `NSTextBlock`, but swiftshim's `NSTextTable` carries no `base: NSTextBlock` field
+        // (unlike `NSTextTableBlock`, which has one plus a `Deref`/`DerefMut` onto it), so there
+        // is no member here to call `super` through yet. Reported to b-shim; phase B (needs a
+        // live graphics context, same as every other drawing call).
         let _ = (&self.base, frame_rect, control_view, char_range, layout_manager);
         if let Some(image) = &self.background_image {
             image.draw(

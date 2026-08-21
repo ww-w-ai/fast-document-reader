@@ -183,6 +183,25 @@ impl NSTextBlock {
     pub fn set_border_color_edge(&mut self, color: NSColor, edge: NSRectEdge) {
         self.setBorderColorForEdge(color, edge);
     }
+
+    /// swift: NSTextBlock.drawBackground(withFrame:in:characterRange:layoutManager:) — declared
+    /// directly on `NSTextBlock` itself in real AppKit (not on `NSTextTableBlock`), which is why
+    /// it lives here rather than on either sibling below: `GridTextTableBlock.swift` (a
+    /// `NSTextTableBlock` subclass) and `GridTextTable.swift` (a `NSTextTable` subclass) BOTH
+    /// override it and BOTH call `super.drawBackground(...)` — one `super` implementation, one
+    /// declaration site, reached by each sibling through its own `base: NSTextBlock` field
+    /// (see the `Deref` doc comments on `NSTextTableBlock`/`NSTextTable` below for why a
+    /// `base` field is how each one reaches this rather than the method living twice). Drawing
+    /// itself needs a live graphics context (phase B / host-resident).
+    pub fn drawBackground(
+        &self,
+        _frame_rect: CGRect,
+        _control_view: &crate::textkit::NSView,
+        _character_range: crate::foundation::NSRange,
+        _layout_manager: &crate::textkit::NSLayoutManager,
+    ) {
+        todo!("swift: NSTextBlock.drawBackground(withFrame:in:characterRange:layoutManager:) — phase B")
+    }
 }
 
 /// swift: NSTextBlock.VerticalAlignment
@@ -219,28 +238,40 @@ impl NSTextTableBlock {
         }
     }
 
-    /// swift: NSTextTableBlock.drawBackground(withFrame:in:characterRange:layoutManager:) —
-    /// GridTextTableBlock.swift (in scope) overrides this and calls `super.drawBackground(...)`
-    /// for the no-page-break case, so the base implementation has to exist here, not just the
-    /// override. Drawing itself needs a live graphics context (phase B / host-resident).
-    pub fn drawBackground(
-        &self,
-        _frame_rect: CGRect,
-        _control_view: &crate::textkit::NSView,
-        _character_range: crate::foundation::NSRange,
-        _layout_manager: &crate::textkit::NSLayoutManager,
-    ) {
-        todo!("swift: NSTextTableBlock.drawBackground(withFrame:in:characterRange:layoutManager:) — phase B")
-    }
 }
 
 /// swift: `NSTextTableBlock : NSTextBlock` — Rust has no class inheritance, so the "is-a" relation
 /// is expressed the way this crate's own doc comment above already promises ("per convention §3's
 /// `extension T: P` → `impl P for T` mapping" extends the same way to subclassing): `Deref`/
 /// `DerefMut` onto the `base` field, so every `NSTextBlock` method (`width`, `borderColor`,
-/// `setWidth`, `setContentWidth`, the convenience wrappers above, …) is reachable directly on an
-/// `NSTextTableBlock` exactly as Swift's subclassing made them reachable on `NSTextTableBlock`
+/// `setWidth`, `setContentWidth`, `drawBackground`, the convenience wrappers above, …) is
+/// reachable directly on an `NSTextTableBlock` exactly as Swift's subclassing made them reachable
 /// there.
+///
+/// **Sibling, not parent/child**: `NSTextTable` (below) is NOT a subclass of `NSTextTableBlock`,
+/// or the reverse — in real AppKit both are DIRECT subclasses of `NSTextBlock`, siblings under
+/// the same base, each with its own `base: NSTextBlock` field and its own `Deref`/`DerefMut` pair.
+/// Getting this backwards costs a wrong instruction: `drawBackground`'s "it's an `NSTextBlock`
+/// method" fact alone does not say which sibling's `base` field a given `super.drawBackground(...)`
+/// call should reach through — both do, independently.
+///
+/// **`Deref` has no virtual dispatch.** A real Swift subclass can OVERRIDE any inherited member;
+/// this shim's `Deref` cannot. Reachability differs by where the member is declared:
+/// - An override declared on the SUBCLASS itself (`NSTextTableBlock`/`NSTextTable`) is reached
+///   correctly — Rust's inherent-method lookup on the concrete type always wins over anything
+///   reached through `Deref`, exactly like calling the override directly.
+/// - A member that would override something living on the `Deref` TARGET (`NSTextBlock`) is
+///   silently skipped: there is no way for `swiftshim::NSTextBlock`'s implementation to know a
+///   "subclass" wants a different answer, because Rust does not know `NSTextTableBlock`/
+///   `NSTextTable` are subclasses at all — `Deref` is a field-access convenience, not a vtable.
+///   No in-scope override needs this today (verified in the semantic audit,
+///   `/tmp/fmd-b/shim-audit.md`) — the one existing override, `drawBackground`, is now declared
+///   directly on `NSTextBlock` itself (see its doc comment above) precisely so BOTH siblings
+///   inherit the SAME implementation rather than needing one each. If a future engine file needs
+///   two DIFFERENT behaviours for a method declared on `NSTextBlock` — one for `NSTextTable`,
+///   another for `NSTextTableBlock` — `Deref` cannot express that; it needs its own method
+///   defined directly on the sibling that differs, shadowing the inherited one for that sibling
+///   only (Rust's own-inherent-method-wins rule handles the shadowing correctly, same as above).
 impl std::ops::Deref for NSTextTableBlock {
     type Target = NSTextBlock;
     fn deref(&self) -> &NSTextBlock {
@@ -254,9 +285,14 @@ impl std::ops::DerefMut for NSTextTableBlock {
     }
 }
 
-/// swift: NSTextTable — the table itself: column count plus collapse behaviour.
+/// swift: NSTextTable — the table itself: column count plus collapse behaviour. A direct
+/// `NSTextBlock` subclass in real AppKit, exactly like `NSTextTableBlock` above — see that
+/// type's `Deref` doc comment for why this has its own `base` field rather than sharing
+/// `NSTextTableBlock`'s (siblings, not parent/child) and what `Deref` does and does not give it
+/// (no virtual dispatch).
 #[derive(Debug, Clone, Default)]
 pub struct NSTextTable {
+    base: NSTextBlock,
     pub numberOfColumns: i32,
     pub collapsesBorders: bool,
     pub hidesEmptyCells: bool,
@@ -283,5 +319,24 @@ impl NSTextTable {
         _column: i32,
     ) -> CGFloat {
         todo!("swift: NSTextTable.value(forDimension:row:column:) — phase B")
+    }
+}
+
+/// swift: `NSTextTable : NSTextBlock` — the second `NSTextBlock` subclass, a SIBLING of
+/// `NSTextTableBlock` (see that type's `Deref` doc comment above for the full reasoning: the
+/// sibling-not-parent/child relationship, and what `Deref`-as-inheritance does and does not
+/// give a type — no virtual dispatch). This is what makes `self.base.drawBackground(...)`
+/// (`GridTextTable`'s `super.drawBackground(...)` call) resolve: `NSTextBlock::drawBackground`
+/// reached through THIS `Deref`, the same declaration `NSTextTableBlock`'s own `Deref` reaches.
+impl std::ops::Deref for NSTextTable {
+    type Target = NSTextBlock;
+    fn deref(&self) -> &NSTextBlock {
+        &self.base
+    }
+}
+
+impl std::ops::DerefMut for NSTextTable {
+    fn deref_mut(&mut self) -> &mut NSTextBlock {
+        &mut self.base
     }
 }

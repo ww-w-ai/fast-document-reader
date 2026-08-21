@@ -314,10 +314,8 @@ impl OfficeTextBuilder {
             // as an empty paragraph (the reader took the object out of the flow), and that empty
             // paragraph's own newline is what carries the marker — an object with no range could
             // never be found by a page.
-            // BLOCKED on missing shim member: AttrValue has no array-of-Int64 variant (needed to
-            // carry `[Int]` — Swift's `MDAttr.anchoredObjects` value). Reported to b-shim.
-            if let Some(_ids) = anchored_objects.get(&index) {
-                // result.addAttribute(MDAttr::anchored_objects(), swiftshim::AttrValue::???(ids.clone()), r);
+            if let Some(ids) = anchored_objects.get(&index) {
+                result.addAttribute(MDAttr::anchored_objects(), swiftshim::AttrValue::Any(std::sync::Arc::new(ids.clone())), r);
             }
             // The document's own page break, marked on the block that starts the new page. A block
             // that builds to nothing carries no marker for the same reason the section one does not:
@@ -388,10 +386,8 @@ impl OfficeTextBuilder {
                         )),
                         heading_range,
                     );
-                    // BLOCKED on missing shim member: AttrValue has no FillMarginTabInfo variant.
-                    // Reported to b-shim.
-                    if let Some(_info) = Self::fill_margin_tab_info(tab_stops) {
-                        // result.addAttribute(MDAttr::fill_margin_tab(), swiftshim::AttrValue::???(_info), heading_range);
+                    if let Some(info) = Self::fill_margin_tab_info(tab_stops) {
+                        result.addAttribute(MDAttr::fill_margin_tab(), swiftshim::AttrValue::Any(std::sync::Arc::new(info)), heading_range);
                     }
                 }
                 OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, .. } => {
@@ -409,9 +405,8 @@ impl OfficeTextBuilder {
                         )),
                         paragraph_range,
                     );
-                    // BLOCKED on missing shim member: AttrValue has no FillMarginTabInfo variant.
-                    if let Some(_info) = Self::fill_margin_tab_info(tab_stops) {
-                        // result.addAttribute(MDAttr::fill_margin_tab(), swiftshim::AttrValue::???(_info), paragraph_range);
+                    if let Some(info) = Self::fill_margin_tab_info(tab_stops) {
+                        result.addAttribute(MDAttr::fill_margin_tab(), swiftshim::AttrValue::Any(std::sync::Arc::new(info)), paragraph_range);
                     }
                     Self::mark_tab_leaders(tab_stops, paragraph_range, &mut result);
                 }
@@ -753,8 +748,7 @@ impl OfficeTextBuilder {
                 attrs.insert(MDAttr::footnote_ref(), swiftshim::AttrValue::Int(*reference));
             }
             if let Some(cols) = &span.column_layout {
-                // BLOCKED on missing shim member: AttrValue has no OfficeColumnLayout variant. Reported.
-                // attrs.insert(MDAttr::column_layout(), swiftshim::AttrValue::???(cols.clone()));
+                attrs.insert(MDAttr::column_layout(), swiftshim::AttrValue::Any(std::sync::Arc::new(cols.clone())));
             }
             if span.superscript {
                 let raised = font.pointSize() * 0.35;
@@ -880,8 +874,8 @@ impl OfficeTextBuilder {
                 }
             }
             if !span.bookmarks.is_empty() {
-                // BLOCKED on missing shim member: AttrValue has no [String] variant. Reported.
-                // attrs.insert(MDAttr::bookmark_target(), swiftshim::AttrValue::???(span.bookmarks.clone()));
+                let names: Vec<String> = span.bookmarks.iter().map(|b| b.to_string()).collect();
+                attrs.insert(MDAttr::bookmark_target(), swiftshim::AttrValue::Any(std::sync::Arc::new(names)));
             }
             // P6b: a span whose ids resolve to a known comment gets the DISPLAY number(s) tagged —
             // an id with no match (comments capture failed to find it, or a stale/dangling id) is
@@ -889,8 +883,7 @@ impl OfficeTextBuilder {
             if !span.comment_ids.is_empty() {
                 let numbers: Vec<i64> = span.comment_ids.iter().filter_map(|id| comment_numbers.get(&id.to_string()).copied()).collect();
                 if !numbers.is_empty() {
-                    // BLOCKED on missing shim member: AttrValue has no [Int64] variant. Reported.
-                    // attrs.insert(MDAttr::comment_mark(), swiftshim::AttrValue::???(numbers));
+                    attrs.insert(MDAttr::comment_mark(), swiftshim::AttrValue::Any(std::sync::Arc::new(numbers)));
                 }
             }
             // header-footer-design.md §5 (build step 5): mark a PAGE/NUMPAGES run so a header/footer
@@ -898,9 +891,8 @@ impl OfficeTextBuilder {
             // why this never touches `displayText`/the span model itself (the cached text still
             // renders verbatim everywhere else, including `--extract`, which never reaches this
             // function at all — invariant 40's blocks→serializer path is entirely separate).
-            // BLOCKED on missing shim member: AttrValue has no PageNumberField variant. Reported.
-            if let Some(_field) = &span.page_number_field {
-                // attrs.insert(MDAttr::page_number_field(), swiftshim::AttrValue::???(_field.clone()));
+            if let Some(field) = &span.page_number_field {
+                attrs.insert(MDAttr::page_number_field(), swiftshim::AttrValue::Any(std::sync::Arc::new(field.clone())));
             }
             // An explicitly-marked run (docx `w:rPr/w:rtl`) gets TextKit's own run-level embedding
             // override — the same mechanism a Unicode RLE/PDF control character would produce, just
@@ -909,12 +901,21 @@ impl OfficeTextBuilder {
             // embedded in an RTL paragraph never sets this, and a Hebrew phrase embedded in an LTR
             // one does — TextKit's bidi algorithm already reorders the two correctly around each
             // other once told which is which.
-            // BLOCKED on missing shim members: no `NSAttributedStringKey::WritingDirection` variant,
-            // no `AttrValue` variant to carry it, and `NSWritingDirection`/`NSWritingDirectionFormatType`
-            // are plain enums here (not the OptionSet AppKit's `[.rightToLeft, .override]` array-of-
-            // raw-values shape needs) — so there is no bit representation to union. Reported to b-shim.
+            // No dedicated `NSAttributedStringKey::WritingDirection` case (the shim only names the
+            // stock keys `spansAttributedString`'s siblings already used, plus `Custom`) — carried
+            // under a Custom key, same as AppKit's own real key is a string underneath. The AppKit
+            // value is `[NSWritingDirection.rightToLeft.rawValue | NSWritingDirectionFormatType
+            // .embedding.rawValue]`, an OptionSet-flavoured raw-value array this shim's plain
+            // `NSWritingDirection`/`NSWritingDirectionFormatType` enums have no bits for — so the
+            // pair of enum values rides through `Any` instead of a re-derived integer.
             if span.rtl {
-                // attrs.insert(swiftshim::NSAttributedStringKey::WritingDirection, swiftshim::AttrValue::???);
+                attrs.insert(
+                    swiftshim::NSAttributedStringKey::Custom("writingDirection".to_string()),
+                    swiftshim::AttrValue::Any(std::sync::Arc::new((
+                        NSWritingDirection::RightToLeft,
+                        swiftshim::NSWritingDirectionFormatType::Embedding,
+                    ))),
+                );
             }
             out.append(&NSAttributedString::with_attributes(display_text, attrs));
         }
@@ -2275,12 +2276,16 @@ impl OfficeTextBuilder {
     /// invariant 31 means this case is sized by `.bounds` with an image that is never nil, so
     /// stretching the old bitmap would blur its label instead of re-laying it out.
     pub fn placeholder_image(label: &str, size: CGSize) -> NSImage {
-        // BLOCKED on missing shim member: no `NSImage(size:flipped:drawingHandler:)` constructor,
-        // and `swiftshim::NSImage` only carries a `size` field (no pixel buffer) to draw into
-        // regardless — this needs a live graphics context, same as `draw_placeholder_card` below.
-        // Reported to b-shim.
-        let _label = label.to_string();
-        NSImage::withSize(size)
+        // `with_drawing` is a real shim constructor now, but its drawing handler is `todo!()`
+        // (needs a live graphics context, same as `draw_placeholder_card` below) — this still
+        // cannot draw a bitmap, but it no longer silently drops `label` behind a size-only stub;
+        // it fails loudly the moment something actually tries to rasterize the placeholder,
+        // which is the honest state of a phase-A port rather than a quiet data loss.
+        let label = label.to_string();
+        NSImage::with_drawing(size, false, move |rect| {
+            Self::draw_placeholder_card(&label, rect);
+            true
+        })
     }
 
     // swift: Render/Office/OfficeTextBuilder.swift:1842-1866
@@ -2383,13 +2388,12 @@ impl OfficeTextBuilder {
         // the new width (see `MDAttr.officeGraphic`) — a rebuild is not required to resize a window.
         ph.addAttribute(
             MDAttr::office_graphic(),
-            // BLOCKED on missing shim member: AttrValue has no OfficeGraphicInfo variant. Reported.
-            swiftshim::AttrValue::OfficeGraphic(OfficeGraphicInfo {
+            swiftshim::AttrValue::Any(std::sync::Arc::new(OfficeGraphicInfo {
                 authored: size,
                 placeholder_label: None,
                 basis_width: basis,
                 is_inside_cell: inside_cell,
-            }),
+            })),
             whole,
         );
         Self::apply_graphic_alignment(alignment, &mut ph);
@@ -2451,13 +2455,12 @@ impl OfficeTextBuilder {
         // width (see `MDAttr.officeGraphic`) instead of leaving it frozen at the build width.
         ph.addAttribute(
             MDAttr::office_graphic(),
-            // BLOCKED on missing shim member: AttrValue has no OfficeGraphicInfo variant. Reported.
-            swiftshim::AttrValue::OfficeGraphic(OfficeGraphicInfo {
+            swiftshim::AttrValue::Any(std::sync::Arc::new(OfficeGraphicInfo {
                 authored: size,
                 placeholder_label: Some(label),
                 basis_width: basis,
                 is_inside_cell: inside_cell,
-            }),
+            })),
             NSRange::new(0, ph.length()),
         );
         Self::apply_graphic_alignment(alignment, &mut ph);

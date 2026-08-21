@@ -241,15 +241,6 @@ use markdown::{
 };
 
 // swift: Render/MarkdownRenderer.swift:4-8
-/// swift: `NSMutableAttributedString(attachment:)` — swiftshim's `attributed_string.rs` has no
-/// notion of an attachment run at all (`AttrValue` is a closed enum of font/color/paragraph-style/
-/// range/int/double/bool/text/underline — none of which can hold an `NSTextAttachment`), so this
-/// stands in with the Unicode OBJECT REPLACEMENT CHARACTER real AppKit itself inserts for an
-/// attachment run's placeholder text, until swiftshim grows attachment support (blocked on shim,
-/// reported to b-shim — see `swiftshim::NSTextAttachment`).
-fn attributed_string_with_attachment(_att: swiftshim::NSTextAttachment) -> swiftshim::NSMutableAttributedString {
-    swiftshim::NSMutableAttributedString::fromString("\u{FFFC}")
-}
 
 pub struct MarkdownRenderer;
 
@@ -700,7 +691,7 @@ impl AttributedBuilder {
         // lives in Render/SizedAttachmentCell.swift (out of this sprint's scope), referenced by
         // Swift name; `attachment_cell` is a shim addition to `NSTextAttachment`.
         att.attachmentCell = Some(swiftshim::SizedAttachmentCell::new(ph));
-        let mut out = attributed_string_with_attachment(att);
+        let mut out = swiftshim::NSMutableAttributedString::with_attachment(att);
         let whole = swiftshim::NSRange::new(0, out.length());
         out.addAttribute(
             crate::render::md_attr::MDAttr::image(),
@@ -1084,7 +1075,7 @@ impl AttributedBuilder {
         att.bounds = swiftshim::CGRect::new(0.0, 0.0, size.width, size.height);
         // owns size when image==nil
         att.attachmentCell = Some(swiftshim::SizedAttachmentCell::new(size));
-        let mut ph = attributed_string_with_attachment(att);
+        let mut ph = swiftshim::NSMutableAttributedString::with_attachment(att);
         // swift: `engine.attribute` — `WebBlock.Engine` names the ONE `MDAttr` key its code lives
         // under (`.mermaid`/`.math`); the two are matched out locally since `Engine` (web_block.rs,
         // not this file's) carries no such method itself.

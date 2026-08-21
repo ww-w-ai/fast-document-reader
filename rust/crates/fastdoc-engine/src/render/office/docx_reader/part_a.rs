@@ -895,7 +895,7 @@ struct TableStyle {
 /// `0x0100` lastColumn, `0x0200` noHBand, `0x0400` noVBand) — see `parseTblLook`.
 // swift: Render/Office/DocxReader.swift:639-646
 #[derive(Debug, Clone, Default)]
-struct TblLook {
+pub(crate) struct TblLook {
     first_row: bool,
     last_row: bool,
     first_column: bool,

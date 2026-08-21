@@ -222,7 +222,7 @@ impl GridTextTableBlock {
 
     // swift: Render/GridTextTableBlock.swift:146-221
     fn paint(&self, rect: NSRect, cut_above: bool, cut_below: bool) {
-        if let Some(background) = &self.base.base.backgroundColor {
+        if let Some(background) = &self.base.backgroundColor {
             background.setFill();
             rect.fill();
         }
