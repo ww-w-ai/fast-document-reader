@@ -1,0 +1,6 @@
+# Fetch git dependencies through the system `git` binary rather than cargo's built-in client, so
+# the machine's existing credential helper authenticates the private rhwp remote. Without this,
+# cargo fails with "failed to acquire username/password from local configuration" even when
+# `git ls-remote` on the same URL succeeds.
+[net]
+git-fetch-with-cli = true

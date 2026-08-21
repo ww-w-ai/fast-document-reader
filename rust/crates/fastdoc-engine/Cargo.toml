@@ -8,3 +8,9 @@ publish.workspace = true
 swiftshim = { path = "../swiftshim" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# The SAME rhwp commit the shipped xcframework was built from (Vendor/RHWP-SOURCE.txt). Pinned by
+# rev on purpose: the Swift reader links that xcframework, so a floating rev would let the two
+# readers parse a document with different parser builds — and every difference the corpus comparison
+# turns up would then be unattributable. Bump this and RHWP-SOURCE.txt together, never one alone.
+rhwp = { git = "https://github.com/ww-w-ai/rhwp.git", rev = "001fd0bfbb9c21af5393051963ee76dee625c7ec", default-features = false }
