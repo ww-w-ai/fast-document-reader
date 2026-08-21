@@ -2215,6 +2215,7 @@ impl OfficeTextBuilder {
     /// `cacheDisplay`, and scanning the bitmap for the rightmost painted pixel — container 451.3,
     /// inset 32, frame 515.3:
     ///
+    /// ```text
     ///     authored  container   rightmost painted   unclipped would be
     ///      411.3      451.3          447.3               448.3    ← fits, whole
     ///      451.3      451.3          482.3               488.3
@@ -2223,6 +2224,7 @@ impl OfficeTextBuilder {
     ///      651.3      451.3          482.3               688.3
     ///      551.3      551.3          582.3               588.3    ← CONTROL, whole
     ///      651.3      651.3          682.3               688.3    ← CONTROL, whole
+    /// ```
     ///
     /// The painted extent tracks the CONTAINER and nothing else: pinned at 482.3 for every oversize
     /// width, while the two controls — same pictures, container widened to match — paint whole. So
