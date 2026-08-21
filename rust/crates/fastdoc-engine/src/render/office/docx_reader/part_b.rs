@@ -1850,7 +1850,6 @@ impl super::DocxReader {
                                                 Span {
                                                     text: number.to_string().into(),
                                                     superscript: true,
-                                                    footnote_ref: Some(*number as i64),
                                                     link: link.map(SwiftString::from),
                                                     ..Default::default()
                                                 },
@@ -1866,7 +1865,6 @@ impl super::DocxReader {
                                                 Span {
                                                     text: number.to_string().into(),
                                                     superscript: true,
-                                                    footnote_ref: Some(*number as i64),
                                                     link: link.map(SwiftString::from),
                                                     ..Default::default()
                                                 },

@@ -1044,21 +1044,34 @@ impl DocxReader {
     /// (its own whole-table `w:tblPr`/`w:tcPr`) or one of its `w:tblStylePr` children (a region's
     /// `w:tcPr`/`w:tblPr`). Shading and border are each read cell-level (`w:tcPr/w:shd`,
     /// `w:tcPr/w:tcBorders`) FIRST, falling to the rarer table-level spelling
-    /// (`w:tblPr/w:shd`/`w:tblPr/w:tblBorders`) only when the cell-level one is entirely absent —
+    /// (`w:tblPr/w:shd`/`w:tblPr/w:tblBorders`) when the cell-level one is either entirely ABSENT
+    /// or present but stating `w:fill="auto"` — the latter is this codebase's own spelling of
+    /// "explicitly no colour" (see `color_from_hex`'s own "auto"/absent-edge sentinel reading), so
+    /// a cell that names `auto` must fall through exactly like one that names nothing at all. The
+    /// shading half of this fell through only on ABSENCE for a while (an `auto`-filled cell entered
+    /// the cell branch, failed the colour test, and never reached the table-level fallback) —
     /// mirroring `cellShading`/`cellBorder`'s own "auto"/absent-edge sentinel reading via
     /// `colorFromHex`/`resolveBorder`, reused here rather than re-implemented.
     fn parse_table_conditional_style(node: &XMLNode) -> TableConditionalStyle {
         let mut result = TableConditionalStyle::default();
         let tc_pr = node.child("w:tcPr");
         let tbl_pr = node.child("w:tblPr");
-        if let Some(fill) = tc_pr.as_ref().and_then(|n| n.child("w:shd")).and_then(|n| n.attributes.get("w:fill").cloned()) {
-            if fill.to_lowercase() != "auto" {
-                result.shading = Self::color_from_hex(&fill);
-            }
-        } else if let Some(fill) = tbl_pr.as_ref().and_then(|n| n.child("w:shd")).and_then(|n| n.attributes.get("w:fill").cloned()) {
-            if fill.to_lowercase() != "auto" {
-                result.shading = Self::color_from_hex(&fill);
-            }
+        // swift: DocxReader.swift:762-765 binds `fill` and tests `!= "auto"` as ONE condition, so a
+        // cell that writes `w:fill="auto"` (this codebase's own spelling of "explicitly no colour")
+        // fails the whole branch and falls through to the table-level shading. Nesting the `!=
+        // "auto"` check inside the `if let` (as this used to) commits to the cell branch the moment
+        // `w:fill` merely EXISTS, so an "auto" cell fill never reaches the table-level fallback —
+        // `.filter()` keeps the bind-and-test as one unit, matching the Swift.
+        let cell_fill = tc_pr.as_ref().and_then(|n| n.child("w:shd"))
+            .and_then(|n| n.attributes.get("w:fill").cloned())
+            .filter(|fill| fill.to_lowercase() != "auto");
+        let table_fill = tbl_pr.as_ref().and_then(|n| n.child("w:shd"))
+            .and_then(|n| n.attributes.get("w:fill").cloned())
+            .filter(|fill| fill.to_lowercase() != "auto");
+        if let Some(fill) = cell_fill {
+            result.shading = Self::color_from_hex(&fill);
+        } else if let Some(fill) = table_fill {
+            result.shading = Self::color_from_hex(&fill);
         }
         let cell_border = Self::resolve_border(tc_pr.as_ref().and_then(|n| n.child("w:tcBorders")));
         if cell_border.0.is_some() || cell_border.1.is_some() {
