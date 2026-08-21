@@ -7,13 +7,34 @@
 //! calls straight on a rect.
 
 use crate::color_font::NSImage;
-use crate::geometry::{CGFloat, CGPoint, CGRect};
+use crate::geometry::{CGFloat, CGPoint, CGRect, NSSize};
 
 /// swift: NSTextAttachment
 #[derive(Debug, Clone, Default)]
 pub struct NSTextAttachment {
     pub image: Option<NSImage>,
     pub bounds: CGRect,
+    pub attachmentCell: Option<SizedAttachmentCell>,
+}
+
+/// swift: Render/SizedAttachmentCell.swift — the cell that OWNS its layout size independently of
+/// whether pixels are loaded, so lazily loading or purging an image never moves the document.
+///
+/// Only the SIZE crosses into the engine. The cell's drawing (`draw(withFrame:in:)`, the
+/// undrawable-format label card) stays with the host, which is where a graphics context exists —
+/// see `CROSS-PLATFORM.md` §2: the engine lays out and the host paints. What layout needs from
+/// this type is the one thing the Swift class exists to guarantee: a reserved box that does not
+/// change when the pixels do.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SizedAttachmentCell {
+    pub reservedSize: NSSize,
+}
+
+impl SizedAttachmentCell {
+    /// swift: `SizedAttachmentCell(reservedSize:)`
+    pub fn new(reservedSize: NSSize) -> Self {
+        Self { reservedSize }
+    }
 }
 
 impl NSTextAttachment {
@@ -110,4 +131,30 @@ impl NSImage {
     ) {
         todo!("swift: NSImage.draw(in:from:operation:fraction:respectFlipped:hints:) — phase B")
     }
+}
+
+/// swift: `NSString.size(withAttributes:)` — how much room a run of text takes at a given font.
+///
+/// Text measurement is layout, so it belongs to the engine, but it cannot be answered without font
+/// metrics: the width of a string is a property of the installed typeface, not of the characters.
+/// That is `CROSS-PLATFORM.md` §6's "authority for font metrics", and until the engine has one this
+/// is the honest shape of the gap.
+pub fn size_with_attributes(
+    _text: &str,
+    _attributes: &std::collections::HashMap<crate::NSAttributedStringKey, crate::AttrValue>,
+) -> crate::geometry::NSSize {
+    todo!("font metrics — see CROSS-PLATFORM.md §6")
+}
+
+/// swift: `NSString.draw(at:withAttributes:)` — paints a label into the current graphics context.
+///
+/// Drawing is the host's, not the engine's (`CROSS-PLATFORM.md` §2). This call site survives the
+/// transliteration because `OfficeTextBuilder.swift` builds a placeholder card's label and paints it
+/// in the same routine; Phase B replaces it with a `RenderTree` node the host paints.
+pub fn draw_string_at(
+    _text: &str,
+    _at: crate::geometry::NSPoint,
+    _attributes: &std::collections::HashMap<crate::NSAttributedStringKey, crate::AttrValue>,
+) {
+    todo!("host paints — see CROSS-PLATFORM.md §2")
 }

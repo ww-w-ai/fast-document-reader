@@ -18,7 +18,7 @@
 
 use crate::render::office::docx_reader::part_a::*;
 use crate::render::office::office_block::*;
-use swiftshim::{CGFloat, CGSize};
+use swiftshim::{CGFloat, CGSize, NSColor};
 
 // Provenance for doc-comment / blank lines whose content is already carried by the doc
 // comment on the item immediately below in this file (the comment text was ported there,
@@ -2230,9 +2230,9 @@ impl super::DocxReader {
     // ============================================================================================
 
     // swift: Render/Office/DocxReader.swift:3572-3579
-    fn build_tree(data: &[u8]) -> Result<XMLNode, super::ReadError> {
+    fn build_tree(data: &[u8]) -> Result<XMLNode, DocxReaderReadError> {
         let delegate_root = XMLTreeBuilder::parse(data);
-        delegate_root.ok_or_else(|| super::ReadError::MalformedXML("xml".to_string()))
+        delegate_root.ok_or_else(|| DocxReaderReadError::MalformedXML("xml".to_string()))
     }
 }
 

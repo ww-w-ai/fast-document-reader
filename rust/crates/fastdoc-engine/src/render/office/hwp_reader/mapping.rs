@@ -777,7 +777,7 @@ use crate::render::office::office_block::{
 };
 use crate::render::office::hwp_reader::schema::{HwpMasterPage, HwpHeaderFooterEntry, HwpFootnote};
 // swift: hwp shape renderer — referenced by name, ported elsewhere (out of this file's range).
-use crate::render::office::hwp_shape_renderer::HwpShapeRenderer;
+use crate::render::office::hwp_shape_path::HwpShapeRenderer;
 
 impl HwpReader {
     /// Where an anchored object sits on the SHEET, in points from the paper's top-left — rhwp's own
@@ -2081,8 +2081,8 @@ impl HwpReader {
     /// guessed at — a mis-read control point draws a line across the page, which is worse than a
     /// missing segment.
     // swift: Render/Office/HwpReader.swift:1590-1620
-    fn shape_path(p: &HwpShapePath) -> Option<crate::render::office::hwp_shape_renderer::PathSpec> {
-        use crate::render::office::hwp_shape_renderer::{PathCommand, PathSpec};
+    fn shape_path(p: &HwpShapePath) -> Option<crate::render::office::hwp_shape_path::PathSpec> {
+        use crate::render::office::hwp_shape_path::{PathCommand, PathSpec};
         let mut commands: Vec<PathCommand> = Vec::new();
         for token in &p.d {
             let numbers: Vec<CGFloat> = token.iter().filter_map(|v| v.value()).map(|v| v as CGFloat / 100.0).collect();
@@ -2113,8 +2113,8 @@ impl HwpReader {
     /// The box the paths themselves occupy — the fallback size for an object whose own record states
     /// none, so a drawing with real geometry is never collapsed to nothing.
     // swift: Render/Office/HwpReader.swift:1621-1637
-    fn paths_extent(paths: &[crate::render::office::hwp_shape_renderer::PathSpec]) -> Option<CGSize> {
-        use crate::render::office::hwp_shape_renderer::PathCommand;
+    fn paths_extent(paths: &[crate::render::office::hwp_shape_path::PathSpec]) -> Option<CGSize> {
+        use crate::render::office::hwp_shape_path::PathCommand;
         let (mut maxX, mut maxY, mut any) = (0.0 as CGFloat, 0.0 as CGFloat, false);
         for path in paths {
             for command in &path.commands {

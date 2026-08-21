@@ -203,11 +203,6 @@ impl OdfScriptTable {
     }
 }
 
-struct Row {
-    first: u32,
-    last: u32,
-    r#type: OdfScriptType,
-}
 
 struct Row {
     first: u32,

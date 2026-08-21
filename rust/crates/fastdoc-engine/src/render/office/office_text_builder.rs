@@ -987,7 +987,7 @@ impl OfficeTextBuilder {
             p.alignment = alignment;
         }
         if !tab_stops.is_empty() {
-            p.tabStops = Self::resolved_tab_stops(tabStops, column_width, paged);
+            p.tabStops = Self::resolved_tab_stops(&tab_stops, column_width, paged);
         }
         // Body only: a `.multiple` line rule never renders below the readability floor (see
         // `OfficeStyle.bodyMinLineHeightRatio`). Headings pass none — they are effectively single-line
@@ -1129,7 +1129,7 @@ impl OfficeTextBuilder {
             p.alignment = alignment;
         }
         if !tab_stops.is_empty() {
-            p.tabStops = Self::resolved_tab_stops(tabStops, column_width, paged);
+            p.tabStops = Self::resolved_tab_stops(&tab_stops, column_width, paged);
         }
         Self::apply_paragraph_format(format.as_ref(), font_size_scale, 0.0, 0.0, &mut p);
         p.into_immutable()
@@ -2301,7 +2301,7 @@ impl OfficeTextBuilder {
         let fitted = Self::graphic_size(size, scale, column_width, bleed);
         let att = NSTextAttachment::new();
         att.set_bounds(NSRect::fromOriginSize(NSPoint::zero(), fitted));
-        att.set_attachment_cell(SizedAttachmentCell::new(fitted));
+        att.attachmentCell = Some(SizedAttachmentCell::new(fitted));
         let mut ph = NSMutableAttributedString::from_attachment(&att);
         let whole = NSRange::new(0, ph.length());
         ph.addAttribute(MDAttr::image(), swiftshim::AttrValue::Text(id), whole);
@@ -2402,7 +2402,7 @@ impl OfficeTextBuilder {
         let size = CGSize::new(260.0, 60.0);
         let att = NSTextAttachment::new();
         att.set_bounds(NSRect::fromOriginSize(NSPoint::zero(), size));
-        att.set_attachment_cell(SizedAttachmentCell::new(size));
+        att.attachmentCell = Some(SizedAttachmentCell::new(size));
         let mut ph = NSMutableAttributedString::from_attachment(&att);
         ph.addAttribute(MDAttr::math(), swiftshim::AttrValue::Text(latex), NSRange::new(0, ph.length()));
         result.append(&ph);

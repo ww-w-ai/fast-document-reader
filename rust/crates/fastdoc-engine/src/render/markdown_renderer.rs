@@ -686,7 +686,7 @@ impl AttributedBuilder {
         // swift: att.attachmentCell = SizedAttachmentCell(reservedSize: ph) — `SizedAttachmentCell`
         // lives in Render/SizedAttachmentCell.swift (out of this sprint's scope), referenced by
         // Swift name; `attachment_cell` is a shim addition to `NSTextAttachment`.
-        att.attachment_cell = Some(crate::render::sized_attachment_cell::SizedAttachmentCell::new(ph));
+        att.attachmentCell = Some(swiftshim::SizedAttachmentCell::new(ph));
         let mut out = swiftshim::NSMutableAttributedString::with_attachment(att);
         let whole = swiftshim::NSRange::new(0, out.length());
         out.addAttribute(
@@ -1070,7 +1070,7 @@ impl AttributedBuilder {
         let mut att = swiftshim::NSTextAttachment::new();
         att.bounds = swiftshim::CGRect::new(0.0, 0.0, size.width, size.height);
         // owns size when image==nil
-        att.attachment_cell = Some(crate::render::sized_attachment_cell::SizedAttachmentCell::new(size));
+        att.attachmentCell = Some(swiftshim::SizedAttachmentCell::new(size));
         let mut ph = swiftshim::NSMutableAttributedString::with_attachment(att);
         ph.addAttribute(
             engine.attribute(),
@@ -1311,19 +1311,19 @@ impl AttributedBuilder {
         // buttons) and the CODE. Splitting them lets paragraphSpacingBefore on the code add a
         // real gap BELOW the buttons — a single \u{2028}-joined paragraph could not.
         let mut header_ps = swiftshim::NSMutableParagraphStyle::default();
-        header_ps.headIndent = crate::render::code_card_layout_manager::CodeCardMetrics::TEXT_INSET;
-        header_ps.firstLineHeadIndent = crate::render::code_card_layout_manager::CodeCardMetrics::TEXT_INSET;
-        header_ps.tailIndent = -crate::render::code_card_layout_manager::CodeCardMetrics::TEXT_INSET;
-        header_ps.paragraphSpacingBefore = crate::render::code_card_layout_manager::CodeCardMetrics::VERTICAL_PADDING + 6.0; // outer gap above the card
+        header_ps.headIndent = crate::render::code_card_metrics::CodeCardMetrics::TEXT_INSET;
+        header_ps.firstLineHeadIndent = crate::render::code_card_metrics::CodeCardMetrics::TEXT_INSET;
+        header_ps.tailIndent = -crate::render::code_card_metrics::CodeCardMetrics::TEXT_INSET;
+        header_ps.paragraphSpacingBefore = crate::render::code_card_metrics::CodeCardMetrics::VERTICAL_PADDING + 6.0; // outer gap above the card
         header_ps.minimumLineHeight = code_lh;
         header_ps.maximumLineHeight = code_lh;
 
         let mut ps = swiftshim::NSMutableParagraphStyle::default();
-        ps.headIndent = crate::render::code_card_layout_manager::CodeCardMetrics::TEXT_INSET;
-        ps.firstLineHeadIndent = crate::render::code_card_layout_manager::CodeCardMetrics::TEXT_INSET;
-        ps.tailIndent = -crate::render::code_card_layout_manager::CodeCardMetrics::TEXT_INSET;
+        ps.headIndent = crate::render::code_card_metrics::CodeCardMetrics::TEXT_INSET;
+        ps.firstLineHeadIndent = crate::render::code_card_metrics::CodeCardMetrics::TEXT_INSET;
+        ps.tailIndent = -crate::render::code_card_metrics::CodeCardMetrics::TEXT_INSET;
         ps.paragraphSpacingBefore = 9.0; // breathing room UNDER the header buttons / divider
-        ps.paragraphSpacing = crate::render::code_card_layout_manager::CodeCardMetrics::VERTICAL_PADDING + 6.0; // outer gap below the card
+        ps.paragraphSpacing = crate::render::code_card_metrics::CodeCardMetrics::VERTICAL_PADDING + 6.0; // outer gap below the card
         ps.minimumLineHeight = code_lh;
         ps.maximumLineHeight = code_lh;
         ps.lineBreakMode = swiftshim::NSLineBreakMode::ByCharWrapping; // default: fold long lines (toggle to no-wrap per block)

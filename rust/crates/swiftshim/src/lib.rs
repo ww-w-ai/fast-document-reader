@@ -41,14 +41,14 @@ pub use color_font::{
     system_colors, DynamicColor, NSBitmapImageRep, NSColor, NSFont, NSFontDescriptor,
     NSFontFeatureKey, NSFontDescriptorSymbolicTraits, NSFontWeight, NSGradient, NSImage,
 };
-pub use drawing_misc::{NSBezierPath, NSCompositingOperation, NSTextAttachment};
+pub use drawing_misc::{draw_string_at, size_with_attributes, NSBezierPath, NSCompositingOperation, NSTextAttachment, SizedAttachmentCell};
 pub use foundation::{Data, EngineError, FileManager, NSNumber, NSRange, NSValue, NSObject, URL, NSNotFound, NS_NOT_FOUND};
 pub use geometry::{
     CGFloat, CGGlyph, CGPoint, CGRect, CGSize, NSEdgeInsets, NSPoint, NSRect, NSRectEdge, NSSize,
 };
 pub use nsstring::{NSString, SwiftString};
 pub use paragraph_style::{
-    NSLineBreakMode, NSMutableParagraphStyle, NSParagraphStyle, NSTextAlignment, NSTextTab,
+    NSLineBreakMode, NSLineBreakStrategy, NSMutableParagraphStyle, NSParagraphStyle, NSTextAlignment, NSTextTab,
     NSTextTabOptions, NSUnderlineStyle, NSWritingDirection, NSWritingDirectionFormatType,
 };
 pub use regex::{
@@ -58,4 +58,6 @@ pub use text_table::{
     NSTextBlock, NSTextBlockDimension, NSTextBlockLayer, NSTextBlockValueType,
     NSTextBlockVerticalAlignment, NSTextTable, NSTextTableBlock,
 };
+pub mod xml_parser;
+pub use xml_parser::{XMLParser, XMLParserDelegate};
 pub use textkit::{NSLayoutManager, NSScrollView, NSTextContainer, NSTextStorage, NSTextView, NSView};

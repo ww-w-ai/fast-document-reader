@@ -86,8 +86,38 @@ impl NSTextTab {
 
 /// swift: NSParagraphStyle — the read-only view; `NSMutableParagraphStyle` is the type call
 /// sites actually build (`.default().mutableCopy()`), so this mirrors the same fields.
+/// swift: `NSLineBreakStrategy` — the option set a paragraph carries to say how a line may be
+/// broken. The reader sets exactly one of its members (`hangulWordPriority`), which is what makes
+/// Korean text break at word boundaries rather than mid-word; everything else is carried so a
+/// document that states a strategy is not silently flattened to none.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NSLineBreakStrategy(pub u32);
+
+impl NSLineBreakStrategy {
+    pub const none: NSLineBreakStrategy = NSLineBreakStrategy(0);
+    pub const pushOut: NSLineBreakStrategy = NSLineBreakStrategy(1 << 0);
+    pub const hangulWordPriority: NSLineBreakStrategy = NSLineBreakStrategy(1 << 1);
+    pub const standard: NSLineBreakStrategy = NSLineBreakStrategy(0xFFFF);
+
+    /// swift: `OptionSet.insert(_:)`
+    pub fn insert(&mut self, other: NSLineBreakStrategy) {
+        self.0 |= other.0;
+    }
+
+    /// swift: `OptionSet.remove(_:)`
+    pub fn remove(&mut self, other: NSLineBreakStrategy) {
+        self.0 &= !other.0;
+    }
+
+    /// swift: `OptionSet.contains(_:)`
+    pub fn contains(&self, other: NSLineBreakStrategy) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NSParagraphStyle {
+    pub lineBreakStrategy: NSLineBreakStrategy,
     pub alignment: NSTextAlignment,
     pub lineSpacing: CGFloat,
     pub paragraphSpacing: CGFloat,
@@ -108,6 +138,7 @@ impl Default for NSParagraphStyle {
     fn default() -> Self {
         Self {
             alignment: NSTextAlignment::default(),
+            lineBreakStrategy: NSLineBreakStrategy::default(),
             lineSpacing: 0.0,
             paragraphSpacing: 0.0,
             paragraphSpacingBefore: 0.0,

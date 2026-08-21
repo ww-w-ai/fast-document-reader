@@ -8,6 +8,7 @@ pub mod zip_archive;
 pub mod page_pagination;
 pub mod page_grid;
 pub mod page_band_geometry;
+pub mod hwp_shape_path;
 pub mod column_geometry;
 pub mod footnote_band_settle;
 pub mod font_substitution_resolver;
