@@ -950,6 +950,9 @@ dependencies = [
 [[package]]
 name = "swiftshim"
 version = "0.0.0"
+dependencies = [
+ "rhwp",
+]
 
 [[package]]
 name = "syn"

@@ -15,14 +15,18 @@ fn rgb(hex: u32, alpha: CGFloat) -> NSColor {
 }
 
 /// swift: `NSColor.dynamic(light:dark:)` resolves against the live `NSAppearance` at draw time
-/// in real AppKit. `swiftshim::NSColor::dynamic` has no appearance to resolve against (its own
-/// doc comment: "this shim has no notion of appearance, so it takes both variants and defers the
-/// choice"), returning `DynamicColor` rather than `NSColor`. Every call site here needs a
-/// concrete `NSColor` today (attribute values, `.setFill()`/`.setStroke()`), so this PHASE A
-/// stand-in resolves to the light variant until a host-side appearance signal exists to pick.
+/// in real AppKit. `swiftshim::NSColor::dynamic` has no appearance to resolve against, so it
+/// returns a `DynamicColor` carrying both variants, and `DynamicColor::resolve` makes the choice.
+/// Every call site here needs a concrete `NSColor` today (attribute values, `.setFill()`), so
+/// this stays as a one-line spelling for the 17 of them.
+///
+/// The CHOICE itself is deliberately not here. `resolve` picks the light variant for now, and it
+/// is the ONLY place in the tree that does — the shim's system colours go through the same
+/// function. That matters on the day a host starts passing an appearance in: with one decision
+/// point that day is one edit, and with two it is one edit plus a dark window whose code blocks
+/// are still painted in light-mode colours.
 fn dynamic(light: NSColor, dark: NSColor) -> NSColor {
-    let _ = dark;
-    light
+    NSColor::dynamic(light, dark).resolve()
 }
 
 // swift: Render/RenderTheme.swift:3-17

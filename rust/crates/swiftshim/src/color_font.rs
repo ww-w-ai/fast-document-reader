@@ -128,27 +128,118 @@ pub struct DynamicColor {
     pub dark: NSColor,
 }
 
+impl DynamicColor {
+    /// swift: resolves `NSColor.dynamic(light:dark:)` against the live `NSAppearance` at draw
+    /// time in real AppKit. THE ONE resolver for that resolution in this whole crate — every
+    /// appearance-dependent colour (`RenderTheme`'s ~15-entry `Palette`, and the six
+    /// `system_colors` below) goes through this single function, not a second copy of the same
+    /// "pick one for now" decision re-derived per call site.
+    ///
+    /// **PHASE A STAND-IN.** This shim has no notion of a live appearance — no host has passed
+    /// one in yet — so this always resolves to `light`, unconditionally, today. That is a known,
+    /// accepted gap (not a belief that light is correct), and it living in exactly one place is
+    /// the point: the day a host-side appearance signal exists, this is the one function that
+    /// changes, and every caller — theme colours and system colours alike — picks it up at once.
+    /// Before this was hoisted here, `RenderTheme.swift`'s Rust port (`render_theme.rs`) carried
+    /// its own file-local copy of this exact same stand-in; that copy should be deleted in favour
+    /// of calling this (team-lead routing to that file's owner, not edited here).
+    pub fn resolve(&self) -> NSColor {
+        self.light
+    }
+}
+
 /// swift: the NSColor system-color statics the theme and readers reference directly.
+///
+/// **Provenance (all six, read together):** Apple does not publish guaranteed hex/RGB values for
+/// named system colours — they come from a dynamic provider and are documented as able to shift
+/// with OS version and accessibility settings (e.g. Increase Contrast). These are MEASURED, not
+/// Apple-documented: live `NSColor` introspection on macOS 12.0.1 (Monterey) —
+/// <https://gist.github.com/andrejilderda/8677c565cddc969e6aae7df48622d47c> — cross-checked
+/// against a second, independently-compiled reference
+/// (<https://swiftuicolors.com/macos-colors>, <https://blog.verslu.is/xamarin/ios-macos-dark-mode-dynamic-colors-overview/>)
+/// which agrees on five of the six. Treat as "good enough for phase A, known to be a future
+/// maintenance point if Apple shifts them in a later macOS release" — the same footing
+/// `RenderTheme.swift`'s own hardcoded literals are already on.
 pub mod system_colors {
     use super::NSColor;
 
+    /// swift: `NSColor.secondaryLabelColor` — NOT a flat RGB. AppKit implements every label
+    /// colour as a translucent overlay (black in light appearance, white in dark), so the alpha
+    /// component is load-bearing, not a stylistic extra — dropping it to 1.0 still LOOKS
+    /// plausible (a very dark or very light grey), which is exactly what makes it easy to get
+    /// quietly wrong.
     pub fn secondaryLabelColor() -> NSColor {
-        todo!("swift: NSColor.secondaryLabelColor — phase B (needs live appearance)")
+        NSColor::dynamic(
+            NSColor::srgb(0.0, 0.0, 0.0, 0.498), // light: black @ 49.8% alpha
+            NSColor::srgb(1.0, 1.0, 1.0, 0.549), // dark: white @ 54.9% alpha
+        )
+        .resolve()
     }
+
     pub fn systemRed() -> NSColor {
-        todo!("swift: NSColor.systemRed — phase B")
+        NSColor::dynamic(
+            NSColor::rgb(0xFF3B30, 1.0), // light
+            NSColor::rgb(0xFF453A, 1.0), // dark
+        )
+        .resolve()
     }
+
     pub fn systemOrange() -> NSColor {
-        todo!("swift: NSColor.systemOrange — phase B")
+        NSColor::dynamic(
+            NSColor::rgb(0xFF9500, 1.0), // light
+            NSColor::rgb(0xFF9F0A, 1.0), // dark
+        )
+        .resolve()
     }
+
     pub fn systemGreen() -> NSColor {
-        todo!("swift: NSColor.systemGreen — phase B")
+        NSColor::dynamic(
+            NSColor::rgb(0x28CD41, 1.0), // light
+            NSColor::rgb(0x32D74B, 1.0), // dark
+        )
+        .resolve()
     }
+
+    /// swift: `NSColor.systemTeal` — macOS (AppKit) value, deliberately NOT the iOS `UIColor`
+    /// value. The two platforms' `systemTeal` genuinely diverge (confirmed against the primary
+    /// macOS-specific source above, which disagrees with the community reference's iOS-flavoured
+    /// number) — this is a real platform difference, not a sourcing error, so do not "fix" this
+    /// to match a `UIColor.systemTeal` table found elsewhere.
     pub fn systemTeal() -> NSColor {
-        todo!("swift: NSColor.systemTeal — phase B")
+        NSColor::dynamic(
+            NSColor::rgb(0x59ADC4, 1.0), // light
+            NSColor::rgb(0x6AC4DC, 1.0), // dark
+        )
+        .resolve()
     }
+
     pub fn systemPink() -> NSColor {
-        todo!("swift: NSColor.systemPink — phase B")
+        NSColor::dynamic(
+            NSColor::rgb(0xFF2D55, 1.0), // light
+            NSColor::rgb(0xFF375F, 1.0), // dark
+        )
+        .resolve()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use super::super::CGFloat;
+
+        // Phase-A stand-in resolves to light — see `DynamicColor::resolve`'s doc. These pin
+        // the exact measured light-appearance values so a future edit here (or an accidental
+        // light/dark swap) shows up as a failing test, not a silent colour drift.
+        #[test]
+        fn resolves_to_the_light_appearance_values_for_now() {
+            let approx = |c: NSColor, r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat| {
+                assert!((c.red - r).abs() < 1e-9, "red: {} vs {r}", c.red);
+                assert!((c.green - g).abs() < 1e-9, "green: {} vs {g}", c.green);
+                assert!((c.blue - b).abs() < 1e-9, "blue: {} vs {b}", c.blue);
+                assert!((c.alpha - a).abs() < 1e-9, "alpha: {} vs {a}", c.alpha);
+            };
+            approx(systemRed(), 0xFF as CGFloat / 255.0, 0x3B as CGFloat / 255.0, 0x30 as CGFloat / 255.0, 1.0);
+            approx(secondaryLabelColor(), 0.0, 0.0, 0.0, 0.498);
+        }
     }
 }
 

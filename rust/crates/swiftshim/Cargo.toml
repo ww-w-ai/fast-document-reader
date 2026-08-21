@@ -5,3 +5,14 @@ version.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The SAME rhwp commit `fastdoc-engine` pins (see its own Cargo.toml comment) — bump both
+# together, never one alone, for the same reason: the Swift reader links an xcframework built
+# from this exact commit, and a floating rev here would let this crate's font-metric lookups
+# drift from what that xcframework does.
+#
+# Linked as a plain rlib dependency, NOT through the C FFI the Swift reader uses
+# (`rhwp_native_ffi.h`) — the whole `pub` surface (`renderer::font_metrics_data::find_metric`,
+# `FontMetric`, `HangulMetric`, `MetricMatch`) is reachable by path, no fork edit needed. See
+# `fastdoc-engine/tests/rhwp_metrics_reachable.rs` for the standing test that catches a future
+# rhwp bump narrowing this visibility.
+rhwp = { git = "https://github.com/ww-w-ai/rhwp.git", rev = "001fd0bfbb9c21af5393051963ee76dee625c7ec", default-features = false }
