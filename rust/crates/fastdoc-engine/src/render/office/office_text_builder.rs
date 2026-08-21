@@ -779,7 +779,13 @@ impl OfficeTextBuilder {
             // it is harmless to also request the feature on an already-uppercased run (small-caps
             // has no effect on characters that are already capital).
             if span.small_caps {
-                font = todo!("swift:602-607 kLowerCaseType/kLowerCaseSmallCapsSelector font-feature descriptor — needs NSFontDescriptor.FeatureKey shim");
+                // swift: `NSFont(descriptor: font.fontDescriptor.addingAttributes([.featureSettings:
+                // smallCapsAttrs]), size: font.pointSize) ?? font` — `?? font` is the fallback Swift
+                // itself names: "a font lacking the feature silently renders its ordinary lowercase
+                // glyphs instead — no crash". `NSFontDescriptor.addingAttributes` is `todo!()` in the
+                // shim (needs CoreText's kLowerCaseType/kLowerCaseSmallCapsSelector, not yet wired),
+                // so this takes that SAME fallback now rather than panicking on any small-caps run —
+                // the feature request itself is still unwired, not "small caps are done".
             }
             attrs.insert(swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(font.clone()));
             attrs.insert(swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(color.clone()));
@@ -1490,7 +1496,11 @@ impl OfficeTextBuilder {
     /// Bullet glyph per depth so nested levels read distinctly: • → ◦ → ▪ (then repeat) — same
     /// progression `MarkdownRenderer.bullet(_:)` uses.
     fn bullet_glyph(level: i64) -> &'static str {
-        match level.rem_euclid(3) {
+        // swift: `level % 3` — Swift's `%` is a truncating remainder (sign follows the dividend),
+        // the SAME semantics as Rust's own `%` on signed integers — so this uses `%` directly, not
+        // `rem_euclid` (which is always non-negative and disagrees with Swift for level < 0, e.g.
+        // -2 % 3 == -2 in both Swift and Rust, falling to the `_` arm either way).
+        match level % 3 {
             0 => "•",
             1 => "◦",
             _ => "▪",

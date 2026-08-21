@@ -275,6 +275,21 @@ impl NSFont {
         self.fontDescriptor.clone()
     }
 
+    /// Test-only. `NSFont::named`/`with_descriptor` (below) both defer to CoreText (`todo!()`),
+    /// so there is no way, outside this module, to build an `NSFont` with a real face name —
+    /// which every test of `size_with_attributes`'s font-metric wiring needs one to exercise the
+    /// MEASURED path rather than only the no-`.font`-key default. `#[cfg(test)]` keeps this off
+    /// the real public surface entirely; it never ships.
+    #[cfg(test)]
+    pub(crate) fn for_metrics_test(name: &str, size: CGFloat) -> Self {
+        NSFont {
+            fontName: name.to_string(),
+            familyName: None,
+            pointSize: size,
+            fontDescriptor: NSFontDescriptor::default(),
+        }
+    }
+
     pub fn named(_name: &str, _size: CGFloat) -> Option<Self> {
         todo!("swift: NSFont(name:size:) — phase B (needs CoreText)")
     }

@@ -554,13 +554,24 @@ impl OdtReader {
                     tab_stops: tab_stops.clone(), format: format.clone(),
                 })
             }
-            OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, numbering } => {
+            OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, .. } => {
                 let mut new_spans = vec![marker, Self::note_marker_separator()];
                 new_spans.extend(spans.clone());
+                // swift: OdtReader.swift:435-437 binds the original `numbering` with `_` and omits
+                // it on reconstruction, so it falls to `OfficeBlock.listItem`'s own default
+                // (`numbering: ListNumbering? = nil`, OfficeBlock.swift:817) — silently dropping the
+                // item's numbering here. Reproduced deliberately, not fixed: `numbering`'s own doc
+                // comment calls it a "vocabulary-only addition, trailing and defaulted so no
+                // existing caller changes meaning" — this IS an existing caller that would have
+                // needed updating and was not, so this looks like a latent Swift defect rather than
+                // a design choice. The port must match the program that exists, not the one that
+                // should; diverging here would make every corpus-comparison diff at this site
+                // ambiguous between "port bug" and "we improved on Swift". Do not "fix" this back to
+                // preserving `numbering` without also fixing OdtReader.swift and DocxReader.swift.
                 Some(OfficeBlock::ListItem {
                     level: *level, ordered: *ordered, spans: new_spans, marker: item_marker.clone(),
                     rtl: rtl.clone(), alignment: alignment.clone(), tab_stops: tab_stops.clone(),
-                    format: format.clone(), numbering: numbering.clone(),
+                    format: format.clone(), numbering: None,
                 })
             }
             OfficeBlock::Table { .. } | OfficeBlock::Image { .. } | OfficeBlock::UnsupportedGraphic { .. }

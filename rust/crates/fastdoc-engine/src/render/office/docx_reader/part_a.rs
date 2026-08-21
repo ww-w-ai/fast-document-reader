@@ -697,12 +697,23 @@ impl DocxReader {
                 new_spans.extend(spans);
                 Some(OfficeBlock::Heading { level, spans: new_spans, rtl, alignment, tab_stops, format })
             }
-            OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, numbering } => {
+            OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, .. } => {
                 let mut new_spans = vec![marker];
                 new_spans.extend(spans);
+                // swift: DocxReader.swift:463-465 binds the original `numbering` with `_` and omits
+                // it on reconstruction, so it falls to `OfficeBlock.listItem`'s own default
+                // (`numbering: ListNumbering? = nil`, OfficeBlock.swift:817) — silently dropping the
+                // item's numbering here. Reproduced deliberately, not fixed: `numbering`'s own doc
+                // comment calls it a "vocabulary-only addition, trailing and defaulted so no
+                // existing caller changes meaning" — this IS an existing caller that would have
+                // needed updating and was not, so this looks like a latent Swift defect rather than
+                // a design choice. The port must match the program that exists, not the one that
+                // should; diverging here would make every corpus-comparison diff at this site
+                // ambiguous between "port bug" and "we improved on Swift". Do not "fix" this back to
+                // preserving `numbering` without also fixing DocxReader.swift and OdtReader.swift.
                 Some(OfficeBlock::ListItem {
                     level, ordered, spans: new_spans, marker: item_marker, rtl, alignment, tab_stops,
-                    format, numbering,
+                    format, numbering: None,
                 })
             }
             OfficeBlock::Table { .. }

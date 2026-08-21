@@ -369,7 +369,7 @@ mod font_metric_tests {
     }
 
     #[test]
-    fn size_with_attributes_sums_measured_widths_and_estimates_height() {
+    fn size_with_attributes_estimates_height_on_the_off_table_default_path() {
         let attrs = HashMap::from([(
             NSAttributedStringKey::ForegroundColor,
             AttrValue::Color(crate::NSColor::black()),
@@ -378,5 +378,43 @@ mod font_metric_tests {
         // Two chars against an off-table (empty-name) face: both estimated at half of 12pt.
         assert_eq!(size.width, 12.0);
         assert_eq!(size.height, 12.0 * 1.2);
+    }
+
+    /// The one test that reaches `size_with_attributes` through its PUBLIC surface (not
+    /// `glyph_advance` directly) with a real `.font` key that resolves to a table hit — every
+    /// other caller in the engine goes through exactly this path. An earlier version of this test
+    /// only asserted `width == font_size` for a 2-char off-table string, which is invariant under
+    /// the em/pt conversion entirely (it never touches the table) — team-lead mutation testing
+    /// caught it: inverting `raw * font_size / em` to `raw * em / font_size` still passed. This
+    /// version computes its expected width from the table's OWN numbers, independently of
+    /// `glyph_advance`'s own arithmetic, specifically so an inverted or transposed conversion
+    /// shows up as a real mismatch.
+    #[test]
+    fn size_with_attributes_matches_the_tables_own_measured_width_for_a_real_face() {
+        let font = crate::color_font::NSFont::for_metrics_test("Arial", 12.0);
+        let attrs = HashMap::from([(NSAttributedStringKey::Font, AttrValue::Font(font))]);
+
+        let found = rhwp::renderer::font_metrics_data::find_metric("Arial", false, false)
+            .expect("Arial is one of the 595 faces the table carries");
+        let em = found.metric.em_size as CGFloat;
+        // Independently computed, not by calling `glyph_advance`: raw table units → points, the
+        // same `raw * font_size / em` conversion stated (and only stated once) in that function's
+        // doc — restated HERE, separately, is what lets a mutation in the real implementation
+        // show up as a numeric mismatch instead of agreeing with itself.
+        let expected: CGFloat = "AB"
+            .chars()
+            .map(|ch| {
+                let raw = found.metric.get_width(ch).expect("Arial covers plain ASCII 'A' and 'B'");
+                raw as CGFloat * 12.0 / em
+            })
+            .sum();
+        assert!(expected > 0.0, "sanity: the table must report a nonzero width for 'AB'");
+
+        let size = size_with_attributes("AB", &attrs);
+        assert!(
+            (size.width - expected).abs() < 1e-9,
+            "got {}, expected {expected} (table em_size={em})",
+            size.width
+        );
     }
 }
