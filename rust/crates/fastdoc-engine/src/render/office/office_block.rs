@@ -286,6 +286,7 @@ impl Default for Span {
 // swift: Render/Office/OfficeBlock.swift:185-189
 /// Which live page-number field a span stands in for — see `Span.page_number_field`'s own doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum PageNumberField {
     // swift: Render/Office/OfficeBlock.swift:187
     Page,
@@ -301,6 +302,7 @@ pub enum PageNumberField {
 /// `wavyDouble`)→`.wavy`; anything else, including `single` itself and an absent/unrecognized
 /// `@w:val`, →`.single`. Only consulted when `Span.underline` is `true` — see that field's doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum UnderlineStyle {
     // swift: Render/Office/OfficeBlock.swift:198
     Single,
@@ -582,6 +584,7 @@ pub struct OfficePageNumberRestart {
 /// doc comment for why this is a closed three-case vocabulary rather than AppKit's own
 /// `NSTextBlock.VerticalAlignment`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CellVAlign {
     // swift: Render/Office/OfficeBlock.swift:347
     Top,
@@ -632,6 +635,7 @@ pub struct CellDiagonal {
 /// `slash` is bottom-left to top-right (`/`), `backslash` top-left to bottom-right (`\`), `both` is
 /// the `X`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum CellDiagonalDirection {
     Slash,
     Backslash,
@@ -666,6 +670,7 @@ impl Default for BorderSide {
 /// `dash-dot` are the same picture on screen, and carrying eighteen cases would oblige the painter
 /// to invent seventeen dash patterns nobody can tell apart at a 0.3pt rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum BorderLineStyle {
     Solid,
     Dashed,
@@ -689,6 +694,7 @@ pub enum BorderLineStyle {
 /// One enum rather than a side plus a parallel "was this declared" mask: two sources of truth for
 /// the same fact can disagree, and a disagreement here surfaces as a stray or missing rule on screen.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum BorderDecl {
     // swift: Render/Office/OfficeBlock.swift:423
     Drawn(BorderSide),
@@ -898,6 +904,7 @@ impl PartialEq for TableFormat {
 // swift: Render/Office/OfficeBlock.swift:574-582
 /// What a document permits when its table meets a page boundary — see `TableFormat.page_break_policy`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TablePageBreakPolicy {
     // swift: Render/Office/OfficeBlock.swift:576-577
     /// Never split: the whole table moves to the next page rather than being cut.
@@ -918,6 +925,7 @@ pub enum TablePageBreakPolicy {
 /// `OfficeTextBuilder`'s translation to `NSParagraphStyle` line-height, are next sprint's job) —
 /// this sprint only carries the vocabulary, nothing constructs a non-nil value yet.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum LineHeight {
     // swift: Render/Office/OfficeBlock.swift:591-592
     /// docx `w:lineRule="auto"` — a RATIO of the line's own font size, not an absolute value;
@@ -943,6 +951,7 @@ pub enum LineHeight {
 /// AT `position`, `.center` centers it ON `position`, and `.decimal` aligns the decimal point (or,
 /// for non-numeric text, the whole run) ON `position`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TabAlignment {
     // swift: Render/Office/OfficeBlock.swift:611
     Left,
@@ -960,6 +969,7 @@ pub enum TabAlignment {
 /// renders as an ordinary aligned tab, just without the fill; `OfficeTextBuilder`'s `NSTextTab`
 /// construction reads `position`/`alignment` only, and comments why `leader` is inert.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TabLeader {
     // swift: Render/Office/OfficeBlock.swift:622
     None,
@@ -1130,6 +1140,7 @@ impl Default for ParagraphFormat {
 /// `…LineBreak` fields. Named after what the setting DOES rather than after any one format's
 /// spelling, because the two formats that state it disagree about which value is the default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum LineBreakGranularity {
     // swift: Render/Office/OfficeBlock.swift:738-739
     /// Break only between words — a word is never split across two lines.
@@ -1145,6 +1156,9 @@ pub enum LineBreakGranularity {
 // swift: Render/Office/OfficeBlock.swift:746-754
 /// The four sides of a rectangle, as a set — see `ParagraphFormat.border_edges`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+/// `transparent` so an edge set crosses as the bit field it is, not as an object wrapping one.
+/// A host models this as its own option set, and an option set reads a number.
+#[serde(transparent)]
 pub struct RectEdge {
     pub raw_value: i64,
 }
@@ -1216,6 +1230,7 @@ impl std::ops::BitOrAssign for RectEdge {
 /// nothing about Word, ODF or XML: a parser's only job is to produce this vocabulary, and
 /// `OfficeTextBuilder`'s only job is to consume it, so the two are built and tested apart.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum OfficeBlock {
     // swift: Render/Office/OfficeBlock.swift:761-788
     /// Every case below that holds spans also carries `rtl`, defaulted `false` so every existing
@@ -1401,6 +1416,7 @@ pub struct OfficeComment {
 /// concept in this mechanism at all — see `HwpReader`'s own mapping comment for exactly what its
 /// `"both"`/`"odd"`/`"even"` fold onto here, and what distinction is lost by doing so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum HeaderFooterApplicability {
     // swift: Render/Office/OfficeBlock.swift:914-916
     /// docx `w:type="default"`; odt `style:header`/`style:footer` (the un-suffixed, base variant);
@@ -1555,6 +1571,7 @@ pub struct ParagraphAnchor {
 // swift: Render/Office/OfficeBlock.swift:1024
 /// `ParagraphAnchor.Align` in Swift.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ParagraphAnchorAlign {
     Top,
     Center,
@@ -1600,6 +1617,7 @@ impl Default for ListNumbering {
 /// `ListNumbering.Glyphs` in Swift. HWP's own table-43 systems, named. `decimal` is the default and
 /// the fallback for anything a document declares that this reader cannot write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ListNumberingGlyphs {
     Decimal,
     CircledDecimal,
@@ -2245,6 +2263,7 @@ impl Default for OfficeFormControl {
 // swift: Render/Office/OfficeBlock.swift:1444-1450
 /// `OfficeFormControl.Kind` in Swift — a String-backed enum (docx form-field kind names).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum OfficeFormControlKind {
     CheckBox,
     RadioButton,

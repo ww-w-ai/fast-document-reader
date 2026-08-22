@@ -27,6 +27,7 @@ use std::sync::OnceLock;
 /// entries, and both are recorded where they live: the romanised Korean roots, and the vendor-prefix
 /// rule that keeps a Latin-SPELLED Korean face from being called a Western one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum DeclaredFontKind {
     Serif,
     Sans,

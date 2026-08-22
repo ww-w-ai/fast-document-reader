@@ -130,6 +130,19 @@ enum DocumentTypes {
                 NSLocalizedDescriptionKey: "\".\(ext)\" is registered as an office format but has no reader.",
             ])
         }
+        #if FMD_RUST_ENGINE
+        // The ported engine reads the document instead, when it can. It returns nil for a file it
+        // cannot read, and also for one it read but cannot hand over intact — and both mean the
+        // same thing here, which is why there is one branch and not two: fall through to the
+        // reader that has always been here.
+        //
+        // Font substitution deliberately stays BELOW this branch. It is AppKit's, it is the host's,
+        // and running it once for whichever reader produced the blocks is what keeps invariant 29's
+        // single funnel single.
+        if let ported = RustEngine.readOffice(archive.sourceBytes, extension: ext) {
+            return ported.resolvingFontSubstitution()
+        }
+        #endif
         // `.resolvingFontSubstitution()` is applied HERE, once, for both docx/docm/dotx/dotm AND
         // odt — the single funnel invariant 29 already makes both readers share, so neither
         // `DocxReader` nor `OdtReader` has to call it (or forget to). See

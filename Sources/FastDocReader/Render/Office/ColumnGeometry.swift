@@ -222,3 +222,25 @@ enum ColumnGeometry {
         return (index, offset - CGFloat(index) * columnHeight)
     }
 }
+
+#if FMD_RUST_ENGINE
+/// Declared here, not beside the decoder: Swift synthesises `Decodable` only in the file that
+/// declares the type. See `OfficeBlock.swift`'s decoding section for the whole picture.
+extension OfficeColumnLayout: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case count, spacing, widths, gaps, proportional
+        case separatorType, separatorWidthPt, separatorColor
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        count = try c.decode(Int.self, forKey: .count)
+        spacing = try c.decode(CGFloat.self, forKey: .spacing)
+        widths = try c.decode([CGFloat].self, forKey: .widths)
+        gaps = try c.decode([CGFloat].self, forKey: .gaps)
+        proportional = try c.decode(Bool.self, forKey: .proportional)
+        separatorType = try c.decode(Int.self, forKey: .separatorType)
+        separatorWidthPt = try c.decode(CGFloat.self, forKey: .separatorWidthPt)
+        separatorColor = try c.decodeIfPresent(WireColor.self, forKey: .separatorColor)?.color
+    }
+}
+#endif

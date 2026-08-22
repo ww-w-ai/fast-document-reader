@@ -1492,3 +1492,375 @@ struct OfficeFormControl: Hashable {
         label.isEmpty ? mark : mark + " " + label
     }
 }
+
+#if FMD_RUST_ENGINE
+// MARK: - Decoding the ported engine's envelope
+//
+// Compiled ONLY into a build that asked for the Rust engine, so the shipped app carries none of it.
+// These conformances live in THIS file rather than beside the decoder because Swift synthesises
+// `Decodable` only when the conformance is declared alongside the type — writing them elsewhere
+// would mean hand-rolling `init(from:)` for every field of every type here, which is a second
+// description of the vocabulary and free to drift from the first.
+//
+// Field names are not repeated: the decoder runs with `.convertFromSnakeCase`, so the engine's
+// `font_size` finds `fontSize` on its own. Only the fields that must NOT be decoded are named, and
+// only where one exists.
+
+
+
+
+extension OfficeReadResult: Decodable {
+    /// `images`, `masterPages` and `anchoredObjects` are absent: all three carry decoded pictures
+    /// or pre-rendered drawings, all three are HWP's, and the engine refuses to export a document
+    /// that has any of them rather than letting them vanish quietly.
+    enum CodingKeys: String, CodingKey {
+        case blocks, comments, defaultBodyFontSize, declaredFaces, pageContentWidth
+        case pageMarginLeft, pageMarginRight, pageContentHeight, pageMarginTop, pageMarginBottom
+        case pageHeaderDistance, pageFooterDistance, headers, footers, footnotes
+        case sections, sectionStartBlocks, keepWithNextBlocks, pageBreakBlocks, hidePageNumberBlocks
+        case pageNumberRestartBlocks, lineGridPitch
+    }
+}
+
+extension TabStop: Decodable {}
+extension EdgeBorders: Decodable {}
+extension EdgePadding: Decodable {}
+extension CellDiagonal: Decodable {}
+extension ListNumbering: Decodable {}
+extension OfficeComment: Decodable {
+    /// `dateISO` has to be spelled out. The decoder turns the engine's `date_iso` into `dateIso`,
+    /// and this property is `dateISO` — a mismatch that costs nothing at compile time and silently
+    /// leaves the date nil at run time, because a key that is simply absent is how an optional
+    /// arrives empty. Nothing would have reported it; comparing whole documents did.
+    enum CodingKeys: String, CodingKey {
+        case id, author, text, number
+        case dateISO = "dateIso"
+    }
+}
+extension OfficeFootnote: Decodable {}
+extension OfficeHeaderFooter: Decodable {}
+extension OfficeSectionDeclaration: Decodable {}
+extension PaperGeometry: Decodable {}
+extension OfficePageNumberRestart: Decodable {}
+extension OfficeFormControl: Decodable {}
+extension RectEdge: Decodable {}
+
+// MARK: Types holding a colour
+//
+// `NSColor` is a non-final ObjC class, so `init(from:)` cannot be added to it in an extension —
+// the requirement can only be met by a `required` initialiser in the class's own definition. These
+// seven types therefore read their colours through `WireColor` and are decoded by hand. Every
+// other field is still named exactly once, and the compiler still checks each one's type.
+
+extension Span: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case text, bold, italic, underline, underlineStyle
+        case code, caps, smallCaps, link, strikethrough
+        case superscript, footnoteRef, formControl, columnLayout, subscripted
+        case rtl, bookmarks, commentIds, textColor, highlightColor
+        case letterSpacingPercent, baselineOffsetPercent, underlineColor, strikethroughColor, fontSize
+        case fontName, pageNumberField
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        text = try c.decode(String.self, forKey: .text)
+        bold = try c.decode(Bool.self, forKey: .bold)
+        italic = try c.decode(Bool.self, forKey: .italic)
+        underline = try c.decode(Bool.self, forKey: .underline)
+        underlineStyle = try c.decode(UnderlineStyle.self, forKey: .underlineStyle)
+        code = try c.decode(Bool.self, forKey: .code)
+        caps = try c.decode(Bool.self, forKey: .caps)
+        smallCaps = try c.decode(Bool.self, forKey: .smallCaps)
+        link = try c.decodeIfPresent(String.self, forKey: .link)
+        strikethrough = try c.decode(Bool.self, forKey: .strikethrough)
+        superscript = try c.decode(Bool.self, forKey: .superscript)
+        footnoteRef = try c.decodeIfPresent(Int.self, forKey: .footnoteRef)
+        formControl = try c.decodeIfPresent(OfficeFormControl.self, forKey: .formControl)
+        columnLayout = try c.decodeIfPresent(OfficeColumnLayout.self, forKey: .columnLayout)
+        subscripted = try c.decode(Bool.self, forKey: .subscripted)
+        rtl = try c.decode(Bool.self, forKey: .rtl)
+        bookmarks = try c.decode([String].self, forKey: .bookmarks)
+        commentIds = try c.decode([String].self, forKey: .commentIds)
+        textColor = try c.decodeIfPresent(WireColor.self, forKey: .textColor)?.color
+        highlightColor = try c.decodeIfPresent(WireColor.self, forKey: .highlightColor)?.color
+        letterSpacingPercent = try c.decodeIfPresent(CGFloat.self, forKey: .letterSpacingPercent)
+        baselineOffsetPercent = try c.decodeIfPresent(CGFloat.self, forKey: .baselineOffsetPercent)
+        underlineColor = try c.decodeIfPresent(WireColor.self, forKey: .underlineColor)?.color
+        strikethroughColor = try c.decodeIfPresent(WireColor.self, forKey: .strikethroughColor)?.color
+        fontSize = try c.decodeIfPresent(CGFloat.self, forKey: .fontSize)
+        fontName = try c.decodeIfPresent(String.self, forKey: .fontName)
+        pageNumberField = try c.decodeIfPresent(PageNumberField.self, forKey: .pageNumberField)
+    }
+}
+
+extension Cell: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case blocks, rowSpan, colSpan, backgroundColor, borderColor
+        case borderWidth, edgeBorders, width, verticalAlignment, padding
+        case edgePadding, diagonal, styleShading, styleBorderColor, styleBorderWidth
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        blocks = try c.decode([OfficeBlock].self, forKey: .blocks)
+        rowSpan = try c.decode(Int.self, forKey: .rowSpan)
+        colSpan = try c.decode(Int.self, forKey: .colSpan)
+        backgroundColor = try c.decodeIfPresent(WireColor.self, forKey: .backgroundColor)?.color
+        borderColor = try c.decodeIfPresent(WireColor.self, forKey: .borderColor)?.color
+        borderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .borderWidth)
+        edgeBorders = try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders)
+        width = try c.decodeIfPresent(CGFloat.self, forKey: .width)
+        verticalAlignment = try c.decodeIfPresent(CellVAlign.self, forKey: .verticalAlignment)
+        padding = try c.decodeIfPresent(CGFloat.self, forKey: .padding)
+        edgePadding = try c.decodeIfPresent(EdgePadding.self, forKey: .edgePadding)
+        diagonal = try c.decodeIfPresent(CellDiagonal.self, forKey: .diagonal)
+        styleShading = try c.decodeIfPresent(WireColor.self, forKey: .styleShading)?.color
+        styleBorderColor = try c.decodeIfPresent(WireColor.self, forKey: .styleBorderColor)?.color
+        styleBorderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .styleBorderWidth)
+    }
+}
+
+extension TableFormat: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case defaultBorderColor, defaultBorderWidth, defaultShading, sourceWidth, edgeBorders
+        case defaultPadding, repeatHeaderRows, pageBreakPolicy, outerMargin
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        defaultBorderColor = try c.decodeIfPresent(WireColor.self, forKey: .defaultBorderColor)?.color
+        defaultBorderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .defaultBorderWidth)
+        defaultShading = try c.decodeIfPresent(WireColor.self, forKey: .defaultShading)?.color
+        sourceWidth = try c.decodeIfPresent(CGFloat.self, forKey: .sourceWidth)
+        edgeBorders = try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders)
+        defaultPadding = try c.decodeIfPresent(EdgePadding.self, forKey: .defaultPadding)
+        repeatHeaderRows = try c.decodeIfPresent(Bool.self, forKey: .repeatHeaderRows)
+        pageBreakPolicy = try c.decodeIfPresent(TablePageBreakPolicy.self, forKey: .pageBreakPolicy)
+        outerMargin = try c.decodeIfPresent(EdgePadding.self, forKey: .outerMargin)
+    }
+}
+
+extension ParagraphFormat: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case listTextDistance, spacingBefore, spacingAfter, lineHeight, indentStart
+        case indentEnd, firstLineIndent, hangingIndent, contextualSpacing, shading
+        case borderColor, borderWidth, borderEdges, eastAsianLineBreak, latinLineBreak
+        case autoSpaceEastAsianLatin, autoSpaceEastAsianNumber, lineHeightFromFontMetrics
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        listTextDistance = try c.decodeIfPresent(CGFloat.self, forKey: .listTextDistance)
+        spacingBefore = try c.decodeIfPresent(CGFloat.self, forKey: .spacingBefore)
+        spacingAfter = try c.decodeIfPresent(CGFloat.self, forKey: .spacingAfter)
+        lineHeight = try c.decodeIfPresent(LineHeight.self, forKey: .lineHeight)
+        indentStart = try c.decodeIfPresent(CGFloat.self, forKey: .indentStart)
+        indentEnd = try c.decodeIfPresent(CGFloat.self, forKey: .indentEnd)
+        firstLineIndent = try c.decodeIfPresent(CGFloat.self, forKey: .firstLineIndent)
+        hangingIndent = try c.decodeIfPresent(CGFloat.self, forKey: .hangingIndent)
+        contextualSpacing = try c.decode(Bool.self, forKey: .contextualSpacing)
+        shading = try c.decodeIfPresent(WireColor.self, forKey: .shading)?.color
+        borderColor = try c.decodeIfPresent(WireColor.self, forKey: .borderColor)?.color
+        borderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .borderWidth)
+        borderEdges = try c.decode(RectEdge.self, forKey: .borderEdges)
+        eastAsianLineBreak = try c.decodeIfPresent(LineBreakGranularity.self, forKey: .eastAsianLineBreak)
+        latinLineBreak = try c.decodeIfPresent(LineBreakGranularity.self, forKey: .latinLineBreak)
+        autoSpaceEastAsianLatin = try c.decodeIfPresent(Bool.self, forKey: .autoSpaceEastAsianLatin)
+        autoSpaceEastAsianNumber = try c.decodeIfPresent(Bool.self, forKey: .autoSpaceEastAsianNumber)
+        lineHeightFromFontMetrics = try c.decodeIfPresent(Bool.self, forKey: .lineHeightFromFontMetrics)
+    }
+}
+
+extension BorderSide: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case width, color, style
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        width = try c.decode(CGFloat.self, forKey: .width)
+        color = try c.decodeIfPresent(WireColor.self, forKey: .color)?.color
+        style = try c.decode(BorderLineStyle.self, forKey: .style)
+    }
+}
+
+extension OfficePageBorder: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case borders, background, spacing, measuredFromPaper
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        borders = try c.decodeIfPresent(EdgeBorders.self, forKey: .borders)
+        background = try c.decodeIfPresent(WireColor.self, forKey: .background)?.color
+        spacing = try c.decode(NSEdgeInsets.self, forKey: .spacing)
+        measuredFromPaper = try c.decode(Bool.self, forKey: .measuredFromPaper)
+    }
+}
+
+extension OfficeFootnoteSeparator: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case lineType, lineWidthPt, color, lengthPt, marginTopPt
+        case marginBottomPt, noteSpacingPt
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        lineType = try c.decode(Int.self, forKey: .lineType)
+        lineWidthPt = try c.decode(CGFloat.self, forKey: .lineWidthPt)
+        color = try c.decodeIfPresent(WireColor.self, forKey: .color)?.color
+        lengthPt = try c.decodeIfPresent(CGFloat.self, forKey: .lengthPt)
+        marginTopPt = try c.decode(CGFloat.self, forKey: .marginTopPt)
+        marginBottomPt = try c.decode(CGFloat.self, forKey: .marginBottomPt)
+        noteSpacingPt = try c.decode(CGFloat.self, forKey: .noteSpacingPt)
+    }
+}
+
+// MARK: Enums the engine writes as a bare name
+//
+// Written by hand rather than synthesised. Swift synthesises `Decodable` for a payload-free enum
+// as a single-key OBJECT — `{"single":{}}` — while the engine writes the case's name and nothing
+// else, which is both smaller and what every other reader of this envelope would expect. Giving
+// these enums `String` raw values would let synthesis match, at the cost of making every one of
+// them `RawRepresentable` in the shipped app for the sake of a build that is still experimental.
+
+extension PageNumberField: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "page": self = .page
+        case "numPages": self = .numPages
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown PageNumberField \"\(other)\"")
+        }
+    }
+}
+
+extension UnderlineStyle: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "single": self = .single
+        case "double": self = .double
+        case "dotted": self = .dotted
+        case "dashed": self = .dashed
+        case "wavy": self = .wavy
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown UnderlineStyle \"\(other)\"")
+        }
+    }
+}
+
+extension CellVAlign: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "top": self = .top
+        case "center": self = .center
+        case "bottom": self = .bottom
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown CellVAlign \"\(other)\"")
+        }
+    }
+}
+
+extension BorderLineStyle: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "solid": self = .solid
+        case "dashed": self = .dashed
+        case "dotted": self = .dotted
+        case "double": self = .double
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown BorderLineStyle \"\(other)\"")
+        }
+    }
+}
+
+extension TablePageBreakPolicy: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "never": self = .never
+        case "atRowBoundary": self = .atRowBoundary
+        case "anywhere": self = .anywhere
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown TablePageBreakPolicy \"\(other)\"")
+        }
+    }
+}
+
+extension TabAlignment: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "left": self = .left
+        case "center": self = .center
+        case "right": self = .right
+        case "decimal": self = .decimal
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown TabAlignment \"\(other)\"")
+        }
+    }
+}
+
+extension TabLeader: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "none": self = .none
+        case "dot": self = .dot
+        case "hyphen": self = .hyphen
+        case "underscore": self = .underscore
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown TabLeader \"\(other)\"")
+        }
+    }
+}
+
+extension LineBreakGranularity: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "word": self = .word
+        case "hyphen": self = .hyphen
+        case "character": self = .character
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown LineBreakGranularity \"\(other)\"")
+        }
+    }
+}
+
+extension HeaderFooterApplicability: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "defaultPages": self = .defaultPages
+        case "firstPage": self = .firstPage
+        case "evenPages": self = .evenPages
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown HeaderFooterApplicability \"\(other)\"")
+        }
+    }
+}
+
+extension CellDiagonal.Direction: Decodable {
+    public init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "slash": self = .slash
+        case "backslash": self = .backslash
+        case "both": self = .both
+        case let other:
+            throw DecodingError.dataCorruptedError(
+                in: try decoder.singleValueContainer(),
+                debugDescription: "unknown CellDiagonal.Direction \"\(other)\"")
+        }
+    }
+}
+extension ListNumbering.Glyphs: Decodable {}
+extension OfficeFormControl.Kind: Decodable {}
+#endif

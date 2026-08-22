@@ -2245,7 +2245,9 @@ impl OdtReader {
     fn parse_odf_color(raw: &str) -> Option<NSColor> {
         if raw == "transparent" || !raw.starts_with('#') || raw.len() != 7 { return None; }
         let value = u32::from_str_radix(&raw[1..], 16).ok()?;
-        Some(NSColor::srgb(
+        // swift: `NSColor(deviceRed:...)`, and device RGB is what OdtReader means — the other
+        // two readers build sRGB from the same kind of literal. Same components, different colour.
+        Some(NSColor::device_rgb(
             CGFloat::from(((value >> 16) & 0xFF) as f64 / 255.0),
             CGFloat::from(((value >> 8) & 0xFF) as f64 / 255.0),
             CGFloat::from((value & 0xFF) as f64 / 255.0),

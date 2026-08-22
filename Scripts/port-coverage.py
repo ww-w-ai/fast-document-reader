@@ -73,8 +73,36 @@ def swift_files_in_scope() -> dict[str, int]:
         full = SWIFT_ROOT / key
         if not full.exists():
             sys.exit(f"port manifest names a file that does not exist: {key}")
-        scope[key] = len(full.read_text(errors="replace").splitlines())
+        scope[key] = len(host_only_stripped(full.read_text(errors="replace").splitlines()))
     return scope
+
+
+def host_only_stripped(lines: list[str]) -> list[str]:
+    """Drops `#if FMD_RUST_ENGINE` regions.
+
+    Those lines exist ONLY in a build that links the Rust engine — they are the host's half of the
+    bridge to it. Counting them as Swift the engine still has to absorb asks the port to transliterate
+    the code that calls the port, which has no meaning and would drive coverage down every time the
+    bridge grows.
+    """
+    kept, depth = [], 0
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#if FMD_RUST_ENGINE"):
+            # The blank line that separates the region from the code above belongs to the region,
+            # not to the file — otherwise adding the bridge costs coverage one line per block.
+            while kept and not kept[-1].strip():
+                kept.pop()
+            depth += 1
+            continue
+        if depth:
+            if stripped.startswith("#if"):
+                depth += 1
+            elif stripped.startswith("#endif"):
+                depth -= 1
+            continue
+        kept.append(line)
+    return kept
 
 
 def claimed_ranges() -> tuple[dict[str, set[int]], int, list[str], list[str]]:

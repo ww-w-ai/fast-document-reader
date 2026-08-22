@@ -19,15 +19,37 @@ pub struct NSColor {
     pub green: CGFloat,
     pub blue: CGFloat,
     pub alpha: CGFloat,
+    /// Which space those three numbers are IN.
+    ///
+    /// Not a detail. `NSColor(deviceRed:)` and `NSColor(srgbRed:)` given identical components are
+    /// different colours on screen, and the readers do not agree: `OdtReader` builds device RGB
+    /// while `DocxReader` and `HwpReader` build sRGB. Carrying only the components — which this
+    /// shim did until a host first compared two documents — silently moves every ODT colour.
+    pub space: NSColorSpaceName,
+}
+
+/// swift: the colour space a call site names by choosing its `NSColor` initialiser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NSColorSpaceName {
+    SRGB,
+    DeviceRGB,
 }
 
 impl NSColor {
+    /// swift: `NSColor(deviceRed:green:blue:alpha:)`
+    pub fn device_rgb(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> Self {
+        NSColor { red, green, blue, alpha, space: NSColorSpaceName::DeviceRGB }
+    }
+
+    /// swift: `NSColor(srgbRed:green:blue:alpha:)`
     pub fn srgb(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) -> Self {
         Self {
             red,
             green,
             blue,
             alpha,
+            space: NSColorSpaceName::SRGB,
         }
     }
 

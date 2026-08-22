@@ -10,6 +10,7 @@ use crate::geometry::CGFloat;
 
 /// swift: NSTextAlignment
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum NSTextAlignment {
     #[default]
     Left,

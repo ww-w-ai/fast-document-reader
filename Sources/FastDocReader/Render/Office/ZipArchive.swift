@@ -252,3 +252,15 @@ private extension Data {
             | (UInt32(self[base + 2]) << 16) | (UInt32(self[base + 3]) << 24)
     }
 }
+
+#if FMD_RUST_ENGINE
+extension ZipArchive {
+    /// The bytes this archive was built from, for handing to the ported engine — which parses the
+    /// container itself and so needs the file, not this reader's view of it.
+    ///
+    /// Inside the flag, and in this file, so the shipped app's `ZipArchive` gains nothing: `data`
+    /// stays private there, and a build without the engine has no way to ask for it.
+    var sourceBytes: Data { data }
+}
+#endif
+
