@@ -9,6 +9,10 @@
 //! whose right answer is known — a link that compiles proves nothing, and a link that returns the
 //! wrong bytes silently is what this exists to rule out.
 
+use fastdoc_engine::render::office::{
+    docx_reader::DocxReader, odt_reader::OdtReader, office_block::OfficeReadResult,
+    office_markdown_serializer::OfficeMarkdownSerializer, zip_archive::ZipArchive,
+};
 use std::ffi::{c_char, CStr, CString};
 
 /// Reads an office document and returns its Markdown extraction, or NULL.
@@ -52,6 +56,42 @@ pub unsafe extern "C" fn fastdoc_extract_markdown(
     }
 }
 
+/// Reads an office document and returns it as the JSON envelope a host decodes, or NULL.
+///
+/// Same ownership and same NULL-means-no as `fastdoc_extract_markdown`. NULL here also covers a
+/// document the engine READ but cannot hand over intact — one carrying decoded pictures or a
+/// resolved face — because a host that received it silently short those things would render a
+/// plausible, wrong document. Falling back to its own reader is the correct response, and NULL is
+/// what asks for it.
+///
+/// # Safety
+/// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_read_office_json(
+    bytes: *const u8,
+    len: usize,
+    extension_: *const c_char,
+) -> *mut c_char {
+    if bytes.is_null() || extension_.is_null() {
+        return std::ptr::null_mut();
+    }
+    let data = std::slice::from_raw_parts(bytes, len);
+    let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
+        return std::ptr::null_mut();
+    };
+    let read = std::panic::catch_unwind(|| {
+        let result = read_office(data, extension)?;
+        fastdoc_engine::render::office::office_export::to_json(&result).ok()
+    });
+    match read {
+        Ok(Some(json)) => match CString::new(json) {
+            Ok(c) => c.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        _ => std::ptr::null_mut(),
+    }
+}
+
 /// Frees a string this library returned. Passing anything else is undefined.
 ///
 /// # Safety
@@ -63,18 +103,18 @@ pub unsafe extern "C" fn fastdoc_string_free(s: *mut c_char) {
     }
 }
 
-fn extract(data: &[u8], extension: &str) -> Option<String> {
-    use fastdoc_engine::render::office::{
-        docx_reader::DocxReader, office_block::OfficeReadResult,
-        office_markdown_serializer::OfficeMarkdownSerializer, odt_reader::OdtReader,
-        zip_archive::ZipArchive,
-    };
-
+/// swift: `DocumentTypes.readOffice`'s reader half — the dispatch only, WITHOUT
+/// `.resolvingFontSubstitution()`, which is AppKit's and stays on the host.
+fn read_office(data: &[u8], extension: &str) -> Option<OfficeReadResult> {
     let archive = ZipArchive::new(swiftshim::Data::fromBytes(data.to_vec())).ok()?;
-    let result: OfficeReadResult = match extension.to_lowercase().as_str() {
-        "docx" | "docm" | "dotx" | "dotm" => DocxReader::read(&archive).ok()?,
-        "odt" => OdtReader::read(&archive).ok()?,
-        _ => return None,
-    };
+    match extension.to_lowercase().as_str() {
+        "docx" | "docm" | "dotx" | "dotm" => DocxReader::read(&archive).ok(),
+        "odt" => OdtReader::read(&archive).ok(),
+        _ => None,
+    }
+}
+
+fn extract(data: &[u8], extension: &str) -> Option<String> {
+    let result = read_office(data, extension)?;
     Some(OfficeMarkdownSerializer::serialize(&result.blocks, &result.footnotes))
 }

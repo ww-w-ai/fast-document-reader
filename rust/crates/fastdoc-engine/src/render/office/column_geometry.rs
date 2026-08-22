@@ -18,7 +18,7 @@ use swiftshim::{CGFloat, NSColor};
 /// and is deliberately separate, exactly as `FootnoteBandSettle` was separated from the settle loop
 /// it feeds (invariant 98).
 // swift: Render/Office/ColumnGeometry.swift:3-45
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeColumnLayout {
     /// How many columns the text flows through. `1` is the ordinary single column and is carried
     /// rather than dropped: a document that RETURNS to one column says so with a declaration, and
@@ -78,7 +78,7 @@ impl OfficeColumnLayout {
 pub struct ColumnGeometry;
 
 /// One column's horizontal extent, in the same coordinates the body text is laid out in.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Column {
     pub x: CGFloat,
     pub width: CGFloat,

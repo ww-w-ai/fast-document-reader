@@ -9,7 +9,7 @@ use std::ops::{Add, Sub};
 pub type CGFloat = f64;
 
 /// swift: CGPoint
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct CGPoint {
     pub x: CGFloat,
     pub y: CGFloat,
@@ -25,7 +25,7 @@ impl CGPoint {
 }
 
 /// swift: CGSize
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct CGSize {
     pub width: CGFloat,
     pub height: CGFloat,
@@ -45,7 +45,7 @@ impl CGSize {
 
 /// swift: CGRect — call sites read `.minX`/`.maxX`/`.minY`/`.maxY`/`.midX`/`.midY`/`.width`/
 /// `.height`/`.origin`/`.size` as computed properties, mirrored here the same way.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct CGRect {
     pub origin: CGPoint,
     pub size: CGSize,
@@ -105,7 +105,7 @@ pub type NSSize = CGSize;
 pub type NSRect = CGRect;
 
 /// swift: NSEdgeInsets
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct NSEdgeInsets {
     pub top: CGFloat,
     pub left: CGFloat,

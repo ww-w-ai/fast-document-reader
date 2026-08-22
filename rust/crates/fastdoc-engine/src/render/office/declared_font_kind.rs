@@ -26,7 +26,7 @@ use std::sync::OnceLock;
 /// what fell out, never assumed ahead of the data. Two rounds of that produced the two least obvious
 /// entries, and both are recorded where they live: the romanised Korean roots, and the vendor-prefix
 /// rule that keeps a Latin-SPELLED Korean face from being called a Western one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DeclaredFontKind {
     Serif,
     Sans,
@@ -197,7 +197,7 @@ impl DeclaredFontKind {
 /// HWP's `HWPTAG_FACE_NAME` carries a nominated substitute, an embed flag and a ten-byte type-info
 /// block; `.docx` and `.odt` have their own equivalents. This type is what the substitution pass reads,
 /// so that pass never learns which format it is serving.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct DeclaredFace {
     /// The face the DOCUMENT ITSELF nominates when its first choice is unavailable. Measured on 1,589
     /// real HWP documents: 9,084 faces nominate one and **none of them resolves** on a machine without

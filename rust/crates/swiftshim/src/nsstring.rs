@@ -21,7 +21,11 @@ use crate::foundation::NSRange;
 /// are computed from the stored UTF-8 text on demand so `length`/`substring(with:)` match
 /// Cocoa's counting exactly instead of Rust's UTF-8 byte counting, which is the whole reason the
 /// app pays for this cast (MarkdownRenderer.swift 172-179).
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+/// `transparent` so text crosses a boundary AS text. Without it every string in a document is
+/// wrapped in an object naming this struct's private field — an implementation detail no host
+/// should have to know, let alone match.
+#[serde(transparent)]
 pub struct SwiftString {
     s: String,
 }

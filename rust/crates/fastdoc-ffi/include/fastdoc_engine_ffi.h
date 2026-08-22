@@ -9,6 +9,11 @@
 // UTF-8 string, or NULL if it could not be read. Free the result with fastdoc_string_free.
 char *fastdoc_extract_markdown(const unsigned char *bytes, size_t len, const char *extension);
 
+// Reads an office document and returns the JSON envelope a host decodes, or NULL. NULL also means
+// "read, but cannot be handed over intact" — the host should use its own reader. Free with
+// fastdoc_string_free.
+char *fastdoc_read_office_json(const unsigned char *bytes, size_t len, const char *extension);
+
 // Frees a string returned by this library.
 void fastdoc_string_free(char *s);
 

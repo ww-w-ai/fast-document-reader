@@ -19,3 +19,8 @@ rhwp = { git = "https://github.com/ww-w-ai/rhwp.git", rev = "001fd0bfbb9c21af539
 
 # See the workspace manifest for why these two crates, and why the RAW deflate decoder.
 quick-xml = { workspace = true }
+
+# Only the plain VALUE types the document vocabulary carries are serialisable (colour, geometry,
+# string, alignment). The handles are not, and deliberately: an `NSFont`/`NSImage` that crossed a
+# boundary as data would be a face or a bitmap nobody resolved on the other side.
+serde = { version = "1", features = ["derive"] }

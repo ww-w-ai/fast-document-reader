@@ -33,7 +33,7 @@ fn map_eq<V: PartialEq>(
 /// `code` at once (an office format's run properties are independent axes, unlike markdown where
 /// `` `code` `` can't nest inside `**bold**`) — `code` only changes which FONT/COLOR the run
 /// renders with (see `OfficeTextBuilder`), it doesn't suppress the others.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     // swift: Render/Office/OfficeBlock.swift:9
     pub text: SwiftString,
@@ -220,6 +220,12 @@ pub struct Span {
     /// A span whose declared font covers SOME but not all of its characters is split by the resolver
     /// into multiple `Span`s at read time (one per maximal same-substitute run), each carrying its
     /// own value here — this field is never "some characters use it, others don't" within one span.
+    /// NOT serialised — it is an AppKit handle, and a face identity cannot survive being written
+    /// down and read back on the other side. Nothing is lost across the boundary because nothing is
+    /// there yet: the readers leave this nil and `resolvingFontSubstitution()` fills it afterwards,
+    /// on the host. `assert_exportable` refuses a tree where that is not true, so the skip can
+    /// never quietly drop a resolved face.
+    #[serde(skip)]
     pub resolved_font_descriptor: Option<NSFontDescriptor>,
     // swift: Render/Office/OfficeBlock.swift:168-182
     /// A live page-number FIELD this span stands in for (docx `PAGE`/`NUMPAGES` — see
@@ -279,7 +285,7 @@ impl Default for Span {
 
 // swift: Render/Office/OfficeBlock.swift:185-189
 /// Which live page-number field a span stands in for — see `Span.page_number_field`'s own doc.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PageNumberField {
     // swift: Render/Office/OfficeBlock.swift:187
     Page,
@@ -294,7 +300,7 @@ pub enum PageNumberField {
 /// (`dash`/`dashLong`/`dashedHeavy`/…)→`.dashed`; every `wave*` variant (`wave`/`wavyHeavy`/
 /// `wavyDouble`)→`.wavy`; anything else, including `single` itself and an absent/unrecognized
 /// `@w:val`, →`.single`. Only consulted when `Span.underline` is `true` — see that field's doc.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UnderlineStyle {
     // swift: Render/Office/OfficeBlock.swift:198
     Single,
@@ -319,7 +325,7 @@ impl Default for UnderlineStyle {
 /// positions land in at render time, the same way `NSTextTableBlock` itself only needs to be told
 /// about anchors. All-1 spans (this sprint's parsers emit nothing else yet) reproduce a plain
 /// rectangular grid exactly — one `Cell` per visible position, nothing skipped.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Cell {
     // swift: Render/Office/OfficeBlock.swift:208-216
     /// A cell's content is the SAME format-neutral block vocabulary as the top of a document —
@@ -349,6 +355,11 @@ pub struct Cell {
     /// Korean document is built out of. A reader that knows only `background_color` renders all of
     /// them as blank paper. `nil` everywhere else, and nil from `mapJSON` alone (the bytes need the
     /// parse handle, so `HwpReader.read` is what fills it).
+    /// NOT serialised — decoded pixels, not a document fact. Only `HwpReader` fills this (HWP has
+    /// no archive a host could resolve a picture from later); the zip readers leave it nil and the
+    /// host loads the picture from the archive it already holds. `assert_exportable` refuses a tree
+    /// where it is set, so this cannot become a silently blank table.
+    #[serde(skip)]
     pub background_image: Option<NSImage>,
     // swift: Render/Office/OfficeBlock.swift:232-238
     /// The cell's own border colour/width (docx `w:tcPr/w:tcBorders`, odt cell-style borders) —
@@ -560,7 +571,7 @@ impl Cell {
 
 // swift: Render/Office/OfficeBlock.swift:337-341
 /// One "start the page numbering again here" instruction, resolved to the block that carries it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficePageNumberRestart {
     pub block: i64,
     pub number: i64,
@@ -570,7 +581,7 @@ pub struct OfficePageNumberRestart {
 /// A cell's vertical alignment — docx `w:tcPr/w:vAlign/@w:val`. See `Cell.vertical_alignment`'s own
 /// doc comment for why this is a closed three-case vocabulary rather than AppKit's own
 /// `NSTextBlock.VerticalAlignment`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CellVAlign {
     // swift: Render/Office/OfficeBlock.swift:347
     Top,
@@ -605,7 +616,7 @@ pub enum CellVAlign {
 /// Measured before it was built: of 637 real documents, 47 draw one and they hold 208 such cells —
 /// rare enough that it is a decoration rather than a defect, common enough that the reader was
 /// silently dropping a mark the document made on purpose. Every one of the three directions occurs.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CellDiagonal {
     // swift: Render/Office/OfficeBlock.swift:376-379
     pub direction: CellDiagonalDirection,
@@ -620,7 +631,7 @@ pub struct CellDiagonal {
 /// `CellDiagonal.Direction` in Swift — which way the line runs, from the reader's point of view —
 /// `slash` is bottom-left to top-right (`/`), `backslash` top-left to bottom-right (`\`), `both` is
 /// the `X`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CellDiagonalDirection {
     Slash,
     Backslash,
@@ -628,7 +639,7 @@ pub enum CellDiagonalDirection {
 }
 
 // swift: Render/Office/OfficeBlock.swift:387-397
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BorderSide {
     pub width: CGFloat,
     pub color: Option<NSColor>,
@@ -654,7 +665,7 @@ impl Default for BorderSide {
 /// into these. Deliberately NOT a copy of any one format's list — a `dashDotStroked` and a
 /// `dash-dot` are the same picture on screen, and carrying eighteen cases would oblige the painter
 /// to invent seventeen dash patterns nobody can tell apart at a 0.3pt rule.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BorderLineStyle {
     Solid,
     Dashed,
@@ -677,7 +688,7 @@ pub enum BorderLineStyle {
 ///
 /// One enum rather than a side plus a parallel "was this declared" mask: two sources of truth for
 /// the same fact can disagree, and a disagreement here surfaces as a stray or missing rule on screen.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum BorderDecl {
     // swift: Render/Office/OfficeBlock.swift:423
     Drawn(BorderSide),
@@ -695,7 +706,7 @@ pub enum BorderDecl {
 /// Collapsing that to one width per cell (what this vocabulary did before) made each row's whole box
 /// take a different weight and colour, which is exactly the ragged look a reader notices. It also
 /// perturbed the content width, since that subtracts the border twice.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct EdgeBorders {
     pub top: Option<BorderDecl>,
     pub left: Option<BorderDecl>,
@@ -745,7 +756,7 @@ impl EdgeBorders {
 /// nobody mentioned — the same discipline `EdgeBorders`/`BorderDecl` apply to borders, reused here
 /// for padding. Consulted ONLY by the PAGED table-geometry model; see `Cell.edge_padding`'s own doc
 /// for why the non-paged (window-filling) model keeps its separate, single-value `Cell.padding`.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct EdgePadding {
     pub top: Option<CGFloat>,
     pub left: Option<CGFloat>,
@@ -777,7 +788,7 @@ impl OfficeBlock {
 }
 
 // swift: Render/Office/OfficeBlock.swift:500-572
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TableFormat {
     pub default_border_color: Option<NSColor>,
     pub default_border_width: Option<CGFloat>,
@@ -787,6 +798,11 @@ pub struct TableFormat {
     /// cell — HWP's rounded annotation box is exactly this: one image behind a table whose cells
     /// declare nothing at all (55 tables in one measured manual). Filled by `HwpReader.read`, nil
     /// for every other format and for `mapJSON` alone.
+    /// NOT serialised — decoded pixels, not a document fact. Only `HwpReader` fills this (HWP has
+    /// no archive a host could resolve a picture from later); the zip readers leave it nil and the
+    /// host loads the picture from the archive it already holds. `assert_exportable` refuses a tree
+    /// where it is set, so this cannot become a silently blank table.
+    #[serde(skip)]
     pub background_image: Option<NSImage>,
     // swift: Render/Office/OfficeBlock.swift:509-525
     /// The table's own total width in POINTS as the SOURCE document laid it out (docx `w:tblGrid`
@@ -881,7 +897,7 @@ impl PartialEq for TableFormat {
 
 // swift: Render/Office/OfficeBlock.swift:574-582
 /// What a document permits when its table meets a page boundary — see `TableFormat.page_break_policy`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TablePageBreakPolicy {
     // swift: Render/Office/OfficeBlock.swift:576-577
     /// Never split: the whole table moves to the next page rather than being cut.
@@ -901,7 +917,7 @@ pub enum TablePageBreakPolicy {
 /// over it exhaustively. Reserved for P2 (the reader that populates it, and
 /// `OfficeTextBuilder`'s translation to `NSParagraphStyle` line-height, are next sprint's job) —
 /// this sprint only carries the vocabulary, nothing constructs a non-nil value yet.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LineHeight {
     // swift: Render/Office/OfficeBlock.swift:591-592
     /// docx `w:lineRule="auto"` — a RATIO of the line's own font size, not an absolute value;
@@ -926,7 +942,7 @@ pub enum LineHeight {
 /// and every markdown/office call site that never authored a real alignment), `.right` ends text
 /// AT `position`, `.center` centers it ON `position`, and `.decimal` aligns the decimal point (or,
 /// for non-numeric text, the whole run) ON `position`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TabAlignment {
     // swift: Render/Office/OfficeBlock.swift:611
     Left,
@@ -943,7 +959,7 @@ pub enum TabAlignment {
 /// real (measured-later) rendering cost this sprint doesn't take on. A tab with a leader still
 /// renders as an ordinary aligned tab, just without the fill; `OfficeTextBuilder`'s `NSTextTab`
 /// construction reads `position`/`alignment` only, and comments why `leader` is inert.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TabLeader {
     // swift: Render/Office/OfficeBlock.swift:622
     None,
@@ -968,7 +984,7 @@ pub enum TabLeader {
 /// NOTE: `CGFloat` maps to `f64` (`swiftshim::CGFloat`), which has no `Eq`/`Hash` impl — the
 /// `Hashable` conformance this struct declares in Swift cannot compile as a plain `#[derive]` in
 /// Rust; a manual impl is phase-B work (see `docs/plans/rust-port-convention.md` §0).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TabStop {
     pub position: CGFloat,
     pub alignment: TabAlignment,
@@ -993,7 +1009,7 @@ impl TabStop {
 /// every block that can carry one; NEITHER reader (`DocxReader`/`OdtReader`) constructs a non-default
 /// value yet, NOR does `OfficeTextBuilder` read any of these fields into layout — both are P2's job.
 /// A default `ParagraphFormat()` therefore renders BYTE-IDENTICAL to a block with no `format` at all.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParagraphFormat {
     // swift: Render/Office/OfficeBlock.swift:656-666
     /// Space before/after the paragraph, in POINTS (docx `w:pPr/w:spacing/@w:before`/`@w:after` are
@@ -1113,7 +1129,7 @@ impl Default for ParagraphFormat {
 /// How finely a line may be broken inside one script's text — see `ParagraphFormat`'s two
 /// `…LineBreak` fields. Named after what the setting DOES rather than after any one format's
 /// spelling, because the two formats that state it disagree about which value is the default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LineBreakGranularity {
     // swift: Render/Office/OfficeBlock.swift:738-739
     /// Break only between words — a word is never split across two lines.
@@ -1128,7 +1144,7 @@ pub enum LineBreakGranularity {
 
 // swift: Render/Office/OfficeBlock.swift:746-754
 /// The four sides of a rectangle, as a set — see `ParagraphFormat.border_edges`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct RectEdge {
     pub raw_value: i64,
 }
@@ -1199,7 +1215,7 @@ impl std::ops::BitOrAssign for RectEdge {
 /// sprints) and `OfficeTextBuilder`, which turns these into typography. Deliberately knows
 /// nothing about Word, ODF or XML: a parser's only job is to produce this vocabulary, and
 /// `OfficeTextBuilder`'s only job is to consume it, so the two are built and tested apart.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum OfficeBlock {
     // swift: Render/Office/OfficeBlock.swift:761-788
     /// Every case below that holds spans also carries `rtl`, defaulted `false` so every existing
@@ -1366,7 +1382,7 @@ pub enum OfficeBlock {
 /// in the body when it has one, or (for a comment the body never anchors at all) continuing that
 /// same sequence in the source's own file order — so a reader can show "Comment 1", "Comment 2", …
 /// the way a native office app's review pane would, even for an unanchored comment.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeComment {
     pub id: SwiftString,
     pub author: Option<SwiftString>,
@@ -1384,7 +1400,7 @@ pub struct OfficeComment {
 /// split is the same shape and maps case-for-case. HWP (rhwp's `apply_to`) has NO first-page
 /// concept in this mechanism at all — see `HwpReader`'s own mapping comment for exactly what its
 /// `"both"`/`"odd"`/`"even"` fold onto here, and what distinction is lost by doing so.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HeaderFooterApplicability {
     // swift: Render/Office/OfficeBlock.swift:914-916
     /// docx `w:type="default"`; odt `style:header`/`style:footer` (the un-suffixed, base variant);
@@ -1411,7 +1427,7 @@ pub enum HeaderFooterApplicability {
 /// SAME `parseBody`/body-walk each reader already uses for the document's own text — see
 /// header-footer-design.md §2c) plus which pages it applies to. Read-only vocabulary: nothing paints
 /// these yet (steps 4/5 of that design), so this struct exists for a later sprint to consume.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeHeaderFooter {
     pub applies_to: HeaderFooterApplicability,
     pub blocks: Vec<OfficeBlock>,
@@ -1434,7 +1450,7 @@ pub struct OfficeHeaderFooter {
 /// which is not known until the document has been laid out, and which the reservation then changes.
 /// That circularity is why `FootnoteBandSettle` exists (invariant 98) and why this type carries no
 /// page of its own — nothing may cache one.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeFootnote {
     // swift: Render/Office/OfficeBlock.swift:956-958
     /// The number the document gave it, and the SAME number its reference marker carries
@@ -1528,7 +1544,7 @@ pub struct OfficeAnchoredObject {
 /// The ALIGN is the whole reason this is expressible at all. The float layer invariant 75 rejected
 /// used the offsets alone and so put a 431pt rule over a table's column label; with the align
 /// exported (invariant 81) the offset is measured from the edge the document actually named.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParagraphAnchor {
     pub align: ParagraphAnchorAlign,
     // swift: Render/Office/OfficeBlock.swift:1026-1027
@@ -1538,7 +1554,7 @@ pub struct ParagraphAnchor {
 
 // swift: Render/Office/OfficeBlock.swift:1024
 /// `ParagraphAnchor.Align` in Swift.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ParagraphAnchorAlign {
     Top,
     Center,
@@ -1566,7 +1582,7 @@ impl ParagraphAnchor {
 /// `marker` on a list item is the document's FORMAT (`^1.`, `제^1장`), not finished text: the number
 /// itself is the reader's to compute, because only the reader knows how many items came before under
 /// its own layout. This says which glyphs to write it in and where to start.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ListNumbering {
     pub glyphs: ListNumberingGlyphs,
     // swift: Render/Office/OfficeBlock.swift:1057
@@ -1583,7 +1599,7 @@ impl Default for ListNumbering {
 // swift: Render/Office/OfficeBlock.swift:1048-1055
 /// `ListNumbering.Glyphs` in Swift. HWP's own table-43 systems, named. `decimal` is the default and
 /// the fallback for anything a document declares that this reader cannot write.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ListNumberingGlyphs {
     Decimal,
     CircledDecimal,
@@ -1686,7 +1702,7 @@ impl ListNumbering {
 /// `measured_from_paper` decides where `spacing` is measured from — the sheet's own edge, or the body
 /// area's. The two land a margin apart (70–110pt on real documents), so guessing draws the frame in
 /// the wrong place rather than slightly off.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub struct OfficePageBorder {
     // swift: Render/Office/OfficeBlock.swift:1109-1112
     /// The four edges, resolved through the document's own fill table at read time — the same
@@ -1742,7 +1758,7 @@ impl PartialEq for OfficePageBorder {
 /// declared nothing and the reader's own minimum stands. Kept as a value on the SECTION rather than
 /// on the document because HWP declares it per section — the corpus happens to agree section to
 /// section today, but throwing that away would be inventing an answer the format actually gives.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeFootnoteSeparator {
     // swift: Render/Office/OfficeBlock.swift:1148-1150
     /// `1` = solid and so on, in the SAME code space as a border edge's line type — `DiagonalLine`'s
@@ -1796,7 +1812,7 @@ impl OfficeFootnoteSeparator {
 }
 
 // swift: Render/Office/OfficeBlock.swift:1173-1198
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeSectionDeclaration {
     // swift: Render/Office/OfficeBlock.swift:1174-1176
     /// The rule above this section's footnotes — see `OfficeFootnoteSeparator`. `nil` for every
@@ -1854,7 +1870,7 @@ impl Default for OfficeSectionDeclaration {
 /// ONE width (invariant 57), so the width here is what an anchored object is placed against and what
 /// a page's own height is measured by; carrying it per section is what lets a page table know that
 /// an appendix's sheet is not the body's.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PaperGeometry {
     pub content_width: CGFloat,
     pub content_height: CGFloat,
@@ -1903,7 +1919,7 @@ pub struct OfficeMasterPage {
 /// exactly the kind of second, divergent path invariant 29 exists to prevent). `comments` defaults
 /// to `[]` so every pre-P6a construction site (tests building a bare `[OfficeBlock]` result) keeps
 /// compiling and means exactly what it always meant: no comments captured.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct OfficeReadResult {
     pub blocks: Vec<OfficeBlock>,
     pub comments: Vec<OfficeComment>,
@@ -1916,6 +1932,9 @@ pub struct OfficeReadResult {
     /// checks this map before the archive. Defaults to `[:]` so every existing construction site
     /// (both zip readers, all tests) keeps compiling and means exactly what it always meant: nothing
     /// pre-decoded, resolve from the archive.
+    /// NOT serialised, for the same reason as `background_image`: these are decoded bytes that
+    /// only `HwpReader` produces. `assert_exportable` refuses a non-empty map.
+    #[serde(skip)]
     pub images: std::collections::HashMap<SwiftString, Data>,
     // swift: Render/Office/OfficeBlock.swift:1253-1262
     /// The document's own default BODY run size in points — the other half of `OfficeTextBuilder`'s
@@ -2033,6 +2052,10 @@ pub struct OfficeReadResult {
     /// Every 바탕쪽 the document declares, each naming its own section — the reader picks per PAGE,
     /// through `section_start_blocks`. Empty for docx and odt, which have no equivalent mechanism, and
     /// for every HWP that declares none. See `OfficeMasterPage`.
+    /// NOT serialised: the 바탕쪽 is an HWP concept, carrying decoded pictures and pre-rendered
+    /// vector drawings — bytes, not document facts. `assert_exportable` refuses a non-empty list
+    /// rather than letting a page's repeating artwork vanish without a word.
+    #[serde(skip)]
     pub master_pages: Vec<OfficeMasterPage>,
     // swift: Render/Office/OfficeBlock.swift:1366-1371
     /// What each SECTION declared about its own page furniture — hidden running head, hidden master
@@ -2044,6 +2067,10 @@ pub struct OfficeReadResult {
     // swift: Render/Office/OfficeBlock.swift:1373-1375
     /// Objects the document pins to the paper, each naming the block it is anchored at — see
     /// `OfficeAnchoredObject`. Empty for docx and odt.
+    /// NOT serialised: an anchored object carries an `OfficeMasterObject`, which is HWP's decoded
+    /// pictures and pre-rendered drawings. Same reason as `master_pages`, and the same guard —
+    /// `assert_exportable` refuses a non-empty list.
+    #[serde(skip)]
     pub anchored_objects: Vec<OfficeAnchoredObject>,
     // swift: Render/Office/OfficeBlock.swift:1377-1381
     /// Where each section begins in `blocks` — `section_start_blocks[i]` is the index of section `i`'s
@@ -2186,7 +2213,7 @@ impl Default for OfficeReadResult {
 /// sample renders as a completely blank page today, which is the state this replaces.
 ///
 /// NOTE: same `CGFloat`-is-`f64` caveat as `TabStop` above — `Hashable` needs a manual impl.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeFormControl {
     pub kind: OfficeFormControlKind,
     // swift: Render/Office/OfficeBlock.swift:1453
@@ -2217,7 +2244,7 @@ impl Default for OfficeFormControl {
 
 // swift: Render/Office/OfficeBlock.swift:1444-1450
 /// `OfficeFormControl.Kind` in Swift — a String-backed enum (docx form-field kind names).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OfficeFormControlKind {
     CheckBox,
     RadioButton,

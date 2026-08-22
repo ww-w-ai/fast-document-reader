@@ -972,6 +972,7 @@ version = "0.0.0"
 dependencies = [
  "quick-xml 0.37.5",
  "rhwp",
+ "serde",
 ]
 
 [[package]]

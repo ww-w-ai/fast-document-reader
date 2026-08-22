@@ -7,7 +7,12 @@ publish.workspace = true
 [dependencies]
 swiftshim = { path = "../swiftshim" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip` is NOT serde_json's default: its fast float parser is allowed to land one ULP
+# away, and it does. A document's own declared geometry — a column 96.23622047244095 points wide —
+# came back as ...096, which is harmless to look at and fatal to CHECK. A boundary that is only
+# nearly lossless cannot be told apart from one that has a real defect in it, and the round-trip
+# test that proves this one is exact is the only guard the port has here.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 # The SAME rhwp commit the shipped xcframework was built from (Vendor/RHWP-SOURCE.txt). Pinned by
 # rev on purpose: the Swift reader links that xcframework, so a floating rev would let the two

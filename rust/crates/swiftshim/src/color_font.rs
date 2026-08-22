@@ -13,7 +13,7 @@ use crate::geometry::CGFloat;
 /// `.alphaComponent`, and construct with `NSColor(srgbRed:green:blue:alpha:)`,
 /// `NSColor(name:dynamicProvider:)` (the `.dynamic(light:dark:)` helper), and the system color
 /// statics (`.systemRed`, `.secondaryLabelColor`, …).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NSColor {
     pub red: CGFloat,
     pub green: CGFloat,
