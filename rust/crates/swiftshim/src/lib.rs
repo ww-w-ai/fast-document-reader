@@ -18,6 +18,7 @@ use std::rc::Rc;
 pub mod attributed_string;
 pub mod color_font;
 pub mod drawing_misc;
+pub mod font_provider;
 pub mod foundation;
 pub mod geometry;
 pub mod nsstring;

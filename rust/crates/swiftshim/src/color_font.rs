@@ -290,18 +290,33 @@ impl NSFont {
         }
     }
 
-    pub fn named(_name: &str, _size: CGFloat) -> Option<Self> {
-        todo!("swift: NSFont(name:size:) — phase B (needs CoreText)")
+    /// swift: `NSFont(name:size:)` — `nil` when this machine has no such font.
+    pub fn named(name: &str, size: CGFloat) -> Option<Self> {
+        crate::font_provider::provider().face_named(name).map(|face| Self::of_face(face, size))
     }
-    pub fn with_descriptor(_descriptor: &NSFontDescriptor, _size: CGFloat) -> Option<Self> {
-        todo!("swift: NSFont(descriptor:size:) — phase B (needs CoreText)")
+
+    /// swift: `NSFont(descriptor:size:)`
+    pub fn with_descriptor(descriptor: &NSFontDescriptor, size: CGFloat) -> Option<Self> {
+        crate::font_provider::provider().resolve(descriptor).map(|face| Self::of_face(face, size))
+    }
+
+    /// The one constructor: a face the provider issued, at a size. Every public constructor above
+    /// funnels through here so an `NSFont` can never hold a face identity nobody resolved.
+    fn of_face(face: crate::font_provider::FaceId, size: CGFloat) -> Self {
+        let info = crate::font_provider::provider().describe(face);
+        NSFont {
+            fontName: info.name,
+            familyName: info.family,
+            pointSize: size,
+            fontDescriptor: NSFontDescriptor::of_face(face, info.traits),
+        }
     }
 
     /// swift: NSFont.systemFont(ofSize:) — the one-argument overload, kept as the bare name per
     /// this crate's own precedent (`setWidth`/`setBorderColor` also keep the bare name for their
     /// least-labelled overload; the more specific sibling gets the disambiguating suffix below).
-    pub fn systemFont(_size: CGFloat) -> Self {
-        todo!("swift: NSFont.systemFont(ofSize:) — phase B")
+    pub fn systemFont(size: CGFloat) -> Self {
+        Self::systemFontWeight(size, NSFontWeight::regular)
     }
 
     /// swift: NSFont.systemFont(ofSize:weight:) — convention §3's overload rule
@@ -309,12 +324,12 @@ impl NSFont {
     /// the distinguishing label is `weight` alone, exactly as `setWidthForEdge`'s suffix names
     /// only the label that isn't already on `setWidth`. Named by team-lead request
     /// (render_theme.rs:172), 2026-08-21 — record kept here per convention §3's overload rule.
-    pub fn systemFontWeight(_size: CGFloat, _weight: NSFontWeight) -> Self {
-        todo!("swift: NSFont.systemFont(ofSize:weight:) — phase B")
+    pub fn systemFontWeight(size: CGFloat, weight: NSFontWeight) -> Self {
+        Self::of_face(crate::font_provider::provider().system_face(weight, false), size)
     }
 
-    pub fn monospacedSystemFont(_size: CGFloat, _weight: NSFontWeight) -> Self {
-        todo!("swift: NSFont.monospacedSystemFont(ofSize:weight:) — phase B")
+    pub fn monospacedSystemFont(size: CGFloat, weight: NSFontWeight) -> Self {
+        Self::of_face(crate::font_provider::provider().system_face(weight, true), size)
     }
 }
 
@@ -339,9 +354,20 @@ impl NSFontWeight {
 /// swift: NSFontDescriptor — call sites read `.symbolicTraits` and pass
 /// `[.featureIdentifier: ..., .typeIdentifier: ...]`-shaped feature dictionaries
 /// (`NSFontDescriptor.FeatureKey`) for small caps.
+/// A face plus whatever has been layered on it, NOT a description anyone can recompose.
+///
+/// `base` is the identity the provider issued for the face this descriptor was taken from, and it
+/// is carried rather than a family name for the reason `font_provider.rs` documents at length:
+/// AppKit's system-UI cascades hand back descriptors with no public family, and layering traits on
+/// one can land on a different face entirely. Dropping `base` — which this shim did until the
+/// render path first tried to USE a descriptor — turns "the same face, one size smaller" into "the
+/// default face, one size smaller", silently, on every scaled run in a document.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NSFontDescriptor {
+    base: Option<crate::font_provider::FaceId>,
     symbolicTraits: NSFontDescriptorSymbolicTraits,
+    /// swift: `.featureSettings` — accumulated by `addingAttributes`, used for small caps.
+    features: Vec<(NSFontFeatureKey, i64)>,
 }
 
 impl NSFontDescriptor {
@@ -352,20 +378,40 @@ impl NSFontDescriptor {
         self.symbolicTraits
     }
 
-    pub fn addingAttributes(&self, _attributes: Vec<(NSFontFeatureKey, i64)>) -> Self {
-        todo!("swift: NSFontDescriptor.addingAttributes(_:) — phase B")
-    }
-    pub fn withSymbolicTraits(&self, traits: NSFontDescriptorSymbolicTraits) -> Self {
-        Self {
-            symbolicTraits: traits,
-        }
+    /// swift: `NSFontDescriptor.addingAttributes(_:)` — returns a COPY with these added, which is
+    /// why the existing features are kept rather than replaced.
+    pub fn addingAttributes(&self, attributes: Vec<(NSFontFeatureKey, i64)>) -> Self {
+        let mut copy = self.clone();
+        copy.features.extend(attributes);
+        copy
     }
 
-    /// swift: .postscriptName — needs the real installed font's metadata (CoreText), which this
-    /// shim has no backend for yet; matches the `size_with_attributes`/`draw_string_at` precedent
-    /// in `drawing_misc.rs` for "font metrics — see CROSS-PLATFORM.md §6".
+    /// swift: `NSFontDescriptor.withSymbolicTraits(_:)` — REPLACES the trait set, it does not
+    /// merge; every call site does its own `union` first for exactly that reason.
+    pub fn withSymbolicTraits(&self, traits: NSFontDescriptorSymbolicTraits) -> Self {
+        Self { base: self.base, symbolicTraits: traits, features: self.features.clone() }
+    }
+
+    /// The face this descriptor was derived from, for a `FontProvider` to resolve against.
+    pub fn base_face(&self) -> Option<crate::font_provider::FaceId> {
+        self.base
+    }
+
+    /// swift: `.featureSettings`
+    pub fn features(&self) -> &[(NSFontFeatureKey, i64)] {
+        &self.features
+    }
+
+    /// Builds the descriptor a resolved face carries. Only `NSFont` calls this — a descriptor with
+    /// a `base` the provider never issued would be a face identity the engine invented.
+    pub(crate) fn of_face(face: crate::font_provider::FaceId, traits: NSFontDescriptorSymbolicTraits) -> Self {
+        Self { base: Some(face), symbolicTraits: traits, features: Vec::new() }
+    }
+
+    /// swift: `.postscriptName` — the resolved face's name, or `None` when this descriptor has not
+    /// been resolved to a face (a trait-only descriptor, which Swift also reports nil for).
     pub fn postscriptName(&self) -> Option<String> {
-        todo!("swift: NSFontDescriptor.postscriptName — phase B (needs CoreText, see CROSS-PLATFORM.md §6)")
+        self.base.map(|face| crate::font_provider::provider().describe(face).name)
     }
 }
 
