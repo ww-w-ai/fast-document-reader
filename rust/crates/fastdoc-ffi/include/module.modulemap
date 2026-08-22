@@ -1,0 +1,4 @@
+module CFastdocEngine {
+    header "fastdoc_engine_ffi.h"
+    export *
+}

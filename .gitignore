@@ -31,3 +31,10 @@ docs
 /testdocs
 docs/.doc-sync-state.json
 __pycache__/
+
+# Build products of the in-repo Rust engine. The rhwp xcframework beside it IS committed because its
+# source lives outside this repo; this one's source is `rust/`, so a committed copy would be a second
+# artefact that can silently disagree with the code next to it. Rebuild with Scripts/build-engine.sh.
+rust/target/
+rust/dist/
+/Vendor/FastdocEngine.xcframework/

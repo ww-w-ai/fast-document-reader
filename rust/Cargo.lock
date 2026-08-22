@@ -224,6 +224,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastdoc-ffi"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "fastdoc-engine",
+ "swiftshim",
+]
+
+[[package]]
 name = "fax"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

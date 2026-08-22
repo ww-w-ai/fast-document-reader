@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/swiftshim", "crates/fastdoc-engine"]
+members = ["crates/swiftshim", "crates/fastdoc-engine", "crates/fastdoc-ffi"]
 
 [workspace.package]
 edition = "2021"

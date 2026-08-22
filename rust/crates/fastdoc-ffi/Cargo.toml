@@ -1,0 +1,28 @@
+[package]
+name = "fastdoc-ffi"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[lib]
+# A static library so the engine is absorbed into the app's executable, exactly as the rhwp parser
+# already is — no dylib to embed, sign or notarise. See docs/BUILD-RHWP.md for the precedent this
+# packaging deliberately copies.
+crate-type = ["staticlib"]
+name = "fastdoc_engine_ffi"
+
+[dependencies]
+fastdoc-engine = { path = "../fastdoc-engine" }
+swiftshim = { path = "../swiftshim" }
+
+# Not called from here. Declared ONLY to turn on blake3's `pure` feature, which drops its C and
+# assembly implementations in favour of the Rust one.
+#
+# Without it this library and the prebuilt rhwp parser beside it BOTH carry blake3's C object, and
+# `_blake3_compress_in_place_portable` has C linkage — so unlike every Rust symbol, which is hashed
+# per crate, it collides and the app fails to link. The hash is the same either way; only the
+# implementation differs, and nothing on this side hashes anything.
+#
+# Cargo features are additive across a graph, so setting it here sets it for the blake3 that gets
+# built into this workspace. The rhwp xcframework is built separately and keeps its own.
+blake3 = { version = "1", default-features = false, features = ["pure"] }
