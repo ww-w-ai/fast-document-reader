@@ -6,3 +6,17 @@ members = ["crates/swiftshim", "crates/fastdoc-engine"]
 edition = "2021"
 version = "0.0.0"
 publish = false
+
+[workspace.dependencies]
+# The two crates phase B's worklist §1 left open. Both are pure Rust with no C toolchain, which
+# matters because this engine has to build for every platform the reader is going to reach.
+#
+# XML: `quick-xml` is a pull parser, so its event loop maps onto Foundation's SAX delegate one
+# event at a time — the readers' callbacks stay exactly as transliterated. `roxmltree` was not
+# taken: it builds its own tree, and the readers already build theirs, so adopting it would mean
+# rewriting both `XMLTreeBuilder`s against a foreign node type.
+quick-xml = "0.37"
+# Inflate: `flate2`'s `rust_backend` is `miniz_oxide`, no zlib C dependency. A zip entry stores
+# RAW deflate (no zlib header), which is also what Swift's `COMPRESSION_ZLIB` means, so the raw
+# decoder is the faithful one — `ZlibDecoder` here would fail on the first byte of every entry.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

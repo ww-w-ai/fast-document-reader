@@ -101,8 +101,11 @@ impl Data {
     pub fn base64Encoded(_b64: &str) -> Option<Self> {
         todo!("swift: Data(base64Encoded:) — phase B")
     }
-    pub fn contentsOf(_url: &URL) -> Result<Self, EngineError> {
-        todo!("swift: Data(contentsOf:) — phase B")
+    /// swift: `Data(contentsOf:)` — file URLs only, which is every call site in scope.
+    pub fn contentsOf(url: &URL) -> Result<Self, EngineError> {
+        std::fs::read(url.path())
+            .map(Data)
+            .map_err(|e| EngineError::Message(e.to_string()))
     }
 
     /// swift: .count — a `Collection`'s element count. `len()` is kept alongside for S4's call
@@ -163,8 +166,19 @@ impl URL {
             string: s.to_string(),
         })
     }
-    pub fn fileURL(_path: &str) -> Self {
-        todo!("swift: URL(fileURLWithPath:) — phase B")
+    /// swift: `URL(fileURLWithPath:)`
+    ///
+    /// The path is stored as given, NOT as a `file://` string. `string` is read back by
+    /// `OfficeTextBuilder` as the href it writes into a link attribute, and percent-encoding a
+    /// local path there would put `%20` in front of the user instead of a space.
+    pub fn fileURL(path: &str) -> Self {
+        URL { string: path.to_string() }
+    }
+
+    /// swift: `URL.path` — the filesystem path, with a `file://` prefix tolerated on the way in
+    /// because `fromString` accepts any string and some call sites hand it a real URL.
+    pub fn path(&self) -> &str {
+        self.string.strip_prefix("file://").unwrap_or(&self.string)
     }
 }
 
@@ -177,8 +191,8 @@ impl FileManager {
     pub fn defaultManager() -> Self {
         FileManager
     }
-    pub fn fileExists(&self, _path: &str) -> bool {
-        todo!("swift: FileManager.default.fileExists(atPath:) — phase B")
+    pub fn fileExists(&self, path: &str) -> bool {
+        std::path::Path::new(path).exists()
     }
 }
 
@@ -189,6 +203,15 @@ impl FileManager {
 pub enum EngineError {
     Message(String),
 }
+impl EngineError {
+    /// The human-readable half, for callers whose own error type has nowhere to put the cause.
+    pub fn message(&self) -> String {
+        match self {
+            EngineError::Message(m) => m.clone(),
+        }
+    }
+}
+
 
 impl std::fmt::Display for EngineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

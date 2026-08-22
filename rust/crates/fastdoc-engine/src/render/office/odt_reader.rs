@@ -2659,13 +2659,13 @@ impl OdtReader {
     fn build_tree(data: &swiftshim::Data) -> Result<Ref<XMLNode>, OdtReadError> {
         let delegate = XMLTreeBuilder::new();
         // swift: Render/Office/OdtReader.swift:2200-2202 — `XMLParser`/`XMLParserDelegate` are
-        // Foundation, not yet in swiftshim (shim addition: `swiftshim::XMLParser`).
-        let root: Option<Ref<XMLNode>> = todo!("swift:2199-2206 XMLParser(data:).parse() driving XMLTreeBuilder's delegate callbacks");
-        #[allow(unreachable_code)]
-        {
-            let _ = delegate;
-            root.ok_or(OdtReadError::MalformedXML("xml".to_string()))
-        }
+        // Foundation, standing in as `swiftshim::XMLParser` (shim addition), which drives bytes
+        // through the SAME loop `DocxReader` uses so the two readers cannot disagree about what
+        // an entity or a self-closing tag means.
+        let parser = swiftshim::XMLParser::new(&data.0);
+        let parsed = parser.parse(&delegate);
+        let root: Option<Ref<XMLNode>> = if parsed { delegate.root.borrow().clone() } else { None };
+        root.ok_or(OdtReadError::MalformedXML("xml".to_string()))
     }
 }
 

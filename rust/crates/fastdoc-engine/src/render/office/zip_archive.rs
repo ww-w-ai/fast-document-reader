@@ -41,6 +41,15 @@ pub enum ZipArchiveError {
     /// The entry's declared uncompressed size exceeds `maxEntryUncompressedSize` — refused
     /// before any buffer sized from that (untrusted) number is allocated.
     EntryTooLarge { declared: usize, cap: usize },
+    /// The file could not be read at all — it is missing, unreadable, or not a file.
+    ///
+    /// PORT DEVIATION, deliberate. `init(url:)` in Swift is `throws` without narrowing, so the
+    /// error `Data(contentsOf:)` raises travels out AS a Foundation error and never becomes a
+    /// `ZipArchive.Error`. This enum is the only error this function can return in Rust, so the
+    /// choice was between inventing this case and dropping the reason on the floor. Dropping it
+    /// would make "the file isn't there" and "the file isn't a zip" report identically, which is
+    /// the difference a user needs most.
+    UnreadableFile(String),
 }
 
 // swift: Render/Office/ZipArchive.swift:36-44
@@ -99,8 +108,8 @@ impl ZipArchive {
     // swift: Render/Office/ZipArchive.swift:87-90
     pub fn from_url(url: &swiftshim::URL) -> Result<Self, ZipArchiveError> {
         // swift: Render/Office/ZipArchive.swift:88 — Data(contentsOf: url)
-        let data = todo!("swift:88 Data(contentsOf: url)");
-        #[allow(unreachable_code)]
+        let data = swiftshim::Data::contentsOf(url)
+            .map_err(|e| ZipArchiveError::UnreadableFile(e.message()))?;
         Self::new(data)
     }
 
@@ -274,10 +283,28 @@ impl ZipArchive {
             return Ok(Data::empty());
         }
         // swift:213-219 compression_decode_buffer(destBase, capacity, srcBase, compressed.count, nil, COMPRESSION_ZLIB)
-        // Deferred: Apple's Compression framework has no Rust equivalent yet — phase B replaces
-        // this with a real DEFLATE decoder (e.g. miniz_oxide). Do NOT substitute a crate here in
-        // phase A; that is a design decision, not a transliteration.
-        todo!("swift:207-221 Compression.inflate (compression_decode_buffer, COMPRESSION_ZLIB)")
+        //
+        // Two properties of Apple's call are load-bearing for the caller above, and both are
+        // reproduced here rather than improved on:
+        //
+        //   1. It writes AT MOST `capacity` bytes and reports how many. That truncation is not a
+        //      failure — it is the whole mechanism `inflate` uses to tell a complete entry from a
+        //      truncated one, by decoding a second time into one more byte.
+        //   2. It reports 0 rather than raising when the stream is malformed. Returning an error
+        //      here instead would reach the caller as a DIFFERENT error than Swift produces: the
+        //      caller turns a short read into `corruptEntry(name)`, naming the entry, and an error
+        //      thrown from this level would bypass that and lose the name.
+        let mut decoder = flate2::read::DeflateDecoder::new(compressed.0.as_slice());
+        let mut output: Vec<u8> = Vec::new();
+        let count = match std::io::Read::read_to_end(
+            &mut std::io::Read::take(&mut decoder, capacity as u64),
+            &mut output,
+        ) {
+            Ok(count) => count,
+            Err(_) => 0,
+        };
+        output.truncate(count);
+        Ok(Data::fromBytes(output))
     }
 }
 
@@ -306,6 +333,9 @@ impl ZipArchiveError {
             ZipArchiveError::CorruptEntry(name) => format!("\"{}\" is corrupt.", name),
             ZipArchiveError::EntryTooLarge { declared, cap } => {
                 format!("Declared size {} bytes exceeds the {}-byte limit.", declared, cap)
+            }
+            ZipArchiveError::UnreadableFile(reason) => {
+                format!("The file could not be read: {}.", reason)
             }
         }
     }

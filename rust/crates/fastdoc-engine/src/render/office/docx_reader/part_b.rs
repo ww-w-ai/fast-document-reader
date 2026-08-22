@@ -2734,11 +2734,31 @@ impl XMLTreeBuilder {
         }
     }
 
-    /// swift note: `buildTree`'s `XMLParser(data:).parse()` driver loop — no XML crate is wired
-    /// into this workspace yet, so the actual byte-by-byte drive is deferred; the delegate
-    /// callbacks above are real and ready for whatever SAX-style parser phase B selects.
+    /// swift: `buildTree`'s `XMLParser(data:).parse()` driver loop.
+    ///
+    /// The driving itself lives in `swiftshim::xml_parser::drive`, shared with `OdtReader`, so the
+    /// two readers cannot drift apart on what an entity or a self-closing tag means. Only the
+    /// adapter is here: this builder is a plain `&mut self` struct rather than an interior-
+    /// mutability delegate, which is why it calls `drive` directly instead of going through
+    /// `XMLParser::parse`.
     // swift: Render/Office/DocxReader.swift:3572-3578
-    fn parse(_data: &[u8]) -> Option<XMLNode> {
-        todo!("swift:3572-3578 XMLParser drive loop — no XML crate selected yet")
+    fn parse(data: &[u8]) -> Option<XMLNode> {
+        let mut builder = XMLTreeBuilder::new();
+        let ok = {
+            let b = std::cell::RefCell::new(&mut builder);
+            swiftshim::xml_parser::drive(
+                data,
+                &mut |name, attributes| b.borrow_mut().did_start_element(name, attributes),
+                &mut |text| b.borrow_mut().found_characters(text),
+                &mut |_name| b.borrow_mut().did_end_element(),
+            )
+        };
+        // swift:3577 — `parser.parse()` failing yields nil, and so does a document that parsed but
+        // never closed its root. A half-built tree is worse than none: the caller would read it as
+        // a complete document that happens to be missing everything after the error.
+        if !ok || !builder.stack.is_empty() {
+            return None;
+        }
+        builder.root
     }
 }
