@@ -144,6 +144,11 @@ enum DocumentTypes {
         //
         // Font substitution stays below, applied once to whatever produced the blocks: it is
         // AppKit's, it is the host's, and it is what keeps invariant 29's single funnel single.
+        #if DEBUG
+        try DocumentEngineTrace.record(
+            fileClass: ext.lowercased() == "odt" ? "odt" : "docx",
+            extension: ext, engine: "rust", seam: "M-ZIP-RUST-DISPATCH")
+        #endif
         guard let ported = RustEngine.readOffice(archive.sourceBytes, extension: ext) else {
             throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
                 NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
@@ -155,6 +160,11 @@ enum DocumentTypes {
         // odt — the single funnel invariant 29 already makes both readers share, so neither
         // `DocxReader` nor `OdtReader` has to call it (or forget to). See
         // `FontSubstitutionResolver`'s file doc for why this belongs at read time.
+        #if DEBUG
+        try DocumentEngineTrace.record(
+            fileClass: ext.lowercased() == "odt" ? "odt" : "docx",
+            extension: ext, engine: "swift", seam: "M-ZIP-SWIFT-DISPATCH")
+        #endif
         return try reader.read(archive).resolvingFontSubstitution()
         #endif
     }

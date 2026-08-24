@@ -10,6 +10,75 @@ import XCTest
 /// only place a whole class of failure can appear: the bytes handed over, the string encoding
 /// coming back, the ownership of that string. A pure-Rust test cannot see any of it.
 final class RustEngineBridgeTests: XCTestCase {
+    /// The shipping Swift implementation is the reference even in a Rust-enabled build.
+    /// Never route this helper through `DocumentTypes.readOffice`: that dispatches to Rust under
+    /// `FMD_RUST_ENGINE` and would turn the comparison into Rust against itself.
+    private func swiftReference(_ data: Data, extension ext: String) throws -> OfficeReadResult {
+        #if DEBUG
+        try DocumentEngineTrace.record(
+            fileClass: ext == "odt" ? "odt" : "docx", extension: ext, engine: "swift",
+            seam: ext == "odt" ? "M-SWIFT-REF-ODT" : "M-SWIFT-REF-DOCX")
+        #endif
+        let archive = try ZipArchive(data: data)
+        return ext == "odt" ? try OdtReader.read(archive) : try DocxReader.read(archive)
+    }
+
+    /// Deterministic S1A fixtures make both successful format comparisons mandatory. A refused
+    /// document is a failure here and can never inflate the compared-document count.
+    func testS1BDeterministicDocxAndOdtBridgeComparisonsAndMutations() throws {
+        for item in [("docx", S1BOfficeFixtures.docx), ("odt", S1BOfficeFixtures.odt)] {
+            let ext = item.0
+            let data = item.1
+            let reference = try swiftReference(data, extension: ext)
+            let tree = try XCTUnwrap(RustEngine.readOffice(data, extension: ext))
+            XCTAssertEqual(tree, reference, "\(ext) full-tree bridge differs")
+            XCTAssertEqual(
+                RustEngine.extractMarkdown(data, extension: ext),
+                OfficeMarkdownSerializer.serialize(reference.blocks, footnotes: reference.footnotes),
+                "\(ext) Markdown bridge differs")
+            print("S1B_COMPARE {\"extension\":\"\(ext)\",\"api\":\"tree\",\"result\":\"equal\"}")
+            print("S1B_COMPARE {\"extension\":\"\(ext)\",\"api\":\"markdown\",\"result\":\"equal\"}")
+
+            #if DEBUG
+            let referenceSeam = ext == "odt" ? "M-SWIFT-REF-ODT" : "M-SWIFT-REF-DOCX"
+            let referenceRun = "reference-mutated-\(ext)"
+            XCTAssertThrowsError(try DocumentEngineTrace.withRun(
+                referenceRun, entryPoint: "bridge-reference", faults: [referenceSeam]
+            ) { try swiftReference(data, extension: ext) })
+            XCTAssertEqual(DocumentEngineTrace.faults(runID: referenceRun), ["F-\(referenceSeam)"])
+            print("S1B_MUTATION {\"id\":\"\(referenceSeam)\",\"faultId\":\"F-\(referenceSeam)\","
+                  + "\"configuration\":\"rust-enabled\",\"role\":\"killer\","
+                  + "\"controlPassed\":true,\"mutatedFailed\":true,"
+                  + "\"killerTest\":\"RustEngineBridgeTests/"
+                  + "testS1BDeterministicDocxAndOdtBridgeComparisonsAndMutations\"}")
+
+            let treeRun = "tree-mutated-\(ext)"
+            XCTAssertNil(DocumentEngineTrace.withRun(
+                treeRun, entryPoint: "bridge-tree", faults: ["M-RUST-BRIDGE-TREE"]
+            ) { RustEngine.readOffice(data, extension: ext) })
+            XCTAssertEqual(DocumentEngineTrace.faults(runID: treeRun), ["F-M-RUST-BRIDGE-TREE"])
+            let bridgeRole = ext == "docx" ? "killer" : "corroboration"
+            print("S1B_MUTATION {\"id\":\"M-RUST-BRIDGE-TREE\",\"faultId\":\"F-M-RUST-BRIDGE-TREE\","
+                  + "\"configuration\":\"rust-enabled\",\"role\":\"\(bridgeRole)\","
+                  + "\"controlPassed\":true,\"mutatedFailed\":true,"
+                  + "\"killerTest\":\"RustEngineBridgeTests/"
+                  + "testS1BDeterministicDocxAndOdtBridgeComparisonsAndMutations\"}")
+
+            let markdownRun = "markdown-mutated-\(ext)"
+            XCTAssertNil(DocumentEngineTrace.withRun(
+                markdownRun, entryPoint: "bridge-markdown", faults: ["M-RUST-BRIDGE-MARKDOWN"]
+            ) { RustEngine.extractMarkdown(data, extension: ext) })
+            XCTAssertEqual(DocumentEngineTrace.faults(runID: markdownRun), ["F-M-RUST-BRIDGE-MARKDOWN"])
+            print("S1B_MUTATION {\"id\":\"M-RUST-BRIDGE-MARKDOWN\","
+                  + "\"faultId\":\"F-M-RUST-BRIDGE-MARKDOWN\","
+                  + "\"configuration\":\"rust-enabled\",\"role\":\"\(bridgeRole)\","
+                  + "\"controlPassed\":true,\"mutatedFailed\":true,"
+                  + "\"killerTest\":\"RustEngineBridgeTests/"
+                  + "testS1BDeterministicDocxAndOdtBridgeComparisonsAndMutations\"}")
+            #endif
+        }
+    }
+
     /// The extension the bridge is given comes from the filename, and the engine lower-cases it
     /// itself — a `.DOCX` attachment is a real thing, and the readers' dispatch is case-insensitive
     /// on this side too.
@@ -36,7 +105,7 @@ final class RustEngineBridgeTests: XCTestCase {
 
             let ours: String?
             do {
-                let result = try DocumentTypes.readOffice(try ZipArchive(data: data), extension: ext)
+                let result = try swiftReference(data, extension: ext)
                 ours = OfficeMarkdownSerializer.serialize(result.blocks, footnotes: result.footnotes)
             } catch {
                 ours = nil
@@ -86,10 +155,7 @@ final class RustEngineBridgeTests: XCTestCase {
 
             let ours: OfficeReadResult?
             do {
-                // The readers directly, NOT `DocumentTypes.readOffice` — that applies font
-                // substitution, which is the host's and runs after either reader.
-                let archive = try ZipArchive(data: data)
-                ours = ext == "odt" ? try OdtReader.read(archive) : try DocxReader.read(archive)
+                ours = try swiftReference(data, extension: ext)
             } catch {
                 ours = nil
             }

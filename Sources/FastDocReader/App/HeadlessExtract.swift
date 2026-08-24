@@ -39,6 +39,16 @@ enum HeadlessExtract {
 
         switch DocumentTypes.kind(forExtension: ext) {
         case .markdown, .plainText:
+            #if DEBUG
+            do {
+                try DocumentEngineTrace.record(
+                    fileClass: DocumentTypes.kind(forExtension: ext) == .markdown ? "markdown" : "plain-text",
+                    extension: ext, engine: "swift", seam: "swift-text-extract")
+            } catch {
+                err("cannot extract \(url.lastPathComponent): \(error.localizedDescription)")
+                return 1
+            }
+            #endif
             // Already text — emit verbatim, decoded in whatever encoding the file actually is
             // (invariant 18's detector), so a CP949/UTF-16 file isn't turned into a wall of "?".
             out(TextEncodingDetector.decode(data).text)
@@ -56,6 +66,12 @@ enum HeadlessExtract {
                 // archive, for the same reason this code used to: a `.hwp` is CFB binary and would
                 // fail as a zip. Letting HWP keep falling back to `HwpReader` would have left the
                 // larger half of this corpus untested while the totals still read as green.
+                #if DEBUG
+                try DocumentEngineTrace.record(
+                    fileClass: DocumentTypes.isHwp(ext) ? ext : (ext == "odt" ? "odt" : "docx"),
+                    extension: ext, engine: "rust",
+                    seam: DocumentTypes.isHwp(ext) ? "M-HWP-RUST-EXTRACT" : "M-RUST-BRIDGE-MARKDOWN")
+                #endif
                 guard let unresolved = RustEngine.readOffice(data, extension: ext) else {
                     throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
                         NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
@@ -65,6 +81,13 @@ enum HeadlessExtract {
                 // over before substitution because an opaque NSFontDescriptor cannot cross JSON.
                 let result = unresolved.resolvingFontSubstitution()
                 #else
+                #if DEBUG
+                if DocumentTypes.isHwp(ext) {
+                    try DocumentEngineTrace.record(
+                        fileClass: ext, extension: ext, engine: "swift",
+                        seam: "M-HWP-SWIFT-EXTRACT")
+                }
+                #endif
                 let result = try DocumentTypes.isHwp(ext)
                     ? HwpReader.read(data)
                     : DocumentTypes.readOffice(try ZipArchive(data: data), extension: ext)

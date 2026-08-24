@@ -89,6 +89,119 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(490, len(cells))
         self.assertEqual(490, len({(c["extension"], c["entryPointId"]) for c in cells}))
         self.assertTrue(all(c["applicability"] in baseline.APPS for c in cells))
+        self.assertTrue(all(c["oracle"].get("id") for c in cells))
+        self.assertTrue(all(set(c["mutation"]) == baseline.CONFIGURATIONS for c in cells))
+
+    def test_behavior_registry_is_closed_and_has_frozen_mutations(self):
+        contracts, mutations = baseline.behavior()
+        self.assertEqual(42, len(contracts))
+        self.assertEqual(12, len(mutations))
+        self.assertEqual(baseline.MUTATION_IDS, {m["id"] for m in mutations})
+
+    def test_every_alias_cell_inherits_only_its_same_class_entry_contract(self):
+        contracts, _mutations = baseline.behavior()
+        by_pair = {(c["class"], c["entryPointId"]): c for c in contracts}
+        _document, _sources, mapping = baseline.manifest(check=False)
+        generated = baseline.cells(baseline.entries(), mapping)
+        _extensions, classes = baseline.extensions()
+        for cell in generated:
+            contract = by_pair[(cell["fileClass"], cell["entryPointId"])]
+            representative = cell["oracle"]["representativeExtension"]
+            self.assertEqual(classes[representative], cell["fileClass"])
+            self.assertEqual(contract["mutationByConfiguration"], cell["mutation"])
+            self.assertEqual(contract["oracleId"], cell["oracle"]["id"])
+
+    def test_behavior_registry_rejects_missing_contract_and_unknown_mutation(self):
+        document = baseline.load(baseline.ROOT / "Tests/Baseline/behavior.json")
+        missing = copy.deepcopy(document)
+        missing["contracts"].pop()
+        with self.assertRaises(baseline.Error):
+            baseline.validate_behavior_data(missing)
+        unknown = copy.deepcopy(document)
+        unknown["contracts"][0]["mutationByConfiguration"]["default"] = {
+            "applicability": "required",
+            "id": "M-UNKNOWN",
+            "reason": "test",
+        }
+        with self.assertRaises(baseline.Error):
+            baseline.validate_behavior_data(unknown)
+        invalid_mode = copy.deepcopy(document)
+        invalid_mode["contracts"][0]["evidenceMode"] = "trust-me"
+        with self.assertRaises(baseline.Error):
+            baseline.validate_behavior_data(invalid_mode)
+        invalid_inheritance = copy.deepcopy(document)
+        invalid_inheritance["contracts"][0]["inheritsFrom"] = "other-class/gui-open"
+        with self.assertRaises(baseline.Error):
+            baseline.validate_behavior_data(invalid_inheritance)
+        invalid_alias_mode = copy.deepcopy(document)
+        invalid_alias_mode["contracts"][0]["evidenceMode"] = "inherited-alias"
+        invalid_alias_mode["contracts"][0]["inheritsFrom"] = "markdown/gui-open/default"
+        with self.assertRaises(baseline.Error):
+            baseline.validate_behavior_data(invalid_alias_mode)
+
+    def test_bridge_reference_never_routes_through_document_types(self):
+        source = (baseline.ROOT / "Tests/FastDocReaderTests/RustEngineBridgeTests.swift").read_text()
+        helper = source.split("private func swiftReference", 1)[1].split("\n    }", 1)[0]
+        self.assertIn("DocxReader.read", helper)
+        self.assertIn("OdtReader.read", helper)
+        self.assertNotIn("DocumentTypes.readOffice", helper)
+        self.assertNotIn("RustEngine", helper)
+
+    def test_s1b_evidence_rejects_missing_killer_and_accepts_closed_evidence(self):
+        _contracts, mutations = baseline.behavior()
+        lines = []
+        for killer_test in {mutation["killerTest"] for mutation in mutations}:
+            class_name, method_name = killer_test.split("/", 1)
+            lines.append(
+                f"Test Case '-[FastDocReaderTests.{class_name} {method_name}]' passed"
+            )
+        for mutation in mutations:
+            configuration = mutation["configuration"]
+            if configuration == "both":
+                configuration = "default"
+            lines.append("S1B_MUTATION " + json.dumps({
+                "id": mutation["id"], "faultId": mutation["faultId"],
+                "configuration": configuration, "role": "killer",
+                "controlPassed": True, "mutatedFailed": True,
+                "killerTest": mutation["killerTest"],
+            }))
+        for extension in ("docx", "odt"):
+            for api in ("tree", "markdown"):
+                lines.append("S1B_COMPARE " + json.dumps({
+                    "extension": extension, "api": api, "result": "equal",
+                }))
+        for contract in baseline.behavior()[0]:
+            for configuration in baseline.CONFIGURATIONS:
+                lines.append("S1B_CONTRACT " + json.dumps({
+                    "class": contract["class"],
+                    "entryPointId": contract["entryPointId"],
+                    "configuration": configuration,
+                    "runId": f"oracle-{contract['class']}-{contract['entryPointId']}-{configuration}",
+                    "representativeExtension": contract["representativeExtension"],
+                    "oracleId": contract["oracleId"],
+                    "controlAssertions": 1,
+                    "expectedEngine": contract["expectedEngineByConfiguration"][configuration],
+                    "expectedEvents": [] if contract["expectedEngineByConfiguration"][configuration] == "none"
+                        else [contract["expectedEngineByConfiguration"][configuration]],
+                    "observedEvents": [] if contract["expectedEngineByConfiguration"][configuration] == "none"
+                        else [contract["expectedEngineByConfiguration"][configuration]],
+                }))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "s1b.log"
+            path.write_text("\n".join(lines) + "\n")
+            args = type("Args", (), {"log": [str(path)], "json": None})()
+            self.assertEqual(0, baseline.s1b_evidence(args))
+            path.write_text("\n".join(lines[1:]) + "\n")
+            with self.assertRaises(baseline.Error):
+                baseline.s1b_evidence(args)
+
+    def test_release_containment_rejects_fault_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / "binary"
+            binary.write_bytes(b"prefix\\0DocumentEngineTrace\\0suffix")
+            args = type("Args", (), {"binary": str(binary)})()
+            with self.assertRaises(baseline.Error):
+                baseline.release_containment(args)
 
     def test_entry_registry_rejects_malformed_contracts(self):
         document = baseline.load(baseline.ROOT / "Tests/Baseline/entry-points.json")

@@ -344,6 +344,14 @@ final class MarkdownDocument: NSDocument {
         // the only writer (`applySourceEdit` never runs for `.office`; see the kind gates in
         // `ReaderTextView` and `DocumentWindowController`), so refusing here closes the door for
         // every path at once.
+        #if DEBUG
+        if kind == .office, DocumentEngineTrace.mutationActive(
+            fileClass: fileURL?.pathExtension.lowercased() ?? "office",
+            extension: fileURL?.pathExtension ?? "", engine: "none",
+            seam: "M-OFFICE-SAVE-REJECTION") {
+            return Data()
+        }
+        #endif
         guard kind != .office else {
             throw NSError(domain: "ai.ww-w.fast-md-reader", code: 2, userInfo: [
                 NSLocalizedDescriptionKey: "This document is read-only and can't be saved.",
@@ -351,6 +359,11 @@ final class MarkdownDocument: NSDocument {
                     "\(fileURL?.lastPathComponent ?? "This file") is a format fast-md-reader only reads, not edits.",
             ])
         }
+        #if DEBUG
+        try DocumentEngineTrace.record(
+            fileClass: kind == .markdown ? "markdown" : "plain-text",
+            extension: fileURL?.pathExtension ?? "", engine: "swift", seam: "swift-text-save")
+        #endif
         guard let bytes = TextEncodingDetector.encode(text, like: file) else {
             throw NSError(domain: "ai.ww-w.fast-md-reader", code: 1, userInfo: [
                 NSLocalizedDescriptionKey: "This file's text encoding can't represent some of the characters in your edits.",
@@ -372,6 +385,12 @@ final class MarkdownDocument: NSDocument {
         // THROW on failure rather than opening an empty window (see `DocxReader.ReadError`) — an
         // empty office document would look like a genuinely blank file, the worst failure mode.
         guard kind == .office else {
+            #if DEBUG
+            try DocumentEngineTrace.record(
+                fileClass: kind == .markdown ? "markdown" : "plain-text",
+                extension: fileURL?.pathExtension ?? untitledExtension ?? "",
+                engine: "swift", seam: "swift-text-open")
+            #endif
             // NOT `String(decoding:as: UTF8.self)`: that never fails, it just substitutes
             // replacement characters, so a Windows-made CP949 or UTF-16 file arrives as a wall of
             // "?" and looks corrupted. The detector reads the bytes for what they are.
@@ -394,6 +413,11 @@ final class MarkdownDocument: NSDocument {
         // `DocumentTypes.hwpExtensions` ARE the HWP dispatch (invariant 29); the zip path below is
         // unchanged for docx/odt.
         if DocumentTypes.isHwp(ext) {
+            #if DEBUG
+            try DocumentEngineTrace.record(
+                fileClass: ext.lowercased(), extension: ext, engine: "swift",
+                seam: "M-HWP-SWIFT-OPEN")
+            #endif
             let result = try HwpReader.read(data)
             setOfficeContent(
                 blocks: result.blocks, comments: result.comments, archive: nil,
@@ -548,6 +572,15 @@ final class MarkdownDocument: NSDocument {
             return .failure(error.localizedDescription)
         }
         guard kind == .office else {
+            #if DEBUG
+            do {
+                try DocumentEngineTrace.record(
+                    fileClass: kind == .markdown ? "markdown" : "plain-text",
+                    extension: ext, engine: "swift", seam: "swift-text-reload")
+            } catch {
+                return .failure(error.localizedDescription)
+            }
+            #endif
             return .text(TextEncodingDetector.decode(data))
         }
         do {
@@ -557,6 +590,11 @@ final class MarkdownDocument: NSDocument {
             // 11 — that made a ⌘R reload of an HWP whose declared body size ≠ 11 render differently
             // from its first open, the exact regression invariant 29 forbids).
             if DocumentTypes.isHwp(ext) {
+                #if DEBUG
+                try DocumentEngineTrace.record(
+                    fileClass: ext.lowercased(), extension: ext, engine: "swift",
+                    seam: "M-HWP-SWIFT-RELOAD")
+                #endif
                 let result = try HwpReader.read(data)
                 return .office(result, archive: nil, defaultBodyFontSize: result.defaultBodyFontSize)
             }

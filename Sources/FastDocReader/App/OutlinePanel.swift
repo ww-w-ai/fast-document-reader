@@ -62,6 +62,15 @@ final class OutlinePanel: NSView, NSTableViewDelegate, NSTableViewDataSource {
     /// Rebuild from the document's rendered text. Cheap enough to run after every edit: it walks
     /// heading attribute runs, not the whole string.
     func reload(from storage: NSTextStorage) {
+        #if DEBUG
+        if DocumentEngineTrace.mutationActive(
+            fileClass: "plain-text", extension: "txt", engine: "none",
+            seam: "M-PLAIN-NAV-REJECTION") {
+            entries = [OutlineEntry(title: "injected mutation", level: 1, charIndex: 0)]
+            table.reloadData()
+            return
+        }
+        #endif
         var found: [OutlineEntry] = []
         let whole = NSRange(location: 0, length: storage.length)
         let text = storage.string as NSString

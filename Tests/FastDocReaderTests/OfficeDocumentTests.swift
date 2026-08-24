@@ -396,6 +396,47 @@ final class OfficeDocumentTests: XCTestCase {
         XCTAssertThrowsError(try DocumentTypes.readOffice(try ZipArchive(data: fixtureDocx()), extension: "rtf"))
     }
 
+    #if DEBUG
+    /// S1B: the production zip-office funnel must identify one engine in each build, and injecting
+    /// the matching dispatch mutation must stop both representative formats before parsing.
+    func testS1BZipOfficeDispatchControlThenConfigurationMutation() throws {
+        #if FMD_RUST_ENGINE
+        let seam = "M-ZIP-RUST-DISPATCH"
+        let expectedEngine = "rust"
+        #else
+        let seam = "M-ZIP-SWIFT-DISPATCH"
+        let expectedEngine = "swift"
+        #endif
+        for item in [("docx", fixtureDocx()), ("odt", fixtureOdt())] {
+            let control = "zip-control-\(item.0)"
+            _ = try DocumentEngineTrace.withRun(control, entryPoint: "gui-open") {
+                try DocumentTypes.readOffice(try ZipArchive(data: item.1), extension: item.0)
+            }
+            XCTAssertEqual(DocumentEngineTrace.snapshot(runID: control).map(\.engine), [expectedEngine])
+
+            let mutated = "zip-mutated-\(item.0)"
+            XCTAssertThrowsError(try DocumentEngineTrace.withRun(
+                mutated, entryPoint: "gui-open", faults: [seam]
+            ) {
+                try DocumentTypes.readOffice(try ZipArchive(data: item.1), extension: item.0)
+            })
+            XCTAssertEqual(DocumentEngineTrace.faults(runID: mutated), ["F-\(seam)"])
+            XCTAssertEqual(DocumentEngineTrace.snapshot(runID: mutated).map(\.seam), [seam])
+            #if FMD_RUST_ENGINE
+            let configuration = "rust-enabled"
+            #else
+            let configuration = "default"
+            #endif
+            let role = item.0 == "docx" ? "killer" : "corroboration"
+            print("S1B_MUTATION {\"id\":\"\(seam)\",\"faultId\":\"F-\(seam)\","
+                  + "\"configuration\":\"\(configuration)\",\"role\":\"\(role)\","
+                  + "\"controlPassed\":true,\"mutatedFailed\":true,"
+                  + "\"killerTest\":\"OfficeDocumentTests/"
+                  + "testS1BZipOfficeDispatchControlThenConfigurationMutation\"}")
+        }
+    }
+    #endif
+
     /// The headless `--extract` seam end to end at the library level: bytes → the SAME dispatch the
     /// app uses (`DocumentTypes.readOffice`) → `OfficeMarkdownSerializer`. A pure serializer unit test
     /// (`OfficeMarkdownSerializerTests`) can't prove the reader actually FEEDS the serializer — this

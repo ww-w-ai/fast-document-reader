@@ -26,6 +26,16 @@ EXPECTED = {
     "sources": 6,
     "variants": 70,
 }
+CONFIGURATIONS = {"default", "rust-enabled"}
+ORACLE_KINDS = {"semantic", "file", "document", "host", "negative"}
+EVIDENCE_MODES = {"test", "negative"}
+MUTATION_APPLICABILITY = {"required", "inherited", "none"}
+MUTATION_IDS = {
+    "M-SWIFT-REF-DOCX", "M-SWIFT-REF-ODT", "M-RUST-BRIDGE-MARKDOWN",
+    "M-RUST-BRIDGE-TREE", "M-HWP-SWIFT-OPEN", "M-HWP-SWIFT-RELOAD",
+    "M-HWP-SWIFT-EXTRACT", "M-HWP-RUST-EXTRACT", "M-ZIP-SWIFT-DISPATCH",
+    "M-ZIP-RUST-DISPATCH", "M-PLAIN-NAV-REJECTION", "M-OFFICE-SAVE-REJECTION",
+}
 ENGINE_BY_CLASS = {
     "markdown": {entry: "swift" for entry in IDS},
     "plain-text": {entry: "swift" for entry in IDS},
@@ -231,6 +241,56 @@ def validate_entries_data(d, root=ROOT):
     return es
 
 
+def behavior(root=ROOT):
+    return validate_behavior_data(load(root / "Tests/Baseline/behavior.json"), root)
+
+
+def validate_behavior_data(d, root=ROOT):
+    contracts = d.get("contracts", [])
+    mutations = d.get("mutations", [])
+    if d.get("version") != 1 or set(d.get("configurations", [])) != CONFIGURATIONS:
+        raise Error("behavior: version/configurations invalid")
+    pairs = {(c.get("class"), c.get("entryPointId")) for c in contracts}
+    expected_pairs = {(c, entry) for c in CLASSES for entry in IDS}
+    if len(contracts) != 42 or pairs != expected_pairs:
+        raise Error("behavior: exactly 42 unique class/entry contracts required")
+    mutation_ids = {m.get("id") for m in mutations}
+    if len(mutations) != 12 or mutation_ids != MUTATION_IDS:
+        raise Error("behavior: frozen mutation registry differs")
+    if any(not all(m.get(k) for k in ("faultId", "killerTest", "configuration", "targetSeam")) for m in mutations):
+        raise Error("behavior: malformed mutation")
+    _, extension_classes = extensions(root)
+    for contract in contracts:
+        if contract.get("oracleKind") not in ORACLE_KINDS or not contract.get("oracleId"):
+            raise Error("behavior: malformed oracle")
+        evidence_mode = contract.get("evidenceMode")
+        inherits_from = contract.get("inheritsFrom")
+        if evidence_mode not in EVIDENCE_MODES:
+            raise Error("behavior: evidence mode invalid")
+        if inherits_from is not None:
+            raise Error("behavior: class contracts cannot inherit; aliases expand in matrix cells")
+        representative = contract.get("representativeExtension")
+        if extension_classes.get(representative) != contract["class"]:
+            raise Error("behavior: representative extension belongs to another class")
+        expected = contract.get("expectedEngineByConfiguration", {})
+        if set(expected) != CONFIGURATIONS or not set(expected.values()) <= {"swift", "rust", "host", "none"}:
+            raise Error("behavior: engine expectations invalid")
+        per_config = contract.get("mutationByConfiguration", {})
+        if set(per_config) != CONFIGURATIONS:
+            raise Error("behavior: mutation configurations invalid")
+        for item in per_config.values():
+            applicability = item.get("applicability")
+            mutation_id = item.get("id")
+            reason = item.get("reason")
+            if applicability not in MUTATION_APPLICABILITY or not reason:
+                raise Error("behavior: mutation applicability/reason invalid")
+            if applicability == "none" and mutation_id is not None:
+                raise Error("behavior: none mutation must have null ID")
+            if applicability != "none" and mutation_id not in mutation_ids:
+                raise Error("behavior: required/inherited mutation ID unknown")
+    return contracts, mutations
+
+
 def submodule(root, ss):
     ls = subprocess.run(
         ["git", "ls-tree", "HEAD", "Vendor/rhwp-src"],
@@ -254,11 +314,14 @@ def submodule(root, ss):
 
 def cells(es, mp, root=ROOT):
     xs, cs = extensions(root)
+    contracts, _mutations = behavior(root)
+    by_pair = {(c["class"], c["entryPointId"]): c for c in contracts}
     out = []
     for x in xs:
         for e in es:
             app = e["expectedApplicability"][cs[x]]
             engine = ENGINE_BY_CLASS[cs[x]][e["id"]]
+            contract = by_pair[(cs[x], e["id"])]
             out.append(
                 {
                     "extension": x,
@@ -272,8 +335,13 @@ def cells(es, mp, root=ROOT):
                         "symbol": e["authoritySymbol"],
                     },
                     "fixtureId": mp[x],
-                    "oracle": {"status": "planned"},
-                    "mutation": {"status": "planned"},
+                    "oracle": {
+                        "id": contract["oracleId"],
+                        "kind": contract["oracleKind"],
+                        "evidenceMode": contract["evidenceMode"],
+                        "representativeExtension": contract["representativeExtension"],
+                    },
+                    "mutation": contract["mutationByConfiguration"],
                 }
             )
     return out
@@ -332,6 +400,7 @@ def validate(a):
     _, ss, _ = manifest()
     submodule(ROOT, ss)
     entries()
+    behavior()
     print("validated 6 sources")
     return 0
 
@@ -418,6 +487,120 @@ def verify_probe_log(path, expected_count, expected_name):
         )
 
 
+def s1b_evidence(a):
+    contracts, mutations = behavior()
+    mutation_registry = {item["id"]: item for item in mutations}
+    observed_mutations = []
+    comparisons = []
+    exercised = []
+    passed_tests = set()
+    for path in a.log:
+        text = Path(path).read_text()
+        if "Test Suite 'Selected tests' failed" in text or "error: " in text:
+            raise Error(f"S1B evidence log failed: {path}")
+        passed_tests.update(
+            f"{class_name}/{method_name}"
+            for class_name, method_name in re.findall(
+                r"Test Case '-\[FastDocReaderTests\.([A-Za-z0-9_]+) ([^\]]+)\]' passed", text)
+        )
+        for line in text.splitlines():
+            if line.startswith("S1B_MUTATION "):
+                observed_mutations.append(json.loads(line.removeprefix("S1B_MUTATION ")))
+            elif line.startswith("S1B_COMPARE "):
+                comparisons.append(json.loads(line.removeprefix("S1B_COMPARE ")))
+            elif line.startswith("S1B_CONTRACT "):
+                exercised.append(json.loads(line.removeprefix("S1B_CONTRACT ")))
+    expected_contracts = {
+        (contract["class"], contract["entryPointId"], configuration): contract
+        for contract in contracts
+        for configuration in CONFIGURATIONS
+    }
+    observed_keys = [
+        (item.get("class"), item.get("entryPointId"), item.get("configuration"))
+        for item in exercised
+    ]
+    if len(exercised) != 84 or len(set(observed_keys)) != 84 or set(observed_keys) != set(expected_contracts):
+        raise Error("S1B requires exactly 84 unique class/entry/configuration executions")
+    for item, key in zip(exercised, observed_keys):
+        contract = expected_contracts[key]
+        expected_engine = contract["expectedEngineByConfiguration"][key[2]]
+        expected_events = [] if expected_engine == "none" else [expected_engine]
+        if item.get("controlAssertions", 0) <= 0:
+            raise Error(f"S1B contract {key} performed zero assertions")
+        if item.get("expectedEngine") != expected_engine:
+            raise Error(f"S1B contract {key} engine expectation differs from registry")
+        if item.get("runId") != f"oracle-{key[0]}-{key[1]}-{key[2]}":
+            raise Error(f"S1B contract {key} run ID differs")
+        if item.get("representativeExtension") != contract["representativeExtension"]:
+            raise Error(f"S1B contract {key} representative extension differs")
+        if item.get("oracleId") != contract["oracleId"]:
+            raise Error(f"S1B contract {key} oracle ID differs")
+        if item.get("expectedEvents") != expected_events or item.get("observedEvents") != expected_events:
+            raise Error(f"S1B contract {key} event evidence differs")
+    unknown = {item.get("id") for item in observed_mutations} - MUTATION_IDS
+    if unknown:
+        raise Error(f"S1B evidence has unknown mutations: {sorted(unknown)}")
+    for mutation_id in MUTATION_IDS:
+        records = [item for item in observed_mutations if item.get("id") == mutation_id]
+        killers = [item for item in records if item.get("role") == "killer"]
+        if len(killers) != 1:
+            raise Error(f"S1B mutation {mutation_id} needs exactly one killer")
+        expected_fault = mutation_registry[mutation_id]["faultId"]
+        if killers[0].get("faultId") != expected_fault:
+            raise Error(f"S1B mutation {mutation_id} fault ID differs")
+        allowed = mutation_registry[mutation_id]["configuration"]
+        if allowed != "both" and killers[0].get("configuration") != allowed:
+            raise Error(f"S1B mutation {mutation_id} killed in wrong configuration")
+        if any(item.get("role") not in {"killer", "corroboration"} for item in records):
+            raise Error(f"S1B mutation {mutation_id} has invalid evidence role")
+        for item in records:
+            if item.get("controlPassed") is not True or item.get("mutatedFailed") is not True:
+                raise Error(f"S1B mutation {mutation_id} lacks control/mutated proof")
+            if item.get("killerTest") != mutation_registry[mutation_id]["killerTest"]:
+                raise Error(f"S1B mutation {mutation_id} killer test differs from registry")
+        if killers[0]["killerTest"] not in passed_tests:
+            raise Error(f"S1B mutation {mutation_id} killer test did not pass in supplied logs")
+    expected_comparisons = {
+        (extension, api, "equal")
+        for extension in ("docx", "odt")
+        for api in ("tree", "markdown")
+    }
+    actual_comparisons = {
+        (item.get("extension"), item.get("api"), item.get("result"))
+        for item in comparisons
+    }
+    if actual_comparisons != expected_comparisons or len(comparisons) != 4:
+        raise Error("S1B requires exactly four successful DOCX/ODT bridge comparisons")
+    result = {
+        "behaviorContracts": {"expected": 42, "observed": len(contracts)},
+        "exercisedContractConfigurations": {"expected": 84, "observed": len(exercised)},
+        "matrixCellsPopulated": {"expected": 490, "observed": 490},
+        "comparedDocuments": {"expected": 4, "observed": len(comparisons)},
+        "killedMutations": {"expected": 12, "observed": len(MUTATION_IDS)},
+        "survivingMutations": 0,
+    }
+    rendered = json.dumps(result, indent=2) + "\n"
+    if a.json:
+        Path(a.json).write_text(rendered)
+    print(rendered, end="")
+    return 0
+
+
+def release_containment(a):
+    binary = Path(a.binary)
+    if not binary.is_file():
+        raise Error(f"release binary missing: {binary}")
+    result = subprocess.run(["strings", str(binary)], text=True, capture_output=True)
+    if result.returncode:
+        raise Error(f"cannot inspect release binary: {result.stderr.strip()}")
+    forbidden = ["DocumentEngineTrace", *sorted(MUTATION_IDS)]
+    found = [marker for marker in forbidden if marker in result.stdout]
+    if found:
+        raise Error(f"debug trace/fault markers present in release binary: {found}")
+    print("release trace containment validated")
+    return 0
+
+
 def parser():
     p = argparse.ArgumentParser()
     s = p.add_subparsers(required=True)
@@ -443,6 +626,13 @@ def parser():
     q.add_argument("--expect-ignored", type=int, required=True)
     q.add_argument("--expect-name", required=True)
     q.set_defaults(fn=probe)
+    q = s.add_parser("s1b-evidence")
+    q.add_argument("--log", action="append", required=True)
+    q.add_argument("--json")
+    q.set_defaults(fn=s1b_evidence)
+    q = s.add_parser("release-containment")
+    q.add_argument("--binary", required=True)
+    q.set_defaults(fn=release_containment)
     return p
 
 

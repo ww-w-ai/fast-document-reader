@@ -34,6 +34,15 @@ enum RustEngine {
     /// and `DocumentTypes.readOffice` already applies it once for every reader — so this returns
     /// exactly what a reader returns, at exactly the point a reader returns it.
     static func readOffice(_ data: Data, extension ext: String) -> OfficeReadResult? {
+        #if DEBUG
+        if DocumentEngineTrace.currentEntryPoint == "bridge-tree" {
+            do {
+                try DocumentEngineTrace.record(
+                    fileClass: ext == "odt" ? "odt" : "docx", extension: ext,
+                    engine: "rust", seam: "M-RUST-BRIDGE-TREE")
+            } catch { return nil }
+        }
+        #endif
         RustEngineFonts.install()
         let json: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { raw -> UnsafeMutablePointer<CChar>? in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
@@ -112,6 +121,15 @@ enum RustEngine {
     }
 
     static func extractMarkdown(_ data: Data, extension ext: String) -> String? {
+        #if DEBUG
+        if DocumentEngineTrace.currentEntryPoint == "bridge-markdown" {
+            do {
+                try DocumentEngineTrace.record(
+                    fileClass: ext == "odt" ? "odt" : "docx", extension: ext,
+                    engine: "rust", seam: "M-RUST-BRIDGE-MARKDOWN")
+            } catch { return nil }
+        }
+        #endif
         RustEngineFonts.install()
         let result: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { raw -> UnsafeMutablePointer<CChar>? in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
