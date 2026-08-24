@@ -69,6 +69,7 @@ pub struct Span {
     /// The link target, if this run is (or is inside) a hyperlink — `nil` for ordinary text. A
     /// later sprint's docx/odt parser resolves relationship ids / `text:a` hrefs down to this
     /// string; this sprint only carries the field through to rendering.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub link: Option<SwiftString>,
     // swift: Render/Office/OfficeBlock.swift:35
     pub strikethrough: bool,
@@ -80,15 +81,18 @@ pub struct Span {
     /// are indistinguishable from an exponent's. Becomes `MDAttr.footnote_ref` on the built text.
     /// `nil` on every other run, including an ENDNOTE's marker: an endnote stays in the body flow
     /// and nothing needs to go looking for it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub footnote_ref: Option<i64>,
     // swift: Render/Office/OfficeBlock.swift:43-45
     /// A form control the document embedded — a checkbox, a radio button, a button, a field.
     /// `nil` on every ordinary run.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub form_control: Option<super::office_block::OfficeFormControl>,
     // swift: Render/Office/OfficeBlock.swift:46-49
     /// Where the document switches how many columns its text flows through, carried on the run the
     /// declaration sits at. A declaration is a POSITION, not a property of a section: HWP puts it in
     /// the text, so one document can go to two columns and back. Becomes `MDAttr.column_layout`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub column_layout: Option<crate::render::office::column_geometry::OfficeColumnLayout>,
     // swift: Render/Office/OfficeBlock.swift:50-53
     /// Named `subscripted`, not `subscript` — that spelling is a Swift keyword and would need
@@ -132,6 +136,7 @@ pub struct Span {
     /// change to receive it). `nil` is NOT "black" — `OfficeTextBuilder` decides what an unset (or,
     /// per its own judgement call, a near-neutral authored) colour renders as; see its
     /// `resolvedTextColor`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub text_color: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:88-93
     /// The run's highlighter/background colour (docx `w:highlight`/`w:shd`, odt
@@ -139,6 +144,7 @@ pub struct Span {
     /// never reinterpreted against the reading theme: painting a background behind text is already
     /// an unambiguous, deliberate mark (there's no "ordinary black highlight" the way there's
     /// "ordinary black body text"), so it is always drawn exactly as authored.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub highlight_color: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:94-104
     /// The run's LETTER SPACING as a percentage of its own em (HWP `CharShape.spacings`, 자간, −50…50;
@@ -151,19 +157,23 @@ pub struct Span {
     /// document's seven slots agree, which they do in 95.9% of the 52,451 real char shapes that
     /// state it at all. A shape whose slots disagree carries nothing rather than one script's answer
     /// applied to all of them.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub letter_spacing_percent: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:105-108
     /// The run's baseline shift as a percentage of its own em (HWP `CharShape.char_offsets`, 글자
     /// 위치), positive being UP. Distinct from `superscript`/`subscripted`, which also resize.
     /// Filled under the same all-slots-agree rule as `letter_spacing_percent` (99.7% agree).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub baseline_offset_percent: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:109-111
     /// The colour of this run's UNDERLINE, when the document states one distinct from the text
     /// (HWP `CharShape.underline_color`, docx `w:u/@w:color`). `nil` = the underline takes the
     /// text's own colour, which is what every underline did before this existed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub underline_color: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:113-114
     /// The colour of this run's STRIKETHROUGH, same rule as `underline_color`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub strikethrough_color: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:115-123
     /// The run's authored font size, in POINTS — a reader converts from its own source unit before
@@ -174,6 +184,7 @@ pub struct Span {
     /// between the user's chosen reading size and the document's own default body size, so a
     /// heading stays proportionally larger than body text at ANY reading size, and the reading-size
     /// setting still governs how big the whole document looks).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub font_size: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:124-130
     /// The run's authored font FAMILY name (docx `w:rFonts/@w:ascii`, odt `style:font-name`) —
@@ -182,6 +193,7 @@ pub struct Span {
     /// consistent monospaced look across the whole app (see `Palette`'s "one deliberate spot of
     /// color" reasoning) — letting an authored family override it would make some code spans
     /// inconsistent with others for no reason a reader would understand.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub font_name: Option<SwiftString>,
     // swift: Render/Office/OfficeBlock.swift:131-167
     /// The SUBSTITUTE font's `NSFontDescriptor`, resolved ONCE at read time by
@@ -242,6 +254,7 @@ pub struct Span {
     /// would smear the substitutable text into literal characters that must never be replaced (the
     /// dashes around a page number, say), which is exactly the boundary a live substitution needs
     /// intact.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_number_field: Option<PageNumberField>,
 }
 
@@ -349,6 +362,7 @@ pub struct Cell {
     /// `Palette.tableHeaderBg` for a header row exactly as it did before this field existed (an
     /// explicit `background_color` on a HEADER cell overrides that theme shading; on a body cell it
     /// is the only shading there is).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub background_color: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:225-231
     /// The cell's own PICTURE fill, already decoded. HWP is the only format here that fills a cell
@@ -371,12 +385,15 @@ pub struct Cell {
     /// scope — both readers' input formats can express far more than this vocabulary carries yet,
     /// and one uniform colour/width already covers the measured "borders" need without inventing
     /// four fields no parser fills in this sprint.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub border_color: Option<NSColor>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub border_width: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:241-244
     /// The cell's own FOUR edges when the document declared them individually (docx `w:tcBorders`).
     /// Takes precedence over `border_color`/`border_width`, which stay as the uniform model every other
     /// format and markdown still use. `nil` = this cell said nothing per-edge → unchanged behaviour.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edge_borders: Option<EdgeBorders>,
     // swift: Render/Office/OfficeBlock.swift:245-251
     /// The cell's own declared column width in POINTS (docx `w:tcPr/w:tcW`, converted from twips;
@@ -385,6 +402,7 @@ pub struct Cell {
     /// as before this field existed. Set on the grid's anchor cells; a merged cell's covered
     /// positions have no `Cell` of their own to carry a width at all (see `OfficeBlock.table`'s doc
     /// comment on anchor-only rows).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub width: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:252-258
     /// The cell's own vertical alignment (docx `w:tcPr/w:vAlign/@w:val` — `top`/`center`/`bottom`;
@@ -393,6 +411,7 @@ pub struct Cell {
     /// vertical alignment untouched rather than setting it explicitly. `CellVAlign` is a closed
     /// three-case vocabulary rather than reusing `NSTextBlock.VerticalAlignment` directly so the
     /// reader stays free of AppKit's own `.baseline` case, which no source format expresses.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub vertical_alignment: Option<CellVAlign>,
     // swift: Render/Office/OfficeBlock.swift:259-271
     /// The cell's own resolved cell margin/padding, in POINTS, ALREADY resolved by the reader
@@ -407,6 +426,7 @@ pub struct Cell {
     /// `edge_padding` below instead, where four independent edges genuinely matter (Word's own stock
     /// `w:tblCellMar` default is `top=bottom=0, left=right=5.4pt`, and smearing that 5.4pt onto top
     /// and bottom is exactly the "표가 너무 큼" defect this field's sibling exists to fix).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub padding: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:272-283
     /// The cell's own FOUR edges of padding/inset, independently — docx `w:tcPr/w:tcMar` (this
@@ -420,6 +440,7 @@ pub struct Cell {
     /// (`TableBlockBuilder.build`'s own per-edge resolution); the non-paged model keeps using the
     /// single `padding` value above, unaffected — this field did not exist before it, so a
     /// non-paged document renders byte-identical whether or not its reader populates this.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edge_padding: Option<EdgePadding>,
     // swift: Render/Office/OfficeBlock.swift:284-289
     /// The cell's own DIAGONAL, when the document drew one across it. `nil` = no diagonal, which is
@@ -427,6 +448,7 @@ pub struct Cell {
     /// whether a declaration IS a drawn diagonal is made by the parser (`BorderFill::cell_diagonal`),
     /// never re-derived here. Two thirds of the raw declarations are not diagonals at all, so a
     /// reader that judged them itself would rule lines across cells the document left plain.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub diagonal: Option<CellDiagonal>,
     // swift: Render/Office/OfficeBlock.swift:291-298
     /// The cell's shading RESOLVED from the table's named STYLE (docx `w:tbl/w:tblPr/w:tblStyle`
@@ -436,11 +458,14 @@ pub struct Cell {
     /// (this cell's own direct `w:tcPr/w:shd`) and the table's own DIRECT default
     /// (`TableFormat.default_shading`): `TableBlockBuilder` only falls to this when both of those
     /// are `nil`, and falls further still to the header theme colour when this is `nil` too.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub style_shading: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:299-301
     /// The cell's border colour/width RESOLVED from the table's named STYLE, mirroring
     /// `style_shading`'s doc — same lower-priority layer, same position-conditional resolution.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub style_border_color: Option<NSColor>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub style_border_width: Option<CGFloat>,
 }
 
@@ -646,6 +671,7 @@ pub enum CellDiagonalDirection {
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BorderSide {
     pub width: CGFloat,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub color: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:390-395
     /// How the rule is DRAWN. All three office formats state this and all three used to drop it, so a
@@ -714,13 +740,19 @@ pub enum BorderDecl {
 /// perturbed the content width, since that subtracts the border twice.
 #[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct EdgeBorders {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub top: Option<BorderDecl>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub left: Option<BorderDecl>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub bottom: Option<BorderDecl>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub right: Option<BorderDecl>,
     // swift: Render/Office/OfficeBlock.swift:441-442
     /// Table-level only: the horizontal/vertical edges BETWEEN cells.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub inside_h: Option<BorderDecl>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub inside_v: Option<BorderDecl>,
 }
 
@@ -764,9 +796,13 @@ impl EdgeBorders {
 /// for why the non-paged (window-filling) model keeps its separate, single-value `Cell.padding`.
 #[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct EdgePadding {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub top: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub left: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub bottom: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub right: Option<CGFloat>,
 }
 
@@ -796,8 +832,11 @@ impl OfficeBlock {
 // swift: Render/Office/OfficeBlock.swift:500-572
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct TableFormat {
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub default_border_color: Option<NSColor>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub default_border_width: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub default_shading: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:504-508
     /// The TABLE's own picture fill, painted once across the whole grid rather than repeated per
@@ -827,12 +866,14 @@ pub struct TableFormat {
     /// the reading column, never wider) rather than stretched to fill it — `TableBlockBuilder`'s own
     /// `GridTextTable.maxWidth`. `nil` (every markdown table, and any office table whose grid total
     /// wasn't readable) leaves a paged table exactly as before this second use — filling the column.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source_width: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:526-530
     /// The table's own declared edges, INCLUDING the interior ones (`w:tblBorders`' `w:inside_h`/
     /// `w:inside_v`). A cell inherits the outer edge when it sits on that side of the table and the
     /// interior edge when it does not — the position test lives in `TableBlockBuilder`, which is the
     /// only place that knows where a cell sits in the grid.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edge_borders: Option<EdgeBorders>,
     // swift: Render/Office/OfficeBlock.swift:531-538
     /// The table's own default cell margin/padding per edge (docx `w:tblPr/w:tblCellMar`; ODT has no
@@ -842,6 +883,7 @@ pub struct TableFormat {
     /// `default_padding`) means the table said nothing about that edge either, and the PAGED
     /// resolution falls through to `TableBlockBuilder.defaultCellPadding`. Consulted ONLY by the
     /// PAGED model — see `Cell.edge_padding`'s own doc.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub default_padding: Option<EdgePadding>,
     // swift: Render/Office/OfficeBlock.swift:539-544
     /// Whether the AUTHOR asked for the heading rows to be reprinted on every page the table runs
@@ -849,11 +891,13 @@ pub struct TableFormat {
     /// `OfficeBlock.table`'s `header_rows`, which says only WHICH rows are the heading: a table can
     /// have a heading and not ask for it to repeat, and reprinting it then invents a row the
     /// document never put there. `nil` = the source said nothing.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub repeat_header_rows: Option<bool>,
     // swift: Render/Office/OfficeBlock.swift:545-548
     /// Where the DOCUMENT allows this table to be split when it reaches the foot of a page — HWP's
     /// own three-way answer (`Table.page_break`), whose docx cousin is `w:trPr/w:cantSplit` on each
     /// row. `nil` = the source said nothing, and the reader's own policy stands (invariant 92).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_break_policy: Option<TablePageBreakPolicy>,
     // swift: Render/Office/OfficeBlock.swift:549-571
     /// The gap between the TABLE OBJECT ITSELF and what surrounds it — HWP's own
@@ -878,6 +922,7 @@ pub struct TableFormat {
     /// built to absorb a margin there. This is the same shape invariant 97 already names for six of
     /// a char shape's sixteen decorations: carried on the model because the source declares it and a
     /// future reader may need it, deliberately not drawn because the one place that tried is unsafe.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub outer_margin: Option<EdgePadding>,
 }
 
@@ -1032,12 +1077,16 @@ pub struct ParagraphFormat {
     ///
     /// This is the gap between the MARKER and the TEXT, not the item's indent: how far the whole
     /// item sits from the margin is `indent_start`, which the reader already honours.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub list_text_distance: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub spacing_before: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub spacing_after: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:669-671
     /// The paragraph's line-spacing mode — see `LineHeight` above. `nil` leaves whatever line
     /// height the builder already computes (typically driven by font size) untouched.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub line_height: Option<LineHeight>,
     // swift: Render/Office/OfficeBlock.swift:672-679
     /// Indentation from the text block's start/end edge (docx `w:pPr/w:ind/@w:start`(or `@w:left`)/
@@ -1048,9 +1097,13 @@ pub struct ParagraphFormat {
     /// mutually-exclusive pair). All four in POINTS. Named after the SOURCE spec's own attributes
     /// deliberately — mapping `start`/`end` (which flip with `rtl`) onto `NSParagraphStyle`'s
     /// physical `firstLineHeadIndent`/`headIndent` is P2's job, not this struct's.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub indent_start: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub indent_end: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub first_line_indent: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub hanging_indent: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:684-689
     /// docx `w:pPr/w:contextual_spacing` (a toggle, read the same on/off way as `Span.rtl` — see
@@ -1064,6 +1117,7 @@ pub struct ParagraphFormat {
     /// `fo:background-color`) — `nil` means unshaded, exactly as every paragraph renders today.
     /// Mirrors `Cell.background_color`'s naming/semantics one level up, for the same reason: a
     /// paragraph can carry its own fill independent of any table it might sit inside.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub shading: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:695-699
     /// The paragraph's border box (docx `w:pPr/w:pBdr`, odt paragraph-style `fo:border`) — one
@@ -1071,7 +1125,9 @@ pub struct ParagraphFormat {
     /// its documented reasoning: a real per-edge border (top/bottom/left/right independently) is
     /// out of scope for the same reason it is on `Cell` — both source formats can express far more
     /// than this vocabulary carries, and one uniform colour/width already covers the measured need.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub border_color: Option<NSColor>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub border_width: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:702-712
     /// WHICH of the four edges the document actually declared — `[.top, .bottom]` for a rule above
@@ -1091,22 +1147,27 @@ pub struct ParagraphFormat {
     /// docx's nearest spelling is `w:pPr/w:kinsoku`, which governs the same question from the other
     /// side). `nil` = the source said nothing, and the reader's own line-breaking default stands —
     /// which is what every document did before this field existed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub east_asian_line_break: Option<LineBreakGranularity>,
     // swift: Render/Office/OfficeBlock.swift:719-722
     /// The same question for a stretch of Latin text (HWP attr1 bits 5-6; docx `w:pPr/w:wordWrap`,
     /// whose `w:val="0"` is this vocabulary's `.character`). `.hyphen` is HWP's middle setting:
     /// break at a word boundary, and additionally at a hyphen already in the word.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub latin_line_break: Option<LineBreakGranularity>,
     // swift: Render/Office/OfficeBlock.swift:723-726
     /// Whether the document itself widens the seam where East Asian text meets Latin letters
     /// (docx `w:pPr/w:autoSpaceDE`, HWP attr1 bit 20 / attr2 bit 4) or digits (`w:autoSpaceDN`,
     /// attr1 bit 21 / attr2 bit 5). `nil` = unstated.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub auto_space_east_asian_latin: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub auto_space_east_asian_number: Option<bool>,
     // swift: Render/Office/OfficeBlock.swift:728-731
     /// Whether the line's height is taken from the FONT's own metrics rather than from the
     /// character size the paragraph declares (HWP attr1 bit 22 — 글꼴에 어울리는 줄 높이).
     /// `nil` = unstated.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub line_height_from_font_metrics: Option<bool>,
 }
 
@@ -1264,6 +1325,7 @@ pub enum OfficeBlock {
         level: i64,
         spans: Vec<Span>,
         rtl: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         alignment: Option<NSTextAlignment>,
         tab_stops: Vec<TabStop>,
         format: ParagraphFormat,
@@ -1272,6 +1334,7 @@ pub enum OfficeBlock {
     Paragraph {
         spans: Vec<Span>,
         rtl: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         alignment: Option<NSTextAlignment>,
         tab_stops: Vec<TabStop>,
         format: ParagraphFormat,
@@ -1307,11 +1370,14 @@ pub enum OfficeBlock {
         level: i64,
         ordered: bool,
         spans: Vec<Span>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         marker: Option<SwiftString>,
         rtl: bool,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         alignment: Option<NSTextAlignment>,
         tab_stops: Vec<TabStop>,
         format: ParagraphFormat,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         numbering: Option<ListNumbering>,
     },
     // swift: Render/Office/OfficeBlock.swift:819-844
@@ -1400,7 +1466,9 @@ pub enum OfficeBlock {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeComment {
     pub id: SwiftString,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub author: Option<SwiftString>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub date_iso: Option<SwiftString>,
     pub text: SwiftString,
     pub number: i64,
@@ -1453,6 +1521,7 @@ pub struct OfficeHeaderFooter {
     /// can be placed in a section (`OfficeReadResult.section_start_blocks`) the entries are all kept
     /// and chosen per page instead of filtered down to one section's. `nil` = the format did not
     /// say (docx, odt), and the entry then applies wherever its parity does, exactly as before.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub section: Option<i64>,
 }
 
@@ -1478,6 +1547,7 @@ pub struct OfficeFootnote {
     /// WHICH SECTION declared it, for the format that says so (HWP) — a footnote's numbering and
     /// separator are section-level declarations, so a host that flattened the document into one
     /// flow would otherwise have no way back to them. `nil` = the format did not say.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub section: Option<i64>,
 }
 
@@ -1604,6 +1674,7 @@ pub struct ListNumbering {
     pub glyphs: ListNumberingGlyphs,
     // swift: Render/Office/OfficeBlock.swift:1057
     /// The level's first number when the author set one other than 1.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub start_number: Option<i64>,
 }
 
@@ -1727,9 +1798,11 @@ pub struct OfficePageBorder {
     /// resolution a cell's border gets, in the same vocabulary. Resolved here rather than carried as
     /// an id because the table itself does not outlive the read: it is folded into the blocks and
     /// dropped, so an id kept for later would point at nothing when the page is painted.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub borders: Option<EdgeBorders>,
     // swift: Render/Office/OfficeBlock.swift:1114-1115
     /// The page's own background colour, when the same fill declares one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub background: Option<NSColor>,
     pub spacing: NSEdgeInsets,
     // swift: Render/Office/OfficeBlock.swift:1117-1119
@@ -1788,10 +1861,12 @@ pub struct OfficeFootnoteSeparator {
     /// way a cell diagonal's is resolved (`HwpReader.diagonalWidthPt`), so a separator and a border
     /// drawn from the same step cannot come out different weights.
     pub line_width_pt: CGFloat,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub color: Option<NSColor>,
     // swift: Render/Office/OfficeBlock.swift:1157-1158
     /// How long the rule is. The format's own "full width" sentinel is far outside any real page, so
     /// a value that exceeds the column is read as "all of it" rather than clamped silently.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub length_pt: Option<CGFloat>,
     pub margin_top_pt: CGFloat,
     pub margin_bottom_pt: CGFloat,
@@ -1835,15 +1910,18 @@ pub struct OfficeSectionDeclaration {
     // swift: Render/Office/OfficeBlock.swift:1174-1176
     /// The rule above this section's footnotes — see `OfficeFootnoteSeparator`. `nil` for every
     /// format but HWP, and for an HWP section that declared none.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub footnote_separator: Option<OfficeFootnoteSeparator>,
     // swift: Render/Office/OfficeBlock.swift:1177
     /// The frame this section rules around its page, when it declares one. CARRIED, NOT YET PAINTED.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_border: Option<OfficePageBorder>,
     // swift: Render/Office/OfficeBlock.swift:1179-1183
     /// The sheet THIS section declared. `nil` = the section stated no page of its own, and the
     /// document's own geometry is the answer. HWP defines a page per section and this reader used to
     /// keep only the busiest one (invariant 73), which typeset a 612pt appendix page on the body's
     /// 555pt sheet.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub paper: Option<PaperGeometry>,
     // swift: Render/Office/OfficeBlock.swift:1184-1187
     /// The section turned its own running header / footer / master page off. A veto, not a
@@ -1854,9 +1932,11 @@ pub struct OfficeSectionDeclaration {
     // swift: Render/Office/OfficeBlock.swift:1189-1191
     /// The page number this section restarts at, when it declares one (a chapter that begins at 1
     /// again). `nil` = continue from the previous section.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_number_start: Option<i64>,
     // swift: Render/Office/OfficeBlock.swift:1192-1193
     /// The 원고지-style fixed line pitch in points, when the section is written on a grid.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub line_grid_pitch: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:1194-1197
     /// The section is set VERTICALLY. Recorded, not honoured: this reader lays text out
@@ -1990,6 +2070,7 @@ pub struct OfficeReadResult {
     /// sources it from its own format: HWP from rhwp's `PageDef` (landscape swaps width/height), docx
     /// from the body `w:sectPr`'s `w:pgSz`/`w:pgMar` (twips), odt from `styles.xml`'s
     /// `style:page-layout-properties` (`fo:page-width`/`fo:margin-*`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_content_width: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:1288-1301
     /// The page's own LEFT and RIGHT margins in points — the white space either side of
@@ -2005,7 +2086,9 @@ pub struct OfficeReadResult {
     /// differently (a bound report with a wide gutter), and the difference is visible: the text sits
     /// off-centre on the sheet exactly as the author placed it. `nil` for either = the reader did not
     /// find one, and the view falls back to its own margin, unchanged.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_margin_left: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_margin_right: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:1304-1316
     /// The document's page BODY height in points — the printable row span between the top and bottom
@@ -2020,6 +2103,7 @@ pub struct OfficeReadResult {
     /// rhwp's `PageAreas` (paper height − top/bottom margins, landscape-swapped), docx from the body
     /// `w:sectPr`'s `w:pgSz@w:h`/`w:pgMar@w:top`/`@w:bottom` (twips), odt from `styles.xml`'s
     /// `fo:page-height`/`fo:margin-top`/`fo:margin-bottom`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_content_height: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:1318-1325
     /// The page's own TOP and BOTTOM margins in points — the vertical twins of `page_margin_left`/
@@ -2028,7 +2112,9 @@ pub struct OfficeReadResult {
     /// values, not one symmetric inset, for the same reason the horizontal pair is: a document may
     /// set them differently (running headers eat more of the top margin than the bottom), and a
     /// consumer reproducing the sheet needs to know which is which.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_margin_top: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_margin_bottom: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:1326-1340
     /// How far a running HEADER sits from the paper's own TOP edge, and the FOOTER from its BOTTOM
@@ -2045,7 +2131,9 @@ pub struct OfficeReadResult {
     ///
     /// `nil` = the format did not say (every ODT and HWP document today), and the band falls back to
     /// the halves it used before these existed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_header_distance: Option<CGFloat>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub page_footer_distance: Option<CGFloat>,
     // swift: Render/Office/OfficeBlock.swift:1343-1349
     /// Running headers/footers this document declares (header-footer-design.md step 2) — read-only
@@ -2147,6 +2235,7 @@ pub struct OfficeReadResult {
     /// byte-identical (invariant 37): the paged branch falls back to the natural line height it uses
     /// today. It is a FLOOR, never a ceiling — a paragraph that states its own larger spacing keeps
     /// it, exactly as Word does.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub line_grid_pitch: Option<CGFloat>,
 }
 

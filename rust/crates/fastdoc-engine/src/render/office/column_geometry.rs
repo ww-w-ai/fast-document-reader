@@ -40,6 +40,7 @@ pub struct OfficeColumnLayout {
     /// say. The other 56 (38%) do draw one.
     pub separator_type: i64,
     pub separator_width_pt: CGFloat,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub separator_color: Option<NSColor>,
 }
 

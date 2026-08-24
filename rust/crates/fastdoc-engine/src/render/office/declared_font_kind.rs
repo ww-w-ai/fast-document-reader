@@ -205,6 +205,7 @@ pub struct DeclaredFace {
     /// Hancom Office (invariant 95). It is tried first anyway, because a substitute the document chose
     /// outranks one this reader inferred, and on a machine that HAS those fonts it fires.
     // swift: Render/Office/DeclaredFontKind.swift:137-141
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub nominated_substitute: Option<String>,
     /// The document carries the face's own bytes. Two documents in 1,589 do.
     // swift: Render/Office/DeclaredFontKind.swift:142-143
@@ -215,6 +216,7 @@ pub struct DeclaredFace {
     /// and the stated answer wins. `nil` means the document said nothing, which is not the same as a
     /// block of zeroes (PANOSE zero means "any", a real declaration).
     // swift: Render/Office/DeclaredFontKind.swift:144-150
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub type_info: Option<Vec<u8>>,
 }
 
