@@ -47,6 +47,19 @@ all_string_enums! {
     LineBreakKind { Soft => "soft", Hard => "hard" },
     DiagramLanguage { Mermaid => "mermaid", Other => "other" },
     FormControlKind { CheckBox => "checkBox", RadioButton => "radioButton", PushButton => "pushButton", ComboBox => "comboBox", Edit => "edit", ListBox => "listBox", ScrollBar => "scrollBar", Unknown => "unknown" },
+    VerticalPosition { Normal => "normal", Superscript => "superscript", Subscript => "subscript" },
+    PageNumberField { Page => "page", NumPages => "numPages" },
+    TabAlignment { Left => "left", Center => "center", Right => "right", Decimal => "decimal" },
+    TabLeader { None => "none", Dot => "dot", Hyphen => "hyphen", Underscore => "underscore" },
+    LineBreakGranularity { Word => "word", Hyphen => "hyphen", Character => "character" },
+    ListNumberingGlyphs { Decimal => "decimal", CircledDecimal => "circledDecimal", RomanUpper => "romanUpper", RomanLower => "romanLower", LatinUpper => "latinUpper", LatinLower => "latinLower", HangulSyllable => "hangulSyllable", HangulNumber => "hangulNumber", HanjaNumber => "hanjaNumber" },
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for VerticalPosition {
+    fn default() -> Self {
+        Self::Normal
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -244,6 +257,18 @@ pub struct CharacterStyle {
     #[serde(default)]
     pub underline: Option<UnderlineStyle>,
     #[serde(default)]
+    pub vertical_position: VerticalPosition,
+    #[serde(default)]
+    pub letter_spacing_percent: Option<f64>,
+    #[serde(default)]
+    pub baseline_offset_percent: Option<f64>,
+    #[serde(default)]
+    pub underline_color: Option<Color>,
+    #[serde(default)]
+    pub strikethrough_color: Option<Color>,
+    #[serde(default)]
+    pub declared_font_name: Option<String>,
+    #[serde(default)]
     pub font_families: Vec<String>,
     #[serde(default)]
     pub font_size_points: Option<f64>,
@@ -286,6 +311,22 @@ pub struct ParagraphStyle {
     pub shading: Option<Color>,
     #[serde(default)]
     pub columns: Option<Columns>,
+    #[serde(default)]
+    pub list_text_distance: Option<f64>,
+    #[serde(default)]
+    pub hanging_indent: Option<f64>,
+    #[serde(default)]
+    pub contextual_spacing: bool,
+    #[serde(default)]
+    pub east_asian_line_break: Option<LineBreakGranularity>,
+    #[serde(default)]
+    pub latin_line_break: Option<LineBreakGranularity>,
+    #[serde(default)]
+    pub auto_space_east_asian_latin: Option<bool>,
+    #[serde(default)]
+    pub auto_space_east_asian_number: Option<bool>,
+    #[serde(default)]
+    pub line_height_from_font_metrics: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -334,9 +375,11 @@ pub struct Section {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Heading {
-    pub level: u8,
+    pub level: i64,
     #[serde(default)]
     pub style: ParagraphStyle,
+    #[serde(default)]
+    pub tab_stops: Vec<TabStop>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -344,7 +387,7 @@ pub struct Paragraph {
     #[serde(default)]
     pub style: ParagraphStyle,
     #[serde(default)]
-    pub tab_stops: Vec<f64>,
+    pub tab_stops: Vec<TabStop>,
     #[serde(default)]
     pub keep_with_next: bool,
     #[serde(default)]
@@ -372,6 +415,12 @@ pub struct TextRun {
     pub comment_ids: Vec<u64>,
     #[serde(default)]
     pub field: Option<Field>,
+    #[serde(default)]
+    pub footnote_reference_number: Option<i64>,
+    #[serde(default)]
+    pub form_control: Option<InlineFormControl>,
+    #[serde(default)]
+    pub page_number_field: Option<PageNumberField>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -388,13 +437,9 @@ pub struct CodeBlock {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Numbering {
-    pub format: String,
+    pub glyphs: ListNumberingGlyphs,
     #[serde(default)]
-    pub start: i64,
-    #[serde(default)]
-    pub prefix: String,
-    #[serde(default)]
-    pub suffix: String,
+    pub start_number: Option<i64>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -405,9 +450,31 @@ pub struct List {
 #[serde(rename_all = "camelCase")]
 pub struct ListItem {
     pub level: u32,
-    pub ordinal: Option<i64>,
+    pub ordered: bool,
     pub marker: Option<String>,
-    pub numbering: Numbering,
+    pub numbering: Option<Numbering>,
+    #[serde(default)]
+    pub style: ParagraphStyle,
+    #[serde(default)]
+    pub tab_stops: Vec<TabStop>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabStop {
+    pub position_points: f64,
+    pub alignment: TabAlignment,
+    pub leader: TabLeader,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InlineFormControl {
+    pub kind: FormControlKind,
+    pub caption: String,
+    pub text: String,
+    pub value: i64,
+    pub enabled: bool,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

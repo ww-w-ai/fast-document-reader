@@ -8,6 +8,7 @@
 //! backend-neutral hierarchy principle. Its flat ID graph, all-format payloads, checked wire model,
 //! source/edit authority, and immutable canonical owner are FastDoc-specific divergences.
 
+mod office_accounting;
 mod validate;
 // Internal producers (S2A2/S3) may construct unchecked wire drafts, but no downstream crate can.
 pub(crate) mod wire;
@@ -16,12 +17,14 @@ pub use wire::{
     Affinity, Alignment, Annotations as RenderAnnotationsDraft, Bookmark, CharacterStyle,
     CodeBlock, Color, Columns, Comment, Diagram, DiagramLanguage, Direction,
     Document as RenderDocumentDraft, DocumentFormat, Edge, EdgeSet, EditMetadata, EditOperation,
-    Empty, Field, Footnote, FormControl, FormControlKind, Formula, Heading, Image, Insets,
-    LineBreak, LineBreakKind, LineHeight, List, ListItem, Node as RenderNodeDraft, NodePayload,
-    Numbering, PageNumbering, Paper, Paragraph, ParagraphStyle, PathCommand, RangeSegment, RawHtml,
-    Resource as RenderResourceDraft, Section, Size, SourceDescriptor as RenderSourceDraft,
-    SourceKind, SourceSpan, SpanPurpose, Table, TableCell, TableRow, TaskListItem, TextRun,
-    UnderlineStyle, Unsupported, Vector, VerticalAlignment,
+    Empty, Field, Footnote, FormControl, FormControlKind, Formula, Heading, Image,
+    InlineFormControl, Insets, LineBreak, LineBreakGranularity, LineBreakKind, LineHeight, List,
+    ListItem, ListNumberingGlyphs, Node as RenderNodeDraft, NodePayload, Numbering,
+    PageNumberField, PageNumbering, Paper, Paragraph, ParagraphStyle, PathCommand, RangeSegment,
+    RawHtml, Resource as RenderResourceDraft, Section, Size, SourceDescriptor as RenderSourceDraft,
+    SourceKind, SourceSpan, SpanPurpose, TabAlignment, TabLeader, TabStop, Table, TableCell,
+    TableRow, TaskListItem, TextRun, UnderlineStyle, Unsupported, Vector, VerticalAlignment,
+    VerticalPosition,
 };
 
 /// A semantic RenderTree whose complete wire graph has passed canonical validation.
@@ -98,6 +101,59 @@ mod tests {
     #[test]
     fn every_macro_authoritative_enum_value_round_trips() {
         wire::assert_all_enum_round_trips();
+    }
+
+    fn fixture() -> wire::EnvelopeV1 {
+        serde_json::from_slice(include_bytes!(
+            "../../../tests/fixtures/render-tree-v1-exhaustive.json"
+        ))
+        .unwrap()
+    }
+
+    fn assert_invariant(wire: wire::EnvelopeV1, expected: &str) {
+        let error = super::ValidatedRenderTree::try_from_wire(wire).unwrap_err();
+        assert!(
+            error.detail().contains(expected),
+            "expected {expected:?}, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn typed_non_finite_s2a1b_metrics_reach_their_validator_branches() {
+        let mut letter = fixture();
+        let wire::NodePayload::TextRun(run) = &mut letter.nodes[5].payload else {
+            unreachable!()
+        };
+        run.style.letter_spacing_percent = Some(f64::NAN);
+        assert_invariant(letter, "character metric is invalid");
+
+        let mut baseline = fixture();
+        let wire::NodePayload::TextRun(run) = &mut baseline.nodes[5].payload else {
+            unreachable!()
+        };
+        run.style.baseline_offset_percent = Some(f64::INFINITY);
+        assert_invariant(baseline, "character metric is invalid");
+
+        let mut list_distance = fixture();
+        let wire::NodePayload::Paragraph(paragraph) = &mut list_distance.nodes[4].payload else {
+            unreachable!()
+        };
+        paragraph.style.list_text_distance = Some(f64::NAN);
+        assert_invariant(list_distance, "paragraph metric is invalid");
+
+        let mut hanging = fixture();
+        let wire::NodePayload::Paragraph(paragraph) = &mut hanging.nodes[4].payload else {
+            unreachable!()
+        };
+        paragraph.style.hanging_indent = Some(f64::NEG_INFINITY);
+        assert_invariant(hanging, "paragraph metric is invalid");
+
+        let mut tab = fixture();
+        let wire::NodePayload::Paragraph(paragraph) = &mut tab.nodes[4].payload else {
+            unreachable!()
+        };
+        paragraph.tab_stops[0].position_points = f64::NAN;
+        assert_invariant(tab, "tab stops are not finite strictly increasing");
     }
 }
 

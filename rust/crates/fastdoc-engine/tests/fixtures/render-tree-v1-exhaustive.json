@@ -135,7 +135,8 @@
         "style": {
           "alignment": "left",
           "direction": "leftToRight"
-        }
+        },
+        "tabStops": [{ "positionPoints": 18, "alignment": "center", "leader": "hyphen" }]
       }
     },
     {
@@ -150,6 +151,9 @@
           "firstLineIndent": 12,
           "headIndent": 0,
           "tailIndent": 0,
+          "listTextDistance": 8,
+          "hangingIndent": 4,
+          "contextualSpacing": true,
           "spacingBefore": 2,
           "spacingAfter": 3,
           "lineHeight": {
@@ -176,10 +180,15 @@
             "count": 1,
             "widths": [],
             "gaps": []
-          }
+          },
+          "eastAsianLineBreak": "character",
+          "latinLineBreak": "word",
+          "autoSpaceEastAsianLatin": true,
+          "autoSpaceEastAsianNumber": false,
+          "lineHeightFromFontMetrics": true
         },
         "tabStops": [
-          36
+          { "positionPoints": 36, "alignment": "decimal", "leader": "dot" }
         ],
         "keepWithNext": true,
         "pageBreakBefore": false
@@ -222,6 +231,12 @@
           "caps": true,
           "smallCaps": true,
           "underline": "wavy",
+          "verticalPosition": "superscript",
+          "letterSpacingPercent": -5,
+          "baselineOffsetPercent": 10,
+          "underlineColor": { "red": 0, "green": 0, "blue": 1, "alpha": 1 },
+          "strikethroughColor": { "red": 1, "green": 0, "blue": 0, "alpha": 1 },
+          "declaredFontName": "Test Sans",
           "fontFamilies": [
             "Test Sans"
           ],
@@ -256,7 +271,10 @@
         "field": {
           "kind": "date",
           "value": "2026-08-24"
-        }
+        },
+        "footnoteReferenceNumber": 1,
+        "formControl": { "kind": "checkBox", "caption": "Inline", "text": "", "value": 1, "enabled": true },
+        "pageNumberField": "page"
       }
     },
     {
@@ -300,10 +318,8 @@
       "type": "list",
       "data": {
         "numbering": {
-          "format": "decimal",
-          "start": 1,
-          "prefix": "",
-          "suffix": "."
+          "glyphs": "decimal",
+          "startNumber": 1
         }
       }
     },
@@ -314,14 +330,14 @@
       "type": "listItem",
       "data": {
         "level": 1,
-        "ordinal": 1,
+        "ordered": true,
         "marker": "1.",
         "numbering": {
-          "format": "decimal",
-          "start": 1,
-          "prefix": "",
-          "suffix": "."
-        }
+          "glyphs": "circledDecimal",
+          "startNumber": 0
+        },
+        "style": { "eastAsianLineBreak": "hyphen", "contextualSpacing": true },
+        "tabStops": [{ "positionPoints": 24, "alignment": "right", "leader": "underscore" }]
       }
     },
     {

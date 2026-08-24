@@ -79,6 +79,24 @@ fn every_macro_enum_value_is_exercised_by_a_checked_fixture_variant() {
                 "LineBreakKind" => fixture["nodes"][6]["data"]["kind"] = (*value).into(),
                 "DiagramLanguage" => fixture["nodes"][19]["data"]["language"] = (*value).into(),
                 "FormControlKind" => fixture["nodes"][24]["data"]["kind"] = (*value).into(),
+                "VerticalPosition" => {
+                    fixture["nodes"][5]["data"]["style"]["verticalPosition"] = (*value).into()
+                }
+                "PageNumberField" => {
+                    fixture["nodes"][5]["data"]["pageNumberField"] = (*value).into()
+                }
+                "TabAlignment" => {
+                    fixture["nodes"][4]["data"]["tabStops"][0]["alignment"] = (*value).into()
+                }
+                "TabLeader" => {
+                    fixture["nodes"][4]["data"]["tabStops"][0]["leader"] = (*value).into()
+                }
+                "LineBreakGranularity" => {
+                    fixture["nodes"][11]["data"]["style"]["eastAsianLineBreak"] = (*value).into()
+                }
+                "ListNumberingGlyphs" => {
+                    fixture["nodes"][10]["data"]["numbering"]["glyphs"] = (*value).into()
+                }
                 other => panic!("enum catalog has no checked fixture route: {other}"),
             }
             decode_value(&fixture).unwrap_or_else(|error| panic!("{name}::{value}: {error:?}"));
@@ -142,6 +160,68 @@ fn additive_fields_are_tolerated_but_unknown_tags_and_versions_are_not() {
         decode_value(&version),
         Err(DecodeError::Schema(_))
     ));
+}
+
+#[test]
+fn pre_consumer_old_tabs_and_numbering_are_rejected_while_office_values_are_preserved() {
+    let mut scalar_tab = exhaustive_value();
+    scalar_tab["nodes"][4]["data"]["tabStops"] = serde_json::json!([36]);
+    assert!(matches!(
+        decode_value(&scalar_tab),
+        Err(DecodeError::Syntax(_))
+    ));
+
+    let mut free_form_numbering = exhaustive_value();
+    free_form_numbering["nodes"][10]["data"]["numbering"] =
+        serde_json::json!({"format":"decimal","start":1,"prefix":"","suffix":"."});
+    assert!(matches!(
+        decode_value(&free_form_numbering),
+        Err(DecodeError::Syntax(_))
+    ));
+
+    let mut deep_heading_and_negative_start = exhaustive_value();
+    deep_heading_and_negative_start["nodes"][3]["data"]["level"] = (-99).into();
+    deep_heading_and_negative_start["nodes"][11]["data"]["numbering"]["startNumber"] = (-7).into();
+    decode_value(&deep_heading_and_negative_start).unwrap();
+}
+
+#[test]
+fn s2a1b_fixture_exercises_every_new_run_paragraph_and_list_field_shape() {
+    let value = exhaustive_value();
+    let required = [
+        "/nodes/3/data/tabStops/0/alignment",
+        "/nodes/4/data/style/listTextDistance",
+        "/nodes/4/data/style/hangingIndent",
+        "/nodes/4/data/style/contextualSpacing",
+        "/nodes/4/data/style/eastAsianLineBreak",
+        "/nodes/4/data/style/latinLineBreak",
+        "/nodes/4/data/style/autoSpaceEastAsianLatin",
+        "/nodes/4/data/style/autoSpaceEastAsianNumber",
+        "/nodes/4/data/style/lineHeightFromFontMetrics",
+        "/nodes/4/data/tabStops/0/leader",
+        "/nodes/5/data/style/verticalPosition",
+        "/nodes/5/data/style/letterSpacingPercent",
+        "/nodes/5/data/style/baselineOffsetPercent",
+        "/nodes/5/data/style/underlineColor",
+        "/nodes/5/data/style/strikethroughColor",
+        "/nodes/5/data/style/declaredFontName",
+        "/nodes/5/data/footnoteReferenceNumber",
+        "/nodes/5/data/formControl/kind",
+        "/nodes/5/data/pageNumberField",
+        "/nodes/10/data/numbering/glyphs",
+        "/nodes/10/data/numbering/startNumber",
+        "/nodes/11/data/ordered",
+        "/nodes/11/data/marker",
+        "/nodes/11/data/numbering/glyphs",
+        "/nodes/11/data/style/eastAsianLineBreak",
+        "/nodes/11/data/tabStops/0/positionPoints",
+    ];
+    for pointer in required {
+        assert!(
+            value.pointer(pointer).is_some(),
+            "fixture field absent: {pointer}"
+        );
+    }
 }
 
 #[test]
@@ -539,10 +619,36 @@ fn every_required_malformed_schema_mutation_is_killed() {
                 v["nodes"][5]["data"]["style"]["featureFlags"] = serde_json::json!(["z", "a"])
             }),
         ),
+        (
+            "underline-color-without-underline",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["underline"] = Value::Null),
+        ),
+        (
+            "underline-color-component",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["underlineColor"]["red"] = 2.into()),
+        ),
+        (
+            "strike-color-without-strike",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["strike"] = false.into()),
+        ),
+        (
+            "negative-tab-position",
+            Box::new(|v| v["nodes"][4]["data"]["tabStops"][0]["positionPoints"] = (-1).into()),
+        ),
+        (
+            "duplicate-tab-position",
+            Box::new(|v| {
+                let tab = v["nodes"][4]["data"]["tabStops"][0].clone();
+                v["nodes"][4]["data"]["tabStops"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(tab);
+            }),
+        ),
     ];
     let ids: BTreeSet<_> = mutations.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids.len(), mutations.len(), "duplicate mutation IDs");
-    assert_eq!(mutations.len(), 68, "mutation inventory drifted");
+    assert_eq!(mutations.len(), 73, "mutation inventory drifted");
     let mut killed = 0;
     for (id, mutate) in mutations {
         let mut value = exhaustive_value();
@@ -554,7 +660,7 @@ fn every_required_malformed_schema_mutation_is_killed() {
         );
         killed += 1;
     }
-    assert_eq!(killed, 68);
+    assert_eq!(killed, 73);
 }
 
 fn expected_detail(id: &str) -> &'static str {
@@ -616,6 +722,12 @@ fn expected_detail(id: &str) -> &'static str {
         "unsupported-provenance" => "provenance is empty",
         "document-editability" => "invalid editable source authority",
         "feature-flag-order" => "feature flags are not canonical",
+        "underline-color-without-underline" => "underline color exists while underline is off",
+        "underline-color-component" => "color component is invalid",
+        "strike-color-without-strike" => "strikethrough color exists while strike is off",
+        "negative-tab-position" | "duplicate-tab-position" => {
+            "tab stops are not finite strictly increasing"
+        }
         other => panic!("mutation has no expected branch: {other}"),
     }
 }

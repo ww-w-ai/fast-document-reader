@@ -453,8 +453,9 @@ fn validate_payload(
 ) -> Result<(), DecodeError> {
     use wire::NodePayload as P;
     match &node.payload {
-        P::Heading(v) if !(1..=6).contains(&v.level) => {
-            return Err(invalid("heading level is invalid"))
+        P::Heading(v) => {
+            validate_paragraph_style(&v.style)?;
+            validate_tab_stops(&v.tab_stops)?;
         }
         P::TextRun(v) => {
             sorted_unique_nonzero(v.comment_ids.iter().copied(), "text run comment")?;
@@ -468,6 +469,10 @@ fn validate_payload(
         }
         P::ListItem(v) if !(1..=32).contains(&v.level) => {
             return Err(invalid("list level is invalid"));
+        }
+        P::ListItem(v) => {
+            validate_paragraph_style(&v.style)?;
+            validate_tab_stops(&v.tab_stops)?;
         }
         P::TaskListItem(v) if !matches!(v.level, Some(1..=32)) => {
             return Err(invalid("task list level is invalid"))
@@ -548,8 +553,10 @@ fn validate_payload(
                 require_resource(*id, resources)?;
             }
         }
-        P::Paragraph(v) => validate_paragraph_style(&v.style)?,
-        P::Heading(v) => validate_paragraph_style(&v.style)?,
+        P::Paragraph(v) => {
+            validate_paragraph_style(&v.style)?;
+            validate_tab_stops(&v.tab_stops)?;
+        }
         _ => {}
     }
     Ok(())
@@ -576,12 +583,19 @@ fn validate_character_style(v: &wire::CharacterStyle) -> Result<(), DecodeError>
     }
     if v.font_size_points.is_some_and(|x| !finite_nonnegative(x))
         || v.baseline_offset_points.is_some_and(|x| !x.is_finite())
+        || v.letter_spacing_percent.is_some_and(|x| !x.is_finite())
+        || v.baseline_offset_percent.is_some_and(|x| !x.is_finite())
     {
         return Err(invalid("character metric is invalid"));
     }
-    for color in [v.foreground.as_ref(), v.background.as_ref()]
-        .into_iter()
-        .flatten()
+    for color in [
+        v.foreground.as_ref(),
+        v.background.as_ref(),
+        v.underline_color.as_ref(),
+        v.strikethrough_color.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
     {
         if ![color.red, color.green, color.blue, color.alpha]
             .into_iter()
@@ -589,6 +603,12 @@ fn validate_character_style(v: &wire::CharacterStyle) -> Result<(), DecodeError>
         {
             return Err(invalid("color component is invalid"));
         }
+    }
+    if v.underline_color.is_some() && v.underline.is_none() {
+        return Err(invalid("underline color exists while underline is off"));
+    }
+    if v.strikethrough_color.is_some() && !v.strike {
+        return Err(invalid("strikethrough color exists while strike is off"));
     }
     Ok(())
 }
@@ -603,6 +623,8 @@ fn validate_paragraph_style(v: &wire::ParagraphStyle) -> Result<(), DecodeError>
         v.tail_indent,
         v.spacing_before,
         v.spacing_after,
+        v.list_text_distance,
+        v.hanging_indent,
     ]
     .into_iter()
     .flatten()
@@ -627,6 +649,21 @@ fn validate_paragraph_style(v: &wire::ParagraphStyle) -> Result<(), DecodeError>
         {
             return Err(invalid("column declaration is invalid"));
         }
+    }
+    Ok(())
+}
+
+fn validate_tab_stops(values: &[wire::TabStop]) -> Result<(), DecodeError> {
+    let mut previous = None;
+    for value in values {
+        if !finite_nonnegative(value.position_points)
+            || previous.is_some_and(|position| value.position_points <= position)
+        {
+            return Err(invalid(
+                "tab stops are not finite strictly increasing positions",
+            ));
+        }
+        previous = Some(value.position_points);
     }
     Ok(())
 }
