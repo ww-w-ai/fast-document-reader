@@ -262,11 +262,14 @@ fn every_macro_enum_value_is_exercised_by_a_checked_fixture_variant() {
                     fixture["nodes"][5]["data"]["style"]["foreground"]["space"] = (*value).into()
                 }
                 "BorderLineStyle" => {
-                    fixture["nodes"][15]["data"]["borders"]["top"]["value"]["style"] =
+                    fixture["nodes"][15]["data"]["directEdgeBorders"]["top"]["value"]["style"] =
                         (*value).into()
                 }
                 "CellDiagonalDirection" => {
                     fixture["nodes"][15]["data"]["diagonal"]["direction"] = (*value).into()
+                }
+                "TablePageBreakPolicy" => {
+                    fixture["nodes"][13]["data"]["style"]["pageBreakPolicy"] = (*value).into()
                 }
                 other => panic!("enum catalog has no checked fixture route: {other}"),
             }
@@ -532,6 +535,7 @@ fn every_required_malformed_schema_mutation_is_killed() {
         (
             "row-parent-kind",
             Box::new(|v| {
+                v["nodes"][13]["data"]["headerRows"] = 0.into();
                 v["nodes"][13]["children"] = serde_json::json!([]);
                 v["nodes"][14]["parentId"] = 1.into();
                 let children = v["nodes"][0]["children"].as_array_mut().unwrap();
@@ -613,7 +617,10 @@ fn every_required_malformed_schema_mutation_is_killed() {
         ),
         (
             "table-grid-span",
-            Box::new(|v| v["nodes"][13]["data"]["gridWidths"] = serde_json::json!([100])),
+            Box::new(|v| {
+                v["nodes"][13]["data"]["gridWidths"] = serde_json::json!([100]);
+                v["nodes"][13]["data"]["sourceColumnWidths"] = serde_json::json!([100]);
+            }),
         ),
         (
             "table-overlap",
@@ -864,7 +871,7 @@ fn every_required_malformed_schema_mutation_is_killed() {
         (
             "border-declaration-kind-missing",
             Box::new(|v| {
-                v["nodes"][15]["data"]["borders"]["top"] = serde_json::json!({
+                v["nodes"][15]["data"]["directEdgeBorders"]["top"] = serde_json::json!({
                     "widthPoints": 1,
                     "style": "solid",
                     "color": { "red": 0, "green": 0, "blue": 0, "alpha": 1, "space": "sRGB" }
@@ -880,7 +887,8 @@ fn every_required_malformed_schema_mutation_is_killed() {
         (
             "border-width-negative",
             Box::new(|v| {
-                v["nodes"][15]["data"]["borders"]["left"]["value"]["widthPoints"] = (-1).into()
+                v["nodes"][15]["data"]["directEdgeBorders"]["left"]["value"]["widthPoints"] =
+                    (-1).into()
             }),
         ),
         (
@@ -899,31 +907,81 @@ fn every_required_malformed_schema_mutation_is_killed() {
             Box::new(|v| v["nodes"][15]["data"]["diagonal"]["side"]["widthPoints"] = (-1).into()),
         ),
         (
+            "direct-uniform-border-empty",
+            Box::new(|v| v["nodes"][15]["data"]["directUniformBorder"] = serde_json::json!({})),
+        ),
+        (
+            "style-uniform-border-empty",
+            Box::new(|v| v["nodes"][15]["data"]["styleUniformBorder"] = serde_json::json!({})),
+        ),
+        (
+            "uniform-border-width-negative",
+            Box::new(|v| {
+                v["nodes"][15]["data"]["directUniformBorder"]["widthPoints"] = (-1).into()
+            }),
+        ),
+        (
+            "declared-cell-width-negative",
+            Box::new(|v| v["nodes"][15]["data"]["declaredWidthPoints"] = (-1).into()),
+        ),
+        (
+            "uniform-padding-negative",
+            Box::new(|v| v["nodes"][15]["data"]["uniformPaddingPoints"] = (-1).into()),
+        ),
+        (
+            "header-rows-exceed",
+            Box::new(|v| v["nodes"][13]["data"]["headerRows"] = 2.into()),
+        ),
+        (
+            "source-column-width-count",
+            Box::new(|v| v["nodes"][13]["data"]["sourceColumnWidths"] = serde_json::json!([100])),
+        ),
+        (
+            "source-column-width-negative",
+            Box::new(|v| v["nodes"][13]["data"]["sourceColumnWidths"][0] = (-1).into()),
+        ),
+        (
+            "table-source-width-negative",
+            Box::new(|v| v["nodes"][13]["data"]["style"]["sourceWidthPoints"] = (-1).into()),
+        ),
+        (
+            "table-default-padding-negative",
+            Box::new(|v| v["nodes"][13]["data"]["style"]["defaultPadding"]["left"] = (-1).into()),
+        ),
+        (
+            "table-edge-border-width-negative",
+            Box::new(|v| {
+                v["nodes"][13]["data"]["style"]["edgeBorders"]["top"]["value"]["widthPoints"] =
+                    (-1).into()
+            }),
+        ),
+        (
+            "table-policy-unknown",
+            Box::new(|v| v["nodes"][13]["data"]["style"]["pageBreakPolicy"] = "rowMaybe".into()),
+        ),
+        (
+            "old-wire-table",
+            Box::new(|v| {
+                v["nodes"][13]["data"] = serde_json::json!({
+                    "gridWidths": [100, 100], "alignment": "center", "preferredWidth": 200
+                })
+            }),
+        ),
+        (
             "old-wire-table-cell",
             Box::new(|v| {
-                v["nodes"][15]["data"]["borders"] = serde_json::json!({
-                    "top": {
-                        "widthPoints": 1,
-                        "style": "solid",
-                        "color": { "red": 0, "green": 0, "blue": 0, "alpha": 1, "space": "sRGB" }
-                    },
-                    "right": null,
-                    "bottom": null,
-                    "left": null
-                });
-                v["nodes"][15]["data"]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("edgePadding");
-                v["nodes"][15]["data"]["padding"] = serde_json::json!({
-                    "top": 1, "right": 1, "bottom": 1, "left": 1
+                v["nodes"][15]["data"] = serde_json::json!({
+                    "row": 0, "column": 0, "rowSpan": 1, "columnSpan": 2,
+                    "borders": { "top": null, "right": null, "bottom": null, "left": null },
+                    "padding": { "top": 1, "right": 1, "bottom": 1, "left": 1 },
+                    "fill": null, "verticalAlignment": "middle"
                 });
             }),
         ),
     ];
     let ids: BTreeSet<_> = mutations.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids.len(), mutations.len(), "duplicate mutation IDs");
-    assert_eq!(mutations.len(), 90, "mutation inventory drifted");
+    assert_eq!(mutations.len(), 103, "mutation inventory drifted");
     let mut killed = 0;
     for (id, mutate) in mutations {
         let mut value = exhaustive_value();
@@ -935,7 +993,7 @@ fn every_required_malformed_schema_mutation_is_killed() {
         );
         killed += 1;
     }
-    assert_eq!(killed, 90);
+    assert_eq!(killed, 103);
 }
 
 fn expected_detail(id: &str) -> &'static str {
@@ -1013,11 +1071,26 @@ fn expected_detail(id: &str) -> &'static str {
         "negative-tab-position" | "duplicate-tab-position" => {
             "tab stops are not finite strictly increasing"
         }
-        "border-declaration-kind-missing" | "old-wire-table-cell" => "missing field",
+        "border-declaration-kind-missing" => "missing field",
+        "old-wire-table-cell" => "unknown field",
         "border-style-unknown" => "unknown variant",
         "border-width-negative" | "diagonal-width-negative" => "border width is invalid",
         "paragraph-border-inside-edge" => "may not declare inside edges",
         "cell-padding-negative" => "cell padding is invalid",
+        "direct-uniform-border-empty" | "style-uniform-border-empty" => "uniform border is empty",
+        "uniform-border-width-negative" => "uniform border width is invalid",
+        "declared-cell-width-negative" | "uniform-padding-negative" => {
+            "table cell source metric is invalid"
+        }
+        "header-rows-exceed" => "header row count exceeds",
+        "source-column-width-count" | "source-column-width-negative" => {
+            "source column widths are invalid"
+        }
+        "table-source-width-negative" => "table source width is invalid",
+        "table-default-padding-negative" => "cell padding is invalid",
+        "table-edge-border-width-negative" => "border width is invalid",
+        "table-policy-unknown" => "unknown variant",
+        "old-wire-table" => "missing field",
         other => panic!("mutation has no expected branch: {other}"),
     }
 }

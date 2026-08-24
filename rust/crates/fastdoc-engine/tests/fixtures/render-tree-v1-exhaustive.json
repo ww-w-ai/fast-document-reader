@@ -375,7 +375,29 @@
           100
         ],
         "alignment": "center",
-        "preferredWidth": 200
+        "preferredWidth": 200,
+        "headerRows": 1,
+        "sourceColumnWidths": [100, 100],
+        "style": {
+          "defaultUniformBorder": {
+            "color": { "red": 0.45, "green": 0.45, "blue": 0.45, "alpha": 1, "space": "sRGB" },
+            "widthPoints": 1
+          },
+          "defaultShading": { "red": 0.95, "green": 0.95, "blue": 0.95, "alpha": 1, "space": "deviceRGB" },
+          "edgeBorders": {
+            "top": { "kind": "drawn", "value": { "widthPoints": 1, "color": { "red": 0.11, "green": 0.11, "blue": 0.11, "alpha": 1, "space": "sRGB" }, "style": "solid" } },
+            "right": { "kind": "drawn", "value": { "widthPoints": 1, "color": { "red": 0.12, "green": 0.12, "blue": 0.12, "alpha": 1, "space": "sRGB" }, "style": "solid" } },
+            "bottom": { "kind": "drawn", "value": { "widthPoints": 1, "color": { "red": 0.13, "green": 0.13, "blue": 0.13, "alpha": 1, "space": "sRGB" }, "style": "solid" } },
+            "left": { "kind": "drawn", "value": { "widthPoints": 1, "color": { "red": 0.14, "green": 0.14, "blue": 0.14, "alpha": 1, "space": "sRGB" }, "style": "solid" } },
+            "insideHorizontal": { "kind": "drawn", "value": { "widthPoints": 0.5, "color": { "red": 0.15, "green": 0.15, "blue": 0.15, "alpha": 1, "space": "sRGB" }, "style": "dotted" } },
+            "insideVertical": { "kind": "drawn", "value": { "widthPoints": 0.5, "color": { "red": 0.16, "green": 0.16, "blue": 0.16, "alpha": 1, "space": "sRGB" }, "style": "dashed" } }
+          },
+          "defaultPadding": { "top": 0, "right": 5.4, "bottom": 0, "left": 5.4 },
+          "sourceWidthPoints": 200,
+          "repeatHeaderRows": true,
+          "pageBreakPolicy": "atRowBoundary",
+          "outerMargin": { "top": -1, "right": 2, "bottom": -2, "left": 3 }
+        }
       }
     },
     {
@@ -402,7 +424,18 @@
         "column": 0,
         "rowSpan": 1,
         "columnSpan": 2,
-        "borders": {
+        "directShading": {
+          "red": 0.9,
+          "green": 0.9,
+          "blue": 0.9,
+          "alpha": 1,
+          "space": "sRGB"
+        },
+        "directUniformBorder": {
+          "color": { "red": 0.5, "green": 0.5, "blue": 0.5, "alpha": 1, "space": "deviceRGB" },
+          "widthPoints": 0.5
+        },
+        "directEdgeBorders": {
           "top": {
             "kind": "drawn",
             "value": {
@@ -452,6 +485,9 @@
             }
           }
         },
+        "declaredWidthPoints": 200,
+        "verticalAlignment": "middle",
+        "uniformPaddingPoints": 2,
         "edgePadding": {
           "top": 0,
           "right": 2,
@@ -466,14 +502,17 @@
             "color": { "red": 0.4, "green": 0.4, "blue": 0.4, "alpha": 1, "space": "sRGB" }
           }
         },
-        "fill": {
-          "red": 0.9,
-          "green": 0.9,
-          "blue": 0.9,
+        "styleShading": {
+          "red": 0.8,
+          "green": 0.8,
+          "blue": 0.8,
           "alpha": 1,
-          "space": "sRGB"
+          "space": "deviceRGB"
         },
-        "verticalAlignment": "middle"
+        "styleUniformBorder": {
+          "color": { "red": 0.6, "green": 0.6, "blue": 0.6, "alpha": 1, "space": "sRGB" },
+          "widthPoints": 0.25
+        }
       }
     },
     {

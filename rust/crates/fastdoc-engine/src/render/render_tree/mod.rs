@@ -24,8 +24,8 @@ pub use wire::{
     PageNumberField, PageNumbering, Paper, Paragraph, ParagraphStyle, PathCommand, RangeSegment,
     RawHtml, Resource as RenderResourceDraft, Section, Size, SourceDescriptor as RenderSourceDraft,
     SourceKind, SourceSpan, SpanPurpose, TabAlignment, TabLeader, TabStop, Table, TableCell,
-    TableRow, TaskListItem, TextRun, UnderlineStyle, Unsupported, Vector, VerticalAlignment,
-    VerticalPosition,
+    TablePageBreakPolicy, TableRow, TableStyle, TaskListItem, TextRun, UnderlineStyle,
+    UniformBorder, Unsupported, Vector, VerticalAlignment, VerticalPosition,
 };
 
 pub use validate::{resolve_cell_borders, resolve_cell_padding, CellSide, ResolvedEdge};
@@ -199,16 +199,21 @@ mod tests {
             let wire::NodePayload::TableCell(cell) = &mut table_cell.nodes[15].payload else {
                 unreachable!()
             };
-            set_channel(cell.fill.as_mut().unwrap(), channel, value);
-            assert_invariant(table_cell, "color component is invalid at fill");
+            set_channel(cell.direct_shading.as_mut().unwrap(), channel, value);
+            assert_invariant(table_cell, "color component is invalid at directShading");
 
             let mut table_cell_inside = fixture();
             let wire::NodePayload::TableCell(cell) = &mut table_cell_inside.nodes[15].payload
             else {
                 unreachable!()
             };
-            let wire::BorderDeclaration::Drawn(inside_h) =
-                cell.borders.inside_horizontal.as_mut().unwrap()
+            let wire::BorderDeclaration::Drawn(inside_h) = cell
+                .direct_edge_borders
+                .as_mut()
+                .unwrap()
+                .inside_horizontal
+                .as_mut()
+                .unwrap()
             else {
                 unreachable!()
             };
@@ -242,7 +247,14 @@ mod tests {
             let wire::NodePayload::TableCell(cell) = &mut border_width.nodes[15].payload else {
                 unreachable!()
             };
-            let wire::BorderDeclaration::Drawn(left) = cell.borders.left.as_mut().unwrap() else {
+            let wire::BorderDeclaration::Drawn(left) = cell
+                .direct_edge_borders
+                .as_mut()
+                .unwrap()
+                .left
+                .as_mut()
+                .unwrap()
+            else {
                 unreachable!()
             };
             left.width_points = value;
@@ -265,6 +277,72 @@ mod tests {
     }
 
     #[test]
+    fn typed_non_finite_table_source_layer_metrics_reach_their_validator_branches() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut direct_uniform = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut direct_uniform.nodes[15].payload else {
+                unreachable!()
+            };
+            cell.direct_uniform_border.as_mut().unwrap().width_points = Some(value);
+            assert_invariant(direct_uniform, "uniform border width is invalid");
+
+            let mut style_uniform = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut style_uniform.nodes[15].payload else {
+                unreachable!()
+            };
+            cell.style_uniform_border.as_mut().unwrap().width_points = Some(value);
+            assert_invariant(style_uniform, "uniform border width is invalid");
+
+            let mut declared_width = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut declared_width.nodes[15].payload else {
+                unreachable!()
+            };
+            cell.declared_width_points = Some(value);
+            assert_invariant(declared_width, "table cell source metric is invalid");
+
+            let mut uniform_padding = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut uniform_padding.nodes[15].payload else {
+                unreachable!()
+            };
+            cell.uniform_padding_points = Some(value);
+            assert_invariant(uniform_padding, "table cell source metric is invalid");
+
+            let mut source_column = fixture();
+            let wire::NodePayload::Table(table) = &mut source_column.nodes[13].payload else {
+                unreachable!()
+            };
+            table.source_column_widths[0] = value;
+            assert_invariant(source_column, "table source column widths are invalid");
+
+            let mut default_uniform = fixture();
+            let wire::NodePayload::Table(table) = &mut default_uniform.nodes[13].payload else {
+                unreachable!()
+            };
+            table
+                .style
+                .default_uniform_border
+                .as_mut()
+                .unwrap()
+                .width_points = Some(value);
+            assert_invariant(default_uniform, "uniform border width is invalid");
+
+            let mut source_width = fixture();
+            let wire::NodePayload::Table(table) = &mut source_width.nodes[13].payload else {
+                unreachable!()
+            };
+            table.style.source_width_points = Some(value);
+            assert_invariant(source_width, "table source width is invalid");
+
+            let mut outer_margin = fixture();
+            let wire::NodePayload::Table(table) = &mut outer_margin.nodes[13].payload else {
+                unreachable!()
+            };
+            table.style.outer_margin.as_mut().unwrap().top = Some(value);
+            assert_invariant(outer_margin, "table outer margin is invalid");
+        }
+    }
+
+    #[test]
     fn color_occurrence_visitor_finds_the_exact_stable_path_set_in_the_exhaustive_fixture() {
         let tree = fixture();
         let wire::NodePayload::TextRun(run) = &tree.nodes[5].payload else {
@@ -274,6 +352,9 @@ mod tests {
             unreachable!()
         };
         let wire::NodePayload::TableCell(cell) = &tree.nodes[15].payload else {
+            unreachable!()
+        };
+        let wire::NodePayload::Table(table) = &tree.nodes[13].payload else {
             unreachable!()
         };
 
@@ -290,6 +371,11 @@ mod tests {
                     .into_iter()
                     .filter_map(|(path, color)| color.map(|_| ("tableCell", path))),
             )
+            .chain(
+                validate::table_colors(table)
+                    .into_iter()
+                    .filter_map(|(path, color)| color.map(|_| ("table", path))),
+            )
             .collect();
         occurrences.sort();
 
@@ -302,6 +388,14 @@ mod tests {
                 ("character", "underlineColor"),
                 ("paragraph", "borders/top/color"),
                 ("paragraph", "shading"),
+                ("table", "borders/bottom/color"),
+                ("table", "borders/insideHorizontal/color"),
+                ("table", "borders/insideVertical/color"),
+                ("table", "borders/left/color"),
+                ("table", "borders/right/color"),
+                ("table", "borders/top/color"),
+                ("table", "style/defaultShading"),
+                ("table", "style/defaultUniformBorder/color"),
                 ("tableCell", "borders/bottom/color"),
                 ("tableCell", "borders/insideHorizontal/color"),
                 ("tableCell", "borders/insideVertical/color"),
@@ -309,7 +403,10 @@ mod tests {
                 ("tableCell", "borders/right/color"),
                 ("tableCell", "borders/top/color"),
                 ("tableCell", "diagonal/side/color"),
-                ("tableCell", "fill"),
+                ("tableCell", "directShading"),
+                ("tableCell", "directUniformBorder/color"),
+                ("tableCell", "styleShading"),
+                ("tableCell", "styleUniformBorder/color"),
             ]
         );
     }

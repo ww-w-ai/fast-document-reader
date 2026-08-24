@@ -56,6 +56,7 @@ all_string_enums! {
     ColorSpace { Srgb => "sRGB", DeviceRgb => "deviceRGB" },
     BorderLineStyle { Solid => "solid", Dashed => "dashed", Dotted => "dotted", Double => "double" },
     CellDiagonalDirection { Slash => "slash", Backslash => "backslash", Both => "both" },
+    TablePageBreakPolicy { Never => "never", AtRowBoundary => "atRowBoundary", Anywhere => "anywhere" },
 }
 
 #[allow(clippy::derivable_impls)]
@@ -277,6 +278,36 @@ pub struct OptionalInsets {
 pub struct CellDiagonal {
     pub direction: CellDiagonalDirection,
     pub side: DrawnBorder,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UniformBorder {
+    #[serde(default)]
+    pub color: Option<Color>,
+    #[serde(default)]
+    pub width_points: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableStyle {
+    #[serde(default)]
+    pub default_uniform_border: Option<UniformBorder>,
+    #[serde(default)]
+    pub default_shading: Option<Color>,
+    #[serde(default)]
+    pub edge_borders: Option<BorderSet>,
+    #[serde(default)]
+    pub default_padding: Option<OptionalInsets>,
+    #[serde(default)]
+    pub source_width_points: Option<f64>,
+    #[serde(default)]
+    pub repeat_header_rows: Option<bool>,
+    #[serde(default)]
+    pub page_break_policy: Option<TablePageBreakPolicy>,
+    #[serde(default)]
+    pub outer_margin: Option<OptionalInsets>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -529,6 +560,10 @@ pub struct Table {
     pub grid_widths: Vec<f64>,
     pub alignment: Alignment,
     pub preferred_width: Option<f64>,
+    pub header_rows: u32,
+    #[serde(default)]
+    pub source_column_widths: Vec<f64>,
+    pub style: TableStyle,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -539,20 +574,32 @@ pub struct TableRow {
     pub height: Option<f64>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TableCell {
     pub row: u32,
     pub column: u32,
     pub row_span: u32,
     pub column_span: u32,
     #[serde(default)]
-    pub borders: BorderSet,
+    pub direct_shading: Option<Color>,
+    #[serde(default)]
+    pub direct_uniform_border: Option<UniformBorder>,
+    #[serde(default)]
+    pub direct_edge_borders: Option<BorderSet>,
+    #[serde(default)]
+    pub declared_width_points: Option<f64>,
+    #[serde(default)]
+    pub vertical_alignment: Option<VerticalAlignment>,
+    #[serde(default)]
+    pub uniform_padding_points: Option<f64>,
     #[serde(default)]
     pub edge_padding: Option<OptionalInsets>,
     #[serde(default)]
     pub diagonal: Option<CellDiagonal>,
-    pub fill: Option<Color>,
-    pub vertical_alignment: VerticalAlignment,
+    #[serde(default)]
+    pub style_shading: Option<Color>,
+    #[serde(default)]
+    pub style_uniform_border: Option<UniformBorder>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

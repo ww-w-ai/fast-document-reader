@@ -2,7 +2,8 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use crate::render::office::office_block::{
-    ListNumbering, OfficeBlock, ParagraphFormat, Span, TabStop,
+    BorderSide, Cell, CellDiagonal, EdgeBorders, EdgePadding, ListNumbering, OfficeBlock,
+    ParagraphFormat, Span, TabStop, TableFormat,
 };
 use std::collections::BTreeMap;
 
@@ -81,6 +82,55 @@ const EXPECTED_KEYS: &[&str] = &[
     "OfficeBlock.ListItem.numbering",
 ];
 
+const TABLE_EXPECTED_DECISIONS: usize = 45;
+const TABLE_EXPECTED_KEYS: &[&str] = &[
+    "Cell.blocks",
+    "Cell.row_span",
+    "Cell.col_span",
+    "Cell.background_color",
+    "Cell.background_image",
+    "Cell.border_color",
+    "Cell.border_width",
+    "Cell.edge_borders",
+    "Cell.width",
+    "Cell.vertical_alignment",
+    "Cell.padding",
+    "Cell.edge_padding",
+    "Cell.diagonal",
+    "Cell.style_shading",
+    "Cell.style_border_color",
+    "Cell.style_border_width",
+    "CellDiagonal.direction",
+    "CellDiagonal.side",
+    "BorderSide.width",
+    "BorderSide.color",
+    "BorderSide.style",
+    "EdgeBorders.top",
+    "EdgeBorders.left",
+    "EdgeBorders.bottom",
+    "EdgeBorders.right",
+    "EdgeBorders.inside_h",
+    "EdgeBorders.inside_v",
+    "EdgePadding.top",
+    "EdgePadding.left",
+    "EdgePadding.bottom",
+    "EdgePadding.right",
+    "TableFormat.default_border_color",
+    "TableFormat.default_border_width",
+    "TableFormat.default_shading",
+    "TableFormat.background_image",
+    "TableFormat.source_width",
+    "TableFormat.edge_borders",
+    "TableFormat.default_padding",
+    "TableFormat.repeat_header_rows",
+    "TableFormat.page_break_policy",
+    "TableFormat.outer_margin",
+    "OfficeBlock.Table.rows",
+    "OfficeBlock.Table.header_rows",
+    "OfficeBlock.Table.column_widths",
+    "OfficeBlock.Table.format",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccountingError {
     DuplicateDecision(String),
@@ -93,12 +143,26 @@ pub enum AccountingError {
     HostResolvedFontAtSemanticBoundary,
     ColumnLayoutRequiresFlowSchema,
     UnknownParagraphBorderBits(i64),
+    InvalidRowSpan(i64),
+    InvalidColumnSpan(i64),
+    InvalidHeaderRows(i64),
+    HeaderRowsExceedRowCount {
+        header_rows: u32,
+        row_count: usize,
+    },
+    CellBackgroundImageRequiresResourceBytes {
+        path: String,
+    },
+    TableBackgroundImageRequiresResourceBytes {
+        path: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecisionKind {
     Mapped,
     Deferred,
+    Refused,
 }
 
 struct DecisionToken {
@@ -124,7 +188,14 @@ impl FieldDecisionLedger {
         Ok(())
     }
     fn finish(self) -> Result<Self, AccountingError> {
-        let expected: std::collections::BTreeSet<_> = EXPECTED_KEYS.iter().copied().collect();
+        self.finish_expected(EXPECTED_KEYS, EXPECTED_DECISIONS)
+    }
+    fn finish_expected(
+        self,
+        expected_keys: &[&'static str],
+        expected_count: usize,
+    ) -> Result<Self, AccountingError> {
+        let expected: std::collections::BTreeSet<_> = expected_keys.iter().copied().collect();
         let actual: std::collections::BTreeSet<_> = self.decisions.keys().copied().collect();
         if actual != expected {
             return Err(AccountingError::DecisionSetMismatch {
@@ -138,7 +209,7 @@ impl FieldDecisionLedger {
                     .collect(),
             });
         }
-        debug_assert_eq!(self.decisions.len(), EXPECTED_DECISIONS);
+        debug_assert_eq!(self.decisions.len(), expected_count);
         Ok(self)
     }
     pub fn decision_count(&self) -> usize {
@@ -148,6 +219,18 @@ impl FieldDecisionLedger {
         self.decisions
             .values()
             .filter(|kind| matches!(kind, DecisionKind::Deferred))
+            .count()
+    }
+    pub fn refused_count(&self) -> usize {
+        self.decisions
+            .values()
+            .filter(|kind| matches!(kind, DecisionKind::Refused))
+            .count()
+    }
+    pub fn mapped_count(&self) -> usize {
+        self.decisions
+            .values()
+            .filter(|kind| matches!(kind, DecisionKind::Mapped))
             .count()
     }
 }
@@ -162,6 +245,12 @@ fn deferred(key: &'static str) -> DecisionToken {
     DecisionToken {
         key,
         kind: DecisionKind::Deferred,
+    }
+}
+fn refused(key: &'static str) -> DecisionToken {
+    DecisionToken {
+        key,
+        kind: DecisionKind::Refused,
     }
 }
 
@@ -388,6 +477,211 @@ pub(crate) fn account_current_office_slice(
     ledger.finish()
 }
 
+pub(crate) fn account_table_cell_source_layers(
+    cell: &Cell,
+    cell_diagonal: &CellDiagonal,
+    border_side: &BorderSide,
+    edge_borders: &EdgeBorders,
+    edge_padding: &EdgePadding,
+    table_format: &TableFormat,
+    table_block: &OfficeBlock,
+) -> Result<FieldDecisionLedger, AccountingError> {
+    let mut ledger = FieldDecisionLedger::new();
+    let Cell {
+        blocks,
+        row_span,
+        col_span,
+        background_color,
+        background_image,
+        border_color,
+        border_width,
+        edge_borders: cell_edge_borders,
+        width,
+        vertical_alignment,
+        padding,
+        edge_padding: cell_edge_padding,
+        diagonal,
+        style_shading,
+        style_border_color,
+        style_border_width,
+    } = cell;
+    ledger.record(deferred("Cell.blocks"))?;
+    ledger.record(refused("Cell.background_image"))?;
+    ledger.record(mapped("Cell.edge_borders"))?;
+    ledger.record(mapped("Cell.edge_padding"))?;
+    record!(
+        ledger,
+        "Cell",
+        row_span,
+        col_span,
+        background_color,
+        border_color,
+        border_width,
+        width,
+        vertical_alignment,
+        padding,
+        diagonal,
+        style_shading,
+        style_border_color,
+        style_border_width
+    );
+    let CellDiagonal { direction, side } = cell_diagonal;
+    record!(ledger, "CellDiagonal", direction, side);
+    let BorderSide {
+        width,
+        color,
+        style,
+    } = border_side;
+    record!(ledger, "BorderSide", width, color, style);
+    let EdgeBorders {
+        top,
+        left,
+        bottom,
+        right,
+        inside_h,
+        inside_v,
+    } = edge_borders;
+    record!(
+        ledger,
+        "EdgeBorders",
+        top,
+        left,
+        bottom,
+        right,
+        inside_h,
+        inside_v
+    );
+    let EdgePadding {
+        top,
+        left,
+        bottom,
+        right,
+    } = edge_padding;
+    record!(ledger, "EdgePadding", top, left, bottom, right);
+    let TableFormat {
+        default_border_color,
+        default_border_width,
+        default_shading,
+        background_image: table_background_image,
+        source_width,
+        edge_borders: table_edge_borders,
+        default_padding,
+        repeat_header_rows,
+        page_break_policy,
+        outer_margin,
+    } = table_format;
+    ledger.record(refused("TableFormat.background_image"))?;
+    ledger.record(mapped("TableFormat.edge_borders"))?;
+    record!(
+        ledger,
+        "TableFormat",
+        default_border_color,
+        default_border_width,
+        default_shading,
+        source_width,
+        default_padding,
+        repeat_header_rows,
+        page_break_policy,
+        outer_margin
+    );
+    let OfficeBlock::Table {
+        rows,
+        header_rows,
+        column_widths,
+        format,
+    } = table_block
+    else {
+        return Err(AccountingError::WrongBlockVariant("Table"));
+    };
+    ledger.record(deferred("OfficeBlock.Table.rows"))?;
+    record!(
+        ledger,
+        "OfficeBlock.Table",
+        header_rows,
+        column_widths,
+        format
+    );
+    let _ = (
+        blocks,
+        background_image,
+        cell_edge_borders,
+        cell_edge_padding,
+        table_background_image,
+        table_edge_borders,
+        rows,
+    );
+    ledger.finish_expected(TABLE_EXPECTED_KEYS, TABLE_EXPECTED_DECISIONS)
+}
+
+pub(crate) fn checked_row_span(value: i64) -> Result<u32, AccountingError> {
+    u32::try_from(value)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or(AccountingError::InvalidRowSpan(value))
+}
+
+pub(crate) fn checked_column_span(value: i64) -> Result<u32, AccountingError> {
+    u32::try_from(value)
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or(AccountingError::InvalidColumnSpan(value))
+}
+
+pub(crate) fn checked_header_rows(value: i64, row_count: usize) -> Result<u32, AccountingError> {
+    let header_rows =
+        u32::try_from(value).map_err(|_| AccountingError::InvalidHeaderRows(value))?;
+    if usize::try_from(header_rows)
+        .ok()
+        .is_none_or(|count| count > row_count)
+    {
+        return Err(AccountingError::HeaderRowsExceedRowCount {
+            header_rows,
+            row_count,
+        });
+    }
+    Ok(header_rows)
+}
+
+pub(crate) fn refuse_table_background_images(
+    rows: &[Vec<Cell>],
+    format: &TableFormat,
+    path: &str,
+) -> Result<(), AccountingError> {
+    if format.background_image.is_some() {
+        return Err(AccountingError::TableBackgroundImageRequiresResourceBytes {
+            path: format!("{path}/format/backgroundImage"),
+        });
+    }
+    for (row_index, row) in rows.iter().enumerate() {
+        for (cell_index, cell) in row.iter().enumerate() {
+            refuse_cell_background_images(
+                cell,
+                &format!("{path}/rows/{row_index}/cells/{cell_index}"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn refuse_cell_background_images(cell: &Cell, path: &str) -> Result<(), AccountingError> {
+    if cell.background_image.is_some() {
+        return Err(AccountingError::CellBackgroundImageRequiresResourceBytes {
+            path: format!("{path}/backgroundImage"),
+        });
+    }
+    for (block_index, block) in cell.blocks.iter().enumerate() {
+        refuse_block_background_images(block, &format!("{path}/blocks/{block_index}"))?;
+    }
+    Ok(())
+}
+
+fn refuse_block_background_images(block: &OfficeBlock, path: &str) -> Result<(), AccountingError> {
+    if let OfficeBlock::Table { rows, format, .. } = block {
+        refuse_table_background_images(rows, format, path)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
@@ -397,7 +691,7 @@ mod tests {
         LineBreakGranularity, LineHeight, ListNumberingGlyphs, OfficeFormControl,
         OfficeFormControlKind, PageNumberField, RectEdge, TabAlignment, TabLeader, UnderlineStyle,
     };
-    use swiftshim::{NSColor, NSFontDescriptor, NSTextAlignment, SwiftString};
+    use swiftshim::{CGSize, NSColor, NSFontDescriptor, NSImage, NSTextAlignment, SwiftString};
 
     fn fixture(
         span: Span,
@@ -576,5 +870,197 @@ mod tests {
         };
         assert_eq!(missing, vec!["Span.text"]);
         assert_eq!(unexpected, vec!["bogus.same_count.key"]);
+    }
+
+    #[test]
+    fn table_expected_keys_are_exactly_forty_five() {
+        assert_eq!(TABLE_EXPECTED_KEYS.len(), TABLE_EXPECTED_DECISIONS);
+    }
+
+    fn table_source_fixture() -> (
+        Cell,
+        CellDiagonal,
+        BorderSide,
+        EdgeBorders,
+        EdgePadding,
+        TableFormat,
+        OfficeBlock,
+    ) {
+        use crate::render::office::office_block::{
+            BorderDecl, BorderLineStyle, CellDiagonalDirection, CellVAlign, TablePageBreakPolicy,
+        };
+        let color = NSColor::srgb(0.1, 0.2, 0.3, 1.0);
+        let side = BorderSide {
+            width: 1.0,
+            color: Some(color),
+            style: BorderLineStyle::Dashed,
+        };
+        let edges = EdgeBorders {
+            top: Some(BorderDecl::Drawn(side)),
+            left: Some(BorderDecl::Suppressed),
+            bottom: Some(BorderDecl::Drawn(side)),
+            right: Some(BorderDecl::Suppressed),
+            inside_h: Some(BorderDecl::Drawn(side)),
+            inside_v: Some(BorderDecl::Drawn(side)),
+        };
+        let padding = EdgePadding {
+            top: Some(0.0),
+            left: Some(2.0),
+            bottom: Some(3.0),
+            right: Some(4.0),
+        };
+        let diagonal = CellDiagonal {
+            direction: CellDiagonalDirection::Both,
+            side,
+        };
+        let cell = Cell {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            row_span: 2,
+            col_span: 3,
+            background_color: Some(color),
+            background_image: None,
+            border_color: Some(color),
+            border_width: Some(1.0),
+            edge_borders: Some(edges),
+            width: Some(100.0),
+            vertical_alignment: Some(CellVAlign::Center),
+            padding: Some(5.0),
+            edge_padding: Some(padding),
+            diagonal: Some(diagonal),
+            style_shading: Some(color),
+            style_border_color: Some(color),
+            style_border_width: Some(0.5),
+        };
+        let format = TableFormat {
+            default_border_color: Some(color),
+            default_border_width: Some(1.0),
+            default_shading: Some(color),
+            background_image: None,
+            source_width: Some(200.0),
+            edge_borders: Some(edges),
+            default_padding: Some(padding),
+            repeat_header_rows: Some(true),
+            page_break_policy: Some(TablePageBreakPolicy::AtRowBoundary),
+            outer_margin: Some(padding),
+        };
+        let table = OfficeBlock::Table {
+            rows: vec![vec![cell.clone()]],
+            header_rows: 1,
+            column_widths: vec![200.0],
+            format: format.clone(),
+        };
+        (cell, diagonal, side, edges, padding, format, table)
+    }
+
+    #[test]
+    fn s2a1c3_exact_forty_five_field_ledger_classifies_41_2_2() {
+        let (cell, diagonal, side, edges, padding, format, table) = table_source_fixture();
+        let ledger = account_table_cell_source_layers(
+            &cell, &diagonal, &side, &edges, &padding, &format, &table,
+        )
+        .unwrap();
+        assert_eq!(ledger.decision_count(), 45);
+        assert_eq!(ledger.mapped_count(), 41);
+        assert_eq!(ledger.deferred_count(), 2);
+        assert_eq!(ledger.refused_count(), 2);
+    }
+
+    #[test]
+    fn s2a1c3_ledger_rejects_same_count_substituted_key() {
+        let mut ledger = FieldDecisionLedger::new();
+        for key in TABLE_EXPECTED_KEYS.iter().skip(1) {
+            ledger.record(mapped(key)).unwrap();
+        }
+        ledger.record(mapped("bogus.same_count.key")).unwrap();
+        let AccountingError::DecisionSetMismatch {
+            missing,
+            unexpected,
+        } = ledger
+            .finish_expected(TABLE_EXPECTED_KEYS, TABLE_EXPECTED_DECISIONS)
+            .unwrap_err()
+        else {
+            panic!("same-count table key substitution was accepted")
+        };
+        assert_eq!(missing, vec!["Cell.blocks"]);
+        assert_eq!(unexpected, vec!["bogus.same_count.key"]);
+    }
+
+    #[test]
+    fn s2a1c3_checked_spans_reject_non_positive_and_overflow() {
+        assert_eq!(checked_row_span(1), Ok(1));
+        assert_eq!(checked_column_span(1), Ok(1));
+        for value in [0, -1, i64::from(u32::MAX) + 1] {
+            assert_eq!(
+                checked_row_span(value),
+                Err(AccountingError::InvalidRowSpan(value))
+            );
+            assert_eq!(
+                checked_column_span(value),
+                Err(AccountingError::InvalidColumnSpan(value))
+            );
+        }
+    }
+
+    #[test]
+    fn s2a1c3_checked_header_rows_reject_invalid_classes() {
+        assert_eq!(checked_header_rows(0, 1), Ok(0));
+        assert_eq!(checked_header_rows(1, 1), Ok(1));
+        for value in [-1, i64::from(u32::MAX) + 1] {
+            assert_eq!(
+                checked_header_rows(value, usize::MAX),
+                Err(AccountingError::InvalidHeaderRows(value))
+            );
+        }
+        assert_eq!(
+            checked_header_rows(2, 1),
+            Err(AccountingError::HeaderRowsExceedRowCount {
+                header_rows: 2,
+                row_count: 1
+            }),
+        );
+    }
+
+    #[test]
+    fn s2a1c3_recursive_refusal_finds_both_nested_background_image_kinds() {
+        let image = NSImage::withSize(CGSize {
+            width: 1.0,
+            height: 1.0,
+        });
+        let (mut cell, _, _, _, _, mut format, _) = table_source_fixture();
+        cell.background_image = Some(image.clone());
+        let error = refuse_table_background_images(&[vec![cell]], &TableFormat::default(), "root")
+            .unwrap_err();
+        assert_eq!(
+            error,
+            AccountingError::CellBackgroundImageRequiresResourceBytes {
+                path: "root/rows/0/cells/0/backgroundImage".into(),
+            }
+        );
+
+        format.background_image = Some(image);
+        let nested = Cell {
+            blocks: vec![OfficeBlock::Table {
+                rows: vec![],
+                header_rows: 0,
+                column_widths: vec![],
+                format,
+            }],
+            ..Cell::default()
+        };
+        let error =
+            refuse_table_background_images(&[vec![nested]], &TableFormat::default(), "root")
+                .unwrap_err();
+        assert_eq!(
+            error,
+            AccountingError::TableBackgroundImageRequiresResourceBytes {
+                path: "root/rows/0/cells/0/blocks/0/format/backgroundImage".into(),
+            }
+        );
     }
 }

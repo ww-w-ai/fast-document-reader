@@ -475,7 +475,7 @@ fn validate_payload(
             validate_tab_stops(&v.tab_stops)?;
         }
         P::TaskListItem(v) if !matches!(v.level, Some(1..=32)) => {
-            return Err(invalid("task list level is invalid"))
+            return Err(invalid("task list level is invalid"));
         }
         P::Table(v) => {
             if v.grid_widths.iter().any(|x| !finite_nonnegative(*x))
@@ -483,16 +483,44 @@ fn validate_payload(
             {
                 return Err(invalid("table width is invalid"));
             }
+            validate_table_style(&v.style)?;
+            if v.header_rows as usize > node.children.len() {
+                return Err(invalid("table header row count exceeds table rows"));
+            }
+            if !v.source_column_widths.is_empty()
+                && (v.source_column_widths.len() != v.grid_widths.len()
+                    || v.source_column_widths
+                        .iter()
+                        .any(|x| !finite_nonnegative(*x)))
+            {
+                return Err(invalid("table source column widths are invalid"));
+            }
+            check_colors(table_colors(v))?;
             validate_table(node, v, nodes)?;
         }
         P::TableRow(v) if v.height.is_some_and(|x| !finite_nonnegative(x)) => {
-            return Err(invalid("row height is invalid"))
+            return Err(invalid("row height is invalid"));
         }
         P::TableCell(v) => {
             if v.row_span == 0 || v.column_span == 0 {
                 return Err(invalid("table cell topology is invalid"));
             }
-            validate_border_set(&v.borders, true)?;
+            if let Some(borders) = &v.direct_edge_borders {
+                validate_border_set(borders, true)?;
+            }
+            if let Some(border) = &v.direct_uniform_border {
+                validate_uniform_border(border)?;
+            }
+            if let Some(border) = &v.style_uniform_border {
+                validate_uniform_border(border)?;
+            }
+            if v.declared_width_points
+                .is_some_and(|x| !finite_nonnegative(x))
+                || v.uniform_padding_points
+                    .is_some_and(|x| !finite_nonnegative(x))
+            {
+                return Err(invalid("table cell source metric is invalid"));
+            }
             if let Some(padding) = &v.edge_padding {
                 validate_optional_insets(padding)?;
             }
@@ -533,7 +561,7 @@ fn validate_payload(
             _ => {
                 return Err(invalid(
                     "footnote body flow is missing or has the wrong kind",
-                ))
+                ));
             }
         },
         P::Section(v) => {
@@ -735,23 +763,36 @@ pub(super) fn paragraph_style_colors(
     ]
 }
 
-pub(super) fn table_cell_colors(v: &wire::TableCell) -> [(&'static str, Option<&wire::Color>); 8] {
+fn uniform_border_color(border: Option<&wire::UniformBorder>) -> Option<&wire::Color> {
+    border.and_then(|value| value.color.as_ref())
+}
+
+pub(super) fn table_cell_colors(v: &wire::TableCell) -> [(&'static str, Option<&wire::Color>); 11] {
     let wire::TableCell {
         row: _,
         column: _,
         row_span: _,
         column_span: _,
-        borders,
+        direct_shading,
+        direct_uniform_border,
+        direct_edge_borders,
+        declared_width_points: _,
+        vertical_alignment: _,
+        uniform_padding_points: _,
         edge_padding: _,
         diagonal,
-        fill,
-        vertical_alignment: _,
+        style_shading,
+        style_uniform_border,
     } = v;
     let [top, right, bottom, left, inside_horizontal, inside_vertical] =
-        border_set_colors(Some(borders));
+        border_set_colors(direct_edge_borders.as_ref());
     let diagonal_side = diagonal_colors(diagonal.as_ref());
     [
-        ("fill", fill.as_ref()),
+        ("directShading", direct_shading.as_ref()),
+        (
+            "directUniformBorder/color",
+            uniform_border_color(direct_uniform_border.as_ref()),
+        ),
         top,
         right,
         bottom,
@@ -759,6 +800,47 @@ pub(super) fn table_cell_colors(v: &wire::TableCell) -> [(&'static str, Option<&
         inside_horizontal,
         inside_vertical,
         diagonal_side,
+        ("styleShading", style_shading.as_ref()),
+        (
+            "styleUniformBorder/color",
+            uniform_border_color(style_uniform_border.as_ref()),
+        ),
+    ]
+}
+
+pub(super) fn table_colors(v: &wire::Table) -> [(&'static str, Option<&wire::Color>); 8] {
+    let wire::Table {
+        grid_widths: _,
+        alignment: _,
+        preferred_width: _,
+        header_rows: _,
+        source_column_widths: _,
+        style,
+    } = v;
+    let wire::TableStyle {
+        default_uniform_border,
+        default_shading,
+        edge_borders,
+        default_padding: _,
+        source_width_points: _,
+        repeat_header_rows: _,
+        page_break_policy: _,
+        outer_margin: _,
+    } = style;
+    let [top, right, bottom, left, inside_horizontal, inside_vertical] =
+        border_set_colors(edge_borders.as_ref());
+    [
+        (
+            "style/defaultUniformBorder/color",
+            uniform_border_color(default_uniform_border.as_ref()),
+        ),
+        ("style/defaultShading", default_shading.as_ref()),
+        top,
+        right,
+        bottom,
+        left,
+        inside_horizontal,
+        inside_vertical,
     ]
 }
 
@@ -874,6 +956,49 @@ fn validate_optional_insets(v: &wire::OptionalInsets) -> Result<(), DecodeError>
         .any(|x| !finite_nonnegative(*x))
     {
         return Err(invalid("cell padding is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_uniform_border(v: &wire::UniformBorder) -> Result<(), DecodeError> {
+    if v.color.is_none() && v.width_points.is_none() {
+        return Err(invalid("uniform border is empty"));
+    }
+    if v.width_points.is_some_and(|x| !finite_nonnegative(x)) {
+        return Err(invalid("uniform border width is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_table_style(v: &wire::TableStyle) -> Result<(), DecodeError> {
+    if let Some(border) = &v.default_uniform_border {
+        validate_uniform_border(border)?;
+    }
+    if let Some(edges) = &v.edge_borders {
+        validate_border_set(edges, true)?;
+    }
+    if let Some(padding) = &v.default_padding {
+        validate_optional_insets(padding)?;
+    }
+    if v.source_width_points
+        .is_some_and(|x| !finite_nonnegative(x))
+    {
+        return Err(invalid("table source width is invalid"));
+    }
+    if let Some(margin) = &v.outer_margin {
+        let wire::OptionalInsets {
+            top,
+            right,
+            bottom,
+            left,
+        } = margin;
+        if [top, right, bottom, left]
+            .into_iter()
+            .flatten()
+            .any(|x| !x.is_finite())
+        {
+            return Err(invalid("table outer margin is invalid"));
+        }
     }
     Ok(())
 }
