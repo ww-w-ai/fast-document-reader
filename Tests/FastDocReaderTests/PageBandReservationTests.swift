@@ -33,7 +33,7 @@ final class PageBandReservationTests: XCTestCase {
         super.setUp()
         // The outline is the MASTER: a header and footer only exist alongside it, so "band, no
         // sheets" — the shape this suite used to pin — is no longer a configuration the reader has.
-        PageViewOptionsStore.current = PageViewOptions(outline: true)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: true)
     }
 
     override func tearDown() {
@@ -718,7 +718,7 @@ final class PageBandReservationTests: XCTestCase {
     func testARealDocumentWithNoHeaderOrFooterIsLaidOutExactlyAsBefore() throws {
         // Nothing to reserve means the OUTLINE is off too — with it on, the desk between
         // sheets is reserved whether or not there is a header (invariant 60c).
-        PageViewOptionsStore.current = PageViewOptions(outline: false)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: false)
         let (_, wc) = try openPagedOffice(headers: [], footers: [], pageContentHeight: 150)
 
         XCTAssertTrue(wc.isPaged, "precondition: this document is still paged (page WIDTH is what makes it so)")
@@ -872,7 +872,7 @@ final class PageBandReservationTests: XCTestCase {
     func testARealDocumentWithNoHeaderOrFooterHasNoPaintContentEither() throws {
         // Nothing to reserve means the OUTLINE is off too — with it on, the desk between
         // sheets is reserved whether or not there is a header (invariant 60c).
-        PageViewOptionsStore.current = PageViewOptions(outline: false)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: false)
         let (_, wc) = try openPagedOffice(headers: [], footers: [], pageContentHeight: 150)
         XCTAssertNil(wc.pageBandContent)
     }
@@ -1045,7 +1045,7 @@ final class PageBandReservationTests: XCTestCase {
     func testNeitherEdgeIsReservedWithNoHeaderOrFooter() throws {
         // Nothing to reserve means the OUTLINE is off too — with it on, the desk between
         // sheets is reserved whether or not there is a header (invariant 60c).
-        PageViewOptionsStore.current = PageViewOptions(outline: false)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: false)
         let (_, wc) = try openPagedOffice(headers: [], footers: [], pageContentHeight: 150)
         XCTAssertEqual(wc.pageBandDelegate.leadingBand, 0)
         XCTAssertEqual(wc.pageBandDelegate.trailingBand, 0)

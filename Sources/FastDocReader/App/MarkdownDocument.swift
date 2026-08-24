@@ -15,6 +15,28 @@ final class MarkdownDocument: NSDocument {
     /// being measured) sets this directly, before the first `render(into:)`.
     var readingSize: CGFloat = FontSizeStore.startingSize
 
+    /// THIS document's own page furniture — the sheet outline, the running header and footer, and
+    /// whether a table may break across a page. Seeded ONCE, at creation, from the last choice the
+    /// reader made, and never re-read from the store afterwards: exactly the shape `readingSize`
+    /// above has, for exactly the reason its comment gives. Turning the outline off for the report
+    /// being measured must not re-apply the band to the twelve other documents that happen to be
+    /// open — and re-applying a band invalidates a document's whole layout, so that was not free.
+    ///
+    /// Read through `underOutlineRule`, so the other three report off while no page is drawn: with
+    /// nothing on paper there is nothing for a header, a footer or a page break to be about.
+    private(set) var pageOptions: PageViewOptions = PageViewOptionsStore.startingOptions.underOutlineRule
+
+    /// What the reader actually CHOSE, before `underOutlineRule` masks it. The menu ticks and the
+    /// toggle both need this: with the outline off, `pageOptions` reports the other two off, so
+    /// reading it there would write those falses back and turning the outline on again would come
+    /// up bare instead of restoring what the reader had.
+    private(set) var pageOptionsIntent: PageViewOptions = PageViewOptionsStore.intent
+
+    func setPageOptions(_ options: PageViewOptions) {
+        pageOptionsIntent = options
+        pageOptions = options.underOutlineRule
+    }
+
     /// The office reader's output (`.docx` etc — see `Render/Office`). Blocks, not a finished
     /// attributed string: `render(into:)` re-runs `OfficeTextBuilder.build` every time (font-size
     /// change, ⌘R), so a cached string would freeze the document at whatever size it was built at.
@@ -1370,7 +1392,7 @@ final class MarkdownDocument: NSDocument {
         let theme = theme ?? RenderTheme.current(
             size: officePageContentWidth != nil ? officeDefaultBodyFontSize : readingSize)
         let readingColumn = readingColumn ?? wc.textView.textContainer?.size.width ?? 800
-        let stored = PageViewOptionsStore.current
+        let stored = pageOptions
         let options = forPrinting ? PageViewOptions(outline: true, splitTables: stored.splitTables) : stored
         let headers = options.header ? officeHeaders : []
         let footers = options.footer ? officeFooters : []
