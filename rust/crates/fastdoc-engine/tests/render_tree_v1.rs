@@ -97,6 +97,9 @@ fn every_macro_enum_value_is_exercised_by_a_checked_fixture_variant() {
                 "ListNumberingGlyphs" => {
                     fixture["nodes"][10]["data"]["numbering"]["glyphs"] = (*value).into()
                 }
+                "ColorSpace" => {
+                    fixture["nodes"][5]["data"]["style"]["foreground"]["space"] = (*value).into()
+                }
                 other => panic!("enum catalog has no checked fixture route: {other}"),
             }
             decode_value(&fixture).unwrap_or_else(|error| panic!("{name}::{value}: {error:?}"));
@@ -624,12 +627,57 @@ fn every_required_malformed_schema_mutation_is_killed() {
             Box::new(|v| v["nodes"][5]["data"]["style"]["underline"] = Value::Null),
         ),
         (
+            "strike-color-without-strike",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["strike"] = false.into()),
+        ),
+        (
             "underline-color-component",
             Box::new(|v| v["nodes"][5]["data"]["style"]["underlineColor"]["red"] = 2.into()),
         ),
         (
-            "strike-color-without-strike",
-            Box::new(|v| v["nodes"][5]["data"]["style"]["strike"] = false.into()),
+            "color-space-missing",
+            Box::new(|v| {
+                v["nodes"][5]["data"]["style"]["foreground"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("space");
+            }),
+        ),
+        (
+            "color-space-unknown",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["foreground"]["space"] = "cmyk".into()),
+        ),
+        (
+            "color-red-below-range",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["foreground"]["red"] = (-0.1).into()),
+        ),
+        (
+            "color-red-above-range",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["foreground"]["red"] = 1.1.into()),
+        ),
+        (
+            "color-green-below-range",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["foreground"]["green"] = (-0.1).into()),
+        ),
+        (
+            "color-green-above-range",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["foreground"]["green"] = 1.1.into()),
+        ),
+        (
+            "color-blue-below-range",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["foreground"]["blue"] = (-0.1).into()),
+        ),
+        (
+            "color-blue-above-range",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["foreground"]["blue"] = 1.1.into()),
+        ),
+        (
+            "color-alpha-below-range",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["foreground"]["alpha"] = (-0.1).into()),
+        ),
+        (
+            "color-alpha-above-range",
+            Box::new(|v| v["nodes"][5]["data"]["style"]["foreground"]["alpha"] = 1.1.into()),
         ),
         (
             "negative-tab-position",
@@ -648,7 +696,7 @@ fn every_required_malformed_schema_mutation_is_killed() {
     ];
     let ids: BTreeSet<_> = mutations.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids.len(), mutations.len(), "duplicate mutation IDs");
-    assert_eq!(mutations.len(), 73, "mutation inventory drifted");
+    assert_eq!(mutations.len(), 83, "mutation inventory drifted");
     let mut killed = 0;
     for (id, mutate) in mutations {
         let mut value = exhaustive_value();
@@ -660,7 +708,7 @@ fn every_required_malformed_schema_mutation_is_killed() {
         );
         killed += 1;
     }
-    assert_eq!(killed, 73);
+    assert_eq!(killed, 83);
 }
 
 fn expected_detail(id: &str) -> &'static str {
@@ -723,7 +771,17 @@ fn expected_detail(id: &str) -> &'static str {
         "document-editability" => "invalid editable source authority",
         "feature-flag-order" => "feature flags are not canonical",
         "underline-color-without-underline" => "underline color exists while underline is off",
-        "underline-color-component" => "color component is invalid",
+        "underline-color-component" => "color component is invalid at underlineColor",
+        "color-red-below-range"
+        | "color-red-above-range"
+        | "color-green-below-range"
+        | "color-green-above-range"
+        | "color-blue-below-range"
+        | "color-blue-above-range"
+        | "color-alpha-below-range"
+        | "color-alpha-above-range" => "color component is invalid at foreground",
+        "color-space-missing" => "missing field",
+        "color-space-unknown" => "unknown variant",
         "strike-color-without-strike" => "strikethrough color exists while strike is off",
         "negative-tab-position" | "duplicate-tab-position" => {
             "tab stops are not finite strictly increasing"

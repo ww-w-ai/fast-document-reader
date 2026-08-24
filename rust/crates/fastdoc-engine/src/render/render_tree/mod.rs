@@ -15,7 +15,7 @@ pub(crate) mod wire;
 
 pub use wire::{
     Affinity, Alignment, Annotations as RenderAnnotationsDraft, Bookmark, CharacterStyle,
-    CodeBlock, Color, Columns, Comment, Diagram, DiagramLanguage, Direction,
+    CodeBlock, Color, ColorSpace, Columns, Comment, Diagram, DiagramLanguage, Direction,
     Document as RenderDocumentDraft, DocumentFormat, Edge, EdgeSet, EditMetadata, EditOperation,
     Empty, Field, Footnote, FormControl, FormControlKind, Formula, Heading, Image,
     InlineFormControl, Insets, LineBreak, LineBreakGranularity, LineBreakKind, LineHeight, List,
@@ -96,7 +96,7 @@ impl RenderTreeBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::wire;
+    use super::{validate, wire};
 
     #[test]
     fn every_macro_authoritative_enum_value_round_trips() {
@@ -154,6 +154,92 @@ mod tests {
         };
         paragraph.tab_stops[0].position_points = f64::NAN;
         assert_invariant(tab, "tab stops are not finite strictly increasing");
+    }
+
+    fn set_channel(color: &mut wire::Color, channel: usize, value: f64) {
+        match channel {
+            0 => color.red = value,
+            1 => color.green = value,
+            _ => color.blue = value,
+        }
+    }
+
+    #[test]
+    fn typed_non_finite_colors_reach_their_validator_branch_across_categories() {
+        for (channel, value) in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY]
+            .into_iter()
+            .enumerate()
+        {
+            let mut character = fixture();
+            let wire::NodePayload::TextRun(run) = &mut character.nodes[5].payload else {
+                unreachable!()
+            };
+            set_channel(run.style.foreground.as_mut().unwrap(), channel, value);
+            assert_invariant(character, "color component is invalid at foreground");
+
+            let mut paragraph_edge = fixture();
+            let wire::NodePayload::Paragraph(paragraph) = &mut paragraph_edge.nodes[4].payload
+            else {
+                unreachable!()
+            };
+            let borders = paragraph.style.borders.as_mut().unwrap();
+            set_channel(&mut borders.top.as_mut().unwrap().color, channel, value);
+            assert_invariant(
+                paragraph_edge,
+                "color component is invalid at borders/top/color",
+            );
+
+            let mut table_cell = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut table_cell.nodes[15].payload else {
+                unreachable!()
+            };
+            set_channel(cell.fill.as_mut().unwrap(), channel, value);
+            assert_invariant(table_cell, "color component is invalid at fill");
+        }
+    }
+
+    #[test]
+    fn color_occurrence_visitor_finds_the_exact_stable_path_set_in_the_exhaustive_fixture() {
+        let tree = fixture();
+        let wire::NodePayload::TextRun(run) = &tree.nodes[5].payload else {
+            unreachable!()
+        };
+        let wire::NodePayload::Paragraph(paragraph) = &tree.nodes[4].payload else {
+            unreachable!()
+        };
+        let wire::NodePayload::TableCell(cell) = &tree.nodes[15].payload else {
+            unreachable!()
+        };
+
+        let mut occurrences: Vec<(&str, &str)> = validate::character_style_colors(&run.style)
+            .into_iter()
+            .filter_map(|(path, color)| color.map(|_| ("character", path)))
+            .chain(
+                validate::paragraph_style_colors(&paragraph.style)
+                    .into_iter()
+                    .filter_map(|(path, color)| color.map(|_| ("paragraph", path))),
+            )
+            .chain(
+                validate::table_cell_colors(cell)
+                    .into_iter()
+                    .filter_map(|(path, color)| color.map(|_| ("tableCell", path))),
+            )
+            .collect();
+        occurrences.sort();
+
+        assert_eq!(
+            occurrences,
+            vec![
+                ("character", "background"),
+                ("character", "foreground"),
+                ("character", "strikethroughColor"),
+                ("character", "underlineColor"),
+                ("paragraph", "borders/top/color"),
+                ("paragraph", "shading"),
+                ("tableCell", "borders/top/color"),
+                ("tableCell", "fill"),
+            ]
+        );
     }
 }
 

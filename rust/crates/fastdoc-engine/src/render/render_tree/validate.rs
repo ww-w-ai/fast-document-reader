@@ -488,8 +488,11 @@ fn validate_payload(
         P::TableRow(v) if v.height.is_some_and(|x| !finite_nonnegative(x)) => {
             return Err(invalid("row height is invalid"))
         }
-        P::TableCell(v) if v.row_span == 0 || v.column_span == 0 || !valid_insets(&v.padding) => {
-            return Err(invalid("table cell topology/insets are invalid"));
+        P::TableCell(v) => {
+            if v.row_span == 0 || v.column_span == 0 || !valid_insets(&v.padding) {
+                return Err(invalid("table cell topology/insets are invalid"));
+            }
+            check_colors(table_cell_colors(v))?;
         }
         P::Image(v) => {
             require_resource(v.resource_id, resources)?;
@@ -577,6 +580,138 @@ fn valid_insets(v: &wire::Insets) -> bool {
         .into_iter()
         .all(finite_nonnegative)
 }
+fn valid_color(c: &wire::Color) -> bool {
+    [c.red, c.green, c.blue, c.alpha]
+        .into_iter()
+        .all(|x| x.is_finite() && (0.0..=1.0).contains(&x))
+}
+
+fn check_colors<const N: usize>(
+    colors: [(&'static str, Option<&wire::Color>); N],
+) -> Result<(), DecodeError> {
+    for (path, color) in colors {
+        if color.is_some_and(|c| !valid_color(c)) {
+            return Err(invalid(format!("color component is invalid at {path}")));
+        }
+    }
+    Ok(())
+}
+
+fn edge_color(edge: &wire::Edge) -> &wire::Color {
+    let wire::Edge {
+        width_points: _,
+        style: _,
+        color,
+    } = edge;
+    color
+}
+
+fn edge_set_colors(set: Option<&wire::EdgeSet>) -> [(&'static str, Option<&wire::Color>); 4] {
+    let paths = [
+        "borders/top/color",
+        "borders/right/color",
+        "borders/bottom/color",
+        "borders/left/color",
+    ];
+    let Some(wire::EdgeSet {
+        top,
+        right,
+        bottom,
+        left,
+    }) = set
+    else {
+        return [
+            (paths[0], None),
+            (paths[1], None),
+            (paths[2], None),
+            (paths[3], None),
+        ];
+    };
+    [
+        (paths[0], top.as_ref().map(edge_color)),
+        (paths[1], right.as_ref().map(edge_color)),
+        (paths[2], bottom.as_ref().map(edge_color)),
+        (paths[3], left.as_ref().map(edge_color)),
+    ]
+}
+
+pub(super) fn character_style_colors(
+    v: &wire::CharacterStyle,
+) -> [(&'static str, Option<&wire::Color>); 4] {
+    let wire::CharacterStyle {
+        bold: _,
+        italic: _,
+        strike: _,
+        inline_code: _,
+        caps: _,
+        small_caps: _,
+        underline: _,
+        vertical_position: _,
+        letter_spacing_percent: _,
+        baseline_offset_percent: _,
+        underline_color,
+        strikethrough_color,
+        declared_font_name: _,
+        font_families: _,
+        font_size_points: _,
+        foreground,
+        background,
+        baseline_offset_points: _,
+        language: _,
+        script: _,
+        feature_flags: _,
+    } = v;
+    [
+        ("underlineColor", underline_color.as_ref()),
+        ("strikethroughColor", strikethrough_color.as_ref()),
+        ("foreground", foreground.as_ref()),
+        ("background", background.as_ref()),
+    ]
+}
+
+pub(super) fn paragraph_style_colors(
+    v: &wire::ParagraphStyle,
+) -> [(&'static str, Option<&wire::Color>); 5] {
+    let wire::ParagraphStyle {
+        alignment: _,
+        direction: _,
+        first_line_indent: _,
+        head_indent: _,
+        tail_indent: _,
+        spacing_before: _,
+        spacing_after: _,
+        line_height: _,
+        borders,
+        shading,
+        columns: _,
+        list_text_distance: _,
+        hanging_indent: _,
+        contextual_spacing: _,
+        east_asian_line_break: _,
+        latin_line_break: _,
+        auto_space_east_asian_latin: _,
+        auto_space_east_asian_number: _,
+        line_height_from_font_metrics: _,
+    } = v;
+    let [top, right, bottom, left] = edge_set_colors(borders.as_ref());
+    [("shading", shading.as_ref()), top, right, bottom, left]
+}
+
+pub(super) fn table_cell_colors(v: &wire::TableCell) -> [(&'static str, Option<&wire::Color>); 5] {
+    let wire::TableCell {
+        row: _,
+        column: _,
+        row_span: _,
+        column_span: _,
+        borders,
+        padding: _,
+        fill,
+        vertical_alignment: _,
+    } = v;
+    let [top, right, bottom, left] = edge_set_colors(Some(borders));
+    [("fill", fill.as_ref()), top, right, bottom, left]
+}
+
 fn validate_character_style(v: &wire::CharacterStyle) -> Result<(), DecodeError> {
     if !strictly_sorted_unique_strings(&v.feature_flags) {
         return Err(invalid("character feature flags are not canonical"));
@@ -588,22 +723,7 @@ fn validate_character_style(v: &wire::CharacterStyle) -> Result<(), DecodeError>
     {
         return Err(invalid("character metric is invalid"));
     }
-    for color in [
-        v.foreground.as_ref(),
-        v.background.as_ref(),
-        v.underline_color.as_ref(),
-        v.strikethrough_color.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if ![color.red, color.green, color.blue, color.alpha]
-            .into_iter()
-            .all(|x| x.is_finite() && (0.0..=1.0).contains(&x))
-        {
-            return Err(invalid("color component is invalid"));
-        }
-    }
+    check_colors(character_style_colors(v))?;
     if v.underline_color.is_some() && v.underline.is_none() {
         return Err(invalid("underline color exists while underline is off"));
     }
@@ -650,7 +770,7 @@ fn validate_paragraph_style(v: &wire::ParagraphStyle) -> Result<(), DecodeError>
             return Err(invalid("column declaration is invalid"));
         }
     }
-    Ok(())
+    check_colors(paragraph_style_colors(v))
 }
 
 fn validate_tab_stops(values: &[wire::TabStop]) -> Result<(), DecodeError> {

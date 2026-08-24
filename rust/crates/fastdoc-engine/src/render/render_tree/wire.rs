@@ -53,6 +53,7 @@ all_string_enums! {
     TabLeader { None => "none", Dot => "dot", Hyphen => "hyphen", Underscore => "underscore" },
     LineBreakGranularity { Word => "word", Hyphen => "hyphen", Character => "character" },
     ListNumberingGlyphs { Decimal => "decimal", CircledDecimal => "circledDecimal", RomanUpper => "romanUpper", RomanLower => "romanLower", LatinUpper => "latinUpper", LatinLower => "latinLower", HangulSyllable => "hangulSyllable", HangulNumber => "hangulNumber", HanjaNumber => "hanjaNumber" },
+    ColorSpace { Srgb => "sRGB", DeviceRgb => "deviceRGB" },
 }
 
 #[allow(clippy::derivable_impls)]
@@ -204,6 +205,7 @@ pub struct Color {
     pub green: f64,
     pub blue: f64,
     pub alpha: f64,
+    pub space: ColorSpace,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
