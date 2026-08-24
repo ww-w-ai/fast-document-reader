@@ -466,6 +466,9 @@ fn validate_payload(
                 return Err(invalid("text run annotation is missing"));
             }
             validate_character_style(&v.style)?;
+            if let Some(column_flow) = &v.column_flow {
+                validate_column_flow(column_flow)?;
+            }
         }
         P::ListItem(v) if !(1..=32).contains(&v.level) => {
             return Err(invalid("list level is invalid"));
@@ -740,7 +743,7 @@ pub(super) fn paragraph_style_colors(
         line_height: _,
         borders,
         shading,
-        columns: _,
+        legacy_columns: _,
         list_text_distance: _,
         hanging_indent: _,
         contextual_spacing: _,
@@ -869,6 +872,9 @@ fn strictly_sorted_unique_strings(values: &[String]) -> bool {
     values.windows(2).all(|pair| pair[0] < pair[1])
 }
 fn validate_paragraph_style(v: &wire::ParagraphStyle) -> Result<(), DecodeError> {
+    if v.legacy_columns.is_some() {
+        return Err(invalid("paragraph columns use the removed wire shape"));
+    }
     for x in [
         v.first_line_indent,
         v.head_indent,
@@ -891,21 +897,101 @@ fn validate_paragraph_style(v: &wire::ParagraphStyle) -> Result<(), DecodeError>
     {
         return Err(invalid("line height is invalid"));
     }
-    if let Some(columns) = &v.columns {
-        if columns.count == 0
-            || columns
-                .widths
-                .iter()
-                .chain(&columns.gaps)
-                .any(|x| !finite_nonnegative(*x))
-        {
-            return Err(invalid("column declaration is invalid"));
-        }
-    }
     if let Some(borders) = &v.borders {
         validate_border_set(borders, false)?;
     }
     check_colors(paragraph_style_colors(v))
+}
+
+fn validate_column_flow(v: &wire::ColumnFlowDeclaration) -> Result<(), DecodeError> {
+    use wire::{ColumnFlowDirection as Direction, ColumnFlowType as Flow, ColumnWidthMode as Mode};
+    if v.count == 0 {
+        return Err(invalid("column flow count is invalid"));
+    }
+    if !finite_nonnegative(v.spacing_points)
+        || v.widths
+            .iter()
+            .chain(&v.gaps)
+            .any(|x| !finite_nonnegative(*x))
+        || !finite_nonnegative(v.separator.width_points)
+    {
+        return Err(invalid("column flow metric is invalid"));
+    }
+    let expected_len =
+        usize::try_from(v.count).map_err(|_| invalid("column flow count is invalid"))?;
+    match v.width_mode {
+        Mode::Equal if !v.widths.is_empty() || !v.gaps.is_empty() => {
+            return Err(invalid("equal column flow has explicit widths or gaps"));
+        }
+        Mode::Absolute | Mode::Proportional
+            if v.widths.len() != expected_len || v.gaps.len() != expected_len =>
+        {
+            return Err(invalid("column flow width or gap cardinality is invalid"));
+        }
+        _ => {}
+    }
+    let expected_mode = if v.source_same_width {
+        Mode::Equal
+    } else if v.source_proportional_widths {
+        Mode::Proportional
+    } else {
+        Mode::Absolute
+    };
+    if v.width_mode != expected_mode {
+        return Err(invalid(
+            "column flow width mode disagrees with source flags",
+        ));
+    }
+    let expected_width = crate::render::office::column_geometry::column_width_code_points(
+        v.separator.source_width_code,
+    )
+    .ok_or_else(|| invalid("column separator width code is invalid"))?;
+    if (v.separator.width_points - expected_width).abs() > 1e-9 {
+        return Err(invalid("column separator width disagrees with source code"));
+    }
+    let raw = v.separator.source_color_ref;
+    let expected = [
+        f64::from(raw & 0xff) / 255.0,
+        f64::from((raw >> 8) & 0xff) / 255.0,
+        f64::from((raw >> 16) & 0xff) / 255.0,
+    ];
+    let color = &v.separator.color;
+    if !matches!(color.space, wire::ColorSpace::Srgb)
+        || color.alpha != 1.0
+        || [color.red, color.green, color.blue]
+            .into_iter()
+            .zip(expected)
+            .any(|(actual, expected)| !actual.is_finite() || (actual - expected).abs() > 1e-12)
+    {
+        return Err(invalid(
+            "column separator color disagrees with source color",
+        ));
+    }
+    if v.source_raw_attributes != 0 {
+        let attr = v.source_raw_attributes;
+        let raw_flow = match attr & 0x03 {
+            1 => Flow::Distribute,
+            2 => Flow::Parallel,
+            _ => Flow::Normal,
+        };
+        let raw_count = u32::from((attr >> 2) & 0xff);
+        let raw_direction = if ((attr >> 10) & 0x03) == 1 {
+            Direction::RightToLeft
+        } else {
+            Direction::LeftToRight
+        };
+        let raw_same_width = attr & (1 << 12) != 0;
+        if v.flow_type != raw_flow
+            || v.count != raw_count
+            || v.direction != raw_direction
+            || v.source_same_width != raw_same_width
+        {
+            return Err(invalid(
+                "column source attributes disagree with semantic fields",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_drawn_border_width(drawn: &wire::DrawnBorder) -> Result<(), DecodeError> {

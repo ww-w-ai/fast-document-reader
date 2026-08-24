@@ -4,6 +4,27 @@
 use std::collections::HashMap;
 use swiftshim::{CGFloat, NSColor};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OfficeColumnFlowType {
+    Normal,
+    Distribute,
+    Parallel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OfficeColumnDirection {
+    LeftToRight,
+    RightToLeft,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum OfficeColumnLayoutError {
+    Count(u16),
+    SeparatorType(u8),
+    SeparatorWidthCode(u8),
+}
+
 /// What a document declares when it says "from here on, N columns", and where those columns sit.
 ///
 /// The declaration arrives at a PARAGRAPH, not on the section: HWP puts a `ColumnDef` control in the
@@ -20,6 +41,7 @@ use swiftshim::{CGFloat, NSColor};
 // swift: Render/Office/ColumnGeometry.swift:3-45
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeColumnLayout {
+    pub flow_type: Option<OfficeColumnFlowType>,
     /// How many columns the text flows through. `1` is the ordinary single column and is carried
     /// rather than dropped: a document that RETURNS to one column says so with a declaration, and
     /// throwing it away would leave the previous one in force for the rest of the document.
@@ -36,30 +58,123 @@ pub struct OfficeColumnLayout {
     pub gaps: Vec<CGFloat>,
     /// Whether `widths`/`gaps` are shares of the whole (`true`) or points (`false`).
     pub proportional: bool,
+    pub same_width: bool,
+    pub direction: OfficeColumnDirection,
     /// The rule drawn between columns — `0` is no rule, which is what 93 of the 149 declarations
     /// say. The other 56 (38%) do draw one.
     pub separator_type: i64,
+    pub separator_width_code: u8,
     pub separator_width_pt: CGFloat,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub separator_color: Option<NSColor>,
+    pub separator_color_ref: Option<u32>,
+    pub source_raw_attributes: Option<u16>,
 }
 
 impl Default for OfficeColumnLayout {
     fn default() -> Self {
         OfficeColumnLayout {
+            flow_type: None,
             count: 1,
             spacing: 0.0,
             widths: Vec::new(),
             gaps: Vec::new(),
             proportional: false,
+            same_width: true,
+            direction: OfficeColumnDirection::LeftToRight,
             separator_type: 0,
-            separator_width_pt: 0.0,
+            separator_width_code: 0,
+            separator_width_pt: 0.1 * 72.0 / 25.4,
             separator_color: None,
+            separator_color_ref: None,
+            source_raw_attributes: None,
         }
     }
 }
 
 impl OfficeColumnLayout {
+    #[allow(dead_code)]
+    pub(crate) fn from_rhwp_column_def(
+        source: &rhwp::model::page::ColumnDef,
+    ) -> Result<Self, OfficeColumnLayoutError> {
+        use rhwp::model::page::{ColumnDirection, ColumnType};
+
+        let rhwp::model::page::ColumnDef {
+            column_type,
+            column_count,
+            direction,
+            same_width,
+            spacing,
+            widths,
+            gaps,
+            proportional_widths,
+            separator_type,
+            separator_width,
+            separator_color,
+            raw_attr,
+        } = source;
+        if *column_count == 0 {
+            return Err(OfficeColumnLayoutError::Count(*column_count));
+        }
+        if *separator_type > 7 {
+            return Err(OfficeColumnLayoutError::SeparatorType(*separator_type));
+        }
+
+        let flow_type = match column_type {
+            ColumnType::Normal => OfficeColumnFlowType::Normal,
+            ColumnType::Distribute => OfficeColumnFlowType::Distribute,
+            ColumnType::Parallel => OfficeColumnFlowType::Parallel,
+        };
+        let direction = match direction {
+            ColumnDirection::LeftToRight => OfficeColumnDirection::LeftToRight,
+            ColumnDirection::RightToLeft => OfficeColumnDirection::RightToLeft,
+        };
+        let width_pt = column_width_code_points(*separator_width).ok_or(
+            OfficeColumnLayoutError::SeparatorWidthCode(*separator_width),
+        )?;
+        let raw_color = *separator_color;
+        let color = NSColor::srgb(
+            f64::from(raw_color & 0xff) / 255.0,
+            f64::from((raw_color >> 8) & 0xff) / 255.0,
+            f64::from((raw_color >> 16) & 0xff) / 255.0,
+            1.0,
+        );
+        Ok(Self {
+            flow_type: Some(flow_type),
+            count: i64::from(*column_count),
+            spacing: f64::from(*spacing) / 100.0,
+            widths: widths
+                .iter()
+                .map(|value| {
+                    if *proportional_widths {
+                        f64::from(*value)
+                    } else {
+                        f64::from(*value) / 100.0
+                    }
+                })
+                .collect(),
+            gaps: gaps
+                .iter()
+                .map(|value| {
+                    if *proportional_widths {
+                        f64::from(*value)
+                    } else {
+                        f64::from(*value) / 100.0
+                    }
+                })
+                .collect(),
+            proportional: *proportional_widths,
+            same_width: *same_width,
+            direction,
+            separator_type: i64::from(*separator_type),
+            separator_width_code: *separator_width,
+            separator_width_pt: width_pt,
+            separator_color: (*separator_type != 0).then_some(color),
+            separator_color_ref: Some(raw_color),
+            source_raw_attributes: Some(*raw_attr),
+        })
+    }
+
     /// Whether this declaration actually splits the text. A `count` of one is a declaration to
     /// STOP, and every consumer wants to tell the two apart without repeating the comparison.
     // swift: Render/Office/ColumnGeometry.swift:41-41
@@ -71,6 +186,75 @@ impl OfficeColumnLayout {
     // swift: Render/Office/ColumnGeometry.swift:43-43
     pub fn draws_separator(&self) -> bool {
         self.separator_type != 0 && self.splits_text()
+    }
+}
+
+pub(crate) fn column_width_code_points(code: u8) -> Option<CGFloat> {
+    const MILLIMETERS: [CGFloat; 16] = [
+        0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0,
+    ];
+    MILLIMETERS
+        .get(usize::from(code))
+        .map(|mm| mm * 72.0 / 25.4)
+}
+
+#[cfg(test)]
+mod s2a1d_tests {
+    use super::*;
+    use rhwp::model::page::{ColumnDef, ColumnDirection, ColumnType};
+
+    #[test]
+    fn pinned_column_def_fields_are_converted_without_loss() {
+        let source = ColumnDef {
+            column_type: ColumnType::Parallel,
+            column_count: 3,
+            direction: ColumnDirection::RightToLeft,
+            same_width: false,
+            spacing: 250,
+            widths: vec![1000, 1100, 1200],
+            gaps: vec![100, 101, 102],
+            proportional_widths: false,
+            separator_type: 4,
+            separator_width: 7,
+            separator_color: 0xaa33_2211,
+            raw_attr: 0xabcd,
+        };
+        let actual = OfficeColumnLayout::from_rhwp_column_def(&source).unwrap();
+        assert_eq!(actual.flow_type, Some(OfficeColumnFlowType::Parallel));
+        assert_eq!(actual.count, 3);
+        assert_eq!(actual.direction, OfficeColumnDirection::RightToLeft);
+        assert!(!actual.same_width && !actual.proportional);
+        assert_eq!(actual.spacing, 2.5);
+        assert_eq!(actual.widths, vec![10.0, 11.0, 12.0]);
+        assert_eq!(actual.gaps, vec![1.0, 1.01, 1.02]);
+        assert_eq!((actual.separator_type, actual.separator_width_code), (4, 7));
+        assert_eq!(actual.separator_color_ref, Some(0xaa33_2211));
+        assert_eq!(actual.source_raw_attributes, Some(0xabcd));
+        assert_eq!(
+            actual.separator_color.unwrap().redComponent(),
+            0x11 as f64 / 255.0
+        );
+    }
+
+    #[test]
+    fn pinned_column_def_rejects_invalid_closed_values() {
+        let mut source = ColumnDef::default();
+        assert_eq!(
+            OfficeColumnLayout::from_rhwp_column_def(&source),
+            Err(OfficeColumnLayoutError::Count(0))
+        );
+        source.column_count = 1;
+        source.separator_type = 8;
+        assert_eq!(
+            OfficeColumnLayout::from_rhwp_column_def(&source),
+            Err(OfficeColumnLayoutError::SeparatorType(8))
+        );
+        source.separator_type = 0;
+        source.separator_width = 16;
+        assert_eq!(
+            OfficeColumnLayout::from_rhwp_column_def(&source),
+            Err(OfficeColumnLayoutError::SeparatorWidthCode(16))
+        );
     }
 }
 

@@ -186,11 +186,6 @@
             "alpha": 1,
             "space": "sRGB"
           },
-          "columns": {
-            "count": 1,
-            "widths": [],
-            "gaps": []
-          },
           "eastAsianLineBreak": "character",
           "latinLineBreak": "word",
           "autoSpaceEastAsianLatin": true,
@@ -286,7 +281,32 @@
         },
         "footnoteReferenceNumber": 1,
         "formControl": { "kind": "checkBox", "caption": "Inline", "text": "", "value": 1, "enabled": true },
-        "pageNumberField": "page"
+        "pageNumberField": "page",
+        "columnFlow": {
+          "count": 3,
+          "spacingPoints": 0,
+          "widths": [10000, 10000, 10000],
+          "gaps": [922, 922, 924],
+          "flowType": "parallel",
+          "direction": "rightToLeft",
+          "widthMode": "proportional",
+          "sourceSameWidth": false,
+          "sourceProportionalWidths": true,
+          "sourceRawAttributes": 33806,
+          "separator": {
+            "style": "dashDot",
+            "sourceWidthCode": 0,
+            "widthPoints": 0.2834645669291339,
+            "sourceColorRef": 3351057,
+            "color": {
+              "red": 0.06666666666666667,
+              "green": 0.13333333333333333,
+              "blue": 0.2,
+              "alpha": 1,
+              "space": "sRGB"
+            }
+          }
+        }
       }
     },
     {

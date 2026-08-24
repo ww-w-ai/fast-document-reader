@@ -16,16 +16,18 @@ pub(crate) mod wire;
 pub use wire::{
     Affinity, Alignment, Annotations as RenderAnnotationsDraft, Bookmark, BorderDeclaration,
     BorderLineStyle, BorderSet, CellDiagonal, CellDiagonalDirection, CharacterStyle, CodeBlock,
-    Color, ColorSpace, Columns, Comment, Diagram, DiagramLanguage, Direction,
+    Color, ColorSpace, ColumnFlowDeclaration, ColumnFlowDirection, ColumnFlowType, ColumnSeparator,
+    ColumnSeparatorStyle, ColumnWidthMode, Comment, Diagram, DiagramLanguage, Direction,
     Document as RenderDocumentDraft, DocumentFormat, DrawnBorder, EditMetadata, EditOperation,
     Empty, Field, Footnote, FormControl, FormControlKind, Formula, Heading, Image,
     InlineFormControl, Insets, LineBreak, LineBreakGranularity, LineBreakKind, LineHeight, List,
     ListItem, ListNumberingGlyphs, Node as RenderNodeDraft, NodePayload, Numbering, OptionalInsets,
     PageNumberField, PageNumbering, Paper, Paragraph, ParagraphStyle, PathCommand, RangeSegment,
-    RawHtml, Resource as RenderResourceDraft, Section, Size, SourceDescriptor as RenderSourceDraft,
-    SourceKind, SourceSpan, SpanPurpose, TabAlignment, TabLeader, TabStop, Table, TableCell,
-    TablePageBreakPolicy, TableRow, TableStyle, TaskListItem, TextRun, UnderlineStyle,
-    UniformBorder, Unsupported, Vector, VerticalAlignment, VerticalPosition,
+    RawHtml, Resource as RenderResourceDraft, Section, SectionColumns, Size,
+    SourceDescriptor as RenderSourceDraft, SourceKind, SourceSpan, SpanPurpose, TabAlignment,
+    TabLeader, TabStop, Table, TableCell, TablePageBreakPolicy, TableRow, TableStyle, TaskListItem,
+    TextRun, UnderlineStyle, UniformBorder, Unsupported, Vector, VerticalAlignment,
+    VerticalPosition,
 };
 
 pub use validate::{resolve_cell_borders, resolve_cell_padding, CellSide, ResolvedEdge};
@@ -157,6 +159,46 @@ mod tests {
         };
         paragraph.tab_stops[0].position_points = f64::NAN;
         assert_invariant(tab, "tab stops are not finite strictly increasing");
+    }
+
+    #[test]
+    fn typed_non_finite_column_flow_metrics_reach_the_validator() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut spacing = fixture();
+            let wire::NodePayload::TextRun(run) = &mut spacing.nodes[5].payload else {
+                unreachable!()
+            };
+            run.column_flow.as_mut().unwrap().spacing_points = value;
+            assert_invariant(spacing, "column flow metric is invalid");
+
+            let mut separator = fixture();
+            let wire::NodePayload::TextRun(run) = &mut separator.nodes[5].payload else {
+                unreachable!()
+            };
+            run.column_flow.as_mut().unwrap().separator.width_points = value;
+            assert_invariant(separator, "column flow metric is invalid");
+
+            let mut width = fixture();
+            let wire::NodePayload::TextRun(run) = &mut width.nodes[5].payload else {
+                unreachable!()
+            };
+            run.column_flow.as_mut().unwrap().widths[0] = value;
+            assert_invariant(width, "column flow metric is invalid");
+
+            let mut gap = fixture();
+            let wire::NodePayload::TextRun(run) = &mut gap.nodes[5].payload else {
+                unreachable!()
+            };
+            run.column_flow.as_mut().unwrap().gaps[0] = value;
+            assert_invariant(gap, "column flow metric is invalid");
+
+            let mut color = fixture();
+            let wire::NodePayload::TextRun(run) = &mut color.nodes[5].payload else {
+                unreachable!()
+            };
+            run.column_flow.as_mut().unwrap().separator.color.red = value;
+            assert_invariant(color, "column separator color disagrees with source color");
+        }
     }
 
     fn set_channel(color: &mut wire::Color, channel: usize, value: f64) {

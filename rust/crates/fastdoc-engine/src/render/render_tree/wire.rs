@@ -57,6 +57,10 @@ all_string_enums! {
     BorderLineStyle { Solid => "solid", Dashed => "dashed", Dotted => "dotted", Double => "double" },
     CellDiagonalDirection { Slash => "slash", Backslash => "backslash", Both => "both" },
     TablePageBreakPolicy { Never => "never", AtRowBoundary => "atRowBoundary", Anywhere => "anywhere" },
+    ColumnFlowType { Normal => "normal", Distribute => "distribute", Parallel => "parallel" },
+    ColumnFlowDirection { LeftToRight => "leftToRight", RightToLeft => "rightToLeft" },
+    ColumnWidthMode { Equal => "equal", Absolute => "absolute", Proportional => "proportional" },
+    ColumnSeparatorStyle { None => "none", Solid => "solid", Dash => "dash", Dot => "dot", DashDot => "dashDot", DashDotDot => "dashDotDot", LongDash => "longDash", Circle => "circle" },
 }
 
 #[allow(clippy::derivable_impls)]
@@ -380,8 +384,8 @@ pub struct ParagraphStyle {
     pub borders: Option<BorderSet>,
     #[serde(default)]
     pub shading: Option<Color>,
-    #[serde(default)]
-    pub columns: Option<Columns>,
+    #[serde(default, rename = "columns", skip_serializing)]
+    pub(crate) legacy_columns: Option<SectionColumns>,
     #[serde(default)]
     pub list_text_distance: Option<f64>,
     #[serde(default)]
@@ -408,12 +412,38 @@ pub struct LineHeight {
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Columns {
+pub struct SectionColumns {
     pub count: u32,
     #[serde(default)]
     pub widths: Vec<f64>,
     #[serde(default)]
     pub gaps: Vec<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnSeparator {
+    pub style: ColumnSeparatorStyle,
+    pub source_width_code: u8,
+    pub width_points: f64,
+    pub source_color_ref: u32,
+    pub color: Color,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnFlowDeclaration {
+    pub count: u32,
+    pub spacing_points: f64,
+    pub widths: Vec<f64>,
+    pub gaps: Vec<f64>,
+    pub flow_type: ColumnFlowType,
+    pub direction: ColumnFlowDirection,
+    pub width_mode: ColumnWidthMode,
+    pub source_same_width: bool,
+    pub source_proportional_widths: bool,
+    pub source_raw_attributes: u16,
+    pub separator: ColumnSeparator,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -433,7 +463,7 @@ pub struct PageNumbering {
 #[serde(rename_all = "camelCase")]
 pub struct Section {
     pub paper: Option<Paper>,
-    pub columns: Option<Columns>,
+    pub columns: Option<SectionColumns>,
     #[serde(default)]
     pub header_ids: Vec<u64>,
     #[serde(default)]
@@ -492,6 +522,8 @@ pub struct TextRun {
     pub form_control: Option<InlineFormControl>,
     #[serde(default)]
     pub page_number_field: Option<PageNumberField>,
+    #[serde(default)]
+    pub column_flow: Option<ColumnFlowDeclaration>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

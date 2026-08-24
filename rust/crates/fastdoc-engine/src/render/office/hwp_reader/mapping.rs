@@ -1351,20 +1351,30 @@ impl HwpReader {
     fn column_layout(cd: &HwpColumnDef) -> OfficeColumnLayout {
         // The rule's thickness reuses HWP's sixteen-step line-width table, the same one a cell
         // diagonal and a footnote separator are measured with — one table, three consumers.
-        let rule = if cd.separator_type.unwrap_or(0) != 0 {
-            Self::diagonal_width_pt(Some(cd.separator_width.unwrap_or(0)))
-        } else {
-            0.0
-        };
+        let rule = Self::diagonal_width_pt(Some(cd.separator_width.unwrap_or(0)));
         OfficeColumnLayout {
+            flow_type: None,
             count: cd.column_count.max(1),
             spacing: cd.column_spacing_pt.unwrap_or(0.0) as CGFloat,
             widths: cd.column_widths.clone().unwrap_or_default().into_iter().map(|w| w as CGFloat).collect(),
             gaps: cd.column_gaps.clone().unwrap_or_default().into_iter().map(|g| g as CGFloat).collect(),
             proportional: cd.proportional_widths.unwrap_or(false),
+            same_width: cd.same_width.unwrap_or(false),
+            direction: if cd.direction.as_deref() == Some("rightToLeft") {
+                crate::render::office::column_geometry::OfficeColumnDirection::RightToLeft
+            } else {
+                crate::render::office::column_geometry::OfficeColumnDirection::LeftToRight
+            },
             separator_type: cd.separator_type.unwrap_or(0),
+            separator_width_code: cd.separator_width.unwrap_or(0).clamp(0, 15) as u8,
             separator_width_pt: rule,
-            separator_color: if rule > 0.0 { Self::color(cd.separator_color.as_deref()) } else { None },
+            separator_color: if cd.separator_type.unwrap_or(0) != 0 {
+                Self::color(cd.separator_color.as_deref())
+            } else {
+                None
+            },
+            separator_color_ref: None,
+            source_raw_attributes: None,
         }
     }
 }

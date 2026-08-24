@@ -1,6 +1,10 @@
 //! Mechanical S2A1b decisions for the current Office run/paragraph/list source vocabulary.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use super::wire;
+use crate::render::office::column_geometry::{
+    OfficeColumnDirection, OfficeColumnFlowType, OfficeColumnLayout,
+};
 use crate::render::office::office_block::{
     BorderSide, Cell, CellDiagonal, EdgeBorders, EdgePadding, ListNumbering, OfficeBlock,
     ParagraphFormat, Span, TabStop, TableFormat,
@@ -141,7 +145,11 @@ pub enum AccountingError {
     WrongBlockVariant(&'static str),
     ConflictingVerticalPosition,
     HostResolvedFontAtSemanticBoundary,
-    ColumnLayoutRequiresFlowSchema,
+    InvalidOfficeColumnCount(i64),
+    InvalidOfficeColumnSeparatorType(i64),
+    IncompleteOfficeColumnAuthority,
+    InvalidOfficeColumnSeparatorWidth,
+    InvalidOfficeColumnSeparatorColor,
     UnknownParagraphBorderBits(i64),
     InvalidRowSpan(i64),
     InvalidColumnSpan(i64),
@@ -339,10 +347,10 @@ pub(crate) fn account_current_office_slice(
         return Err(AccountingError::HostResolvedFontAtSemanticBoundary);
     }
     ledger.record(deferred("Span.resolved_font_descriptor"))?;
-    if column_layout.is_some() {
-        return Err(AccountingError::ColumnLayoutRequiresFlowSchema);
+    if let Some(layout) = column_layout {
+        let _ = column_flow_from_office(layout)?;
     }
-    ledger.record(deferred("Span.column_layout"))?;
+    ledger.record(mapped("Span.column_layout"))?;
 
     let ParagraphFormat {
         list_text_distance,
@@ -475,6 +483,115 @@ pub(crate) fn account_current_office_slice(
     );
 
     ledger.finish()
+}
+
+pub(crate) fn column_flow_from_office(
+    layout: &OfficeColumnLayout,
+) -> Result<wire::ColumnFlowDeclaration, AccountingError> {
+    let OfficeColumnLayout {
+        flow_type,
+        count,
+        spacing,
+        widths,
+        gaps,
+        proportional,
+        same_width,
+        direction,
+        separator_type,
+        separator_width_code,
+        separator_width_pt,
+        separator_color,
+        separator_color_ref,
+        source_raw_attributes,
+    } = layout;
+    let count = u32::try_from(*count)
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or(AccountingError::InvalidOfficeColumnCount(*count))?;
+    let flow_type = match flow_type
+        .as_ref()
+        .ok_or(AccountingError::IncompleteOfficeColumnAuthority)?
+    {
+        OfficeColumnFlowType::Normal => wire::ColumnFlowType::Normal,
+        OfficeColumnFlowType::Distribute => wire::ColumnFlowType::Distribute,
+        OfficeColumnFlowType::Parallel => wire::ColumnFlowType::Parallel,
+    };
+    let direction = match direction {
+        OfficeColumnDirection::LeftToRight => wire::ColumnFlowDirection::LeftToRight,
+        OfficeColumnDirection::RightToLeft => wire::ColumnFlowDirection::RightToLeft,
+    };
+    let style = match *separator_type {
+        0 => wire::ColumnSeparatorStyle::None,
+        1 => wire::ColumnSeparatorStyle::Solid,
+        2 => wire::ColumnSeparatorStyle::Dash,
+        3 => wire::ColumnSeparatorStyle::Dot,
+        4 => wire::ColumnSeparatorStyle::DashDot,
+        5 => wire::ColumnSeparatorStyle::DashDotDot,
+        6 => wire::ColumnSeparatorStyle::LongDash,
+        7 => wire::ColumnSeparatorStyle::Circle,
+        other => return Err(AccountingError::InvalidOfficeColumnSeparatorType(other)),
+    };
+    let raw = separator_color_ref.ok_or(AccountingError::IncompleteOfficeColumnAuthority)?;
+    let source_raw_attributes =
+        source_raw_attributes.ok_or(AccountingError::IncompleteOfficeColumnAuthority)?;
+    let expected_width =
+        crate::render::office::column_geometry::column_width_code_points(*separator_width_code)
+            .ok_or(AccountingError::InvalidOfficeColumnSeparatorWidth)?;
+    if (*separator_width_pt - expected_width).abs() > 1e-9 {
+        return Err(AccountingError::InvalidOfficeColumnSeparatorWidth);
+    }
+    let expected_color = [
+        f64::from(raw & 0xff) / 255.0,
+        f64::from((raw >> 8) & 0xff) / 255.0,
+        f64::from((raw >> 16) & 0xff) / 255.0,
+    ];
+    let color_matches = separator_color.as_ref().is_some_and(|color| {
+        [
+            color.redComponent(),
+            color.greenComponent(),
+            color.blueComponent(),
+        ]
+        .into_iter()
+        .zip(expected_color)
+        .all(|(actual, expected)| (actual - expected).abs() <= 1e-12)
+            && (color.alphaComponent() - 1.0).abs() <= 1e-12
+    });
+    if (*separator_type == 0 && separator_color.is_some())
+        || (*separator_type != 0 && !color_matches)
+    {
+        return Err(AccountingError::InvalidOfficeColumnSeparatorColor);
+    }
+    Ok(wire::ColumnFlowDeclaration {
+        count,
+        spacing_points: *spacing,
+        widths: widths.clone(),
+        gaps: gaps.clone(),
+        flow_type,
+        direction,
+        width_mode: if *same_width {
+            wire::ColumnWidthMode::Equal
+        } else if *proportional {
+            wire::ColumnWidthMode::Proportional
+        } else {
+            wire::ColumnWidthMode::Absolute
+        },
+        source_same_width: *same_width,
+        source_proportional_widths: *proportional,
+        source_raw_attributes,
+        separator: wire::ColumnSeparator {
+            style,
+            source_width_code: *separator_width_code,
+            width_points: *separator_width_pt,
+            source_color_ref: raw,
+            color: wire::Color {
+                red: f64::from(raw & 0xff) / 255.0,
+                green: f64::from((raw >> 8) & 0xff) / 255.0,
+                blue: f64::from((raw >> 16) & 0xff) / 255.0,
+                alpha: 1.0,
+                space: wire::ColorSpace::Srgb,
+            },
+        },
+    })
 }
 
 pub(crate) fn account_table_cell_source_layers(
@@ -803,7 +920,7 @@ mod tests {
         });
         let ledger = account(span).unwrap();
         assert_eq!(ledger.decision_count(), 71);
-        assert_eq!(ledger.deferred_count(), 2);
+        assert_eq!(ledger.deferred_count(), 1);
     }
 
     #[test]
@@ -825,7 +942,7 @@ mod tests {
         columns.column_layout = Some(OfficeColumnLayout::default());
         assert_eq!(
             account(columns).unwrap_err(),
-            AccountingError::ColumnLayoutRequiresFlowSchema
+            AccountingError::IncompleteOfficeColumnAuthority
         );
         let mut invalid = ParagraphFormat::default();
         invalid.border_edges = RectEdge { raw_value: 0x20 };
@@ -838,6 +955,54 @@ mod tests {
             .unwrap_err(),
             AccountingError::UnknownParagraphBorderBits(0x20)
         );
+    }
+
+    #[test]
+    fn reconciled_office_column_fields_map_once_and_check_derived_values() {
+        let mut layout = OfficeColumnLayout {
+            flow_type: Some(OfficeColumnFlowType::Distribute),
+            count: 2,
+            spacing: 12.0,
+            widths: vec![100.0, 200.0],
+            gaps: vec![10.0, 20.0],
+            proportional: true,
+            same_width: false,
+            direction: OfficeColumnDirection::RightToLeft,
+            separator_type: 2,
+            separator_width_code: 7,
+            separator_width_pt: crate::render::office::column_geometry::column_width_code_points(7)
+                .unwrap(),
+            separator_color: Some(NSColor::srgb(
+                0x11 as f64 / 255.0,
+                0x22 as f64 / 255.0,
+                0x33 as f64 / 255.0,
+                1.0,
+            )),
+            separator_color_ref: Some(0x0033_2211),
+            source_raw_attributes: Some(0),
+        };
+        let flow = column_flow_from_office(&layout).unwrap();
+        assert_eq!(
+            (flow.count, flow.widths, flow.gaps),
+            (2, vec![100.0, 200.0], vec![10.0, 20.0])
+        );
+        assert_eq!(flow.flow_type, wire::ColumnFlowType::Distribute);
+        assert_eq!(flow.direction, wire::ColumnFlowDirection::RightToLeft);
+        assert_eq!(flow.width_mode, wire::ColumnWidthMode::Proportional);
+        assert_eq!(flow.separator.source_color_ref, 0x0033_2211);
+
+        layout.separator_width_pt = 0.0;
+        assert!(matches!(
+            column_flow_from_office(&layout),
+            Err(AccountingError::InvalidOfficeColumnSeparatorWidth)
+        ));
+        layout.separator_width_pt =
+            crate::render::office::column_geometry::column_width_code_points(7).unwrap();
+        layout.separator_color = Some(NSColor::black());
+        assert!(matches!(
+            column_flow_from_office(&layout),
+            Err(AccountingError::InvalidOfficeColumnSeparatorColor)
+        ));
     }
 
     #[test]

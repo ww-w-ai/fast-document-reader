@@ -37,6 +37,80 @@ fn exhaustive_fixture_is_checked_deterministic_and_covers_every_node_tag() {
 }
 
 #[test]
+fn column_flow_matrix_and_malformed_wire_branches_are_checked() {
+    let mut equal = exhaustive_value();
+    let flow = &mut equal["nodes"][5]["data"]["columnFlow"];
+    flow["count"] = 2.into();
+    flow["widths"] = serde_json::json!([]);
+    flow["gaps"] = serde_json::json!([]);
+    flow["widthMode"] = "equal".into();
+    flow["sourceSameWidth"] = true.into();
+    flow["sourceProportionalWidths"] = true.into();
+    flow["sourceRawAttributes"] = 0.into();
+    decode_value(&equal).unwrap();
+
+    let mut absolute = exhaustive_value();
+    let flow = &mut absolute["nodes"][5]["data"]["columnFlow"];
+    flow["count"] = 2.into();
+    flow["widths"] = serde_json::json!([200.0, 180.0]);
+    flow["gaps"] = serde_json::json!([20.0, 0.0]);
+    flow["widthMode"] = "absolute".into();
+    flow["sourceSameWidth"] = false.into();
+    flow["sourceProportionalWidths"] = false.into();
+    flow["sourceRawAttributes"] = 0.into();
+    decode_value(&absolute).unwrap();
+
+    let mut return_to_one = equal.clone();
+    return_to_one["nodes"][5]["data"]["columnFlow"]["count"] = 1.into();
+    decode_value(&return_to_one).unwrap();
+
+    let mut inactive_separator = equal.clone();
+    let separator = &mut inactive_separator["nodes"][5]["data"]["columnFlow"]["separator"];
+    separator["style"] = "none".into();
+    separator["sourceWidthCode"] = 7.into();
+    separator["widthPoints"] = serde_json::json!(1.4173228346456694);
+    decode_value(&inactive_separator).unwrap();
+
+    for (name, mutation) in [
+        ("zero count", ("count", serde_json::json!(0))),
+        ("wrong cardinality", ("widths", serde_json::json!([1.0]))),
+        (
+            "negative spacing",
+            ("spacingPoints", serde_json::json!(-1.0)),
+        ),
+        (
+            "raw disagreement",
+            ("sourceRawAttributes", serde_json::json!(4)),
+        ),
+        (
+            "width mode disagreement",
+            ("widthMode", serde_json::json!("absolute")),
+        ),
+    ] {
+        let mut bad = exhaustive_value();
+        bad["nodes"][5]["data"]["columnFlow"][mutation.0] = mutation.1;
+        assert!(decode_value(&bad).is_err(), "mutation survived: {name}");
+    }
+    for (name, field, value) in [
+        (
+            "invalid width code",
+            "sourceWidthCode",
+            serde_json::json!(16),
+        ),
+        ("width disagreement", "widthPoints", serde_json::json!(9.0)),
+        ("color disagreement", "sourceColorRef", serde_json::json!(0)),
+    ] {
+        let mut bad = exhaustive_value();
+        bad["nodes"][5]["data"]["columnFlow"]["separator"][field] = value;
+        assert!(decode_value(&bad).is_err(), "mutation survived: {name}");
+    }
+    let mut old_paragraph_wire = exhaustive_value();
+    old_paragraph_wire["nodes"][4]["data"]["style"]["columns"] =
+        serde_json::json!({"count": 1, "widths": [], "gaps": []});
+    assert!(decode_value(&old_paragraph_wire).is_err());
+}
+
+#[test]
 fn all_six_document_formats_decode_through_the_checked_boundary() {
     let fixtures: Vec<Value> = serde_json::from_slice(FORMATS).unwrap();
     assert_eq!(fixtures.len(), 6);
@@ -270,6 +344,29 @@ fn every_macro_enum_value_is_exercised_by_a_checked_fixture_variant() {
                 }
                 "TablePageBreakPolicy" => {
                     fixture["nodes"][13]["data"]["style"]["pageBreakPolicy"] = (*value).into()
+                }
+                "ColumnFlowType" => {
+                    fixture["nodes"][5]["data"]["columnFlow"]["sourceRawAttributes"] = 0.into();
+                    fixture["nodes"][5]["data"]["columnFlow"]["flowType"] = (*value).into()
+                }
+                "ColumnFlowDirection" => {
+                    fixture["nodes"][5]["data"]["columnFlow"]["sourceRawAttributes"] = 0.into();
+                    fixture["nodes"][5]["data"]["columnFlow"]["direction"] = (*value).into()
+                }
+                "ColumnWidthMode" => {
+                    let flow = &mut fixture["nodes"][5]["data"]["columnFlow"];
+                    flow["sourceRawAttributes"] = 0.into();
+                    flow["widthMode"] = (*value).into();
+                    flow["sourceSameWidth"] = (*value == "equal").into();
+                    flow["sourceProportionalWidths"] = (*value == "proportional").into();
+                    if *value == "equal" {
+                        flow["widths"] = serde_json::json!([]);
+                        flow["gaps"] = serde_json::json!([]);
+                    }
+                }
+                "ColumnSeparatorStyle" => {
+                    fixture["nodes"][5]["data"]["columnFlow"]["separator"]["style"] =
+                        (*value).into()
                 }
                 other => panic!("enum catalog has no checked fixture route: {other}"),
             }
