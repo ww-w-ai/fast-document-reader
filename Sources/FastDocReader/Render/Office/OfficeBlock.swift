@@ -987,6 +987,7 @@ struct OfficeMasterObject: Equatable {
     enum Content: Equatable {
         case image(NSImage)
         case drawing(Data)
+        case vector(HwpShapeRenderer.VectorGraphic)
         case text([OfficeBlock])
     }
 }
@@ -1250,6 +1251,7 @@ struct OfficeReadResult: Equatable {
     /// (both zip readers, all tests) keeps compiling and means exactly what it always meant: nothing
     /// pre-decoded, resolve from the archive.
     var images: [String: Data] = [:]
+    var vectorGraphics: [String: HwpShapeRenderer.VectorGraphic] = [:]
     /// The document's own default BODY run size in points — the other half of `OfficeTextBuilder`'s
     /// font-size model (`documentDefaultFontSize`), used to scale every absolute size to the reader's
     /// base. For HWP this is the Normal("바탕글") style's char-shape base size, decoded from the rhwp
@@ -1514,10 +1516,10 @@ extension OfficeReadResult: Decodable {
     /// `images` crosses as base64 strings, the native JSON representation Foundation's `Data`
     /// decoder consumes.
     enum CodingKeys: String, CodingKey {
-        case blocks, comments, images, defaultBodyFontSize, declaredFaces, pageContentWidth
+        case blocks, comments, images, vectorGraphics, defaultBodyFontSize, declaredFaces, pageContentWidth
         case pageMarginLeft, pageMarginRight, pageContentHeight, pageMarginTop, pageMarginBottom
         case pageHeaderDistance, pageFooterDistance, headers, footers, footnotes
-        case sections, sectionStartBlocks, keepWithNextBlocks, pageBreakBlocks, hidePageNumberBlocks
+        case masterPages, anchoredObjects, sections, sectionStartBlocks, keepWithNextBlocks, pageBreakBlocks, hidePageNumberBlocks
         case pageNumberRestartBlocks, lineGridPitch
     }
 }
@@ -1595,7 +1597,7 @@ extension Span: Decodable {
 
 extension Cell: Decodable {
     enum CodingKeys: String, CodingKey {
-        case blocks, rowSpan, colSpan, backgroundColor, borderColor
+        case blocks, rowSpan, colSpan, backgroundColor, backgroundImage, borderColor
         case borderWidth, edgeBorders, width, verticalAlignment, padding
         case edgePadding, diagonal, styleShading, styleBorderColor, styleBorderWidth
     }
@@ -1605,6 +1607,7 @@ extension Cell: Decodable {
         rowSpan = try c.decode(Int.self, forKey: .rowSpan)
         colSpan = try c.decode(Int.self, forKey: .colSpan)
         backgroundColor = try c.decodeIfPresent(WireColor.self, forKey: .backgroundColor)?.color
+        backgroundImage = try c.decodeIfPresent(WireImage.self, forKey: .backgroundImage)?.image
         borderColor = try c.decodeIfPresent(WireColor.self, forKey: .borderColor)?.color
         borderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .borderWidth)
         edgeBorders = try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders)
@@ -1621,7 +1624,7 @@ extension Cell: Decodable {
 
 extension TableFormat: Decodable {
     enum CodingKeys: String, CodingKey {
-        case defaultBorderColor, defaultBorderWidth, defaultShading, sourceWidth, edgeBorders
+        case defaultBorderColor, defaultBorderWidth, defaultShading, backgroundImage, sourceWidth, edgeBorders
         case defaultPadding, repeatHeaderRows, pageBreakPolicy, outerMargin
     }
     public init(from decoder: Decoder) throws {
@@ -1629,6 +1632,7 @@ extension TableFormat: Decodable {
         defaultBorderColor = try c.decodeIfPresent(WireColor.self, forKey: .defaultBorderColor)?.color
         defaultBorderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .defaultBorderWidth)
         defaultShading = try c.decodeIfPresent(WireColor.self, forKey: .defaultShading)?.color
+        backgroundImage = try c.decodeIfPresent(WireImage.self, forKey: .backgroundImage)?.image
         sourceWidth = try c.decodeIfPresent(CGFloat.self, forKey: .sourceWidth)
         edgeBorders = try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders)
         defaultPadding = try c.decodeIfPresent(EdgePadding.self, forKey: .defaultPadding)

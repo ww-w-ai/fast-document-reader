@@ -1,9 +1,7 @@
 //! The document, as it crosses to a host — and the check that says nothing was lost on the way.
 //!
-//! Five places in the vocabulary hold something that cannot be written down: an AppKit font
-//! descriptor, decoded picture bytes, a pre-rendered vector drawing. They are `#[serde(skip)]`, and
-//! a skip on its own is the quietest kind of data loss — the document still arrives, still renders,
-//! just without the thing that was dropped, and nothing says so.
+//! The one value that cannot cross is an AppKit font descriptor. Images cross as encoded bytes and
+//! drawings cross as vector commands for the host painter; neither is silently skipped.
 //!
 //! So the skips are paired with `assert_exportable`. Every one of them is empty for the readers
 //! this boundary carries — the zip readers leave pictures in the archive for the host to resolve,
@@ -26,7 +24,7 @@ pub struct OfficeDocumentEnvelope {
 }
 
 /// The version this build writes. Bump when the shape changes in a way a host must notice.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// What a read result carried that this boundary cannot.
 #[derive(Debug, PartialEq)]
@@ -34,18 +32,14 @@ pub enum NotExportable {
     /// A span already has a resolved substitute face. Font resolution belongs to the host and runs
     /// after the read, so a reader producing one means that order changed.
     ResolvedFontDescriptor,
-    /// A table or cell carries decoded picture pixels.
-    BackgroundImage,
-    /// Master pages (바탕쪽) or paragraph-anchored objects: pictures and pre-rendered drawings.
-    PaperObjects,
 }
 
 impl NotExportable {
     pub fn description(&self) -> &'static str {
         match self {
-            Self::ResolvedFontDescriptor => "a span carries a resolved font descriptor, which cannot cross to a host",
-            Self::BackgroundImage => "a table or cell carries decoded picture pixels",
-            Self::PaperObjects => "the document carries master-page or anchored objects",
+            Self::ResolvedFontDescriptor => {
+                "a span carries a resolved font descriptor, which cannot cross to a host"
+            }
         }
     }
 }
@@ -55,9 +49,6 @@ impl NotExportable {
 /// Deliberately a hard check rather than a lossy export: a host that renders a document with its
 /// pictures missing looks like a rendering bug for as long as it takes someone to find this file.
 pub fn assert_exportable(result: &OfficeReadResult) -> Result<(), NotExportable> {
-    if !result.master_pages.is_empty() || !result.anchored_objects.is_empty() {
-        return Err(NotExportable::PaperObjects);
-    }
     check_blocks(&result.blocks)?;
     for footnote in &result.footnotes {
         check_blocks(&footnote.blocks)?;
@@ -75,10 +66,7 @@ fn check_blocks(blocks: &[OfficeBlock]) -> Result<(), NotExportable> {
                     return Err(NotExportable::ResolvedFontDescriptor);
                 }
             }
-            OfficeBlock::Table { rows, format, .. } => {
-                if format.background_image.is_some() {
-                    return Err(NotExportable::BackgroundImage);
-                }
+            OfficeBlock::Table { rows, .. } => {
                 for row in rows {
                     for cell in row {
                         check_cell(cell)?;
@@ -94,16 +82,16 @@ fn check_blocks(blocks: &[OfficeBlock]) -> Result<(), NotExportable> {
 }
 
 fn check_cell(cell: &Cell) -> Result<(), NotExportable> {
-    if cell.background_image.is_some() {
-        return Err(NotExportable::BackgroundImage);
-    }
     check_blocks(&cell.blocks)
 }
 
 /// The document as JSON, or what stopped it.
 pub fn to_json(result: &OfficeReadResult) -> Result<String, NotExportable> {
     assert_exportable(result)?;
-    let envelope = OfficeDocumentEnvelope { v: SCHEMA_VERSION, result: result.clone() };
+    let envelope = OfficeDocumentEnvelope {
+        v: SCHEMA_VERSION,
+        result: result.clone(),
+    };
     // Serialisation itself cannot fail for this shape — every field is a plain value, there is no
     // map with non-string keys and no custom impl that can error.
     Ok(serde_json::to_string(&envelope).unwrap_or_default())

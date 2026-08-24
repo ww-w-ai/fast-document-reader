@@ -974,6 +974,7 @@ name = "swiftshim"
 version = "0.0.0"
 dependencies = [
  "base64",
+ "image",
  "quick-xml 0.37.5",
  "rhwp",
  "serde",

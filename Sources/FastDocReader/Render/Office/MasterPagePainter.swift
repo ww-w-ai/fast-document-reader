@@ -113,6 +113,11 @@ enum MasterPagePainter {
             guard let image = NSImage(data: pdf) else { return }
             image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
                        respectFlipped: true, hints: nil)
+        case .vector(let graphic):
+            guard let pdf = HwpShapeRenderer.pdf(paths: graphic.paths, size: graphic.size),
+                  let image = NSImage(data: pdf) else { return }
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                       respectFlipped: true, hints: nil)
         case .text(let blocks):
             // Built through the SAME `OfficeTextBuilder` the body and every band use (invariant 29),
             // then given this page's live number by the SAME substitution a running header's page

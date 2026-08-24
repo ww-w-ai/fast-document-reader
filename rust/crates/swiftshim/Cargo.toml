@@ -25,3 +25,4 @@ quick-xml = { workspace = true }
 # boundary as data would be a face or a bitmap nobody resolved on the other side.
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }

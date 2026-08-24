@@ -536,17 +536,25 @@ impl NSFontFeatureKey {
 
 /// swift: NSImage — call sites construct with `NSImage(data:)` and `NSImage(size:)` /
 /// `NSImage(size:flipped:drawingHandler:)`, and read `.size`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NSImage {
     pub size: crate::geometry::CGSize,
+    pub data: Option<Data>,
 }
 
 impl NSImage {
-    pub fn fromData(_data: &Data) -> Option<Self> {
-        todo!("swift: NSImage(data:) — phase B (needs ImageIO)")
+    pub fn fromData(data: &Data) -> Option<Self> {
+        let decoded = image::load_from_memory(&data.0).ok()?;
+        Some(Self {
+            size: crate::geometry::CGSize {
+                width: decoded.width() as crate::geometry::CGFloat,
+                height: decoded.height() as crate::geometry::CGFloat,
+            },
+            data: Some(data.clone()),
+        })
     }
     pub fn withSize(size: crate::geometry::CGSize) -> Self {
-        Self { size }
+        Self { size, data: None }
     }
 
     /// swift: `NSImage(size:flipped:drawingHandler:)` — the drawing handler is called by AppKit

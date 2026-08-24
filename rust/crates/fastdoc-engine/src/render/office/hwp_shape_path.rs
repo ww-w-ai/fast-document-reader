@@ -10,7 +10,7 @@ use crate::render::office::office_block::BorderSide;
 use swiftshim::{CGFloat, CGPoint, NSColor};
 
 /// swift: `HwpShapeRenderer.Path.Command`
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PathCommand {
     Move(CGPoint),
     Line(CGPoint),
@@ -20,13 +20,20 @@ pub enum PathCommand {
 }
 
 /// swift: `HwpShapeRenderer.Path`
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PathSpec {
     pub commands: Vec<PathCommand>,
     pub stroke: Option<BorderSide>,
     pub fill: Option<NSColor>,
     pub arrow_start: bool,
     pub arrow_end: bool,
+}
+
+/// A vector drawing after layout, ready to cross to a host painter.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct VectorGraphic {
+    pub paths: Vec<PathSpec>,
+    pub size: swiftshim::CGSize,
 }
 
 /// swift: `HwpShapeRenderer.draw`'s own `head` (HwpShapeRenderer.swift:105) — how big an arrowhead
@@ -62,30 +69,57 @@ pub fn arrow_head_points(tip: CGPoint, from: CGPoint, size: CGFloat) -> Option<[
     }
     let (ux, uy) = (dx / length, dy / length);
     let spread = size * 0.38;
-    let base = CGPoint { x: tip.x - ux * size, y: tip.y - uy * size };
+    let base = CGPoint {
+        x: tip.x - ux * size,
+        y: tip.y - uy * size,
+    };
     Some([
         tip,
-        CGPoint { x: base.x - uy * spread, y: base.y + ux * spread },
-        CGPoint { x: base.x + uy * spread, y: base.y - ux * spread },
+        CGPoint {
+            x: base.x - uy * spread,
+            y: base.y + ux * spread,
+        },
+        CGPoint {
+            x: base.x + uy * spread,
+            y: base.y - ux * spread,
+        },
     ])
 }
 
-/// swift: `HwpShapeRenderer.pdf(paths:size:)` — PDF bytes for one shape, or `None` when there is
-/// nothing to draw.
-///
-/// This is the rasterising half of the Swift file, and it is deliberately NOT implemented here.
-/// `docs/plans/rust-phase-b-worklist.md` §1.3 settled it: the engine hands the host a laid-out tree
-/// and the host paints, so these ten drawing call sites are replaced by `RenderTree` nodes rather
-/// than reimplemented. It exists as a signature because the mapping layer, transliterated from a
-/// Swift file that mixed both halves, still calls it at four sites; those calls go away with the
-/// node work, and until then this states the boundary instead of hiding it behind a fake return.
-///
-/// Note what it would take to keep it: a graphics context, a PDF writer, and the y-axis flip the
-/// Swift does once (HWP's y grows downward, PDF's upward). None of that is layout.
-pub struct HwpShapeRenderer;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl HwpShapeRenderer {
-    pub fn pdf(_paths: &[PathSpec], _size: swiftshim::CGSize) -> Option<swiftshim::Data> {
-        todo!("host paints — see docs/plans/rust-phase-b-worklist.md §1.3")
+    #[test]
+    fn vector_graphic_survives_the_wire_exactly() {
+        let graphic = VectorGraphic {
+            size: swiftshim::CGSize {
+                width: 120.0,
+                height: 48.0,
+            },
+            paths: vec![PathSpec {
+                commands: vec![
+                    PathCommand::Move(swiftshim::CGPoint { x: 1.0, y: 2.0 }),
+                    PathCommand::Curve(
+                        swiftshim::CGPoint { x: 3.0, y: 4.0 },
+                        swiftshim::CGPoint { x: 5.0, y: 6.0 },
+                        swiftshim::CGPoint { x: 7.0, y: 8.0 },
+                    ),
+                    PathCommand::Close,
+                ],
+                stroke: Some(BorderSide {
+                    width: 1.5,
+                    color: Some(swiftshim::NSColor::srgb(0.1, 0.2, 0.3, 1.0)),
+                    style: crate::render::office::office_block::BorderLineStyle::Dashed,
+                }),
+                fill: Some(swiftshim::NSColor::srgb(0.8, 0.7, 0.6, 0.5)),
+                arrow_start: true,
+                arrow_end: false,
+            }],
+        };
+
+        let json = serde_json::to_string(&graphic).unwrap();
+        let decoded: VectorGraphic = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, graphic);
     }
 }

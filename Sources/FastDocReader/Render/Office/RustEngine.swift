@@ -22,7 +22,7 @@ enum RustEngine {
     /// Checked before anything else. The engine ships as a prebuilt library, so a stale one is a
     /// real state to be in — and a version mismatch has to read as "use the other reader", not as
     /// a document that decoded most of the way.
-    static let schemaVersion = 2
+    static let schemaVersion = 4
 
     /// The document, read by the engine, in this app's own vocabulary.
     ///
@@ -60,7 +60,18 @@ enum RustEngine {
         do {
             let envelope = try decoder.decode(Envelope.self, from: bytes)
             guard envelope.v == schemaVersion else { return nil }
-            return envelope.result
+            var result = envelope.result
+            for (id, graphic) in result.vectorGraphics {
+                guard let pdf = HwpShapeRenderer.pdf(paths: graphic.paths, size: graphic.size) else {
+                    FileHandle.standardError.write(
+                        Data("fastdoc: host could not paint vector \(id) at \(graphic.size)\n".utf8)
+                    )
+                    return nil
+                }
+                result.images[id] = pdf
+            }
+            result.vectorGraphics.removeAll(keepingCapacity: false)
+            return result
         } catch {
             // The host cannot RECOVER from a decode failure — there is no second reader behind this
             // one any more — but it must not hide one either. A silent nil here reads exactly like

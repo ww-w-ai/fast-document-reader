@@ -449,6 +449,7 @@ impl HwpReader {
 // swift: Render/Office/HwpReader.swift:207-249
 pub struct MediaContext {
     pub images: std::collections::HashMap<String, Data>,
+    pub vectors: std::collections::HashMap<String, crate::render::office::hwp_shape_path::VectorGraphic>,
     /// Objects pinned to the PAPER, collected during the block walk with the index of the block
     /// they were anchored at — see `OfficeAnchoredObject`. A reference type for the same reason
     /// `images` is: the `map` closures that build blocks add to it without threading `inout`.
@@ -478,6 +479,7 @@ impl MediaContext {
     pub fn new(picture: Option<Box<dyn Fn(i64) -> Option<Data>>>) -> Self {
         Self {
             images: std::collections::HashMap::new(),
+            vectors: std::collections::HashMap::new(),
             anchored: Vec::new(),
             paper: None,
             last_anchored_frame: None,
@@ -501,6 +503,13 @@ impl MediaContext {
         self.next += 1;
         let id = format!("{}{}", HwpReader::HWP_SHAPE_PREFIX, self.next);
         self.images.insert(id.clone(), data);
+        id
+    }
+
+    pub fn add_vector(&mut self, graphic: crate::render::office::hwp_shape_path::VectorGraphic) -> String {
+        self.next += 1;
+        let id = format!("{}{}", HwpReader::HWP_SHAPE_PREFIX, self.next);
+        self.vectors.insert(id.clone(), graphic);
         id
     }
 }
@@ -607,6 +616,8 @@ impl HwpReader {
             ));
         }
         let mut result = OfficeReadResult { blocks, comments: Vec::new(), ..Default::default() };
+        result.vector_graphics = shapes.vectors.clone().into_iter()
+            .map(|(key, value)| (SwiftString::from(key), value)).collect();
         result.anchored_objects = shapes.anchored.clone();
         // What the DOCUMENT's own font table says about each family it names, handed to the format-
         // neutral substitution pass. It is read only when a declared family cannot be resolved on
@@ -907,7 +918,6 @@ use crate::render::office::office_block::{
 };
 use crate::render::office::hwp_reader::schema::{HwpMasterPage, HwpHeaderFooterEntry};
 // swift: hwp shape renderer — referenced by name, ported elsewhere (out of this file's range).
-use crate::render::office::hwp_shape_path::HwpShapeRenderer;
 
 impl HwpReader {
     /// Where an anchored object sits on the SHEET, in points from the paper's top-left — rhwp's own
@@ -1030,9 +1040,14 @@ impl HwpReader {
             let paths: Vec<_> = object.paths.clone().unwrap_or_default().into_iter()
                 .filter_map(|p| Self::shape_path(&p)).collect();
             if !paths.is_empty() && frame.size.width > 0.5 && frame.size.height > 0.5 {
-                if let Some(pdf) = HwpShapeRenderer::pdf(&paths, frame.size) {
-                    objects.push(OfficeMasterObject { frame, content: OfficeMasterObjectContent::Drawing(pdf) });
-                }
+                objects.push(OfficeMasterObject {
+                    frame,
+                    content: OfficeMasterObjectContent::Vector(
+                        crate::render::office::hwp_shape_path::VectorGraphic {
+                            paths: paths.clone(), size: frame.size,
+                        },
+                    ),
+                });
             }
             let blocks: Vec<OfficeBlock> = object.blocks.clone().unwrap_or_default().iter()
                 .map(|b| Self::map_block(b, page_width, default_body_size, slot_fonts, border_fills, shapes, paged))
@@ -1260,7 +1275,28 @@ impl HwpReader {
         let gradient = gradient?;
         let stops: Vec<NSColor> = gradient.colors.iter().filter_map(|c| Self::color(Some(c))).collect();
         if stops.len() < 2 { return None; }
-        todo!("swift:825-840 NSGradient rendering into a 64x64 NSImage — needs a raster/drawing shim, phase B")
+        let angle = (-90.0 - gradient.angle.unwrap_or(0) as f64).to_radians();
+        let (dx, dy) = (angle.cos(), -angle.sin());
+        let mut pixels = image::RgbaImage::new(64, 64);
+        for (x, y, pixel) in pixels.enumerate_pixels_mut() {
+            let nx = x as f64 / 63.0 - 0.5;
+            let ny = y as f64 / 63.0 - 0.5;
+            let t = (nx * dx + ny * dy + 0.5).clamp(0.0, 1.0);
+            let scaled = t * (stops.len() - 1) as f64;
+            let index = (scaled.floor() as usize).min(stops.len() - 2);
+            let local = scaled - index as f64;
+            let a = stops[index];
+            let b = stops[index + 1];
+            let channel = |left: f64, right: f64| ((left + (right - left) * local) * 255.0).round() as u8;
+            *pixel = image::Rgba([
+                channel(a.red, b.red), channel(a.green, b.green),
+                channel(a.blue, b.blue), channel(a.alpha, b.alpha),
+            ]);
+        }
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(pixels)
+            .write_to(&mut encoded, image::ImageFormat::Png).ok()?;
+        swiftshim::NSImage::fromData(&Data::fromBytes(encoded.into_inner()))
     }
 
     /// HWP paragraph `align` → the block's `NSTextAlignment?`, resolved exactly the way
@@ -2106,6 +2142,10 @@ impl HwpReader {
             x: Self::points(sh.offset_x.unwrap_or(0)),
             y: Self::points(sh.offset_y.unwrap_or(0)),
         };
+        let vector = crate::render::office::hwp_shape_path::VectorGraphic {
+            paths: paths.clone(),
+            size,
+        };
         // PINNED TO THE PAPER — a cover's decoration, a rule down a margin. Placed by the
         // document's own rule (`anchoredFrame`) and drawn on the sheet the anchoring block falls
         // on, rather than pushed into the text where inlining one cost 29 pages (invariant 75).
@@ -2116,18 +2156,19 @@ impl HwpReader {
                     sh.vert_align.as_deref().unwrap_or("top"), sh.horz_align.as_deref().unwrap_or("left"),
                     offset, &paper,
                 ) {
-                    if let Some(pdf) = HwpShapeRenderer::pdf(&paths, size) {
-                        shapes.last_anchored_frame = Some(frame);
-                        shapes.anchored.push(OfficeAnchoredObject {
-                            block_index: shapes.block_index as i64,
-                            object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Drawing(pdf) },
-                            paragraph_anchor: None,
-                        });
-                        return OfficeBlock::Paragraph {
-                            spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
-                            format: ParagraphFormat::default(),
-                        };
-                    }
+                    shapes.last_anchored_frame = Some(frame);
+                    shapes.anchored.push(OfficeAnchoredObject {
+                        block_index: shapes.block_index as i64,
+                        object: OfficeMasterObject {
+                            frame,
+                            content: OfficeMasterObjectContent::Vector(vector.clone()),
+                        },
+                        paragraph_anchor: None,
+                    });
+                    return OfficeBlock::Paragraph {
+                        spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
+                        format: ParagraphFormat::default(),
+                    };
                 }
             }
         }
@@ -2141,18 +2182,19 @@ impl HwpReader {
                     sh.vert_align.as_deref().unwrap_or("top"), sh.horz_align.as_deref().unwrap_or("left"),
                     offset, &paper,
                 ) {
-                    if let Some(pdf) = HwpShapeRenderer::pdf(&paths, size) {
-                        shapes.last_anchored_frame = Some(frame);
-                        shapes.anchored.push(OfficeAnchoredObject {
-                            block_index: shapes.block_index as i64,
-                            object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Drawing(pdf) },
-                            paragraph_anchor: Some(anchor),
-                        });
-                        return OfficeBlock::Paragraph {
-                            spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
-                            format: ParagraphFormat::default(),
-                        };
-                    }
+                    shapes.last_anchored_frame = Some(frame);
+                    shapes.anchored.push(OfficeAnchoredObject {
+                        block_index: shapes.block_index as i64,
+                        object: OfficeMasterObject {
+                            frame,
+                            content: OfficeMasterObjectContent::Vector(vector.clone()),
+                        },
+                        paragraph_anchor: Some(anchor),
+                    });
+                    return OfficeBlock::Paragraph {
+                        spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
+                        format: ParagraphFormat::default(),
+                    };
                 }
             }
         }
@@ -2162,13 +2204,17 @@ impl HwpReader {
                 format: ParagraphFormat::default(),
             };
         }
-        let Some(pdf) = HwpShapeRenderer::pdf(&paths, size) else {
+        if vector.paths.is_empty() || vector.size.width <= 0.5 || vector.size.height <= 0.5 {
             return OfficeBlock::Paragraph {
                 spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
                 format: ParagraphFormat::default(),
             };
-        };
-        OfficeBlock::Image { id: SwiftString::from(shapes.add(pdf)), size, alignment: Self::image_alignment(sh.align.as_deref()) }
+        }
+        let id = shapes.add_vector(vector);
+        OfficeBlock::Image {
+            id: SwiftString::from(id), size,
+            alignment: Self::image_alignment(sh.align.as_deref()),
+        }
     }
 
     /// `ListNumbering.Glyphs(rawValue:) ?? .decimal` — a Swift `String`-backed enum's raw values,

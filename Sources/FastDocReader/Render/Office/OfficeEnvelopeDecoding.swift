@@ -20,6 +20,25 @@ struct WireSize: Decodable {
     var size: CGSize { CGSize(width: width, height: height) }
 }
 
+private struct WirePoint: Decodable {
+    let x: CGFloat, y: CGFloat
+    var point: CGPoint { CGPoint(x: x, y: y) }
+}
+
+private struct WireRect: Decodable {
+    let origin: WirePoint, size: WireSize
+    var rect: CGRect { CGRect(origin: origin.point, size: size.size) }
+}
+
+struct WireImage: Decodable {
+    let size: WireSize
+    let data: Data?
+    var image: NSImage? {
+        if let data, let decoded = NSImage(data: data) { return decoded }
+        return nil
+    }
+}
+
 struct WireColor: Decodable {
     /// Which initialiser the reader chose. Carried rather than assumed: `OdtReader` builds device
     /// RGB and the other readers build sRGB, and the same three components in the two spaces are
@@ -121,6 +140,121 @@ extension BorderDecl: Decodable {
                 forKey: key, in: c, debugDescription: "unknown border declaration")
         }
         self = .drawn(try c.decode(BorderSide.self, forKey: key))
+    }
+}
+
+extension HwpShapeRenderer.Path.Command: Decodable {
+    init(from decoder: Decoder) throws {
+        if let name = try? decoder.singleValueContainer().decode(String.self), name == "Close" {
+            self = .close
+            return
+        }
+        let (c, key) = try singleKey(decoder)
+        switch key.stringValue {
+        case "Move": self = .move(try c.decode(WirePoint.self, forKey: key).point)
+        case "Line": self = .line(try c.decode(WirePoint.self, forKey: key).point)
+        case "Curve":
+            let points = try c.decode([WirePoint].self, forKey: key)
+            guard points.count == 3 else {
+                throw DecodingError.dataCorruptedError(forKey: key, in: c,
+                                                       debugDescription: "curve needs three points")
+            }
+            self = .curve(points[0].point, points[1].point, points[2].point)
+        default:
+            throw DecodingError.dataCorruptedError(forKey: key, in: c,
+                                                   debugDescription: "unknown path command")
+        }
+    }
+}
+
+extension HwpShapeRenderer.Path: Decodable {
+    private enum CodingKeys: String, CodingKey { case commands, stroke, fill, arrowStart, arrowEnd }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        commands = try c.decode([Command].self, forKey: .commands)
+        stroke = try c.decodeIfPresent(BorderSide.self, forKey: .stroke)
+        fill = try c.decodeIfPresent(WireColor.self, forKey: .fill)?.color
+        arrowStart = try c.decode(Bool.self, forKey: .arrowStart)
+        arrowEnd = try c.decode(Bool.self, forKey: .arrowEnd)
+    }
+}
+
+extension HwpShapeRenderer.VectorGraphic: Decodable {
+    private enum CodingKeys: String, CodingKey { case paths, size }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        paths = try c.decode([HwpShapeRenderer.Path].self, forKey: .paths)
+        size = try c.decode(WireSize.self, forKey: .size).size
+    }
+}
+
+extension OfficeMasterObject.Content: Decodable {
+    init(from decoder: Decoder) throws {
+        let (c, key) = try singleKey(decoder)
+        switch key.stringValue {
+        case "Image":
+            guard let image = try c.decode(WireImage.self, forKey: key).image else {
+                throw DecodingError.dataCorruptedError(forKey: key, in: c,
+                                                       debugDescription: "host image has no bytes")
+            }
+            self = .image(image)
+        case "Drawing": self = .drawing(try c.decode(Data.self, forKey: key))
+        case "Vector": self = .vector(try c.decode(HwpShapeRenderer.VectorGraphic.self, forKey: key))
+        case "Text": self = .text(try c.decode([OfficeBlock].self, forKey: key))
+        default:
+            throw DecodingError.dataCorruptedError(forKey: key, in: c,
+                                                   debugDescription: "unknown master object content")
+        }
+    }
+}
+
+extension OfficeMasterObject: Decodable {
+    private enum CodingKeys: String, CodingKey { case frame, content }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        frame = try c.decode(WireRect.self, forKey: .frame).rect
+        content = try c.decode(Content.self, forKey: .content)
+    }
+}
+
+extension ParagraphAnchor.Align: Decodable {
+    init(from decoder: Decoder) throws {
+        switch try decoder.singleValueContainer().decode(String.self) {
+        case "top": self = .top
+        case "center": self = .center
+        case "bottom": self = .bottom
+        default: throw DecodingError.dataCorruptedError(
+            in: try decoder.singleValueContainer(), debugDescription: "unknown paragraph anchor")
+        }
+    }
+}
+
+extension ParagraphAnchor: Decodable {
+    private enum CodingKeys: String, CodingKey { case align, offset }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        align = try c.decode(Align.self, forKey: .align)
+        offset = try c.decode(CGFloat.self, forKey: .offset)
+    }
+}
+
+extension OfficeAnchoredObject: Decodable {
+    private enum CodingKeys: String, CodingKey { case blockIndex, object, paragraphAnchor }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        blockIndex = try c.decode(Int.self, forKey: .blockIndex)
+        object = try c.decode(OfficeMasterObject.self, forKey: .object)
+        paragraphAnchor = try c.decodeIfPresent(ParagraphAnchor.self, forKey: .paragraphAnchor)
+    }
+}
+
+extension OfficeMasterPage: Decodable {
+    private enum CodingKeys: String, CodingKey { case section, appliesTo, objects }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        section = try c.decode(Int.self, forKey: .section)
+        appliesTo = try c.decode(HeaderFooterApplicability.self, forKey: .appliesTo)
+        objects = try c.decode([OfficeMasterObject].self, forKey: .objects)
     }
 }
 

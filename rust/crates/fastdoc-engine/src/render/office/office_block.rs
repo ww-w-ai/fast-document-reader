@@ -1561,7 +1561,7 @@ pub struct OfficeFootnote {
 /// in a real Korean document, the page number (invariant 77 measured exactly that: both bands empty
 /// on a body page, the number coming from here). So there is nothing to lay out and nothing to
 /// reserve: each piece is drawn where the paper says.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeMasterObject {
     pub frame: CGRect,
     pub content: OfficeMasterObjectContent,
@@ -1577,11 +1577,12 @@ pub struct OfficeMasterObject {
 /// body — and a text box arrives as ordinary blocks, so the page number inside it is the SAME
 /// `MDAttr.page_number_field` span a running header carries and `PageBandPainter.
 /// substitutingPageFields` already knows how to fill in.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum OfficeMasterObjectContent {
     // swift: Render/Office/OfficeBlock.swift:988-990
     Image(NSImage),
     Drawing(Data),
+    Vector(crate::render::office::hwp_shape_path::VectorGraphic),
     Text(Vec<OfficeBlock>),
 }
 
@@ -1590,6 +1591,7 @@ impl PartialEq for OfficeMasterObjectContent {
         match (self, other) {
             (Self::Image(a), Self::Image(b)) => a.size == b.size,
             (Self::Drawing(a), Self::Drawing(b)) => a == b,
+            (Self::Vector(a), Self::Vector(b)) => a == b,
             (Self::Text(a), Self::Text(b)) => a == b,
             _ => false,
         }
@@ -1609,7 +1611,7 @@ impl PartialEq for OfficeMasterObjectContent {
 /// paragraph's own line, which only layout knows, so `paragraph_anchor` carries the unfinished half
 /// and the draw pass completes it (`ReaderTextView.drawAnchoredObjects`). Nothing is cached: the
 /// line rect is asked for at draw time, so a reflow cannot leave a stale position behind.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeAnchoredObject {
     // swift: Render/Office/OfficeBlock.swift:1007-1009
     /// Index into `OfficeReadResult.blocks` — the block whose place in the text says which page this
@@ -1995,7 +1997,7 @@ impl PaperGeometry {
 /// `applies_to` reuses the header/footer vocabulary because HWP states it with the same three words
 /// (`both`/`odd`/`even`) and means the same thing by them; see `HeaderFooterApplicability` for what
 /// that folding does and does not preserve.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeMasterPage {
     // swift: Render/Office/OfficeBlock.swift:1223-1227
     /// WHICH SECTION declares it. A master page belongs to its own section the way a running head
@@ -2033,6 +2035,12 @@ pub struct OfficeReadResult {
     /// Serialized as base64 strings. Foundation's `Data: Decodable` consumes that exact JSON
     /// shape, preserving the bytes the live HWP parse handle extracted before it was closed.
     pub images: std::collections::HashMap<SwiftString, Data>,
+    /// Inline vector drawings keyed by the `.image(id:)` layout node that reserves their box.
+    /// The host paints these paths and installs the resulting bytes into `images` before layout.
+    pub vector_graphics: std::collections::HashMap<
+        SwiftString,
+        crate::render::office::hwp_shape_path::VectorGraphic,
+    >,
     // swift: Render/Office/OfficeBlock.swift:1253-1262
     /// The document's own default BODY run size in points — the other half of `OfficeTextBuilder`'s
     /// font-size model (`documentDefaultFontSize`), used to scale every absolute size to the reader's
@@ -2160,7 +2168,6 @@ pub struct OfficeReadResult {
     /// NOT serialised: the 바탕쪽 is an HWP concept, carrying decoded pictures and pre-rendered
     /// vector drawings — bytes, not document facts. `assert_exportable` refuses a non-empty list
     /// rather than letting a page's repeating artwork vanish without a word.
-    #[serde(skip)]
     pub master_pages: Vec<OfficeMasterPage>,
     // swift: Render/Office/OfficeBlock.swift:1366-1371
     /// What each SECTION declared about its own page furniture — hidden running head, hidden master
@@ -2175,7 +2182,6 @@ pub struct OfficeReadResult {
     /// NOT serialised: an anchored object carries an `OfficeMasterObject`, which is HWP's decoded
     /// pictures and pre-rendered drawings. Same reason as `master_pages`, and the same guard —
     /// `assert_exportable` refuses a non-empty list.
-    #[serde(skip)]
     pub anchored_objects: Vec<OfficeAnchoredObject>,
     // swift: Render/Office/OfficeBlock.swift:1377-1381
     /// Where each section begins in `blocks` — `section_start_blocks[i]` is the index of section `i`'s
@@ -2241,7 +2247,7 @@ pub struct OfficeReadResult {
 impl PartialEq for OfficeReadResult {
     fn eq(&self, other: &Self) -> bool {
         let Self {
-            blocks, comments, images, default_body_font_size, declared_faces,
+            blocks, comments, images, vector_graphics, default_body_font_size, declared_faces,
             page_content_width, page_margin_left, page_margin_right, page_content_height,
             page_margin_top, page_margin_bottom, page_header_distance, page_footer_distance,
             headers, footers, footnotes, master_pages, sections, anchored_objects,
@@ -2251,6 +2257,7 @@ impl PartialEq for OfficeReadResult {
         blocks == &other.blocks
             && comments == &other.comments
             && map_eq(images, &other.images)
+            && map_eq(vector_graphics, &other.vector_graphics)
             && default_body_font_size == &other.default_body_font_size
             && map_eq(declared_faces, &other.declared_faces)
             && page_content_width == &other.page_content_width
@@ -2282,6 +2289,7 @@ impl Default for OfficeReadResult {
             blocks: vec![],
             comments: vec![],
             images: std::collections::HashMap::new(),
+            vector_graphics: std::collections::HashMap::new(),
             default_body_font_size: 11.0,
             declared_faces: std::collections::HashMap::new(),
             page_content_width: None,

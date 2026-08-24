@@ -15,19 +15,24 @@ import AppKit
 enum HwpShapeRenderer {
 
     /// One path of a shape, already in POINTS relative to the object's own box (top-left origin).
-    struct Path {
+    struct Path: Equatable {
         var commands: [Command]
         var stroke: BorderSide?
         var fill: NSColor?
         var arrowStart = false
         var arrowEnd = false
 
-        enum Command {
+        enum Command: Equatable {
             case move(CGPoint)
             case line(CGPoint)
             case curve(CGPoint, CGPoint, CGPoint)   // two controls, then the end point
             case close
         }
+    }
+
+    struct VectorGraphic: Equatable {
+        var paths: [Path]
+        var size: CGSize
     }
 
     /// PDF bytes for one shape, or nil when there is nothing to draw (no path, or a zero-sized box).
