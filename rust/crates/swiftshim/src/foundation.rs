@@ -87,6 +87,30 @@ pub struct NSObject;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Data(pub Vec<u8>);
 
+impl serde::Serialize for Data {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use base64::Engine;
+        serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(&self.0))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Data {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use base64::Engine;
+        let encoded = <String as serde::Deserialize>::deserialize(deserializer)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .map(Data)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 impl Data {
     pub fn new() -> Self {
         Data(Vec::new())

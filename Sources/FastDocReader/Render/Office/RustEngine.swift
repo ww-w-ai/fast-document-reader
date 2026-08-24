@@ -22,7 +22,7 @@ enum RustEngine {
     /// Checked before anything else. The engine ships as a prebuilt library, so a stale one is a
     /// real state to be in — and a version mismatch has to read as "use the other reader", not as
     /// a document that decoded most of the way.
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     /// The document, read by the engine, in this app's own vocabulary.
     ///
@@ -41,7 +41,15 @@ enum RustEngine {
                 fastdoc_read_office_json(base, raw.count, extensionC)
             }
         }
-        guard let json else { return nil }
+        guard let json else {
+            if let diagnostic = fastdoc_take_last_error() {
+                defer { fastdoc_string_free(diagnostic) }
+                FileHandle.standardError.write(
+                    Data("fastdoc: \(String(cString: diagnostic))\n".utf8)
+                )
+            }
+            return nil
+        }
         defer { fastdoc_string_free(json) }
 
         let bytes = Data(bytesNoCopy: json, count: strlen(json), deallocator: .none)

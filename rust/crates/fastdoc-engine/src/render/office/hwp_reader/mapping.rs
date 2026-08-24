@@ -82,6 +82,52 @@ impl HwpReader {
     // MARK: - S3: structured JSON -> OfficeBlock / OfficeReadResult
 }
 
+#[cfg(test)]
+mod crop_tests {
+    use super::HwpReader;
+    use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
+    use std::io::Cursor;
+    use swiftshim::{Data, CGPoint, CGRect, CGSize};
+
+    fn four_quadrants_png() -> Data {
+        let image = ImageBuffer::from_fn(4, 4, |x, y| {
+            let pixel = match (x >= 2, y >= 2) {
+                (false, false) => [255, 0, 0, 255],
+                (true, false) => [0, 255, 0, 255],
+                (false, true) => [0, 0, 255, 255],
+                (true, true) => [255, 255, 0, 255],
+            };
+            Rgba(pixel)
+        });
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        Data::fromBytes(bytes.into_inner())
+    }
+
+    #[test]
+    fn crop_uses_fractional_pixel_box_and_reencodes_png() {
+        let fraction = CGRect {
+            origin: CGPoint { x: 0.5, y: 0.0 },
+            size: CGSize { width: 0.5, height: 0.5 },
+        };
+        let cropped = HwpReader::cropped_image_data(&four_quadrants_png(), fraction).unwrap();
+        let decoded = image::load_from_memory(&cropped.0).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (2, 2));
+        assert!(decoded.pixels().all(|pixel| pixel.0 == [0, 255, 0, 255]));
+    }
+
+    #[test]
+    fn crop_rejects_a_box_outside_the_source() {
+        let fraction = CGRect {
+            origin: CGPoint { x: 0.75, y: 0.75 },
+            size: CGSize { width: 0.5, height: 0.5 },
+        };
+        assert!(HwpReader::cropped_image_data(&four_quadrants_png(), fraction).is_none());
+    }
+}
+
 /// swift: `UnsafeMutableRawPointer` used as the rhwp parse handle — named here so the FFI stand-in
 /// functions above have a real parameter type instead of an opaque pointer type nobody else uses.
 // swift: Render/Office/HwpReader.swift:36 (parameter type)
@@ -173,6 +219,19 @@ impl HwpReader {
     /// `String -> OfficeReadResult`, unit-tested with synthetic JSON, no FFI needed).
     // swift: Render/Office/HwpReader.swift:62-102
     pub fn read(data: &Data) -> Result<OfficeReadResult, MapError> {
+        Self::read_mapped(data, true)
+    }
+
+    /// Reads for a host process that owns font discovery and substitution.
+    ///
+    /// A resolved `NSFontDescriptor` is an opaque identity issued by that host. It cannot be
+    /// serialized into the JSON envelope and reconstructed elsewhere. The C FFI therefore takes
+    /// this path and lets the host apply the same substitution pass after decoding.
+    pub fn read_before_host_font_substitution(data: &Data) -> Result<OfficeReadResult, MapError> {
+        Self::read_mapped(data, false)
+    }
+
+    fn read_mapped(data: &Data, resolve_fonts: bool) -> Result<OfficeReadResult, MapError> {
         if data.0.is_empty() {
             return Err(MapError::ParseFailed);
         }
@@ -204,8 +263,12 @@ impl HwpReader {
             // call rather than `readOffice`'s), NOT inside `mapJSON`: `mapJSON` stays a pure JSON->
             // result mapper so every hand-built-envelope test that calls it directly is unaffected by
             // this pass. See `FontSubstitutionResolver`'s file doc for why read time is the right home.
-            let font_cache = crate::render::office::font_substitution_resolver::FontSubstitutionCache::default();
-            Ok(result.resolving_font_substitution(&font_cache))
+            if resolve_fonts {
+                let font_cache = crate::render::office::font_substitution_resolver::FontSubstitutionCache::default();
+                Ok(result.resolving_font_substitution(&font_cache))
+            } else {
+                Ok(result)
+            }
         })();
         Self::rhwp_close(handle);
         outcome
@@ -336,7 +399,32 @@ impl HwpReader {
     /// draws, with no second crop model to keep in step.
     // swift: Render/Office/HwpReader.swift:177-196
     pub fn cropped_image_data(data: &Data, fraction: CGRect) -> Option<Data> {
-        todo!("swift:185-196 NSBitmapImageRep decode/crop/PNG re-encode — needs an image-codec shim, phase B")
+        use image::ImageFormat;
+
+        let source = image::load_from_memory(&data.0).ok()?;
+        let w = source.width();
+        let h = source.height();
+        if w == 0 || h == 0 {
+            return None;
+        }
+
+        // Match Swift exactly: origin rounds down, extent rounds to nearest, and an extent never
+        // becomes smaller than one pixel. Reject rather than clamp a rectangle outside the source;
+        // clamping would show pixels the document did not select.
+        let x = (fraction.origin.x * w as CGFloat).floor();
+        let y = (fraction.origin.y * h as CGFloat).floor();
+        let width = (fraction.size.width * w as CGFloat).round().max(1.0);
+        let height = (fraction.size.height * h as CGFloat).round().max(1.0);
+        if !x.is_finite() || !y.is_finite() || !width.is_finite() || !height.is_finite()
+            || x < 0.0 || y < 0.0 || x + width > w as CGFloat || y + height > h as CGFloat
+        {
+            return None;
+        }
+
+        let cut = source.crop_imm(x as u32, y as u32, width as u32, height as u32);
+        let mut png = std::io::Cursor::new(Vec::new());
+        cut.write_to(&mut png, ImageFormat::Png).ok()?;
+        Some(Data::fromBytes(png.into_inner()))
     }
 
     // swift: Render/Office/HwpReader.swift:197-201

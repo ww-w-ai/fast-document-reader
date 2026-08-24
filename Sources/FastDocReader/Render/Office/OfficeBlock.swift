@@ -1510,11 +1510,11 @@ struct OfficeFormControl: Hashable {
 
 
 extension OfficeReadResult: Decodable {
-    /// `images`, `masterPages` and `anchoredObjects` are absent: all three carry decoded pictures
-    /// or pre-rendered drawings, all three are HWP's, and the engine refuses to export a document
-    /// that has any of them rather than letting them vanish quietly.
+    /// `masterPages` and `anchoredObjects` remain absent because they contain host-painted objects.
+    /// `images` crosses as base64 strings, the native JSON representation Foundation's `Data`
+    /// decoder consumes.
     enum CodingKeys: String, CodingKey {
-        case blocks, comments, defaultBodyFontSize, declaredFaces, pageContentWidth
+        case blocks, comments, images, defaultBodyFontSize, declaredFaces, pageContentWidth
         case pageMarginLeft, pageMarginRight, pageContentHeight, pageMarginTop, pageMarginBottom
         case pageHeaderDistance, pageFooterDistance, headers, footers, footnotes
         case sections, sectionStartBlocks, keepWithNextBlocks, pageBreakBlocks, hidePageNumberBlocks

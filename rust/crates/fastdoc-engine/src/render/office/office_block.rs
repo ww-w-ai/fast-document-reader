@@ -2030,9 +2030,8 @@ pub struct OfficeReadResult {
     /// checks this map before the archive. Defaults to `[:]` so every existing construction site
     /// (both zip readers, all tests) keeps compiling and means exactly what it always meant: nothing
     /// pre-decoded, resolve from the archive.
-    /// NOT serialised, for the same reason as `background_image`: these are decoded bytes that
-    /// only `HwpReader` produces. `assert_exportable` refuses a non-empty map.
-    #[serde(skip)]
+    /// Serialized as base64 strings. Foundation's `Data: Decodable` consumes that exact JSON
+    /// shape, preserving the bytes the live HWP parse handle extracted before it was closed.
     pub images: std::collections::HashMap<SwiftString, Data>,
     // swift: Render/Office/OfficeBlock.swift:1253-1262
     /// The document's own default BODY run size in points — the other half of `OfficeTextBuilder`'s

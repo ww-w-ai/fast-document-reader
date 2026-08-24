@@ -56,11 +56,14 @@ enum HeadlessExtract {
                 // archive, for the same reason this code used to: a `.hwp` is CFB binary and would
                 // fail as a zip. Letting HWP keep falling back to `HwpReader` would have left the
                 // larger half of this corpus untested while the totals still read as green.
-                guard let result = RustEngine.readOffice(data, extension: ext) else {
+                guard let unresolved = RustEngine.readOffice(data, extension: ext) else {
                     throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
                         NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
                     ])
                 }
+                // Font discovery belongs to this AppKit host. The engine deliberately sends HWP
+                // over before substitution because an opaque NSFontDescriptor cannot cross JSON.
+                let result = unresolved.resolvingFontSubstitution()
                 #else
                 let result = try DocumentTypes.isHwp(ext)
                     ? HwpReader.read(data)

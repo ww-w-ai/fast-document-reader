@@ -26,7 +26,7 @@ pub struct OfficeDocumentEnvelope {
 }
 
 /// The version this build writes. Bump when the shape changes in a way a host must notice.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// What a read result carried that this boundary cannot.
 #[derive(Debug, PartialEq)]
@@ -36,8 +36,6 @@ pub enum NotExportable {
     ResolvedFontDescriptor,
     /// A table or cell carries decoded picture pixels.
     BackgroundImage,
-    /// Pre-decoded embedded images — the HWP path, which has no archive to resolve from later.
-    PreDecodedImages,
     /// Master pages (바탕쪽) or paragraph-anchored objects: pictures and pre-rendered drawings.
     PaperObjects,
 }
@@ -47,7 +45,6 @@ impl NotExportable {
         match self {
             Self::ResolvedFontDescriptor => "a span carries a resolved font descriptor, which cannot cross to a host",
             Self::BackgroundImage => "a table or cell carries decoded picture pixels",
-            Self::PreDecodedImages => "the document carries pre-decoded images",
             Self::PaperObjects => "the document carries master-page or anchored objects",
         }
     }
@@ -58,9 +55,6 @@ impl NotExportable {
 /// Deliberately a hard check rather than a lossy export: a host that renders a document with its
 /// pictures missing looks like a rendering bug for as long as it takes someone to find this file.
 pub fn assert_exportable(result: &OfficeReadResult) -> Result<(), NotExportable> {
-    if !result.images.is_empty() {
-        return Err(NotExportable::PreDecodedImages);
-    }
     if !result.master_pages.is_empty() || !result.anchored_objects.is_empty() {
         return Err(NotExportable::PaperObjects);
     }
