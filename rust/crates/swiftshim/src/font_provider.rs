@@ -67,6 +67,21 @@ pub trait FontProvider: Send + Sync {
 
     /// What a `FaceId` this provider issued actually is.
     fn describe(&self, face: FaceId) -> FaceInfo;
+
+    /// swift: `CTFontGetGlyphsForCharacters` — can this face draw this scalar?
+    ///
+    /// A cmap lookup, and the reason `FontSubstitutionResolver` exists: a face that cannot draw a
+    /// character must be replaced BEFORE the run is built, or the reader paints tofu. Not derivable
+    /// from a family name, so it belongs here with the other three.
+    fn covers(&self, face: FaceId, scalar: u32) -> bool;
+
+    /// swift: `CTFontCreateForString` — what the font system itself would substitute for a scalar
+    /// this face cannot draw.
+    ///
+    /// `None` when the system offers nothing, which the caller reads as "keep the declared face".
+    /// Deliberately not "pick from a list we hold": the substitution cascade is the platform's, and
+    /// reproducing this build means asking it rather than modelling it.
+    fn substitute(&self, declared: FaceId, scalar: u32) -> Option<FaceId>;
 }
 
 static PROVIDER: std::sync::OnceLock<Box<dyn FontProvider>> = std::sync::OnceLock::new();
@@ -96,4 +111,145 @@ pub fn provider() -> &'static dyn FontProvider {
 /// Whether a provider has been installed, for callers that must not panic (probes, tests).
 pub fn is_installed() -> bool {
     PROVIDER.get().is_some()
+}
+
+// ---------------------------------------------------------------------------------------------
+// A provider the HOST answers, reached through plain C function pointers.
+//
+// `host-owned` was chosen for the fork this module's header describes: the platform's own font
+// system answers, so this build reproduces the shipped macOS reader exactly and the corpus
+// comparison against it means something. The other fork (a bundled face set, identical on every
+// platform) can be a second implementation of the same trait — that is why the boundary was worth
+// having before the fork was settled.
+//
+// A `FaceId` is issued by the host and opaque here, exactly as the trait requires. This crate never
+// constructs one, never decomposes one, and never assumes two faces with the same traits are the
+// same face.
+// ---------------------------------------------------------------------------------------------
+
+/// The four questions, as C function pointers. `0` is the null `FaceId` — "no such face" — which
+/// is why the host must never issue `0` for a real one.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FontProviderCallbacks {
+    /// `NSFont(name:size:)` — returns 0 when this machine has no such face.
+    pub face_named: extern "C" fn(name: *const std::os::raw::c_char) -> u64,
+    /// `NSFont(descriptor:size:)`. `base` is 0 when the descriptor names no face of its own.
+    /// `features` is `feature_count` pairs of (key, value), flattened.
+    pub resolve: extern "C" fn(
+        base: u64,
+        traits: u32,
+        features: *const i64,
+        feature_count: usize,
+    ) -> u64,
+    /// `NSFont.systemFont(ofSize:weight:)` / `.monospacedSystemFont(...)`. Never 0.
+    pub system_face: extern "C" fn(weight: f64, monospaced: bool) -> u64,
+    /// Fills `name`/`family` (NUL-terminated, truncated to the given capacities) and `traits`.
+    /// `has_family` is false for the private system-UI cascades, whose `familyName` is nil.
+    pub describe: extern "C" fn(
+        face: u64,
+        name: *mut std::os::raw::c_char,
+        name_cap: usize,
+        family: *mut std::os::raw::c_char,
+        family_cap: usize,
+        has_family: *mut bool,
+        traits: *mut u32,
+    ),
+    /// `CTFontGetGlyphsForCharacters` — can this face draw this scalar?
+    pub covers: extern "C" fn(face: u64, scalar: u32) -> bool,
+    /// `CTFontCreateForString` — what the system substitutes, or 0 for "nothing to offer".
+    pub substitute: extern "C" fn(declared: u64, scalar: u32) -> u64,
+}
+
+// SAFETY: the callbacks are plain function pointers into host code that is itself thread-safe
+// (AppKit font lookup is), and this struct holds no state of its own.
+unsafe impl Send for FontProviderCallbacks {}
+unsafe impl Sync for FontProviderCallbacks {}
+
+struct CallbackProvider(FontProviderCallbacks);
+
+/// Enough for any PostScript name a font system will hand back; longer answers are truncated
+/// rather than reallocated, because a name that long is a bug on the host's side, not a face.
+const NAME_CAP: usize = 256;
+
+fn to_c(s: &str) -> Option<std::ffi::CString> {
+    std::ffi::CString::new(s).ok()
+}
+
+fn from_buf(buf: &[std::os::raw::c_char]) -> String {
+    let bytes: Vec<u8> = buf
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| *c as u8)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+impl FontProvider for CallbackProvider {
+    fn face_named(&self, name: &str) -> Option<FaceId> {
+        let c = to_c(name)?;
+        match (self.0.face_named)(c.as_ptr()) {
+            0 => None,
+            id => Some(FaceId(id)),
+        }
+    }
+
+    fn resolve(&self, descriptor: &crate::color_font::NSFontDescriptor) -> Option<FaceId> {
+        let flat: Vec<i64> = descriptor
+            .featureSettings()
+            .iter()
+            .flat_map(|(k, v)| [k.rawValue(), *v])
+            .collect();
+        let base = descriptor.baseFace().map(|f| f.0).unwrap_or(0);
+        match (self.0.resolve)(
+            base,
+            descriptor.symbolicTraits().0,
+            flat.as_ptr(),
+            flat.len() / 2,
+        ) {
+            0 => None,
+            id => Some(FaceId(id)),
+        }
+    }
+
+    fn system_face(&self, weight: NSFontWeight, monospaced: bool) -> FaceId {
+        FaceId((self.0.system_face)(weight.0, monospaced))
+    }
+
+    fn describe(&self, face: FaceId) -> FaceInfo {
+        let mut name = [0 as std::os::raw::c_char; NAME_CAP];
+        let mut family = [0 as std::os::raw::c_char; NAME_CAP];
+        let mut has_family = false;
+        let mut traits = 0u32;
+        (self.0.describe)(
+            face.0,
+            name.as_mut_ptr(),
+            NAME_CAP,
+            family.as_mut_ptr(),
+            NAME_CAP,
+            &mut has_family,
+            &mut traits,
+        );
+        FaceInfo {
+            name: from_buf(&name),
+            family: has_family.then(|| from_buf(&family)),
+            traits: NSFontDescriptorSymbolicTraits(traits),
+        }
+    }
+
+    fn covers(&self, face: FaceId, scalar: u32) -> bool {
+        (self.0.covers)(face.0, scalar)
+    }
+
+    fn substitute(&self, declared: FaceId, scalar: u32) -> Option<FaceId> {
+        match (self.0.substitute)(declared.0, scalar) {
+            0 => None,
+            id => Some(FaceId(id)),
+        }
+    }
+}
+
+/// Installs a host-answered provider. Same one-shot rule as `install`.
+pub fn install_callbacks(callbacks: FontProviderCallbacks) -> bool {
+    install(Box::new(CallbackProvider(callbacks)))
 }

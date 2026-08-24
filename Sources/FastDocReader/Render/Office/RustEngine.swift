@@ -34,6 +34,7 @@ enum RustEngine {
     /// and `DocumentTypes.readOffice` already applies it once for every reader — so this returns
     /// exactly what a reader returns, at exactly the point a reader returns it.
     static func readOffice(_ data: Data, extension ext: String) -> OfficeReadResult? {
+        RustEngineFonts.install()
         let json: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { raw -> UnsafeMutablePointer<CChar>? in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
             return ext.withCString { extensionC in
@@ -53,6 +54,14 @@ enum RustEngine {
             guard envelope.v == schemaVersion else { return nil }
             return envelope.result
         } catch {
+            // The host cannot RECOVER from a decode failure — there is no second reader behind this
+            // one any more — but it must not hide one either. A silent nil here reads exactly like
+            // "the engine could not parse the document", and the two have completely different
+            // causes: one is a document the engine cannot read, the other is a field the two sides
+            // spell differently. Saying which is the difference between a five-minute fix and an
+            // afternoon. This is stderr rather than a thrown error because the callers all take an
+            // Optional, and widening them to `throws` is a change this diagnostic does not need.
+            FileHandle.standardError.write(Data("fastdoc: engine JSON did not decode: \(error)\n".utf8))
             return nil
         }
     }
@@ -75,6 +84,7 @@ enum RustEngine {
     /// Returns nil only when the engine could not be asked at all; the engine itself answers 11 for
     /// a document that declares nothing, which is what this reader's own fallback answered.
     static func officeDefaultBodyFontSize(_ data: Data, extension ext: String) -> CGFloat? {
+        RustEngineFonts.install()
         guard !data.isEmpty else { return nil }
         return data.withUnsafeBytes { raw -> CGFloat? in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
@@ -83,6 +93,7 @@ enum RustEngine {
     }
 
     static func extractMarkdown(_ data: Data, extension ext: String) -> String? {
+        RustEngineFonts.install()
         let result: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { raw -> UnsafeMutablePointer<CChar>? in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
             return ext.withCString { extensionC in

@@ -756,9 +756,16 @@ impl FontSubstitutionCache {
         if let Some(hit) = self.coverage_memo.borrow().get(&key) {
             return *hit;
         }
-        // A real cmap lookup asks the operating system whether a font can draw this character —
-        // phase B's job, not phase A's. `CTFontGetGlyphsForCharacters(font, &units, &glyphs, ...)`.
-        let covered: bool = todo!("swift:528-536 CTFontGetGlyphsForCharacters cmap lookup");
+        // A cmap lookup asks the font system whether this face can draw this character. The engine
+        // cannot answer it — that is the whole reason `font_provider` is a port — so it asks, using
+        // the face id the descriptor was issued.
+        let covered: bool = match font.fontDescriptor().baseFace() {
+            Some(face) => swiftshim::font_provider::provider().covers(face, scalar),
+            // A font with no issued face is one this process never resolved, so there is nothing to
+            // ask about. Reporting "covered" keeps the declared face rather than substituting on a
+            // question that was never answered — the Swift's own posture when the lookup cannot run.
+            None => true,
+        };
         self.coverage_core_text_calls.set(self.coverage_core_text_calls.get() + 1);
         self.coverage_memo.borrow_mut().insert(key, covered);
         covered
@@ -775,9 +782,17 @@ impl FontSubstitutionCache {
             return hit.clone();
         }
         let Some(_unicode) = char::from_u32(scalar) else { return declared.clone() };
-        // Asks the operating system what it would substitute for this character — phase B's job.
-        // `CTFontCreateForString(declared, text, CFRange(location: 0, length: ...))`.
-        let font: swiftshim::NSFont = todo!("swift:549-551 CTFontCreateForString substitution query");
+        // Asks the font system what IT would substitute — not a list held here. The substitution
+        // cascade is the platform's, and reproducing this build means asking it.
+        let Some(declared_face) = declared.fontDescriptor().baseFace() else { return declared.clone() };
+        let font: swiftshim::NSFont = match swiftshim::font_provider::provider()
+            .substitute(declared_face, scalar)
+        {
+            // The system offered nothing, so the declared face stands — substituting to some other
+            // face here would be this engine inventing a cascade rather than reproducing one.
+            None => declared.clone(),
+            Some(face) => swiftshim::NSFont::fromFace(face, declared.pointSize()),
+        };
         self.substitute_core_text_calls.set(self.substitute_core_text_calls.get() + 1);
         self.substitute_memo.borrow_mut().insert(key, font.clone());
         font

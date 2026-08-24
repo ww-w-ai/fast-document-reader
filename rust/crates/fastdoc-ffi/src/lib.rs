@@ -162,3 +162,25 @@ fn extract(data: &[u8], extension: &str) -> Option<String> {
     let result = read_office(data, extension)?;
     Some(OfficeMarkdownSerializer::serialize(&result.blocks, &result.footnotes))
 }
+
+/// Declares the font world this process runs in, answered by the HOST.
+///
+/// The engine cannot answer "is there a font called 함초롬바탕 on this machine", and it must not
+/// guess: a provider that says every font exists never substitutes, one that says none does
+/// substitutes everything, and both render a plausible document in the wrong typefaces with
+/// nothing reporting it. So this is required before any office document is read, and reading one
+/// without it panics rather than proceeding.
+///
+/// Call once. A second call is ignored rather than swapped — two halves of one document resolving
+/// against different font worlds is worse than either world.
+///
+/// # Safety
+/// The four function pointers must remain valid for the life of the process, and must be safe to
+/// call from any thread. `face_named`'s argument is a NUL-terminated UTF-8 string; `describe`'s
+/// out-parameters point at buffers of the stated capacities.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_install_font_provider(
+    callbacks: swiftshim::font_provider::FontProviderCallbacks,
+) -> bool {
+    swiftshim::font_provider::install_callbacks(callbacks)
+}

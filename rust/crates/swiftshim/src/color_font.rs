@@ -297,6 +297,21 @@ impl NSFont {
         self.fontDescriptor.clone()
     }
 
+    /// An `NSFont` for a face the provider issued, at a size.
+    ///
+    /// The name and family are ASKED FOR rather than assembled: `describe` is the only thing that
+    /// knows what a `FaceId` turned out to be, and a face resolved through a substitution cascade
+    /// routinely has a different name — and sometimes a different family — from the one requested.
+    pub fn fromFace(face: crate::font_provider::FaceId, size: CGFloat) -> Self {
+        let info = crate::font_provider::provider().describe(face);
+        NSFont {
+            fontName: info.name,
+            familyName: info.family,
+            pointSize: size,
+            fontDescriptor: NSFontDescriptor::fromFace(face, info.traits),
+        }
+    }
+
     /// Test-only. `NSFont::named`/`with_descriptor` (below) both defer to CoreText (`todo!()`),
     /// so there is no way, outside this module, to build an `NSFont` with a real face name —
     /// which every test of `size_with_attributes`'s font-metric wiring needs one to exercise the
@@ -400,6 +415,31 @@ impl NSFontDescriptor {
         self.symbolicTraits
     }
 
+    /// The face this descriptor was built FROM, if any — `None` for one that carries nothing but
+    /// traits. Exposed for the font port alone: a provider needs to know which face a descriptor
+    /// is layering onto, and it must not try to reconstruct one from `family + traits` (see
+    /// `font_provider`'s header for the measurement that rules that out).
+    pub fn baseFace(&self) -> Option<crate::font_provider::FaceId> {
+        self.base
+    }
+
+    /// A descriptor that names a face the provider issued, carrying the traits that face reports.
+    /// Built here rather than by a caller so `base` stays private and can only ever hold an id the
+    /// provider actually handed out.
+    pub fn fromFace(
+        face: crate::font_provider::FaceId,
+        traits: NSFontDescriptorSymbolicTraits,
+    ) -> Self {
+        NSFontDescriptor { base: Some(face), symbolicTraits: traits, features: Vec::new() }
+    }
+
+    /// The `.featureSettings` accumulated by `addingAttributes` — small caps is the only in-scope
+    /// user. Exposed for the same reason as `baseFace`: the provider resolves the descriptor, so
+    /// it has to see all of it.
+    pub fn featureSettings(&self) -> &[(NSFontFeatureKey, i64)] {
+        &self.features
+    }
+
     /// swift: `NSFontDescriptor.addingAttributes(_:)` — returns a COPY with these added, which is
     /// why the existing features are kept rather than replaced.
     pub fn addingAttributes(&self, attributes: Vec<(NSFontFeatureKey, i64)>) -> Self {
@@ -480,6 +520,18 @@ pub enum NSFontFeatureKey {
     FeatureIdentifier,
     TypeIdentifier,
     SelectorIdentifier,
+}
+
+impl NSFontFeatureKey {
+    /// A stable number for the crossing to a host. Not Apple's own constant — these are dictionary
+    /// KEYS in AppKit, not integers — so both sides agree on this encoding and nothing else.
+    pub fn rawValue(self) -> i64 {
+        match self {
+            NSFontFeatureKey::FeatureIdentifier => 0,
+            NSFontFeatureKey::TypeIdentifier => 1,
+            NSFontFeatureKey::SelectorIdentifier => 2,
+        }
+    }
 }
 
 /// swift: NSImage — call sites construct with `NSImage(data:)` and `NSImage(size:)` /
