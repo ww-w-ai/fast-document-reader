@@ -14,18 +14,21 @@ mod validate;
 pub(crate) mod wire;
 
 pub use wire::{
-    Affinity, Alignment, Annotations as RenderAnnotationsDraft, Bookmark, CharacterStyle,
-    CodeBlock, Color, ColorSpace, Columns, Comment, Diagram, DiagramLanguage, Direction,
-    Document as RenderDocumentDraft, DocumentFormat, Edge, EdgeSet, EditMetadata, EditOperation,
+    Affinity, Alignment, Annotations as RenderAnnotationsDraft, Bookmark, BorderDeclaration,
+    BorderLineStyle, BorderSet, CellDiagonal, CellDiagonalDirection, CharacterStyle, CodeBlock,
+    Color, ColorSpace, Columns, Comment, Diagram, DiagramLanguage, Direction,
+    Document as RenderDocumentDraft, DocumentFormat, DrawnBorder, EditMetadata, EditOperation,
     Empty, Field, Footnote, FormControl, FormControlKind, Formula, Heading, Image,
     InlineFormControl, Insets, LineBreak, LineBreakGranularity, LineBreakKind, LineHeight, List,
-    ListItem, ListNumberingGlyphs, Node as RenderNodeDraft, NodePayload, Numbering,
+    ListItem, ListNumberingGlyphs, Node as RenderNodeDraft, NodePayload, Numbering, OptionalInsets,
     PageNumberField, PageNumbering, Paper, Paragraph, ParagraphStyle, PathCommand, RangeSegment,
     RawHtml, Resource as RenderResourceDraft, Section, Size, SourceDescriptor as RenderSourceDraft,
     SourceKind, SourceSpan, SpanPurpose, TabAlignment, TabLeader, TabStop, Table, TableCell,
     TableRow, TaskListItem, TextRun, UnderlineStyle, Unsupported, Vector, VerticalAlignment,
     VerticalPosition,
 };
+
+pub use validate::{resolve_cell_borders, resolve_cell_padding, CellSide, ResolvedEdge};
 
 /// A semantic RenderTree whose complete wire graph has passed canonical validation.
 #[derive(Debug, Clone)]
@@ -183,7 +186,10 @@ mod tests {
                 unreachable!()
             };
             let borders = paragraph.style.borders.as_mut().unwrap();
-            set_channel(&mut borders.top.as_mut().unwrap().color, channel, value);
+            let wire::BorderDeclaration::Drawn(top) = borders.top.as_mut().unwrap() else {
+                unreachable!()
+            };
+            set_channel(top.color.as_mut().unwrap(), channel, value);
             assert_invariant(
                 paragraph_edge,
                 "color component is invalid at borders/top/color",
@@ -195,6 +201,66 @@ mod tests {
             };
             set_channel(cell.fill.as_mut().unwrap(), channel, value);
             assert_invariant(table_cell, "color component is invalid at fill");
+
+            let mut table_cell_inside = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut table_cell_inside.nodes[15].payload
+            else {
+                unreachable!()
+            };
+            let wire::BorderDeclaration::Drawn(inside_h) =
+                cell.borders.inside_horizontal.as_mut().unwrap()
+            else {
+                unreachable!()
+            };
+            set_channel(inside_h.color.as_mut().unwrap(), channel, value);
+            assert_invariant(
+                table_cell_inside,
+                "color component is invalid at borders/insideHorizontal/color",
+            );
+
+            let mut table_cell_diagonal = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut table_cell_diagonal.nodes[15].payload
+            else {
+                unreachable!()
+            };
+            set_channel(
+                cell.diagonal.as_mut().unwrap().side.color.as_mut().unwrap(),
+                channel,
+                value,
+            );
+            assert_invariant(
+                table_cell_diagonal,
+                "color component is invalid at diagonal/side/color",
+            );
+        }
+    }
+
+    #[test]
+    fn typed_non_finite_border_padding_and_diagonal_metrics_reach_their_validator_branches() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut border_width = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut border_width.nodes[15].payload else {
+                unreachable!()
+            };
+            let wire::BorderDeclaration::Drawn(left) = cell.borders.left.as_mut().unwrap() else {
+                unreachable!()
+            };
+            left.width_points = value;
+            assert_invariant(border_width, "border width is invalid");
+
+            let mut padding = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut padding.nodes[15].payload else {
+                unreachable!()
+            };
+            cell.edge_padding.as_mut().unwrap().right = Some(value);
+            assert_invariant(padding, "cell padding is invalid");
+
+            let mut diagonal = fixture();
+            let wire::NodePayload::TableCell(cell) = &mut diagonal.nodes[15].payload else {
+                unreachable!()
+            };
+            cell.diagonal.as_mut().unwrap().side.width_points = value;
+            assert_invariant(diagonal, "border width is invalid");
         }
     }
 
@@ -236,7 +302,13 @@ mod tests {
                 ("character", "underlineColor"),
                 ("paragraph", "borders/top/color"),
                 ("paragraph", "shading"),
+                ("tableCell", "borders/bottom/color"),
+                ("tableCell", "borders/insideHorizontal/color"),
+                ("tableCell", "borders/insideVertical/color"),
+                ("tableCell", "borders/left/color"),
+                ("tableCell", "borders/right/color"),
                 ("tableCell", "borders/top/color"),
+                ("tableCell", "diagonal/side/color"),
                 ("tableCell", "fill"),
             ]
         );

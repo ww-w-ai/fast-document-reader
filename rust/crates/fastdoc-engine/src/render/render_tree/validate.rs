@@ -489,8 +489,15 @@ fn validate_payload(
             return Err(invalid("row height is invalid"))
         }
         P::TableCell(v) => {
-            if v.row_span == 0 || v.column_span == 0 || !valid_insets(&v.padding) {
-                return Err(invalid("table cell topology/insets are invalid"));
+            if v.row_span == 0 || v.column_span == 0 {
+                return Err(invalid("table cell topology is invalid"));
+            }
+            validate_border_set(&v.borders, true)?;
+            if let Some(padding) = &v.edge_padding {
+                validate_optional_insets(padding)?;
+            }
+            if let Some(diagonal) = &v.diagonal {
+                validate_drawn_border_width(&diagonal.side)?;
             }
             check_colors(table_cell_colors(v))?;
         }
@@ -575,11 +582,6 @@ fn require_resource(
         Err(invalid("node resource is missing"))
     }
 }
-fn valid_insets(v: &wire::Insets) -> bool {
-    [v.top, v.right, v.bottom, v.left]
-        .into_iter()
-        .all(finite_nonnegative)
-}
 fn valid_color(c: &wire::Color) -> bool {
     [c.red, c.green, c.blue, c.alpha]
         .into_iter()
@@ -597,42 +599,69 @@ fn check_colors<const N: usize>(
     Ok(())
 }
 
-fn edge_color(edge: &wire::Edge) -> &wire::Color {
-    let wire::Edge {
-        width_points: _,
-        style: _,
-        color,
-    } = edge;
-    color
+fn border_declaration_color(decl: &wire::BorderDeclaration) -> Option<&wire::Color> {
+    match decl {
+        wire::BorderDeclaration::Suppressed => None,
+        wire::BorderDeclaration::Drawn(drawn) => {
+            let wire::DrawnBorder {
+                width_points: _,
+                color,
+                style: _,
+            } = drawn;
+            color.as_ref()
+        }
+    }
 }
 
-fn edge_set_colors(set: Option<&wire::EdgeSet>) -> [(&'static str, Option<&wire::Color>); 4] {
+fn border_set_colors(set: Option<&wire::BorderSet>) -> [(&'static str, Option<&wire::Color>); 6] {
     let paths = [
         "borders/top/color",
         "borders/right/color",
         "borders/bottom/color",
         "borders/left/color",
+        "borders/insideHorizontal/color",
+        "borders/insideVertical/color",
     ];
-    let Some(wire::EdgeSet {
+    let Some(wire::BorderSet {
         top,
         right,
         bottom,
         left,
+        inside_horizontal,
+        inside_vertical,
     }) = set
     else {
-        return [
-            (paths[0], None),
-            (paths[1], None),
-            (paths[2], None),
-            (paths[3], None),
-        ];
+        return paths.map(|path| (path, None));
     };
     [
-        (paths[0], top.as_ref().map(edge_color)),
-        (paths[1], right.as_ref().map(edge_color)),
-        (paths[2], bottom.as_ref().map(edge_color)),
-        (paths[3], left.as_ref().map(edge_color)),
+        (paths[0], top.as_ref().and_then(border_declaration_color)),
+        (paths[1], right.as_ref().and_then(border_declaration_color)),
+        (paths[2], bottom.as_ref().and_then(border_declaration_color)),
+        (paths[3], left.as_ref().and_then(border_declaration_color)),
+        (
+            paths[4],
+            inside_horizontal
+                .as_ref()
+                .and_then(border_declaration_color),
+        ),
+        (
+            paths[5],
+            inside_vertical.as_ref().and_then(border_declaration_color),
+        ),
     ]
+}
+
+fn diagonal_colors(diagonal: Option<&wire::CellDiagonal>) -> (&'static str, Option<&wire::Color>) {
+    let path = "diagonal/side/color";
+    let Some(wire::CellDiagonal { direction: _, side }) = diagonal else {
+        return (path, None);
+    };
+    let wire::DrawnBorder {
+        width_points: _,
+        color,
+        style: _,
+    } = side;
+    (path, color.as_ref())
 }
 
 pub(super) fn character_style_colors(
@@ -671,7 +700,7 @@ pub(super) fn character_style_colors(
 
 pub(super) fn paragraph_style_colors(
     v: &wire::ParagraphStyle,
-) -> [(&'static str, Option<&wire::Color>); 5] {
+) -> [(&'static str, Option<&wire::Color>); 7] {
     let wire::ParagraphStyle {
         alignment: _,
         direction: _,
@@ -693,23 +722,44 @@ pub(super) fn paragraph_style_colors(
         auto_space_east_asian_number: _,
         line_height_from_font_metrics: _,
     } = v;
-    let [top, right, bottom, left] = edge_set_colors(borders.as_ref());
-    [("shading", shading.as_ref()), top, right, bottom, left]
+    let [top, right, bottom, left, inside_horizontal, inside_vertical] =
+        border_set_colors(borders.as_ref());
+    [
+        ("shading", shading.as_ref()),
+        top,
+        right,
+        bottom,
+        left,
+        inside_horizontal,
+        inside_vertical,
+    ]
 }
 
-pub(super) fn table_cell_colors(v: &wire::TableCell) -> [(&'static str, Option<&wire::Color>); 5] {
+pub(super) fn table_cell_colors(v: &wire::TableCell) -> [(&'static str, Option<&wire::Color>); 8] {
     let wire::TableCell {
         row: _,
         column: _,
         row_span: _,
         column_span: _,
         borders,
-        padding: _,
+        edge_padding: _,
+        diagonal,
         fill,
         vertical_alignment: _,
     } = v;
-    let [top, right, bottom, left] = edge_set_colors(Some(borders));
-    [("fill", fill.as_ref()), top, right, bottom, left]
+    let [top, right, bottom, left, inside_horizontal, inside_vertical] =
+        border_set_colors(Some(borders));
+    let diagonal_side = diagonal_colors(diagonal.as_ref());
+    [
+        ("fill", fill.as_ref()),
+        top,
+        right,
+        bottom,
+        left,
+        inside_horizontal,
+        inside_vertical,
+        diagonal_side,
+    ]
 }
 
 fn validate_character_style(v: &wire::CharacterStyle) -> Result<(), DecodeError> {
@@ -770,7 +820,176 @@ fn validate_paragraph_style(v: &wire::ParagraphStyle) -> Result<(), DecodeError>
             return Err(invalid("column declaration is invalid"));
         }
     }
+    if let Some(borders) = &v.borders {
+        validate_border_set(borders, false)?;
+    }
     check_colors(paragraph_style_colors(v))
+}
+
+fn validate_drawn_border_width(drawn: &wire::DrawnBorder) -> Result<(), DecodeError> {
+    if !finite_nonnegative(drawn.width_points) {
+        return Err(invalid("border width is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_border_declaration(decl: &wire::BorderDeclaration) -> Result<(), DecodeError> {
+    match decl {
+        wire::BorderDeclaration::Suppressed => Ok(()),
+        wire::BorderDeclaration::Drawn(drawn) => validate_drawn_border_width(drawn),
+    }
+}
+
+fn validate_border_set(set: &wire::BorderSet, allow_inside_edges: bool) -> Result<(), DecodeError> {
+    let wire::BorderSet {
+        top,
+        right,
+        bottom,
+        left,
+        inside_horizontal,
+        inside_vertical,
+    } = set;
+    if !allow_inside_edges && (inside_horizontal.is_some() || inside_vertical.is_some()) {
+        return Err(invalid("paragraph border set may not declare inside edges"));
+    }
+    for decl in [top, right, bottom, left, inside_horizontal, inside_vertical]
+        .into_iter()
+        .flatten()
+    {
+        validate_border_declaration(decl)?;
+    }
+    Ok(())
+}
+
+fn validate_optional_insets(v: &wire::OptionalInsets) -> Result<(), DecodeError> {
+    let wire::OptionalInsets {
+        top,
+        right,
+        bottom,
+        left,
+    } = v;
+    if [top, right, bottom, left]
+        .into_iter()
+        .flatten()
+        .any(|x| !finite_nonnegative(*x))
+    {
+        return Err(invalid("cell padding is invalid"));
+    }
+    Ok(())
+}
+
+/// Which of a table cell's four logical edges is being resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellSide {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+/// The pure outcome of cascading a cell border declaration against its table context.
+#[derive(Debug, Clone, Copy)]
+pub struct ResolvedEdge<'a> {
+    pub side: Option<&'a wire::DrawnBorder>,
+    pub explicit: bool,
+}
+
+fn select_table_declaration(
+    table: &wire::BorderSet,
+    side: CellSide,
+    is_perimeter: bool,
+) -> Option<&wire::BorderDeclaration> {
+    match (side, is_perimeter) {
+        (CellSide::Top, true) => table.top.as_ref(),
+        (CellSide::Top, false) => table.inside_horizontal.as_ref(),
+        (CellSide::Bottom, true) => table.bottom.as_ref(),
+        (CellSide::Bottom, false) => table.inside_horizontal.as_ref(),
+        (CellSide::Left, true) => table.left.as_ref(),
+        (CellSide::Left, false) => table.inside_vertical.as_ref(),
+        (CellSide::Right, true) => table.right.as_ref(),
+        (CellSide::Right, false) => table.inside_vertical.as_ref(),
+    }
+}
+
+/// Resolves a single cell edge against its selected table declaration. Pure and allocation-free.
+fn resolve_border_side<'a>(
+    cell: Option<&'a wire::BorderDeclaration>,
+    table: Option<&'a wire::BorderDeclaration>,
+    table_drew_any_edge: bool,
+    fallback: Option<&'a wire::DrawnBorder>,
+) -> ResolvedEdge<'a> {
+    match cell {
+        Some(wire::BorderDeclaration::Drawn(drawn)) => ResolvedEdge {
+            side: Some(drawn),
+            explicit: true,
+        },
+        Some(wire::BorderDeclaration::Suppressed) => ResolvedEdge {
+            side: None,
+            explicit: true,
+        },
+        None => match table {
+            Some(wire::BorderDeclaration::Drawn(drawn)) => ResolvedEdge {
+                side: Some(drawn),
+                explicit: true,
+            },
+            Some(wire::BorderDeclaration::Suppressed) => ResolvedEdge {
+                side: None,
+                explicit: true,
+            },
+            None if table_drew_any_edge => ResolvedEdge {
+                side: None,
+                explicit: false,
+            },
+            None => ResolvedEdge {
+                side: fallback,
+                explicit: false,
+            },
+        },
+    }
+}
+
+/// Resolves all four logical cell edges against their table context. Pure and allocation-free.
+pub fn resolve_cell_borders<'a>(
+    cell: &'a wire::BorderSet,
+    table: &'a wire::BorderSet,
+    perimeter: [bool; 4],
+    table_drew_any_edge: bool,
+    fallback: Option<&'a wire::DrawnBorder>,
+) -> [ResolvedEdge<'a>; 4] {
+    let sides = [
+        CellSide::Top,
+        CellSide::Right,
+        CellSide::Bottom,
+        CellSide::Left,
+    ];
+    let cell_fields = [
+        cell.top.as_ref(),
+        cell.right.as_ref(),
+        cell.bottom.as_ref(),
+        cell.left.as_ref(),
+    ];
+    std::array::from_fn(|i| {
+        let table_decl = select_table_declaration(table, sides[i], perimeter[i]);
+        resolve_border_side(cell_fields[i], table_decl, table_drew_any_edge, fallback)
+    })
+}
+
+fn resolve_padding_edge(cell: Option<f64>, table: Option<f64>, fallback: f64) -> f64 {
+    cell.or(table).unwrap_or(fallback)
+}
+
+/// Resolves paged cell padding against its table context, edge by edge. Pure and allocation-free.
+pub fn resolve_cell_padding(
+    cell: &wire::OptionalInsets,
+    table: &wire::OptionalInsets,
+    fallback: wire::Insets,
+) -> wire::Insets {
+    wire::Insets {
+        top: resolve_padding_edge(cell.top, table.top, fallback.top),
+        right: resolve_padding_edge(cell.right, table.right, fallback.right),
+        bottom: resolve_padding_edge(cell.bottom, table.bottom, fallback.bottom),
+        left: resolve_padding_edge(cell.left, table.left, fallback.left),
+    }
 }
 
 fn validate_tab_stops(values: &[wire::TabStop]) -> Result<(), DecodeError> {

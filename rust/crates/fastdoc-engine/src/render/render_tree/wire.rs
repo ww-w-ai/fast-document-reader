@@ -54,6 +54,8 @@ all_string_enums! {
     LineBreakGranularity { Word => "word", Hyphen => "hyphen", Character => "character" },
     ListNumberingGlyphs { Decimal => "decimal", CircledDecimal => "circledDecimal", RomanUpper => "romanUpper", RomanLower => "romanLower", LatinUpper => "latinUpper", LatinLower => "latinLower", HangulSyllable => "hangulSyllable", HangulNumber => "hangulNumber", HanjaNumber => "hanjaNumber" },
     ColorSpace { Srgb => "sRGB", DeviceRgb => "deviceRGB" },
+    BorderLineStyle { Solid => "solid", Dashed => "dashed", Dotted => "dotted", Double => "double" },
+    CellDiagonalDirection { Slash => "slash", Backslash => "backslash", Both => "both" },
 }
 
 #[allow(clippy::derivable_impls)]
@@ -215,7 +217,7 @@ pub struct Size {
     pub height: f64,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Insets {
     pub top: f64,
@@ -226,19 +228,55 @@ pub struct Insets {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Edge {
+pub struct DrawnBorder {
     pub width_points: f64,
-    pub style: String,
-    pub color: Color,
+    #[serde(default)]
+    pub color: Option<Color>,
+    pub style: BorderLineStyle,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum BorderDeclaration {
+    Suppressed,
+    Drawn(DrawnBorder),
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EdgeSet {
-    pub top: Option<Edge>,
-    pub right: Option<Edge>,
-    pub bottom: Option<Edge>,
-    pub left: Option<Edge>,
+pub struct BorderSet {
+    #[serde(default)]
+    pub top: Option<BorderDeclaration>,
+    #[serde(default)]
+    pub right: Option<BorderDeclaration>,
+    #[serde(default)]
+    pub bottom: Option<BorderDeclaration>,
+    #[serde(default)]
+    pub left: Option<BorderDeclaration>,
+    #[serde(default)]
+    pub inside_horizontal: Option<BorderDeclaration>,
+    #[serde(default)]
+    pub inside_vertical: Option<BorderDeclaration>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OptionalInsets {
+    #[serde(default)]
+    pub top: Option<f64>,
+    #[serde(default)]
+    pub right: Option<f64>,
+    #[serde(default)]
+    pub bottom: Option<f64>,
+    #[serde(default)]
+    pub left: Option<f64>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellDiagonal {
+    pub direction: CellDiagonalDirection,
+    pub side: DrawnBorder,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -308,7 +346,7 @@ pub struct ParagraphStyle {
     #[serde(default)]
     pub line_height: Option<LineHeight>,
     #[serde(default)]
-    pub borders: Option<EdgeSet>,
+    pub borders: Option<BorderSet>,
     #[serde(default)]
     pub shading: Option<Color>,
     #[serde(default)]
@@ -508,8 +546,11 @@ pub struct TableCell {
     pub row_span: u32,
     pub column_span: u32,
     #[serde(default)]
-    pub borders: EdgeSet,
-    pub padding: Insets,
+    pub borders: BorderSet,
+    #[serde(default)]
+    pub edge_padding: Option<OptionalInsets>,
+    #[serde(default)]
+    pub diagonal: Option<CellDiagonal>,
     pub fill: Option<Color>,
     pub vertical_alignment: VerticalAlignment,
 }

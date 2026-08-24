@@ -162,13 +162,22 @@
           },
           "borders": {
             "top": {
-              "widthPoints": 1,
-              "style": "solid",
-              "color": { "red": 0, "green": 0, "blue": 0, "alpha": 1, "space": "sRGB" }
+              "kind": "drawn",
+              "value": {
+                "widthPoints": 1,
+                "style": "solid",
+                "color": { "red": 0, "green": 0, "blue": 0, "alpha": 1, "space": "sRGB" }
+              }
             },
-            "right": null,
+            "right": { "kind": "suppressed" },
             "bottom": null,
-            "left": null
+            "left": {
+              "kind": "drawn",
+              "value": {
+                "widthPoints": 0.75,
+                "style": "dashed"
+              }
+            }
           },
           "shading": {
             "red": 1,
@@ -395,19 +404,67 @@
         "columnSpan": 2,
         "borders": {
           "top": {
-            "widthPoints": 0.5,
-            "style": "solid",
-            "color": { "red": 0.2, "green": 0.2, "blue": 0.2, "alpha": 1, "space": "deviceRGB" }
+            "kind": "drawn",
+            "value": {
+              "widthPoints": 0.5,
+              "style": "solid",
+              "color": { "red": 0.2, "green": 0.2, "blue": 0.2, "alpha": 1, "space": "deviceRGB" }
+            }
           },
-          "right": null,
-          "bottom": null,
-          "left": null
+          "right": {
+            "kind": "drawn",
+            "value": {
+              "widthPoints": 0.75,
+              "style": "dashed",
+              "color": { "red": 0.25, "green": 0.25, "blue": 0.25, "alpha": 1, "space": "sRGB" }
+            }
+          },
+          "bottom": {
+            "kind": "drawn",
+            "value": {
+              "widthPoints": 1,
+              "style": "dotted",
+              "color": { "red": 0.15, "green": 0.15, "blue": 0.15, "alpha": 1, "space": "deviceRGB" }
+            }
+          },
+          "left": {
+            "kind": "drawn",
+            "value": {
+              "widthPoints": 1.25,
+              "style": "dashed",
+              "color": { "red": 0.35, "green": 0.35, "blue": 0.35, "alpha": 1, "space": "sRGB" }
+            }
+          },
+          "insideHorizontal": {
+            "kind": "drawn",
+            "value": {
+              "widthPoints": 0.25,
+              "style": "dotted",
+              "color": { "red": 0.1, "green": 0.1, "blue": 0.1, "alpha": 1, "space": "sRGB" }
+            }
+          },
+          "insideVertical": {
+            "kind": "drawn",
+            "value": {
+              "widthPoints": 2,
+              "style": "double",
+              "color": { "red": 0.3, "green": 0.3, "blue": 0.3, "alpha": 1, "space": "sRGB" }
+            }
+          }
         },
-        "padding": {
-          "top": 2,
+        "edgePadding": {
+          "top": 0,
           "right": 2,
-          "bottom": 2,
+          "bottom": null,
           "left": 2
+        },
+        "diagonal": {
+          "direction": "both",
+          "side": {
+            "widthPoints": 0,
+            "style": "solid",
+            "color": { "red": 0.4, "green": 0.4, "blue": 0.4, "alpha": 1, "space": "sRGB" }
+          }
         },
         "fill": {
           "red": 0.9,

@@ -1,6 +1,8 @@
 use fastdoc_engine::render::render_tree::{
-    DecodeError, DocumentFormat, Empty, NodePayload, RenderDocumentDraft, RenderNodeDraft,
-    RenderSourceDraft, RenderTreeBuilder, SourceKind, ValidatedRenderTree,
+    resolve_cell_borders, resolve_cell_padding, BorderDeclaration, BorderLineStyle, BorderSet,
+    DecodeError, DocumentFormat, DrawnBorder, Empty, Insets, NodePayload, OptionalInsets,
+    RenderDocumentDraft, RenderNodeDraft, RenderSourceDraft, RenderTreeBuilder, SourceKind,
+    ValidatedRenderTree,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -41,6 +43,165 @@ fn all_six_document_formats_decode_through_the_checked_boundary() {
     for fixture in fixtures {
         decode_value(&fixture).unwrap();
     }
+}
+
+fn drawn(width_points: f64) -> DrawnBorder {
+    DrawnBorder {
+        width_points,
+        color: None,
+        style: BorderLineStyle::Solid,
+    }
+}
+
+fn borders_with(side: usize, decl: Option<BorderDeclaration>) -> BorderSet {
+    let mut set = BorderSet::default();
+    match side {
+        0 => set.top = decl,
+        1 => set.right = decl,
+        2 => set.bottom = decl,
+        _ => set.left = decl,
+    }
+    set
+}
+
+fn inside_side(side: usize, decl: Option<BorderDeclaration>) -> BorderSet {
+    let mut set = BorderSet::default();
+    if side == 0 || side == 2 {
+        set.inside_horizontal = decl;
+    } else {
+        set.inside_vertical = decl;
+    }
+    set
+}
+
+#[test]
+fn border_side_resolution_matches_the_six_row_matrix_across_perimeter_and_interior_placements() {
+    let fallback = drawn(9.0);
+    for side in 0..4usize {
+        let mut perimeter = [false; 4];
+        perimeter[side] = true;
+
+        // Row 1: cell drawn wins regardless of table declaration or perimeter placement.
+        let cell = borders_with(side, Some(BorderDeclaration::Drawn(drawn(1.0))));
+        let table = borders_with(side, Some(BorderDeclaration::Suppressed));
+        let resolved = resolve_cell_borders(&cell, &table, perimeter, true, Some(&fallback));
+        assert!(resolved[side].explicit);
+        assert_eq!(resolved[side].side.map(|d| d.width_points), Some(1.0));
+
+        // Row 2: cell suppressed wins over any table declaration.
+        let cell = borders_with(side, Some(BorderDeclaration::Suppressed));
+        let table = borders_with(side, Some(BorderDeclaration::Drawn(drawn(2.0))));
+        let resolved = resolve_cell_borders(&cell, &table, perimeter, true, Some(&fallback));
+        assert!(resolved[side].explicit);
+        assert!(resolved[side].side.is_none());
+
+        // Row 3: cell unspecified, perimeter table side drawn -> table wins, explicit.
+        let cell = BorderSet::default();
+        let table = borders_with(side, Some(BorderDeclaration::Drawn(drawn(3.0))));
+        let resolved = resolve_cell_borders(&cell, &table, perimeter, true, Some(&fallback));
+        assert!(resolved[side].explicit);
+        assert_eq!(resolved[side].side.map(|d| d.width_points), Some(3.0));
+
+        // Row 3 (interior selection): same but the span sits on the table interior instead.
+        let mut interior_perimeter = [false; 4];
+        interior_perimeter[side] = false;
+        let table_interior = inside_side(side, Some(BorderDeclaration::Drawn(drawn(3.5))));
+        let resolved = resolve_cell_borders(
+            &cell,
+            &table_interior,
+            interior_perimeter,
+            true,
+            Some(&fallback),
+        );
+        assert!(resolved[side].explicit);
+        assert_eq!(resolved[side].side.map(|d| d.width_points), Some(3.5));
+
+        // Row 4: cell unspecified, table side suppressed -> no side, explicit.
+        let table = borders_with(side, Some(BorderDeclaration::Suppressed));
+        let resolved = resolve_cell_borders(&cell, &table, perimeter, true, Some(&fallback));
+        assert!(resolved[side].explicit);
+        assert!(resolved[side].side.is_none());
+
+        // Row 5: both unspecified, table drew some other edge -> no side, implicit.
+        let table = BorderSet::default();
+        let resolved = resolve_cell_borders(&cell, &table, perimeter, true, Some(&fallback));
+        assert!(!resolved[side].explicit);
+        assert!(resolved[side].side.is_none());
+
+        // Row 6: both unspecified, table drew nothing -> caller fallback, implicit.
+        let resolved = resolve_cell_borders(&cell, &table, perimeter, false, Some(&fallback));
+        assert!(!resolved[side].explicit);
+        assert_eq!(resolved[side].side.map(|d| d.width_points), Some(9.0));
+    }
+}
+
+#[test]
+fn spanned_placement_selects_inside_and_perimeter_table_declarations_per_side() {
+    let cell = BorderSet::default();
+    let mut table = BorderSet::default();
+    table.top = Some(BorderDeclaration::Drawn(drawn(1.0)));
+    table.right = Some(BorderDeclaration::Drawn(drawn(2.0)));
+    table.bottom = Some(BorderDeclaration::Drawn(drawn(3.0)));
+    table.left = Some(BorderDeclaration::Drawn(drawn(4.0)));
+    table.inside_horizontal = Some(BorderDeclaration::Drawn(drawn(5.0)));
+    table.inside_vertical = Some(BorderDeclaration::Drawn(drawn(6.0)));
+
+    let (row, column, row_span, column_span, row_count, column_count) = (1, 1, 2, 3, 3, 4);
+    let perimeter = [
+        row == 0,
+        column + column_span >= column_count,
+        row + row_span >= row_count,
+        column == 0,
+    ];
+    let resolved = resolve_cell_borders(&cell, &table, perimeter, true, None);
+    assert_eq!(
+        resolved.map(|edge| edge.side.unwrap().width_points),
+        [5.0, 2.0, 3.0, 6.0]
+    );
+}
+
+#[test]
+fn padding_resolution_matches_the_three_row_matrix_including_authored_zero() {
+    let fallback = Insets {
+        top: 5.0,
+        right: 5.0,
+        bottom: 5.0,
+        left: 5.0,
+    };
+
+    // Row 1: cell value wins, including an authored zero.
+    let cell = OptionalInsets {
+        top: Some(0.0),
+        right: Some(1.0),
+        bottom: None,
+        left: None,
+    };
+    let table = OptionalInsets {
+        top: Some(9.0),
+        right: Some(9.0),
+        bottom: Some(9.0),
+        left: None,
+    };
+    let resolved = resolve_cell_padding(&cell, &table, fallback);
+    assert_eq!(resolved.top, 0.0);
+    assert_eq!(resolved.right, 1.0);
+
+    // Row 2: cell unspecified, table value wins, including an authored zero.
+    let cell_unspecified = OptionalInsets::default();
+    let table_zero = OptionalInsets {
+        top: Some(0.0),
+        right: None,
+        bottom: None,
+        left: None,
+    };
+    let resolved = resolve_cell_padding(&cell_unspecified, &table_zero, fallback);
+    assert_eq!(resolved.top, 0.0);
+
+    // Row 3: both unspecified, caller fallback wins.
+    let both_unspecified = OptionalInsets::default();
+    let resolved = resolve_cell_padding(&both_unspecified, &both_unspecified, fallback);
+    assert_eq!(resolved.top, fallback.top);
+    assert_eq!(resolved.left, fallback.left);
 }
 
 #[test]
@@ -99,6 +260,13 @@ fn every_macro_enum_value_is_exercised_by_a_checked_fixture_variant() {
                 }
                 "ColorSpace" => {
                     fixture["nodes"][5]["data"]["style"]["foreground"]["space"] = (*value).into()
+                }
+                "BorderLineStyle" => {
+                    fixture["nodes"][15]["data"]["borders"]["top"]["value"]["style"] =
+                        (*value).into()
+                }
+                "CellDiagonalDirection" => {
+                    fixture["nodes"][15]["data"]["diagonal"]["direction"] = (*value).into()
                 }
                 other => panic!("enum catalog has no checked fixture route: {other}"),
             }
@@ -693,10 +861,69 @@ fn every_required_malformed_schema_mutation_is_killed() {
                     .push(tab);
             }),
         ),
+        (
+            "border-declaration-kind-missing",
+            Box::new(|v| {
+                v["nodes"][15]["data"]["borders"]["top"] = serde_json::json!({
+                    "widthPoints": 1,
+                    "style": "solid",
+                    "color": { "red": 0, "green": 0, "blue": 0, "alpha": 1, "space": "sRGB" }
+                });
+            }),
+        ),
+        (
+            "border-style-unknown",
+            Box::new(|v| {
+                v["nodes"][4]["data"]["style"]["borders"]["top"]["value"]["style"] = "groove".into()
+            }),
+        ),
+        (
+            "border-width-negative",
+            Box::new(|v| {
+                v["nodes"][15]["data"]["borders"]["left"]["value"]["widthPoints"] = (-1).into()
+            }),
+        ),
+        (
+            "paragraph-border-inside-edge",
+            Box::new(|v| {
+                v["nodes"][4]["data"]["style"]["borders"]["insideHorizontal"] =
+                    serde_json::json!({"kind": "suppressed"});
+            }),
+        ),
+        (
+            "cell-padding-negative",
+            Box::new(|v| v["nodes"][15]["data"]["edgePadding"]["right"] = (-1).into()),
+        ),
+        (
+            "diagonal-width-negative",
+            Box::new(|v| v["nodes"][15]["data"]["diagonal"]["side"]["widthPoints"] = (-1).into()),
+        ),
+        (
+            "old-wire-table-cell",
+            Box::new(|v| {
+                v["nodes"][15]["data"]["borders"] = serde_json::json!({
+                    "top": {
+                        "widthPoints": 1,
+                        "style": "solid",
+                        "color": { "red": 0, "green": 0, "blue": 0, "alpha": 1, "space": "sRGB" }
+                    },
+                    "right": null,
+                    "bottom": null,
+                    "left": null
+                });
+                v["nodes"][15]["data"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("edgePadding");
+                v["nodes"][15]["data"]["padding"] = serde_json::json!({
+                    "top": 1, "right": 1, "bottom": 1, "left": 1
+                });
+            }),
+        ),
     ];
     let ids: BTreeSet<_> = mutations.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids.len(), mutations.len(), "duplicate mutation IDs");
-    assert_eq!(mutations.len(), 83, "mutation inventory drifted");
+    assert_eq!(mutations.len(), 90, "mutation inventory drifted");
     let mut killed = 0;
     for (id, mutate) in mutations {
         let mut value = exhaustive_value();
@@ -708,7 +935,7 @@ fn every_required_malformed_schema_mutation_is_killed() {
         );
         killed += 1;
     }
-    assert_eq!(killed, 83);
+    assert_eq!(killed, 90);
 }
 
 fn expected_detail(id: &str) -> &'static str {
@@ -786,6 +1013,11 @@ fn expected_detail(id: &str) -> &'static str {
         "negative-tab-position" | "duplicate-tab-position" => {
             "tab stops are not finite strictly increasing"
         }
+        "border-declaration-kind-missing" | "old-wire-table-cell" => "missing field",
+        "border-style-unknown" => "unknown variant",
+        "border-width-negative" | "diagonal-width-negative" => "border width is invalid",
+        "paragraph-border-inside-edge" => "may not declare inside edges",
+        "cell-padding-negative" => "cell padding is invalid",
         other => panic!("mutation has no expected branch: {other}"),
     }
 }
