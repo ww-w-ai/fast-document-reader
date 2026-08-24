@@ -69,6 +69,19 @@ enum RustEngine {
         private enum VersionKey: String, CodingKey { case v }
     }
 
+    /// The document's own default body run size in points — the other half of the typography's
+    /// font-size model, which a zip-backed read result does not carry.
+    ///
+    /// Returns nil only when the engine could not be asked at all; the engine itself answers 11 for
+    /// a document that declares nothing, which is what this reader's own fallback answered.
+    static func officeDefaultBodyFontSize(_ data: Data, extension ext: String) -> CGFloat? {
+        guard !data.isEmpty else { return nil }
+        return data.withUnsafeBytes { raw -> CGFloat? in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
+            return ext.withCString { CGFloat(fastdoc_office_default_body_font_size(base, raw.count, $0)) }
+        }
+    }
+
     static func extractMarkdown(_ data: Data, extension ext: String) -> String? {
         let result: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { raw -> UnsafeMutablePointer<CChar>? in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }

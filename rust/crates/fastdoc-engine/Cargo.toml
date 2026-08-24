@@ -20,3 +20,4 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 # turns up would then be unattributable. Bump this and RHWP-SOURCE.txt together, never one alone.
 rhwp = { git = "https://github.com/ww-w-ai/rhwp.git", rev = "001fd0bfbb9c21af5393051963ee76dee625c7ec", default-features = false }
 flate2 = { workspace = true }
+base64 = "0.22"

@@ -98,8 +98,12 @@ impl Data {
     pub fn fromBytes(bytes: Vec<u8>) -> Self {
         Data(bytes)
     }
-    pub fn base64Encoded(_b64: &str) -> Option<Self> {
-        todo!("swift: Data(base64Encoded:) — phase B")
+    pub fn base64Encoded(b64: &str) -> Option<Self> {
+        // swift: `Data(base64Encoded:)` returns nil for input that is not valid base64, which is
+        // what the HWP picture path relies on to tell "this image did not decode" from "this image
+        // is empty" — so a decode failure must stay None rather than becoming an empty Data.
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(b64).ok().map(Data)
     }
     /// swift: `Data(contentsOf:)` — file URLs only, which is every call site in scope.
     pub fn contentsOf(url: &URL) -> Result<Self, EngineError> {

@@ -131,23 +131,32 @@ enum DocumentTypes {
             ])
         }
         #if FMD_RUST_ENGINE
-        // The ported engine reads the document instead, when it can. It returns nil for a file it
-        // cannot read, and also for one it read but cannot hand over intact — and both mean the
-        // same thing here, which is why there is one branch and not two: fall through to the
-        // reader that has always been here.
+        // The ported engine reads the document, and NOTHING catches it if it cannot.
         //
-        // Font substitution deliberately stays BELOW this branch. It is AppKit's, it is the host's,
-        // and running it once for whichever reader produced the blocks is what keeps invariant 29's
-        // single funnel single.
-        if let ported = RustEngine.readOffice(archive.sourceBytes, extension: ext) {
-            return ported.resolvingFontSubstitution()
+        // It used to fall through to the Swift reader below, which made the app robust and the port
+        // unmeasurable: an engine that failed on every document would have looked exactly like one
+        // that worked, and the Swift readers this build no longer calls are not going to exist on
+        // Windows or Android to catch anything there. The engine has to stand on its own here for
+        // standing on its own elsewhere to mean something.
+        //
+        // The Swift readers are still in the tree and still under test — as the REFERENCE the
+        // engine is checked against, which is the one job they keep.
+        //
+        // Font substitution stays below, applied once to whatever produced the blocks: it is
+        // AppKit's, it is the host's, and it is what keeps invariant 29's single funnel single.
+        guard let ported = RustEngine.readOffice(archive.sourceBytes, extension: ext) else {
+            throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
+            ])
         }
-        #endif
+        return ported.resolvingFontSubstitution()
+        #else
         // `.resolvingFontSubstitution()` is applied HERE, once, for both docx/docm/dotx/dotm AND
         // odt — the single funnel invariant 29 already makes both readers share, so neither
         // `DocxReader` nor `OdtReader` has to call it (or forget to). See
         // `FontSubstitutionResolver`'s file doc for why this belongs at read time.
         return try reader.read(archive).resolvingFontSubstitution()
+        #endif
     }
 
     /// The other half of `OfficeTextBuilder.build`'s font-size model (see its `documentDefaultFontSize`
@@ -157,7 +166,14 @@ enum DocumentTypes {
     /// own) for an extension with no registered reader — this is a lookup for rendering, not a second
     /// place that validates the extension, so it degrades rather than throws.
     static func officeDefaultBodyFontSize(_ archive: ZipArchive, extension ext: String) -> CGFloat {
-        officeReaderType(for: ext)?.documentDefaultBodyFontSize(archive) ?? 11
+        #if FMD_RUST_ENGINE
+        // The engine answers this too — see `readOffice` for why nothing falls back to the Swift
+        // reader here either. This was the SECOND way the app still reached it, and a build that
+        // left it in place would have been calling the reader it believes it no longer uses.
+        return RustEngine.officeDefaultBodyFontSize(archive.sourceBytes, extension: ext) ?? 11
+        #else
+        return officeReaderType(for: ext)?.documentDefaultBodyFontSize(archive) ?? 11
+        #endif
     }
 
     /// Content types for the Open panel's filter.

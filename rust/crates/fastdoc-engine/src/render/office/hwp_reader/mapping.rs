@@ -50,7 +50,14 @@ impl HwpReader {
     /// in bindings/Native/src/lib.rs of the fork).
     // swift: Render/Office/HwpReader.swift:19-32
     pub fn export_document_json(data: &Data) -> Option<String> {
-        todo!("swift:19-32 rhwp_open/rhwp_document_json/rhwp_close FFI bridge — CRhwpNative has no Rust binding yet")
+        // Self-closing: opens, exports, closes. `read` does NOT go through here — it needs the
+        // handle to stay alive past the export so pictures can be fetched against the same parse,
+        // and HWP is CFB binary with no archive to re-open later. This one exists for callers that
+        // want the JSON alone.
+        let handle = Self::rhwp_open(data)?;
+        let json = Self::rhwp_document_json_owned(handle);
+        Self::rhwp_close(handle);
+        json
     }
 
     /// Base64 of an embedded image's bytes, by 1-based bin_data_id. Empty string when
@@ -58,7 +65,17 @@ impl HwpReader {
     /// use this from within a single open/close around the whole read.
     // swift: Render/Office/HwpReader.swift:33-40
     pub fn image_base64(handle: RhwpHandle, bin_data_id: u16) -> Option<String> {
-        todo!("swift:34-40 rhwp_image_base64/rhwp_string_free FFI bridge")
+        if handle.is_null() {
+            return None;
+        }
+        // rhwp's C shim returns "" for an image it cannot resolve, and the Swift treats that empty
+        // string as "no image". Here the failure arrives as an `Err`, so it becomes None directly —
+        // the distinction the caller needs is unresolvable-versus-decoded, and None carries it
+        // without a sentinel that an empty image could be mistaken for.
+        use base64::Engine;
+        let doc = unsafe { &*(handle as *const rhwp::wasm_api::HwpDocument) };
+        let bytes = doc.get_bin_data_image_data_native(bin_data_id).ok()?;
+        Some(base64::engine::general_purpose::STANDARD.encode(bytes))
     }
 
     // swift: Render/Office/HwpReader.swift:43
@@ -117,20 +134,37 @@ impl HwpReader {
     /// resolvingFontSubstitution) stays real logic rather than one function-wide `todo!()`.
     // swift: Render/Office/HwpReader.swift:75-79
     fn rhwp_open(data: &Data) -> Option<RhwpHandle> {
-        todo!("swift:75-79 rhwp_open(base, data.count) FFI call — CRhwpNative has no Rust binding yet")
+        // The Swift original calls `rhwp_open` in `CRhwpNative`, rhwp's C shim. The engine links
+        // rhwp as an RLIB, so there is no C to cross: `rhwp_open` is a thin wrapper over
+        // `HwpDocument::from_bytes`, and that is what runs here. The handle stays a raw pointer
+        // because `read`'s open/defer/close orchestration was transliterated around one, and its
+        // shape is the part worth keeping — a parse failure must still yield a null handle.
+        let doc = rhwp::wasm_api::HwpDocument::from_bytes(&data.0).ok()?;
+        Some(Box::into_raw(Box::new(doc)) as RhwpHandle)
     }
 
     /// swift: `rhwp_close(handle)`, run via `defer` in the Swift original.
     // swift: Render/Office/HwpReader.swift:80
     fn rhwp_close(handle: RhwpHandle) {
-        todo!("swift:80 rhwp_close(handle) FFI call")
+        if handle.is_null() {
+            return;
+        }
+        // Retakes the box `rhwp_open` leaked and drops it. `read`'s closure calls this on every
+        // exit path including the error ones, which is what the Swift's `defer` bought.
+        unsafe { drop(Box::from_raw(handle as *mut rhwp::wasm_api::HwpDocument)) };
     }
 
     /// swift: `guard let cstr = rhwp_document_json(handle) … let json = String(cString: cstr);
     /// rhwp_string_free(cstr)`.
     // swift: Render/Office/HwpReader.swift:82-84
     fn rhwp_document_json_owned(handle: RhwpHandle) -> Option<String> {
-        todo!("swift:82-84 rhwp_document_json/rhwp_string_free FFI call")
+        if handle.is_null() {
+            return None;
+        }
+        // No `rhwp_string_free` to pair with: the C shim allocates a CString for the crossing, and
+        // there is no crossing here — `export_document_json` hands back an owned Rust `String`.
+        let doc = unsafe { &*(handle as *const rhwp::wasm_api::HwpDocument) };
+        doc.export_document_json().ok()
     }
 
     /// The public office entry: HWP/HWPX bytes → the SAME `OfficeReadResult` `DocxReader`/`OdtReader`

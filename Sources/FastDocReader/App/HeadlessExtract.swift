@@ -50,9 +50,22 @@ enum HeadlessExtract {
                 // `HwpReader.read` before `ZipArchive(data:)`, then feed the SAME serializer the zip
                 // office path uses (invariant 40 — one block vocabulary → Markdown). Only the reader
                 // differs; the serializer is shared.
+                #if FMD_RUST_ENGINE
+                // The ported engine answers BOTH families here, HWP included, and nothing catches
+                // it if it cannot. Its own dispatch branches on the extension before opening an
+                // archive, for the same reason this code used to: a `.hwp` is CFB binary and would
+                // fail as a zip. Letting HWP keep falling back to `HwpReader` would have left the
+                // larger half of this corpus untested while the totals still read as green.
+                guard let result = RustEngine.readOffice(data, extension: ext) else {
+                    throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
+                        NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
+                    ])
+                }
+                #else
                 let result = try DocumentTypes.isHwp(ext)
                     ? HwpReader.read(data)
                     : DocumentTypes.readOffice(try ZipArchive(data: data), extension: ext)
+                #endif
                 let body = OfficeMarkdownSerializer.serialize(result.blocks, footnotes: result.footnotes)
                 out(header(for: url.lastPathComponent, body: body) + body)
                 return 0

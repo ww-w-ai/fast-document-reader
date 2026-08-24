@@ -216,6 +216,7 @@ dependencies = [
 name = "fastdoc-engine"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "flate2",
  "rhwp",
  "serde",
@@ -970,6 +971,7 @@ dependencies = [
 name = "swiftshim"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "quick-xml 0.37.5",
  "rhwp",
  "serde",

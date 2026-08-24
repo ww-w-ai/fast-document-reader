@@ -9,6 +9,7 @@
 //! whose right answer is known — a link that compiles proves nothing, and a link that returns the
 //! wrong bytes silently is what this exists to rule out.
 
+use fastdoc_engine::render::office::hwp_reader::mapping::HwpReader;
 use fastdoc_engine::render::office::{
     docx_reader::DocxReader, odt_reader::OdtReader, office_block::OfficeReadResult,
     office_markdown_serializer::OfficeMarkdownSerializer, zip_archive::ZipArchive,
@@ -92,6 +93,43 @@ pub unsafe extern "C" fn fastdoc_read_office_json(
     }
 }
 
+/// The document's own default BODY run size in points — the other half of the typography's
+/// font-size model, which the host asks for separately because the read result does not carry it
+/// for a zip-backed document.
+///
+/// Returns 11 for anything it cannot read, which is the same value the host's own fallback used:
+/// the number Word ASSUMES when a document declares none (see invariant 62's third case — 11 is
+/// what Word WRITES, 10 is what it assumes, and this is the reader's declared-nothing default).
+///
+/// # Safety
+/// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_office_default_body_font_size(
+    bytes: *const u8,
+    len: usize,
+    extension_: *const c_char,
+) -> f64 {
+    const DECLARED_NOTHING: f64 = 11.0;
+    if bytes.is_null() || extension_.is_null() {
+        return DECLARED_NOTHING;
+    }
+    let data = std::slice::from_raw_parts(bytes, len);
+    let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
+        return DECLARED_NOTHING;
+    };
+    std::panic::catch_unwind(|| {
+        let Ok(archive) = ZipArchive::new(swiftshim::Data::fromBytes(data.to_vec())) else {
+            return DECLARED_NOTHING;
+        };
+        match extension.to_lowercase().as_str() {
+            "docx" | "docm" | "dotx" | "dotm" => DocxReader::document_default_body_font_size(&archive),
+            "odt" => OdtReader::document_default_body_font_size(&archive),
+            _ => DECLARED_NOTHING,
+        }
+    })
+    .unwrap_or(DECLARED_NOTHING)
+}
+
 /// Frees a string this library returned. Passing anything else is undefined.
 ///
 /// # Safety
@@ -106,6 +144,12 @@ pub unsafe extern "C" fn fastdoc_string_free(s: *mut c_char) {
 /// swift: `DocumentTypes.readOffice`'s reader half — the dispatch only, WITHOUT
 /// `.resolvingFontSubstitution()`, which is AppKit's and stays on the host.
 fn read_office(data: &[u8], extension: &str) -> Option<OfficeReadResult> {
+    // HWP is answered BEFORE the archive is opened, not after. `.hwp` is CFB binary rather than a
+    // zip, so opening one as an archive fails and the reader would never be reached — which is how
+    // the host's own dispatch does it too (`DocumentTypes.isHwp` branches ahead of `ZipArchive`).
+    if matches!(extension.to_lowercase().as_str(), "hwp" | "hwpx") {
+        return HwpReader::read(&swiftshim::Data::fromBytes(data.to_vec())).ok();
+    }
     let archive = ZipArchive::new(swiftshim::Data::fromBytes(data.to_vec())).ok()?;
     match extension.to_lowercase().as_str() {
         "docx" | "docm" | "dotx" | "dotm" => DocxReader::read(&archive).ok(),

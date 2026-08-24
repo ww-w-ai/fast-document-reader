@@ -24,3 +24,4 @@ quick-xml = { workspace = true }
 # string, alignment). The handles are not, and deliberately: an `NSFont`/`NSImage` that crossed a
 # boundary as data would be a face or a bitmap nobody resolved on the other side.
 serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
