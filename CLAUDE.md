@@ -41,9 +41,26 @@ spending tokens on the zip/XML (invariant 40).
 The Finder's own space-bar preview is this engine too: `Contents/PlugIns/QuickLookPreview.appex`
 carries a COPY of the app's executable and `main.swift` routes it to `NSExtensionMain`, so the
 preview is the reader rather than a second, simpler rendering of the same file (invariant 68).
-Pure Swift/AppKit + TextKit, SwiftPM executable. No web runtime for text. WebKit renders only two
+Native Swift/AppKit + TextKit host, SwiftPM executable. No web runtime for text. WebKit renders only two
 things — mermaid diagrams and TeX/KaTeX formulas — and only on a cache miss; both cache to vector PDF.
 Code highlighting is native (34 languages, single-pass scanner), no JS.
+
+## Architecture authority — all-format Rust migration
+
+This tracked authority supersedes earlier statements that macOS/Swift owns the document engine.
+
+- **Rust owns document semantics for every supported type:** byte decoding, format parsing,
+  normalization into the semantic `RenderTree`, and all platform-neutral measurement and layout.
+- **Swift/AppKit/TextKit owns the host:** windows, input, accessibility, printing, Quick Look, OS font
+  discovery/substitution, WebKit-backed Mermaid/KaTeX rasterization, and final AppKit painting. A host
+  exception may supply platform facts or draw a Rust-decided box; it must not reinterpret document
+  structure or make platform-neutral layout decisions.
+- The current schema-v4 JSON/FFI path that decodes `OfficeReadResult` is a **transitional bridge**, not
+  the target contract. The canonical engine/host boundary is `RenderTree`; compatibility work on the
+  bridge must move toward that boundary rather than make `OfficeReadResult` permanent.
+- Existing hard-won invariants remain binding during the transfer. Move an ownership slice only with
+  parity tests and relevant corpus/performance evidence. Roll it back only for a recorded regression
+  that fails that evidence gate; keep the rollback scoped and preserve the evidence needed to resume.
 
 ## Build / test / run
 

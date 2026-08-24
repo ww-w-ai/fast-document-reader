@@ -6,11 +6,11 @@
 //! document still decodes, still renders, and the missing piece shows up much later as a table
 //! with no shading or a paragraph in the wrong face. Here it shows up as an inequality, by field.
 //!
-//! Skipped unless a corpus is named, for the same reason as the other corpus tests: the documents
-//! are real and this repository cannot ship them.
+//! Ignored by default for the same reason as the other corpus probes: the documents are real and
+//! this repository cannot ship them. Run it explicitly with a corpus named.
 //!
 //! ```text
-//! FMD_EXPORT_CORPUS=~/Documents cargo test -p fastdoc-engine --test export_round_trip -- --nocapture
+//! FMD_EXPORT_CORPUS=~/Documents cargo test -p fastdoc-engine --test export_round_trip -- --ignored --nocapture
 //! ```
 
 use fastdoc_engine::render::office::{
@@ -19,11 +19,11 @@ use fastdoc_engine::render::office::{
 };
 
 #[test]
+#[ignore = "requires explicit external corpus"]
 fn a_document_survives_the_envelope_unchanged() {
-    let Ok(dirs) = std::env::var("FMD_EXPORT_CORPUS") else {
-        eprintln!("skipped: set FMD_EXPORT_CORPUS to a directory of .docx/.odt documents");
-        return;
-    };
+    let dirs = std::env::var("FMD_EXPORT_CORPUS").unwrap_or_else(|_| {
+        panic!("set FMD_EXPORT_CORPUS before running this ignored corpus probe")
+    });
 
     let mut documents = Vec::new();
     for dir in dirs.split(':').filter(|d| !d.is_empty()) {

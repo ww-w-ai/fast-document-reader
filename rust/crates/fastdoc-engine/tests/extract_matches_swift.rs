@@ -7,13 +7,14 @@
 //! three ever reads a document. A transliteration can pass all of them and still put a table's
 //! columns in the wrong order.
 //!
-//! Skipped unless both are set, because the corpus is real user documents that this repository
-//! cannot ship and the baseline is a signed application that only exists on a Mac:
+//! Ignored by default because the corpus is real user documents that this repository cannot ship
+//! and the baseline is a signed application that only exists on a Mac. Run it explicitly with
+//! both environment variables set:
 //!
 //! ```text
 //! FMD_EXTRACT_SWIFT=/Applications/FastDocReader.app/Contents/MacOS/FastDocReader \
 //! FMD_EXTRACT_CORPUS=~/Documents:~/Downloads \
-//!     cargo test -p fastdoc-engine --test extract_matches_swift -- --nocapture
+//!     cargo test -p fastdoc-engine --test extract_matches_swift -- --ignored --nocapture
 //! ```
 //!
 //! The header line is excluded from the comparison, and only that line. Swift's
@@ -30,16 +31,16 @@ use fastdoc_engine::render::office::{
 };
 
 #[test]
+#[ignore = "requires explicit external corpus"]
 fn extract_matches_the_swift_reader_across_a_real_corpus() {
     let (swift, dirs) = match (
         std::env::var("FMD_EXTRACT_SWIFT").ok(),
         std::env::var("FMD_EXTRACT_CORPUS").ok(),
     ) {
         (Some(s), Some(d)) if !s.is_empty() && !d.is_empty() => (s, d),
-        _ => {
-            eprintln!("skipped: set FMD_EXTRACT_SWIFT and FMD_EXTRACT_CORPUS (see this file's header)");
-            return;
-        }
+        _ => panic!(
+            "set non-empty FMD_EXTRACT_SWIFT and FMD_EXTRACT_CORPUS before running this ignored corpus probe"
+        ),
     };
 
     let mut documents = Vec::new();
@@ -84,6 +85,7 @@ fn extract_matches_the_swift_reader_across_a_real_corpus() {
         differences.len()
     );
     assert!(differences.is_empty(), "extract diverged from the Swift reader:\n{}", differences.join("\n"));
+    assert!(matched > 0, "no document was successfully extracted by both readers and compared");
 }
 
 /// The `--extract` pipeline, without the CLI around it: bytes → archive → reader → Markdown.
