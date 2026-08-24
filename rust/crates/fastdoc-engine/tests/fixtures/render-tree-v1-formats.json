@@ -1,0 +1,248 @@
+[
+  {
+    "schemaVersion": 1,
+    "representation": "semantic",
+    "producer": {
+      "engineVersion": "s2a1-fixture",
+      "schemaVersion": 1
+    },
+    "document": {
+      "format": "markdown",
+      "editable": false,
+      "rootNodeId": 1,
+      "sourceIds": [
+        1
+      ]
+    },
+    "sources": [
+      {
+        "id": 1,
+        "kind": "originalFile",
+        "name": "baseline.markdown",
+        "revision": "r1",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0,
+        "editable": false
+      }
+    ],
+    "nodes": [
+      {
+        "id": 1,
+        "parentId": null,
+        "children": [],
+        "type": "document",
+        "data": {}
+      }
+    ],
+    "resources": [],
+    "annotations": {
+      "comments": [],
+      "bookmarks": []
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "representation": "semantic",
+    "producer": {
+      "engineVersion": "s2a1-fixture",
+      "schemaVersion": 1
+    },
+    "document": {
+      "format": "plainText",
+      "editable": false,
+      "rootNodeId": 1,
+      "sourceIds": [
+        1
+      ]
+    },
+    "sources": [
+      {
+        "id": 1,
+        "kind": "originalFile",
+        "name": "baseline.plainText",
+        "revision": "r1",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0,
+        "editable": false
+      }
+    ],
+    "nodes": [
+      {
+        "id": 1,
+        "parentId": null,
+        "children": [],
+        "type": "document",
+        "data": {}
+      }
+    ],
+    "resources": [],
+    "annotations": {
+      "comments": [],
+      "bookmarks": []
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "representation": "semantic",
+    "producer": {
+      "engineVersion": "s2a1-fixture",
+      "schemaVersion": 1
+    },
+    "document": {
+      "format": "docx",
+      "editable": false,
+      "rootNodeId": 1,
+      "sourceIds": [
+        1
+      ]
+    },
+    "sources": [
+      {
+        "id": 1,
+        "kind": "originalFile",
+        "name": "baseline.docx",
+        "revision": "r1",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0,
+        "editable": false
+      }
+    ],
+    "nodes": [
+      {
+        "id": 1,
+        "parentId": null,
+        "children": [],
+        "type": "document",
+        "data": {}
+      }
+    ],
+    "resources": [],
+    "annotations": {
+      "comments": [],
+      "bookmarks": []
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "representation": "semantic",
+    "producer": {
+      "engineVersion": "s2a1-fixture",
+      "schemaVersion": 1
+    },
+    "document": {
+      "format": "odt",
+      "editable": false,
+      "rootNodeId": 1,
+      "sourceIds": [
+        1
+      ]
+    },
+    "sources": [
+      {
+        "id": 1,
+        "kind": "originalFile",
+        "name": "baseline.odt",
+        "revision": "r1",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0,
+        "editable": false
+      }
+    ],
+    "nodes": [
+      {
+        "id": 1,
+        "parentId": null,
+        "children": [],
+        "type": "document",
+        "data": {}
+      }
+    ],
+    "resources": [],
+    "annotations": {
+      "comments": [],
+      "bookmarks": []
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "representation": "semantic",
+    "producer": {
+      "engineVersion": "s2a1-fixture",
+      "schemaVersion": 1
+    },
+    "document": {
+      "format": "hwp",
+      "editable": false,
+      "rootNodeId": 1,
+      "sourceIds": [
+        1
+      ]
+    },
+    "sources": [
+      {
+        "id": 1,
+        "kind": "originalFile",
+        "name": "baseline.hwp",
+        "revision": "r1",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0,
+        "editable": false
+      }
+    ],
+    "nodes": [
+      {
+        "id": 1,
+        "parentId": null,
+        "children": [],
+        "type": "document",
+        "data": {}
+      }
+    ],
+    "resources": [],
+    "annotations": {
+      "comments": [],
+      "bookmarks": []
+    }
+  },
+  {
+    "schemaVersion": 1,
+    "representation": "semantic",
+    "producer": {
+      "engineVersion": "s2a1-fixture",
+      "schemaVersion": 1
+    },
+    "document": {
+      "format": "hwpx",
+      "editable": false,
+      "rootNodeId": 1,
+      "sourceIds": [
+        1
+      ]
+    },
+    "sources": [
+      {
+        "id": 1,
+        "kind": "originalFile",
+        "name": "baseline.hwpx",
+        "revision": "r1",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "byteLength": 0,
+        "editable": false
+      }
+    ],
+    "nodes": [
+      {
+        "id": 1,
+        "parentId": null,
+        "children": [],
+        "type": "document",
+        "data": {}
+      }
+    ],
+    "resources": [],
+    "annotations": {
+      "comments": [],
+      "bookmarks": []
+    }
+  }
+]
