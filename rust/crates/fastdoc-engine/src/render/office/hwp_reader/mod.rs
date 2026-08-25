@@ -10,3 +10,7 @@ pub mod schema;
 
 pub use mapping::*;
 pub use schema::*;
+
+// S2A2 Pass C, unit C1 — measurement only, kept out of `mapping.rs`/`schema.rs` (neither worker's
+// file) as its own module. See its own doc comment for what it measures and why.
+pub mod column_key_parity;

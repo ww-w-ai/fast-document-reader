@@ -22,10 +22,22 @@ use crate::render::office::office_block::{
 };
 use crate::render::office::column_geometry::OfficeColumnLayout;
 use crate::render::office::hwp_font_slots::HwpSlotFonts;
+use crate::render::office::hwp_reader::column_key_parity::{self, ColumnSignature};
 use crate::render::office::hwp_reader::schema::{
     HwpEnvelope, HwpPara, HwpSpan, HwpCell, HwpImage, HwpBorderFill, HwpBorderEdge, HwpGradient,
     HwpColumnDef, HwpCharDecor, HwpShapePath, HwpBlock,
 };
+
+/// A raw HWP `ColumnDef`, reconciled BY VALUE against the same signature the JSON `HwpColumnDef`
+/// DTO shares with it (`column_key_parity::json_signature`/`raw_signature` — every raw field
+/// except `column_type`/`raw_attr`, which the DTO does not carry), already converted through
+/// `OfficeColumnLayout::from_rhwp_column_def` so a matching span can adopt a COMPLETE layout
+/// (`flow_type`/`separator_color_ref`/`source_raw_attributes` populated) rather than the ten-field
+/// reading `column_layout` alone can produce. Built ONCE per read, from the live raw document the
+/// same handle that produced the JSON is still holding open — this map's absence for a signature
+/// (empty map, or that signature simply not a key) means "no match" and "ambiguous match" alike;
+/// `column_layout` treats both the same way: keep the incomplete reading, honestly.
+pub(crate) type ColumnAuthority = std::collections::HashMap<ColumnSignature, OfficeColumnLayout>;
 
 // swift: Render/Office/HwpReader.swift:4-11
 // Bridge to the rhwp (Rust, MIT — github.com/edwardkim/rhwp, forked: FFI drift fix +
@@ -245,14 +257,30 @@ impl HwpReader {
         // so `rhwp_close` fires on every exit, error included.
         let outcome: Result<OfficeReadResult, MapError> = (|| {
             let Some(json) = Self::rhwp_document_json_owned(handle) else { return Err(MapError::ParseFailed) };
+            // The value-based column reconciliation (S2A2-06) needs the RAW document, not the JSON
+            // it produced — `column_type`/`raw_attr` never cross into the JSON DTO at all. Walked
+            // from this SAME live handle (HWP is CFB binary, not a zip; there is no archive to
+            // re-open later), grouped by the ten-field signature the JSON `HwpColumnDef` DTO shares
+            // with the raw declaration, and converted through `from_rhwp_column_def` up front so
+            // `map_json`'s walk only ever does a map lookup, never a second parse of the raw model.
+            let raw_document = unsafe { &*(handle as *const rhwp::wasm_api::HwpDocument) };
+            let column_authority: ColumnAuthority =
+                column_key_parity::resolve_column_declarations(raw_document.document())
+                    .into_iter()
+                    .filter_map(|(signature, raw)| {
+                        crate::render::office::column_geometry::OfficeColumnLayout::from_rhwp_column_def(&raw)
+                            .ok()
+                            .map(|complete| (signature, complete))
+                    })
+                    .collect();
             // The picture provider is what lets a FILL image be decoded during the mapping walk; it is
             // the same FFI `collectImages` uses, handed in rather than reached for, so `mapJSON` stays a
-            // pure function of its two arguments and every hand-built-envelope test is unaffected.
+            // pure function of its arguments and every hand-built-envelope test is unaffected.
             let mut result = Self::map_json(&json, Some(Box::new(move |bin_data_id: i64| {
                 let id = u16::try_from(bin_data_id).ok()?;
                 let b64 = Self::image_base64(handle, id)?;
                 Data::base64Encoded(&b64)
-            })))?;
+            })), &column_authority)?;
             // Embedded pictures are fetched here (they need the live handle); drawings were already
             // rendered inside `mapJSON` and must survive that — hence a merge rather than an assignment.
             for (k, v) in Self::collect_images(handle, &result.blocks) {
@@ -556,6 +584,7 @@ impl HwpReader {
     pub fn map_json(
         json: &str,
         picture_provider: Option<Box<dyn Fn(i64) -> Option<Data>>>,
+        column_authority: &ColumnAuthority,
     ) -> Result<OfficeReadResult, MapError> {
         let envelope: HwpEnvelope =
             serde_json::from_str(json).map_err(|_| MapError::MalformedJSON)?;
@@ -613,6 +642,7 @@ impl HwpReader {
             shapes.block_index = index;
             blocks.push(Self::map_block(
                 block, page_width, default_body_size, &slot_fonts, &border_fills, &mut shapes, paged,
+                column_authority,
             ));
         }
         let mut result = OfficeReadResult { blocks, comments: Vec::new(), ..Default::default() };
@@ -865,6 +895,7 @@ impl HwpReader {
             .map(|e| {
                 Self::map_header_footer_entry(
                     &e, page_width, default_body_size, &slot_fonts, &border_fills, &mut shapes, paged,
+                    column_authority,
                 )
             })
             .collect();
@@ -877,6 +908,7 @@ impl HwpReader {
             .map(|e| {
                 Self::map_header_footer_entry(
                     &e, page_width, default_body_size, &slot_fonts, &border_fills, &mut shapes, paged,
+                    column_authority,
                 )
             })
             .collect();
@@ -888,6 +920,7 @@ impl HwpReader {
             .map(|f| {
                 Self::map_footnote(
                     &f, page_width, default_body_size, &slot_fonts, &border_fills, &mut shapes, paged,
+                    column_authority,
                 )
             })
             .collect();
@@ -905,6 +938,7 @@ impl HwpReader {
             .filter_map(|mp| {
                 Self::map_master_page(
                     &mp, page_width, default_body_size, &slot_fonts, &border_fills, &mut shapes, paged,
+                    column_authority,
                 )
             })
             .collect();
@@ -1008,9 +1042,11 @@ impl HwpReader {
     /// `HwpShapeRenderer` already forced for inline drawings (invariant 75): the picture provider and
     /// the live parse handle exist during the read and are gone by the time anything paints.
     // swift: Render/Office/HwpReader.swift:597-651
+    #[allow(clippy::too_many_arguments)]
     fn map_master_page(
         page: &HwpMasterPage, page_width: Option<CGFloat>, default_body_size: CGFloat,
         slot_fonts: &[HwpSlotFonts], border_fills: &[HwpBorderFill], shapes: &mut MediaContext, paged: bool,
+        column_authority: &ColumnAuthority,
     ) -> Option<OfficeMasterPage> {
         let mut objects: Vec<OfficeMasterObject> = Vec::new();
         // rhwp's own order, not the storage order: measured on the 편람, the full-page background
@@ -1050,7 +1086,7 @@ impl HwpReader {
                 });
             }
             let blocks: Vec<OfficeBlock> = object.blocks.clone().unwrap_or_default().iter()
-                .map(|b| Self::map_block(b, page_width, default_body_size, slot_fonts, border_fills, shapes, paged))
+                .map(|b| Self::map_block(b, page_width, default_body_size, slot_fonts, border_fills, shapes, paged, column_authority))
                 .collect();
             // A DEGENERATE box is dropped rather than given a width this reader invents. Measured on
             // the 편람, one master text box states a width of zero (a rotated tab label on the cover
@@ -1075,14 +1111,16 @@ use crate::render::office::hwp_reader::schema::{HwpFootnoteEntry, HwpFontFace};
 
 impl HwpReader {
     // swift: Render/Office/HwpReader.swift:652-662
+    #[allow(clippy::too_many_arguments)]
     fn map_header_footer_entry(
         entry: &HwpHeaderFooterEntry, page_width: Option<CGFloat>, default_body_size: CGFloat,
         slot_fonts: &[HwpSlotFonts], border_fills: &[HwpBorderFill], shapes: &mut MediaContext, paged: bool,
+        column_authority: &ColumnAuthority,
     ) -> OfficeHeaderFooter {
         OfficeHeaderFooter {
             applies_to: Self::map_header_footer_apply_to(&entry.apply_to),
             blocks: entry.blocks.iter()
-                .map(|b| Self::map_block(b, page_width, default_body_size, slot_fonts, border_fills, shapes, paged))
+                .map(|b| Self::map_block(b, page_width, default_body_size, slot_fonts, border_fills, shapes, paged, column_authority))
                 .collect(),
             section: entry.section,
         }
@@ -1093,14 +1131,16 @@ impl HwpReader {
     /// from its marker rather than from any section rule, so filtering by section here could only
     /// throw away a note whose marker is still in the text.
     // swift: Render/Office/HwpReader.swift:663-680
+    #[allow(clippy::too_many_arguments)]
     fn map_footnote(
         entry: &HwpFootnoteEntry, page_width: Option<CGFloat>, default_body_size: CGFloat,
         slot_fonts: &[HwpSlotFonts], border_fills: &[HwpBorderFill], shapes: &mut MediaContext, paged: bool,
+        column_authority: &ColumnAuthority,
     ) -> OfficeFootnote {
         OfficeFootnote {
             number: entry.number,
             blocks: entry.blocks.iter()
-                .map(|b| Self::map_block(b, page_width, default_body_size, slot_fonts, border_fills, shapes, paged))
+                .map(|b| Self::map_block(b, page_width, default_body_size, slot_fonts, border_fills, shapes, paged, column_authority))
                 .collect(),
             section: entry.section,
         }
@@ -1348,7 +1388,19 @@ impl HwpReader {
     /// already (rhwp divides by 100), EXCEPT the per-column widths when the document states shares
     /// — `proportional` says which, and `ColumnGeometry` is what resolves them against a real page.
     // swift: Render/Office/HwpReader.swift:884-900
-    fn column_layout(cd: &HwpColumnDef) -> OfficeColumnLayout {
+    fn column_layout(cd: &HwpColumnDef, authority: &ColumnAuthority) -> OfficeColumnLayout {
+        // `authority` was built ONCE per read, from the raw document the live handle still holds
+        // open (`read_mapped`), keyed by the SAME ten-field signature this DTO carries
+        // (`column_key_parity::json_signature`). A match means some raw `ColumnDef` in the
+        // document shares every field this reading states AND resolves to exactly one
+        // `(column_type, raw_attr)` pair — the two fields this DTO never carries — so the COMPLETE
+        // layout `OfficeColumnLayout::from_rhwp_column_def` built from it is adopted whole rather
+        // than reconstructed field-by-field here. No match (nothing shares the signature, or two
+        // or more raw declarations disagree) falls through to the same incomplete reading this
+        // reader has always produced.
+        if let Some(complete) = authority.get(&column_key_parity::json_signature(cd)) {
+            return complete.clone();
+        }
         // The rule's thickness reuses HWP's sixteen-step line-width table, the same one a cell
         // diagonal and a footnote separator are measured with — one table, three consumers.
         let rule = Self::diagonal_width_pt(Some(cd.separator_width.unwrap_or(0)));
@@ -1386,7 +1438,7 @@ use crate::render::office::hwp_font_slots::HwpSlotTable;
 
 impl HwpReader {
     // swift: Render/Office/HwpReader.swift:867-1006
-    fn map_span(s: &HwpSpan, slot_fonts: &[HwpSlotFonts]) -> Vec<Span> {
+    fn map_span(s: &HwpSpan, slot_fonts: &[HwpSlotFonts], column_authority: &ColumnAuthority) -> Vec<Span> {
         let (ul, ul_style) = Self::underline(s.underline.as_deref());
         // `Span` carries no `new`/`Default` (office_block.rs) — every field is spelled out here,
         // mirroring the Swift struct's own per-field default-argument initializer.
@@ -1450,7 +1502,7 @@ impl HwpReader {
                 ));
             }
         }
-        if let Some(cd) = &s.column_def { span.column_layout = Some(Self::column_layout(cd)); }
+        if let Some(cd) = &s.column_def { span.column_layout = Some(Self::column_layout(cd, column_authority)); }
         if let Some(f) = &s.form {
             let control = OfficeFormControl {
                 kind: OfficeFormControlKind::new(f.form_type.as_deref()),
@@ -1886,13 +1938,15 @@ use crate::render::office::hwp_reader::schema::{HwpTable, HwpShape, HwpUnsupport
 
 impl HwpReader {
     // swift: Render/Office/HwpReader.swift:1294-1538
+    #[allow(clippy::too_many_arguments)]
     fn map_block(
         b: &HwpBlock, page_width: Option<CGFloat>, default_body_size: CGFloat,
         slot_fonts: &[HwpSlotFonts], border_fills: &[HwpBorderFill], shapes: &mut MediaContext, paged: bool,
+        column_authority: &ColumnAuthority,
     ) -> OfficeBlock {
         match b {
             HwpBlock::Para(p) => {
-                let spans: Vec<Span> = p.spans.iter().flat_map(|s| Self::map_span(s, slot_fonts)).collect();
+                let spans: Vec<Span> = p.spans.iter().flat_map(|s| Self::map_span(s, slot_fonts, column_authority)).collect();
                 let align = Self::alignment(p.align.as_deref());
                 let base = Self::paragraph_format(p, default_body_size, paged);
                 // NOT indented to `boxX`/`boxW`, deliberately. A text box that is a GROUP's child states
@@ -1963,7 +2017,7 @@ impl HwpReader {
             HwpBlock::Table(t) => {
                 let rows: Vec<Vec<_>> = t.rows.iter()
                     .map(|row| row.iter()
-                        .map(|c| Self::map_cell(c, page_width, default_body_size, slot_fonts, border_fills, shapes, paged))
+                        .map(|c| Self::map_cell(c, page_width, default_body_size, slot_fonts, border_fills, shapes, paged, column_authority))
                         .collect())
                     .collect();
                 // colWidths as ABSOLUTE INTEGER-derived points, never percentages (invariant 39/42).
@@ -2250,12 +2304,14 @@ use crate::render::office::office_block::{Cell, CellVAlign, BorderSide};
 
 impl HwpReader {
     // swift: Render/Office/HwpReader.swift:1539-1589
+    #[allow(clippy::too_many_arguments)]
     fn map_cell(
         c: &HwpCell, page_width: Option<CGFloat>, default_body_size: CGFloat,
         slot_fonts: &[HwpSlotFonts], border_fills: &[HwpBorderFill], shapes: &mut MediaContext, paged: bool,
+        column_authority: &ColumnAuthority,
     ) -> Cell {
         let blocks: Vec<OfficeBlock> = c.blocks.iter()
-            .map(|b| Self::map_block(b, page_width, default_body_size, slot_fonts, border_fills, shapes, paged))
+            .map(|b| Self::map_block(b, page_width, default_body_size, slot_fonts, border_fills, shapes, paged, column_authority))
             .collect();
         // "top" is Word/HWP's own default → nil, so a cell that only ever says "top" renders
         // byte-identical to one that says nothing (Cell.verticalAlignment's contract); only an
@@ -2501,5 +2557,167 @@ impl HwpReader {
                 BorderLineStyle::Double,
             _ => BorderLineStyle::Solid,
         }
+    }
+}
+
+#[cfg(test)]
+mod column_authority_tests {
+    //! S2A2-06 — `column_layout`'s consult-the-authority-map behaviour. `column_flow_from_office`
+    //! (`src/render/render_tree/office_accounting.rs:488-536`) is the downstream acceptance gate
+    //! this whole reconciliation exists to satisfy, but that module is `mod` (crate-private to
+    //! `render_tree`, not re-exported) and out of this sprint's scope to touch or widen, so these
+    //! tests assert its EXACT gating condition directly instead of calling it: it requires
+    //! `flow_type.is_some()`, `separator_color_ref.is_some()`, `source_raw_attributes.is_some()`,
+    //! `separator_type <= 7`, and `separator_width_code` a valid 0-15 line-width code (read, not
+    //! modified, at that file's lines 505-536).
+    use super::*;
+    use crate::render::office::column_geometry::{OfficeColumnFlowType, OfficeColumnLayout};
+    use rhwp::model::control::Control;
+    use rhwp::model::document::{Document, Section};
+    use rhwp::model::page::{ColumnDef, ColumnDirection, ColumnType};
+    use rhwp::model::paragraph::Paragraph;
+
+    /// The raw declaration and its JSON `HwpColumnDef` reading, built to describe the SAME
+    /// document fact by construction (not derived from one another) so a test can assert the
+    /// reconciliation connects them rather than assuming it. `column_count: 2`, `RightToLeft`,
+    /// non-equal widths, and a drawn separator — every one of the ten shared fields set to a
+    /// non-default value, so this signature cannot coincide with any test's zero-valued default.
+    fn raw_sample(column_type: ColumnType, raw_attr: u16) -> ColumnDef {
+        ColumnDef {
+            column_type,
+            column_count: 2,
+            direction: ColumnDirection::RightToLeft,
+            same_width: false,
+            spacing: 250,
+            widths: vec![1000, 1100],
+            gaps: vec![100],
+            proportional_widths: false,
+            separator_type: 4,
+            separator_width: 7,
+            separator_color: 0x0022_1133,
+            raw_attr,
+        }
+    }
+
+    /// The JSON `HwpColumnDef` reading of `raw_sample` — spacing/widths/gaps divided by 100 to
+    /// points (not proportional), and the color as `document_json.rs`'s `color_hex` would print
+    /// it: `0x00221133` → r=0x33, g=0x11, b=0x22 → `"331122"`.
+    fn dto_sample() -> HwpColumnDef {
+        HwpColumnDef {
+            column_count: 2,
+            direction: Some("rightToLeft".to_string()),
+            same_width: Some(false),
+            proportional_widths: Some(false),
+            separator_type: Some(4),
+            separator_width: Some(7),
+            separator_color: Some("331122".to_string()),
+            column_spacing_pt: Some(2.5),
+            column_widths: Some(vec![10.0, 11.0]),
+            column_gaps: Some(vec![1.0]),
+        }
+    }
+
+    fn is_complete_per_column_flow_gate(layout: &OfficeColumnLayout) -> bool {
+        layout.flow_type.is_some()
+            && layout.separator_color_ref.is_some()
+            && layout.source_raw_attributes.is_some()
+            && layout.separator_type <= 7
+            && crate::render::office::column_geometry::column_width_code_points(
+                layout.separator_width_code,
+            )
+            .is_some()
+    }
+
+    #[test]
+    fn a_resolved_match_completes_the_layout_where_the_naive_reading_was_incomplete() {
+        let cd = dto_sample();
+        let raw = raw_sample(ColumnType::Parallel, 0x1234);
+
+        // Pin the naive (empty-authority) reading really was incomplete first — "became complete"
+        // means nothing if it started complete.
+        let empty = ColumnAuthority::new();
+        let unresolved = HwpReader::column_layout(&cd, &empty);
+        assert!(unresolved.flow_type.is_none());
+        assert!(unresolved.separator_color_ref.is_none());
+        assert!(unresolved.source_raw_attributes.is_none());
+        assert!(!is_complete_per_column_flow_gate(&unresolved));
+
+        let complete = OfficeColumnLayout::from_rhwp_column_def(&raw)
+            .expect("a valid raw declaration must convert without error");
+        let mut authority = ColumnAuthority::new();
+        authority.insert(column_key_parity::json_signature(&cd), complete);
+        assert_eq!(authority.len(), 1, "sanity: exactly one signature was seeded");
+
+        let resolved = HwpReader::column_layout(&cd, &authority);
+        assert_eq!(resolved.flow_type, Some(OfficeColumnFlowType::Parallel));
+        assert_eq!(resolved.separator_color_ref, Some(0x0022_1133));
+        assert_eq!(resolved.source_raw_attributes, Some(0x1234));
+        assert!(
+            is_complete_per_column_flow_gate(&resolved),
+            "a resolved match must satisfy column_flow_from_office's exact acceptance condition"
+        );
+    }
+
+    #[test]
+    fn an_unmatched_signature_leaves_the_layout_incomplete_and_the_gate_still_rejects_it() {
+        let cd = dto_sample();
+
+        // The authority map has an entry, but under a DIFFERENT signature (a different
+        // column_count) — the lookup for `cd`'s own signature must miss.
+        let mut other = dto_sample();
+        other.column_count = 3;
+        let raw = raw_sample(ColumnType::Normal, 1);
+        let mut authority = ColumnAuthority::new();
+        authority.insert(
+            column_key_parity::json_signature(&other),
+            OfficeColumnLayout::from_rhwp_column_def(&raw).unwrap(),
+        );
+        assert_eq!(authority.len(), 1, "sanity: one entry exists, just not under cd's signature");
+
+        let layout = HwpReader::column_layout(&cd, &authority);
+        assert!(layout.flow_type.is_none());
+        assert!(layout.separator_color_ref.is_none());
+        assert!(layout.source_raw_attributes.is_none());
+        assert!(!is_complete_per_column_flow_gate(&layout));
+    }
+
+    #[test]
+    fn an_ambiguous_raw_pool_never_reaches_the_authority_map_at_all() {
+        // End-to-end through `resolve_column_declarations`: two raw occurrences share every one
+        // of the ten fields `raw_sample` sets but disagree on `raw_attr` — a synthetic case (the
+        // vendored 637-sample corpus has none), constructed the same way S2A2-06's spec requires.
+        let a = raw_sample(ColumnType::Normal, 1);
+        let b = raw_sample(ColumnType::Normal, 2);
+        let document = Document {
+            sections: vec![Section {
+                paragraphs: vec![
+                    Paragraph { controls: vec![Control::ColumnDef(a)], ..Default::default() },
+                    Paragraph { controls: vec![Control::ColumnDef(b)], ..Default::default() },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // Pin the ambiguity was genuinely walked (two occurrences seen) before trusting that the
+        // resolution map came back empty for the right reason and not because nothing was pooled.
+        let declarations = column_key_parity::collect_raw_declarations(&document);
+        assert_eq!(declarations.len(), 2, "both occurrences must have been walked");
+
+        let resolved_raw = column_key_parity::resolve_column_declarations(&document);
+        assert!(resolved_raw.is_empty(), "the shared signature must not resolve — it is ambiguous");
+
+        let authority: ColumnAuthority = resolved_raw
+            .into_iter()
+            .filter_map(|(signature, raw)| {
+                OfficeColumnLayout::from_rhwp_column_def(&raw).ok().map(|complete| (signature, complete))
+            })
+            .collect();
+        assert!(authority.is_empty());
+
+        let cd = dto_sample();
+        let layout = HwpReader::column_layout(&cd, &authority);
+        assert!(layout.flow_type.is_none());
+        assert!(!is_complete_per_column_flow_gate(&layout));
     }
 }

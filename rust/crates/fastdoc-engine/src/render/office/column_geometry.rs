@@ -93,7 +93,6 @@ impl Default for OfficeColumnLayout {
 }
 
 impl OfficeColumnLayout {
-    #[allow(dead_code)]
     pub(crate) fn from_rhwp_column_def(
         source: &rhwp::model::page::ColumnDef,
     ) -> Result<Self, OfficeColumnLayoutError> {

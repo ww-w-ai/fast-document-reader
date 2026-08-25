@@ -14,6 +14,7 @@
 //! and resource ids are separate counters, each starting at 1 independently — and so are comment
 //! ids and bookmark ids (`Annotations` is validated as its own id space, disjoint from node ids).
 
+use super::office_accounting::{self, AccountingError};
 use super::wire;
 use super::{DecodeError, DocumentFormat, RenderTreeBuilder, ValidatedRenderTree};
 use crate::render::office::column_geometry::OfficeColumnLayout;
@@ -27,13 +28,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use swiftshim::{CGSize, NSColor, NSTextAlignment, SwiftString};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct OfficeColumnPosition {
-    pub section_index: usize,
-    pub paragraph_index: usize,
-    pub control_ordinal: usize,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedOfficeResource {
     pub bytes: Vec<u8>,
@@ -46,7 +40,6 @@ pub struct OfficeAdapterInput<'a> {
     pub source_bytes: &'a [u8],
     pub result: &'a OfficeReadResult,
     pub resources: BTreeMap<String, ResolvedOfficeResource>,
-    pub reconciled_columns: BTreeMap<OfficeColumnPosition, OfficeColumnLayout>,
 }
 
 /// What this adapter refuses, and why. Each variant is a fact the source declared that the
@@ -81,6 +74,11 @@ pub enum OfficeAdapterError {
     /// error so a caller can see exactly which invariant this adapter's own construction violated
     /// — this should never happen for a correctly implemented adapter, but is not swallowed.
     Canonicalization(DecodeError),
+    /// A `Span` or section carried an `OfficeColumnLayout` that `column_flow_from_office` could
+    /// not honestly convert — most often `AccountingError::IncompleteOfficeColumnAuthority` (the
+    /// raw pool never resolved this declaration, or resolved it ambiguously). Never substituted
+    /// with `None` and never fabricated: the wrapped accounting error names exactly why.
+    InvalidColumnAuthority(AccountingError),
 }
 
 pub(super) fn from_office(
@@ -204,9 +202,12 @@ pub(super) fn from_office(
             hidden: false,
         };
         let line_grid_points = decl.and_then(|d| d.line_grid_pitch).or(result.line_grid_pitch);
+        let columns = column_flow_for_layout(first_declared_column_layout(slice))?.map(|flow| {
+            wire::SectionColumns { count: flow.count, widths: flow.widths, gaps: flow.gaps }
+        });
         let section_payload = wire::NodePayload::Section(wire::Section {
             paper,
-            columns: None,
+            columns,
             header_ids,
             footer_ids,
             page_numbering,
@@ -663,6 +664,7 @@ impl<'a> Ctx<'a> {
         for span in spans {
             let id = self.new_node_id();
             let mut run = convert_text_run(span, self.default_body_font_size);
+            run.column_flow = column_flow_for_layout(span.column_layout.as_ref())?;
 
             let mut bookmark_ids: Vec<u64> =
                 span.bookmarks.iter().map(|name| self.resolve_bookmark(name.as_str(), id)).collect();
@@ -1077,6 +1079,38 @@ fn convert_cell(cell: &Cell, row: u32, column: u32, row_span: u32, column_span: 
         style_shading: cell.style_shading.map(convert_color),
         style_uniform_border: uniform_border(cell.style_border_color, cell.style_border_width),
     }
+}
+
+/// Converts a span or section's own `OfficeColumnLayout`, when it declared one, into the wire
+/// tree's `ColumnFlowDeclaration` — reusing `office_accounting::column_flow_from_office` rather
+/// than re-deriving its acceptance rule. `None` in means the span/section declared no column flow
+/// at all, which stays `Ok(None)`; `Some` in means it did, and a layout that could not be honestly
+/// converted (incomplete raw authority, an invalid count, ...) surfaces as
+/// `OfficeAdapterError::InvalidColumnAuthority` rather than being silently dropped to `None`.
+fn column_flow_for_layout(
+    layout: Option<&OfficeColumnLayout>,
+) -> Result<Option<wire::ColumnFlowDeclaration>, OfficeAdapterError> {
+    layout
+        .map(|layout| {
+            office_accounting::column_flow_from_office(layout)
+                .map_err(OfficeAdapterError::InvalidColumnAuthority)
+        })
+        .transpose()
+}
+
+/// The column declaration governing a SECTION, read the same way `OfficeTextBuilder` finds the
+/// one governing a block: office formats carry it on the first run inside a paragraph/heading/list
+/// item, not on the section itself, so the section's own authority is whichever of ITS blocks
+/// declares one first.
+fn first_declared_column_layout(blocks: &[OfficeBlock]) -> Option<&OfficeColumnLayout> {
+    blocks.iter().find_map(|block| match block {
+        OfficeBlock::Heading { spans, .. }
+        | OfficeBlock::Paragraph { spans, .. }
+        | OfficeBlock::ListItem { spans, .. } => {
+            spans.iter().find_map(|s| s.column_layout.as_ref())
+        }
+        _ => None,
+    })
 }
 
 /// `default_body_font_size` is the size a run that states none actually renders at, so it is
@@ -1498,7 +1532,6 @@ mod tests {
             source_bytes: b"hello office",
             result,
             resources: BTreeMap::new(),
-            reconciled_columns: BTreeMap::new(),
         }
     }
 
@@ -2073,6 +2106,30 @@ mod tests {
         let json = String::from_utf8(tree.encode_json().unwrap()).unwrap();
         assert!(json.contains("\"name\":\"Chapter1\""));
         assert!(json.contains("\"bookmarkIds\":[1]"));
+
+        // The name of this test promises the bookmark lands on the RUN. Asserting only that the
+        // name and the id appear leaves that promise unchecked: pointing `targetNodeId` at the
+        // paragraph instead passes both assertions above. Resolve the id and read the node it
+        // names, so a relation moved one level up fails here.
+        let doc: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let bookmarks = doc["annotations"]["bookmarks"].as_array().expect("annotations.bookmarks array");
+        assert_eq!(bookmarks.len(), 1, "the fixture declares exactly one bookmark");
+        let target = bookmarks[0]["targetNodeId"].as_u64().expect("targetNodeId");
+        let nodes = doc["nodes"].as_array().expect("nodes array");
+        let targeted = nodes
+            .iter()
+            .find(|n| n["id"].as_u64() == Some(target))
+            .unwrap_or_else(|| panic!("bookmark targets node {target}, which is not in the tree"));
+        assert_eq!(
+            targeted["type"].as_str(),
+            Some("textRun"),
+            "the bookmark must target the text run that carries it, not its parent block"
+        );
+        assert_eq!(
+            targeted["data"]["text"].as_str(),
+            Some("anchor here"),
+            "the targeted run must be the one whose span declared the bookmark"
+        );
     }
 
     #[test]

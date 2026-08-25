@@ -32,9 +32,7 @@ pub use wire::{
     VerticalPosition,
 };
 
-pub use office_adapter::{
-    OfficeAdapterError, OfficeAdapterInput, OfficeColumnPosition, ResolvedOfficeResource,
-};
+pub use office_adapter::{OfficeAdapterError, OfficeAdapterInput, ResolvedOfficeResource};
 pub use validate::{resolve_cell_borders, resolve_cell_padding, CellSide, ResolvedEdge};
 
 /// A semantic RenderTree whose complete wire graph has passed canonical validation.
