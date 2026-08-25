@@ -36,6 +36,68 @@ fn exhaustive_fixture_is_checked_deterministic_and_covers_every_node_tag() {
     assert_eq!(once, twice);
 }
 
+// Every field the fixture declares must still be there, with the same value, after a
+// decode/encode round trip. Recurses through objects and arrays; for scalars, numbers compare by
+// `as_f64()` so a hand-authored integer literal (e.g. `1`) matches the encoder's float output
+// (`1.0`) — this is a value-representation quirk, not a dropped field. Encoded fields the fixture
+// does not mention (schema defaults the fixture leaves implicit) are deliberately NOT required
+// here; only fixture -> encoded is checked, because that is the direction a dropped/renamed field
+// fails silently in.
+fn assert_declared_fields_survive(fixture: &Value, encoded: &Value, path: &str) {
+    match fixture {
+        Value::Object(map) => {
+            let encoded_map = encoded
+                .as_object()
+                .unwrap_or_else(|| panic!("expected object at {path}, got {encoded:?}"));
+            for (key, value) in map {
+                let child_path = format!("{path}/{key}");
+                let encoded_value = encoded_map
+                    .get(key)
+                    .unwrap_or_else(|| panic!("fixture field dropped by round trip: {child_path}"));
+                assert_declared_fields_survive(value, encoded_value, &child_path);
+            }
+        }
+        Value::Array(items) => {
+            let encoded_items = encoded
+                .as_array()
+                .unwrap_or_else(|| panic!("expected array at {path}, got {encoded:?}"));
+            assert_eq!(
+                items.len(),
+                encoded_items.len(),
+                "array length changed at {path}"
+            );
+            for (i, (value, encoded_value)) in items.iter().zip(encoded_items).enumerate() {
+                assert_declared_fields_survive(value, encoded_value, &format!("{path}[{i}]"));
+            }
+        }
+        Value::Number(n) => {
+            let encoded_n = encoded
+                .as_f64()
+                .unwrap_or_else(|| panic!("expected number at {path}, got {encoded:?}"));
+            assert_eq!(
+                n.as_f64().unwrap(),
+                encoded_n,
+                "number changed at {path}"
+            );
+        }
+        other => assert_eq!(other, encoded, "value changed at {path}"),
+    }
+}
+
+// The idempotence assertion above (`once == twice`) only proves the encoder is stable once a field
+// has already been dropped by decode — it can't see a field the fixture declares silently vanish,
+// because the SAME loss happens on both re-encodes and cancels out. Walking the fixture's own
+// declared fields against the re-encoded JSON catches a schema that drops or renames a declared
+// field even though the round-trip "looks" stable; this is exactly how the stale `keepWithNext`/
+// `pageBreakBefore` keys would have gone unnoticed when they moved under `pagination`.
+#[test]
+fn exhaustive_fixture_survives_round_trip_without_field_loss() {
+    let tree = ValidatedRenderTree::decode_json(EXHAUSTIVE).unwrap();
+    let once = tree.encode_json().unwrap();
+    let encoded = serde_json::from_slice::<Value>(&once).unwrap();
+    assert_declared_fields_survive(&exhaustive_value(), &encoded, "");
+}
+
 #[test]
 fn column_flow_matrix_and_malformed_wire_branches_are_checked() {
     let mut equal = exhaustive_value();
@@ -319,6 +381,12 @@ fn every_macro_enum_value_is_exercised_by_a_checked_fixture_variant() {
                 }
                 "PageNumberField" => {
                     fixture["nodes"][5]["data"]["pageNumberField"] = (*value).into()
+                }
+                "HeaderFooterApplicability" => {
+                    fixture["nodes"][22]["data"]["appliesTo"] = (*value).into()
+                }
+                "LineHeightMode" => {
+                    fixture["nodes"][4]["data"]["style"]["lineHeight"]["mode"] = (*value).into()
                 }
                 "TabAlignment" => {
                     fixture["nodes"][4]["data"]["tabStops"][0]["alignment"] = (*value).into()

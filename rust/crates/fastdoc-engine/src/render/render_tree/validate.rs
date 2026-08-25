@@ -444,6 +444,16 @@ fn node_text(payload: &wire::NodePayload) -> Option<&str> {
     }
 }
 
+/// A page-number restart carries the number the counter takes on that page. A negative page
+/// number is not something any document can mean, so it is rejected rather than carried into
+/// pagination arithmetic. Zero stays legal: Word lets a document start its numbering at 0.
+fn validate_paragraph_pagination(value: &wire::ParagraphPagination) -> Result<(), DecodeError> {
+    if value.page_number_restart.is_some_and(|number| number < 0) {
+        return Err(invalid("page number restart is invalid"));
+    }
+    Ok(())
+}
+
 fn validate_payload(
     node: &wire::Node,
     nodes: &BTreeMap<u64, &wire::Node>,
@@ -456,6 +466,7 @@ fn validate_payload(
         P::Heading(v) => {
             validate_paragraph_style(&v.style)?;
             validate_tab_stops(&v.tab_stops)?;
+            validate_paragraph_pagination(&v.pagination)?;
         }
         P::TextRun(v) => {
             sorted_unique_nonzero(v.comment_ids.iter().copied(), "text run comment")?;
@@ -476,6 +487,7 @@ fn validate_payload(
         P::ListItem(v) => {
             validate_paragraph_style(&v.style)?;
             validate_tab_stops(&v.tab_stops)?;
+            validate_paragraph_pagination(&v.pagination)?;
         }
         P::TaskListItem(v) if !matches!(v.level, Some(1..=32)) => {
             return Err(invalid("task list level is invalid"));
@@ -546,12 +558,22 @@ fn validate_payload(
             }
             if !valid_size(&v.intrinsic_size)
                 || v.display_size.as_ref().is_some_and(|s| !valid_size(s))
-                || v.commands
+                || v.paths
                     .iter()
+                    .flat_map(|path| &path.commands)
                     .flat_map(|c| &c.values)
                     .any(|x| !x.is_finite())
             {
                 return Err(invalid("vector data is invalid"));
+            }
+            for path in &v.paths {
+                if let Some(stroke) = &path.stroke {
+                    validate_drawn_border_width(stroke)?;
+                }
+                check_colors([
+                    ("vector stroke", path.stroke.as_ref().and_then(|s| s.color.as_ref())),
+                    ("vector fill", path.fill.as_ref()),
+                ])?;
             }
         }
         P::Diagram(v) => {
@@ -584,6 +606,15 @@ fn validate_payload(
             if v.line_grid_points.is_some_and(|x| !finite_nonnegative(x)) {
                 return Err(invalid("line grid is invalid"));
             }
+            if let Some(paper) = &v.paper {
+                let distances = [paper.header_distance_points, paper.footer_distance_points];
+                if distances
+                    .iter()
+                    .any(|value| value.is_some_and(|x| !finite_nonnegative(x)))
+                {
+                    return Err(invalid("page band distance is invalid"));
+                }
+            }
         }
         P::Unsupported(v) => {
             if v.source_format_tag.is_empty() || v.reason.is_empty() {
@@ -597,6 +628,7 @@ fn validate_payload(
         P::Paragraph(v) => {
             validate_paragraph_style(&v.style)?;
             validate_tab_stops(&v.tab_stops)?;
+            validate_paragraph_pagination(&v.pagination)?;
         }
         _ => {}
     }

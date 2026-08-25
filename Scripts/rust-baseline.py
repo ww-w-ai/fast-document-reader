@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DT = Path("Sources/FastDocReader/App/DocumentTypes.swift")
-PIN = "0f7fc78164ab87059f3fd288945d36c0fd86ce6a"
+PIN = "001fd0bfbb9c21af5393051963ee76dee625c7ec"
 IDS = {
     "gui-open",
     "gui-reload",

@@ -51,6 +51,8 @@ all_string_enums! {
     PageNumberField { Page => "page", NumPages => "numPages" },
     TabAlignment { Left => "left", Center => "center", Right => "right", Decimal => "decimal" },
     TabLeader { None => "none", Dot => "dot", Hyphen => "hyphen", Underscore => "underscore" },
+    LineHeightMode { Multiple => "multiple", Exact => "exact", AtLeast => "atLeast" },
+    HeaderFooterApplicability { DefaultPages => "defaultPages", FirstPage => "firstPage", EvenPages => "evenPages" },
     LineBreakGranularity { Word => "word", Hyphen => "hyphen", Character => "character" },
     ListNumberingGlyphs { Decimal => "decimal", CircledDecimal => "circledDecimal", RomanUpper => "romanUpper", RomanLower => "romanLower", LatinUpper => "latinUpper", LatinLower => "latinLower", HangulSyllable => "hangulSyllable", HangulNumber => "hangulNumber", HanjaNumber => "hanjaNumber" },
     ColorSpace { Srgb => "sRGB", DeviceRgb => "deviceRGB" },
@@ -158,7 +160,7 @@ node_payloads! {
     TaskListItem => "taskListItem" (TaskListItem), Table => "table" (Table), TableRow => "tableRow" (TableRow),
     TableCell => "tableCell" (TableCell), Image => "image" (Image), Vector => "vector" (Vector),
     Formula => "formula" (Formula), Diagram => "diagram" (Diagram), RawHtml => "rawHtml" (RawHtml),
-    Footnote => "footnote" (Footnote), Header => "header" (Empty), Footer => "footer" (Empty),
+    Footnote => "footnote" (Footnote), Header => "header" (HeaderFooter), Footer => "footer" (HeaderFooter),
     FormControl => "formControl" (FormControl), Unsupported => "unsupported" (Unsupported),
 }
 
@@ -408,7 +410,10 @@ pub struct ParagraphStyle {
 #[serde(rename_all = "camelCase")]
 pub struct LineHeight {
     pub value: f64,
-    pub exact: bool,
+    /// Three states, because a document that asks for a MINIMUM line height means something a
+    /// two-state exact/multiple pair cannot say: a line needing more room must be allowed to grow.
+    /// Collapsing "at least" into "exact" clips tall glyphs and inline images.
+    pub mode: LineHeightMode,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -451,6 +456,15 @@ pub struct Paper {
     pub width_points: f64,
     pub height_points: f64,
     pub margins: Insets,
+    /// How far the running header sits from the sheet's own edge, when the document says. Beside
+    /// the margins because it is the same kind of fact: `None` is "this format did not say", which
+    /// is not the same as zero. Anchoring the band to the sheet rather than splitting the margin is
+    /// what keeps the header from drifting page to page (invariant 62).
+    #[serde(default)]
+    pub header_distance_points: Option<f64>,
+    /// The footer's own distance from the sheet edge, read the same way.
+    #[serde(default)]
+    pub footer_distance_points: Option<f64>,
 }
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -473,6 +487,34 @@ pub struct Section {
     #[serde(default)]
     pub line_grid_points: Option<f64>,
 }
+/// The document's own pagination instructions for ONE paragraph-class block.
+///
+/// Not style: style is how the block looks, these are orders the document gives the paginator, and
+/// every Office format attaches them to the paragraph rather than to a section. They live in one
+/// shared struct because the source carries them as parallel block-index lists
+/// (`OfficeReadResult.keep_with_next_blocks`, `page_break_blocks`, `hide_page_number_blocks`,
+/// `page_number_restart_blocks`) whose indices may land on ANY paragraph-class block — and in HWP
+/// a paragraph becomes a `Heading` whenever it declares an outline level or a heading style
+/// (invariant 33). Carrying these on `Paragraph` alone loses the two commonest cases in real
+/// documents: a heading kept with the paragraph below it, and a chapter heading that starts a new
+/// page.
+///
+/// `hides_page_number` and `page_number_restart` are per-BLOCK facts and deliberately NOT the
+/// section-level `PageNumbering`: HWP's `Control::PageHide` (쪽 감추기) is documented as distinct
+/// from a section turning its running head off, and `NewNumber` restarts the counter at an
+/// arbitrary paragraph. The readers already collapse both from HWP's span-level markers to
+/// paragraph granularity, so matching that resolution here is faithful rather than lossy.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParagraphPagination {
+    pub keep_with_next: bool,
+    pub page_break_before: bool,
+    /// The page this block lands on prints NO page number.
+    pub hides_page_number: bool,
+    /// The page counter restarts at this number on the page this block lands on.
+    pub page_number_restart: Option<i64>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Heading {
@@ -481,6 +523,8 @@ pub struct Heading {
     pub style: ParagraphStyle,
     #[serde(default)]
     pub tab_stops: Vec<TabStop>,
+    #[serde(default)]
+    pub pagination: ParagraphPagination,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -490,9 +534,7 @@ pub struct Paragraph {
     #[serde(default)]
     pub tab_stops: Vec<TabStop>,
     #[serde(default)]
-    pub keep_with_next: bool,
-    #[serde(default)]
-    pub page_break_before: bool,
+    pub pagination: ParagraphPagination,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -560,6 +602,8 @@ pub struct ListItem {
     pub style: ParagraphStyle,
     #[serde(default)]
     pub tab_stops: Vec<TabStop>,
+    #[serde(default)]
+    pub pagination: ParagraphPagination,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -651,10 +695,26 @@ pub struct PathCommand {
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+/// One drawn path of a vector graphic. The geometry alone is not the drawing: a document states a
+/// stroke, a fill and arrowheads per path, and a shape reduced to its outline loses the difference
+/// between a filled callout and a bare line.
+pub struct VectorPath {
+    #[serde(default)]
+    pub commands: Vec<PathCommand>,
+    #[serde(default)]
+    pub stroke: Option<DrawnBorder>,
+    #[serde(default)]
+    pub fill: Option<Color>,
+    pub arrow_start: bool,
+    pub arrow_end: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Vector {
     pub resource_id: Option<u64>,
     #[serde(default)]
-    pub commands: Vec<PathCommand>,
+    pub paths: Vec<VectorPath>,
     pub intrinsic_size: Size,
     pub display_size: Option<Size>,
     pub alignment: Alignment,
@@ -679,6 +739,17 @@ pub struct RawHtml {
     pub block: bool,
     pub source: String,
 }
+/// Which pages a running header or footer applies to. Without this, a document that gives its
+/// title page its own header prints that header on every page: docx states the three-way split
+/// directly (`w:headerReference/@w:type`) and ODF states it by element suffix, so the distinction
+/// is authored, not inferred. HWP has no first-page concept in this mechanism and folds onto
+/// `DefaultPages`/`EvenPages`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeaderFooter {
+    pub applies_to: HeaderFooterApplicability,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Footnote {

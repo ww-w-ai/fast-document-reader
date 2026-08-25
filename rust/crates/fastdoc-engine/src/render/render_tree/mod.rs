@@ -9,6 +9,8 @@
 //! source/edit authority, and immutable canonical owner are FastDoc-specific divergences.
 
 mod office_accounting;
+mod office_adapter;
+mod office_result_accounting;
 mod validate;
 // Internal producers (S2A2/S3) may construct unchecked wire drafts, but no downstream crate can.
 pub(crate) mod wire;
@@ -30,12 +32,21 @@ pub use wire::{
     VerticalPosition,
 };
 
+pub use office_adapter::{
+    OfficeAdapterError, OfficeAdapterInput, OfficeColumnPosition, ResolvedOfficeResource,
+};
 pub use validate::{resolve_cell_borders, resolve_cell_padding, CellSide, ResolvedEdge};
 
 /// A semantic RenderTree whose complete wire graph has passed canonical validation.
 #[derive(Debug, Clone)]
 pub struct ValidatedRenderTree {
     inner: wire::EnvelopeV1,
+}
+
+impl ValidatedRenderTree {
+    pub fn from_office(input: OfficeAdapterInput<'_>) -> Result<Self, OfficeAdapterError> {
+        office_adapter::from_office(input)
+    }
 }
 
 /// Typed unchecked drafts for engine producers. `build` is the only canonicalization step.
