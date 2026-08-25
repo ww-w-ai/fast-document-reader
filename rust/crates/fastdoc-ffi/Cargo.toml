@@ -7,13 +7,26 @@ publish.workspace = true
 [lib]
 # A static library so the engine is absorbed into the app's executable, exactly as the rhwp parser
 # already is — no dylib to embed, sign or notarise. See docs/BUILD-RHWP.md for the precedent this
-# packaging deliberately copies.
-crate-type = ["staticlib"]
+# packaging deliberately copies. `rlib` is additive, for `tests/` (S2B-03) to link the crate's
+# real `extern "C"` symbols the normal Rust way; Xcode's build never sees or uses it, only the
+# staticlib output.
+crate-type = ["staticlib", "rlib"]
 name = "fastdoc_engine_ffi"
 
 [dependencies]
 fastdoc-engine = { path = "../fastdoc-engine" }
 swiftshim = { path = "../swiftshim" }
+
+# The discriminated failure crossing the boundary (S2B-02) escapes a message and a location into
+# JSON. Already in `Cargo.lock` at 1.0.151 via `fastdoc-engine`, so this adds no new third-party
+# code to the graph — only a new edge to it.
+serde_json = { version = "1.0.151", features = ["raw_value"] }
+
+# `fastdoc_read_office_tree`'s envelope (S2B-03) splices an already-encoded tree in verbatim via
+# `serde_json::value::RawValue`, whose passthrough only fires from inside a `#[derive(Serialize)]`
+# struct. Already in `Cargo.lock` at the same version via `fastdoc-engine` and `serde_json` above,
+# so this adds no new third-party code to the graph — only a new edge to it.
+serde = { version = "1", features = ["derive"] }
 
 # Not called from here. Declared ONLY to turn on blake3's `pure` feature, which drops its C and
 # assembly implementations in favour of the Rust one.
@@ -26,3 +39,10 @@ swiftshim = { path = "../swiftshim" }
 # Cargo features are additive across a graph, so setting it here sets it for the blake3 that gets
 # built into this workspace. The rhwp xcframework is built separately and keeps its own.
 blake3 = { version = "1", default-features = false, features = ["pure"] }
+
+[dev-dependencies]
+# `tests/office_tree_ffi.rs` (S2B-03) hashes its own fixture bytes to check the recorded source
+# digest independently of the engine's own hasher. Already in `Cargo.lock` via `fastdoc-engine`,
+# so this adds no new third-party code to the graph — only a new edge to it, same as `serde_json`
+# and `serde` above.
+sha2 = "0.10"

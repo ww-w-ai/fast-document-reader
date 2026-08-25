@@ -193,5 +193,86 @@ final class RustEngineBridgeTests: XCTestCase {
             XCTAssertEqual(RustEngine.extractMarkdown(data, extension: ext), first)
         }
     }
+
+    // MARK: - S2B-04: `RustCanonicalEnvelope.decode` against hand-built JSON
+    //
+    // No call into the Rust library — the S2B-04 wire contract is decided and typed on the Swift
+    // side before the export exists, so these deliberately do not depend on any Rust symbol; the
+    // FFI call itself is Pass C's job.
+
+    /// The S2B-04 acceptance condition, by name: an unknown `ffiVersion` fails the WHOLE decode,
+    /// never a partial read of a valid-looking `ok` sitting right beside it. Decoding a normal
+    /// envelope correctly (below) does not by itself satisfy this — this is the test that does.
+    func testAnEnvelopeFromAnUnknownFfiVersionFailsWholeRatherThanPartially() {
+        let json = Data("""
+        {"ffiVersion":99,"ok":{"schemaVersion":1,"blocks":[]}}
+        """.utf8)
+        XCTAssertThrowsError(try RustCanonicalEnvelope.decode(json)) { error in
+            XCTAssertEqual(error as? RustCanonicalEnvelopeError, .unknownFfiVersion(99))
+        }
+    }
+
+    func testAValidOkEnvelopeDecodesToATypedSchemaVersion() throws {
+        let json = Data("""
+        {"ffiVersion":1,"ok":{"schemaVersion":1,"blocks":["a","b"]}}
+        """.utf8)
+        let envelope = try RustCanonicalEnvelope.decode(json)
+        guard case let .ok(ok) = envelope else {
+            return XCTFail("expected .ok, got \(envelope)")
+        }
+        XCTAssertEqual(ok.schemaVersion, 1)
+        let rawObject = try JSONSerialization.jsonObject(with: ok.okObjectBytes) as? [String: Any]
+        XCTAssertEqual(rawObject?["blocks"] as? [String], ["a", "b"])
+    }
+
+    /// An `error` envelope decodes kind/message/location, and — the part that matters — a `kind`
+    /// this build has never seen still decodes rather than throwing, because a future error tag
+    /// must never break a host already in the field.
+    func testAnErrorEnvelopeDecodesAndPreservesAnUnknownKindVerbatim() throws {
+        let json = Data("""
+        {"ffiVersion":1,"error":{"kind":"totally_new_kind_v7","message":"boom","location":"reader.rs:12:3"}}
+        """.utf8)
+        let envelope = try RustCanonicalEnvelope.decode(json)
+        guard case let .error(error) = envelope else {
+            return XCTFail("expected .error, got \(envelope)")
+        }
+        XCTAssertEqual(error.kind, "totally_new_kind_v7")
+        XCTAssertNil(error.known, "an unrecognised kind must not map to a known case")
+        XCTAssertEqual(error.message, "boom")
+        XCTAssertEqual(error.location, "reader.rs:12:3")
+    }
+
+    /// A known `kind` string does map to its case.
+    func testAKnownErrorKindMapsToItsCase() throws {
+        let json = Data("""
+        {"ffiVersion":1,"error":{"kind":"hwpReadFailed","message":"bad byte","location":"reader.rs:1:1"}}
+        """.utf8)
+        guard case let .error(error) = try RustCanonicalEnvelope.decode(json) else {
+            return XCTFail("expected .error")
+        }
+        XCTAssertEqual(error.known, .hwpReadFailed)
+    }
+
+    /// `ffiVersion` (the envelope) and `schemaVersion` (the tree inside `ok`) are read from
+    /// separate fields and must never be confused — the two numbers here are deliberately
+    /// different, and each is asserted at its own site.
+    func testFfiVersionAndSchemaVersionAreReadFromDistinctFields() throws {
+        let json = Data("""
+        {"ffiVersion":1,"ok":{"schemaVersion":42,"blocks":[]}}
+        """.utf8)
+        XCTAssertEqual(RustCanonicalEnvelope.supportedFfiVersion, 1, "the envelope version this build accepts")
+        guard case let .ok(ok) = try RustCanonicalEnvelope.decode(json) else {
+            return XCTFail("expected .ok")
+        }
+        XCTAssertEqual(ok.schemaVersion, 42, "the tree version must be read from \"ok\", not confused with ffiVersion")
+    }
+
+    /// Neither `ok` nor `error` present — not a shape the contract allows.
+    func testAnEnvelopeWithNeitherOkNorErrorFailsToDecode() {
+        let json = Data("""
+        {"ffiVersion":1}
+        """.utf8)
+        XCTAssertThrowsError(try RustCanonicalEnvelope.decode(json))
+    }
 }
 #endif

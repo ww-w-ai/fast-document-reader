@@ -270,6 +270,9 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "fastdoc-engine",
+ "serde",
+ "serde_json",
+ "sha2",
  "swiftshim",
 ]
 

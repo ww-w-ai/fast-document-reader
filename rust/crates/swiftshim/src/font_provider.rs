@@ -94,6 +94,31 @@ pub fn install(provider: Box<dyn FontProvider>) -> bool {
     PROVIDER.set(provider).is_ok()
 }
 
+/// Why `try_provider` could not answer: nothing was ever installed on this process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FontProviderMissing;
+
+impl std::fmt::Display for FontProviderMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("no FontProvider installed — call swiftshim::font_provider::install() first")
+    }
+}
+
+impl std::error::Error for FontProviderMissing {}
+
+/// The installed provider, as a typed absence rather than a panic.
+///
+/// This is the entry point a caller that must not panic across an FFI boundary uses; `provider`
+/// below is unchanged and still panics, because its existing callers (`color_font.rs`,
+/// `font_substitution_resolver.rs`) are outside this module's scope and their contract does not
+/// change here.
+pub fn try_provider() -> Result<&'static dyn FontProvider, FontProviderMissing> {
+    PROVIDER
+        .get()
+        .map(|b| b.as_ref())
+        .ok_or(FontProviderMissing)
+}
+
 /// The installed provider.
 ///
 /// Panics when none is installed, and that is the design. The two "safe" defaults are both
@@ -101,11 +126,11 @@ pub fn install(provider: Box<dyn FontProvider>) -> bool {
 /// none does substitutes everything — and either way the document renders, plausibly, with the
 /// wrong typefaces and nothing reports it. Failing loudly at the boundary is the same call this
 /// port already made about placeholder stand-ins.
+///
+/// Callers that can instead return a typed failure across an FFI boundary should use
+/// `try_provider`.
 pub fn provider() -> &'static dyn FontProvider {
-    PROVIDER
-        .get()
-        .map(|b| b.as_ref())
-        .expect("no FontProvider installed — call swiftshim::font_provider::install() first")
+    try_provider().expect("no FontProvider installed — call swiftshim::font_provider::install() first")
 }
 
 /// Whether a provider has been installed, for callers that must not panic (probes, tests).
@@ -252,4 +277,28 @@ impl FontProvider for CallbackProvider {
 /// Installs a host-answered provider. Same one-shot rule as `install`.
 pub fn install_callbacks(callbacks: FontProviderCallbacks) -> bool {
     install(Box::new(CallbackProvider(callbacks)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// S2B-06's floor: asking for the provider before one is installed must come back as a typed
+    /// absence, not a panic. `PROVIDER` is a process-global `OnceLock` and no other test in this
+    /// binary installs one, so this observes a genuinely empty slot.
+    #[test]
+    fn try_provider_is_a_typed_absence_when_none_installed() {
+        assert!(
+            !is_installed(),
+            "a prior test in this binary already installed a provider; this test needs a clean slot"
+        );
+        // `dyn FontProvider` is not `Debug`, so `Result::expect_err` (which formats the `Ok` side
+        // if that branch is hit) does not typecheck here; matching by hand needs nothing of it.
+        let error = match try_provider() {
+            Err(error) => error,
+            Ok(_) => panic!("no provider was installed"),
+        };
+        assert_eq!(error, FontProviderMissing);
+        assert!(error.to_string().contains("no FontProvider installed"));
+    }
 }

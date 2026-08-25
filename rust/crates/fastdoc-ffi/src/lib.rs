@@ -8,12 +8,42 @@
 //! shipped reader on 551 real documents, so the first thing crossing this boundary is something
 //! whose right answer is known — a link that compiles proves nothing, and a link that returns the
 //! wrong bytes silently is what this exists to rule out.
+//!
+//! ## Ownership (S2B-05) — the single statement of the rule; every export above follows it
+//!
+//! 1. **Rust allocates every returned buffer.** Every `*mut c_char` this crate hands back —
+//!    `fastdoc_extract_markdown`, `fastdoc_read_office_json`, `fastdoc_read_office_tree`,
+//!    `fastdoc_take_last_error` — is a `CString::into_raw()` this library produced. The caller
+//!    frees it with `fastdoc_string_free`, never with `free()` or its own allocator; the two
+//!    allocators are not required to be interchangeable and are not assumed to be.
+//! 2. **A failure is a value, not an exemption.** `fastdoc_read_office_tree`'s error envelope
+//!    (`{"ffiVersion":1,"error":{...}}`) is exactly as owned as its ok envelope and must be freed
+//!    the same way — this export never returns NULL for a document-level failure specifically so
+//!    that both shapes go through one ownership rule instead of two.
+//! 3. **NULL means nothing was allocated.** The only NULL a caller can receive is "the envelope
+//!    itself could not be built" (`fastdoc_read_office_tree`) or "there is nothing to report"
+//!    (`fastdoc_extract_markdown`, `fastdoc_read_office_json`, `fastdoc_take_last_error`). In
+//!    every such case the caller owns nothing and must not call `fastdoc_string_free` on it —
+//!    though doing so is harmless, see 4.
+//! 4. **`fastdoc_string_free(NULL)` is a no-op.** Never undefined behaviour. A caller that frees
+//!    defensively (without branching on NULL first) is safe.
+//!
+//! **Double-freeing a pointer this library returned, or reading it after it has been freed, is
+//! undefined behaviour** — not a documented failure mode with a discriminated kind, because there
+//! is no C ABI shape that reports UB after the fact. `tests/ffi_ownership.rs` proves 1-4 by
+//! running them; it deliberately does NOT contain a double-free or use-after-free test, since
+//! "running" UB is not a check, it is a second bug standing in for the first one.
+
+mod ffi_guard;
 
 use fastdoc_engine::render::office::hwp_reader::mapping::HwpReader;
 use fastdoc_engine::render::office::{
     docx_reader::DocxReader, odt_reader::OdtReader, office_block::OfficeReadResult,
     office_markdown_serializer::OfficeMarkdownSerializer, zip_archive::ZipArchive,
 };
+use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
+use ffi_guard::{guard_envelope, guard_json, guard_scalar, FfiErrorKind, FfiFailure};
+use std::collections::BTreeMap;
 use std::ffi::{c_char, CStr, CString};
 use std::{cell::RefCell, fmt};
 
@@ -34,8 +64,6 @@ enum ReadOfficeError {
     Hwp(fastdoc_engine::render::office::hwp_reader::mapping::MapError),
     Reader(String),
     Export(String),
-    InteriorNul,
-    Panic,
 }
 
 impl fmt::Display for ReadOfficeError {
@@ -48,16 +76,45 @@ impl fmt::Display for ReadOfficeError {
             Self::Hwp(error) => write!(f, "HWP reader failed: {error}"),
             Self::Reader(error) => write!(f, "office reader failed: {error}"),
             Self::Export(error) => write!(f, "office JSON export failed: {error}"),
-            Self::InteriorNul => f.write_str("office JSON contained an interior NUL byte"),
-            Self::Panic => f.write_str("office reader panicked"),
         }
     }
 }
 
-fn set_last_error(error: impl fmt::Display) {
+impl ReadOfficeError {
+    fn kind(&self) -> FfiErrorKind {
+        match self {
+            Self::InvalidArchive => FfiErrorKind::InvalidArchive,
+            Self::UnsupportedExtension(_) => FfiErrorKind::UnsupportedExtension,
+            Self::Hwp(_) => FfiErrorKind::HwpReadFailed,
+            Self::Reader(_) => FfiErrorKind::ReaderFailed,
+            Self::Export(_) => FfiErrorKind::ExportFailed,
+        }
+    }
+}
+
+impl From<ReadOfficeError> for FfiFailure {
+    fn from(error: ReadOfficeError) -> Self {
+        FfiFailure::new(error.kind(), error.to_string())
+    }
+}
+
+/// `font_provider::try_provider`'s typed absence, discriminated for a host that will branch on
+/// `kind` rather than parse prose. No export in this crate calls `try_provider` yet — S4/S5 make
+/// the font-substitution path reachable from a guarded export, and this conversion is what that
+/// export's guard closure will use with a plain `?`.
+impl From<swiftshim::font_provider::FontProviderMissing> for FfiFailure {
+    fn from(error: swiftshim::font_provider::FontProviderMissing) -> Self {
+        FfiFailure::new(FfiErrorKind::HostFontProviderMissing, error.to_string())
+    }
+}
+
+/// Records a guard's discriminated failure where `fastdoc_take_last_error` retrieves it. The
+/// slot is deliberately last-write-wins (see `ffi_guard::contain`'s doc comment) — a re-entrant
+/// call overwriting it is the existing, pre-S2B contract, not a bug this sprint fixes.
+fn set_last_error(failure: &FfiFailure) {
     // CString can fail only when a diagnostic contains NUL. Replacing it keeps the failure
     // observable instead of recursively losing the error while trying to report it.
-    let message = CString::new(error.to_string()).unwrap_or_else(|_| {
+    let message = CString::new(failure.to_last_error_json()).unwrap_or_else(|_| {
         CString::new("office reader failed with an invalid diagnostic").unwrap()
     });
     LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(message));
@@ -73,9 +130,12 @@ fn clear_last_error() {
 /// or not — `docx`, `ODT`. The returned string is UTF-8 and must be handed to
 /// `fastdoc_string_free`.
 ///
-/// NULL means the document could not be read. It does NOT distinguish why: the caller that needs a
-/// reason is the CLI, which does its own reading, and a reason string crossing here would have to
-/// be freed on a path the caller takes only on failure — the shape most likely to leak.
+/// NULL means the document could not be read. The return shape does NOT distinguish why: the
+/// caller that needs a reason is the CLI, which does its own reading, and a reason string
+/// crossing here would have to be freed on a path the caller takes only on failure — the shape
+/// most likely to leak. A failure IS recorded for `fastdoc_take_last_error` now (S2B parity with
+/// `fastdoc_read_office_json`), so a caller that wants a diagnostic for its own logs may still
+/// take one; nothing about the NULL contract changes.
 ///
 /// # Safety
 /// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
@@ -85,27 +145,35 @@ pub unsafe extern "C" fn fastdoc_extract_markdown(
     len: usize,
     extension_: *const c_char,
 ) -> *mut c_char {
+    clear_last_error();
     if bytes.is_null() || extension_.is_null() {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
         return std::ptr::null_mut();
     }
     let data = std::slice::from_raw_parts(bytes, len);
     let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "extension is not valid UTF-8",
+        ));
         return std::ptr::null_mut();
     };
 
     // A panic must not cross the ABI — unwinding into Swift's frames is undefined behaviour, and
-    // this engine still has `todo!()`s in reach of some documents. Catching turns "the host dies
-    // with no message" into "this document could not be read", which is a truth the host can act
-    // on.
-    let extracted = std::panic::catch_unwind(|| extract(data, extension));
-    match extracted {
-        Ok(Some(markdown)) => match CString::new(markdown) {
-            Ok(c) => c.into_raw(),
-            // A NUL inside the text would truncate the document at that byte on the C side.
-            Err(_) => std::ptr::null_mut(),
-        },
-        _ => std::ptr::null_mut(),
-    }
+    // this engine still has `todo!()`s in reach of some documents. `guard_json` turns "the host
+    // dies with no message" into "this document could not be read, and here is why", which is a
+    // truth the host can act on.
+    guard_json(move || {
+        extract(data, extension).ok_or_else(|| {
+            FfiFailure::new(
+                FfiErrorKind::ReaderFailed,
+                "the office reader produced no markdown for this document",
+            )
+        })
+    })
 }
 
 /// Reads an office document and returns it as the JSON envelope a host decodes, or NULL.
@@ -126,31 +194,88 @@ pub unsafe extern "C" fn fastdoc_read_office_json(
 ) -> *mut c_char {
     clear_last_error();
     if bytes.is_null() || extension_.is_null() {
-        set_last_error("invalid NULL argument");
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
         return std::ptr::null_mut();
     }
     let data = std::slice::from_raw_parts(bytes, len);
     let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
-        set_last_error("extension is not valid UTF-8");
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "extension is not valid UTF-8",
+        ));
         return std::ptr::null_mut();
     };
-    let read = std::panic::catch_unwind(|| {
-        let result = read_office(data, extension)?;
-        let json = fastdoc_engine::render::office::office_export::to_json(&result)
-            .map_err(|error| ReadOfficeError::Export(format!("{error:?}")))?;
-        CString::new(json).map_err(|_| ReadOfficeError::InteriorNul)
-    });
-    match read {
-        Ok(Ok(json)) => json.into_raw(),
-        Ok(Err(error)) => {
-            set_last_error(error);
-            std::ptr::null_mut()
-        }
-        Err(_) => {
-            set_last_error(ReadOfficeError::Panic);
-            std::ptr::null_mut()
-        }
+    // `guard_json` owns turning an interior NUL in `json` into `FfiErrorKind::InteriorNul` —
+    // this closure just has to produce the string.
+    guard_json(move || {
+        let result = read_office(data, extension).map_err(FfiFailure::from)?;
+        fastdoc_engine::render::office::office_export::to_json(&result).map_err(|error| {
+            FfiFailure::from(ReadOfficeError::Export(format!("{error:?}")))
+        })
+    })
+}
+
+/// Reads an office document into the canonical `ValidatedRenderTree` wire form (S2B-03) and
+/// returns it as a self-describing envelope — never NULL for a document-level failure, unlike
+/// `fastdoc_extract_markdown`/`fastdoc_read_office_json` above:
+///
+/// - success: `{"ffiVersion":1,"ok":<the tree's own `encode_json()` bytes, spliced in verbatim>}`
+/// - failure: `{"ffiVersion":1,"error":{"kind":"...","message":"...","location":"file:line:col"}}`
+///
+/// `ffiVersion` versions this envelope; `ok`'s `schemaVersion` (inside the tree JSON) versions the
+/// tree — the two never mean the same thing, and neither call site should conflate them.
+///
+/// Ownership: the returned string is owned by this library in BOTH shapes and must be passed to
+/// `fastdoc_string_free` either way — including the error envelope, which is not a `NULL`-style
+/// sentinel here. NULL comes back ONLY when the envelope itself could not be allocated (its JSON
+/// text was somehow not valid UTF-8, or contained an interior NUL); in that one case there is
+/// nothing for the caller to own or free. This export does not touch `fastdoc_take_last_error`'s
+/// slot — the envelope IS the diagnostic channel.
+///
+/// # Safety
+/// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_read_office_tree(
+    bytes: *const u8,
+    len: usize,
+    extension_: *const c_char,
+) -> *mut c_char {
+    if bytes.is_null() || extension_.is_null() {
+        return guard_envelope(|| {
+            Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "invalid NULL argument",
+            ))
+        });
     }
+    let data = std::slice::from_raw_parts(bytes, len);
+    let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
+        return guard_envelope(|| {
+            Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "extension is not valid UTF-8",
+            ))
+        });
+    };
+
+    guard_envelope(move || {
+        let format = document_format(extension).map_err(FfiFailure::from)?;
+        let result = read_office(data, extension).map_err(FfiFailure::from)?;
+        let source_name = format!("document.{extension}");
+        let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
+            format,
+            source_name: &source_name,
+            source_bytes: data,
+            result: &result,
+            resources: BTreeMap::new(),
+        })
+        .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))?;
+        tree.encode_json()
+            .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))
+    })
 }
 
 /// Takes the diagnostic produced by the most recent failed call on this thread, or NULL.
@@ -191,7 +316,7 @@ pub unsafe extern "C" fn fastdoc_office_default_body_font_size(
     let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
         return DECLARED_NOTHING;
     };
-    std::panic::catch_unwind(|| {
+    guard_scalar(DECLARED_NOTHING, move || {
         let Ok(archive) = ZipArchive::new(swiftshim::Data::fromBytes(data.to_vec())) else {
             return DECLARED_NOTHING;
         };
@@ -203,7 +328,6 @@ pub unsafe extern "C" fn fastdoc_office_default_body_font_size(
             _ => DECLARED_NOTHING,
         }
     })
-    .unwrap_or(DECLARED_NOTHING)
 }
 
 /// Frees a string this library returned. Passing anything else is undefined.
@@ -242,6 +366,21 @@ fn read_office(data: &[u8], extension: &str) -> Result<OfficeReadResult, ReadOff
     }
 }
 
+/// The `render_tree::DocumentFormat` an extension declares — the same four-way split
+/// `read_office` above already dispatches on, kept separate because `from_office`'s
+/// `OfficeAdapterInput.format` and `read_office`'s reader choice are two different questions that
+/// happen to share one answer set (docm/dotx/dotm are all `DocumentFormat::Docx`, matching Word's
+/// own single template-family reader).
+fn document_format(extension: &str) -> Result<DocumentFormat, ReadOfficeError> {
+    match extension.to_lowercase().as_str() {
+        "docx" | "docm" | "dotx" | "dotm" => Ok(DocumentFormat::Docx),
+        "odt" => Ok(DocumentFormat::Odt),
+        "hwp" => Ok(DocumentFormat::Hwp),
+        "hwpx" => Ok(DocumentFormat::Hwpx),
+        other => Err(ReadOfficeError::UnsupportedExtension(other.to_owned())),
+    }
+}
+
 fn extract(data: &[u8], extension: &str) -> Option<String> {
     let result = read_office(data, extension).ok()?;
     Some(OfficeMarkdownSerializer::serialize(
@@ -269,7 +408,12 @@ fn extract(data: &[u8], extension: &str) -> Option<String> {
 pub unsafe extern "C" fn fastdoc_install_font_provider(
     callbacks: swiftshim::font_provider::FontProviderCallbacks,
 ) -> bool {
-    swiftshim::font_provider::install_callbacks(callbacks)
+    // Guarded like every other export, not because installation is expected to panic, but because
+    // "every export goes through one guard" is only checkable if it has no exceptions. `false` is
+    // the documented failure answer here — it already means "not installed".
+    guard_scalar(false, move || {
+        swiftshim::font_provider::install_callbacks(callbacks)
+    })
 }
 
 #[cfg(test)]
@@ -310,5 +454,62 @@ mod tests {
         // SAFETY: The pointer came from this library and has not previously been freed.
         unsafe { fastdoc_string_free(diagnostic) };
         assert!(fastdoc_take_last_error().is_null());
+    }
+
+    /// S2B-06: the font-provider precondition crosses into `fastdoc-ffi`'s error vocabulary as
+    /// `hostFontProviderMissing`, exercised with no provider installed rather than by wiring a
+    /// real export to resolve fonts just to manufacture reachability.
+    #[test]
+    fn font_provider_missing_maps_to_its_own_kind() {
+        // `dyn FontProvider` is not `Debug`, so `Result::unwrap_err` does not typecheck here.
+        let error = match swiftshim::font_provider::try_provider() {
+            Err(error) => error,
+            Ok(_) => panic!("no provider was installed"),
+        };
+        let failure = FfiFailure::from(error);
+        assert_eq!(failure.kind, FfiErrorKind::HostFontProviderMissing);
+        assert_eq!(failure.kind.tag(), "hostFontProviderMissing");
+        assert!(failure.message.contains("no FontProvider installed"));
+    }
+
+    /// The Design's sentence is "every export goes through one containment core". A sentence is not
+    /// a check: the export that installs the font provider was added outside the guard and nothing
+    /// noticed until a fresh reviewer read the Design beside the code. This walks THIS file and
+    /// fails on any `#[no_mangle]` export whose body names no guard.
+    ///
+    /// Two exports are exempt, and the exemption is stated rather than discovered:
+    /// `fastdoc_take_last_error` and `fastdoc_string_free` are memory and thread-local plumbing that
+    /// runs AFTER a failure has already been decided. Wrapping a deallocation in a panic guard buys
+    /// nothing — there is no value left to return and nowhere to record the failure that the caller
+    /// would still be able to read.
+    #[test]
+    fn every_export_but_the_two_named_plumbing_ones_goes_through_a_guard() {
+        const EXEMPT: [&str; 2] = ["fastdoc_take_last_error", "fastdoc_string_free"];
+        let source = include_str!("lib.rs");
+        let mut unguarded = Vec::new();
+        for part in source.split("#[no_mangle]").skip(1) {
+            let Some(name_at) = part.find("fn fastdoc_") else {
+                continue;
+            };
+            let rest = &part[name_at + 3..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if EXEMPT.contains(&name.as_str()) {
+                continue;
+            }
+            let body = part.split("\n}\n").next().unwrap_or(part);
+            let guarded = ["guard_json", "guard_scalar", "guard_envelope"]
+                .iter()
+                .any(|g| body.contains(g));
+            if !guarded {
+                unguarded.push(name);
+            }
+        }
+        assert!(
+            unguarded.is_empty(),
+            "these exports reach the ABI without the containment core: {unguarded:?}"
+        );
     }
 }
