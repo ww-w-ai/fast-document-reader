@@ -2,7 +2,8 @@
 //! swift-range: 1-2
 
 use std::collections::HashMap;
-use swiftshim::{CGFloat, NSAttributedString, NSLayoutManager, NSSize, NSTextContainer, NSTextStorage};
+use swiftshim::{CGFloat, NSAttributedString};
+use swiftshim::text_measure::{ResolveError, ResolvedText, TextMeasurerMissing};
 use crate::render::office::office_block::OfficeBlock;
 use crate::render::office::office_text_builder::OfficeTextBuilder;
 use crate::render::render_theme::RenderTheme;
@@ -11,6 +12,42 @@ use crate::render::render_theme::RenderTheme;
 /// `office_block` (S3's vocabulary type); not redefined.
 // swift: Render/Office/PageBandGeometry.swift — OfficeHeaderFooter is declared in OfficeBlock.swift, not here.
 pub use crate::render::office::office_block::OfficeHeaderFooter;
+
+/// Why a band-height decision could not answer, S5-03's typed absence. Two distinct causes fold
+/// into one refusal for the caller: nothing is installed to measure with at all
+/// (`TextMeasurerMissing`), or `OfficeTextBuilder`'s own output could not be resolved into the
+/// port's payload — today that is only an attachment run whose reserved size the builder never
+/// set (`ResolveError::UnresolvedAttachmentSize`). Both are refusals rather than a guessed
+/// height: this module's header names that as the failure this repository has now shipped three
+/// times, and a stand-in number here would be a fourth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasureError {
+    NoMeasurer,
+    UnresolvedPayload(ResolveError),
+}
+
+impl std::fmt::Display for MeasureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoMeasurer => f.write_str("no TextMeasurer installed — the band height cannot be decided"),
+            Self::UnresolvedPayload(inner) => write!(f, "the band's own text could not be resolved: {inner}"),
+        }
+    }
+}
+
+impl std::error::Error for MeasureError {}
+
+impl From<TextMeasurerMissing> for MeasureError {
+    fn from(_: TextMeasurerMissing) -> Self {
+        Self::NoMeasurer
+    }
+}
+
+impl From<ResolveError> for MeasureError {
+    fn from(error: ResolveError) -> Self {
+        Self::UnresolvedPayload(error)
+    }
+}
 
 /// Measures the vertical space a document's running header + footer actually occupy when built by
 /// THIS reader's own `OfficeTextBuilder` — never the document's declared header/footer OFFSET.
@@ -85,8 +122,8 @@ impl PageBandGeometry {
         page_content_width: Option<CGFloat>,
         page_margin_top: Option<CGFloat>,
         page_margin_bottom: Option<CGFloat>,
-    ) -> CGFloat {
-        Self::measure(
+    ) -> Result<CGFloat, MeasureError> {
+        Ok(Self::measure(
             headers,
             footers,
             theme,
@@ -97,8 +134,8 @@ impl PageBandGeometry {
             page_margin_bottom,
             false,
             None,
-        )
-        .band
+        )?
+        .band)
     }
 
     /// `separatesPages` — the reader is drawing each sheet as its own page
@@ -120,11 +157,11 @@ impl PageBandGeometry {
         page_margin_bottom: Option<CGFloat>,
         separates_pages: bool,
         desk_gap: Option<CGFloat>,
-    ) -> Sides {
-        let h = Self::measured_height(headers, theme, column_width, document_default_font_size, page_content_width);
-        let f = Self::measured_height(footers, theme, column_width, document_default_font_size, page_content_width);
+    ) -> Result<Sides, MeasureError> {
+        let h = Self::measured_height(headers, theme, column_width, document_default_font_size, page_content_width)?;
+        let f = Self::measured_height(footers, theme, column_width, document_default_font_size, page_content_width)?;
         if !(h > 0.0 || f > 0.0 || separates_pages) {
-            return Sides { header: h, footer: f, band: 0.0 };
+            return Ok(Sides { header: h, footer: f, band: 0.0 });
         }
         // The document's own two margins when it stated them, and what this reader must draw when
         // that is taller — the max, not a sum, because the header and footer are drawn INSIDE those
@@ -137,7 +174,7 @@ impl PageBandGeometry {
         // it back off, so the paper is exactly the document's own sheet.
         let band = Self::declared_band(page_margin_top, page_margin_bottom).max(h + f)
             + desk_gap.unwrap_or(if separates_pages { RenderTheme::PAGE_DESK_GAP } else { 0.0 });
-        Sides { header: h, footer: f, band }
+        Ok(Sides { header: h, footer: f, band })
     }
 
     /// One side (headers OR footers) of `bandHeight`, isolated so the additive structure
@@ -150,9 +187,9 @@ impl PageBandGeometry {
         column_width: CGFloat,
         document_default_font_size: CGFloat,
         page_content_width: Option<CGFloat>,
-    ) -> CGFloat {
+    ) -> Result<CGFloat, MeasureError> {
         if !(column_width.is_finite() && column_width > 0.0) {
-            return 0.0;
+            return Ok(0.0);
         }
         // The TALLEST of them, not the first. Once a document's entries come from several sections
         // (a page takes its own section's — invariant 78), any of them can be the one painted on a
@@ -164,9 +201,9 @@ impl PageBandGeometry {
             if entry.blocks.is_empty() {
                 continue;
             }
-            tallest = tallest.max(Self::built_height(&entry.blocks, theme, column_width, document_default_font_size, page_content_width));
+            tallest = tallest.max(Self::built_height(&entry.blocks, theme, column_width, document_default_font_size, page_content_width)?);
         }
-        tallest
+        Ok(tallest)
     }
 
     /// How much a page must keep clear at its foot for the notes cited on it: the separator's own
@@ -189,12 +226,18 @@ impl PageBandGeometry {
     /// How tall this run of blocks is once BUILT and laid out at `columnWidth` — the one place that
     /// answers it, for a running head and for a footnote alike.
     ///
-    /// Measured through a throwaway TextKit stack rather than estimated from font sizes, because
-    /// that is the only thing that agrees with what the reader will actually draw: a two-line header
-    /// and a header that wraps to two lines are the same height, and no arithmetic over the spans
-    /// can tell them apart. Blocks that build to nothing measure `0` (`drawsSomething`) — 28% of the
-    /// real documents that declare a header declare an EMPTY one, and reserving space for those
-    /// would put a gap on every page of a quarter of the corpus.
+    /// Built through `OfficeTextBuilder` exactly as before — paragraph style, tab stops, hanging
+    /// indents, line height and list numbering are all INTERPRETED there, which is the decision
+    /// this sprint keeps in Rust — and then measured through the port (S5-01/S5-03) rather than a
+    /// TextKit stack this crate assembles itself: `swiftshim::text_measure` carries that resolved
+    /// output across and asks whichever live text stack the host installed for the used height,
+    /// because no arithmetic over the spans can tell a two-line header from one that WRAPS to two
+    /// lines — only laying it out can. Blocks that build to nothing still measure `0`
+    /// (`drawsSomething`) without asking the port at all — 28% of the real documents that declare a
+    /// header declare an EMPTY one, and reserving space for those would put a gap on every page of
+    /// a quarter of the corpus. With no measurer installed, or a run this module cannot resolve
+    /// into the port's payload (an attachment whose reserved size the builder never set), this
+    /// refuses rather than returning a plausible number — `MeasureError`, not a stand-in height.
     // swift: Render/Office/PageBandGeometry.swift:137-165
     pub fn built_height(
         blocks: &[OfficeBlock],
@@ -202,9 +245,9 @@ impl PageBandGeometry {
         column_width: CGFloat,
         document_default_font_size: CGFloat,
         page_content_width: Option<CGFloat>,
-    ) -> CGFloat {
+    ) -> Result<CGFloat, MeasureError> {
         if blocks.is_empty() || !(column_width.is_finite() && column_width > 0.0) {
-            return 0.0;
+            return Ok(0.0);
         }
         let attr = OfficeTextBuilder::build(
             blocks,
@@ -225,18 +268,11 @@ impl PageBandGeometry {
             &HashMap::new(),
         );
         if !(attr.length() > 0) || !Self::draws_something(blocks, &attr) {
-            return 0.0;
+            return Ok(0.0);
         }
-        let mut storage = NSTextStorage::withAttributedString(&attr);
-        let mut layout = NSLayoutManager::new();
-        layout.set_allows_non_contiguous_layout(false);
-        storage.addLayoutManager(&layout);
-        let container = NSTextContainer::new(NSSize::new(column_width, CGFloat::MAX));
-        container.set_width_tracks_text_view(false);
-        container.set_line_fragment_padding(0.0);
-        layout.addTextContainer(&container);
-        layout.ensure_layout(&container);
-        layout.used_rect(&container).height()
+        let resolved = ResolvedText::from_attributed_string(&attr)?;
+        let measurer = swiftshim::text_measure::try_measurer()?;
+        Ok(measurer.measure(&resolved, column_width))
     }
 
     /// Does this ONE entry have anything for the reader to put in a band — the question every gate

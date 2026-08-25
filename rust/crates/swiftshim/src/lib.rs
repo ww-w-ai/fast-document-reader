@@ -24,6 +24,7 @@ pub mod geometry;
 pub mod nsstring;
 pub mod paragraph_style;
 pub mod regex;
+pub mod text_measure;
 pub mod text_table;
 pub mod textkit;
 

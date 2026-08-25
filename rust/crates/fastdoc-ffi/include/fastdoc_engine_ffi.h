@@ -60,6 +60,70 @@ typedef struct {
 
 bool fastdoc_install_font_provider(FastdocFontProvider callbacks);
 
+
+/* ---------------------------------------------------------------------------------------------
+ * The measurement port (S5). The engine decides WHAT belongs in a band and what its height means;
+ * the host answers one question — how tall is this text at this width.
+ *
+ * The payload is BUILT BY RUST, borrowed by the host for the duration of one call, and freed by
+ * Rust when the call returns. Copy anything you intend to keep. Every value here is already
+ * resolved: the host maps it onto its own text stack one for one and measures. If the host finds
+ * itself deciding something, this contract has been broken.
+ * ------------------------------------------------------------------------------------------- */
+
+typedef struct { unsigned char alignment; double location; } FastdocTextMeasureTabStop;
+
+typedef struct {
+    unsigned char alignment;
+    double line_spacing, line_height_multiple, minimum_line_height, maximum_line_height;
+    double spacing_before, spacing_after, first_line_head_indent, head_indent, tail_indent;
+    const FastdocTextMeasureTabStop *tab_stops;
+    size_t tab_stop_count;
+} FastdocTextMeasureParagraph;
+
+typedef unsigned char FastdocTextMeasureRunKind; /* 0 = text, 1 = attachment */
+#define FastdocTextMeasureRunKindText ((FastdocTextMeasureRunKind)0)
+#define FastdocTextMeasureRunKindAttachment ((FastdocTextMeasureRunKind)1)
+
+typedef struct {
+    size_t paragraph_index;
+    FastdocTextMeasureRunKind kind;
+    /* The face's OWN name, not its family: NSFont(name:size:) resolves a face, and a family name
+     * silently falls back to the system font wherever the two differ. */
+    const char *font_name;
+    double size;
+    bool bold, italic;
+    const char *text;
+    /* An attachment's already-fitted box. A run list carrying only fonts and text would drop this
+     * contribution and return a number that merely looks like a header height. */
+    double attachment_width, attachment_height;
+} FastdocTextMeasureRun;
+
+typedef struct {
+    const FastdocTextMeasureParagraph *paragraphs;
+    size_t paragraph_count;
+    const FastdocTextMeasureRun *runs;
+    size_t run_count;
+} FastdocTextMeasurePayload;
+
+typedef struct {
+    double (*measure)(const FastdocTextMeasurePayload *payload, double width_points);
+} FastdocTextMeasureCallbacks;
+
+/* Install once. A second call is ignored rather than swapping, for the same reason the font
+ * provider refuses one: two halves of a document measured against different worlds is worse than
+ * either world. */
+bool fastdoc_install_text_measurer(FastdocTextMeasureCallbacks callbacks);
+
+/* The running header (or footer) band height for a document, decided in the engine and measured
+ * through the port above. Returns a negative value when it cannot answer — no measurer installed,
+ * the document unreadable, or the band carrying something whose size the engine does not know —
+ * and `fastdoc_take_last_error` names which. A height is never negative, so the sentinel cannot
+ * collide with an answer. */
+double fastdoc_office_header_band_height(const unsigned char *bytes, size_t len,
+                                         const char *extension, double column_width,
+                                         bool footer);
+
 void fastdoc_string_free(char *s);
 
 #endif

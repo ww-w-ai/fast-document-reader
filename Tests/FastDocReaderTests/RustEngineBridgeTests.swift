@@ -274,5 +274,192 @@ final class RustEngineBridgeTests: XCTestCase {
         """.utf8)
         XCTAssertThrowsError(try RustCanonicalEnvelope.decode(json))
     }
+
+    // MARK: - S5-04/S5-05: the running-header band height, decided in Rust, against the host's own answer
+
+    /// `RustEngineMeasure`'s `makePayload` → `measure` round trip, checked from Swift alone: does
+    /// the FLATTEN of `OfficeTextBuilder`'s own output lose anything TextKit would have measured
+    /// differently? This is adapter-mapping fidelity, not cross-process agreement — no FFI call, no
+    /// Rust decision, both numbers computed in THIS process by THIS file. The live, two-way C-ABI
+    /// call that actually asks Rust for the band height is
+    /// `testTheCrossProcessCallAgreesWithTheHostsOwnBandHeightForARealHeader` below, which was the
+    /// gap an intent audit found this file's old test names claimed to close and did not.
+    ///
+    /// Tolerance: 0.5pt. Both heights come from the identical TextKit ritual
+    /// (`NSTextStorage` → `NSLayoutManager` → unbounded `NSTextContainer`, no padding) run twice —
+    /// once directly on `OfficeTextBuilder`'s output, once on that output flattened and rebuilt —
+    /// so the only source of drift is floating-point rounding through two separate attributed
+    /// strings, not a different interpretation. A tolerance wide enough to hide a whole extra
+    /// line (this theme's line height, ~20pt) would defeat the point; 0.5pt cannot.
+    private func adapterMappingHeights(for blocks: [OfficeBlock], theme: RenderTheme, columnWidth: CGFloat) -> (swift: CGFloat, rust: CGFloat) {
+        let swiftHeight = PageBandGeometry.builtHeight(
+            of: blocks, theme: theme, columnWidth: columnWidth, documentDefaultFontSize: theme.baseFontSize,
+            pageContentWidth: nil)
+        let attr = OfficeTextBuilder.build(
+            blocks, theme: theme, columnWidth: columnWidth, documentDefaultFontSize: theme.baseFontSize,
+            pageContentWidth: nil)
+        let (payload, keepAlive) = RustEngineMeasure.makePayload(from: attr)
+        let rustHeight = withExtendedLifetime(keepAlive) { RustEngineMeasure.measure(payload, widthPoints: columnWidth) }
+        return (swiftHeight, rustHeight)
+    }
+
+    func testTheAdapterMappingReproducesTheHostsOwnBandHeightForARealHeader() {
+        let theme = RenderTheme.current(size: 14)
+        let blocks: [OfficeBlock] = [.paragraph(spans: [Span(text: "Quarterly Report — Finance Division")])]
+        let (swiftHeight, rustHeight) = adapterMappingHeights(for: blocks, theme: theme, columnWidth: 400)
+
+        XCTAssertGreaterThan(swiftHeight, 0, "a real header must not measure zero")
+        XCTAssertEqual(swiftHeight, rustHeight, accuracy: 0.5,
+                        "the flattened-and-rebuilt payload must answer the same question TextKit already answered")
+    }
+
+    /// A second, taller header (three paragraphs, one carrying an image) must move BOTH sides —
+    /// the guard against a tolerance wide enough to let a constant pass.
+    func testATallerHeaderMovesBothTheHostsAnswerAndTheAdapterMappingsAnswerTheSameDirection() {
+        let theme = RenderTheme.current(size: 14)
+        let shortBlocks: [OfficeBlock] = [.paragraph(spans: [Span(text: "Q3 Report")])]
+        let tallBlocks: [OfficeBlock] = [
+            .paragraph(spans: [Span(text: "Quarterly Report — Consolidated Results for the Fiscal Year")]),
+            .paragraph(spans: [Span(text: "Prepared by the Finance division, subject to audit")]),
+            .image(id: "logo", size: CGSize(width: 64, height: 40), alignment: .left),
+        ]
+
+        let short = adapterMappingHeights(for: shortBlocks, theme: theme, columnWidth: 400)
+        let tall = adapterMappingHeights(for: tallBlocks, theme: theme, columnWidth: 400)
+
+        XCTAssertGreaterThan(tall.swift, short.swift, "the host's own answer must grow for the taller header")
+        XCTAssertGreaterThan(tall.rust, short.rust, "the adapter mapping's answer must grow in the SAME direction")
+        XCTAssertEqual(tall.swift, tall.rust, accuracy: 0.5, "agreement must hold at the taller size too, not just the short one")
+    }
+
+    // MARK: - The live cross-process call: `fastdoc_office_header_band_height`, actually invoked
+
+    /// `docs/fixtures/office` and `testdocs/` are both gitignored (repo convention — see
+    /// `.gitignore`'s own comments on those two lines, which name a SYMLINK as how a worktree
+    /// reaches `testdocs/`; this worktree now has one, `ln -s <repo>/testdocs testdocs`), so a
+    /// fresh checkout has neither; other fixture-backed tests in this target
+    /// (`CellInteriorSeparatorTests.fixture`) already skip rather than fail for exactly that
+    /// reason. This machine has both corpora, and every path this file passes here carries a real
+    /// Word `w:headerReference` (`unzip -p … word/document.xml`), confirmed before writing this
+    /// test — not invented. `repoRootRelativePath` is rooted at the repo, e.g.
+    /// `"docs/fixtures/office/paged-visual/prosepages.docx"` or
+    /// `"testdocs/everything/GnBS_IM_20260401.docx"`.
+    private static func fixture(_ repoRootRelativePath: String) throws -> Data {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent(repoRootRelativePath)
+        guard let data = FileManager.default.contents(atPath: url.path) else {
+            throw XCTSkip("\(repoRootRelativePath) is gitignored and absent in this checkout")
+        }
+        return data
+    }
+
+    /// The host's own band height for a real document — `PageBandGeometry.bandHeight` run over the
+    /// SAME `OfficeReadResult` the Swift reader produces for the SAME bytes, with the SAME theme the
+    /// engine builds for itself (`RenderTheme::current(result.default_body_font_size)`,
+    /// `fastdoc-ffi/src/lib.rs`'s `fastdoc_office_header_band_height`) — so the two calls are asked
+    /// the identical question about the identical document.
+    private func hostBandHeight(for reference: OfficeReadResult, columnWidth: CGFloat, footer: Bool) -> CGFloat {
+        let theme = RenderTheme.current(size: reference.defaultBodyFontSize)
+        return PageBandGeometry.bandHeight(
+            headers: footer ? [] : reference.headers, footers: footer ? reference.footers : [],
+            theme: theme, columnWidth: columnWidth,
+            documentDefaultFontSize: reference.defaultBodyFontSize, pageContentWidth: nil)
+    }
+
+    /// The gap the intent audit named directly: no test in this file called into Rust across the C
+    /// ABI for the band-height decision. This one does — twice over, in fact, since
+    /// `fastdoc_office_header_band_height` crosses the boundary once for the document bytes (Rust
+    /// reads and normalizes them) and once back into THIS process per paragraph (through
+    /// `RustEngineMeasure`'s installed callback).
+    ///
+    /// One test, not two, and the order inside it matters: `RustEngineMeasure.install()` and the
+    /// engine's font provider are both process-global one-shots (`fastdoc-ffi/src/lib.rs`'s own
+    /// `text_measurer_missing_then_a_reentrant_callback_keeps_the_outer_panic_location` test states
+    /// the same constraint for exactly this reason — "the measurer is a process-global `OnceLock`
+    /// shared by every test in this binary, so the absence check has to run before the install
+    /// below, in the same test"). Splitting the "not installed yet" assertion into its own test
+    /// method was tried first and is WRONG here: XCTest does not run this file's methods in
+    /// declaration order (observed empirically — alphabetical), so a second method that calls
+    /// `install()` can run first and the "not installed" method then observes an already-installed
+    /// process and fails for the wrong reason. Sequence, in order: (1) call the export with NO
+    /// measurer installed — refused; (2) install fonts (`RustEngineFonts`, needed by the docx
+    /// reader's own layout decisions) and the measurer (`RustEngineMeasure`); (3) call the SAME
+    /// export again for a short real header and compare against the host's own
+    /// `PageBandGeometry.bandHeight` for the SAME bytes; (4) repeat for a taller real header and
+    /// check both sides moved the same direction — the live-call counterpart of
+    /// `testATallerHeaderMovesBothTheHostsAnswerAndTheAdapterMappingsAnswerTheSameDirection` above,
+    /// with two real documents standing in for "short"/"tall" instead of hand-built blocks.
+    /// `prosepages.docx`'s header is one short line; `GnBS_IM_20260401.docx`'s (from `testdocs/`,
+    /// `docx-test-corpus.md`'s standing real-document collection) is a single long line
+    /// ("INVESTMENT MEMORANDUM | 주식회사 지앤바이오솔루션 … STRICTLY CONFIDENTIAL") that WRAPS at
+    /// this test's 400pt column — genuinely taller, not merely longer, which is what "taller"
+    /// has to mean for this check (only layout can tell a wrap from a single line, the same
+    /// reasoning `built_height`'s own comment gives for measuring rather than estimating). Every
+    /// other real header on this machine with `docs/fixtures/office`'s corpus checked first was
+    /// either the SAME height as `prosepages.docx`'s (`bus-headings.docx`, `tablepage.docx`) or
+    /// empty (덕소 5B구역's three blank header paragraphs) — confirmed by direct measurement
+    /// before this pair was chosen, not assumed.
+    func testTheCrossProcessCallAgreesWithTheHostsOwnBandHeightAndMovesTallerWithATallerRealHeader() throws {
+        let columnWidth: CGFloat = 400
+        let shortData = try Self.fixture("docs/fixtures/office/paged-visual/prosepages.docx")
+        let tallData = try Self.fixture("testdocs/everything/GnBS_IM_20260401.docx")
+
+        let beforeInstall = RustEngineMeasure.headerBandHeight(shortData, extension: "docx", columnWidth: columnWidth, footer: false)
+        XCTAssertNil(beforeInstall, "with no measurer installed the engine cannot answer a height question")
+        XCTAssertEqual(RustEngineMeasure.lastErrorKind(), "hostTextMeasurerMissing")
+
+        RustEngineFonts.install()
+        RustEngineMeasure.install()
+
+        let shortReference = try swiftReference(shortData, extension: "docx")
+        let tallReference = try swiftReference(tallData, extension: "docx")
+        XCTAssertFalse(shortReference.headers.isEmpty, "prosepages.docx must declare a running header for this test to mean anything")
+        XCTAssertFalse(tallReference.headers.isEmpty, "GnBS_IM_20260401.docx must declare a running header for this test to mean anything")
+
+        let shortHost = hostBandHeight(for: shortReference, columnWidth: columnWidth, footer: false)
+        let tallHost = hostBandHeight(for: tallReference, columnWidth: columnWidth, footer: false)
+        XCTAssertGreaterThan(shortHost, 0, "a real header must not measure zero")
+
+        let shortEngine = try XCTUnwrap(
+            RustEngineMeasure.headerBandHeight(shortData, extension: "docx", columnWidth: columnWidth, footer: false),
+            "the engine must answer once a measurer is installed")
+        let tallEngine = try XCTUnwrap(
+            RustEngineMeasure.headerBandHeight(tallData, extension: "docx", columnWidth: columnWidth, footer: false))
+
+        XCTAssertEqual(shortHost, shortEngine, accuracy: 0.5,
+                        "the engine's own decision must agree with this reader's own band height, across the FFI, for a real document")
+        XCTAssertGreaterThan(tallHost, shortHost, "the host's own answer must grow for the taller real header")
+        XCTAssertGreaterThan(tallEngine, shortEngine, "the engine's cross-process answer must grow in the SAME direction")
+        XCTAssertEqual(tallHost, tallEngine, accuracy: 0.5, "agreement must hold at the taller real document too")
+    }
+
+    // MARK: - S5-01: the adapter maps a payload only — it decides nothing about the document itself
+
+    /// `RustEngineMeasure.swift`'s own module doc states the rule this test enforces mechanically:
+    /// "if the host has to decide anything, the port is wrong." A branch on a document format, a
+    /// block kind, or a file extension would be exactly that — a second, divergent interpretation of
+    /// the document living in the adapter instead of the engine. `swiftshim/src/text_measure.rs`'s
+    /// `the_port_has_exactly_one_primitive_and_it_is_justified` is the Rust-side twin of this check.
+    ///
+    /// Proven to actually catch something, not just to pass: this test was run once with a deliberate
+    /// `if ext == "hwp" { … }` inserted into `RustEngineMeasure.swift` and failed on that token before
+    /// the line was removed (reported in this pass's return, not left behind as a second test).
+    func testTheAdapterFileContainsNoDocumentFormatOrBlockKindBranching() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/FastDocReader/Render/Office/RustEngineMeasure.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+
+        let forbidden = [
+            "\"docx\"", "\"docm\"", "\"dotx\"", "\"dotm\"", "\"odt\"", "\"hwp\"", "\"hwpx\"",
+            "DocxReader", "OdtReader", "HwpReader", "OfficeBlock",
+            "case .paragraph", "case .heading", "case .table(", "case .image(",
+        ]
+        for token in forbidden {
+            XCTAssertFalse(source.contains(token),
+                            "RustEngineMeasure.swift must not branch on \(token) — it maps an already-flattened payload only")
+        }
+    }
 }
 #endif

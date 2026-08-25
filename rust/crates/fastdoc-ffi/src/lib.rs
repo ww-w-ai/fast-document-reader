@@ -109,6 +109,14 @@ impl From<swiftshim::font_provider::FontProviderMissing> for FfiFailure {
     }
 }
 
+/// `text_measure::try_measurer`'s typed absence — the same conversion as the font provider's,
+/// for the same reason (S5-02).
+impl From<swiftshim::text_measure::TextMeasurerMissing> for FfiFailure {
+    fn from(error: swiftshim::text_measure::TextMeasurerMissing) -> Self {
+        FfiFailure::new(FfiErrorKind::HostTextMeasurerMissing, error.to_string())
+    }
+}
+
 /// Records a guard's discriminated failure where `fastdoc_take_last_error` retrieves it. The
 /// slot is deliberately last-write-wins (see `ffi_guard::contain`'s doc comment) — a re-entrant
 /// call overwriting it is the existing, pre-S2B contract, not a bug this sprint fixes.
@@ -394,6 +402,80 @@ pub unsafe extern "C" fn fastdoc_office_default_body_font_size(
 /// Frees a string this library returned. Passing anything else is undefined.
 ///
 /// # Safety
+/// The running header (or footer) band height for a document, decided in the engine and measured
+/// through the host's installed text measurer.
+///
+/// Returns a NEGATIVE sentinel when it cannot answer — no measurer installed, the document
+/// unreadable, or a band carrying something whose size the engine does not know. A height is never
+/// negative, so the sentinel cannot be mistaken for an answer, and `fastdoc_take_last_error` names
+/// which case it was. Same shape as `fastdoc_office_default_body_font_size`: a scalar return has
+/// nowhere to put an envelope, so the failure goes where the existing contract already says to look.
+///
+/// # Safety
+/// `bytes`/`len` describe a readable buffer for the duration of the call, and `extension` is a
+/// NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_office_header_band_height(
+    bytes: *const u8,
+    len: usize,
+    extension_: *const c_char,
+    column_width: f64,
+    footer: bool,
+) -> f64 {
+    const CANNOT_ANSWER: f64 = -1.0;
+    clear_last_error();
+    if bytes.is_null() || extension_.is_null() {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return CANNOT_ANSWER;
+    }
+    let data = std::slice::from_raw_parts(bytes, len);
+    let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "extension is not valid UTF-8",
+        ));
+        return CANNOT_ANSWER;
+    };
+    guard_scalar(CANNOT_ANSWER, move || {
+        let result = match read_office(data, extension) {
+            Ok(result) => result,
+            Err(error) => {
+                set_last_error(&FfiFailure::from(error));
+                return CANNOT_ANSWER;
+            }
+        };
+        let theme = fastdoc_engine::render::render_theme::RenderTheme::current(result.default_body_font_size);
+        let empty: Vec<fastdoc_engine::render::office::office_block::OfficeHeaderFooter> = Vec::new();
+        let (headers, footers) = if footer {
+            (empty.as_slice(), result.footers.as_slice())
+        } else {
+            (result.headers.as_slice(), empty.as_slice())
+        };
+        match fastdoc_engine::render::office::page_band_geometry::PageBandGeometry::band_height(
+            headers,
+            footers,
+            &theme,
+            column_width,
+            result.default_body_font_size,
+            None,
+            None,
+            None,
+        ) {
+            Ok(height) => height,
+            Err(error) => {
+                set_last_error(&FfiFailure::new(
+                    FfiErrorKind::HostTextMeasurerMissing,
+                    format!("{error}"),
+                ));
+                CANNOT_ANSWER
+            }
+        }
+    })
+}
+
 /// `s` must be NULL or a pointer this library returned and has not already freed.
 #[no_mangle]
 pub unsafe extern "C" fn fastdoc_string_free(s: *mut c_char) {
@@ -477,6 +559,26 @@ pub unsafe extern "C" fn fastdoc_install_font_provider(
     })
 }
 
+/// Declares the text stack this process measures with (S5-02).
+///
+/// Same one-shot rule as `fastdoc_install_font_provider`: call once, before any ported layout
+/// decision runs. A second call is ignored rather than swapped — two halves of one document
+/// measured against different text stacks is worse than either.
+///
+/// # Safety
+/// `callbacks.measure` must remain valid for the life of the process and must be safe to call
+/// from any thread; see `swiftshim::text_measure`'s module doc for the payload's ownership rule.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_install_text_measurer(
+    callbacks: swiftshim::text_measure::TextMeasureCallbacks,
+) -> bool {
+    // Guarded like every other export — see `fastdoc_install_font_provider`'s own comment for
+    // why this is not merely defensive.
+    guard_scalar(false, move || {
+        swiftshim::text_measure::install_callbacks(callbacks)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,6 +633,60 @@ mod tests {
         assert_eq!(failure.kind, FfiErrorKind::HostFontProviderMissing);
         assert_eq!(failure.kind.tag(), "hostFontProviderMissing");
         assert!(failure.message.contains("no FontProvider installed"));
+    }
+
+    /// S5-02/S5-05, both through this crate's own error vocabulary: absence maps to
+    /// `hostTextMeasurerMissing` before anything is installed, and a callback that re-enters a
+    /// guarded export (the font provider's own hazard, S2B) does not lose the OUTER guarded
+    /// call's failure location. One test, not several — `swiftshim::text_measure`'s `MEASURER`
+    /// is a process-global `OnceLock` shared by every test in this binary, so the absence check
+    /// has to run before the install below, in the same test, the way `font_provider.rs`'s own
+    /// single-test precedent does it.
+    #[test]
+    fn text_measurer_missing_then_a_reentrant_callback_keeps_the_outer_panic_location() {
+        let error = match swiftshim::text_measure::try_measurer() {
+            Err(error) => error,
+            Ok(_) => panic!("no measurer was installed"),
+        };
+        let failure = FfiFailure::from(error);
+        assert_eq!(failure.kind, FfiErrorKind::HostTextMeasurerMissing);
+        assert_eq!(failure.kind.tag(), "hostTextMeasurerMissing");
+        assert!(failure.message.contains("no TextMeasurer installed"));
+
+        // A callback that, when the host calls it, re-enters a GUARDED export and panics —
+        // exactly the shape a real measurement callback has, since a host's text stack can
+        // itself call back into this library. `guard_json`'s own save/restore is what must keep
+        // this inner panic from clobbering the outer one below.
+        extern "C" fn reentrant_measure(
+            _payload: *const swiftshim::text_measure::TextMeasurePayload,
+            _width_points: f64,
+        ) -> f64 {
+            let inner = guard_json(|| -> Result<String, FfiFailure> {
+                panic!("inner panic that must not survive")
+            });
+            assert!(inner.is_null());
+            crate::fastdoc_take_last_error(); // drain it; only the outer diagnostic matters here.
+            0.0
+        }
+        assert!(swiftshim::text_measure::install_callbacks(
+            swiftshim::text_measure::TextMeasureCallbacks { measure: reentrant_measure }
+        ));
+
+        let outer = guard_scalar(-1.0_f64, || -> f64 {
+            let measurer = swiftshim::text_measure::try_measurer().expect("installed above");
+            let resolved = swiftshim::text_measure::ResolvedText::default();
+            let _ = measurer.measure(&resolved, 300.0); // runs the reentrant callback above
+            panic!("outer panic that must survive")
+        });
+        assert_eq!(outer, -1.0, "the documented fallback must still come back");
+
+        let diagnostic = crate::fastdoc_take_last_error();
+        assert!(!diagnostic.is_null());
+        let text = unsafe { CStr::from_ptr(diagnostic) }.to_str().unwrap().to_owned();
+        unsafe { crate::fastdoc_string_free(diagnostic) };
+        assert!(text.contains("outer panic that must survive"), "{text}");
+        assert!(!text.contains("inner panic that must not survive"), "{text}");
+        assert!(text.contains("lib.rs"), "the location must be THIS file's outer panic: {text}");
     }
 
     /// The Design's sentence is "every export goes through one containment core". A sentence is not

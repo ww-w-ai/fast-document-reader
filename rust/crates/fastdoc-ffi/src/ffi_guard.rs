@@ -35,6 +35,7 @@ pub(crate) enum FfiErrorKind {
     InteriorNul,
     Panic,
     HostFontProviderMissing,
+    HostTextMeasurerMissing,
 }
 
 impl FfiErrorKind {
@@ -53,6 +54,7 @@ impl FfiErrorKind {
             Self::InteriorNul => "interiorNul",
             Self::Panic => "panic",
             Self::HostFontProviderMissing => "hostFontProviderMissing",
+            Self::HostTextMeasurerMissing => "hostTextMeasurerMissing",
         }
     }
 }
@@ -299,6 +301,7 @@ mod tests {
             (InteriorNul, "interiorNul"),
             (Panic, "panic"),
             (HostFontProviderMissing, "hostFontProviderMissing"),
+            (HostTextMeasurerMissing, "hostTextMeasurerMissing"),
         ];
         for (kind, expected) in pairs {
             assert_eq!(kind.tag(), expected, "wire tag changed without updating the Swift mirror");

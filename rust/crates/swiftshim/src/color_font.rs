@@ -327,6 +327,25 @@ impl NSFont {
         }
     }
 
+    /// Test-only twin of `for_metrics_test` that also carries a family name and symbolic traits
+    /// — `text_measure.rs`'s tests need a face whose `fontDescriptor().symbolicTraits()` reports
+    /// bold/italic without a real `FontProvider` installed, the same reason the plain version
+    /// above exists. `#[cfg(test)]` keeps this off the real public surface entirely.
+    #[cfg(test)]
+    pub(crate) fn for_metrics_test_with_traits(
+        name: &str,
+        family: &str,
+        size: CGFloat,
+        traits: NSFontDescriptorSymbolicTraits,
+    ) -> Self {
+        NSFont {
+            fontName: name.to_string(),
+            familyName: Some(family.to_string()),
+            pointSize: size,
+            fontDescriptor: NSFontDescriptor::default().withSymbolicTraits(traits),
+        }
+    }
+
     /// swift: `NSFont(name:size:)` — `nil` when this machine has no such font.
     pub fn named(name: &str, size: CGFloat) -> Option<Self> {
         crate::font_provider::provider().face_named(name).map(|face| Self::of_face(face, size))

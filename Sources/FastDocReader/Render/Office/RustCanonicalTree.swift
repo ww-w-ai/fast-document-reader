@@ -47,6 +47,7 @@ struct RustCanonicalError: Equatable {
         case interiorNul
         case panic
         case hostFontProviderMissing
+        case hostTextMeasurerMissing
     }
 
     /// The wire's `kind` string, verbatim — never dropped or rejected for being unrecognised.
