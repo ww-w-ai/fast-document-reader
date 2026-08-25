@@ -4,6 +4,7 @@ pub mod office;
 pub mod render_theme;
 pub mod md_attr;
 pub mod table_block_builder;
+pub mod table_resize_math;
 pub mod grid_text_table_block;
 pub mod markdown;
 pub mod plaintext;

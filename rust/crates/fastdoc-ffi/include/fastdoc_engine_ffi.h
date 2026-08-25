@@ -124,6 +124,34 @@ double fastdoc_office_header_band_height(const unsigned char *bytes, size_t len,
                                          const char *extension, double column_width,
                                          bool footer);
 
+/* One cell's own geometry, mirroring the arithmetic in
+ * Render/TableBlockBuilder.swift:977-988. */
+typedef struct {
+    size_t starting_column;
+    size_t column_span;
+    double pad_left;
+    double pad_right;
+    double border_left;
+    double border_right;
+} FastdocTableResizeCell;
+
+/* S5B2a: the arithmetic behind TableBlockBuilder.resizeTables, one call per table — HOST TO RUST,
+ * the opposite direction from every other export on this page. Fills out_widths[0..cell_count]
+ * with each cells[i]'s target content width and returns true, or leaves out_widths untouched and
+ * returns false on a bad payload (fastdoc_take_last_error names which).
+ *
+ * max_width <= 0.0 means "no authored cap" (a real cap is always a positive point width, so the
+ * sentinel cannot collide with an answer).
+ *
+ * Ownership is inverted from this file's other exports: out_widths is allocated and owned by the
+ * CALLER (at least cell_count doubles), lent for the duration of this call only. Nothing here is
+ * allocated by this library, so there is no fastdoc_*_free counterpart. */
+bool fastdoc_table_resize_cell_widths(const double *column_proportions, size_t column_count,
+                                      double available_width, double outer_margin_left,
+                                      double outer_margin_right, double max_width,
+                                      const FastdocTableResizeCell *cells, size_t cell_count,
+                                      double *out_widths);
+
 void fastdoc_string_free(char *s);
 
 #endif

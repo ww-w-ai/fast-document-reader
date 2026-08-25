@@ -44,6 +44,7 @@ use fastdoc_engine::render::office::{
 };
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
 use ffi_guard::{guard_envelope, guard_json, guard_scalar, FfiErrorKind, FfiFailure};
+use swiftshim::CGFloat;
 use std::collections::BTreeMap;
 use std::ffi::{c_char, CStr, CString};
 use std::{cell::RefCell, fmt};
@@ -474,6 +475,113 @@ pub unsafe extern "C" fn fastdoc_office_header_band_height(
             }
         }
     })
+}
+
+/// One cell's own geometry, mirroring `fastdoc_engine::render::table_resize_math::TableResizeCell`
+/// field for field. `#[repr(C)]` so the layout is exactly what the header declares.
+#[repr(C)]
+pub struct FastdocTableResizeCell {
+    pub starting_column: usize,
+    pub column_span: usize,
+    pub pad_left: CGFloat,
+    pub pad_right: CGFloat,
+    pub border_left: CGFloat,
+    pub border_right: CGFloat,
+}
+
+/// S5B2a: the arithmetic behind `Render/TableBlockBuilder.swift`'s `resizeTables` — one call per
+/// table, HOST TO RUST, the opposite direction from every other export on this page (S5's own
+/// text-measurement port has Rust call a host-installed callback; here the host already holds the
+/// live `NSTextStorage` and calls straight in). Fills `out_widths[0..cell_count]` with each
+/// `cells[i]`'s target content width and returns `true`, or leaves `out_widths` untouched and
+/// returns `false` on a bad payload — `fastdoc_take_last_error` names which.
+///
+/// `max_width <= 0.0` means "no authored cap", matching `edges(forWidth:)`'s own
+/// `guard let maxWidth, maxWidth > 0 else { return width }` — a real authored cap is always a
+/// positive point width, so the sentinel cannot collide with an answer.
+///
+/// Ownership is inverted from this file's other exports: `out_widths` is allocated and owned by
+/// the CALLER (at least `cell_count` `CGFloat`s), lent for the duration of this call only. Nothing
+/// here is allocated by this library, so there is no `fastdoc_*_free` counterpart.
+///
+/// # Safety
+/// `column_proportions`/`column_count` and `cells`/`cell_count` describe readable buffers for the
+/// duration of the call; `out_widths` describes a writable buffer of at least `cell_count`
+/// `CGFloat`s for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_table_resize_cell_widths(
+    column_proportions: *const CGFloat,
+    column_count: usize,
+    available_width: CGFloat,
+    outer_margin_left: CGFloat,
+    outer_margin_right: CGFloat,
+    max_width: CGFloat,
+    cells: *const FastdocTableResizeCell,
+    cell_count: usize,
+    out_widths: *mut CGFloat,
+) -> bool {
+    clear_last_error();
+    if (column_count > 0 && column_proportions.is_null())
+        || (cell_count > 0 && (cells.is_null() || out_widths.is_null()))
+    {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return false;
+    }
+    // `slice::from_raw_parts` requires a non-NULL, aligned pointer even for a zero-length slice —
+    // a NULL/0 pair is valid C (nothing to describe) but undefined Rust, so a zero count skips the
+    // call entirely rather than handing `from_raw_parts` a NULL it would abort on.
+    let column_proportions = if column_count == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(column_proportions, column_count).to_vec()
+    };
+    let cell_inputs: Vec<fastdoc_engine::render::table_resize_math::TableResizeCell> = if cell_count
+        == 0
+    {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(cells, cell_count)
+            .iter()
+            .map(|c| fastdoc_engine::render::table_resize_math::TableResizeCell {
+                starting_column: c.starting_column,
+                column_span: c.column_span,
+                pad_left: c.pad_left,
+                pad_right: c.pad_right,
+                border_left: c.border_left,
+                border_right: c.border_right,
+            })
+            .collect()
+    };
+    let input = fastdoc_engine::render::table_resize_math::TableResizeInput {
+        column_proportions,
+        available_width,
+        outer_margin_left,
+        outer_margin_right,
+        max_width: if max_width > 0.0 { Some(max_width) } else { None },
+        cells: cell_inputs,
+    };
+    let widths: Option<Vec<CGFloat>> = guard_scalar(None, move || {
+        Some(fastdoc_engine::render::table_resize_math::cell_target_widths(&input))
+    });
+    match widths {
+        Some(widths) if widths.len() == cell_count => {
+            if cell_count > 0 {
+                let out = std::slice::from_raw_parts_mut(out_widths, cell_count);
+                out.copy_from_slice(&widths);
+            }
+            true
+        }
+        _ => {
+            set_last_error(&FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "arithmetic failed or returned the wrong cell count",
+            ));
+            false
+        }
+    }
 }
 
 /// `s` must be NULL or a pointer this library returned and has not already freed.
