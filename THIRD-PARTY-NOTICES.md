@@ -25,6 +25,17 @@ Pulled in transitively by swift-markdown. Multi-licensed, with several named hol
   Copyright (c) 2015, Karl Dubost (normalization)
 - https://github.com/swiftlang/swift-cmark
 
+## Rust dependencies (fetched via Cargo)
+
+### comrak v0.54.0 — BSD-2-Clause
+- Copyright (c) 2017-2025, Comrak contributors
+- https://github.com/kivikakk/comrak
+- A direct C-to-Rust port of `cmark-gfm` — the same parser the Swift `swift-markdown` path wraps
+  (see the `swift-cmark` entry above) — used by `crates/fastdoc-engine/src/render/markdown/` to
+  parse `.md`/`.markdown` documents into the canonical `RenderTree`. Built with
+  `default-features = false`; only the parsing/AST library is compiled in, none of the crate's
+  bundled-CLI dependencies (`clap`, `xdg`, `shell-words`).
+
 ## Generated from third-party data
 
 ### Unicode Character Database 17.0.0 — UNICODE LICENSE V3

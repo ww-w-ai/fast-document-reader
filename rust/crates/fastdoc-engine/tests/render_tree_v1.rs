@@ -1,8 +1,8 @@
 use fastdoc_engine::render::render_tree::{
-    resolve_cell_borders, resolve_cell_padding, BorderDeclaration, BorderLineStyle, BorderSet,
-    DecodeError, DocumentFormat, DrawnBorder, Empty, Insets, NodePayload, OptionalInsets,
-    RenderDocumentDraft, RenderNodeDraft, RenderSourceDraft, RenderTreeBuilder, SourceKind,
-    ValidatedRenderTree,
+    resolve_cell_borders, resolve_cell_padding, Alignment, BorderDeclaration, BorderLineStyle,
+    BorderSet, DecodeError, DocumentFormat, DrawnBorder, Empty, Image, Insets, NodePayload,
+    OptionalInsets, RenderDocumentDraft, RenderNodeDraft, RenderResourceDraft, RenderSourceDraft,
+    RenderTreeBuilder, Size, SourceKind, ValidatedRenderTree,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -561,6 +561,125 @@ fn s2a1b_fixture_exercises_every_new_run_paragraph_and_list_field_shape() {
             "fixture field absent: {pointer}"
         );
     }
+}
+
+/// Index of the fixture's one `image` node, found by tag rather than a hardcoded position so a
+/// future fixture reorder does not silently point these tests at the wrong node.
+fn image_node_index(fixture: &Value) -> usize {
+    fixture["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|n| n["type"] == "image")
+        .expect("fixture has no image node")
+}
+
+#[test]
+fn image_display_size_and_display_width_fraction_are_mutually_exclusive() {
+    let mut value = exhaustive_value();
+    let index = image_node_index(&value);
+    // The fixture's image already has `displaySize` set; adding `displayWidthFraction` beside
+    // it must be rejected.
+    value["nodes"][index]["data"]["displayWidthFraction"] = 0.5.into();
+    let error = decode_value(&value).unwrap_err();
+    let detail = error.detail();
+    assert!(detail.contains("displaySize"), "detail: {detail}");
+    assert!(detail.contains("displayWidthFraction"), "detail: {detail}");
+}
+
+/// Builds a minimal one-image tree through the public typed builder (same construction pattern
+/// as `public_typed_builder_uses_the_same_checked_canonicalization`), so out-of-range fractions —
+/// including NaN and infinity, which JSON cannot even represent as a bare number — reach
+/// `validate.rs`'s `is_finite()` check directly instead of being rejected earlier by JSON syntax.
+fn build_with_image_fraction(fraction: Option<f64>) -> Result<ValidatedRenderTree, DecodeError> {
+    let document = RenderDocumentDraft {
+        format: DocumentFormat::PlainText,
+        editable: false,
+        root_node_id: 1,
+        source_ids: vec![],
+        default_locale: None,
+    };
+    let mut builder = RenderTreeBuilder::new("image-fraction-test", document);
+    builder.add_resource(RenderResourceDraft {
+        id: 1,
+        mime_type: "image/png".into(),
+        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
+        byte_length: 0,
+        bytes_base64: String::new(),
+        intrinsic_size: None,
+    });
+    builder.add_node(RenderNodeDraft {
+        id: 1,
+        parent_id: None,
+        children: vec![2],
+        source_spans: vec![],
+        edit: None,
+        payload: NodePayload::Document(Empty {}),
+    });
+    builder.add_node(RenderNodeDraft {
+        id: 2,
+        parent_id: Some(1),
+        children: vec![],
+        source_spans: vec![],
+        edit: None,
+        payload: NodePayload::Image(Image {
+            resource_id: 1,
+            intrinsic_size: Size {
+                width: 10.0,
+                height: 10.0,
+            },
+            display_size: None,
+            display_width_fraction: fraction,
+            alignment: Alignment::Natural,
+            alt_text: None,
+        }),
+    });
+    builder.build()
+}
+
+#[test]
+fn image_display_width_fraction_out_of_range_is_rejected() {
+    for fraction in [0.0, -0.1, 1.5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let result = build_with_image_fraction(Some(fraction));
+        assert!(
+            result.is_err(),
+            "fraction {fraction} should have been rejected"
+        );
+    }
+}
+
+#[test]
+fn image_display_width_fraction_round_trips_when_display_size_is_absent() {
+    let mut value = exhaustive_value();
+    let index = image_node_index(&value);
+    value["nodes"][index]["data"]["displaySize"] = Value::Null;
+    value["nodes"][index]["data"]["displayWidthFraction"] = 0.5.into();
+    let tree = decode_value(&value).expect("0.5 is a valid fraction");
+    let encoded: Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+    let node_index = image_node_index(&encoded);
+    assert_eq!(
+        encoded["nodes"][node_index]["data"]["displayWidthFraction"],
+        0.5
+    );
+    assert!(encoded["nodes"][node_index]["data"]["displaySize"].is_null());
+}
+
+#[test]
+fn image_without_display_width_fraction_key_decodes_to_none() {
+    // The exhaustive fixture predates this field and has no `displayWidthFraction` key at all —
+    // it must still decode (backward compatibility), defaulting the field to absent.
+    let value = exhaustive_value();
+    let index = image_node_index(&value);
+    assert!(
+        value["nodes"][index]["data"]
+            .get("displayWidthFraction")
+            .is_none(),
+        "fixture must not carry this key, or this test proves nothing"
+    );
+    let tree = decode_value(&value).expect("fixture without displayWidthFraction still decodes");
+    let encoded: Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+    let node_index = image_node_index(&encoded);
+    assert!(encoded["nodes"][node_index]["data"]["displayWidthFraction"].is_null());
 }
 
 #[test]

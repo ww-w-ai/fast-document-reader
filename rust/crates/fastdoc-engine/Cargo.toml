@@ -23,3 +23,12 @@ flate2 = { workspace = true }
 base64 = "0.22"
 sha2 = "0.10"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }
+
+# The shipping Swift path (`swift-markdown`) is cmark-gfm itself; comrak is a direct C-to-Rust port
+# of that same parser (652/652 CommonMark + 670/670 GFM spec cases), so parity risk starts lower
+# than an independent implementation could. `default-features = false` keeps this a LIBRARY
+# dependency only — comrak's default features pull in `clap`/`xdg`/`shell-words` for its bundled
+# CLI binary, none of which this crate builds or ships (`cargo tree -p fastdoc-engine` confirms no
+# CLI-only crate is present). GFM extensions (tables, task lists, strikethrough) are enabled at
+# call time via `ComrakExtensionOptions`, not through a Cargo feature.
+comrak = { version = "0.54.0", default-features = false }

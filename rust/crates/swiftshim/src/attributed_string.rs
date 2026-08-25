@@ -220,8 +220,8 @@ impl NSMutableAttributedString {
 
     /// swift: `NSMutableAttributedString(attributedString:)` — same reasoning as
     /// `with_attributes` above: a Swift initializer label list, not a name to mirror, so
-    /// snake_case per convention's Rust-only-constructor clause. Found missing during S12
-    /// verification (markdown_renderer.rs:846,898,1344,1513 all call it).
+    /// snake_case per convention's Rust-only-constructor clause. Its callers are in
+    /// `render/office/office_text_builder.rs`.
     pub fn from_attributed_string(other: &NSAttributedString) -> Self {
         Self {
             inner: other.clone(),
@@ -380,7 +380,7 @@ impl NSMutableAttributedString {
     }
 
     /// swift: `NSMutableAttributedString(attachment:)` — same initializer as `from_attachment`
-    /// above, under the name markdown_renderer.rs's call sites use.
+    /// above, under the name the office text builder's call sites use.
     pub fn with_attachment(attachment: NSTextAttachment) -> Self {
         Self::from_attachment(&attachment)
     }

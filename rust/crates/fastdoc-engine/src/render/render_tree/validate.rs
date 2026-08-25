@@ -228,6 +228,13 @@ fn validate_nodes(
             return Err(invalid("bookmark target is missing"));
         }
     }
+    // Built once for the whole tree, not once per span — see `Utf16Index`.
+    let utf16_indexes: BTreeMap<u64, Utf16Index> = sources
+        .iter()
+        .filter_map(|(id, source)| {
+            source.text_content.as_ref().map(|text| (*id, Utf16Index::build(text)))
+        })
+        .collect();
     for node in &tree.nodes {
         let unique: BTreeSet<_> = node.children.iter().copied().collect();
         if unique.len() != node.children.len() {
@@ -250,7 +257,7 @@ fn validate_nodes(
             }
             validate_parent_kind(node, parent)?;
         }
-        validate_spans(tree, node, sources)?;
+        validate_spans(tree, node, sources, &utf16_indexes)?;
         validate_payload(node, &map, resources, comments, bookmarks)?;
     }
     let mut cycle_visited = BTreeSet::new();
@@ -314,6 +321,7 @@ fn validate_spans(
     tree: &wire::EnvelopeV1,
     node: &wire::Node,
     sources: &BTreeMap<u64, &wire::SourceDescriptor>,
+    utf16: &BTreeMap<u64, Utf16Index>,
 ) -> Result<(), DecodeError> {
     let mut editable_text = String::new();
     let mut editable_source = None;
@@ -370,8 +378,11 @@ fn validate_spans(
                     {
                         return Err(invalid("UTF-8 source range is invalid"));
                     }
-                    if utf16_offset(text, a) != Some(*utf16_start)
-                        || utf16_offset(text, b) != Some(*utf16_end)
+                    let index = utf16
+                        .get(&span.source_id)
+                        .ok_or_else(|| invalid("text range targets binary source"))?;
+                    if index.offset(text, a) != Some(*utf16_start)
+                        || index.offset(text, b) != Some(*utf16_end)
                     {
                         return Err(invalid("UTF-16 source range is invalid"));
                     }
@@ -428,9 +439,52 @@ fn validate_spans(
     Ok(())
 }
 
-fn utf16_offset(text: &str, byte: usize) -> Option<u64> {
-    text.is_char_boundary(byte)
-        .then(|| text[..byte].encode_utf16().count() as u64)
+/// UTF-16 offsets for one source text, answered without rescanning the document.
+///
+/// The obvious implementation — `text[..byte].encode_utf16().count()` — walks from the start of the
+/// WHOLE document for every endpoint it is asked about. That is invisible while nothing emits
+/// source spans (the office adapter emits none), and quadratic the moment something does: the
+/// markdown producer's first real document, a 1.2 MB novel, spent 2.1s here, and halving the input
+/// quartered the time — the signature of O(n^2).
+///
+/// So the text is walked ONCE, recording (byte, utf16) checkpoints, and a query resumes from the
+/// nearest checkpoint at or before it. Build is O(n); a query costs at most the distance to the
+/// previous checkpoint.
+struct Utf16Index {
+    checkpoints: Vec<(usize, u64)>,
+}
+
+impl Utf16Index {
+    /// One checkpoint per this many bytes. Small enough that a query scans a short tail, large
+    /// enough that the table stays a rounding error beside the text it indexes.
+    const STRIDE: usize = 1024;
+
+    fn build(text: &str) -> Self {
+        let mut checkpoints = vec![(0usize, 0u64)];
+        let mut utf16 = 0u64;
+        let mut next_at = Self::STRIDE;
+        for (byte, ch) in text.char_indices() {
+            if byte >= next_at {
+                checkpoints.push((byte, utf16));
+                next_at = byte + Self::STRIDE;
+            }
+            utf16 += ch.len_utf16() as u64;
+        }
+        Self { checkpoints }
+    }
+
+    fn offset(&self, text: &str, byte: usize) -> Option<u64> {
+        if !text.is_char_boundary(byte) {
+            return None;
+        }
+        let idx = match self.checkpoints.binary_search_by_key(&byte, |(b, _)| *b) {
+            Ok(i) => i,
+            Err(0) => return None,
+            Err(i) => i - 1,
+        };
+        let (start_byte, start_utf16) = self.checkpoints[idx];
+        Some(start_utf16 + text[start_byte..byte].encode_utf16().count() as u64)
+    }
 }
 
 fn node_text(payload: &wire::NodePayload) -> Option<&str> {
@@ -550,6 +604,16 @@ fn validate_payload(
                 || v.display_size.as_ref().is_some_and(|s| !valid_size(s))
             {
                 return Err(invalid("image size is invalid"));
+            }
+            if v.display_size.is_some() && v.display_width_fraction.is_some() {
+                return Err(invalid(
+                    "image displaySize and displayWidthFraction are mutually exclusive",
+                ));
+            }
+            if let Some(fraction) = v.display_width_fraction {
+                if !(fraction.is_finite() && fraction > 0.0 && fraction <= 1.0) {
+                    return Err(invalid("image displayWidthFraction is out of range"));
+                }
             }
         }
         P::Vector(v) => {
@@ -1309,4 +1373,47 @@ fn validate_table(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod utf16_index_tests {
+    use super::Utf16Index;
+
+    /// The naive form this index replaced. Kept only here, as the thing the fast path is measured
+    /// against — a faster answer that is a different answer is not an optimisation.
+    fn naive(text: &str, byte: usize) -> Option<u64> {
+        text.is_char_boundary(byte)
+            .then(|| text[..byte].encode_utf16().count() as u64)
+    }
+
+    #[test]
+    fn the_checkpointed_index_answers_exactly_what_the_naive_scan_would() {
+        // Long enough to cross several checkpoints, and mixed so that byte, char and UTF-16 counts
+        // all disagree: ASCII is 1/1/1, Korean is 3 bytes and 1 unit, an emoji is 4 bytes and TWO
+        // UTF-16 units. An index that quietly counted characters would pass on ASCII alone.
+        let unit = "ascii 한국어 🎉 mixed\n";
+        let text: String = unit.repeat(600);
+        let index = Utf16Index::build(&text);
+
+        let mut checked = 0;
+        for (byte, _) in text.char_indices() {
+            assert_eq!(
+                index.offset(&text, byte),
+                naive(&text, byte),
+                "disagreed at byte {byte}"
+            );
+            checked += 1;
+        }
+        assert_eq!(index.offset(&text, text.len()), naive(&text, text.len()));
+        assert!(checked > 4_000, "the fixture was too small to cross checkpoints");
+    }
+
+    #[test]
+    fn a_byte_that_is_not_a_char_boundary_has_no_offset() {
+        let text = "한";
+        let index = Utf16Index::build(text);
+        assert_eq!(index.offset(text, 1), None);
+        assert_eq!(index.offset(text, 2), None);
+        assert_eq!(index.offset(text, 3), Some(1));
+    }
 }

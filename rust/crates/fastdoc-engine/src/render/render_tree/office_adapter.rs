@@ -872,6 +872,9 @@ impl<'a> Ctx<'a> {
             resource_id,
             intrinsic_size: intrinsic,
             display_size: None,
+            // Office formats have no percent-of-column width declaration; only markdown's `%`
+            // syntax sets this.
+            display_width_fraction: None,
             alignment: alignment.map(convert_alignment).unwrap_or(wire::Alignment::Natural),
             alt_text: None,
         }))

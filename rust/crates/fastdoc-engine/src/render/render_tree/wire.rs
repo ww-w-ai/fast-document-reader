@@ -683,6 +683,12 @@ pub struct Image {
     pub resource_id: u64,
     pub intrinsic_size: Size,
     pub display_size: Option<Size>,
+    /// A document-declared width as a fraction of the reading column (e.g. `50%`), carried
+    /// verbatim — never converted to points here, since that conversion needs the column width,
+    /// which is S5's concern, not the wire schema's. Mutually exclusive with `display_size`
+    /// (`validate.rs` rejects both being set).
+    #[serde(default)]
+    pub display_width_fraction: Option<f64>,
     pub alignment: Alignment,
     pub alt_text: Option<String>,
 }
