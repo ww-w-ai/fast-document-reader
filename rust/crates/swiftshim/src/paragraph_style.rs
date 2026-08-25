@@ -7,6 +7,7 @@
 //! `.maximumLineHeight`, `.baseWritingDirection`, `.lineBreakMode`, `.defaultTabInterval`.
 
 use crate::geometry::CGFloat;
+use crate::text_table::NSTextTableBlock;
 
 /// swift: NSTextAlignment
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -139,6 +140,10 @@ pub struct NSParagraphStyle {
     pub maximumLineHeight: CGFloat,
     pub baseWritingDirection: NSWritingDirection,
     pub lineBreakMode: NSLineBreakMode,
+    /// swift: `.textBlocks` — the table-cell chain a paragraph belongs to; a nested cell (a cell
+    /// inside a cell) carries more than one, innermost last, which is the whole reason this is a
+    /// `Vec` rather than a single optional block.
+    pub textBlocks: Vec<NSTextTableBlock>,
 }
 
 impl Default for NSParagraphStyle {
@@ -159,9 +164,55 @@ impl Default for NSParagraphStyle {
             maximumLineHeight: 0.0,
             baseWritingDirection: NSWritingDirection::default(),
             lineBreakMode: NSLineBreakMode::default(),
+            textBlocks: Vec::new(),
         }
     }
 }
 
 /// swift: NSMutableParagraphStyle
 pub type NSMutableParagraphStyle = NSParagraphStyle;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::text_table::{NSTextBlock, NSTextTable, NSTextTableBlock};
+
+    /// swift: `paragraphStyle.textBlocks = [outer, inner]` then reading it back — a cell nested
+    /// inside a cell (S5B1-01) carries more than one block, innermost last, which is the whole
+    /// reason `textBlocks` is a `Vec` rather than a single optional field. If a round trip drops
+    /// or reorders either block, this fails.
+    #[test]
+    fn text_blocks_round_trips_two_nested_blocks() {
+        let outer_table = NSTextTable::new();
+        let outer_block = NSTextTableBlock {
+            base: NSTextBlock::new(),
+            table: outer_table,
+            startingRow: 0,
+            rowSpan: 1,
+            startingColumn: 0,
+            columnSpan: 1,
+        };
+        let inner_table = NSTextTable::new();
+        let inner_block = NSTextTableBlock {
+            base: NSTextBlock::new(),
+            table: inner_table,
+            startingRow: 0,
+            rowSpan: 1,
+            startingColumn: 1,
+            columnSpan: 1,
+        };
+
+        let style = NSMutableParagraphStyle {
+            textBlocks: vec![outer_block.clone(), inner_block.clone()],
+            ..Default::default()
+        };
+
+        assert_eq!(style.textBlocks.len(), 2);
+        assert_eq!(style.textBlocks[0], outer_block);
+        assert_eq!(style.textBlocks[1], inner_block);
+
+        // A style with no table membership at all is the common case (most paragraphs are not
+        // inside a cell) and must stay distinguishable from one that is.
+        assert!(NSParagraphStyle::default().textBlocks.is_empty());
+    }
+}

@@ -37,7 +37,7 @@ pub enum NSTextBlockLayer {
     Margin,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct EdgeValues<T: Copy + Default> {
     minX: T,
     maxX: T,
@@ -66,7 +66,7 @@ impl<T: Copy + Default> EdgeValues<T> {
 
 /// swift: NSTextBlock — the abstract base `NSTextTableBlock` inherits from. Kept concrete here
 /// (rather than a trait) since the reader never subclasses it directly, only `NSTextTableBlock`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct NSTextBlock {
     widths: EdgeValues<CGFloat>,
     width_types: EdgeValues<Option<NSTextBlockValueType>>,
@@ -216,7 +216,7 @@ pub enum NSTextBlockVerticalAlignment {
 
 /// swift: NSTextTableBlock — a cell: a fixed (row, column) position plus row/column span into
 /// its owning `NSTextTable`. `GridTextTableBlock` (in scope) subclasses this.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NSTextTableBlock {
     pub base: NSTextBlock,
     pub table: NSTextTable,
@@ -290,7 +290,7 @@ impl std::ops::DerefMut for NSTextTableBlock {
 /// type's `Deref` doc comment for why this has its own `base` field rather than sharing
 /// `NSTextTableBlock`'s (siblings, not parent/child) and what `Deref` does and does not give it
 /// (no virtual dispatch).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct NSTextTable {
     base: NSTextBlock,
     pub numberOfColumns: i32,

@@ -28,8 +28,9 @@
 use std::collections::{HashMap, HashSet};
 
 use swiftshim::{
-    CGFloat, NSAttributedString, NSAttributedStringKey, NSColor, NSImage, NSLayoutManager,
-    NSMutableAttributedString, NSRange, NSRectEdge, NSTextStorage, NSTextTable, NSTextTableBlock,
+    AttrValue, CGFloat, NSAttributedString, NSAttributedStringKey, NSColor, NSImage,
+    NSLayoutManager, NSMutableAttributedString, NSMutableParagraphStyle, NSRange, NSRectEdge,
+    NSTextStorage, NSTextTable, NSTextTableBlock,
 };
 
 use crate::render::grid_text_table_block::GridTextTableBlock;
@@ -1100,18 +1101,45 @@ impl TableBlockBuilder {
             //     cellStr.addAttribute(.paragraphStyle, value: ps, range: range)
             // }
             //
-            // Needs a mutable-while-enumerating pass over `cellStr`'s own paragraph-style runs — the
-            // enumeration primitive exists (`NSAttributedString::enumerate_attribute`), but the
-            // `NSParagraphStyle` -> `NSMutableParagraphStyle` copy-and-mutate step needs the
-            // `paragraph_style` shim module `attributed_string.rs` already forward-references and
-            // does not exist yet.
-            let _ = &whole;
-            let _ = &block;
+            // Collected first, applied after — mutating the attributes being enumerated is
+            // undefined (same rule `FontSubstitutionResolver`'s two enumerate/apply passes
+            // follow). Every run that carries a `.paragraphStyle` at all gets the table block
+            // appended to whatever chain it already had (empty for a plain cell, non-empty for a
+            // cell nested inside another cell's own graft).
+            //
+            // `setAttributes` at the run's OWN exact range, not `addAttribute`: this shim's
+            // `NSMutableAttributedString` has no live TextKit storage to update the run
+            // in place, so a second `addAttribute` for the same key at the same range is a
+            // SECOND entry, and this crate's `attribute()`/`paragraph_style_at()` resolve the
+            // FIRST entry that matches a position — the freshly grafted style would be shadowed
+            // by the one it was meant to replace. Re-stating the run's full attribute set (this
+            // synthetic run's own attrs with only `.paragraphStyle` swapped) through
+            // `setAttributes` retires the stale entry and keeps every other attribute the run
+            // already carried (font, colour, …) rather than dropping them.
             let block_ref: NSTextTableBlock = block.base.clone();
-            todo!("swift:811-816 cellStr.enumerateAttribute(.paragraphStyle) — needs NSMutableParagraphStyle (paragraph_style shim, not yet added)");
-            #[allow(unreachable_code)]
+            let mut grafts: Vec<(NSRange, HashMap<NSAttributedStringKey, AttrValue>)> = Vec::new();
+            cell_str.asAttributedString().enumerateAttribute(
+                &NSAttributedStringKey::ParagraphStyle,
+                whole,
+                |value, range, _stop| {
+                    let mut style = match value {
+                        Some(AttrValue::ParagraphStyle(existing)) => existing.clone(),
+                        _ => NSMutableParagraphStyle::default(),
+                    };
+                    style.textBlocks.push(block_ref.clone());
+                    let mut attrs = cell_str
+                        .asAttributedString()
+                        .attributesAt(range.location)
+                        .cloned()
+                        .unwrap_or_default();
+                    attrs.insert(NSAttributedStringKey::ParagraphStyle, AttrValue::ParagraphStyle(style));
+                    grafts.push((range, attrs));
+                },
+            );
+            for (range, attrs) in grafts {
+                cell_str.setAttributes(attrs, range);
+            }
             result.append(&cell_str.asAttributedString().clone());
-            let _ = block_ref;
         }
         // swift: Render/TableBlockBuilder.swift:819-822
         // A trailing paragraph with NO table block closes the table (else the next document content
