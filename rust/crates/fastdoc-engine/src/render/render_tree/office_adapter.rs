@@ -238,6 +238,11 @@ pub(super) fn from_office(
         root_node_id: root_id,
         source_ids: vec![],
         default_locale: None,
+        declared_faces: result
+            .declared_faces
+            .iter()
+            .map(|(name, face)| (name.to_string(), face.clone()))
+            .collect(),
     };
     let mut builder = RenderTreeBuilder::new("fastdoc-office-adapter", document);
 
@@ -615,6 +620,7 @@ impl<'a> Ctx<'a> {
             byte_length: bytes.len() as u64,
             bytes_base64,
             intrinsic_size: intrinsic,
+            source_key: Some(key.to_string()),
         });
         self.resource_by_key.insert(key.to_string(), id);
         self.resource_by_hash.insert(hash, id);
@@ -852,7 +858,7 @@ impl<'a> Ctx<'a> {
         alignment: Option<NSTextAlignment>,
     ) -> Result<wire::NodePayload, OfficeAdapterError> {
         if let Some(graphic) = self.vector_graphics.get(id_key).cloned() {
-            return Ok(self.map_vector(&graphic, alignment));
+            return Ok(self.map_vector(&graphic, id_key, alignment));
         }
         self.map_image(id_key, size, alignment)
     }
@@ -888,6 +894,7 @@ impl<'a> Ctx<'a> {
     fn map_vector(
         &mut self,
         graphic: &VectorGraphic,
+        id_key: &SwiftString,
         alignment: Option<NSTextAlignment>,
     ) -> wire::NodePayload {
         let intrinsic = wire::Size {
@@ -901,6 +908,7 @@ impl<'a> Ctx<'a> {
             intrinsic_size: intrinsic,
             display_size: None,
             alignment: alignment.map(convert_alignment).unwrap_or(wire::Alignment::Natural),
+            source_key: Some(id_key.as_str().to_string()),
         })
     }
 

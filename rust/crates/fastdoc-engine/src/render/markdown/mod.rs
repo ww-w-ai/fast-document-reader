@@ -170,6 +170,7 @@ impl<'a> Ctx<'a> {
             byte_length: bytes.len() as u64,
             bytes_base64,
             intrinsic_size: None,
+            source_key: None,
         });
         self.resource_by_key.insert(src.to_string(), id);
         self.resource_by_hash.insert(hash, id);
@@ -219,6 +220,7 @@ pub fn produce(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, M
         root_node_id: doc_id,
         source_ids: vec![],
         default_locale: None,
+        declared_faces: std::collections::BTreeMap::new(),
     };
     let mut builder = RenderTreeBuilder::new("fastdoc-markdown-producer", document);
 

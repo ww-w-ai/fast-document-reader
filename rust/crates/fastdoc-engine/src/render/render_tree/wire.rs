@@ -101,6 +101,14 @@ pub struct Document {
     pub source_ids: Vec<u64>,
     #[serde(default)]
     pub default_locale: Option<String>,
+    /// The document's own font table — what it declared about each face it names, format-neutral
+    /// (`DeclaredFace`). schema-v4's `declared_faces` is keyed by the same face name this map uses.
+    /// `BTreeMap` rather than `HashMap`: the tree is a canonical artifact this sprint's oracle
+    /// compares by parsed JSON value, and a deterministic key order keeps that comparison (and any
+    /// eyeballed diff of the wire JSON) from depending on hash iteration order.
+    /// `#[serde(default)]`: existing golden fixtures predate this field and carry none.
+    #[serde(default)]
+    pub declared_faces: std::collections::BTreeMap<String, crate::render::office::declared_font_kind::DeclaredFace>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -724,6 +732,11 @@ pub struct Vector {
     pub intrinsic_size: Size,
     pub display_size: Option<Size>,
     pub alignment: Alignment,
+    /// The id the document itself used for this graphic (`"hwpimg:3"`, a docx `rId`) — schema-v4
+    /// keys `vector_graphics` by this string, not by the wire's own sequential node/resource ids.
+    /// `None` for a producer (markdown) whose document never declared such a key.
+    #[serde(default)]
+    pub source_key: Option<String>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -791,6 +804,11 @@ pub struct Resource {
     pub byte_length: u64,
     pub bytes_base64: String,
     pub intrinsic_size: Option<Size>,
+    /// The id the document itself used for this resource (`"hwpimg:3"`, a docx `rId`) —
+    /// schema-v4's `images` map is keyed by this string, not by `id`. `None` for a producer
+    /// (markdown) whose document never declared such a key.
+    #[serde(default)]
+    pub source_key: Option<String>,
 }
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

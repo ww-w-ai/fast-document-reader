@@ -181,6 +181,7 @@ pub fn produce(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, P
         root_node_id: doc_id,
         source_ids: vec![],
         default_locale: None,
+        declared_faces: std::collections::BTreeMap::new(),
     };
     let mut builder = RenderTreeBuilder::new("fastdoc-plaintext-producer", document);
 

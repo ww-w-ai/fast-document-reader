@@ -451,6 +451,7 @@ fn public_typed_builder_uses_the_same_checked_canonicalization() {
         root_node_id: 1,
         source_ids: vec![],
         default_locale: None,
+        declared_faces: Default::default(),
     };
     let mut builder = RenderTreeBuilder::new("builder-test", document);
     builder.add_source(RenderSourceDraft {
@@ -598,6 +599,7 @@ fn build_with_image_fraction(fraction: Option<f64>) -> Result<ValidatedRenderTre
         root_node_id: 1,
         source_ids: vec![],
         default_locale: None,
+        declared_faces: Default::default(),
     };
     let mut builder = RenderTreeBuilder::new("image-fraction-test", document);
     builder.add_resource(RenderResourceDraft {
@@ -607,6 +609,7 @@ fn build_with_image_fraction(fraction: Option<f64>) -> Result<ValidatedRenderTre
         byte_length: 0,
         bytes_base64: String::new(),
         intrinsic_size: None,
+        source_key: None,
     });
     builder.add_node(RenderNodeDraft {
         id: 1,

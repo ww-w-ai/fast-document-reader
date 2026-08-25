@@ -39,7 +39,8 @@ mod ffi_guard;
 use fastdoc_engine::render::office::hwp_reader::mapping::HwpReader;
 use fastdoc_engine::render::office::{
     docx_reader::DocxReader, odt_reader::OdtReader, office_block::OfficeReadResult,
-    office_markdown_serializer::OfficeMarkdownSerializer, zip_archive::ZipArchive,
+    office_markdown_serializer::OfficeMarkdownSerializer, office_project, projection_ledger,
+    zip_archive::ZipArchive,
 };
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
 use ffi_guard::{guard_envelope, guard_json, guard_scalar, FfiErrorKind, FfiFailure};
@@ -184,6 +185,17 @@ pub unsafe extern "C" fn fastdoc_extract_markdown(
 /// intact — one carrying decoded pictures or a resolved face — because a host that received it
 /// silently short those things would render a plausible, wrong document.
 ///
+/// S4-07: the bytes this export returns now come from `ValidatedRenderTree::from_office` →
+/// `office_project::project` FIRST — the tree path, proven equal to the reader path over the
+/// registered fixtures by S4-02's oracle. Only when a document cannot cross the tree (a refusal
+/// at either stage) does this fall back to the reader's own
+/// `office_export::to_json(&OfficeReadResult)`, exactly as it returned before this sprint. The
+/// fallback is never silent: `projection_ledger::record` names the document and the refusal kind
+/// before the reader path runs, so S4-05's ledger and S4-03's census can be cross-checked against
+/// each other. The return SHAPE — a bare JSON string, NULL on genuine failure — is unchanged: a
+/// host reading this export cannot tell which branch produced its bytes, by design (that is what
+/// "one door" means for S4-07).
+///
 /// # Safety
 /// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
 #[no_mangle]
@@ -212,10 +224,59 @@ pub unsafe extern "C" fn fastdoc_read_office_json(
     // this closure just has to produce the string.
     guard_json(move || {
         let result = read_office(data, extension).map_err(FfiFailure::from)?;
-        fastdoc_engine::render::office::office_export::to_json(&result).map_err(|error| {
-            FfiFailure::from(ReadOfficeError::Export(format!("{error:?}")))
-        })
+        let source_name = format!("document.{extension}");
+        project_or_fall_back(extension, &source_name, data, &result)
     })
+}
+
+/// The pipeline S4-07's design names: `from_office` → `project` on success, a recorded fallback to
+/// `to_json(&result)` on either stage's refusal. Split out of `fastdoc_read_office_json` so the
+/// two failure directions this sprint must not change — "already worked, still works" and
+/// "already failed, still fails the same way" — are each one `match` arm, not entangled in the
+/// unsafe FFI wrapper.
+fn project_or_fall_back(
+    extension: &str,
+    source_name: &str,
+    source_bytes: &[u8],
+    result: &OfficeReadResult,
+) -> Result<String, FfiFailure> {
+    let format = document_format(extension).map_err(FfiFailure::from)?;
+    let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
+        format,
+        source_name,
+        source_bytes,
+        result,
+        resources: BTreeMap::new(),
+    });
+    match tree {
+        Ok(tree) => match office_project::project(&tree) {
+            Ok(projected) => Ok(projected),
+            Err(error) => {
+                projection_ledger::record(
+                    source_name,
+                    projection_ledger::projection_error_kind(&error),
+                    error.description(),
+                );
+                fall_back_to_reader(result)
+            }
+        },
+        Err(error) => {
+            projection_ledger::record(
+                source_name,
+                projection_ledger::adapter_error_kind(&error),
+                format!("{error:?}"),
+            );
+            fall_back_to_reader(result)
+        }
+    }
+}
+
+/// The unchanged path: `office_export::to_json(&OfficeReadResult)`, exactly as
+/// `fastdoc_read_office_json` called it before S4-07 — this function exists only so the fallback
+/// is spelled once, from both refusal sites above.
+fn fall_back_to_reader(result: &OfficeReadResult) -> Result<String, FfiFailure> {
+    fastdoc_engine::render::office::office_export::to_json(result)
+        .map_err(|error| FfiFailure::from(ReadOfficeError::Export(format!("{error:?}"))))
 }
 
 /// Reads an office document into the canonical `ValidatedRenderTree` wire form (S2B-03) and

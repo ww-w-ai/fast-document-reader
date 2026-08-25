@@ -235,14 +235,16 @@ pub(crate) fn account_office_read_result(
         ledger.record(derived(key))?;
     }
 
-    // Both of these are consumed BEFORE canonicalization and survive inside the runs: the font
-    // substitution pass resolves the declared face table into each run's own families, and the
-    // document default is what every run's absolute size is resolved against. The tree carries the
-    // resolved answer, so nothing is lost — but the source shape is not the canonical shape.
+    // Consumed BEFORE canonicalization and survives inside the runs: the font substitution pass
+    // resolves this into each run's own family, and the document default is what every run's
+    // absolute size is resolved against. The tree carries the resolved answer, so nothing is
+    // lost — but the source shape is not the canonical shape.
     let _ = default_body_font_size;
     ledger.record(derived("OfficeReadResult.default_body_font_size"))?;
+    // Carried onto `wire::Document.declared_faces`, keyed by the same face name, with no
+    // reshaping — the office adapter copies this table across unchanged.
     let _ = declared_faces;
-    ledger.record(derived("OfficeReadResult.declared_faces"))?;
+    ledger.record(mapped("OfficeReadResult.declared_faces"))?;
 
     // Straight to `Paper`, beside the margins the same section already carries.
     let _ = page_header_distance;
@@ -603,7 +605,7 @@ mod tests {
             ("OfficeReadResult.page_margin_bottom", Derived),
             ("OfficeReadResult.section_start_blocks", Derived),
             ("OfficeReadResult.default_body_font_size", Derived),
-            ("OfficeReadResult.declared_faces", Derived),
+            ("OfficeReadResult.declared_faces", Mapped),
             ("OfficeReadResult.page_header_distance", Mapped),
             ("OfficeReadResult.page_footer_distance", Mapped),
             ("OfficeReadResult.master_pages", Refused),
