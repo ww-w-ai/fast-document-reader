@@ -124,6 +124,46 @@ double fastdoc_office_header_band_height(const unsigned char *bytes, size_t len,
                                          const char *extension, double column_width,
                                          bool footer);
 
+/* S5C1-01: an opaque handle to a document the engine has already read, so the three sprints after
+ * this one (sheet placement, the 바탕쪽, the footnote band) can ask it more than one question
+ * without paying the read cost again. Opaque — the host holds only the pointer. */
+typedef struct FastdocOfficeDocument FastdocOfficeDocument;
+
+/* Reads an office document ONCE and returns a handle every later query borrows, or NULL on a
+ * document this engine cannot read (fastdoc_take_last_error names why — the SAME read_office
+ * failure this file's other exports already report). */
+FastdocOfficeDocument *fastdoc_office_open(const unsigned char *bytes, size_t len,
+                                           const char *extension);
+
+/* Closes a handle fastdoc_office_open returned. NULL is a no-op. Closing a handle twice, or
+ * querying one after it is closed, is undefined behaviour — the same statement this file's module
+ * doc already makes for a double-freed string, extended to this second owned resource. */
+void fastdoc_office_close(FastdocOfficeDocument *handle);
+
+/* S5C1-02: the band query re-expressed over an open handle — the engine's own decision for a
+ * document's running header, footer AND combined band, in one call, from a document it already
+ * holds rather than one it re-reads.
+ *
+ * The three page values are OPTIONAL in the same sense the host's own page-geometry model treats
+ * them: each carries an explicit has_* flag rather than folding "absent" into the value itself, so
+ * a value the host actually passed can never be confused with one it did not. headers_on/
+ * footers_on mirror the host's own page-view toggles — off is passed through as NO ENTRIES, not a
+ * flag the engine reinterprets. separates_pages/desk_gap mirror the host's own page-outline mode:
+ * the desk space between two sheets that exists even when neither side draws anything, carried
+ * through unchanged rather than dropped, so the flagged build's band matches the host's own for
+ * the SAME inputs in outline mode too, not only when a header or footer is present.
+ *
+ * Fills out[0..3] (header, footer, band) and returns true, or leaves out untouched and returns
+ * false — no measurer installed, a band carrying something the engine cannot resolve, or a NULL
+ * handle/out pointer — with fastdoc_take_last_error naming which. A refusal is the safe direction:
+ * the host falls back to its own answer rather than draw a bandless page. */
+bool fastdoc_office_band_sides(const FastdocOfficeDocument *handle, double column_width,
+                               double page_content_width, bool has_page_content_width,
+                               double page_margin_top, bool has_page_margin_top,
+                               double page_margin_bottom, bool has_page_margin_bottom,
+                               bool headers_on, bool footers_on, bool separates_pages,
+                               double desk_gap, bool has_desk_gap, double *out);
+
 /* One cell's own geometry, mirroring the arithmetic in
  * Render/TableBlockBuilder.swift:977-988. */
 typedef struct {

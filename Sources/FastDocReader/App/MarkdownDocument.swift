@@ -209,6 +209,17 @@ final class MarkdownDocument: NSDocument {
     /// trip is not). `nil` for every other kind.
     private(set) var officeArchive: ZipArchive?
 
+    #if FMD_RUST_ENGINE
+    /// S5C1-01/03: the engine's own read of THIS document, opened in `setOfficeContent` (the seam
+    /// both `read(from:)` and `reloadDocument` pass through) and closed automatically by ARC when
+    /// this property is reassigned or this document deallocates — `RustOfficeDocumentHandle.deinit`
+    /// is the one and only `fastdoc_office_close` call site, never a `defer` here. Reassigning this
+    /// property to a NEW handle drops the old one first (Swift's own property-assignment order),
+    /// which is the close-then-reopen a reload needs: the handle can never answer with pre-reload
+    /// content once `setOfficeContent` has run for the new bytes.
+    private(set) var officeEngineHandle: RustOfficeDocumentHandle?
+    #endif
+
     /// Embedded office image bytes PRE-DECODED at read time, keyed by the `.image` block's id (see
     /// `OfficeReadResult.images`). The zip-backed readers (`DocxReader`/`OdtReader`) leave this `[:]`
     /// and resolve pixels lazily from `officeArchive`; HWP has no archive and its image FFI needs the
@@ -438,7 +449,8 @@ final class MarkdownDocument: NSDocument {
                 pageNumberRestartBlocks: result.pageNumberRestartBlocks,
                 sections: result.sections,
                 anchoredObjects: result.anchoredObjects,
-                lineGridPitch: result.lineGridPitch)
+                lineGridPitch: result.lineGridPitch,
+                documentData: data, documentExtension: ext)
             return
         }
         let archive = try ZipArchive(data: data)
@@ -463,7 +475,8 @@ final class MarkdownDocument: NSDocument {
                 pageNumberRestartBlocks: result.pageNumberRestartBlocks,
                 sections: result.sections,
                 anchoredObjects: result.anchoredObjects,
-                lineGridPitch: result.lineGridPitch)
+                lineGridPitch: result.lineGridPitch,
+                documentData: data, documentExtension: ext)
     }
 
     /// The office-document seam `read(from:)` and `reloadDocument` both go through: the parser's
@@ -489,8 +502,22 @@ final class MarkdownDocument: NSDocument {
         pageNumberRestartBlocks: [OfficePageNumberRestart] = [],
         sections: [OfficeSectionDeclaration] = [],
         anchoredObjects: [OfficeAnchoredObject] = [],
-        lineGridPitch: CGFloat? = nil
+        lineGridPitch: CGFloat? = nil,
+        documentData: Data? = nil, documentExtension: String? = nil
     ) {
+        #if FMD_RUST_ENGINE
+        // S5C1-03: this is the ONE seam `read(from:ofType:)` and `reloadDocument` both pass
+        // through, so it is where the handle is opened — close-then-reopen, never leaked, never
+        // stranded. Assigning `officeEngineHandle` to a NEW value (or to `nil`, when no bytes were
+        // given — every test call site that constructs blocks by hand rather than reading a real
+        // file) drops whatever handle this document held before, through ARC alone; there is no
+        // separate close call to forget. A document a `documentData`/`documentExtension` pair
+        // cannot open through the engine (unreadable, or the flag's own build) leaves this `nil`,
+        // and every query below falls back to the host's own answer.
+        self.officeEngineHandle = documentData.flatMap { data in
+            documentExtension.flatMap { ext in RustOfficeDocumentHandle(data: data, extension: ext) }
+        }
+        #endif
         self.officeBlocks = blocks
         self.officeComments = comments
         self.officeArchive = archive
@@ -554,7 +581,12 @@ final class MarkdownDocument: NSDocument {
         /// decide here: HWP has no archive at all, and the zip readers leave
         /// `result.defaultBodyFontSize` at its default because that value is resolved from the
         /// archive by `DocumentTypes.officeDefaultBodyFontSize` instead (see the field's own note).
-        case office(OfficeReadResult, archive: ZipArchive?, defaultBodyFontSize: CGFloat)
+        ///
+        /// `data` is the freshly re-read bytes (S5C1-03) — `reloadDocument` needs them to open the
+        /// engine's handle for the NEW content; without carrying them here, a reload would call
+        /// `setOfficeContent` with no bytes to open, and every band query afterward would silently
+        /// keep answering from the handle `read(from:)` opened for the FILE'S PREVIOUS CONTENT.
+        case office(OfficeReadResult, archive: ZipArchive?, defaultBodyFontSize: CGFloat, data: Data)
         case text(TextFile)
         case failure(String)
     }
@@ -596,12 +628,13 @@ final class MarkdownDocument: NSDocument {
                     seam: "M-HWP-SWIFT-RELOAD")
                 #endif
                 let result = try HwpReader.read(data)
-                return .office(result, archive: nil, defaultBodyFontSize: result.defaultBodyFontSize)
+                return .office(result, archive: nil, defaultBodyFontSize: result.defaultBodyFontSize, data: data)
             }
             let archive = try ZipArchive(data: data)
             let result = try DocumentTypes.readOffice(archive, extension: ext)
             return .office(result, archive: archive,
-                           defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext))
+                           defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext),
+                           data: data)
         } catch {
             return .failure(error.localizedDescription)
         }
@@ -625,7 +658,7 @@ final class MarkdownDocument: NSDocument {
         if let url = fileURL {
             let ext = url.pathExtension.isEmpty ? (untitledExtension ?? "") : url.pathExtension
             switch Self.reloadOutcome(url: url, kind: kind, extension: ext) {
-            case .office(let result, let archive, let defaultBodyFontSize):
+            case .office(let result, let archive, let defaultBodyFontSize, let rereadData):
                 // Re-parse the archive, same as the initial read — never through the text-decode
                 // path (invariant: an office document's bytes are never handed to
                 // `TextEncodingDetector`). `defaultBodyFontSize` is carried through too, so a
@@ -648,7 +681,8 @@ final class MarkdownDocument: NSDocument {
                                  pageNumberRestartBlocks: result.pageNumberRestartBlocks,
                                  sections: result.sections,
                                  anchoredObjects: result.anchoredObjects,
-                                 lineGridPitch: result.lineGridPitch)
+                                 lineGridPitch: result.lineGridPitch,
+                                 documentData: rereadData, documentExtension: ext)
             case .text(let reread):
                 // The undo stack holds source OFFSETS into the text we're replacing. Re-reading the
                 // file can move every one of them (the file may have changed behind us), so an undo
@@ -1413,6 +1447,29 @@ final class MarkdownDocument: NSDocument {
         let headers = options.header ? officeHeaders : []
         let footers = options.footer ? officeFooters : []
         let bandColumn = officePageContentWidth ?? readingColumn
+        #if FMD_RUST_ENGINE
+        // S5C1-03: the engine's own decision, from the document this handle already read, for the
+        // SAME inputs the host would otherwise compute this from. A `nil` answer — no handle (this
+        // document's engine read refused, or it was built from hand-supplied blocks with no bytes
+        // behind it), no measurer installed, or a band the engine cannot resolve — falls back to
+        // the host's own arithmetic below rather than drawing a bandless page (S5C1's own stated
+        // failure direction).
+        let sides = officePageContentHeight != nil
+            ? (officeEngineHandle?.bandSides(
+                    columnWidth: bandColumn, pageContentWidth: officePageContentWidth,
+                    pageMarginTop: officePageMarginTop, pageMarginBottom: officePageMarginBottom,
+                    headersOn: options.header, footersOn: options.footer,
+                    separatesPages: options.separatesPages, deskGap: forPrinting ? 0 : nil)
+               ?? PageBandGeometry.measure(headers: headers, footers: footers,
+                                           theme: theme, columnWidth: bandColumn,
+                                           documentDefaultFontSize: officeDefaultBodyFontSize,
+                                           pageContentWidth: officePageContentWidth,
+                                           pageMarginTop: officePageMarginTop,
+                                           pageMarginBottom: officePageMarginBottom,
+                                           separatesPages: options.separatesPages,
+                                           deskGap: forPrinting ? 0 : nil))
+            : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
+        #else
         let sides = officePageContentHeight != nil
             ? PageBandGeometry.measure(headers: headers, footers: footers,
                                        theme: theme, columnWidth: bandColumn,
@@ -1423,6 +1480,7 @@ final class MarkdownDocument: NSDocument {
                                        separatesPages: options.separatesPages,
                                        deskGap: forPrinting ? 0 : nil)
             : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
+        #endif
         // Each note's own height, measured ONCE per render at the column it will be drawn at. The
         // settle loop then adds up whichever notes a page turns out to cite (invariant 98) without
         // re-building any of them — it runs up to eight times, and re-typesetting every note on

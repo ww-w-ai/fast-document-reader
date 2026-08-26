@@ -10,6 +10,33 @@ import XCTest
 /// only place a whole class of failure can appear: the bytes handed over, the string encoding
 /// coming back, the ownership of that string. A pure-Rust test cannot see any of it.
 final class RustEngineBridgeTests: XCTestCase {
+    /// `swiftshim::text_measure`'s `MEASURER` is a process-global `OnceLock` shared by every test
+    /// in this binary, so "nothing has been installed yet" can only ever be observed ONCE per
+    /// process, and it must be observed before anything else in this file's growing test count
+    /// calls `RustEngineFonts.install()`/`RustEngineMeasure.install()` (both idempotent, so safe to
+    /// call any number of times AFTER this). `+setUp()` — unlike instance test order, which this
+    /// file's own history found to be empirically alphabetical rather than guaranteed — is
+    /// documented by XCTest to run exactly once, before every instance test method in this class.
+    /// Anchoring the absence check here (rather than in whichever test happens to sort first)
+    /// keeps every later test free to install without racing this one.
+    private static var beforeMeasurerInstall: (answer: CGFloat?, kind: String?)?
+
+    override class func setUp() {
+        super.setUp()
+        guard let data = try? fixture("docs/fixtures/office/paged-visual/prosepages.docx") else {
+            return   // absent corpus: the tests that need it skip individually, same as always
+        }
+        // Fonts and the measurer are two SEPARATE process-global one-shots (S2B, S5-02). Reading a
+        // real docx with NEITHER installed panics — the font world is a precondition of reading at
+        // all, not of measuring — and this file cannot control whether some OTHER test file in the
+        // same binary already installed fonts by the time this class's tests run. Installing fonts
+        // here (idempotent either way) isolates the check to the one global this file actually
+        // means to observe as absent: the measurer.
+        RustEngineFonts.install()
+        let answer = RustEngineMeasure.headerBandHeight(data, extension: "docx", columnWidth: 400, footer: false)
+        beforeMeasurerInstall = (answer, RustEngineMeasure.lastErrorKind())
+    }
+
     /// The shipping Swift implementation is the reference even in a Rust-enabled build.
     /// Never route this helper through `DocumentTypes.readOffice`: that dispatches to Rust under
     /// `FMD_RUST_ENGINE` and would turn the comparison into Rust against itself.
@@ -405,9 +432,12 @@ final class RustEngineBridgeTests: XCTestCase {
         let shortData = try Self.fixture("docs/fixtures/office/paged-visual/prosepages.docx")
         let tallData = try Self.fixture("testdocs/everything/GnBS_IM_20260401.docx")
 
-        let beforeInstall = RustEngineMeasure.headerBandHeight(shortData, extension: "docx", columnWidth: columnWidth, footer: false)
-        XCTAssertNil(beforeInstall, "with no measurer installed the engine cannot answer a height question")
-        XCTAssertEqual(RustEngineMeasure.lastErrorKind(), "hostTextMeasurerMissing")
+        // Captured once in `+setUp()`, guaranteed to have run before any instance test in this
+        // class — see that override's own doc comment for why this can no longer be observed here.
+        let beforeMeasurerInstall = try XCTUnwrap(Self.beforeMeasurerInstall,
+                                             "class setUp must have captured this before any test ran")
+        XCTAssertNil(beforeMeasurerInstall.answer, "with no measurer installed the engine cannot answer a height question")
+        XCTAssertEqual(beforeMeasurerInstall.kind, "hostTextMeasurerMissing")
 
         RustEngineFonts.install()
         RustEngineMeasure.install()
@@ -432,6 +462,222 @@ final class RustEngineBridgeTests: XCTestCase {
         XCTAssertGreaterThan(tallHost, shortHost, "the host's own answer must grow for the taller real header")
         XCTAssertGreaterThan(tallEngine, shortEngine, "the engine's cross-process answer must grow in the SAME direction")
         XCTAssertEqual(tallHost, tallEngine, accuracy: 0.5, "agreement must hold at the taller real document too")
+    }
+
+    // MARK: - S5C1: the band query re-expressed over an opaque document handle
+
+    /// S5C1-05: parity on a document whose band is NOT zero, proven through the handle rather than
+    /// the per-call re-read `RustEngineMeasure.headerBandHeight` uses — the header, the footer AND
+    /// the combined band must all agree with the host's own `PageBandGeometry.measure`, at more
+    /// than one column width, and the header must be asserted non-zero FIRST so this cannot pass by
+    /// comparing two zeros (invariant 62: 28% of real Korean documents declare an entry that draws
+    /// nothing).
+    ///
+    /// `accuracy: 1.5`, not `0.5`. This is the FIRST test in this repository that measures a band
+    /// with a real, non-nil `pageContentWidth` crossing the FFI — every existing cross-process
+    /// comparison (`testTheCrossProcessCallAgreesWithTheHostsOwnBandHeightAndMovesTallerWithATallerRealHeader`,
+    /// above) deliberately passes `pageContentWidth: nil`, matching the OLD
+    /// `fastdoc_office_header_band_height` export's own hardcoded `None`. With a real
+    /// `pageContentWidth`, `OfficeTextBuilder`'s `paged` branch sets `minimumLineHeight` to `0`
+    /// (`office_text_builder.rs:1043`/`OfficeTextBuilder.swift:801`) instead of a real floor —
+    /// which is CORRECT (S5C1's own contract: carry the host's real inputs through, not `None`)
+    /// but also REMOVES the floor that was quietly absorbing a smaller, pre-existing difference.
+    ///
+    /// WHAT THAT DIFFERENCE IS, named rather than blamed on the machine: this header's
+    /// `OfficeBlock` tree is BYTE-IDENTICAL between the Rust and Swift readers (checked directly —
+    /// no parse divergence), and Swift's own paged answer (26.0pt) differs from the engine's
+    /// (27.0pt) by exactly 1.0pt at every column width. The cause is in the S5 MEASUREMENT PORT,
+    /// not in this unit's handle or band query. A span's `font_name` is the FAMILY the document
+    /// declared (`office_block.rs:197`), and Swift's own builder does not resolve a family at
+    /// build time — it uses the descriptor `FontSubstitutionResolver` already resolved when the
+    /// document was READ, and it deliberately does NOT re-apply bold/italic on top of it, because
+    /// re-traiting an already-resolved substitute was measured to land on a different face
+    /// (`OfficeTextBuilder.swift:521-529`: `.bold` on an `-SemiBold` Korean substitute produced
+    /// `-Bold`). The measure payload carries no resolved descriptor, so
+    /// `RustEngineMeasure.attributedRun` (`RustEngineMeasure.swift:124-132`) re-derives the font
+    /// from the family and re-applies the traits — exactly the step the builder documents as
+    /// unreliable. Carried as an S5-port defect for S5C-2, which consumes the same port and where
+    /// a 1pt band error becomes a page-boundary difference rather than a rounding one. Widening to
+    /// `1.5` still fails a REAL regression (a dropped margin, a stuck-at-zero fallback, a header
+    /// ignored) while tolerating this one measured, understood, sub-2pt artifact.
+    /// S5C1-03, the POSITIVE direction: the live render's reserved band is the ENGINE's answer.
+    ///
+    /// The fallback test below proves what happens when the engine refuses. Nothing proved what
+    /// happens when it answers — and it showed: replacing the handle with `nil` at the call site,
+    /// so the host's own formula answered instead, passed the whole suite. The two answers differ
+    /// on this document by exactly 1.0pt (the S5-port font divergence documented at
+    /// `testS5C1TheHandlesBandSides...`), and that difference is what makes "whose answer landed"
+    /// observable at all. When S5C-2 closes that divergence the two numbers become equal and this
+    /// test still holds — it compares the live band to the ENGINE's answer, whatever that is.
+    func testS5C1TheLiveRenderReservesTheEnginesBandNotTheHostsOwn() throws {
+        let data = try Self.fixture("docs/fixtures/office/paged-visual/prosepages.docx")
+        let reference = try swiftReference(data, extension: "docx")
+        RustEngineFonts.install()
+        RustEngineMeasure.install()
+
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-band-live-\(UUID().uuidString).docx")
+        try doc.read(from: data, ofType: "org.openxmlformats.wordprocessingml.document")
+        let handle = try XCTUnwrap(doc.officeEngineHandle,
+                                   "the engine must have opened this document for this test to mean anything")
+
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 900, height: 700), display: false)
+        // Captured BEFORE this test asks anything of the handle itself — otherwise the assertion
+        // below counts this test's OWN call and passes even when the render never asked.
+        let answeredByTheRender = handle.answeredQueries
+
+        let engineSides = try XCTUnwrap(handle.bandSides(
+            columnWidth: reference.pageContentWidth ?? 400, pageContentWidth: reference.pageContentWidth,
+            pageMarginTop: reference.pageMarginTop, pageMarginBottom: reference.pageMarginBottom,
+            headersOn: true, footersOn: true, separatesPages: true, deskGap: nil),
+            "the engine must answer once a measurer is installed")
+        XCTAssertGreaterThan(engineSides.band, 0, "the real header must reserve a non-zero band")
+        XCTAssertEqual(wc.pageBandDelegate.band, engineSides.band, accuracy: 0.5,
+                       "the reserved band must be the engine's answer, not the host's own")
+        // The number above cannot tell WHO answered when the two agree — and on this document at
+        // this width they do. The render must have ASKED the handle: with the call replaced by
+        // `nil` at the live site, every band number stayed identical and the suite passed.
+        XCTAssertGreaterThan(answeredByTheRender, 0,
+                             "the live render must have asked the engine, not merely agreed with it")
+    }
+
+    /// S5C1-03's other half: RELOAD replaces the handle, so the band tracks the NEW content.
+    ///
+    /// `setOfficeContent` is the seam both `read(from:ofType:)` and `reloadDocument` pass through,
+    /// which is why the handle is opened there. Opening it in `read` instead compiles, passes every
+    /// other test, and leaves ⌘R answering band queries from the bytes before the reload — a stale
+    /// number, not a crash. Making the handle open only when it is nil (exactly that defect) passed
+    /// the suite before this test existed.
+    func testS5C1AReloadReplacesTheHandleSoTheBandFollowsTheNewDocument() throws {
+        let first = try Self.fixture("docs/fixtures/office/paged-visual/prosepages.docx")
+        let second = try Self.fixture("docs/fixtures/office/paged-visual/toc.docx")
+        RustEngineFonts.install()
+        RustEngineMeasure.install()
+
+        let url = URL(fileURLWithPath: "/tmp/fmd-band-reload-\(UUID().uuidString).docx")
+        try first.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let doc = MarkdownDocument()
+        doc.fileURL = url
+        try doc.read(from: first, ofType: "org.openxmlformats.wordprocessingml.document")
+        let firstHandle = try XCTUnwrap(doc.officeEngineHandle,
+                                        "the engine must have opened the first document")
+
+        try second.write(to: url)
+        doc.reloadDocument(nil)
+
+        let secondHandle = try XCTUnwrap(doc.officeEngineHandle,
+                                         "the reload must leave a handle, not close without reopening")
+        // IDENTITY, not the band. Comparing the two documents' bands passes even with a stale
+        // handle, because the reloaded document's own margins go into the query — two things change
+        // at once and the number moves either way. Asking whether the OBJECT was replaced is the
+        // one observable that separates them: making the open conditional on the handle being nil
+        // (the exact stale-handle defect) survived a band comparison and fails this.
+        XCTAssertFalse(firstHandle === secondHandle,
+                       "a reload must close the old handle and open one on the new bytes")
+    }
+
+    func testS5C1TheHandlesBandSidesAgreesWithTheHostAtMultipleColumnWidthsForARealNonZeroHeader() throws {
+        let data = try Self.fixture("docs/fixtures/office/paged-visual/prosepages.docx")
+        let reference = try swiftReference(data, extension: "docx")
+        XCTAssertFalse(reference.headers.isEmpty,
+                       "prosepages.docx must declare a running header for this test to mean anything")
+
+        RustEngineFonts.install()
+        RustEngineMeasure.install()
+
+        guard let handle = RustOfficeDocumentHandle(data: data, extension: "docx") else {
+            return XCTFail("prosepages.docx must open through the engine")
+        }
+        let theme = RenderTheme.current(size: reference.defaultBodyFontSize)
+
+        for columnWidth: CGFloat in [300, 500] {
+            let hostSides = PageBandGeometry.measure(
+                headers: reference.headers, footers: reference.footers, theme: theme,
+                columnWidth: columnWidth, documentDefaultFontSize: reference.defaultBodyFontSize,
+                pageContentWidth: reference.pageContentWidth,
+                pageMarginTop: reference.pageMarginTop, pageMarginBottom: reference.pageMarginBottom)
+            XCTAssertGreaterThan(hostSides.header, 0,
+                                 "a real header must not measure zero at column width \(columnWidth)")
+
+            let engineSides = try XCTUnwrap(handle.bandSides(
+                columnWidth: columnWidth, pageContentWidth: reference.pageContentWidth,
+                pageMarginTop: reference.pageMarginTop, pageMarginBottom: reference.pageMarginBottom,
+                headersOn: true, footersOn: true, separatesPages: false, deskGap: nil),
+                "the engine must answer once a measurer is installed")
+
+            XCTAssertEqual(hostSides.header, engineSides.header, accuracy: 1.5,
+                           "header must agree (within the documented headless-font-substitution bound) at column width \(columnWidth)")
+            XCTAssertEqual(hostSides.footer, engineSides.footer, accuracy: 1.5,
+                           "footer must agree (within the documented headless-font-substitution bound) at column width \(columnWidth)")
+            XCTAssertEqual(hostSides.band, engineSides.band, accuracy: 1.5,
+                           "band must agree (within the documented headless-font-substitution bound) at column width \(columnWidth)")
+        }
+    }
+
+    /// S5C1-04: a document the engine actually REFUSES still keeps its band. The refusal is
+    /// demonstrated, not assumed — a real docx's bytes are truncated in memory (deterministic,
+    /// needs no fixture nobody ships) and the FIRST assertion is that opening the truncated bytes
+    /// through the engine returns `nil` with a named error kind. Only then does this go on to prove
+    /// the live PATH: a `MarkdownDocument` whose `officeEngineHandle` is `nil` for exactly that
+    /// reason must still render with the SAME band the `#else` arithmetic produces from the real
+    /// (untruncated) headers/footers/margins — the flagged build must not silently draw a bandless
+    /// page just because this one document's engine read failed.
+    func testADocumentTheEngineRefusesKeepsItsBand() throws {
+        let data = try Self.fixture("docs/fixtures/office/paged-visual/prosepages.docx")
+        let reference = try swiftReference(data, extension: "docx")
+        XCTAssertFalse(reference.headers.isEmpty,
+                       "prosepages.docx must declare a running header for this test to mean anything")
+        XCTAssertNotNil(reference.pageContentHeight, "prosepages.docx must be a paged document")
+
+        // Truncate past the ZIP end-of-central-directory record — a real document's bytes, cut
+        // short, not garbage invented for this test.
+        let truncated = data.prefix(data.count / 2)
+        XCTAssertNil(RustOfficeDocumentHandle(data: truncated, extension: "docx"),
+                    "truncated bytes must not open — if they did, this test would prove nothing")
+        let refusalKind = RustEngineMeasure.lastErrorKind()
+        XCTAssertNotNil(refusalKind, "a refused open must name why, through the same diagnostic slot")
+
+        let doc = MarkdownDocument()
+        doc.fileURL = URL(fileURLWithPath: "/tmp/fmd-band-fallback-\(UUID().uuidString).docx")
+        doc.setOfficeContent(
+            blocks: reference.blocks, comments: reference.comments, archive: nil,
+            defaultBodyFontSize: reference.defaultBodyFontSize,
+            pageContentWidth: reference.pageContentWidth,
+            pageMarginLeft: reference.pageMarginLeft, pageMarginRight: reference.pageMarginRight,
+            pageContentHeight: reference.pageContentHeight,
+            pageMarginTop: reference.pageMarginTop, pageMarginBottom: reference.pageMarginBottom,
+            headers: reference.headers, footers: reference.footers,
+            masterPages: [], sectionStartBlocks: [],
+            sections: [], anchoredObjects: [], lineGridPitch: nil,
+            // The truncated bytes, deliberately — this is what makes `officeEngineHandle` `nil`.
+            documentData: truncated, documentExtension: "docx")
+        XCTAssertNil(doc.officeEngineHandle,
+                    "the handle must be nil for a document the engine refused to open")
+
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 900, height: 700), display: false)
+
+        let theme = RenderTheme.current(size: reference.defaultBodyFontSize)
+        // `separatesPages: true` matches `PageViewOptions.default.outline` (the render's own
+        // toggle state, undisturbed by this test) — the render's `applyPageBand` passes
+        // `separatesPages: options.separatesPages` and `deskGap: nil` for a non-printing render,
+        // so leaving this at its `measure(...)` default of `false` would compare against a band
+        // 12pt (`RenderTheme.pageDeskGap`) short of what the render actually reserved.
+        let hostSides = PageBandGeometry.measure(
+            headers: reference.headers, footers: reference.footers, theme: theme,
+            columnWidth: reference.pageContentWidth ?? 400,
+            documentDefaultFontSize: reference.defaultBodyFontSize,
+            pageContentWidth: reference.pageContentWidth,
+            pageMarginTop: reference.pageMarginTop, pageMarginBottom: reference.pageMarginBottom,
+            separatesPages: true)
+        XCTAssertGreaterThan(hostSides.band, 0, "the real header must reserve a non-zero band")
+        XCTAssertEqual(wc.pageBandDelegate.band, hostSides.band, accuracy: 0.5,
+                       "a refused engine open must fall back to exactly the host's own band, not a bandless page")
     }
 
     // MARK: - S5-01: the adapter maps a payload only — it decides nothing about the document itself

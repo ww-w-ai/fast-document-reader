@@ -477,6 +477,169 @@ pub unsafe extern "C" fn fastdoc_office_header_band_height(
     })
 }
 
+/// S5C1-01: an opaque document handle — the export above re-reads the document from bytes on
+/// EVERY call (2.4s for a debug parse of a 10.2MB HWP, measured), and the three sprints after this
+/// one (S5C-2 sheet placement, S5C-3 the 바탕쪽, S5D the footnote band) each need "the document you
+/// already read" too. This is the one place that cost gets paid: once, at open.
+///
+/// Boxed and returned as a raw pointer (`Box::into_raw`); `fastdoc_office_close` takes it back
+/// with `Box::from_raw` and drops it. One owner, one close — the Swift side holds this in the
+/// object that owns the document's lifetime (`MarkdownDocument`) and closes it in `deinit`, never
+/// in a `defer` at a call site, so a reload (close-then-reopen) can never strand or double-free it.
+pub struct FastdocOfficeDocument {
+    result: OfficeReadResult,
+}
+
+/// Reads an office document ONCE and hands back an opaque handle every later query borrows,
+/// rather than re-reading it. Returns NULL and records the failure through
+/// `fastdoc_take_last_error` when the document cannot be read — the SAME `read_office` failure
+/// this file's other exports already report, not a new refusal shape.
+///
+/// # Safety
+/// `bytes`/`len` describe a readable buffer for the duration of this call only (the handle copies
+/// what it needs and does not borrow the caller's buffer afterward), and `extension_` is a
+/// NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_office_open(
+    bytes: *const u8,
+    len: usize,
+    extension_: *const c_char,
+) -> *mut FastdocOfficeDocument {
+    clear_last_error();
+    if bytes.is_null() || extension_.is_null() {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return std::ptr::null_mut();
+    }
+    let data = std::slice::from_raw_parts(bytes, len);
+    let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "extension is not valid UTF-8",
+        ));
+        return std::ptr::null_mut();
+    };
+    guard_scalar(std::ptr::null_mut(), move || {
+        match read_office(data, extension) {
+            Ok(result) => Box::into_raw(Box::new(FastdocOfficeDocument { result })),
+            Err(error) => {
+                set_last_error(&FfiFailure::from(error));
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Closes a handle `fastdoc_office_open` returned. NULL is a no-op, matching this crate's existing
+/// string-ownership rule (`fastdoc_string_free(NULL)`). Closing a handle twice, or querying one
+/// after it is closed, is undefined behaviour — the same statement this file's module doc already
+/// makes for a double-freed string, extended to this second owned resource.
+///
+/// # Safety
+/// `handle` must be either NULL or a pointer this crate's `fastdoc_office_open` returned and that
+/// has not already been passed to this function.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_office_close(handle: *mut FastdocOfficeDocument) {
+    guard_scalar((), move || {
+        if !handle.is_null() {
+            drop(Box::from_raw(handle));
+        }
+    })
+}
+
+/// The band query re-expressed over an open handle (S5C1-02): the engine's own decision for a
+/// document's running header, footer AND combined band, in one call, from a document it already
+/// holds rather than one it re-reads.
+///
+/// The three page values are OPTIONAL in the same sense the host's own `PageBandGeometry` treats
+/// them — each carries an explicit `has_*` flag rather than a sentinel folded into the value
+/// itself, so a value the host actually passed can never be confused with one it did not (fact 2
+/// of this unit's plan: a `None` silently substituted for a stated margin answers a different
+/// question than the live path asks). `headers_on`/`footers_on` mirror the host's own
+/// `PageViewOptions` — a toggle switched off is passed through as NO ENTRIES, exactly as the
+/// host's `applyPageBand` already does it, so "hidden" means the same thing on both sides of the
+/// FFI.
+///
+/// Fills `out[0..3]` (header, footer, band) and returns `true`, or leaves `out` untouched and
+/// returns `false` — no measurer installed, the band carrying something the engine cannot resolve,
+/// or a NULL handle/out pointer — with `fastdoc_take_last_error` naming which. A refusal here is
+/// the safe direction: the host falls back to its own answer rather than draw a bandless page.
+///
+/// # Safety
+/// `handle` must be either NULL or a live pointer `fastdoc_office_open` returned that has not been
+/// closed. `out` must describe a writable buffer of at least 3 `f64`s for the duration of the
+/// call.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn fastdoc_office_band_sides(
+    handle: *const FastdocOfficeDocument,
+    column_width: f64,
+    page_content_width: f64,
+    has_page_content_width: bool,
+    page_margin_top: f64,
+    has_page_margin_top: bool,
+    page_margin_bottom: f64,
+    has_page_margin_bottom: bool,
+    headers_on: bool,
+    footers_on: bool,
+    separates_pages: bool,
+    desk_gap: f64,
+    has_desk_gap: bool,
+    out: *mut f64,
+) -> bool {
+    clear_last_error();
+    if handle.is_null() || out.is_null() {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return false;
+    }
+    let handle_ref: &FastdocOfficeDocument = &*handle;
+    let page_content_width = has_page_content_width.then_some(page_content_width);
+    let page_margin_top = has_page_margin_top.then_some(page_margin_top);
+    let page_margin_bottom = has_page_margin_bottom.then_some(page_margin_bottom);
+    let desk_gap = has_desk_gap.then_some(desk_gap);
+    let sides: Option<[f64; 3]> = guard_scalar(None, move || {
+        let result = &handle_ref.result;
+        let theme = fastdoc_engine::render::render_theme::RenderTheme::current(result.default_body_font_size);
+        let empty: Vec<fastdoc_engine::render::office::office_block::OfficeHeaderFooter> = Vec::new();
+        let headers = if headers_on { result.headers.as_slice() } else { empty.as_slice() };
+        let footers = if footers_on { result.footers.as_slice() } else { empty.as_slice() };
+        match fastdoc_engine::render::office::page_band_geometry::PageBandGeometry::measure(
+            headers,
+            footers,
+            &theme,
+            column_width,
+            result.default_body_font_size,
+            page_content_width,
+            page_margin_top,
+            page_margin_bottom,
+            separates_pages,
+            desk_gap,
+        ) {
+            Ok(sides) => Some([sides.header, sides.footer, sides.band]),
+            Err(error) => {
+                set_last_error(&FfiFailure::new(
+                    FfiErrorKind::HostTextMeasurerMissing,
+                    format!("{error}"),
+                ));
+                None
+            }
+        }
+    });
+    match sides {
+        Some(values) => {
+            let out_slice = std::slice::from_raw_parts_mut(out, 3);
+            out_slice.copy_from_slice(&values);
+            true
+        }
+        None => false,
+    }
+}
+
 /// One cell's own geometry, mirroring `fastdoc_engine::render::table_resize_math::TableResizeCell`
 /// field for field. `#[repr(C)]` so the layout is exactly what the header declares.
 #[repr(C)]
