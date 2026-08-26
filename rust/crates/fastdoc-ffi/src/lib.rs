@@ -584,6 +584,153 @@ pub unsafe extern "C" fn fastdoc_table_resize_cell_widths(
     }
 }
 
+/// One table's shared-grid inputs plus where its slice sits in the two flat arrays below —
+/// `fastdoc_table_resize_cell_widths_batch`'s per-table descriptor, mirroring
+/// `fastdoc_engine::render::table_resize_math::TableResizeInput` field for field except that
+/// `column_proportions`/`cells` are replaced by an offset/count into the caller's flat buffers.
+/// `#[repr(C)]` so the layout is exactly what the header declares.
+#[repr(C)]
+pub struct FastdocTableResizeTableDesc {
+    pub column_offset: usize,
+    pub column_count: usize,
+    pub available_width: CGFloat,
+    pub outer_margin_left: CGFloat,
+    pub outer_margin_right: CGFloat,
+    pub max_width: CGFloat,
+    pub cell_offset: usize,
+    pub cell_count: usize,
+}
+
+/// `fastdoc_table_resize_cell_widths` above crosses the FFI boundary once PER TABLE. On a
+/// 323-table, 6,077-cell document that path cost 9.5ms against the host's own 4.5ms, and the gap
+/// decomposed into 0.35ms of boundary, 1.6ms of payload arrays and 2.4ms of collection — the
+/// crossing count was the small share (`s5b2b-latency.md`). This export answers EVERY table in ONE
+/// call: `tables[i]` names its own slice of the flat `column_proportions` and `cells` arrays by
+/// offset/count, `out_widths` is filled in the SAME flattened table-then-cell order the caller
+/// built the payload in, and the total `cell_count` (summed across every table) is what
+/// `out_widths` must be sized to.
+///
+/// Does not replace the single-table export — `RustEngineTableResize`'s S5B2a parity test and any
+/// caller that only ever has one table still reach that one; this is an ADDITIONAL door for the
+/// production reflow path, which now has every table's payload in hand at once (`resizeTables`
+/// collects all tables before asking the engine, exactly so it can call this once).
+///
+/// Each descriptor's `column_offset..column_offset+column_count` and
+/// `cell_offset..cell_offset+cell_count` must fit within `column_proportions_count` and
+/// `cell_count` respectively, or this returns `false` (`fastdoc_take_last_error` names it) rather
+/// than reading past either buffer.
+///
+/// Ownership is inverted, same as the single-table export: `out_widths` is allocated and owned by
+/// the CALLER (at least the SUM of every `tables[i].cell_count`), lent for the duration of this
+/// call only.
+///
+/// # Safety
+/// `tables`/`table_count`, `column_proportions`/`column_proportions_count` and
+/// `cells`/`cell_count` describe readable buffers for the duration of the call; `out_widths`
+/// describes a writable buffer of at least `cell_count` `CGFloat`s for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_table_resize_cell_widths_batch(
+    tables: *const FastdocTableResizeTableDesc,
+    table_count: usize,
+    column_proportions: *const CGFloat,
+    column_proportions_count: usize,
+    cells: *const FastdocTableResizeCell,
+    cell_count: usize,
+    out_widths: *mut CGFloat,
+) -> bool {
+    clear_last_error();
+    if (table_count > 0 && tables.is_null())
+        || (column_proportions_count > 0 && column_proportions.is_null())
+        || (cell_count > 0 && (cells.is_null() || out_widths.is_null()))
+    {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return false;
+    }
+    // Same zero-length guard as the single-table export: `from_raw_parts` requires a non-NULL,
+    // aligned pointer even for a zero-length slice.
+    let table_descs: &[FastdocTableResizeTableDesc] = if table_count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(tables, table_count)
+    };
+    let all_column_proportions: Vec<CGFloat> = if column_proportions_count == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(column_proportions, column_proportions_count).to_vec()
+    };
+    let all_cells: Vec<fastdoc_engine::render::table_resize_math::TableResizeCell> =
+        if cell_count == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(cells, cell_count)
+                .iter()
+                .map(|c| fastdoc_engine::render::table_resize_math::TableResizeCell {
+                    starting_column: c.starting_column,
+                    column_span: c.column_span,
+                    pad_left: c.pad_left,
+                    pad_right: c.pad_right,
+                    border_left: c.border_left,
+                    border_right: c.border_right,
+                })
+                .collect()
+        };
+
+    let mut inputs = Vec::with_capacity(table_descs.len());
+    for desc in table_descs {
+        let column_end = desc.column_offset.checked_add(desc.column_count);
+        let cell_end = desc.cell_offset.checked_add(desc.cell_count);
+        match (column_end, cell_end) {
+            (Some(column_end), Some(cell_end))
+                if column_end <= all_column_proportions.len() && cell_end <= all_cells.len() =>
+            {
+                inputs.push(fastdoc_engine::render::table_resize_math::TableResizeInput {
+                    column_proportions: all_column_proportions[desc.column_offset..column_end]
+                        .to_vec(),
+                    available_width: desc.available_width,
+                    outer_margin_left: desc.outer_margin_left,
+                    outer_margin_right: desc.outer_margin_right,
+                    max_width: if desc.max_width > 0.0 {
+                        Some(desc.max_width)
+                    } else {
+                        None
+                    },
+                    cells: all_cells[desc.cell_offset..cell_end].to_vec(),
+                });
+            }
+            _ => {
+                set_last_error(&FfiFailure::new(
+                    FfiErrorKind::InvalidArgument,
+                    "a table descriptor's offset/count runs past its flat buffer",
+                ));
+                return false;
+            }
+        }
+    }
+
+    let widths: Option<Vec<CGFloat>> = guard_scalar(None, move || {
+        Some(fastdoc_engine::render::table_resize_math::cell_target_widths_batch(&inputs))
+    });
+    match widths {
+        Some(widths) if widths.len() == cell_count => {
+            if cell_count > 0 {
+                let out = std::slice::from_raw_parts_mut(out_widths, cell_count);
+                out.copy_from_slice(&widths);
+            }
+            true
+        }
+        _ => {
+            set_last_error(&FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "arithmetic failed or returned the wrong cell count",
+            ));
+            false
+        }
+    }
+}
+
 /// `s` must be NULL or a pointer this library returned and has not already freed.
 #[no_mangle]
 pub unsafe extern "C" fn fastdoc_string_free(s: *mut c_char) {

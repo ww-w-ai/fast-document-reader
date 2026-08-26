@@ -7,9 +7,11 @@ import CFastdocEngine
 /// document and hands the host an answer; here the host already holds the live `NSTextStorage`
 /// and asks the engine to do the subtraction for one table at a time).
 ///
-/// NOT wired into the production reflow path. `TableBlockBuilder.resizeTables` still computes and
-/// writes its own answer — this type exists only so a test can compare the two, catching a wrong
-/// payload shape now, before S5B2b removes the Rust side's `todo!()` and makes the two paths one.
+/// WIRED INTO the production reflow path since S5B2b: a build carrying `FMD_RUST_ENGINE` takes
+/// `TableBlockBuilder.resizeTables`'s per-cell widths from here. A build without the flag still
+/// runs the host's own formula — `Package.swift:14,33` reads the flag at manifest-evaluation
+/// time, so a shipping build does not contain this file at all, and the two formulas live side by
+/// side until S9 removes the flag.
 enum RustEngineTableResize {
     /// One cell's own geometry — `TableBlockBuilder.resizeTables`'s four `block.width(for:edge:)`
     /// reads plus the span that picks its slice of the shared grid.
@@ -54,6 +56,83 @@ enum RustEngineTableResize {
         }
         guard ok else { return nil }
         return out.map { CGFloat($0) }
+    }
+
+    /// Every table in one document, asked in ONE call — and built WITHOUT a per-table array on
+    /// the way in. Measured on a 323-table, 6,077-cell document, the width-unchanged reflow path
+    /// cost 5.2 ms with the host's own formula and 9.55 ms through a per-table crossing; splitting
+    /// that gap showed the boundary itself was 0.35 ms of it, the intermediate payload arrays
+    /// 1.6 ms and the collection 2.4 ms (`evidence/s5b2b-latency.md`). So the caller appends
+    /// straight into the flat buffers the C ABI already wants: `beginTable` opens a table and
+    /// every `addCell` after it belongs to that table, exactly as `TableBlockBuilder.resizeTables`
+    /// walks them.
+    struct BatchRequest {
+        private var descriptors: [FastdocTableResizeTableDesc] = []
+        private var proportions: [Double] = []
+        private var cells: [FastdocTableResizeCell] = []
+
+        /// The number of cells added so far — the size of the answer `solve` returns.
+        var cellCount: Int { cells.count }
+
+        mutating func reserve(tableCount: Int, cellCount: Int) {
+            descriptors.reserveCapacity(tableCount)
+            cells.reserveCapacity(cellCount)
+        }
+
+        /// Opens a table. Every `addCell` until the next `beginTable` counts toward this one.
+        mutating func beginTable(
+            columnProportions: [CGFloat], availableWidth: CGFloat,
+            outerMarginLeft: CGFloat, outerMarginRight: CGFloat, maxWidth: CGFloat?
+        ) {
+            let columnOffset = proportions.count
+            for proportion in columnProportions { proportions.append(Double(proportion)) }
+            descriptors.append(
+                FastdocTableResizeTableDesc(
+                    column_offset: columnOffset, column_count: columnProportions.count,
+                    available_width: Double(availableWidth),
+                    outer_margin_left: Double(outerMarginLeft),
+                    outer_margin_right: Double(outerMarginRight),
+                    max_width: Double(maxWidth ?? 0),
+                    cell_offset: cells.count, cell_count: 0))
+        }
+
+        /// Adds one cell to the table `beginTable` last opened. Calling it before any `beginTable`
+        /// is a caller bug and is ignored rather than silently attributed to the wrong table.
+        mutating func addCell(
+            startingColumn: Int, columnSpan: Int, padLeft: CGFloat, padRight: CGFloat,
+            borderLeft: CGFloat, borderRight: CGFloat
+        ) {
+            guard !descriptors.isEmpty else { return }
+            cells.append(
+                FastdocTableResizeCell(
+                    starting_column: startingColumn, column_span: columnSpan,
+                    pad_left: Double(padLeft), pad_right: Double(padRight),
+                    border_left: Double(borderLeft), border_right: Double(borderRight)))
+            descriptors[descriptors.count - 1].cell_count += 1
+        }
+
+        /// The target content width for every cell added, in the order they were added. Returns nil
+        /// if the engine could not answer any part of the payload — never a partial array. The
+        /// answer stays `Double`, the width the C ABI speaks, so answering 6,077 cells does not
+        /// allocate a second array to say the same numbers in `CGFloat`.
+        func solve() -> [Double]? {
+            var out = [Double](repeating: 0, count: cells.count)
+            let ok = descriptors.withUnsafeBufferPointer { descriptorsBuf in
+                proportions.withUnsafeBufferPointer { propsBuf in
+                    cells.withUnsafeBufferPointer { cellsBuf in
+                        out.withUnsafeMutableBufferPointer { outBuf in
+                            fastdoc_table_resize_cell_widths_batch(
+                                descriptorsBuf.baseAddress, descriptorsBuf.count,
+                                propsBuf.baseAddress, propsBuf.count,
+                                cellsBuf.baseAddress, cellsBuf.count,
+                                outBuf.baseAddress)
+                        }
+                    }
+                }
+            }
+            guard ok else { return nil }
+            return out
+        }
     }
 }
 #endif

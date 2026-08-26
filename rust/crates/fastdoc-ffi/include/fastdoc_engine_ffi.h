@@ -135,7 +135,7 @@ typedef struct {
     double border_right;
 } FastdocTableResizeCell;
 
-/* S5B2a: the arithmetic behind TableBlockBuilder.resizeTables, one call per table — HOST TO RUST,
+/* The arithmetic behind TableBlockBuilder.resizeTables, one call per table — HOST TO RUST,
  * the opposite direction from every other export on this page. Fills out_widths[0..cell_count]
  * with each cells[i]'s target content width and returns true, or leaves out_widths untouched and
  * returns false on a bad payload (fastdoc_take_last_error names which).
@@ -151,6 +151,32 @@ bool fastdoc_table_resize_cell_widths(const double *column_proportions, size_t c
                                       double outer_margin_right, double max_width,
                                       const FastdocTableResizeCell *cells, size_t cell_count,
                                       double *out_widths);
+
+/* One table's shared-grid inputs plus where its slice sits in the flat column_proportions/cells
+ * arrays a batch call shares across every table. */
+typedef struct {
+    size_t column_offset;
+    size_t column_count;
+    double available_width;
+    double outer_margin_left;
+    double outer_margin_right;
+    double max_width;
+    size_t cell_offset;
+    size_t cell_count;
+} FastdocTableResizeTableDesc;
+
+/* S5B2b: fastdoc_table_resize_cell_widths above crosses the FFI boundary once PER TABLE, measured
+ * at ~15us/table of marshalling. This answers EVERY table in a document in ONE call: tables[i]
+ * names its own slice of column_proportions/cells by offset+count, and out_widths is filled in
+ * the same flattened table-then-cell order, sized to the SUM of every tables[i].cell_count.
+ * Returns false (fastdoc_take_last_error names it) if a descriptor's offset/count runs past its
+ * flat buffer, or on a bad payload. Does not replace the single-table export above. */
+bool fastdoc_table_resize_cell_widths_batch(const FastdocTableResizeTableDesc *tables,
+                                            size_t table_count,
+                                            const double *column_proportions,
+                                            size_t column_proportions_count,
+                                            const FastdocTableResizeCell *cells, size_t cell_count,
+                                            double *out_widths);
 
 void fastdoc_string_free(char *s);
 

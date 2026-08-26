@@ -1,11 +1,13 @@
 //! swift: Render/TableBlockBuilder.swift:960-1002 (`resizeTables`'s per-cell target-width step)
 //!
-//! S5B2a: host-to-Rust, the opposite direction from S5's text-measurement port. The live
+//! S5B2a/S5B2b: host-to-Rust, the opposite direction from S5's text-measurement port. The live
 //! `NSTextStorage` walk and the write-back stay Swift's — only the arithmetic answering "how wide
-//! should this cell be" crosses. Nothing here is called from a production path yet; S5B2b removes
-//! `table_block_builder.rs`'s `resize_tables` `todo!()` and wires this in. Until then this module
-//! exists to prove the payload shape and let a comparison test catch a wrong one early, while
-//! nothing depends on the answer.
+//! should this cell be" crosses, via `fastdoc_table_resize_cell_widths`
+//! (`Sources/FastDocReader/Render/Office/RustEngineTableResize.swift`), called once per table from
+//! `TableBlockBuilder.resizeTables`'s `#if FMD_RUST_ENGINE` branch. There never was a
+//! `table_block_builder.rs::resize_tables` to wire this into — that stub required a live
+//! `NSTextStorage`/`NSTextTableBlock` object model this crate does not have, and the traversal it
+//! would have performed stays in Swift; S5B2b deleted the stub rather than implement it.
 
 use crate::render::table_block_builder::GridTextTable;
 use swiftshim::CGFloat;
@@ -74,6 +76,16 @@ pub fn cell_target_widths(input: &TableResizeInput) -> Vec<CGFloat> {
             width.max(1.0)
         })
         .collect()
+}
+
+/// One call answers EVERY table in a document. On a 323-table, 6,077-cell document the host's
+/// width-unchanged reflow cost 4.5ms of its own and 9.5ms through a per-table crossing; the gap
+/// decomposed into 0.35ms of boundary, 1.6ms of payload arrays and 2.4ms of collection, so the
+/// crossing count was never the price — materialising the payload was (`s5b2b-latency.md`).
+/// Batching it removes the per-table share of that, and the arithmetic (`cell_target_widths`) is
+/// unchanged and reused per table, so behaviour cannot drift from the single-table export.
+pub fn cell_target_widths_batch(inputs: &[TableResizeInput]) -> Vec<CGFloat> {
+    inputs.iter().flat_map(cell_target_widths).collect()
 }
 
 #[cfg(test)]
@@ -202,6 +214,30 @@ mod tests {
         let widths = cell_target_widths(&input);
         // usable = 300 - 20 - 20 = 260; the single cell spans the whole narrowed grid.
         assert_eq!(widths, vec![260.0]);
+    }
+
+    #[test]
+    fn batch_concatenates_each_tables_widths_in_table_then_cell_order() {
+        let a = TableResizeInput {
+            column_proportions: vec![0.5, 0.5],
+            available_width: 200.0,
+            outer_margin_left: 0.0,
+            outer_margin_right: 0.0,
+            max_width: None,
+            cells: vec![cell(0, 1, 0.0, 0.0), cell(1, 1, 0.0, 0.0)],
+        };
+        let b = TableResizeInput {
+            column_proportions: vec![1.0],
+            available_width: 300.0,
+            outer_margin_left: 10.0,
+            outer_margin_right: 10.0,
+            max_width: None,
+            cells: vec![cell(0, 1, 0.0, 0.0)],
+        };
+        let batched = cell_target_widths_batch(&[a.clone(), b.clone()]);
+        let mut expected = cell_target_widths(&a);
+        expected.extend(cell_target_widths(&b));
+        assert_eq!(batched, expected);
     }
 
     #[test]

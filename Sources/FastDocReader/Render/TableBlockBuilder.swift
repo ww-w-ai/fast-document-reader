@@ -960,11 +960,131 @@ enum TableBlockBuilder {
     /// of the old custom engine's `relayout`, but far smaller — it just rewrites each cell block's
     /// content width from the table's stored proportions, then the layout manager reflows. Called from
     /// the window controller on first layout and every reflow (resize / sidebar toggle).
-    static func resizeTables(in storage: NSTextStorage, toWidth width: CGFloat) {
-        guard width > 0, storage.length > 0 else { return }
+    /// The host's own per-cell arithmetic — extracted so the `#else` branch below and a test that
+    /// wants a REFERENCE answer independent of which flag this binary was built with can both call
+    /// the identical formula rather than one copying the other. `nil` means this cell's span clears
+    /// the table's own column count (a corrupt or stale block), the same refusal the inline
+    /// `guard c1 > c0, c1 < edges.count` used to express before this was pulled out.
+    ///
+    /// Deliberately NOT behind `#if FMD_RUST_ENGINE` — it is pure geometry with no engine call in
+    /// it, so a test can reach it in EITHER build configuration to get the same host-formula answer
+    /// `resizeTables`'s `#else` branch writes when the flag is off.
+    static func localCellTargetWidth(
+        edges: [CGFloat], numberOfColumns: Int, startingColumn: Int, columnSpan: Int,
+        padLeft: CGFloat, padRight: CGFloat, borderLeft: CGFloat, borderRight: CGFloat
+    ) -> CGFloat? {
+        let c0 = min(startingColumn, numberOfColumns)
+        let c1 = min(startingColumn + columnSpan, numberOfColumns)
+        guard c1 > c0, c1 < edges.count else { return nil }
+        // SUBTRACT BOTH IN FULL, exactly as `build` does — `collapsesBorders` is off, so nothing is
+        // shared with a neighbour to double-account for. See `resizeTables`'s own doc for why this
+        // must stay identical to `build`'s formula.
+        return max(1, edges[c1] - edges[c0] - padLeft - padRight - borderLeft - borderRight)
+    }
+
+    /// Returns HOW MANY cells it actually wrote — the number a caller (and invariant 48's own
+    /// gate) can observe. Comparing widths afterwards cannot tell "wrote every cell the value it
+    /// already had" apart from "wrote nothing", nor "the engine refused and nothing was applied"
+    /// apart from "the engine's answer happened to equal what was already there"; both mutations
+    /// survived a suite that only compared values.
+    @discardableResult
+    static func resizeTables(in storage: NSTextStorage, toWidth width: CGFloat) -> Int {
+        guard width > 0, storage.length > 0 else { return 0 }
         let whole = NSRange(location: 0, length: storage.length)
-        var edgesByTable: [ObjectIdentifier: [CGFloat]] = [:]
         var touched: [NSRange] = []
+
+        #if FMD_RUST_ENGINE
+        // S5B2b cutover: the per-cell arithmetic crosses to the engine
+        // (`fastdoc_table_resize_cell_widths_batch`, via `RustEngineTableResize`), but the LIVE
+        // traversal and write-back stay exactly Swift's — `RustEngine` reads a whole document;
+        // this is the opposite direction, host-to-engine, and the host still owns the
+        // `NSTextStorage` object model the engine crate has no access to
+        // (`table_block_builder.rs`'s deleted stub needed exactly this and never got it).
+        //
+        // TWO PASSES, deliberately, not one call per cell inline in the enumerate closure below.
+        // Pass 1 collects every table's blocks in document order (the SAME `enumerateAttribute`
+        // walk `build` and the pre-cutover code used). Pass 2 asks the engine ONCE FOR THE WHOLE
+        // DOCUMENT and writes every cell's answer back.
+        //
+        // What this path costs was measured, not assumed (`evidence/s5b2b-latency.md`): asking per
+        // table cost 9.5ms on a 323-table, 6,077-cell document against the host's own 4.5ms, and
+        // of that gap the boundary itself was 0.35ms — the rest was allocation. Batching, the
+        // reference-typed grouping below and appending straight into the engine's flat buffers
+        // took it to 6.1ms; what remains is materialising 6,077 cells, which asking another
+        // process for an answer cannot avoid. A THIRD shape — two walks, keeping nothing in
+        // between — was built and measured SLOWER (7.6ms), so the cells are kept.
+        //
+        // The arithmetic the engine runs per table is unchanged, so the S5B2a/S5B2b parity tests
+        // still hold.
+        // A REFERENCE type on purpose: a struct here means `groups[key]!.blocks.append(...)` is a
+        // get-modify-set through the dictionary, which copies the table's cell array on every
+        // single cell. That copying was 2.4 ms of the 4.3 ms this path regressed by
+        // (`evidence/s5b2b-latency.md`); appending into a class's array mutates it in place.
+        final class TableGroup {
+            let table: GridTextTable
+            var blocks: [(block: NSTextTableBlock, range: NSRange)] = []
+            init(table: GridTextTable) { self.table = table }
+        }
+        var groupsByTable: [ObjectIdentifier: TableGroup] = [:]
+        var orderedGroups: [TableGroup] = []
+        storage.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
+            guard let ps = value as? NSParagraphStyle,
+                  let block = ps.textBlocks.first as? NSTextTableBlock,
+                  let table = block.table as? GridTextTable, !table.columnProportions.isEmpty else { return }
+            let key = ObjectIdentifier(table)
+            let group: TableGroup
+            if let existing = groupsByTable[key] {
+                group = existing
+            } else {
+                group = TableGroup(table: table)
+                groupsByTable[key] = group
+                orderedGroups.append(group)
+            }
+            group.blocks.append((block, range))
+        }
+        // Build the engine's payload by appending STRAIGHT into the flat buffers it wants, in the
+        // same order `orderedGroups` walked the document, so the flat answer splits back apart by
+        // each table's own `blocks.count` with no identifying information echoed back.
+        var request = RustEngineTableResize.BatchRequest()
+        let totalCells = orderedGroups.reduce(0) { $0 + $1.blocks.count }
+        request.reserve(tableCount: orderedGroups.count, cellCount: totalCells)
+        for group in orderedGroups {
+            let table = group.table
+            request.beginTable(
+                columnProportions: table.columnProportions, availableWidth: width,
+                outerMarginLeft: table.outerMarginLeft, outerMarginRight: table.outerMarginRight,
+                maxWidth: table.maxWidth)
+            // The SAME four `block.width(for:edge:)` reads the local formula makes, so the payload
+            // never disagrees with what the host already knows about its own blocks.
+            for entry in group.blocks {
+                request.addCell(
+                    startingColumn: entry.block.startingColumn, columnSpan: entry.block.columnSpan,
+                    padLeft: entry.block.width(for: .padding, edge: .minX),
+                    padRight: entry.block.width(for: .padding, edge: .maxX),
+                    borderLeft: entry.block.width(for: .border, edge: .minX),
+                    borderRight: entry.block.width(for: .border, edge: .maxX))
+            }
+        }
+        // `nil`, or an answer whose count does not match every table's cells, means the engine
+        // refused (or could not honestly answer) the payload — leave EVERY table's cells exactly
+        // as they were rather than writing a partial or guessed answer, the same all-or-nothing
+        // refusal the single-table export makes.
+        if let flatWidths = request.solve(), flatWidths.count == totalCells {
+            var cursor = 0
+            for group in orderedGroups {
+                for entry in group.blocks {
+                    let target = max(1, CGFloat(flatWidths[cursor]))
+                    cursor += 1
+                    // Only cells whose width actually MOVES are touched — same discipline as the
+                    // local formula below, so a reflow at an unchanged width re-snaps nothing.
+                    guard abs(entry.block.contentWidth - target) > 0.5 else { continue }
+                    entry.block.setContentWidth(target, type: .absoluteValueType)
+                    touched.append(entry.range)
+                }
+            }
+        }
+        #else
+        var edgesByTable: [ObjectIdentifier: [CGFloat]] = [:]
         storage.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
             guard let ps = value as? NSParagraphStyle,
                   let block = ps.textBlocks.first as? NSTextTableBlock,
@@ -973,28 +1093,22 @@ enum TableBlockBuilder {
             let edges = edgesByTable[key] ?? {
                 let e = table.edges(forWidth: width); edgesByTable[key] = e; return e
             }()
-            let ncol = table.numberOfColumns
-            let c0 = min(block.startingColumn, ncol)
-            let c1 = min(block.startingColumn + block.columnSpan, ncol)
-            guard c1 > c0, c1 < edges.count else { return }
             // Read BOTH horizontal edges back, never one of them twice. With per-edge borders the
             // left and right widths legitimately differ (a table with no outer rule but an inner one
             // has left 0 and right 1), and doubling the left produced a target that never matched
             // what `build` had already set — so every cell "changed" on every reflow: real work, and
-            // a visible re-snap of the whole table right after it was drawn.
-            let padL = block.width(for: .padding, edge: .minX)
-            let padR = block.width(for: .padding, edge: .maxX)
-            let borderL = block.width(for: .border, edge: .minX)
-            let borderR = block.width(for: .border, edge: .maxX)
-            // SUBTRACT BOTH IN FULL, exactly as `build` does — `collapsesBorders` is off, so nothing
-            // is shared with a neighbour to double-account for, and `build` already left a non-owner
-            // side at width 0 (see its Step B/C), so reading it back here and subtracting it in full
-            // costs nothing extra. This formula must stay identical to the one in `build` or every
-            // cell reads as "changed" on every reflow (see the note above: real work plus a visible
-            // re-snap) — the old halving existed only to model AppKit's collapsing, which no longer
-            // runs, and its perimeter-vs-interior distinction goes with it: every cell's own left/
-            // right width, owner or not, is now exactly what it should be subtracted at, in full.
-            let target = max(1, edges[c1] - edges[c0] - padL - padR - borderL - borderR)
+            // a visible re-snap of the whole table right after it was drawn. `build` already left a
+            // non-owner side at width 0 (see its Step B/C), so subtracting it in full here costs
+            // nothing extra — the old halving existed only to model AppKit's collapsing, which no
+            // longer runs.
+            guard let target = localCellTargetWidth(
+                edges: edges, numberOfColumns: table.numberOfColumns,
+                startingColumn: block.startingColumn, columnSpan: block.columnSpan,
+                padLeft: block.width(for: .padding, edge: .minX),
+                padRight: block.width(for: .padding, edge: .maxX),
+                borderLeft: block.width(for: .border, edge: .minX),
+                borderRight: block.width(for: .border, edge: .maxX))
+            else { return }
             // Only cells whose width actually MOVES are touched. This pass runs on every reflow AND
             // in `display(_:)`'s tail, where the column usually hasn't changed at all — recording
             // every cell unconditionally meant invalidating the whole document to set widths to the
@@ -1003,17 +1117,23 @@ enum TableBlockBuilder {
             block.setContentWidth(target, type: .absoluteValueType)
             touched.append(range)
         }
+        #endif
+
         // Widths changed on the shared block objects; nudge layout to pick them up — ONCE, over the
         // span they cover, not once per cell. Measured on a 62-table Korean form (1,702 cell
         // paragraphs): per-cell invalidation cost 73 ms against 5 ms for a 610-cell Word report — a
         // 14× gap on 2.8× the cells, because each `invalidateLayout` call re-walks what follows it.
-        // One call over the union is the same instruction to the layout manager, paid once.
-        if let lower = touched.first?.location, let last = touched.last,
-           let lm = storage.layoutManagers.first {
-            let upper = min(storage.length, last.location + last.length)
-            guard upper > lower else { return }
-            lm.invalidateLayout(forCharacterRange: NSRange(location: lower, length: upper - lower),
-                                actualCharacterRange: nil)
-        }
+        // One call over the union is the same instruction to the layout manager, paid once. The
+        // union is taken by MIN/MAX over every touched range rather than `touched.first`/`.last`,
+        // because the engine branch collects `touched` table-by-table (pass 2), not necessarily in
+        // ascending document order the way the single-pass `#else` walk always produced it.
+        guard let lower = touched.map({ $0.location }).min(),
+              let upperBound = touched.map({ $0.location + $0.length }).max(),
+              let lm = storage.layoutManagers.first else { return touched.count }
+        let upper = min(storage.length, upperBound)
+        guard upper > lower else { return touched.count }
+        lm.invalidateLayout(forCharacterRange: NSRange(location: lower, length: upper - lower),
+                            actualCharacterRange: nil)
+        return touched.count
     }
 }

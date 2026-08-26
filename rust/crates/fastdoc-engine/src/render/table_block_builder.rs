@@ -30,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 use swiftshim::{
     AttrValue, CGFloat, NSAttributedString, NSAttributedStringKey, NSColor, NSImage,
     NSLayoutManager, NSMutableAttributedString, NSMutableParagraphStyle, NSRange, NSRectEdge,
-    NSTextStorage, NSTextTable, NSTextTableBlock,
+    NSTextTable, NSTextTableBlock,
 };
 
 use crate::render::grid_text_table_block::GridTextTableBlock;
@@ -310,41 +310,6 @@ impl TableBlockBuilder {
     pub fn laid_out_border_width(declared: CGFloat) -> CGFloat {
         if declared > 0.0 { declared.ceil() } else { 0.0 }
     }
-
-    // swift: Render/TableBlockBuilder.swift:958-1018
-    /// Re-solve every `GridTextTable`'s cells to ABSOLUTE integer widths for the current reading-column
-    /// `width`. Tables are built at a placeholder width (`initialColumnWidth`); this is the counterpart
-    /// of the old custom engine's `relayout`, but far smaller — it just rewrites each cell block's
-    /// content width from the table's stored proportions, then the layout manager reflows. Called from
-    /// the window controller on first layout and every reflow (resize / sidebar toggle).
-    pub fn resize_tables(storage: &mut NSTextStorage, width: CGFloat) {
-        if !(width > 0.0) || storage.length() == 0 {
-            return;
-        }
-        let whole = NSRange::new(0, storage.length());
-        let mut edges_by_table: HashMap<usize, Vec<CGFloat>> = HashMap::new();
-        let mut touched: Vec<NSRange> = Vec::new();
-        // swift: storage.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in ... }
-        //
-        // The body reads a `GridTextTable` back off a paragraph's first `NSTextTableBlock`, re-solves
-        // its edges once per table (memoised in `edgesByTable`), and rewrites the owning block's
-        // content width — all pure geometry, expressible now; only the live callback plumbing
-        // (`enumerateAttribute` over a mutable `NSTextStorage`, and `ObjectIdentifier`-keyed table
-        // identity) needs the real TextKit object model B-phase brings.
-        let _ = (&mut edges_by_table, &mut touched, whole);
-        todo!("swift:968-1005 storage.enumerateAttribute(.paragraphStyle) body — needs a live NSTextStorage/NSTextTableBlock object model");
-        // swift: Render/TableBlockBuilder.swift:1006-1017
-        // one invalidateLayout call over the union of touched ranges, not per cell:
-        //
-        //   if let lower = touched.first?.location, let last = touched.last,
-        //      let lm = storage.layoutManagers.first {
-        //       let upper = min(storage.length, last.location + last.length)
-        //       guard upper > lower else { return }
-        //       lm.invalidateLayout(forCharacterRange: NSRange(location: lower, length: upper - lower),
-        //                           actualCharacterRange: nil)
-        //   }
-    }
-
 
     // swift: Render/TableBlockBuilder.swift:243-284
     /// - Parameters:
