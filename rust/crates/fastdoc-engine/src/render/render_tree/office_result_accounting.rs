@@ -390,17 +390,25 @@ pub(crate) fn account_section_declaration(
     ledger.record(mapped("OfficeSectionDeclaration.paper"))?;
     ledger.record(mapped("OfficeSectionDeclaration.page_number_start"))?;
     ledger.record(mapped("OfficeSectionDeclaration.line_grid_pitch"))?;
-    let _ = (hides_header, hides_footer);
-    ledger.record(derived("OfficeSectionDeclaration.hides_header"))?;
-    ledger.record(derived("OfficeSectionDeclaration.hides_footer"))?;
+    // These six are REFUSED together, and `hides_header` / `hides_footer` are not a milder case
+    // than the other four: no line anywhere reads them on the way to the tree
+    // (`office_adapter.rs` never mentions either), and `office_project` reconstructs no section
+    // declaration at all -- a document with more than one section is refused outright, and a
+    // document with one gets `[]`. Calling them `derived` said the tree could get them back, which
+    // is a strictly stronger claim than `refused` and was never true (invariant 107). They move
+    // back to `Mapped` when `wire::Section` gains somewhere to put them, not before.
     let _ = (
         footnote_separator,
         page_border,
+        hides_header,
+        hides_footer,
         hides_master_page,
         is_vertical,
     );
     ledger.record(refused("OfficeSectionDeclaration.footnote_separator"))?;
     ledger.record(refused("OfficeSectionDeclaration.page_border"))?;
+    ledger.record(refused("OfficeSectionDeclaration.hides_header"))?;
+    ledger.record(refused("OfficeSectionDeclaration.hides_footer"))?;
     ledger.record(refused("OfficeSectionDeclaration.hides_master_page"))?;
     ledger.record(refused("OfficeSectionDeclaration.is_vertical"))?;
     ledger.finish_expected(KEYS, KEYS.len())
@@ -544,8 +552,11 @@ mod tests {
         let section = account_section_declaration(&OfficeSectionDeclaration::default()).unwrap();
         assert_eq!(section.decision_count(), 9);
         assert_eq!(section.mapped_count(), 3);
-        assert_eq!(section.derived_count(), 2);
-        assert_eq!(section.refused_count(), 4);
+        // Nothing in a section declaration is DERIVED. `hides_header` / `hides_footer` were
+        // counted here until the tree was asked to produce them and could not: see the comment
+        // beside their `refused` calls.
+        assert_eq!(section.derived_count(), 0);
+        assert_eq!(section.refused_count(), 6);
 
         let restart = account_page_number_restart(&OfficePageNumberRestart {
             block: 0,
