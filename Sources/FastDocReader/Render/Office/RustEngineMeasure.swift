@@ -59,15 +59,15 @@ enum RustEngineMeasure {
 
         for (index, paragraph) in (paragraphs ?? UnsafeBufferPointer<FastdocTextMeasureParagraph>(start: nil, count: 0)).enumerated() {
             let start = result.length
-            var lastRunFont: NSFont?
+            var firstRunFont: NSFont?
             for run in runs ?? UnsafeBufferPointer<FastdocTextMeasureRun>(start: nil, count: 0)
             where run.paragraph_index == index {
                 switch run.kind {
                 case FastdocTextMeasureRunKindText:
                     let piece = attributedRun(for: run)
-                    lastRunFont = piece.length > 0
-                        ? piece.attribute(.font, at: piece.length - 1, effectiveRange: nil) as? NSFont
-                        : lastRunFont
+                    if firstRunFont == nil, piece.length > 0 {
+                        firstRunFont = piece.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+                    }
                     result.append(piece)
                 case FastdocTextMeasureRunKindAttachment:
                     result.append(attributedAttachment(for: run))
@@ -80,16 +80,22 @@ enum RustEngineMeasure {
             // builds a paragraph in (`result.append("\n"); let paragraphRange = ...; addAttribute`).
             // A paragraph with no runs (a blank line) still gets its style on the lone "\n", which
             // is what makes an EMPTY paragraph's line height agree with the host's own answer too.
-            // WITH THE PARAGRAPH'S OWN FONT. An unattributed terminator is the last character of a
-            // single-paragraph header, and TextKit measures its invisible trailing line fragment —
-            // the one it keeps for a cursor past the end — against whatever font that character
-            // carries. Left bare it fell to a default face and reported 14.0pt where the host's own
-            // build reported 13.0, which is the whole of the 1.0pt this port disagreed by on a real
-            // paged header. `OfficeTextBuilder.unifyParagraphTerminators` gives every terminator its
-            // paragraph's font for exactly this reason (invariant 51); the port has to do the same
-            // or it measures a string the host would never have built.
+            // WITH THE PARAGRAPH'S OWN FONT — specifically its FIRST run's, not its last: the host's
+            // own `unifyTerminator` (`OfficeTextBuilder.swift:1690`) copies the attributes AT THE
+            // PARAGRAPH'S START (`result.attributes(at: paragraph.location, ...)`), never the last
+            // run's. The two agree for the overwhelming majority of paragraphs, where every run
+            // shares one font — which is why the earlier `lastRunFont` version measured a real paged
+            // header correctly (single font throughout) while still being the wrong rule in general.
+            // It surfaced on a footnote whose FIRST run is the citation number at the document's own
+            // default size and whose LAST run is the note's smaller body text: `lastRunFont` gave the
+            // terminator the body's small size, TextKit's invisible trailing line fragment measured
+            // short against it, and the note's reserved band came out 6.3pt shorter than the host's
+            // own build for every note in the fixture (`FootnoteHeightsDocumentPathTests`). An
+            // unattributed terminator is still wrong for the reason recorded below — it fell to a
+            // default face and reported 14.0pt where the host's own build reported 13.0 on a real
+            // paged header — so this stays attributed, just to the correct end of the paragraph.
             result.append(NSAttributedString(
-                string: "\n", attributes: lastRunFont.map { [.font: $0] } ?? [:]))
+                string: "\n", attributes: firstRunFont.map { [.font: $0] } ?? [:]))
             let paragraphRange = NSRange(location: start, length: result.length - start)
             if paragraphRange.length > 0 {
                 result.addAttribute(.paragraphStyle, value: paragraphStyle(for: paragraph), range: paragraphRange)

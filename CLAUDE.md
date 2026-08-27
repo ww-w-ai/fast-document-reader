@@ -107,7 +107,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 104 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 105 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -130,6 +130,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | `RenderTheme` tokens, `OfficeTextBuilder`, style resolution | 36, 37, 97 |
 | tables — build, widths, borders, merges, attribute cost | 39, 42, 47, 50, 51, 72, 74, 76 |
 | fonts, per-script slots, substitution | 52, 53, 93, 95 |
+| the engine's measurement port (`RustEngineMeasure`), terminator attributes | 51, 105 |
 | the comments panel | 38 |
 | paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62, 77, 78 |
 | footnotes — the band fixpoint, where a note lands, the settle's round budget | 98, 99 |

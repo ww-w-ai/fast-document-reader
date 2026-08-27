@@ -1433,6 +1433,46 @@ final class MarkdownDocument: NSDocument {
     /// fell into that strip and the line vanished, with the next line printing half-cut at the top of
     /// the following page — text that `pdftotext` still finds in the file because it was drawn, just
     /// onto no sheet.
+    /// Every note's own height at the column it will be drawn at, keyed by the number the document
+    /// gave it — the input the settle loop then adds up without re-building any of them
+    /// (invariant 98's cost premise; it runs up to eight times).
+    ///
+    /// A named method with a RETURN VALUE rather than a few lines inside `applyPageBand`, because
+    /// the choice it makes cannot be seen from the outside otherwise. Engine and host measure the
+    /// SAME document, so their numbers agree — which means a wiring that asks the engine and then
+    /// uses the host's map is invisible to every comparison of values (invariant 103). The test
+    /// therefore hands `engineReply` an answer the host could never produce and requires the map to
+    /// carry it, the same shape `MasterPagePainter.draw`'s `templateSelection` takes. Production
+    /// passes nothing and the real engine is asked.
+    func footnoteHeights(theme: RenderTheme, bandColumn: CGFloat,
+                         engineReply: [Int: CGFloat]?? = nil) -> [Int: CGFloat] {
+        func hostFootnoteHeights() -> [Int: CGFloat] {
+            officeFootnotes.reduce(into: [:]) { out, note in
+                out[note.number] = PageBandGeometry.builtHeight(
+                    of: note.blocks, theme: theme, columnWidth: bandColumn,
+                    documentDefaultFontSize: officeDefaultBodyFontSize,
+                    pageContentWidth: officePageContentWidth)
+            }
+        }
+        #if FMD_RUST_ENGINE
+        // S5D-2: the engine's own answer for the SAME question this render would otherwise measure
+        // note by note — `PageBandGeometry::built_height`, batched into ONE crossing.
+        // `resolveNoteHeights` rejects the WHOLE reply rather than trust a map missing a number
+        // THIS render is about to draw: the bytes are parsed twice and only the numbers a document
+        // declared are common to both parses (`s5d2.md`'s risk section). `nil` — no handle, a bad
+        // payload, or a number this render holds that the reply does not name — falls back to the
+        // host's own loop, unchanged.
+        let reply = engineReply ?? officeEngineHandle?.footnoteHeights(
+            count: officeFootnotes.count, columnWidth: bandColumn,
+            pageContentWidth: officePageContentWidth,
+            documentDefaultFontSize: officeDefaultBodyFontSize)
+        return PageBandGeometry.resolveNoteHeights(hostNumbers: officeFootnotes.map(\.number),
+                                                   engine: reply) ?? hostFootnoteHeights()
+        #else
+        return hostFootnoteHeights()
+        #endif
+    }
+
     func applyPageBand(to wc: DocumentWindowController, theme: RenderTheme? = nil,
                        readingColumn: CGFloat? = nil, forPrinting: Bool = false) {
         // The render passes both, because it has already computed them and they must be the SAME
@@ -1485,33 +1525,7 @@ final class MarkdownDocument: NSDocument {
         // settle loop then adds up whichever notes a page turns out to cite (invariant 98) without
         // re-building any of them — it runs up to eight times, and re-typesetting every note on
         // every round is the one cost that would make the fixpoint too expensive to have.
-        func hostFootnoteHeights() -> [Int: CGFloat] {
-            officeFootnotes.reduce(into: [:]) { out, note in
-                out[note.number] = PageBandGeometry.builtHeight(
-                    of: note.blocks, theme: theme, columnWidth: bandColumn,
-                    documentDefaultFontSize: officeDefaultBodyFontSize,
-                    pageContentWidth: officePageContentWidth)
-            }
-        }
-        #if FMD_RUST_ENGINE
-        // S5D-2: the engine's own answer for the SAME question this render would otherwise
-        // measure note by note — `PageBandGeometry::built_height`, batched into one crossing.
-        // `resolveNoteHeights` is the named seam a test can watch: it rejects the WHOLE reply
-        // rather than trust a map missing a number THIS render is about to draw (two independent
-        // parses of the same bytes are never assumed to agree on order, only on the numbers a
-        // document declared — `s5d2.md`'s own risk section). `nil` — no handle, a bad payload, or a
-        // number this render holds that the engine's reply does not name — falls back to the
-        // host's own loop above, unchanged.
-        let footnoteHeights: [Int: CGFloat] = PageBandGeometry.resolveNoteHeights(
-            hostNumbers: officeFootnotes.map(\.number),
-            engine: officeEngineHandle?.footnoteHeights(
-                count: officeFootnotes.count, columnWidth: bandColumn,
-                pageContentWidth: officePageContentWidth,
-                documentDefaultFontSize: officeDefaultBodyFontSize)
-        ) ?? hostFootnoteHeights()
-        #else
-        let footnoteHeights: [Int: CGFloat] = hostFootnoteHeights()
-        #endif
+        let footnoteHeights = footnoteHeights(theme: theme, bandColumn: bandColumn)
         wc.configurePageBand(pageContentHeight: officePageContentHeight, band: sides.band,
                              footnotes: officeFootnotes, footnoteHeights: footnoteHeights,
                              footnoteSeparators: officeSections.enumerated().reduce(into: [:]) {
