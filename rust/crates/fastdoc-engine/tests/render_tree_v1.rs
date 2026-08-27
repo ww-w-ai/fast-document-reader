@@ -427,7 +427,12 @@ fn every_macro_enum_value_is_exercised_by_a_checked_fixture_variant() {
                     flow["widthMode"] = (*value).into();
                     flow["sourceSameWidth"] = (*value == "equal").into();
                     flow["sourceProportionalWidths"] = (*value == "proportional").into();
-                    if *value == "equal" {
+                    // `equal` and `unspecified` are the two modes that must carry NO per-column
+                    // arrays — the first because every column is the same width, the second
+                    // because the document never said what the widths were. Both are checked in
+                    // that direction by `validate`, so the fixture has to match or this coverage
+                    // walk fails for the wrong reason.
+                    if *value == "equal" || *value == "unspecified" {
                         flow["widths"] = serde_json::json!([]);
                         flow["gaps"] = serde_json::json!([]);
                     }
@@ -452,6 +457,7 @@ fn public_typed_builder_uses_the_same_checked_canonicalization() {
         source_ids: vec![],
         default_locale: None,
         declared_faces: Default::default(),
+        default_body_font_size: 0.0,
     };
     let mut builder = RenderTreeBuilder::new("builder-test", document);
     builder.add_source(RenderSourceDraft {
@@ -600,6 +606,7 @@ fn build_with_image_fraction(fraction: Option<f64>) -> Result<ValidatedRenderTre
         source_ids: vec![],
         default_locale: None,
         declared_faces: Default::default(),
+        default_body_font_size: 0.0,
     };
     let mut builder = RenderTreeBuilder::new("image-fraction-test", document);
     builder.add_resource(RenderResourceDraft {
@@ -626,7 +633,7 @@ fn build_with_image_fraction(fraction: Option<f64>) -> Result<ValidatedRenderTre
         source_spans: vec![],
         edit: None,
         payload: NodePayload::Image(Image {
-            resource_id: 1,
+            resource_id: Some(1),
             intrinsic_size: Size {
                 width: 10.0,
                 height: 10.0,
@@ -635,6 +642,7 @@ fn build_with_image_fraction(fraction: Option<f64>) -> Result<ValidatedRenderTre
             display_width_fraction: fraction,
             alignment: Alignment::Natural,
             alt_text: None,
+            source_key: None,
         }),
     });
     builder.build()
@@ -1186,10 +1194,6 @@ fn every_required_malformed_schema_mutation_is_killed() {
             }),
         ),
         (
-            "cell-padding-negative",
-            Box::new(|v| v["nodes"][15]["data"]["edgePadding"]["right"] = (-1).into()),
-        ),
-        (
             "diagonal-width-negative",
             Box::new(|v| v["nodes"][15]["data"]["diagonal"]["side"]["widthPoints"] = (-1).into()),
         ),
@@ -1232,10 +1236,6 @@ fn every_required_malformed_schema_mutation_is_killed() {
             Box::new(|v| v["nodes"][13]["data"]["style"]["sourceWidthPoints"] = (-1).into()),
         ),
         (
-            "table-default-padding-negative",
-            Box::new(|v| v["nodes"][13]["data"]["style"]["defaultPadding"]["left"] = (-1).into()),
-        ),
-        (
             "table-edge-border-width-negative",
             Box::new(|v| {
                 v["nodes"][13]["data"]["style"]["edgeBorders"]["top"]["value"]["widthPoints"] =
@@ -1268,7 +1268,24 @@ fn every_required_malformed_schema_mutation_is_killed() {
     ];
     let ids: BTreeSet<_> = mutations.iter().map(|(id, _)| *id).collect();
     assert_eq!(ids.len(), mutations.len(), "duplicate mutation IDs");
-    assert_eq!(mutations.len(), 103, "mutation inventory drifted");
+    // 103 -> 101: `cell-padding-negative` and `table-default-padding-negative` were retired, not
+    // weakened. They exercise ONE helper (`validate_optional_insets`, reached from both a cell's
+    // `edgePadding` and a table's `defaultPadding`), and a negative four-edge padding stopped
+    // being an invalid value: rhwp really produces them and the shipped reader really draws them
+    // (measured, 2 of 674 cells in `59043_regulatory_analysis.hwp`). What stays forbidden — a
+    // padding that is not a NUMBER — cannot be written in JSON at all, so deleting these would
+    // have left the helper with nothing biting it. It is checked on the `from_office` path
+    // instead, where a NaN can actually arrive from a parser:
+    // `office_adapter::tests::a_negative_cell_padding_is_carried_but_a_nan_one_stops_the_document`
+    // asserts BOTH directions, at both the cell and the table level. The rule did not lose its
+    // teeth; it moved to where they can bite.
+    //
+    // `uniform-padding-negative` deliberately STAYS. It is a different field
+    // (`uniformPaddingPoints`, a single scalar) under a different rule, and no measurement shows a
+    // real document landing a negative there — the evidence is for the four-edge shape only. The
+    // two are inconsistent on purpose, and named here so the next reader does not read it as an
+    // oversight and "fix" it in either direction without measuring first.
+    assert_eq!(mutations.len(), 101, "mutation inventory drifted");
     let mut killed = 0;
     for (id, mutate) in mutations {
         let mut value = exhaustive_value();
@@ -1280,7 +1297,7 @@ fn every_required_malformed_schema_mutation_is_killed() {
         );
         killed += 1;
     }
-    assert_eq!(killed, 103);
+    assert_eq!(killed, 101);
 }
 
 fn expected_detail(id: &str) -> &'static str {
@@ -1363,7 +1380,6 @@ fn expected_detail(id: &str) -> &'static str {
         "border-style-unknown" => "unknown variant",
         "border-width-negative" | "diagonal-width-negative" => "border width is invalid",
         "paragraph-border-inside-edge" => "may not declare inside edges",
-        "cell-padding-negative" => "cell padding is invalid",
         "direct-uniform-border-empty" | "style-uniform-border-empty" => "uniform border is empty",
         "uniform-border-width-negative" => "uniform border width is invalid",
         "declared-cell-width-negative" | "uniform-padding-negative" => {
@@ -1374,7 +1390,6 @@ fn expected_detail(id: &str) -> &'static str {
             "source column widths are invalid"
         }
         "table-source-width-negative" => "table source width is invalid",
-        "table-default-padding-negative" => "cell padding is invalid",
         "table-edge-border-width-negative" => "border width is invalid",
         "table-policy-unknown" => "unknown variant",
         "old-wire-table" => "missing field",

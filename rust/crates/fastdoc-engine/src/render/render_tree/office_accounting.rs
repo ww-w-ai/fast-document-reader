@@ -560,10 +560,17 @@ pub(crate) fn column_flow_from_office(
         gaps: gaps.clone(),
         flow_type,
         direction,
+        // The last arm used to claim `Absolute` — that the document declared per-column widths —
+        // when all it actually knew was that neither flag was set (invariant 108). A real
+        // document that says `colCount="2" sameSz="0"` and writes no `<hp:colLine>` at all lands
+        // here, and the validator then demanded a widths array nobody wrote, costing the whole
+        // document. `Unspecified` says what is true: columns were declared, their widths were not.
         width_mode: if *same_width {
             wire::ColumnWidthMode::Equal
         } else if *proportional {
             wire::ColumnWidthMode::Proportional
+        } else if widths.is_empty() && gaps.is_empty() {
+            wire::ColumnWidthMode::Unspecified
         } else {
             wire::ColumnWidthMode::Absolute
         },
@@ -810,6 +817,78 @@ mod tests {
         OfficeFormControlKind, PageNumberField, RectEdge, TabAlignment, TabLeader, UnderlineStyle,
     };
     use swiftshim::{CGSize, NSColor, NSFontDescriptor, NSImage, NSTextAlignment, SwiftString};
+
+    /// A column layout as a real document states one, with only the two flags and the arrays
+    /// varying — everything else is the same in all three cases so the mode is the only thing
+    /// under test.
+    fn column_layout(
+        same_width: bool,
+        proportional: bool,
+        widths: Vec<f64>,
+        gaps: Vec<f64>,
+    ) -> OfficeColumnLayout {
+        OfficeColumnLayout {
+            // Required by the ledger, not incidental: a layout with no flow type is a shape no
+            // reader produces, and `column_flow_from_office` refuses it rather than guess.
+            flow_type: Some(crate::render::office::column_geometry::OfficeColumnFlowType::Normal),
+            count: 2,
+            spacing: 0.0,
+            widths,
+            gaps,
+            proportional,
+            same_width,
+            direction: crate::render::office::column_geometry::OfficeColumnDirection::LeftToRight,
+            separator_type: 0,
+            separator_width_code: 0,
+            // Derived from the code rather than typed in: the ledger cross-checks the two, so a
+            // literal here would be testing whether someone copied a constant correctly.
+            separator_width_pt: crate::render::office::column_geometry::column_width_code_points(0)
+                .expect("code 0 is a real width"),
+            separator_color: None,
+            // Also required by the ledger — the separator's own source colour word.
+            separator_color_ref: Some(0),
+            // The ledger refuses a layout that carries no raw attribute word — a real document
+            // always states one, and accepting `None` here would test a shape no reader produces.
+            source_raw_attributes: Some(0),
+        }
+    }
+
+    /// The width mode must be a statement about what the DOCUMENT said, and the last arm of the
+    /// flag chain used to claim `Absolute` — that per-column widths were declared — when all it
+    /// knew was that neither flag was set (invariant 108). A real document
+    /// (`issue2019_floating_form_74312.hwpx`) states `colCount="2" sameSz="0"` and writes no
+    /// `<hp:colLine>` at all, so it landed on `Absolute` and `validate` then demanded a widths
+    /// array nobody wrote, costing the whole document.
+    ///
+    /// `Equal` would be wrong for it too, even though the host does lay such a document out as an
+    /// equal split: the source explicitly said `sameSz="0"`, NOT same size, and `Equal` asserts
+    /// the opposite of what the document stated. The document is internally inconsistent — it
+    /// declined to say the widths after saying they differ — and `Unspecified` is the only name
+    /// that reports that honestly while leaving `source_same_width` carrying the source's own word.
+    #[test]
+    fn a_declaration_that_named_no_per_column_widths_says_so_rather_than_claiming_absolute() {
+        let unspecified = column_flow_from_office(&column_layout(false, false, vec![], vec![]))
+            .expect("maps");
+        assert_eq!(unspecified.width_mode, wire::ColumnWidthMode::Unspecified);
+        assert!(!unspecified.source_same_width, "the source's own flag is carried unchanged");
+
+        let absolute =
+            column_flow_from_office(&column_layout(false, false, vec![100.0, 100.0], vec![0.0, 0.0]))
+                .expect("maps");
+        assert_eq!(
+            absolute.width_mode,
+            wire::ColumnWidthMode::Absolute,
+            "widths that ARE declared still read as absolute"
+        );
+
+        let equal = column_flow_from_office(&column_layout(true, false, vec![], vec![])).expect("maps");
+        assert_eq!(equal.width_mode, wire::ColumnWidthMode::Equal);
+
+        let proportional =
+            column_flow_from_office(&column_layout(false, true, vec![1.0, 1.0], vec![0.0, 0.0]))
+                .expect("maps");
+        assert_eq!(proportional.width_mode, wire::ColumnWidthMode::Proportional);
+    }
 
     fn fixture(
         span: Span,

@@ -2069,6 +2069,20 @@ pub struct OfficeReadResult {
     /// Serialized as base64 strings. Foundation's `Data: Decodable` consumes that exact JSON
     /// shape, preserving the bytes the live HWP parse handle extracted before it was closed.
     pub images: std::collections::HashMap<SwiftString, Data>,
+    /// `.image(id:)` keys the reader itself established have NO bytes behind them — an empty
+    /// `<hc:img binaryItemIDRef="">`, an external link, or bin_data_id's own "no bin data"
+    /// sentinel (`0`). This is a POSITIVE statement, set only where the truth is known (the
+    /// reader that just asked its own image FFI and got nothing back), and it exists specifically
+    /// so that fact stays distinguishable from a caller's resource map simply being incomplete —
+    /// which is a programming error and keeps `MissingResource`'s full strictness
+    /// (`office_adapter::Ctx::resolve_resource`). Collapsing the two into "the key is just absent
+    /// from `images`" was the defect this field replaces: 12 of 400 real documents were refused
+    /// outright for a picture the shipped Swift reader has always drawn as an empty box at the
+    /// authored size (`OfficeTextBuilder.appendImage` reserves regardless of whether bytes exist).
+    /// Empty for the zip-backed readers, which have no equivalent "declared but linked/broken"
+    /// signal yet, and for every HWP picture that DOES have bytes — so a document with no such
+    /// picture is byte-identical to before this field existed.
+    pub pictures_declared_without_bytes: std::collections::HashSet<SwiftString>,
     /// Inline vector drawings keyed by the `.image(id:)` layout node that reserves their box.
     /// The host paints these paths and installs the resulting bytes into `images` before layout.
     pub vector_graphics: std::collections::HashMap<
@@ -2281,7 +2295,8 @@ pub struct OfficeReadResult {
 impl PartialEq for OfficeReadResult {
     fn eq(&self, other: &Self) -> bool {
         let Self {
-            blocks, comments, images, vector_graphics, default_body_font_size, declared_faces,
+            blocks, comments, images, pictures_declared_without_bytes, vector_graphics,
+            default_body_font_size, declared_faces,
             page_content_width, page_margin_left, page_margin_right, page_content_height,
             page_margin_top, page_margin_bottom, page_header_distance, page_footer_distance,
             headers, footers, footnotes, master_pages, sections, anchored_objects,
@@ -2291,6 +2306,7 @@ impl PartialEq for OfficeReadResult {
         blocks == &other.blocks
             && comments == &other.comments
             && map_eq(images, &other.images)
+            && pictures_declared_without_bytes == &other.pictures_declared_without_bytes
             && map_eq(vector_graphics, &other.vector_graphics)
             && default_body_font_size == &other.default_body_font_size
             && map_eq(declared_faces, &other.declared_faces)
@@ -2323,6 +2339,7 @@ impl Default for OfficeReadResult {
             blocks: vec![],
             comments: vec![],
             images: std::collections::HashMap::new(),
+            pictures_declared_without_bytes: std::collections::HashSet::new(),
             vector_graphics: std::collections::HashMap::new(),
             default_body_font_size: 11.0,
             declared_faces: std::collections::HashMap::new(),

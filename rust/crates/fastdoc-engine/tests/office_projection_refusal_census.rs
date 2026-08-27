@@ -17,6 +17,16 @@
 //!   same nine, over `HwpReader` directly rather than `from_office` — this file is the first to run
 //!   them through the adapter).
 //!
+//! This census reports; it does not gate on outcome MIX. `INVARIANTS.md` 109: a real fixture can
+//! move from refused to accepted the moment its own bug is fixed (S6-5a moved
+//! `issue2083_hide_fill_page.hwpx` that way), so a test that requires "at least one refused" among
+//! real fixtures breaks every time this crate's own goal — fewer refusals — succeeds. Whether the
+//! machinery can still tell the two outcomes apart at all is proven separately, by a SYNTHETIC
+//! input guaranteed to refuse by construction (`office_result_forces_missing_resource_by_omitting_the_resource_map`,
+//! below) — a caller that leaves a declared resource key out of its `resources` map is a
+//! programming error, not a document fact, and can never be "fixed" out of existence the way a
+//! real document's own defect can.
+//!
 //! `adapter_error_kind` (`office::projection_ledger`) is the SAME function S4-05's fallback ledger
 //! uses to name a `from_office` refusal — sharing it is what lets a later cross-check test compare
 //! this census's counts against the ledger's without the two ever disagreeing about what to call a
@@ -25,9 +35,11 @@
 use fastdoc_engine::render::office::docx_reader::DocxReader;
 use fastdoc_engine::render::office::hwp_reader::mapping::HwpReader;
 use fastdoc_engine::render::office::odt_reader::OdtReader;
+use fastdoc_engine::render::office::office_block::{OfficeBlock, OfficeReadResult};
 use fastdoc_engine::render::office::projection_ledger::adapter_error_kind;
 use fastdoc_engine::render::office::zip_archive::ZipArchive;
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
+use swiftshim::{CGSize, SwiftString};
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -266,6 +278,13 @@ fn registered_fixtures() -> Vec<(DocumentFormat, &'static str, Vec<u8>)> {
             "feature-picture-fill-refusal-hwpx (issue2083_hide_fill_page.hwpx)",
             rhwp_fixture("samples", "issue2083_hide_fill_page.hwpx"),
         ),
+        // S6-5a fixed the bug this fixture's NAME describes (a declared picture with no bytes
+        // behind it now renders an intentionally empty box, parity with the shipped Swift reader,
+        // instead of refusing the whole document — `OfficeReadResult
+        // .pictures_declared_without_bytes`) — so this entry is `accepted` now. Left in place
+        // rather than removed: the census's job is to report what real fixtures actually do, and
+        // "used to refuse, now doesn't" is itself the evidence the fix landed. See this file's own
+        // doc comment for why nothing here asserts a minimum refused count any more.
     ]
 }
 
@@ -300,15 +319,52 @@ fn refusal_census_over_every_registered_fixture() {
         "the census table's counts must sum to the fixture count"
     );
 
-    // At least one fixture must be accepted and at least one refused, or this census is not
-    // exercising the fork S4-05's fallback depends on — a corpus that is all-accept or all-refuse
-    // would make the ledger cross-check vacuous in one direction.
+    // Only a floor on ACCEPTED, never on refused — see this file's own doc comment
+    // (`INVARIANTS.md` 109): a real fixture's refusal is a bug report, and this crate's whole
+    // point is to make those go away. A census that required at least one refused real fixture
+    // would fail on the day every one of them is finally fixed, which is success, not a
+    // regression. Whether refusal itself still works is proven separately, by a synthetic input
+    // guaranteed to refuse by construction — see
+    // `office_result_forces_missing_resource_by_omitting_the_resource_map` below.
     assert!(
         by_kind.contains_key("accepted"),
         "expected at least one fixture to be accepted by from_office; census: {by_kind:?}"
     );
-    assert!(
-        by_kind.keys().any(|k| k != "accepted"),
-        "expected at least one fixture to be refused by from_office; census: {by_kind:?}"
+}
+
+/// The corroboration `refusal_census_over_every_registered_fixture` used to get from "at least
+/// one real fixture refuses" — removed because that made the census fail on the day this crate
+/// succeeds at its own goal (`INVARIANTS.md` 109). This proves the SAME thing (the adapter can
+/// still produce `MissingResource`, and `outcome_for`/`adapter_error_kind` can still name it) with
+/// an input that refuses by CONSTRUCTION rather than by a real document's current defect: a block
+/// naming a resource key the caller's `resources` map does not contain is a programming error
+/// (the caller forgot to fill it in), never a document fact — the exact case S6-5a's own fix
+/// (`OfficeReadResult.pictures_declared_without_bytes`) deliberately did NOT weaken
+/// (`office_adapter::Ctx::resolve_resource` keeps its full strictness for it) — so this can never
+/// stop refusing the way a real fixture's bug can.
+#[test]
+fn office_result_forces_missing_resource_by_omitting_the_resource_map() {
+    let mut result = OfficeReadResult::default();
+    result.blocks.push(OfficeBlock::Image {
+        id: SwiftString::from("this-key-is-never-in-resources-or-images".to_string()),
+        size: CGSize { width: 10.0, height: 10.0 },
+        alignment: None,
+    });
+
+    let err = ValidatedRenderTree::from_office(OfficeAdapterInput {
+        format: DocumentFormat::Docx,
+        source_name: "synthetic.docx",
+        source_bytes: &[],
+        result: &result,
+        resources: BTreeMap::new(),
+    })
+    .expect_err("a block naming a resource key absent from both maps must refuse, by construction");
+
+    assert_eq!(
+        err,
+        fastdoc_engine::render::render_tree::OfficeAdapterError::MissingResource(
+            "this-key-is-never-in-resources-or-images".to_string()
+        ),
+        "expected exactly the caller-omitted-the-key refusal, got a different kind: {err:?}"
     );
 }

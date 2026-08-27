@@ -16,10 +16,12 @@
 //! `projection_ledger`), and the two are compared per kind — not "the ledger is non-empty", which
 //! would still pass if every refusal but one were swallowed.
 
+use fastdoc_engine::render::office::docx_reader::DocxReader;
 use fastdoc_engine::render::office::hwp_reader::mapping::HwpReader;
 use fastdoc_engine::render::office::office_export::to_json;
 use fastdoc_engine::render::office::office_project::project;
 use fastdoc_engine::render::office::projection_ledger;
+use fastdoc_engine::render::office::zip_archive::ZipArchive;
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
 
 use std::collections::BTreeMap;
@@ -131,6 +133,34 @@ fn docx_zip_bytes() -> Vec<u8> {
     build_stored_zip(&entries)
 }
 
+/// A docx with ONE inline picture (`w:drawing`/`a:blip r:embed="rId2"`) whose relationship
+/// resolves to `media/image1.png` — a path this zip never actually stores. That absence does not
+/// matter to `DocxReader::read`: `OfficeBlock::Image.id` is the relationship TARGET string
+/// (`part_b.rs::resolve_id`), not a lookup into the archive, so this document reads cleanly and
+/// hands the adapter one `.image(id: "media/image1.png")`. The refusal this fixture exists to
+/// prove comes from a different, PERMANENT fact: `call_read_office_json`'s own FFI contract
+/// always supplies an EMPTY `resources` map (see the doc comment on the test below), and docx has
+/// no `OfficeReadResult.images` pre-decode (that is HWP-only — the zip readers resolve pixels
+/// lazily from the archive at reconcile time, which this synthetic path never reaches). So this
+/// key can resolve through NEITHER map, `MissingResource` fires, and it will keep firing exactly
+/// as long as `call_read_office_json` keeps its resources map empty — a structural property of
+/// the export, not a bug some future sprint will fix out from under this test (unlike a real
+/// document picked for CURRENTLY having a defect, which the fix this sprint exists to make stops
+/// having).
+const DOCX_RELS_WITH_IMAGE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/image1.png\"/></Relationships>\n";
+const DOCX_DOCUMENT_XML_WITH_IMAGE: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\" xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body><w:p><w:r><w:drawing><wp:extent cx=\"914400\" cy=\"914400\"/><a:blip r:embed=\"rId2\"/></w:drawing></w:r></w:p></w:body></w:document>\n";
+
+fn docx_zip_bytes_with_unresolvable_image() -> Vec<u8> {
+    let mut entries = vec![
+        ZipEntry { name: "[Content_Types].xml", data: DOCX_CONTENT_TYPES.as_bytes() },
+        ZipEntry { name: "_rels/.rels", data: DOCX_RELS.as_bytes() },
+        ZipEntry { name: "word/_rels/document.xml.rels", data: DOCX_RELS_WITH_IMAGE.as_bytes() },
+        ZipEntry { name: "word/document.xml", data: DOCX_DOCUMENT_XML_WITH_IMAGE.as_bytes() },
+    ];
+    entries.sort_by_key(|e| e.name);
+    build_stored_zip(&entries)
+}
+
 /// `Vendor/rhwp-src/<subdir>/<name>`, resolved from `CARGO_MANIFEST_DIR` — this crate is
 /// `rust/crates/fastdoc-ffi`, matching `office_tree_ffi.rs::rhwp_saved_fixture`.
 fn rhwp_fixture(subdir: &str, name: &str) -> Vec<u8> {
@@ -220,34 +250,42 @@ fn an_accepted_fixture_comes_back_from_the_projection_path() {
 // S4-05: the ledger records it under the same kind `from_office` produced directly.
 // -------------------------------------------------------------------------------------------
 
-/// `SO-SUEOP.hwp` (S4-03's census, `office_projection_refusal_census.rs`) is refused by
-/// `from_office` with `OfficeAdapterError::MissingResource` — this export always supplies an
-/// empty `resources` map (S4-07's design section: unchanged from `fastdoc_read_office_tree`'s own
-/// pre-existing behaviour), so any document declaring an image hits this refusal at the FFI
-/// boundary specifically, regardless of whether the reader itself pre-decoded the picture.
+/// This fixture used to be a real HWP document picked because it CURRENTLY had a defect
+/// (`SO-SUEOP.hwp`, `MissingResource("hwpshape:1")`, then `59043_regulatory_analysis.hwp`,
+/// `Canonicalization("cell padding is invalid")`) — the wrong direction, per `INVARIANTS.md` 109:
+/// a test that needs a real document to STAY broken breaks again every time that document gets
+/// fixed, and the fix is exactly this roadmap's job. `docx_zip_bytes_with_unresolvable_image`
+/// (above) refuses for a reason that is a PERMANENT property of the export being tested here, not
+/// a defect this or any future sprint will remove: `call_read_office_json` always calls
+/// `from_office` with an empty `resources` map (S4-07's own design — unchanged from
+/// `fastdoc_read_office_tree`'s pre-existing behaviour), and docx has no reader-side pre-decode to
+/// fall back on (that is HWP-only), so ANY docx declaring an image refuses at this FFI boundary,
+/// forever, by construction.
 #[test]
 fn a_refused_fixture_still_comes_back_from_the_reader_path_and_the_ledger_names_it() {
     let _lock = LEDGER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let bytes = rhwp_fixture("samples", "SO-SUEOP.hwp");
-    let result = HwpReader::read_before_host_font_substitution(&swiftshim::Data::fromBytes(bytes.clone()))
-        .expect("HwpReader::read succeeds on this fixture");
+    let bytes = docx_zip_bytes_with_unresolvable_image();
+    let archive = ZipArchive::new(swiftshim::Data::fromBytes(bytes.clone()))
+        .unwrap_or_else(|e| panic!("not a valid zip: {e:?}"));
+    let result =
+        DocxReader::read(&archive).unwrap_or_else(|e| panic!("DocxReader::read failed: {e}"));
 
     let expected_kind = ValidatedRenderTree::from_office(OfficeAdapterInput {
-        format: DocumentFormat::Hwp,
-        source_name: "document.hwp",
+        format: DocumentFormat::Docx,
+        source_name: "document.docx",
         source_bytes: &bytes,
         result: &result,
         resources: BTreeMap::new(),
     })
     .err()
     .map(|e| projection_ledger::adapter_error_kind(&e).to_string())
-    .expect("this fixture is refused by from_office (S4-03's census recorded it as such)");
+    .expect("this fixture is refused by from_office (an unresolvable image, by construction)");
 
     let reader_json = to_json(&result).expect("to_json accepts this fixture (no master page/anchored object)");
 
     projection_ledger::clear();
     let ffi_output =
-        call_read_office_json(&bytes, "hwp").expect("fastdoc_read_office_json must not return NULL");
+        call_read_office_json(&bytes, "docx").expect("fastdoc_read_office_json must not return NULL");
 
     assert_canonically_equal(
         &ffi_output,
@@ -258,12 +296,12 @@ fn a_refused_fixture_still_comes_back_from_the_reader_path_and_the_ledger_names_
     let entries = projection_ledger::snapshot();
     let matching: Vec<_> = entries
         .iter()
-        .filter(|e| e.document_name == "document.hwp" && e.kind == expected_kind)
+        .filter(|e| e.document_name == "document.docx" && e.kind == expected_kind)
         .collect();
     assert_eq!(
         matching.len(),
         1,
-        "expected exactly one ledger entry for document.hwp under kind {expected_kind:?}, got: {entries:?}"
+        "expected exactly one ledger entry for document.docx under kind {expected_kind:?}, got: {entries:?}"
     );
 }
 

@@ -294,17 +294,29 @@ impl HwpReader {
             // key `office_adapter.rs` asked for while building a HEADER node, never fetched because
             // this call only walked `result.blocks`. Four separate walks, one per array that can
             // carry an `.image`, all merged into the SAME map `resolve_resource` reads from.
-            for (k, v) in Self::collect_images(handle, &result.blocks) {
+            let (found, without_bytes) = Self::collect_images(handle, &result.blocks);
+            for (k, v) in found {
                 result.images.insert(SwiftString::from(k), v);
             }
+            for k in without_bytes {
+                result.pictures_declared_without_bytes.insert(SwiftString::from(k));
+            }
             for hf in result.headers.iter().chain(result.footers.iter()) {
-                for (k, v) in Self::collect_images(handle, &hf.blocks) {
+                let (found, without_bytes) = Self::collect_images(handle, &hf.blocks);
+                for (k, v) in found {
                     result.images.insert(SwiftString::from(k), v);
+                }
+                for k in without_bytes {
+                    result.pictures_declared_without_bytes.insert(SwiftString::from(k));
                 }
             }
             for footnote in &result.footnotes {
-                for (k, v) in Self::collect_images(handle, &footnote.blocks) {
+                let (found, without_bytes) = Self::collect_images(handle, &footnote.blocks);
+                for (k, v) in found {
                     result.images.insert(SwiftString::from(k), v);
+                }
+                for k in without_bytes {
+                    result.pictures_declared_without_bytes.insert(SwiftString::from(k));
                 }
             }
             // `.resolvingFontSubstitution()` is applied HERE, at HWP's own single dispatch point
@@ -329,17 +341,23 @@ impl HwpReader {
     /// A linked (external-URL) image has no `hwpimg:` id and no embedded bytes, so it is skipped here
     /// and resolved by the URL path instead, exactly like a linked docx/odt image.
     // swift: Render/Office/HwpReader.swift:103-140
-    fn collect_images(handle: RhwpHandle, blocks: &[OfficeBlock]) -> std::collections::HashMap<String, Data> {
+    fn collect_images(
+        handle: RhwpHandle,
+        blocks: &[OfficeBlock],
+    ) -> (std::collections::HashMap<String, Data>, std::collections::HashSet<String>) {
         let mut out: std::collections::HashMap<String, Data> = std::collections::HashMap::new();
+        let mut without_bytes: std::collections::HashSet<String> = std::collections::HashSet::new();
         fn walk(
             handle: RhwpHandle,
             block: &OfficeBlock,
             out: &mut std::collections::HashMap<String, Data>,
+            without_bytes: &mut std::collections::HashSet<String>,
         ) {
             match block {
                 OfficeBlock::Image { id, .. } => {
                     let id = id.to_string();
-                    if out.contains_key(&id) || !id.starts_with(HwpReader::HWP_IMAGE_PREFIX) {
+                    if out.contains_key(&id) || without_bytes.contains(&id)
+                        || !id.starts_with(HwpReader::HWP_IMAGE_PREFIX) {
                         return;
                     }
                     // The id may carry the crop this occurrence applies (`hwpimg:5!crop=x,y,w,h`), so
@@ -347,7 +365,17 @@ impl HwpReader {
                     let body = &id[HwpReader::HWP_IMAGE_PREFIX.len()..];
                     let parts: Vec<&str> = body.split(HwpReader::HWP_CROP_SEPARATOR).collect();
                     let Ok(bin_data_id) = parts[0].parse::<u16>() else { return };
-                    let Some(b64) = HwpReader::image_base64(handle, bin_data_id) else { return };
+                    // rhwp is the truth here: `None` means the document names a picture with NO
+                    // bytes behind it — an empty `binDataIDRef`, an external link, or bin_data_id's
+                    // own "no bin data" sentinel (`0`). That is a FACT about the document, recorded
+                    // as a positive statement rather than just leaving the key out of `out` — see
+                    // `OfficeReadResult.pictures_declared_without_bytes` for why the two cases (this,
+                    // vs. a caller's resource map simply being incomplete) must never collapse into
+                    // one "missing" meaning.
+                    let Some(b64) = HwpReader::image_base64(handle, bin_data_id) else {
+                        without_bytes.insert(id);
+                        return;
+                    };
                     let Some(data) = Data::base64Encoded(&b64) else { return };
                     if parts.len() > 1 {
                         if let Some(box_) = HwpReader::crop_box(parts[1]) {
@@ -363,7 +391,7 @@ impl HwpReader {
                     for row in rows {
                         for cell in row {
                             for b in &cell.blocks {
-                                walk(handle, b, out);
+                                walk(handle, b, out, without_bytes);
                             }
                         }
                     }
@@ -372,9 +400,9 @@ impl HwpReader {
             }
         }
         for block in blocks {
-            walk(handle, block, &mut out);
+            walk(handle, block, &mut out, &mut without_bytes);
         }
-        out
+        (out, without_bytes)
     }
 
     /// The id prefix `mapBlock` stamps on an embedded HWP image — kept in ONE place so the writer
@@ -667,9 +695,6 @@ impl HwpReader {
             ));
         }
         let mut result = OfficeReadResult { blocks, comments: Vec::new(), ..Default::default() };
-        result.vector_graphics = shapes.vectors.clone().into_iter()
-            .map(|(key, value)| (SwiftString::from(key), value)).collect();
-        result.anchored_objects = shapes.anchored.clone();
         // What the DOCUMENT's own font table says about each family it names, handed to the format-
         // neutral substitution pass. It is read only when a declared family cannot be resolved on
         // this machine — 99.5% of font slots across 1,589 real documents (invariant 95) — so on a
@@ -963,6 +988,20 @@ impl HwpReader {
                 )
             })
             .collect();
+        // `vector_graphics`/`anchored_objects` are snapshotted HERE, after EVERY writer that can add
+        // to `shapes.vectors`/`shapes.anchored` has already run — headers, footers, footnotes and
+        // master pages are mapped ABOVE this point (`map_header_footer_entry`/`map_footnote`/
+        // `map_master_page`, each `&mut shapes`) and any of the four can render a drawing or pin a
+        // picture to the paper via `map_shape_block`/`map_image_block`. Taking this snapshot any
+        // earlier — it once sat right after the body `blocks` loop, before any of the four ran — is
+        // exactly INVARIANTS.md 106's class of defect: an expected side that walks only ONE layer
+        // (the body) cannot see a fact a later layer (a 바탕쪽's own vector) adds, and the omission is
+        // invisible until a real document exercises the missing layer. Measured: `SO-SUEOP.hwp`
+        // renders its rule into `header[0][2]` and was refused `MissingResource("hwpshape:1")` because
+        // the early snapshot never saw it.
+        result.vector_graphics = shapes.vectors.clone().into_iter()
+            .map(|(key, value)| (SwiftString::from(key), value)).collect();
+        result.anchored_objects = shapes.anchored.clone();
         Ok(result)
     }
 }

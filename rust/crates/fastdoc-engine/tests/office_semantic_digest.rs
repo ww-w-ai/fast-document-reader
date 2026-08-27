@@ -20,7 +20,7 @@ use fastdoc_engine::render::office::odt_reader::OdtReader;
 use fastdoc_engine::render::office::office_block::{Cell, OfficeBlock, OfficeFormControlKind, OfficeReadResult, Span};
 use fastdoc_engine::render::office::zip_archive::ZipArchive;
 use fastdoc_engine::render::render_tree::{
-    DocumentFormat, OfficeAdapterError, OfficeAdapterInput, ResolvedOfficeResource, ValidatedRenderTree,
+    DocumentFormat, OfficeAdapterInput, ResolvedOfficeResource, ValidatedRenderTree,
 };
 use swiftshim::Data;
 
@@ -1254,34 +1254,25 @@ fn assert_feature_digest_parity(id: &str, format: DocumentFormat, bytes: &[u8], 
     source_digest
 }
 
-/// `feature-multi-column-hwp` and its HWPX sibling do NOT behave the same way through
-/// `from_office`, discovered empirically (not assumed): the HWP side's one inline
-/// `OfficeBlock::Image` names a resource key (`"hwpshape:1"`) that is present in neither
-/// `OfficeReadResult.images` nor `.vector_graphics`, so `from_office` refuses with
-/// `MissingResource` before a tree ever exists — reported here rather than caught and skipped, per
-/// this sprint's own instruction. The HWPX sibling carries no such image and reaches a tree
-/// cleanly, so it gets the full digest-parity treatment the HWP side cannot.
+/// `feature-multi-column-hwp` used to NOT behave the same way through `from_office` as its HWPX
+/// sibling below: the HWP side's one inline `OfficeBlock::Image` names a resource key
+/// (`"hwpshape:1"`) that `HwpReader::map_json` rendered into `shapes.vectors` — but
+/// `result.vector_graphics = shapes.vectors.clone()...` snapshotted that map BEFORE the
+/// header/footer/footnote/master-page mapping that actually renders it ran (the shape sits in
+/// `header[0][2]`), so the key was present in neither `OfficeReadResult.images` nor
+/// `.vector_graphics` by the time `from_office` looked, and it refused with `MissingResource`
+/// before a tree ever existed. S6-5a moved that snapshot to after every writer that can add to
+/// `shapes.vectors` has run (`INVARIANTS.md` 106's own class of defect — an expected side that
+/// walks only one layer). Both siblings now get the full digest-parity treatment.
 #[test]
-fn feature_multi_column_hwp_from_office_refuses_on_a_missing_shape_resource() {
+fn feature_multi_column_hwp_digest_parity() {
     let manifest = load_fixture_manifest();
     let id = "feature-multi-column-hwp";
     let (bytes, format, result) = read_feature_fixture(&manifest, id);
     let multi_column_spans =
         count_matching_spans(&result.blocks, &|s: &Span| s.column_layout.as_ref().map(|cl| cl.count > 1).unwrap_or(false));
     assert!(multi_column_spans >= 1, "{id}: expected at least one span with column_layout.count > 1, found {multi_column_spans}");
-    let err = ValidatedRenderTree::from_office(OfficeAdapterInput {
-        format,
-        source_name: id,
-        source_bytes: &bytes,
-        result: &result,
-        resources: BTreeMap::new(),
-    })
-    .expect_err(&format!("{id}: from_office was expected to refuse on its unresolved \"hwpshape:1\" resource"));
-    assert_eq!(
-        err,
-        OfficeAdapterError::MissingResource("hwpshape:1".to_string()),
-        "{id}: from_office refused with an unexpected error — report this, do not silently reclassify it"
-    );
+    assert_feature_digest_parity(id, format, &bytes, &result);
 }
 
 #[test]

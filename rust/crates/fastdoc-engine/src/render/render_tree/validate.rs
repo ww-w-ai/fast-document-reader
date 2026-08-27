@@ -619,7 +619,12 @@ fn validate_payload(
             }
         }
         P::Image(v) => {
-            require_resource(v.resource_id, resources)?;
+            // `None` is the document's own fact — a declared picture with no bytes behind it —
+            // never a caller mistake; see `wire::Image.resource_id`'s own doc. `Some` keeps this
+            // check's original strictness.
+            if let Some(id) = v.resource_id {
+                require_resource(id, resources)?;
+            }
             if !valid_size(&v.intrinsic_size)
                 || v.display_size.as_ref().is_some_and(|s| !valid_size(s))
             {
@@ -1130,6 +1135,12 @@ fn validate_column_flow(v: &wire::ColumnFlowDeclaration) -> Result<(), DecodeErr
         Mode::Equal if !v.widths.is_empty() || !v.gaps.is_empty() => {
             return Err(invalid("equal column flow has explicit widths or gaps"));
         }
+        // Mirrors `Equal` above, deliberately: a declaration that named no per-column widths must
+        // CARRY none. This is a requirement in the opposite direction, not an exemption — a mode
+        // that merely skipped the cardinality check would let a half-filled widths array through.
+        Mode::Unspecified if !v.widths.is_empty() || !v.gaps.is_empty() => {
+            return Err(invalid("unspecified column flow has explicit widths or gaps"));
+        }
         Mode::Absolute | Mode::Proportional
             if v.widths.len() != expected_len || v.gaps.len() != expected_len =>
         {
@@ -1137,10 +1148,18 @@ fn validate_column_flow(v: &wire::ColumnFlowDeclaration) -> Result<(), DecodeErr
         }
         _ => {}
     }
+    // An independent restatement of `office_accounting::column_flow_from_office`'s own choice,
+    // deliberately duplicated so a mapping that assigns a mode its flags do not support is caught
+    // here rather than trusted. It carried the SAME invariant-108 mistake the mapping did: the
+    // last arm claimed `Absolute` — that per-column widths were declared — when it only knew that
+    // neither flag was set, so a document declaring columns and no widths could not be expressed
+    // in a way both halves agreed on.
     let expected_mode = if v.source_same_width {
         Mode::Equal
     } else if v.source_proportional_widths {
         Mode::Proportional
+    } else if v.widths.is_empty() && v.gaps.is_empty() {
+        Mode::Unspecified
     } else {
         Mode::Absolute
     };
@@ -1246,8 +1265,20 @@ fn validate_optional_insets(v: &wire::OptionalInsets) -> Result<(), DecodeError>
     if [top, right, bottom, left]
         .into_iter()
         .flatten()
-        .any(|x| !finite_nonnegative(*x))
+        .any(|x| !x.is_finite())
     {
+        // `is_finite`, NOT `finite_nonnegative` — and this helper is reached from BOTH a cell's
+        // `edgePadding` and a table's `defaultPadding`, which the host resolves through one path
+        // (`TableBlockBuilder.resolvedPagedPadding`: cell, else table, else the reader's default),
+        // so loosening one without the other would make the fallback stricter than the value it
+        // falls back from. NaN and infinity still refuse —
+        // they cannot be drawn, and a dedicated test holds that line. A NEGATIVE padding is a
+        // number rhwp's `Cell::effective_padding` really produces (measured: 2 of 674 cells in
+        // `59043_regulatory_analysis.hwp`, at -309.84 and -144.72), and the shipped reader carries
+        // it untouched to AppKit — `TableBlockBuilder.resolvedPagedPadding` only rounds down — and
+        // opens the document. Refusing it lost 674 cells over 2, making the canonical tree
+        // stricter than the app it replaces. The other 22 `finite_nonnegative` call sites stay:
+        // a negative WIDTH or font size is a different thing, and genuinely invalid.
         return Err(invalid("cell padding is invalid"));
     }
     Ok(())

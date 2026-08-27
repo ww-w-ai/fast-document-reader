@@ -8,11 +8,12 @@ use crate::render::office::office_block::{
 };
 use std::collections::BTreeMap;
 
-const EXPECTED_DECISIONS: usize = 26;
+const EXPECTED_DECISIONS: usize = 27;
 const EXPECTED_KEYS: &[&str] = &[
     "OfficeReadResult.blocks",
     "OfficeReadResult.comments",
     "OfficeReadResult.images",
+    "OfficeReadResult.pictures_declared_without_bytes",
     "OfficeReadResult.vector_graphics",
     "OfficeReadResult.default_body_font_size",
     "OfficeReadResult.declared_faces",
@@ -166,6 +167,7 @@ pub(crate) fn account_office_read_result(
         blocks,
         comments,
         images,
+        pictures_declared_without_bytes,
         vector_graphics,
         default_body_font_size,
         declared_faces,
@@ -197,6 +199,7 @@ pub(crate) fn account_office_read_result(
         blocks,
         comments,
         images,
+        pictures_declared_without_bytes,
         vector_graphics,
         headers,
         footers,
@@ -235,12 +238,14 @@ pub(crate) fn account_office_read_result(
         ledger.record(derived(key))?;
     }
 
-    // Consumed BEFORE canonicalization and survives inside the runs: the font substitution pass
-    // resolves this into each run's own family, and the document default is what every run's
-    // absolute size is resolved against. The tree carries the resolved answer, so nothing is
-    // lost — but the source shape is not the canonical shape.
+    // MAPPED: carried unchanged on `wire::Document.default_body_font_size`, once per document.
+    // This entry used to read "derived", on the reasoning that every run carried the resolved
+    // answer so nothing was lost. Something WAS lost — stamping the default onto each run made a
+    // run that declared the default and a run that inherited it the same bytes, and the reverse
+    // projection then guessed between them by frequency, which is wrong on every short document
+    // (invariant 107). A default copied onto every consumer is smeared, not carried.
     let _ = default_body_font_size;
-    ledger.record(derived("OfficeReadResult.default_body_font_size"))?;
+    ledger.record(mapped("OfficeReadResult.default_body_font_size"))?;
     // Carried onto `wire::Document.declared_faces`, keyed by the same face name, with no
     // reshaping — the office adapter copies this table across unchanged.
     let _ = declared_faces;
@@ -285,8 +290,12 @@ pub(crate) fn account_office_comment(
         number,
     } = comment;
     record!(ledger, "OfficeComment", author, date_iso, text);
+    // MAPPED, not derived: `wire::Comment.source_id` carries this string unchanged. It was
+    // "derived" while it lived only in the adapter's build-time `comment_id_by_source` map, which
+    // meant the reverse projection could not recover it and filled the field with our own mint —
+    // a number the document never wrote (invariants 107, 108).
     let _ = id;
-    ledger.record(derived("OfficeComment.id"))?;
+    ledger.record(mapped("OfficeComment.id"))?;
     let _ = number;
     ledger.record(derived("OfficeComment.number"))?;
     ledger.finish_expected(OFFICE_COMMENT_KEYS, OFFICE_COMMENT_KEYS.len())
@@ -495,8 +504,10 @@ mod tests {
         };
         let ledger = account_office_comment(&comment).unwrap();
         assert_eq!(ledger.decision_count(), 5);
-        assert_eq!(ledger.mapped_count(), 3);
-        assert_eq!(ledger.derived_count(), 2);
+        // 3 -> 4 mapped: `OfficeComment.id` is carried on `wire::Comment.source_id` now, not
+        // reshaped away into an adapter-internal map.
+        assert_eq!(ledger.mapped_count(), 4);
+        assert_eq!(ledger.derived_count(), 1);
         assert_eq!(ledger.refused_count(), 0);
     }
 
@@ -546,21 +557,22 @@ mod tests {
     }
 
     /// S6-3's `master_pages` was the last top-level field this ledger still recorded `refused` —
-    /// with it now `mapped` alongside S6-2's `anchored_objects`, every one of the 26 is `mapped`
+    /// with it now `mapped` alongside S6-2's `anchored_objects`, every one of the 27 is `mapped`
     /// or `derived`; `refused_count()` for THIS ledger is honestly zero. A sub-ledger further down
     /// the same object graph (`OfficeSectionDeclaration`'s own five fields, `account_section`)
-    /// still records `refused` — this assertion is about the TOP-LEVEL 26 only.
+    /// still records `refused` — this assertion is about the TOP-LEVEL 27 only. (S6-5a added
+    /// `pictures_declared_without_bytes`, `mapped` — see that field's own doc.)
     #[test]
     fn account_office_read_result_records_exactly_twenty_six_decisions() {
         let result = OfficeReadResult::default();
         let ledger = account_office_read_result(&result).unwrap();
-        assert_eq!(ledger.decision_count(), 26);
+        assert_eq!(ledger.decision_count(), 27);
         assert!(ledger.mapped_count() > 0);
         assert!(ledger.derived_count() > 0);
         assert_eq!(ledger.refused_count(), 0);
         assert_eq!(
             ledger.mapped_count() + ledger.derived_count() + ledger.refused_count(),
-            26
+            27
         );
     }
 
@@ -613,6 +625,7 @@ mod tests {
             ("OfficeReadResult.blocks", Mapped),
             ("OfficeReadResult.comments", Mapped),
             ("OfficeReadResult.images", Mapped),
+            ("OfficeReadResult.pictures_declared_without_bytes", Mapped),
             ("OfficeReadResult.vector_graphics", Mapped),
             ("OfficeReadResult.headers", Mapped),
             ("OfficeReadResult.footers", Mapped),
@@ -628,7 +641,7 @@ mod tests {
             ("OfficeReadResult.page_margin_top", Derived),
             ("OfficeReadResult.page_margin_bottom", Derived),
             ("OfficeReadResult.section_start_blocks", Derived),
-            ("OfficeReadResult.default_body_font_size", Derived),
+            ("OfficeReadResult.default_body_font_size", Mapped),
             ("OfficeReadResult.declared_faces", Mapped),
             ("OfficeReadResult.page_header_distance", Mapped),
             ("OfficeReadResult.page_footer_distance", Mapped),
@@ -646,6 +659,8 @@ mod tests {
 
     #[test]
     fn expected_keys_are_exactly_twenty_six() {
+        // Name kept ("twenty_six") — the test still proves the invariant its name describes
+        // (`EXPECTED_KEYS.len() == EXPECTED_DECISIONS`), it just now checks 27 since S6-5a.
         assert_eq!(EXPECTED_KEYS.len(), EXPECTED_DECISIONS);
     }
 
@@ -676,7 +691,7 @@ mod tests {
             ledger.record(mapped(key)).unwrap();
         }
         ledger.record(mapped("bogus.same_count.key")).unwrap();
-        assert_eq!(ledger.decision_count(), 26);
+        assert_eq!(ledger.decision_count(), 27);
         let AccountingError::DecisionSetMismatch {
             missing,
             unexpected,

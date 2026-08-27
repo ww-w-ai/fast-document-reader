@@ -310,7 +310,7 @@ fn build_image(ctx: &mut Ctx, url: &str, alt: &str) -> WireImage {
     let (alt_clean, display_size, display_width_fraction) = parse_sized_alt(alt);
     let resource_id = ctx.resolve_image_resource(url);
     WireImage {
-        resource_id,
+        resource_id: Some(resource_id),
         // `{0, 0}` is a finite, honest "not resolved" sentinel, never a guess — see
         // `Ctx::resolve_image_resource`'s doc comment for why this pass carries no real
         // intrinsic size at all.
@@ -319,6 +319,10 @@ fn build_image(ctx: &mut Ctx, url: &str, alt: &str) -> WireImage {
         display_width_fraction,
         alignment: Alignment::Natural,
         alt_text: if alt_clean.is_empty() { None } else { Some(alt_clean) },
+        // Markdown has no separate resource-vs-declaration split (`resolve_image_resource`
+        // always resolves or synthesises a resource), so there is no case here needing the id
+        // recovered from anywhere but the resource itself — same as office's `Some` path.
+        source_key: None,
     }
 }
 

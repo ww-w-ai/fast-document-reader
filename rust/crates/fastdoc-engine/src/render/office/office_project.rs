@@ -10,12 +10,6 @@
 //!
 //! Known, deliberate exceptions to that rule — narrow, named here rather than silently defaulted,
 //! and reported by the sprint's evidence file rather than hidden:
-//! - `defaultBodyFontSize` / a run's own `fontSize`: the wire tree stamps the document default
-//!   into every run that declared none (`office_adapter::convert_text_run`), so it can never tell
-//!   "declared this exact size" from "declared none, inherited the default" apart — the reader's
-//!   own test says as much ("the fact is simply dropped and the tree is not self-contained").
-//!   Reconstructed as the MODE of every run's size in the document, which is right whenever body
-//!   text outnumbers any heading that happens to share the body size, and wrong exactly there.
 //! - `sections` / `section_start_blocks`: emitted as `[]` for a tree with exactly one `Section`
 //!   node, which cannot tell "the source declared no sections" (the synthetic single-section case
 //!   docx/odt always build) from "the source declared exactly one, with nothing this projector can
@@ -27,10 +21,22 @@
 //!   of `OfficeSectionDeclaration`'s six fields (`footnote_separator`, `page_border`,
 //!   `hides_header`, `hides_footer`, `hides_master_page`, `is_vertical`) have no home anywhere in
 //!   `wire::Section` to reconstruct them from.
-//! - `comments` / a span's own `comment_ids`: a wire `Comment.id` is a fresh sequential `u64` this
-//!   adapter minted (`office_adapter::register_comments`); the source's own opaque id string, and
-//!   `OfficeComment.number` (the review pane's display order), are not carried anywhere in the
-//!   wire tree at all. A document with any comments returns `ProjectionError::Field("comments")`.
+//! - a span's own `comment_ids`: a wire `TextRun.commentIds` entry names a comment by a wire id
+//!   this adapter minted, and `office_adapter::Ctx.comment_id_by_source` — the map back to the
+//!   source's own opaque id string that resolved it — is adapter-internal build state, never
+//!   serialized into the wire tree. Any run carrying one returns
+//!   `ProjectionError::Field("span.comment_ids")`, sending the WHOLE document back to
+//!   `office_export::to_json(&OfficeReadResult)`. `annotations.comments` itself IS projected
+//!   (`comments`, below) whenever every span's `comment_ids` is empty — an orphan comment (no
+//!   in-body range at all) never sets one, so it reaches here and is listed. `OfficeComment.id` is
+//!   read from `wire::Comment.source_id`, which carries the document's own opaque id (docx's
+//!   `w:id`, an odt `office:name`) unchanged. That field was added because the alternatives were
+//!   both dishonest: `wire::Comment.id` is only ever this adapter's fresh mint, so stamping it in
+//!   would report a number the source never wrote, and leaving the field empty asserts the
+//!   document gave its comment no id when it plainly did. `OfficeComment.number` (the review pane's display order) is NOT lossy —
+//!   both readers assign it 1-indexed in `OfficeReadResult.comments`'s own order
+//!   (`docx_reader::parse_comments` sorts its result by it; `OdtReader`'s counter builds that array
+//!   in push order), so `annotations.comments` sorted by wire id reconstructs it exactly.
 //! - A table's filler cells (`office_adapter::map_table`'s pass-2 padding) are indistinguishable,
 //!   once in the tree, from a genuinely empty, unstyled 1x1 cell the source actually authored —
 //!   both cases now roundtrip identically, and the projection includes both.
@@ -83,17 +89,25 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     let by_id: HashMap<u64, wire::Node> = envelope.nodes.into_iter().map(|n| (n.id, n)).collect();
     let resources: HashMap<u64, wire::Resource> =
         envelope.resources.into_iter().map(|r| (r.id, r)).collect();
+    // Bookmark NAMES, not ids — `Span.bookmarks` (`office_block::Span`) is a list of names, the
+    // same vocabulary `office_adapter::resolve_bookmark` minted these wire ids FROM, so this
+    // reverse lookup loses nothing: `wire::Bookmark.name` already IS the source's own bookmark
+    // name (unlike a wire comment id, which is a fresh mint with no source string anywhere in the
+    // tree — see `Projector::comments` below for why that one stays lossy).
+    let bookmark_names: HashMap<u64, String> =
+        envelope.annotations.bookmarks.iter().map(|b| (b.id, b.name.clone())).collect();
     let mut proj = Projector {
         by_id,
         resources,
         images: HashMap::new(),
+        pictures_declared_without_bytes: std::collections::HashSet::new(),
         vector_graphics: HashMap::new(),
         keep_with_next: BTreeSet::new(),
         page_break: BTreeSet::new(),
         hide_page_number: BTreeSet::new(),
         restart: Vec::new(),
-        font_sizes: Vec::new(),
         node_index: HashMap::new(),
+        bookmark_names,
     };
 
     let root_id = envelope.document.root_node_id;
@@ -176,22 +190,12 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     let section = first_section
         .ok_or_else(|| ProjectionError::Malformed("no section was found".to_string()))?;
 
-    let default_body_font_size = mode_or(&proj.font_sizes, 11.0);
-    // A run that declared no size of its own is indistinguishable, in the wire tree, from one
-    // that explicitly declared the document default (`convert_text_run` stamps both alike) — see
-    // this module's own doc. Any span whose reconstructed size equals the just-derived default is
-    // therefore rewritten to `None` here, in a second pass over the already-built blocks: right
-    // whenever that span in fact inherited the default, wrong only when it explicitly repeated it.
-    nullify_default_font_sizes(&mut blocks, default_body_font_size);
-    for h in headers.iter_mut() {
-        nullify_default_font_sizes(&mut h.blocks, default_body_font_size);
-    }
-    for f in footers.iter_mut() {
-        nullify_default_font_sizes(&mut f.blocks, default_body_font_size);
-    }
-    for n in footnotes.iter_mut() {
-        nullify_default_font_sizes(&mut n.blocks, default_body_font_size);
-    }
+    // Read, not reconstructed. The tree carries the document's own default on the document, and
+    // each run carries only the size it declared, so there is nothing left to infer here. This
+    // used to take the most COMMON run size as the default and then null every span matching it —
+    // right on a long document, wrong on every short one, and wrong in both directions at once
+    // (invariant 107). Deleting that guess is the whole point of the field above it.
+    let default_body_font_size = envelope.document.default_body_font_size;
 
     let (
         page_content_width,
@@ -216,11 +220,48 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
         None => (None, None, None, None, None, None, None, None),
     };
 
+    // Every comment reaching this point is an orphan: a span carrying `comment_ids` makes
+    // `convert_run` bail with `ProjectionError::Field("span.comment_ids")` before any block is
+    // even finished, which sends the WHOLE document back to
+    // `office_export::to_json(&OfficeReadResult)` — this module's own top-of-file doc names why (a
+    // span's `comment_ids` cannot roundtrip through the wire tree). `id` is the one
+    // `OfficeComment` field this reconstruction cannot honestly restore: it is meant to be the
+    // DOCUMENT's own opaque id (docx's `w:id` attribute, an odt `office:name` — the shipped reader
+    // preserves it verbatim), and the wire tree never carries that string anywhere — only
+    // `office_adapter::Ctx.comment_id_by_source`, adapter-internal build state, ever held it.
+    // `wire::Comment.id` is a fresh sequential mint with no document meaning of its own; stamping
+    // it in here (even stringified) would be inventing a fact the source never stated, exactly the
+    // failure shape invariant 108 names — a specific value written where "unknown" belongs. Left
+    // empty instead, deliberately, so a caller comparing against the real source id sees a visible
+    // gap rather than a plausible-looking wrong answer. Closing this gap for real needs
+    // `wire::Comment` to carry the source's own id string, which is `office_adapter.rs`'s fix, not
+    // this projector's. `number` has no such gap: both readers assign it 1-indexed in this exact
+    // array's own order (`docx_reader::parse_comments` sorts its result by it; `OdtReader`'s
+    // counter builds `result.comments` in that same push order), so this array's position after
+    // sorting by wire id IS the display number, not a guess.
+    let mut wire_comments = envelope.annotations.comments.clone();
+    wire_comments.sort_by_key(|c| c.id);
+    let comments: Vec<OfficeComment> = wire_comments
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| OfficeComment {
+            id: SwiftString::from(c.source_id),
+            author: if c.author.is_empty() { None } else { Some(SwiftString::from(c.author)) },
+            date_iso: c.date_iso.map(SwiftString::from),
+            text: SwiftString::from(c.text),
+            number: (i as i64) + 1,
+        })
+        .collect();
+
     let mut result = serde_json::Map::new();
     result.insert("v".to_string(), serde_json::Value::from(4u32));
     result.insert("blocks".to_string(), to_value(&blocks)?);
-    result.insert("comments".to_string(), to_value(&Vec::<OfficeComment>::new())?);
+    result.insert("comments".to_string(), to_value(&comments)?);
     result.insert("images".to_string(), to_value(&proj.images)?);
+    result.insert(
+        "pictures_declared_without_bytes".to_string(),
+        to_value(&proj.pictures_declared_without_bytes)?,
+    );
     result.insert("vector_graphics".to_string(), to_value(&proj.vector_graphics)?);
     result.insert(
         "default_body_font_size".to_string(),
@@ -290,71 +331,31 @@ fn insert_opt(map: &mut serde_json::Map<String, serde_json::Value>, key: &str, v
     }
 }
 
-/// The most frequent value in `values`, or `fallback` when empty. Ties break on the smaller value
-/// (deterministic, not "whichever the hash map visited first").
-/// Second pass over already-built blocks: see `project`'s own comment on why this cannot be
-/// decided during the first walk (the document default is only known once every run is seen).
-fn nullify_default_font_sizes(blocks: &mut [OfficeBlock], default: f64) {
-    for block in blocks.iter_mut() {
-        match block {
-            OfficeBlock::Heading { spans, .. }
-            | OfficeBlock::Paragraph { spans, .. }
-            | OfficeBlock::ListItem { spans, .. } => nullify_spans(spans, default),
-            OfficeBlock::Table { rows, .. } => {
-                for row in rows.iter_mut() {
-                    for cell in row.iter_mut() {
-                        nullify_default_font_sizes(&mut cell.blocks, default);
-                    }
-                }
-            }
-            OfficeBlock::Image { .. } | OfficeBlock::UnsupportedGraphic { .. } | OfficeBlock::Formula { .. } => {}
-        }
-    }
-}
 
-fn nullify_spans(spans: &mut [Span], default: f64) {
-    for span in spans.iter_mut() {
-        if span.font_size == Some(default) {
-            span.font_size = None;
-        }
-    }
-}
 
-fn mode_or(values: &[f64], fallback: f64) -> f64 {
-    if values.is_empty() {
-        return fallback;
-    }
-    let mut counts: Vec<(u64, u32)> = Vec::new();
-    for &v in values {
-        let bits = v.to_bits();
-        if let Some(entry) = counts.iter_mut().find(|(b, _)| *b == bits) {
-            entry.1 += 1;
-        } else {
-            counts.push((bits, 1));
-        }
-    }
-    counts.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    f64::from_bits(counts[0].0)
-}
 
 struct Projector {
     by_id: HashMap<u64, wire::Node>,
     resources: HashMap<u64, wire::Resource>,
     images: HashMap<SwiftString, Data>,
+    /// `OfficeReadResult.pictures_declared_without_bytes`'s reverse — every `.image(id:)` key
+    /// `map_image` reconstructed from `wire::Image.source_key` because `resource_id` was `None`.
+    pictures_declared_without_bytes: std::collections::HashSet<SwiftString>,
     vector_graphics: HashMap<SwiftString, VectorGraphic>,
     keep_with_next: BTreeSet<i64>,
     page_break: BTreeSet<i64>,
     hide_page_number: BTreeSet<i64>,
     restart: Vec<OfficePageNumberRestart>,
-    /// Every text run's resolved `fontSizePoints`, in traversal order — the raw material
-    /// `default_body_font_size` is reconstructed from (see this module's own doc).
-    font_sizes: Vec<f64>,
     /// Node id -> its own position in the reconstructed `blocks`/`OfficeAnchoredObject.block_index`
     /// index space, recorded as each top-level flow block is mapped (`map_single_block`/
     /// `map_list_item`) — S6-2's reverse of `office_adapter::Ctx.block_node_id`. An anchored
     /// object's `anchoredToId` (`wire::AnchoredObject`) is looked up here to reconstruct
     /// `block_index`.
     node_index: HashMap<u64, i64>,
+    /// Wire bookmark id -> the source's own bookmark NAME (`wire::Bookmark.name`) — see this
+    /// field's own construction in `project` for why this round-trips honestly while comment ids
+    /// (below) do not.
+    bookmark_names: HashMap<u64, String>,
 }
 
 impl Projector {
@@ -362,6 +363,18 @@ impl Projector {
         self.by_id
             .get(&id)
             .ok_or_else(|| ProjectionError::Malformed(format!("dangling node id {id}")))
+    }
+
+    /// `TextRun.bookmarkIds` entry -> the source's own bookmark NAME, via `self.bookmark_names`
+    /// (built once, up front, from `annotations.bookmarks` — see `project`'s own comment). A run
+    /// naming a bookmark id `annotations.bookmarks` does not contain would be a malformed tree,
+    /// never a silently dropped bookmark.
+    fn resolve_bookmark_name(&self, id: u64) -> Result<SwiftString, ProjectionError> {
+        self.bookmark_names.get(&id).map(|name| SwiftString::from(name.clone())).ok_or_else(|| {
+            ProjectionError::Malformed(format!(
+                "textRun.bookmarkIds named bookmark {id}, which annotations.bookmarks does not contain"
+            ))
+        })
     }
 
     fn header_footer(
@@ -456,10 +469,17 @@ impl Projector {
         let node = self.get(content_id)?.clone();
         match &node.payload {
             wire::NodePayload::Image(img) => {
-                let resource = self.resources.get(&img.resource_id).cloned().ok_or_else(|| {
+                // An anchored object's `Image` always carries host-painted bytes
+                // (`office_adapter::map_anchored_content` always registers them, never a
+                // declared-without-bytes key), so `None` here means the tree itself is malformed,
+                // not a document fact — the same reasoning `wire::Image.source_key`'s doc gives
+                // for why this arm needs no `source_key`.
+                let resource_id = img.resource_id.ok_or_else(|| {
+                    ProjectionError::Malformed("anchored image carries no resource id".to_string())
+                })?;
+                let resource = self.resources.get(&resource_id).cloned().ok_or_else(|| {
                     ProjectionError::Malformed(format!(
-                        "anchored image referenced missing resource {}",
-                        img.resource_id
+                        "anchored image referenced missing resource {resource_id}"
                     ))
                 })?;
                 use base64::Engine;
@@ -595,7 +615,11 @@ impl Projector {
         if !run.comment_ids.is_empty() {
             return Err(ProjectionError::Field("span.comment_ids".to_string()));
         }
-        self.font_sizes.push(run.style.font_size_points.unwrap_or(11.0));
+        let bookmarks = run
+            .bookmark_ids
+            .iter()
+            .map(|&id| self.resolve_bookmark_name(id))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let underline = run.style.underline.is_some();
         let underline_style = run
@@ -631,7 +655,7 @@ impl Projector {
             column_layout,
             subscripted,
             rtl: matches!(run.direction, Some(wire::Direction::RightToLeft)),
-            bookmarks: vec![],
+            bookmarks,
             comment_ids: vec![],
             text_color: run.style.foreground.map(convert_color_back),
             highlight_color: run.style.background.map(convert_color_back),
@@ -713,11 +737,31 @@ impl Projector {
     }
 
     fn map_image(&mut self, img: wire::Image) -> Result<OfficeBlock, ProjectionError> {
+        let alignment = alignment_back(img.alignment);
+        // `resource_id: None` is `wire::Image`'s own positive statement — the document declared
+        // this picture and no bytes back it (`office_adapter::Ctx::map_image`'s doc). There is no
+        // `Resource` row to recover a key from in that case, which is exactly why
+        // `office_adapter` always sets `source_key` regardless of whether a resource resolved:
+        // this arm is the honest reconstruction, not a guess, and the id is recorded in
+        // `pictures_declared_without_bytes` so the projected JSON carries the SAME fact the reader's
+        // own `OfficeReadResult` does.
+        let Some(resource_id) = img.resource_id else {
+            let key = img
+                .source_key
+                .clone()
+                .ok_or_else(|| ProjectionError::Field("image.sourceKey".to_string()))?;
+            self.pictures_declared_without_bytes.insert(SwiftString::from(key.clone()));
+            return Ok(OfficeBlock::Image {
+                id: SwiftString::from(key),
+                size: CGSize::new(img.intrinsic_size.width, img.intrinsic_size.height),
+                alignment,
+            });
+        };
         let resource = self
             .resources
-            .get(&img.resource_id)
+            .get(&resource_id)
             .ok_or_else(|| {
-                ProjectionError::Malformed(format!("image referenced missing resource {}", img.resource_id))
+                ProjectionError::Malformed(format!("image referenced missing resource {resource_id}"))
             })?
             .clone();
         let key = resource
@@ -729,7 +773,6 @@ impl Projector {
             .decode(&resource.bytes_base64)
             .map_err(|e| ProjectionError::Malformed(format!("resource bytes did not decode: {e}")))?;
         self.images.insert(SwiftString::from(key.clone()), Data(bytes));
-        let alignment = alignment_back(img.alignment);
         Ok(OfficeBlock::Image {
             id: SwiftString::from(key),
             size: CGSize::new(img.intrinsic_size.width, img.intrinsic_size.height),
@@ -1192,5 +1235,117 @@ fn convert_alignment_back(a: wire::Alignment) -> NSTextAlignment {
         wire::Alignment::Right => NSTextAlignment::Right,
         wire::Alignment::Center => NSTextAlignment::Center,
         wire::Alignment::Justified => NSTextAlignment::Justified,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::office::office_block::{OfficeComment, ParagraphFormat};
+    use crate::render::render_tree::{DocumentFormat, OfficeAdapterInput};
+
+    fn input(result: &ob::OfficeReadResult) -> OfficeAdapterInput<'_> {
+        OfficeAdapterInput {
+            format: DocumentFormat::Docx,
+            source_name: "doc.docx",
+            source_bytes: b"hello office",
+            result,
+            resources: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// The two top-level arrays `project`'s own callers (`fastdoc_read_office_json`) actually read
+    /// — decoded through the SAME `OfficeBlock`/`OfficeComment` types the encoder used, so these
+    /// tests assert on the round-tripped Rust values rather than guessing this module's JSON shape.
+    #[derive(serde::Deserialize)]
+    struct ProjectedEnvelope {
+        blocks: Vec<OfficeBlock>,
+        comments: Vec<OfficeComment>,
+    }
+
+    fn projected(result: &ob::OfficeReadResult) -> ProjectedEnvelope {
+        let tree = ValidatedRenderTree::from_office(input(result)).expect("tree builds");
+        let json = project(&tree).expect("project succeeds — this fixture has no comment_ids and one section");
+        serde_json::from_str(&json).expect("project's output is valid schema-v4 JSON")
+    }
+
+    /// Defect 1 (S6-7): `convert_run` hardcoded `bookmarks: vec![]` for every span, so an internal
+    /// link resolving to a bookmark went nowhere on the tree path even though `office_adapter`
+    /// resolves and carries the bookmark into the wire tree just fine. Reverting the fix (hardcoding
+    /// `bookmarks: vec![]` again) makes this fail: the span comes back with no bookmark name.
+    #[test]
+    fn a_bookmarked_span_projects_its_bookmark_name() {
+        let mut result = ob::OfficeReadResult::default();
+        result.blocks.push(OfficeBlock::Paragraph {
+            spans: vec![Span {
+                text: SwiftString::from("anchor here"),
+                bookmarks: vec![SwiftString::from("Chapter1")],
+                ..Default::default()
+            }],
+            rtl: false,
+            alignment: None,
+            tab_stops: vec![],
+            format: ParagraphFormat::default(),
+        });
+        let doc = projected(&result);
+        let OfficeBlock::Paragraph { spans, .. } = &doc.blocks[0] else {
+            panic!("expected a paragraph block, got {:?}", doc.blocks[0]);
+        };
+        assert_eq!(
+            spans[0].bookmarks,
+            vec![SwiftString::from("Chapter1")],
+            "the projected span must carry the bookmark name back, not an empty list"
+        );
+    }
+
+    /// Defect 2 (S6-7): `project` hardcoded `"comments": []` unconditionally, so an ORPHAN comment
+    /// (no `w:commentRangeStart`/`office:annotation-end` anywhere — no span ever sets
+    /// `comment_ids`) was silently eaten even on a successful tree projection. This fixture MUST
+    /// have no span carrying `comment_ids`: a comment WITH a body range instead hits `convert_run`'s
+    /// bail and falls back to `office_export::to_json(&OfficeReadResult)`, which was already correct
+    /// before this fix and would pass even with `comments: []` still hardcoded — proving nothing
+    /// about this change. Reverting the fix (hardcoding `[]` again) makes `comments` empty here.
+    #[test]
+    fn an_orphan_comment_with_no_referencing_span_is_still_projected() {
+        let mut result = ob::OfficeReadResult::default();
+        result.comments.push(OfficeComment {
+            id: SwiftString::from("5"),
+            author: Some(SwiftString::from("Carol")),
+            date_iso: None,
+            text: SwiftString::from("Orphan comment"),
+            number: 1,
+        });
+        result.blocks.push(OfficeBlock::Paragraph {
+            spans: vec![Span {
+                text: SwiftString::from("Plain text, no ranges at all."),
+                ..Default::default()
+            }],
+            rtl: false,
+            alignment: None,
+            tab_stops: vec![],
+            format: ParagraphFormat::default(),
+        });
+        let doc = projected(&result);
+        assert_eq!(doc.comments.len(), 1, "the orphan comment must still be listed");
+        assert_eq!(doc.comments[0].author, Some(SwiftString::from("Carol")));
+        assert_eq!(doc.comments[0].text, SwiftString::from("Orphan comment"));
+        assert_eq!(
+            doc.comments[0].number, 1,
+            "display number is reconstructed from this array's own order, which both readers \
+             assign 1-indexed"
+        );
+        // The DOCUMENT's own id, round-tripped through `wire::Comment.source_id`. This assertion
+        // has been wrong twice, in both possible directions, which is why it is spelled out: the
+        // projection first filled this with `wire::Comment.id` — our own sequential mint, a number
+        // the source never wrote — and then, once that was removed, with the empty string, which
+        // asserts the document gave its comment no id when it plainly gave it "5". Both are
+        // invariant 108's mistake: a specific value written where the truth was "we did not carry
+        // it". The fix was to carry it.
+        assert_eq!(
+            doc.comments[0].id,
+            SwiftString::from("5"),
+            "the comment must come back with the id the DOCUMENT gave it, never our own mint and \
+             never empty"
+        );
     }
 }

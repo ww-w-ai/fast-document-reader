@@ -182,6 +182,10 @@ pub fn produce(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, P
         source_ids: vec![],
         default_locale: None,
         declared_faces: std::collections::BTreeMap::new(),
+        // 0.0 = the source stated no body default. Markdown and plain text carry no document-level
+        // font declaration at all — the reader's own theme decides — so there is nothing to carry
+        // and zero hides nothing (see `wire::Document`'s own field doc).
+        default_body_font_size: 0.0,
     };
     let mut builder = RenderTreeBuilder::new("fastdoc-plaintext-producer", document);
 

@@ -271,6 +271,7 @@ pub(super) fn from_office(
             .iter()
             .map(|(name, face)| (name.to_string(), face.clone()))
             .collect(),
+        default_body_font_size: result.default_body_font_size,
     };
     let mut builder = RenderTreeBuilder::new("fastdoc-office-adapter", document);
 
@@ -390,6 +391,15 @@ struct Ctx<'a> {
     /// `resources_input`. Consulting only the caller's map would make an HWP picture unresolvable
     /// unless the caller copied it across first.
     reader_images: &'a std::collections::HashMap<SwiftString, swiftshim::Data>,
+    /// `OfficeReadResult.pictures_declared_without_bytes` — `.image(id:)` keys the reader itself
+    /// established have NO bytes anywhere, ever (not "not yet resolved" — genuinely absent: an
+    /// empty binary-item reference, an external link). Consulted only when a key is in neither
+    /// `reader_images` nor `resources_input`: that ordering means an actual resource always wins
+    /// over this fact if one somehow exists under the same key, and a key naming NEITHER map nor
+    /// this set is still the caller-error `MissingResource` this adapter always raised — this set
+    /// only ever WEAKENS a would-be error into an intentionally empty `Image` node, never the
+    /// reverse. See `wire::Image.resource_id`'s own doc for what the node looks like.
+    pictures_declared_without_bytes: &'a std::collections::HashSet<SwiftString>,
     /// `OfficeReadResult.vector_graphics` — inline vector drawings keyed the same way a raster
     /// picture is (`OfficeBlock::Image.id`). Consulted BEFORE `reader_images`/`resources_input`
     /// for a given key: the host installs a rasterised fallback of the same drawing into `images`
@@ -441,6 +451,7 @@ impl<'a> Ctx<'a> {
             resources_input,
             default_body_font_size: result.default_body_font_size,
             reader_images: &result.images,
+            pictures_declared_without_bytes: &result.pictures_declared_without_bytes,
             vector_graphics: &result.vector_graphics,
             next_node_id: 1,
             next_resource_id: 1,
@@ -502,6 +513,10 @@ impl<'a> Ctx<'a> {
             let author = comment.author.as_ref().map(|s| s.to_string()).unwrap_or_default();
             self.comments.push(wire::Comment {
                 id,
+                // The document's own identifier, carried rather than kept only in the map above:
+                // a reader shows this, not our mint (invariant 108 — writing the mint here would
+                // put a number the document never wrote where a fact belongs).
+                source_id: comment.id.to_string(),
                 author,
                 text: comment.text.to_string(),
                 date_iso: comment.date_iso.as_ref().map(|s| s.to_string()),
@@ -731,7 +746,7 @@ impl<'a> Ctx<'a> {
         let mut ids = Vec::with_capacity(spans.len());
         for span in spans {
             let id = self.new_node_id();
-            let mut run = convert_text_run(span, self.default_body_font_size);
+            let mut run = convert_text_run(span);
             run.column_flow = column_flow_for_layout(span.column_layout.as_ref())?;
 
             let mut bookmark_ids: Vec<u64> =
@@ -941,7 +956,19 @@ impl<'a> Ctx<'a> {
             width: size.width,
             height: size.height,
         };
-        let resource_id = self.resolve_resource(id_key.as_str(), Some(intrinsic.clone()))?;
+        // A key already resolvable through the ordinary paths (this run's own dedup cache, the
+        // reader's decoded bytes, or the caller's resource map) always wins — this set only ever
+        // stands in for an id that resolves NOWHERE else, matching `resolve_resource`'s own
+        // caller-map-then-reader-images order.
+        let resource_id = if !self.resource_by_key.contains_key(id_key.as_str())
+            && !self.resources_input.contains_key(id_key.as_str())
+            && !self.reader_images.contains_key(id_key)
+            && self.pictures_declared_without_bytes.contains(id_key)
+        {
+            None
+        } else {
+            Some(self.resolve_resource(id_key.as_str(), Some(intrinsic.clone()))?)
+        };
         Ok(wire::NodePayload::Image(wire::Image {
             resource_id,
             intrinsic_size: intrinsic,
@@ -951,6 +978,10 @@ impl<'a> Ctx<'a> {
             display_width_fraction: None,
             alignment: alignment.map(convert_alignment).unwrap_or(wire::Alignment::Natural),
             alt_text: None,
+            // Set unconditionally — a `Resource`-backed image and a declared-without-bytes one
+            // (`resource_id: None` above) round-trip through the identical field; see
+            // `wire::Image.source_key`'s own doc.
+            source_key: Some(id_key.as_str().to_string()),
         }))
     }
 
@@ -1005,12 +1036,16 @@ impl<'a> Ctx<'a> {
                 (
                     vec![],
                     wire::NodePayload::Image(wire::Image {
-                        resource_id,
+                        resource_id: Some(resource_id),
                         intrinsic_size: intrinsic,
                         display_size: None,
                         display_width_fraction: None,
                         alignment: wire::Alignment::Natural,
                         alt_text: None,
+                        // No document-declared key: these are host-painted bytes registered
+                        // straight into the resource table, same as `Vector`'s `source_key: None`
+                        // immediately below for the identical reason.
+                        source_key: None,
                     }),
                 )
             }
@@ -1043,12 +1078,13 @@ impl<'a> Ctx<'a> {
                 (
                     vec![],
                     wire::NodePayload::Image(wire::Image {
-                        resource_id,
+                        resource_id: Some(resource_id),
                         intrinsic_size: intrinsic,
                         display_size: None,
                         display_width_fraction: None,
                         alignment: wire::Alignment::Natural,
                         alt_text: None,
+                        source_key: None,
                     }),
                 )
             }
@@ -1429,10 +1465,11 @@ fn first_declared_column_layout(blocks: &[OfficeBlock]) -> Option<&OfficeColumnL
     })
 }
 
-/// `default_body_font_size` is the size a run that states none actually renders at, so it is
-/// resolved here rather than left for a consumer to rediscover. The document-level default has no
-/// slot of its own in v1; carrying it into every run is what keeps the tree self-contained.
-fn convert_text_run(span: &Span, default_body_font_size: f64) -> wire::TextRun {
+/// A run carries ONLY the size it declared. The document's default has its own slot
+/// (`wire::Document.default_body_font_size`) and is not copied down here: a default written onto
+/// every run is indistinguishable from every run having declared it, which destroys the one fact
+/// a consumer needs to reproduce the document's own rhythm (invariant 107).
+fn convert_text_run(span: &Span) -> wire::TextRun {
     let underline = if span.underline { Some(convert_underline_style(span.underline_style)) } else { None };
     let vertical_position = if span.superscript {
         wire::VerticalPosition::Superscript
@@ -1462,7 +1499,12 @@ fn convert_text_run(span: &Span, default_body_font_size: f64) -> wire::TextRun {
             },
             declared_font_name: span.font_name.as_ref().map(|s| s.to_string()),
             font_families: vec![],
-            font_size_points: span.font_size.or(Some(default_body_font_size)),
+            // ONLY what this run declared. Stamping the document's default here made a run that
+            // stated 11pt and a run that inherited 11pt the same bytes, and the reverse projection
+            // then had to GUESS which was which — by frequency, which is right on a long document
+            // and wrong on every short one (invariant 107). The default now rides on
+            // `wire::Document.default_body_font_size`, where one document has exactly one of it.
+            font_size_points: span.font_size,
             foreground: span.text_color.map(convert_color),
             background: span.highlight_color.map(convert_color),
             baseline_offset_points: None,
@@ -1897,15 +1939,55 @@ mod tests {
         );
     }
 
-    /// The ledger declares `default_body_font_size` derived. That is only true if a run which
-    /// states no size of its own actually carries the document's default — otherwise the fact is
-    /// simply dropped and the tree is not self-contained.
+    /// The tree must keep the two facts APART: what the document's default is, and what each run
+    /// declared. The old shape of this test asserted the opposite — that a run with no size of its
+    /// own carries the document's default — and passed, which is how the loss stayed invisible for
+    /// so long: the value was reachable, so "derived" looked honest, while the distinction between
+    /// a declared 13.5 and an inherited one had already been destroyed (invariant 107).
     #[test]
-    fn a_run_that_states_no_size_carries_the_document_default() {
+    fn the_document_carries_its_default_and_a_run_that_declared_nothing_carries_nothing() {
         let result = OfficeReadResult {
             default_body_font_size: 13.5,
             blocks: vec![office_block::OfficeBlock::Paragraph {
                 spans: vec![Span { text: "x".into(), ..Span::default() }],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            ..OfficeReadResult::default()
+        };
+        let tree = from_office(input(&result)).expect("canonicalizes");
+        let json = tree.encode_json().expect("encodes");
+        let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        assert_eq!(
+            value["document"]["defaultBodyFontSize"].as_f64(),
+            Some(13.5),
+            "the document's own default must be carried, once, on the document"
+        );
+        let runs: Vec<&serde_json::Value> = value["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| n["type"] == "textRun")
+            .collect();
+        assert_eq!(runs.len(), 1, "this fixture has exactly one run");
+        assert!(
+            runs[0]["data"]["style"]["fontSizePoints"].is_null(),
+            "a run that declared no size must carry none — stamping the default here is what made \
+             a declared size and an inherited one the same bytes"
+        );
+    }
+
+    /// The other half of the same rule: a run that DID declare a size keeps it, even when that
+    /// size happens to equal the document's default. This is the case the projection's old
+    /// frequency heuristic got wrong on every short document.
+    #[test]
+    fn a_run_that_declared_the_same_size_as_the_default_still_says_so() {
+        let result = OfficeReadResult {
+            default_body_font_size: 13.5,
+            blocks: vec![office_block::OfficeBlock::Paragraph {
+                spans: vec![Span { text: "x".into(), font_size: Some(13.5), ..Span::default() }],
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
@@ -1923,7 +2005,7 @@ mod tests {
             .filter(|n| n["type"] == "textRun")
             .filter_map(|n| n["data"]["style"]["fontSizePoints"].as_f64())
             .collect();
-        assert_eq!(sizes, vec![13.5], "the run must carry the document's own default size");
+        assert_eq!(sizes, vec![13.5], "an explicitly declared size survives even at the default");
     }
 
     /// HWP hands its pictures over already decoded, in the result itself. If the adapter consulted
@@ -2065,6 +2147,88 @@ mod tests {
         let tags = tree.node_tags();
         assert_eq!(tags.iter().filter(|t| **t == "list").count(), 1);
         assert_eq!(tags.iter().filter(|t| **t == "listItem").count(), 3);
+    }
+
+    /// The cell-padding rule, moved here from the JSON mutation battery. It used to be checked by
+    /// a `cell-padding-negative` mutation, and that mutation stopped describing an invalid value
+    /// once a NEGATIVE padding became legal — rhwp's `Cell::effective_padding` really produces
+    /// them (measured: 2 of 674 cells in `59043_regulatory_analysis.hwp`, at -309.84 and -144.72)
+    /// and the shipped reader carries them to AppKit untouched and opens the document, so refusing
+    /// them made the tree stricter than the app it replaces.
+    ///
+    /// What remains forbidden is a padding that is not a NUMBER, and that cannot be expressed in
+    /// JSON at all — so deleting the mutation would have left the rule with nothing biting it. It
+    /// is checked here instead, on the `from_office` path, which is where a NaN can actually
+    /// arrive from a parser. Both directions are asserted: NaN refuses, negative does not.
+    #[test]
+    fn a_negative_cell_padding_is_carried_but_a_nan_one_stops_the_document() {
+        fn table_with_padding(padding: office_block::EdgePadding) -> OfficeReadResult {
+            let mut cell = Cell::new_with_spans(
+                vec![Span { text: SwiftString::from("x"), ..Default::default() }],
+                1,
+                1,
+            );
+            cell.edge_padding = Some(padding);
+            let mut result = OfficeReadResult::default();
+            result.blocks.push(OfficeBlock::Table {
+                rows: vec![vec![cell]],
+                header_rows: 0,
+                column_widths: vec![],
+                format: TableFormat::default(),
+            });
+            result
+        }
+
+        let negative = table_with_padding(office_block::EdgePadding {
+            top: Some(-309.84),
+            left: Some(0.0),
+            bottom: Some(0.0),
+            right: Some(0.0),
+        });
+        assert!(
+            from_office(input(&negative)).is_ok(),
+            "a negative padding is a number the parser really produces and the reader really \
+             draws — refusing it costs the whole document over one cell"
+        );
+
+        let nan = table_with_padding(office_block::EdgePadding {
+            top: Some(f64::NAN),
+            left: Some(0.0),
+            bottom: Some(0.0),
+            right: Some(0.0),
+        });
+        assert!(
+            matches!(from_office(input(&nan)), Err(OfficeAdapterError::Canonicalization(_))),
+            "a padding that is not a number must still stop canonicalization"
+        );
+
+        // The TABLE's own default padding goes through the same helper, and the host resolves the
+        // two as one chain (cell, else table, else the reader's default), so both directions have
+        // to hold there too — a stricter fallback than the value falling back to it would refuse
+        // documents the cell-level rule just accepted.
+        let mut table_negative = OfficeReadResult::default();
+        table_negative.blocks.push(OfficeBlock::Table {
+            rows: vec![vec![Cell::new_with_spans(
+                vec![Span { text: SwiftString::from("x"), ..Default::default() }],
+                1,
+                1,
+            )]],
+            header_rows: 0,
+            column_widths: vec![],
+            format: TableFormat {
+                default_padding: Some(office_block::EdgePadding {
+                    top: Some(0.0),
+                    left: Some(-1.0),
+                    bottom: Some(0.0),
+                    right: Some(0.0),
+                }),
+                ..TableFormat::default()
+            },
+        });
+        assert!(
+            from_office(input(&table_negative)).is_ok(),
+            "a table's default padding must accept a negative for the same reason a cell's does"
+        );
     }
 
     #[test]
@@ -2706,8 +2870,18 @@ mod tests {
         });
         let tree = ValidatedRenderTree::from_office(input(&result)).unwrap();
         let json = String::from_utf8(tree.encode_json().unwrap()).unwrap();
-        assert!(json.contains("\"id\":1,\"author\":\"A\""));
-        assert!(json.contains("\"id\":2,\"author\":\"B\""));
+        // Both the mint AND the document's own id, checked together: the mint is what a wire
+        // reference resolves against, and `sourceId` is what a reader shows. A substring check
+        // that pinned them adjacent used to stand here and broke the moment `sourceId` was added
+        // between them — the fields matter, their order in the JSON does not.
+        assert!(json.contains("\"id\":1,"), "the first comment keeps mint 1");
+        assert!(json.contains("\"id\":2,"), "the second comment keeps mint 2");
+        // And both source ids survive DISTINCTLY, which is this test's actual subject: "1" and
+        // "01" are different identifiers that a numeric reading would collapse into one. The mint
+        // makes collision impossible on the wire; carrying `sourceId` is what lets a reader still
+        // tell the two comments apart by the names the document gave them.
+        assert!(json.contains("\"sourceId\":\"1\""), "the document's own id for the first");
+        assert!(json.contains("\"sourceId\":\"01\""), "and the different one for the second");
     }
 
     #[test]

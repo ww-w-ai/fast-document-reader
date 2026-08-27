@@ -61,7 +61,7 @@ all_string_enums! {
     TablePageBreakPolicy { Never => "never", AtRowBoundary => "atRowBoundary", Anywhere => "anywhere" },
     ColumnFlowType { Normal => "normal", Distribute => "distribute", Parallel => "parallel" },
     ColumnFlowDirection { LeftToRight => "leftToRight", RightToLeft => "rightToLeft" },
-    ColumnWidthMode { Equal => "equal", Absolute => "absolute", Proportional => "proportional" },
+    ColumnWidthMode { Equal => "equal", Absolute => "absolute", Proportional => "proportional", Unspecified => "unspecified" },
     ColumnSeparatorStyle { None => "none", Solid => "solid", Dash => "dash", Dot => "dot", DashDot => "dashDot", DashDotDot => "dashDotDot", LongDash => "longDash", Circle => "circle" },
 }
 
@@ -109,6 +109,16 @@ pub struct Document {
     /// `#[serde(default)]`: existing golden fixtures predate this field and carry none.
     #[serde(default)]
     pub declared_faces: std::collections::BTreeMap<String, crate::render::office::declared_font_kind::DeclaredFace>,
+    /// The size a run that declares none actually renders at — the document's own default, in
+    /// points. It lives HERE, once, rather than being stamped onto every run: a default copied
+    /// onto each consumer is not carried but SMEARED, and a smeared default cannot be told apart
+    /// from the consumers having each declared it (invariant 107). Every absolute length in this
+    /// reader is a share of this number, which is what lets the reader's zoom multiply on top of
+    /// the document's own rhythm instead of replacing it (invariant 36).
+    /// `#[serde(default)]`: golden fixtures predate this field, and 0.0 there means "not stated",
+    /// the same thing those fixtures meant by carrying nothing.
+    #[serde(default)]
+    pub default_body_font_size: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -715,7 +725,15 @@ pub struct TableCell {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Image {
-    pub resource_id: u64,
+    /// `None` when the document DECLARED a picture and no bytes back it — an empty binary-item
+    /// reference, an external link the reader has no bytes for. A positive fact about the source,
+    /// set by `office_adapter::Ctx::map_image` only when the reader itself said so
+    /// (`OfficeReadResult.pictures_declared_without_bytes`), never a guess: the node still reserves
+    /// `intrinsic_size` at its authored dimensions, same as the shipped Swift reader's empty box.
+    /// `Some` keeps this field's original meaning and strictness — a key naming neither the
+    /// caller's resource map nor that positive-absence set is still `MissingResource`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub resource_id: Option<u64>,
     pub intrinsic_size: Size,
     pub display_size: Option<Size>,
     /// A document-declared width as a fraction of the reading column (e.g. `50%`), carried
@@ -726,6 +744,14 @@ pub struct Image {
     pub display_width_fraction: Option<f64>,
     pub alignment: Alignment,
     pub alt_text: Option<String>,
+    /// The id the document itself used for this picture (`"hwpimg:3"`) — same field, same reason
+    /// as `Vector.source_key` above, and the only way `office_project::project` can honestly
+    /// reconstruct an `OfficeBlock::Image.id` when `resource_id` is `None`: there is no `Resource`
+    /// row to recover a key from in that case. Always set by `office_adapter::Ctx::map_image`
+    /// (both when a resource resolves and when it does not), so a `Resource`-backed image and a
+    /// declared-without-bytes one round-trip through the identical field.
+    #[serde(default)]
+    pub source_key: Option<String>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -927,6 +953,16 @@ pub struct Annotations {
 #[serde(rename_all = "camelCase")]
 pub struct Comment {
     pub id: u64,
+    /// The id the DOCUMENT gave this comment — docx `w:comment/@w:id`, odt `office:name`. Carried
+    /// rather than derivable: `id` above is a fresh sequential mint, and a reader that shows a
+    /// comment shows the document's own identifier, not our counter. Before this existed the
+    /// source id lived only in `office_adapter`'s build-time `comment_id_by_source` map and never
+    /// reached the tree, so the reverse projection had nothing to reconstruct and filled the field
+    /// with the mint stringified — a number the document never wrote. `Bookmark` has always
+    /// carried its own `name` for exactly this reason; comments were the inconsistency.
+    /// `#[serde(default)]`: golden fixtures predate this field.
+    #[serde(default)]
+    pub source_id: String,
     pub author: String,
     pub text: String,
     pub date_iso: Option<String>,
