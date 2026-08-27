@@ -59,11 +59,16 @@ enum RustEngineMeasure {
 
         for (index, paragraph) in (paragraphs ?? UnsafeBufferPointer<FastdocTextMeasureParagraph>(start: nil, count: 0)).enumerated() {
             let start = result.length
+            var lastRunFont: NSFont?
             for run in runs ?? UnsafeBufferPointer<FastdocTextMeasureRun>(start: nil, count: 0)
             where run.paragraph_index == index {
                 switch run.kind {
                 case FastdocTextMeasureRunKindText:
-                    result.append(attributedRun(for: run))
+                    let piece = attributedRun(for: run)
+                    lastRunFont = piece.length > 0
+                        ? piece.attribute(.font, at: piece.length - 1, effectiveRange: nil) as? NSFont
+                        : lastRunFont
+                    result.append(piece)
                 case FastdocTextMeasureRunKindAttachment:
                     result.append(attributedAttachment(for: run))
                 default:
@@ -75,7 +80,16 @@ enum RustEngineMeasure {
             // builds a paragraph in (`result.append("\n"); let paragraphRange = ...; addAttribute`).
             // A paragraph with no runs (a blank line) still gets its style on the lone "\n", which
             // is what makes an EMPTY paragraph's line height agree with the host's own answer too.
-            result.append(NSAttributedString(string: "\n"))
+            // WITH THE PARAGRAPH'S OWN FONT. An unattributed terminator is the last character of a
+            // single-paragraph header, and TextKit measures its invisible trailing line fragment —
+            // the one it keeps for a cursor past the end — against whatever font that character
+            // carries. Left bare it fell to a default face and reported 14.0pt where the host's own
+            // build reported 13.0, which is the whole of the 1.0pt this port disagreed by on a real
+            // paged header. `OfficeTextBuilder.unifyParagraphTerminators` gives every terminator its
+            // paragraph's font for exactly this reason (invariant 51); the port has to do the same
+            // or it measures a string the host would never have built.
+            result.append(NSAttributedString(
+                string: "\n", attributes: lastRunFont.map { [.font: $0] } ?? [:]))
             let paragraphRange = NSRange(location: start, length: result.length - start)
             if paragraphRange.length > 0 {
                 result.addAttribute(.paragraphStyle, value: paragraphStyle(for: paragraph), range: paragraphRange)
@@ -123,13 +137,34 @@ enum RustEngineMeasure {
     private static func attributedRun(for run: FastdocTextMeasureRun) -> NSAttributedString {
         let text = run.text.map { String(cString: $0) } ?? ""
         let faceName = run.font_name.map { String(cString: $0) }
-        var font = faceName.flatMap { NSFont(name: $0, size: run.size) } ?? NSFont.systemFont(ofSize: run.size)
-        if run.bold || run.italic {
-            var traits: NSFontDescriptor.SymbolicTraits = []
-            if run.bold { traits.insert(.bold) }
-            if run.italic { traits.insert(.italic) }
-            let descriptor = font.fontDescriptor.withSymbolicTraits(traits)
-            font = NSFont(descriptor: descriptor, size: run.size) ?? font
+        // `font_name` is the face the ENGINE ALREADY RESOLVED — `text_measure.rs:257` reads
+        // `font.fontName()` off the attributed string `office_text_builder` built, and the two
+        // trait flags beside it are read from that same font. So when the name resolves, the
+        // traits are already IN it and re-applying them is not a no-op: `OfficeTextBuilder`
+        // measured `.bold` on an already-resolved `-SemiBold` Korean substitute landing on
+        // `.AppleKoreanFont-Bold`, a different face (`OfficeTextBuilder.swift:521-535`), which is
+        // exactly why the builder gates its own trait step. Re-traiting here re-earned that defect.
+        //
+        // It was NOT, however, the 1.0pt this port disagreed by on a real paged header: removing it
+        // moved that number by nothing, and the cause turned out to be the bare paragraph
+        // terminator below. Kept anyway, because the rule it restores is the builder's own and the
+        // face it would change is a substituted one — which the English fixture that exposed the
+        // 1.0pt never exercises.
+        //
+        // The traits still describe the run when the face does NOT resolve on this machine — then
+        // the fallback is a plain system font and they are the only description left.
+        var font: NSFont
+        if let resolved = faceName.flatMap({ NSFont(name: $0, size: run.size) }) {
+            font = resolved
+        } else {
+            font = NSFont.systemFont(ofSize: run.size)
+            if run.bold || run.italic {
+                var traits: NSFontDescriptor.SymbolicTraits = []
+                if run.bold { traits.insert(.bold) }
+                if run.italic { traits.insert(.italic) }
+                let descriptor = font.fontDescriptor.withSymbolicTraits(traits)
+                font = NSFont(descriptor: descriptor, size: run.size) ?? font
+            }
         }
         return NSAttributedString(string: text, attributes: [.font: font])
     }

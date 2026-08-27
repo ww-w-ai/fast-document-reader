@@ -473,42 +473,14 @@ final class RustEngineBridgeTests: XCTestCase {
     /// comparing two zeros (invariant 62: 28% of real Korean documents declare an entry that draws
     /// nothing).
     ///
-    /// `accuracy: 1.5`, not `0.5`. This is the FIRST test in this repository that measures a band
-    /// with a real, non-nil `pageContentWidth` crossing the FFI — every existing cross-process
-    /// comparison (`testTheCrossProcessCallAgreesWithTheHostsOwnBandHeightAndMovesTallerWithATallerRealHeader`,
-    /// above) deliberately passes `pageContentWidth: nil`, matching the OLD
-    /// `fastdoc_office_header_band_height` export's own hardcoded `None`. With a real
-    /// `pageContentWidth`, `OfficeTextBuilder`'s `paged` branch sets `minimumLineHeight` to `0`
-    /// (`office_text_builder.rs:1043`/`OfficeTextBuilder.swift:801`) instead of a real floor —
-    /// which is CORRECT (S5C1's own contract: carry the host's real inputs through, not `None`)
-    /// but also REMOVES the floor that was quietly absorbing a smaller, pre-existing difference.
-    ///
-    /// WHAT THAT DIFFERENCE IS, named rather than blamed on the machine: this header's
-    /// `OfficeBlock` tree is BYTE-IDENTICAL between the Rust and Swift readers (checked directly —
-    /// no parse divergence), and Swift's own paged answer (26.0pt) differs from the engine's
-    /// (27.0pt) by exactly 1.0pt at every column width. The cause is in the S5 MEASUREMENT PORT,
-    /// not in this unit's handle or band query. A span's `font_name` is the FAMILY the document
-    /// declared (`office_block.rs:197`), and Swift's own builder does not resolve a family at
-    /// build time — it uses the descriptor `FontSubstitutionResolver` already resolved when the
-    /// document was READ, and it deliberately does NOT re-apply bold/italic on top of it, because
-    /// re-traiting an already-resolved substitute was measured to land on a different face
-    /// (`OfficeTextBuilder.swift:521-529`: `.bold` on an `-SemiBold` Korean substitute produced
-    /// `-Bold`). The measure payload carries no resolved descriptor, so
-    /// `RustEngineMeasure.attributedRun` (`RustEngineMeasure.swift:124-132`) re-derives the font
-    /// from the family and re-applies the traits — exactly the step the builder documents as
-    /// unreliable. Carried as an S5-port defect for S5C-2, which consumes the same port and where
-    /// a 1pt band error becomes a page-boundary difference rather than a rounding one. Widening to
-    /// `1.5` still fails a REAL regression (a dropped margin, a stuck-at-zero fallback, a header
-    /// ignored) while tolerating this one measured, understood, sub-2pt artifact.
     /// S5C1-03, the POSITIVE direction: the live render's reserved band is the ENGINE's answer.
     ///
     /// The fallback test below proves what happens when the engine refuses. Nothing proved what
     /// happens when it answers — and it showed: replacing the handle with `nil` at the call site,
-    /// so the host's own formula answered instead, passed the whole suite. The two answers differ
-    /// on this document by exactly 1.0pt (the S5-port font divergence documented at
-    /// `testS5C1TheHandlesBandSides...`), and that difference is what makes "whose answer landed"
-    /// observable at all. When S5C-2 closes that divergence the two numbers become equal and this
-    /// test still holds — it compares the live band to the ENGINE's answer, whatever that is.
+    /// so the host's own formula answered instead, passed the whole suite. The two answers AGREE on
+    /// this document, so no comparison of bands can tell which one landed; the handle's own count of
+    /// the queries it answered is what makes that observable, and this test captures it before
+    /// asking the handle anything itself.
     func testS5C1TheLiveRenderReservesTheEnginesBandNotTheHostsOwn() throws {
         let data = try Self.fixture("docs/fixtures/office/paged-visual/prosepages.docx")
         let reference = try swiftReference(data, extension: "docx")
@@ -609,12 +581,12 @@ final class RustEngineBridgeTests: XCTestCase {
                 headersOn: true, footersOn: true, separatesPages: false, deskGap: nil),
                 "the engine must answer once a measurer is installed")
 
-            XCTAssertEqual(hostSides.header, engineSides.header, accuracy: 1.5,
-                           "header must agree (within the documented headless-font-substitution bound) at column width \(columnWidth)")
-            XCTAssertEqual(hostSides.footer, engineSides.footer, accuracy: 1.5,
-                           "footer must agree (within the documented headless-font-substitution bound) at column width \(columnWidth)")
-            XCTAssertEqual(hostSides.band, engineSides.band, accuracy: 1.5,
-                           "band must agree (within the documented headless-font-substitution bound) at column width \(columnWidth)")
+            XCTAssertEqual(hostSides.header, engineSides.header, accuracy: 0.5,
+                           "header must agree at column width \(columnWidth)")
+            XCTAssertEqual(hostSides.footer, engineSides.footer, accuracy: 0.5,
+                           "footer must agree at column width \(columnWidth)")
+            XCTAssertEqual(hostSides.band, engineSides.band, accuracy: 0.5,
+                           "band must agree at column width \(columnWidth)")
         }
     }
 
