@@ -171,6 +171,7 @@ node_payloads! {
     Footnote => "footnote" (Footnote), Header => "header" (HeaderFooter), Footer => "footer" (HeaderFooter),
     FormControl => "formControl" (FormControl), Unsupported => "unsupported" (Unsupported),
     AnchoredObject => "anchoredObject" (AnchoredObject),
+    MasterPage => "masterPage" (MasterPage), MasterPageObject => "masterPageObject" (MasterPageObject),
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -821,6 +822,39 @@ pub enum ParagraphAnchorAlign {
     Top,
     Center,
     Bottom,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+/// One 바탕쪽 (Korean master page) as its owning section DECLARES it — `office_block::
+/// OfficeMasterPage`'s mirror.
+///
+/// WHICH PAGE this template actually paints on (section filter, odd/even parity, the section's
+/// own veto) is not carried here: that is a draw-time question `MasterPagePainter.applicablePage`
+/// already answers on the host, and S5C-3 answers the same way for the engine — fed host-parsed
+/// descriptors through its own narrow FFI, never this tree. This node only states what the
+/// document declared for the section it is a child of; `applies_to` is the one selector fact a
+/// declaration itself carries (first/default/even), the same enum `Header`/`Footer` already use.
+pub struct MasterPage {
+    pub applies_to: HeaderFooterApplicability,
+    pub object_ids: Vec<u64>,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+/// One object placed on a master page — `office_block::OfficeMasterObject`'s mirror, and the same
+/// content vocabulary `AnchoredObject.content_id` points at (`content_id` here names an existing
+/// `Image`/`Vector`/`Flow` child, never a new payload kind).
+///
+/// Unlike `AnchoredObject`, `y` is never a placeholder. Invariant 78 measured that every object a
+/// 바탕쪽 places is PAPER-relative — "there is no anchor to resolve" — so `office_block::
+/// map_master_page` settles the whole frame, `y` included, at read time; there is no paragraph
+/// rule this node could carry instead, and none of `AnchoredObject`'s mutual-exclusion policing
+/// applies here.
+pub struct MasterPageObject {
+    pub x: f64,
+    pub width: f64,
+    pub height: f64,
+    pub y: f64,
+    pub content_id: u64,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

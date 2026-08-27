@@ -65,7 +65,8 @@
     24,
     25,
     26,
-    27
+    27,
+    29
    ],
    "type": "document",
    "data": {}
@@ -989,6 +990,67 @@
     "intrinsicSize": {
      "width": 40.0,
      "height": 40.0
+    },
+    "displaySize": null,
+    "alignment": "natural"
+   }
+  },
+  {
+   "id": 29,
+   "parentId": 1,
+   "children": [
+    30
+   ],
+   "type": "masterPage",
+   "data": {
+    "appliesTo": "evenPages",
+    "objectIds": [
+     30
+    ]
+   }
+  },
+  {
+   "id": 30,
+   "parentId": 29,
+   "children": [
+    31
+   ],
+   "type": "masterPageObject",
+   "data": {
+    "x": 55.16,
+    "width": 338.46,
+    "height": 16.62,
+    "y": 58.12,
+    "contentId": 31
+   }
+  },
+  {
+   "id": 31,
+   "parentId": 30,
+   "children": [],
+   "type": "vector",
+   "data": {
+    "resourceId": null,
+    "paths": [
+     {
+      "commands": [
+       {
+        "command": "moveTo",
+        "values": [
+         0,
+         0
+        ]
+       }
+      ],
+      "stroke": null,
+      "fill": null,
+      "arrowStart": false,
+      "arrowEnd": false
+     }
+    ],
+    "intrinsicSize": {
+     "width": 338.46,
+     "height": 16.62
     },
     "displaySize": null,
     "alignment": "natural"

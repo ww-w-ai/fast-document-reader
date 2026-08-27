@@ -251,8 +251,11 @@ pub(crate) fn account_office_read_result(
     ledger.record(mapped("OfficeReadResult.page_header_distance"))?;
     let _ = page_footer_distance;
     ledger.record(mapped("OfficeReadResult.page_footer_distance"))?;
+    // S6-3: a 바탕쪽 now becomes a `masterPage` node (`office_adapter::build_master_page_node`),
+    // never dropped — see `account_master_page`/`account_master_object` for the field-by-field
+    // accounting of what that node and its object children carry.
     let _ = master_pages;
-    ledger.record(refused("OfficeReadResult.master_pages"))?;
+    ledger.record(mapped("OfficeReadResult.master_pages"))?;
     // S6-2: an anchored object's frame/content/paragraph rule now becomes an `anchoredObject`
     // node (`office_adapter::from_office`), never dropped — see `account_anchored_object` and
     // `account_paragraph_anchor` below for the field-by-field accounting of what that node carries.
@@ -394,6 +397,11 @@ pub(crate) fn account_section_declaration(
     ledger.finish_expected(KEYS, KEYS.len())
 }
 
+/// S6-3: `office_adapter::build_master_page_node` carries every one of these three fields into
+/// the tree (`applies_to` -> `wire::MasterPage.applies_to`, `objects` -> `object_ids`'
+/// `MasterPageObject` children, `section` -> which section node this becomes a child of — never
+/// a wire field of its own, since the parent/child edge already states it, the same posture
+/// `OfficeHeaderFooter.section` takes).
 pub(crate) fn account_master_page(
     page: &OfficeMasterPage,
 ) -> Result<FieldDecisionLedger, AccountingError> {
@@ -410,11 +418,13 @@ pub(crate) fn account_master_page(
     } = page;
     let _ = (section, applies_to, objects);
     for key in KEYS {
-        ledger.record(refused(key))?;
+        ledger.record(mapped(key))?;
     }
     ledger.finish_expected(KEYS, KEYS.len())
 }
 
+/// S6-3: `office_adapter::build_master_page_object_node`/`map_anchored_content` (S6-2's, reused
+/// verbatim — see that function's own doc) carry both fields.
 pub(crate) fn account_master_object(
     object: &OfficeMasterObject,
 ) -> Result<FieldDecisionLedger, AccountingError> {
@@ -423,7 +433,7 @@ pub(crate) fn account_master_object(
     let OfficeMasterObject { frame, content } = object;
     let _ = (frame, content);
     for key in KEYS {
-        ledger.record(refused(key))?;
+        ledger.record(mapped(key))?;
     }
     ledger.finish_expected(KEYS, KEYS.len())
 }
@@ -431,8 +441,8 @@ pub(crate) fn account_master_object(
 /// S6-2: `office_adapter::build_anchored_object_node`/`map_anchored_content` carry every one of
 /// these three fields into the tree (`block_index` -> `anchoredToId`, `object` -> the frame plus
 /// an `Image`/`Vector`/`Flow` content child, `paragraph_anchor` -> `wire::ParagraphAnchor` when
-/// present). Unlike `account_master_object`/`account_master_page` just above — still refused,
-/// master pages are S6-3's item — this ledger records the mapping S6-2 actually did.
+/// present) — `account_master_object`/`account_master_page` just above now record the same
+/// mapping (S6-3), for the master-object content vocabulary this ledger's `object` reuses.
 pub(crate) fn account_anchored_object(
     anchored: &OfficeAnchoredObject,
 ) -> Result<FieldDecisionLedger, AccountingError> {
@@ -535,6 +545,11 @@ mod tests {
         assert_eq!(restart.refused_count(), 2);
     }
 
+    /// S6-3's `master_pages` was the last top-level field this ledger still recorded `refused` —
+    /// with it now `mapped` alongside S6-2's `anchored_objects`, every one of the 26 is `mapped`
+    /// or `derived`; `refused_count()` for THIS ledger is honestly zero. A sub-ledger further down
+    /// the same object graph (`OfficeSectionDeclaration`'s own five fields, `account_section`)
+    /// still records `refused` — this assertion is about the TOP-LEVEL 26 only.
     #[test]
     fn account_office_read_result_records_exactly_twenty_six_decisions() {
         let result = OfficeReadResult::default();
@@ -542,20 +557,19 @@ mod tests {
         assert_eq!(ledger.decision_count(), 26);
         assert!(ledger.mapped_count() > 0);
         assert!(ledger.derived_count() > 0);
-        assert!(ledger.refused_count() > 0);
+        assert_eq!(ledger.refused_count(), 0);
         assert_eq!(
             ledger.mapped_count() + ledger.derived_count() + ledger.refused_count(),
             26
         );
     }
 
-    /// The master-page family is still refused wholesale at the result level (S6-3's item), so
-    /// its own ledgers are the only record of what that refusal actually covers. The
-    /// anchored-object family is S6-2's: `account_anchored_object`/`account_paragraph_anchor`
-    /// record `mapped` for every field now that `office_adapter::from_office` actually carries
-    /// them into the tree.
+    /// Both families now record `mapped` for every field: master pages as of S6-3
+    /// (`account_master_page`/`account_master_object`), anchored objects as of S6-2
+    /// (`account_anchored_object`/`account_paragraph_anchor`) — `office_adapter::from_office`
+    /// actually carries every one of them into the tree.
     #[test]
-    fn refused_page_furniture_and_mapped_anchored_object_families_are_exhaustively_accounted() {
+    fn master_page_and_anchored_object_families_are_exhaustively_mapped() {
         let object = OfficeMasterObject {
             frame: swiftshim::CGRect::new(0.0, 0.0, 1.0, 1.0),
             content: OfficeMasterObjectContent::Text(Vec::new()),
@@ -568,11 +582,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(page.decision_count(), 3);
-        assert_eq!(page.refused_count(), 3);
+        assert_eq!(page.mapped_count(), 3);
 
         let master_object = account_master_object(&object).unwrap();
         assert_eq!(master_object.decision_count(), 2);
-        assert_eq!(master_object.refused_count(), 2);
+        assert_eq!(master_object.mapped_count(), 2);
 
         let anchored = account_anchored_object(&OfficeAnchoredObject {
             block_index: 0,
@@ -594,7 +608,7 @@ mod tests {
 
     #[test]
     fn every_result_field_keeps_its_exact_decision_kind() {
-        use DecisionKind::{Derived, Mapped, Refused};
+        use DecisionKind::{Derived, Mapped};
         const EXPECTED: &[(&str, DecisionKind)] = &[
             ("OfficeReadResult.blocks", Mapped),
             ("OfficeReadResult.comments", Mapped),
@@ -618,7 +632,7 @@ mod tests {
             ("OfficeReadResult.declared_faces", Mapped),
             ("OfficeReadResult.page_header_distance", Mapped),
             ("OfficeReadResult.page_footer_distance", Mapped),
-            ("OfficeReadResult.master_pages", Refused),
+            ("OfficeReadResult.master_pages", Mapped),
             ("OfficeReadResult.anchored_objects", Mapped),
             ("OfficeReadResult.hide_page_number_blocks", Derived),
             ("OfficeReadResult.page_number_restart_blocks", Derived),

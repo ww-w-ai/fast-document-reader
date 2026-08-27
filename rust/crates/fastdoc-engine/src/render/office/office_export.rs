@@ -32,9 +32,6 @@ pub enum NotExportable {
     /// A span already has a resolved substitute face. Font resolution belongs to the host and runs
     /// after the read, so a reader producing one means that order changed.
     ResolvedFontDescriptor,
-    /// The result carries a 바탕쪽 (HWP master page) — decoded pictures and pre-rendered drawings
-    /// that are not part of the serialized envelope.
-    MasterPages,
     /// A table's own picture fill is decoded pixels, not a document fact, and is not serialized.
     TableBackgroundImage,
     /// A cell's own picture fill is decoded pixels, not a document fact, and is not serialized.
@@ -46,9 +43,6 @@ impl NotExportable {
         match self {
             Self::ResolvedFontDescriptor => {
                 "a span carries a resolved font descriptor, which cannot cross to a host"
-            }
-            Self::MasterPages => {
-                "the result carries a master page, whose decoded artwork cannot cross to a host"
             }
             Self::TableBackgroundImage => {
                 "a table carries a decoded background image, which cannot cross to a host"
@@ -65,9 +59,6 @@ impl NotExportable {
 /// Deliberately a hard check rather than a lossy export: a host that renders a document with its
 /// pictures missing looks like a rendering bug for as long as it takes someone to find this file.
 pub fn assert_exportable(result: &OfficeReadResult) -> Result<(), NotExportable> {
-    if !result.master_pages.is_empty() {
-        return Err(NotExportable::MasterPages);
-    }
     check_blocks(&result.blocks)?;
     for header in &result.headers {
         check_blocks(&header.blocks)?;
@@ -207,8 +198,11 @@ mod tests {
         );
     }
 
+    /// S6-3: a master page serializes honestly like an anchored object already does (S6-2, just
+    /// below) — `OfficeMasterPage`/`OfficeMasterObject`/`OfficeMasterObjectContent` all already
+    /// derive `Serialize`/`Deserialize`, so this boundary was refusing something it could carry.
     #[test]
-    fn refuses_non_empty_master_pages() {
+    fn does_not_refuse_non_empty_master_pages() {
         let result = OfficeReadResult {
             master_pages: vec![OfficeMasterPage {
                 section: 0,
@@ -217,7 +211,7 @@ mod tests {
             }],
             ..OfficeReadResult::default()
         };
-        assert_eq!(assert_exportable(&result), Err(NotExportable::MasterPages));
+        assert_eq!(assert_exportable(&result), Ok(()));
     }
 
     /// S6-2: an anchored object serializes honestly into the envelope like everything else here

@@ -691,6 +691,38 @@ fn validate_payload(
                 }
             }
         }
+        // S6-3: no y/paragraphAnchor exclusion to police here — a master object's `y` is always
+        // final (`wire::MasterPageObject`'s own doc, invariant 78), so this is only the frame and
+        // content-kind checks `AnchoredObject` above also does, minus the anchor half.
+        P::MasterPage(v) => {
+            sorted_unique_nonzero(v.object_ids.iter().copied(), "master page object")?;
+            for id in &v.object_ids {
+                match nodes.get(id) {
+                    Some(target) if matches!(target.payload, P::MasterPageObject(_)) => {}
+                    _ => {
+                        return Err(invalid(
+                            "master page's objectIds entry is missing or has the wrong kind",
+                        ));
+                    }
+                }
+            }
+        }
+        P::MasterPageObject(v) => {
+            if !v.x.is_finite() || !v.y.is_finite() || !finite_nonnegative(v.width)
+                || !finite_nonnegative(v.height)
+            {
+                return Err(invalid("master page object frame is invalid"));
+            }
+            match nodes.get(&v.content_id) {
+                Some(target)
+                    if matches!(target.payload, P::Image(_) | P::Vector(_) | P::Flow(_)) => {}
+                _ => {
+                    return Err(invalid(
+                        "master page object's contentId is missing or has the wrong kind",
+                    ));
+                }
+            }
+        }
         P::Section(v) => {
             sorted_unique_nonzero(v.header_ids.iter().copied(), "section header")?;
             sorted_unique_nonzero(v.footer_ids.iter().copied(), "section footer")?;

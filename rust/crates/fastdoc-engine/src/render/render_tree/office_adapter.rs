@@ -49,9 +49,6 @@ pub enum OfficeAdapterError {
     /// A block referenced a resource key (`OfficeBlock::Image.id` or `.background_image`'s key)
     /// that is absent from `OfficeAdapterInput.resources`.
     MissingResource(String),
-    /// `OfficeReadResult.master_pages` is non-empty — decoded 바탕쪽 artwork that cannot cross into
-    /// the wire tree, the same fact `office_export::assert_exportable` refuses.
-    MasterPagePresent,
     /// An `OfficeAnchoredObject.block_index` names a position `OfficeReadResult.blocks` does not
     /// hold a mapped node for — the reader's own contract (mapping.rs) leaves an empty paragraph
     /// carrier at that index rather than dropping the block, so this should never fire for a
@@ -88,9 +85,6 @@ pub(super) fn from_office(
     input: OfficeAdapterInput<'_>,
 ) -> Result<ValidatedRenderTree, OfficeAdapterError> {
     let result = input.result;
-    if !result.master_pages.is_empty() {
-        return Err(OfficeAdapterError::MasterPagePresent);
-    }
 
     let mut ctx = Ctx::new(result, &input.resources);
     ctx.register_comments(&result.comments);
@@ -115,6 +109,9 @@ pub(super) fn from_office(
     let mut header_children_by_section: Vec<Vec<u64>> = vec![Vec::new(); section_count];
     let mut footer_children_by_section: Vec<Vec<u64>> = vec![Vec::new(); section_count];
     let mut footnote_children_by_section: Vec<Vec<u64>> = vec![Vec::new(); section_count];
+    // S6-3: unlike a header/footer, `OfficeMasterPage.section` is not optional (a 바탕쪽 always
+    // belongs to one section — invariant 78's own doc), so there is no broadcast case here.
+    let mut master_page_children_by_section: Vec<Vec<u64>> = vec![Vec::new(); section_count];
 
     for hf in &result.headers {
         let owner = resolve_owner_section(hf.section, section_count)?;
@@ -146,6 +143,11 @@ pub(super) fn from_office(
         let owner = resolve_owner_section(footnote.section, section_count)?;
         let node_id = ctx.build_footnote_node(footnote, section_ids[owner])?;
         footnote_children_by_section[owner].push(node_id);
+    }
+    for page in &result.master_pages {
+        let owner = resolve_owner_section(Some(page.section), section_count)?;
+        let node_id = ctx.build_master_page_node(page, section_ids[owner])?;
+        master_page_children_by_section[owner].push(node_id);
     }
 
     // Where each declared section's body begins in `result.blocks`; a single synthetic section
@@ -194,12 +196,14 @@ pub(super) fn from_office(
             1 + header_children_by_section[idx].len()
                 + footer_children_by_section[idx].len()
                 + footnote_children_by_section[idx].len()
+                + master_page_children_by_section[idx].len()
                 + anchored_ids.len(),
         );
         children.push(flow_id);
         children.extend(header_children_by_section[idx].iter().copied());
         children.extend(footer_children_by_section[idx].iter().copied());
         children.extend(footnote_children_by_section[idx].iter().copied());
+        children.extend(master_page_children_by_section[idx].iter().copied());
         children.extend(anchored_ids);
 
         let mut header_ids = std::mem::take(&mut header_ids_by_section[idx]);
@@ -1005,14 +1009,27 @@ impl<'a> Ctx<'a> {
                     }),
                 )
             }
-            // A pre-rendered drawing (raw PDF bytes, `HwpShapeRenderer`'s own output) is not
-            // structured paths — carried as a picture the same way the host already treats a
-            // rasterised vector fallback (`Ctx.vector_graphics`'s own doc: "the host installs a
-            // rasterised fallback of the same drawing into `images`"). Not reachable through
-            // `OfficeReadResult.anchored_objects` today (mapping.rs only ever pushes `Image`/
-            // `Vector` there — verified by inspection, not fabricated) but IS reachable once S6-3
-            // reads a master page's own objects, which share this exact content vocabulary; this
-            // arm exists so that day does not find an unhandled variant.
+            // A pre-rendered drawing (raw PDF bytes) is not structured paths, so it is carried as a
+            // picture — the same treatment the host already gives a rasterised vector fallback.
+            //
+            // THIS ARM IS UNREACHABLE FROM THIS CRATE'S OWN READER, and not by accident. Rasterising
+            // paths needs a graphics stack, which is the host's, so the Swift reader renders them at
+            // read time (`HwpReader.swift:639` -> `HwpShapeRenderer.pdf`) and stores `.drawing(pdf)`,
+            // while this crate keeps the vector description and stores `Vector`. Measured, after
+            // S6-3 made master pages reachable: the 편람 fixture's 11 master pages carry 65 objects,
+            // every one of them `Image`/`Vector`/`Text` and NOT ONE `Drawing`. An earlier version of
+            // this comment predicted S6-3 would be the day this arm ran; it was wrong, and the
+            // measurement is recorded here so the prediction is not made a third time.
+            //
+            // It stays because the variant is the SHARED vocabulary both readers speak (the schema-v4
+            // decode has a "Drawing" case, `OfficeEnvelopeDecoding.swift:201`), not because anything
+            // here produces one. Do NOT count it as a covered branch — nothing can exercise it from
+            // this side, so a test that claims to is passing on a path it never took (invariant 103).
+            //
+            // The consequence belongs to S6-6: a host reading the TREE gets `vector` where its own
+            // reader would have produced `.drawing(pdf)`, so it has to rasterise at consume time. The
+            // two also disagree about what survives — the Swift reader DROPS a drawing whose frame is
+            // under half a point or whose render fails, and this one keeps the vector regardless.
             office_block::OfficeMasterObjectContent::Drawing(data) => {
                 let mime = sniff_image_mime(&data.0).to_string();
                 let intrinsic = wire::Size { width: 0.0, height: 0.0 };
@@ -1109,6 +1126,62 @@ impl<'a> Ctx<'a> {
                 paragraph_anchor,
                 anchored_to_id,
                 content_id,
+            }),
+        });
+        Ok(node_id)
+    }
+
+    /// One `OfficeMasterObject` as a node: `map_anchored_content` builds the SAME content vocabulary
+    /// (Image/Drawing/Vector/Text) an anchored object already uses — S6-3 adds no new content kind,
+    /// only the frame wrapper (`MasterPageObject`, never `AnchoredObject`: there is no block this
+    /// travels with and no paragraph rule, invariant 78's own "there is no anchor to resolve").
+    fn build_master_page_object_node(
+        &mut self,
+        obj: &office_block::OfficeMasterObject,
+        parent_id: u64,
+    ) -> Result<u64, OfficeAdapterError> {
+        let node_id = self.new_node_id();
+        let content_id = self.map_anchored_content(&obj.content, node_id)?;
+        self.nodes.push(wire::Node {
+            id: node_id,
+            parent_id: Some(parent_id),
+            children: vec![content_id],
+            source_spans: vec![],
+            edit: None,
+            payload: wire::NodePayload::MasterPageObject(wire::MasterPageObject {
+                x: obj.frame.origin.x,
+                width: obj.frame.size.width,
+                height: obj.frame.size.height,
+                y: obj.frame.origin.y,
+                content_id,
+            }),
+        });
+        Ok(node_id)
+    }
+
+    /// One 바탕쪽 as a node, parented at its owning section (`parent_id`) the same level a header/
+    /// footer/footnote/anchored object attaches at — never which PAGE it paints on (draw-time,
+    /// `MasterPagePainter`/S5C-3's job, not this tree's — see `wire::MasterPage`'s own doc).
+    fn build_master_page_node(
+        &mut self,
+        page: &office_block::OfficeMasterPage,
+        parent_id: u64,
+    ) -> Result<u64, OfficeAdapterError> {
+        let node_id = self.new_node_id();
+        let object_ids = page
+            .objects
+            .iter()
+            .map(|obj| self.build_master_page_object_node(obj, node_id))
+            .collect::<Result<Vec<u64>, _>>()?;
+        self.nodes.push(wire::Node {
+            id: node_id,
+            parent_id: Some(parent_id),
+            children: object_ids.clone(),
+            source_spans: vec![],
+            edit: None,
+            payload: wire::NodePayload::MasterPage(wire::MasterPage {
+                applies_to: convert_header_footer_applicability(page.applies_to),
+                object_ids,
             }),
         });
         Ok(node_id)
@@ -2132,11 +2205,99 @@ mod tests {
         assert_eq!(path["arrowEnd"], true);
     }
 
+    /// S6-3: a 바탕쪽 becomes a `masterPage` node under its section, its declared object a
+    /// `masterPageObject` child whose `y` is FINAL (never a placeholder — invariant 78) with a
+    /// `Vector` content child, the same content vocabulary an anchored object already uses.
     #[test]
-    fn master_page_present_is_refused() {
+    fn master_page_becomes_a_node_with_a_final_y_object() {
         let mut result = OfficeReadResult::default();
         result.master_pages.push(office_block::OfficeMasterPage {
             section: 0,
+            applies_to: office_block::HeaderFooterApplicability::EvenPages,
+            objects: vec![OfficeMasterObject {
+                frame: CGRect::new(1.0, 2.0, 3.0, 4.0),
+                content: OfficeMasterObjectContent::Vector(one_path(PathSpec {
+                    commands: vec![HwpPathCommand::Move(swiftshim::CGPoint { x: 0.0, y: 0.0 })],
+                    stroke: None,
+                    fill: None,
+                    arrow_start: false,
+                    arrow_end: false,
+                })),
+            }],
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).expect("must not refuse");
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let nodes = value["nodes"].as_array().unwrap();
+        let page = nodes.iter().find(|n| n["type"] == "masterPage").unwrap();
+        assert_eq!(page["data"]["appliesTo"], "evenPages");
+        let object_id = page["data"]["objectIds"][0].as_u64().unwrap();
+        let object = nodes.iter().find(|n| n["id"] == object_id).unwrap();
+        assert_eq!(object["type"], "masterPageObject");
+        assert_eq!(object["data"]["x"], 1.0);
+        assert_eq!(object["data"]["y"], 2.0, "a master object's y is always final");
+        assert_eq!(object["data"]["width"], 3.0);
+        assert_eq!(object["data"]["height"], 4.0);
+        let content_id = object["data"]["contentId"].as_u64().unwrap();
+        let content = nodes.iter().find(|n| n["id"] == content_id).unwrap();
+        assert_eq!(content["type"], "vector");
+    }
+
+    /// WHICH section a master page belongs to, not merely that it belongs to one. Mirrors the
+    /// anchored-object lesson (`an_anchored_object_names_the_block_it_was_declared_against`'s own
+    /// doc): a fixture with only one candidate section cannot tell whether `section` was read at
+    /// all, so this declares two and anchors the master page to the SECOND.
+    #[test]
+    fn a_master_page_names_the_section_it_was_declared_against() {
+        let mut result = OfficeReadResult::default();
+        for text in ["first", "second"] {
+            result.blocks.push(OfficeBlock::Paragraph {
+                spans: vec![Span { text: SwiftString::from(text.to_string()), ..Default::default() }],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            });
+        }
+        result.sections = vec![
+            office_block::OfficeSectionDeclaration::default(),
+            office_block::OfficeSectionDeclaration::default(),
+        ];
+        result.section_start_blocks = vec![0, 1];
+        result.master_pages.push(office_block::OfficeMasterPage {
+            section: 1,
+            applies_to: office_block::HeaderFooterApplicability::DefaultPages,
+            objects: vec![OfficeMasterObject {
+                frame: CGRect::zero(),
+                content: OfficeMasterObjectContent::Text(vec![]),
+            }],
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).expect("must not refuse");
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let nodes = value["nodes"].as_array().unwrap();
+        let page = nodes.iter().find(|n| n["type"] == "masterPage").unwrap();
+        let section = nodes.iter().find(|n| n["id"] == page["parentId"]).unwrap();
+        let flow_id = section["children"][0].as_u64().unwrap();
+        let flow = nodes.iter().find(|n| n["id"] == flow_id).unwrap();
+        let first_block = flow["children"][0].as_u64().unwrap();
+        let paragraph = nodes.iter().find(|n| n["id"] == first_block).unwrap();
+        let text: Vec<&str> = nodes
+            .iter()
+            .filter(|n| n["parentId"] == paragraph["id"] && n["type"] == "textRun")
+            .filter_map(|n| n["data"]["text"].as_str())
+            .collect();
+        assert_eq!(text, vec!["second"], "declared against section 1, must attach to THAT section");
+    }
+
+    /// `OfficeMasterPage.section` naming a section index the document does not have is the same
+    /// typed error a header/footer/footnote already gets (`resolve_owner_section`) — never
+    /// silently clamped to section 0.
+    #[test]
+    fn a_master_page_with_a_dangling_section_is_a_typed_error() {
+        let mut result = OfficeReadResult::default();
+        result.master_pages.push(office_block::OfficeMasterPage {
+            section: 3,
             applies_to: office_block::HeaderFooterApplicability::DefaultPages,
             objects: vec![OfficeMasterObject {
                 frame: CGRect::zero(),
@@ -2144,7 +2305,7 @@ mod tests {
             }],
         });
         let err = ValidatedRenderTree::from_office(input(&result)).unwrap_err();
-        assert_eq!(err, OfficeAdapterError::MasterPagePresent);
+        assert_eq!(err, OfficeAdapterError::SectionIndexMissing(3));
     }
 
     /// S6-2: a paper-/page-relative anchored object (no `paragraph_anchor`) becomes a node whose

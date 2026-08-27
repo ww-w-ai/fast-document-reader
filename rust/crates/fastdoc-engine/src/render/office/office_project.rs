@@ -116,9 +116,10 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     let mut footers: Vec<OfficeHeaderFooter> = Vec::new();
     let mut footnotes: Vec<OfficeFootnote> = Vec::new();
     let mut anchored_objects: Vec<ob::OfficeAnchoredObject> = Vec::new();
+    let mut master_pages: Vec<ob::OfficeMasterPage> = Vec::new();
     let mut first_section: Option<wire::Section> = None;
 
-    for &section_id in &root.children {
+    for (section_index, &section_id) in root.children.iter().enumerate() {
         let section_node = proj.get(section_id)?.clone();
         let section = match &section_node.payload {
             wire::NodePayload::Section(s) => s.clone(),
@@ -151,6 +152,9 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
                     footnotes.push(proj.footnote(&child, fnote.clone())?)
                 }
                 wire::NodePayload::AnchoredObject(ao) => pending_anchored.push(ao.clone()),
+                wire::NodePayload::MasterPage(mp) => {
+                    master_pages.push(proj.master_page(mp.clone(), section_index as i64)?)
+                }
                 other => {
                     return Err(ProjectionError::Malformed(format!(
                         "unexpected section child payload: {other:?}"
@@ -237,7 +241,7 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     result.insert("headers".to_string(), to_value(&headers)?);
     result.insert("footers".to_string(), to_value(&footers)?);
     result.insert("footnotes".to_string(), to_value(&footnotes)?);
-    result.insert("master_pages".to_string(), to_value(&Vec::<ob::OfficeMasterPage>::new())?);
+    result.insert("master_pages".to_string(), to_value(&master_pages)?);
     // A tree with exactly one `Section` node is genuinely ambiguous (see this module's own doc):
     // it cannot tell "the source declared no sections" from "declared exactly one, with nothing
     // else this projector can see" apart, so `[]` is the accepted exception there. More than one
@@ -465,6 +469,46 @@ impl Projector {
                 "anchoredObject.contentId named an unexpected node payload: {other:?}"
             ))),
         }
+    }
+
+    /// S6-3's reverse of `office_adapter::build_master_page_node`: every `objectIds` child ->
+    /// `master_object` (below), `section` from this node's own position among the document's
+    /// `Section` children — the parent/child EDGE the tree already states, never a wire field of
+    /// its own (the adapter's own choice, `wire::MasterPage`'s doc).
+    fn master_page(
+        &mut self,
+        mp: wire::MasterPage,
+        section_index: i64,
+    ) -> Result<ob::OfficeMasterPage, ProjectionError> {
+        let objects = mp
+            .object_ids
+            .iter()
+            .map(|&id| self.master_object(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ob::OfficeMasterPage {
+            section: section_index,
+            applies_to: convert_hf_applicability(mp.applies_to),
+            objects,
+        })
+    }
+
+    /// `MasterPageObject` -> `OfficeMasterObject`: `y` is read straight back (never a placeholder
+    /// here — `wire::MasterPageObject`'s own doc, invariant 78), and `content_id` reuses
+    /// `anchored_content` unchanged, since a master object's content is the identical `Image`/
+    /// `Vector`/`Flow` vocabulary an anchored object's is.
+    fn master_object(&mut self, object_id: u64) -> Result<ob::OfficeMasterObject, ProjectionError> {
+        let node = self.get(object_id)?.clone();
+        let wire::NodePayload::MasterPageObject(obj) = &node.payload else {
+            return Err(ProjectionError::Malformed(format!(
+                "masterPage.objectIds named an unexpected node payload: {:?}",
+                node.payload
+            )));
+        };
+        let content = self.anchored_content(obj.content_id)?;
+        Ok(ob::OfficeMasterObject {
+            frame: swiftshim::CGRect::new(obj.x, obj.y, obj.width, obj.height),
+            content,
+        })
     }
 
     /// Walks a run of sibling node ids (a flow's own children) into `OfficeBlock`s, unwrapping the

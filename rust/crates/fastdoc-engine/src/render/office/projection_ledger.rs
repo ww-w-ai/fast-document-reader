@@ -79,7 +79,6 @@ pub fn clear() {
 pub fn adapter_error_kind(error: &OfficeAdapterError) -> &'static str {
     match error {
         OfficeAdapterError::MissingResource(_) => "OfficeAdapterError::MissingResource",
-        OfficeAdapterError::MasterPagePresent => "OfficeAdapterError::MasterPagePresent",
         OfficeAdapterError::AnchoredObjectTargetMissing(_) => {
             "OfficeAdapterError::AnchoredObjectTargetMissing"
         }
