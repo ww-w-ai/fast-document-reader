@@ -82,12 +82,6 @@ pub fn adapter_error_kind(error: &OfficeAdapterError) -> &'static str {
         OfficeAdapterError::AnchoredObjectTargetMissing(_) => {
             "OfficeAdapterError::AnchoredObjectTargetMissing"
         }
-        OfficeAdapterError::TableBackgroundImagePresent => {
-            "OfficeAdapterError::TableBackgroundImagePresent"
-        }
-        OfficeAdapterError::CellBackgroundImagePresent => {
-            "OfficeAdapterError::CellBackgroundImagePresent"
-        }
         OfficeAdapterError::SectionIndexMissing(_) => "OfficeAdapterError::SectionIndexMissing",
         OfficeAdapterError::UnresolvedCommentId(_) => "OfficeAdapterError::UnresolvedCommentId",
         OfficeAdapterError::NegativeFootnoteNumber(_) => {

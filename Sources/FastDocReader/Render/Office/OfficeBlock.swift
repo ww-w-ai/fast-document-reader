@@ -229,6 +229,11 @@ struct Cell: Equatable {
     /// them as blank paper. `nil` everywhere else, and nil from `mapJSON` alone (the bytes need the
     /// parse handle, so `HwpReader.read` is what fills it).
     var backgroundImage: NSImage? = nil
+    /// The cell's own GRADIENT fill DECLARATION (stops + angle), when the fill is a gradient rather
+    /// than a real picture — mutually exclusive with a real picture in `backgroundImage` by
+    /// construction (a fill is one or the other, never both; see `OfficeGradient`'s own doc). `nil`
+    /// everywhere else, and nil from `mapJSON` alone, same as `backgroundImage`.
+    var backgroundGradient: OfficeGradient? = nil
     /// The cell's own border colour/width (docx `w:tcPr/w:tcBorders`, odt cell-style borders) —
     /// either or both may be `nil`, in which case `TableBlockBuilder`'s existing theme default
     /// (`Palette.tableBorder` at 1pt) is used for that one, exactly as before this field existed.
@@ -314,6 +319,7 @@ struct Cell: Equatable {
 
     init(blocks: [OfficeBlock], rowSpan: Int = 1, colSpan: Int = 1,
          backgroundColor: NSColor? = nil, backgroundImage: NSImage? = nil,
+         backgroundGradient: OfficeGradient? = nil,
          borderColor: NSColor? = nil, borderWidth: CGFloat? = nil,
          edgeBorders: EdgeBorders? = nil,
          width: CGFloat? = nil, verticalAlignment: CellVAlign? = nil, padding: CGFloat? = nil,
@@ -323,6 +329,7 @@ struct Cell: Equatable {
         self.colSpan = colSpan
         self.backgroundColor = backgroundColor
         self.backgroundImage = backgroundImage
+        self.backgroundGradient = backgroundGradient
         self.borderColor = borderColor
         self.borderWidth = borderWidth
         self.edgeBorders = edgeBorders
@@ -332,6 +339,19 @@ struct Cell: Equatable {
         self.edgePadding = edgePadding
         self.diagonal = diagonal
     }
+}
+
+/// A GRADIENT fill's colour stops (in order) and angle, as the source DECLARED it — never a
+/// rasterized bitmap. `Cell.backgroundImage`/`TableFormat.backgroundImage` above already carry a
+/// synthesized preview bitmap for a gradient-only fill (unchanged by this field's addition — the
+/// mirrored reader that fills both still populates it the same way it always has, so a build
+/// without this field's consumer draws exactly as before). This field exists so a FUTURE consumer
+/// (a drawing path that paints a real gradient rather than the fixed-size preview) has the
+/// document's own fact to draw from instead of the reader's own bitmap — carried, not yet drawn,
+/// the same layering `fastdoc-engine`'s `office_block::OfficeGradient` was added for.
+struct OfficeGradient: Equatable {
+    var stops: [NSColor]
+    var angleDegrees: CGFloat? = nil
 }
 
 /// One "start the page numbering again here" instruction, resolved to the block that carries it.
@@ -506,6 +526,10 @@ struct TableFormat: Equatable {
     /// declare nothing at all (55 tables in one measured manual). Filled by `HwpReader.read`, nil
     /// for every other format and for `mapJSON` alone.
     var backgroundImage: NSImage? = nil
+    /// The table's own GRADIENT fill DECLARATION — mirrors `Cell.backgroundGradient`'s own doc at
+    /// the table level: mutually exclusive with a real picture in `backgroundImage`, `nil` when the
+    /// table declares no fill at all or a real picture won instead.
+    var backgroundGradient: OfficeGradient? = nil
     /// The table's own total width in POINTS as the SOURCE document laid it out (docx `w:tblGrid`
     /// twips summed, HWP's HWPUNIT column widths summed, ODF `style:column-width` summed) — `nil`
     /// when the format states only proportions (ODF `style:rel-column-width`) or nothing at all.
@@ -1597,7 +1621,7 @@ extension Span: Decodable {
 
 extension Cell: Decodable {
     enum CodingKeys: String, CodingKey {
-        case blocks, rowSpan, colSpan, backgroundColor, backgroundImage, borderColor
+        case blocks, rowSpan, colSpan, backgroundColor, backgroundImage, backgroundGradient, borderColor
         case borderWidth, edgeBorders, width, verticalAlignment, padding
         case edgePadding, diagonal, styleShading, styleBorderColor, styleBorderWidth
     }
@@ -1608,6 +1632,7 @@ extension Cell: Decodable {
         colSpan = try c.decode(Int.self, forKey: .colSpan)
         backgroundColor = try c.decodeIfPresent(WireColor.self, forKey: .backgroundColor)?.color
         backgroundImage = try c.decodeIfPresent(WireImage.self, forKey: .backgroundImage)?.image
+        backgroundGradient = try c.decodeIfPresent(WireGradient.self, forKey: .backgroundGradient)?.gradient
         borderColor = try c.decodeIfPresent(WireColor.self, forKey: .borderColor)?.color
         borderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .borderWidth)
         edgeBorders = try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders)
@@ -1624,7 +1649,7 @@ extension Cell: Decodable {
 
 extension TableFormat: Decodable {
     enum CodingKeys: String, CodingKey {
-        case defaultBorderColor, defaultBorderWidth, defaultShading, backgroundImage, sourceWidth, edgeBorders
+        case defaultBorderColor, defaultBorderWidth, defaultShading, backgroundImage, backgroundGradient, sourceWidth, edgeBorders
         case defaultPadding, repeatHeaderRows, pageBreakPolicy, outerMargin
     }
     public init(from decoder: Decoder) throws {
@@ -1633,6 +1658,7 @@ extension TableFormat: Decodable {
         defaultBorderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .defaultBorderWidth)
         defaultShading = try c.decodeIfPresent(WireColor.self, forKey: .defaultShading)?.color
         backgroundImage = try c.decodeIfPresent(WireImage.self, forKey: .backgroundImage)?.image
+        backgroundGradient = try c.decodeIfPresent(WireGradient.self, forKey: .backgroundGradient)?.gradient
         sourceWidth = try c.decodeIfPresent(CGFloat.self, forKey: .sourceWidth)
         edgeBorders = try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders)
         defaultPadding = try c.decodeIfPresent(EdgePadding.self, forKey: .defaultPadding)

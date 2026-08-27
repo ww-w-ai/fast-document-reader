@@ -324,6 +324,25 @@ pub struct TableStyle {
     pub page_break_policy: Option<TablePageBreakPolicy>,
     #[serde(default)]
     pub outer_margin: Option<OptionalInsets>,
+    // S6-4: the table's own PICTURE fill — a resource reference, the same mechanism S6-2's
+    // `AnchoredObject` content uses, never a rendered bitmap. Mutually exclusive with
+    // `background_gradient` below (`office_block::TableFormat.background_image`/
+    // `.background_gradient`'s own doc: a fill is either a real document picture OR a declared
+    // gradient, never both at once — the reader resolves that priority before either field here
+    // is populated).
+    #[serde(default)]
+    pub background_resource_id: Option<u64>,
+    // S6-4: the table's own gradient fill, DECLARED — stops and angle, never a rasterized bitmap.
+    #[serde(default)]
+    pub background_gradient: Option<Gradient>,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+/// A gradient fill exactly as the document declared it — `office_block::OfficeGradient`'s mirror.
+pub struct Gradient {
+    pub stops: Vec<Color>,
+    #[serde(default)]
+    pub angle_degrees: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -686,6 +705,12 @@ pub struct TableCell {
     pub style_shading: Option<Color>,
     #[serde(default)]
     pub style_uniform_border: Option<UniformBorder>,
+    // S6-4: mirrors `TableStyle.background_resource_id`/`.background_gradient` — same mutual
+    // exclusion, this cell's own fill rather than the table's.
+    #[serde(default)]
+    pub background_resource_id: Option<u64>,
+    #[serde(default)]
+    pub background_gradient: Option<Gradient>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

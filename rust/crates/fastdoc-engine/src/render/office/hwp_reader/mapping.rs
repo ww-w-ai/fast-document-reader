@@ -1360,6 +1360,24 @@ impl HwpReader {
         swiftshim::NSImage::fromData(&Data::fromBytes(encoded.into_inner()))
     }
 
+    /// S6-4: the SAME gradient, as the document declared it — stops and angle, no bitmap. Never
+    /// called in place of `gradient_image` (that one still runs, unchanged, for the host's own
+    /// drawing) — this is the tree/schema-v4 path's honest alternative, populated only when no
+    /// real picture won the fill (mirroring `fill_image(...).or_else(gradient_image(...))`'s own
+    /// priority so a fill declaring both a picture and a gradient never carries both facts at
+    /// once — the picture already won and this stays `None`, same as `gradient_image` would).
+    fn gradient_declaration(
+        gradient: Option<&HwpGradient>,
+    ) -> Option<crate::render::office::office_block::OfficeGradient> {
+        let gradient = gradient?;
+        let stops: Vec<NSColor> = gradient.colors.iter().filter_map(|c| Self::color(Some(c))).collect();
+        if stops.len() < 2 { return None; }
+        Some(crate::render::office::office_block::OfficeGradient {
+            stops,
+            angle_degrees: gradient.angle.map(|a| a as CGFloat),
+        })
+    }
+
     /// HWP paragraph `align` → the block's `NSTextAlignment?`, resolved exactly the way
     /// `DocxReader.alignmentFromJc` does: `"both"`/`"justify"`/`"distribute"` → `.justified`
     /// (`NSTextAlignment` has no distributed case, so distribute collapses to justify — same choice
@@ -2059,12 +2077,19 @@ impl HwpReader {
                 // A PICTURE fill on the table is one image behind the whole grid — the rounded box a
                 // Korean document draws around an annotation. Painted once by `GridTextTable`, never
                 // repeated per cell, which is what turns one frame into a wall of frames.
-                format.background_image = shapes.fill_image(table_fill.and_then(|f| f.bg_image))
-                    .or_else(|| Self::gradient_image(table_fill.and_then(|f| f.bg_gradient.as_ref())));
+                let table_bg_gradient_source = table_fill.and_then(|f| f.bg_gradient.as_ref());
+                let table_real_image = shapes.fill_image(table_fill.and_then(|f| f.bg_image));
+                format.background_image =
+                    table_real_image.clone().or_else(|| Self::gradient_image(table_bg_gradient_source));
+                format.background_gradient = if table_real_image.is_none() {
+                    Self::gradient_declaration(table_bg_gradient_source)
+                } else {
+                    None
+                };
                 // A single-stop gradient is a plain fill, and one that could not be drawn still reads
                 // closer to the document as its first colour than as blank paper.
                 if format.default_shading.is_none() && format.background_image.is_none() {
-                    if let Some(stops) = table_fill.and_then(|f| f.bg_gradient.as_ref()).map(|g| &g.colors) {
+                    if let Some(stops) = table_bg_gradient_source.map(|g| &g.colors) {
                         if !stops.is_empty() { format.default_shading = Self::color(Some(&stops[0])); }
                     }
                 }
@@ -2369,10 +2394,15 @@ impl HwpReader {
         // had deliberately turned off (measured: 423 of the 편람's 821 definitions are all-off).
         let fill = Self::border_fill(c.border_fill_id, border_fills);
         let mut shading = fill.and_then(|f| Self::color(f.bg.as_deref()));
-        let fill_image = shapes.fill_image(fill.and_then(|f| f.bg_image))
-            .or_else(|| Self::gradient_image(fill.and_then(|f| f.bg_gradient.as_ref())));
+        let bg_gradient_source = fill.and_then(|f| f.bg_gradient.as_ref());
+        // The real document picture, unmerged — S6-4's own fact, separate from the fallback bitmap
+        // below (`gradient_declaration`'s own doc: same priority, honest instead of ambiguous).
+        let real_image = shapes.fill_image(fill.and_then(|f| f.bg_image));
+        let fill_image = real_image.clone().or_else(|| Self::gradient_image(bg_gradient_source));
+        let background_gradient =
+            if real_image.is_none() { Self::gradient_declaration(bg_gradient_source) } else { None };
         if shading.is_none() && fill_image.is_none() {
-            if let Some(stops) = fill.and_then(|f| f.bg_gradient.as_ref()).map(|g| &g.colors) {
+            if let Some(stops) = bg_gradient_source.map(|g| &g.colors) {
                 if !stops.is_empty() { shading = Self::color(Some(&stops[0])); }
             }
         }
@@ -2380,6 +2410,7 @@ impl HwpReader {
             blocks, row_span: c.row_span, col_span: c.col_span,
             background_color: shading,
             background_image: fill_image,
+            background_gradient,
             border_color: None,
             border_width: None,
             edge_borders: Self::edge_borders(c.border_fill_id, border_fills),

@@ -310,10 +310,26 @@ fn the_ledgers_per_kind_counts_match_from_office_called_directly_over_several_fi
             result: &result,
             resources: BTreeMap::new(),
         });
-        if let Err(error) = &direct {
-            *expected_by_kind
-                .entry(projection_ledger::adapter_error_kind(error).to_string())
-                .or_default() += 1;
+        // The ledger records BOTH layers the FFI symbol walks, so the expected side must walk
+        // both too. Counting only the adapter's refusals leaves the export layer unwitnessed: a
+        // document the adapter ACCEPTS goes on to `project`, and a refusal swallowed there would
+        // never appear on this side of the comparison. Measured — `issue2083_hide_fill_page.hwpx`
+        // declares three sections, so it clears the adapter and is refused by `project` as
+        // `Field("sections")`; before S6-4 the adapter refused it first and the export layer was
+        // never reached, which is how this hole stayed invisible.
+        match &direct {
+            Err(error) => {
+                *expected_by_kind
+                    .entry(projection_ledger::adapter_error_kind(error).to_string())
+                    .or_default() += 1;
+            }
+            Ok(tree) => {
+                if let Err(error) = project(tree) {
+                    *expected_by_kind
+                        .entry(projection_ledger::projection_error_kind(&error))
+                        .or_default() += 1;
+                }
+            }
         }
 
         // Drive the SAME bytes through the real FFI symbol — the ledger records this call

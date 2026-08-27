@@ -679,6 +679,14 @@ fn digest_from_tree_json(root: &serde_json::Value) -> OfficeSemanticDigest {
                 }
                 "header" => headers_present = true,
                 "footer" => footers_present = true,
+                // S6-2's sidecar: an `OfficeAnchoredObject` is never in `result.blocks` on the
+                // source side (it lives in `result.anchored_objects`, a separate list), so the
+                // source-side digest never sees it either — skipped here for the same reason,
+                // not folded into `body_blocks`.
+                "anchoredObject" => {}
+                // S6-3's sidecar: same reasoning as `anchoredObject` above — an
+                // `OfficeMasterPage` lives in `result.master_pages`, never `result.blocks`.
+                "masterPage" => {}
                 "footnote" => {
                     let number = child["data"]["number"].as_i64().expect("footnote.number");
                     let flow_id = child["children"]
@@ -829,6 +837,23 @@ fn digest_single_block_canonical(
                 form_controls: vec![],
             }
         }
+        // A body-flow `OfficeBlock::Image` whose id resolves to a `VectorGraphic` becomes a
+        // "vector" node here (`office_adapter.rs::map_vector`), not an "image" one — but
+        // `digest_block_src`'s SOURCE-side twin (above) does not make that distinction: it
+        // classifies every `OfficeBlock::Image` as `DigestKind::Image` regardless, and finds no
+        // sha for a vector-graphic id in either `result.images` or `ctx.resources` (`None`).
+        // `map_vector`'s own doc says its wire node's `resource_id` "stays `None`" too, so the
+        // two sides already agree on the fact (no raster resource) — this arm only has to name
+        // it under the SAME `DigestKind` the source side already picked, or parity fails on a
+        // representation difference neither side considers a content difference.
+        "vector" => DigestBlock {
+            kind: DigestKind::Image { resource_sha256: None },
+            text: String::new(),
+            footnote_refs: vec![],
+            comment_texts: vec![],
+            bookmark_names: vec![],
+            form_controls: vec![],
+        },
         "unsupported" => {
             let label = data["reason"].as_str().expect("unsupported.reason").to_string();
             DigestBlock {
@@ -1298,21 +1323,23 @@ fn feature_form_control_digest_parity() {
     }
 }
 
-/// `feature-nested-table-{hwp,hwpx}` carry 11 `Cell.background_image` picture-fill cells AND at
-/// least one anchored object. Before S6-2, `from_office` checked `OfficeReadResult.anchored_objects`
-/// UNCONDITIONALLY at the top of the function, before it ever reached a table cell, so BOTH
-/// nested-table fixtures refused with `AnchoredObjectPresent`, never reaching the
-/// `CellBackgroundImagePresent` check their picture fills would otherwise trigger — a real,
-/// worth-stating fact about check ORDER, not a guess. S6-2 removed that unconditional refusal (the
-/// tree now carries an anchored object, S6-1's sibling item), so these fixtures now refuse ONE
-/// step further in, on the picture-fill cells S6-4 has not yet reached — `CellBackgroundImagePresent`,
-/// the check this comment originally assumed before correcting itself against the pre-S6-2 error.
-/// So this test does NOT call `assert_feature_digest_parity` (there is still no tree to digest) —
-/// it count-pins the SOURCE-side facts the manifest claims directly on `OfficeReadResult`, and
-/// asserts the refusal by its exact error, matching the treatment
-/// `feature_picture_fill_refusal_is_a_typed_from_office_error` gives the dedicated refusal fixture.
+/// `feature-nested-table-{hwp,hwpx}` carry 11 `Cell.background_image` cells AND at least one
+/// anchored object. Before S6-2, `from_office` refused on `AnchoredObjectPresent`; after S6-2 it
+/// refused one step further in, on `CellBackgroundImagePresent`; S6-4 carries that fill instead of
+/// refusing it, so this now builds a real tree — the same `assert_feature_digest_parity` every
+/// OTHER accepted feature fixture in this file already gets, plus a direct count-pin on WHICH kind
+/// of fill the 11 cells actually carry (parity alone would not catch a background silently
+/// dropped, or a synthesized bitmap fabricated into a resource: `OfficeSemanticDigest` has no
+/// field for either, by design — see this file's own digest struct).
+///
+/// `Cell.background_image` is `mapping.rs`'s MERGED field (real picture OR a synthesized gradient
+/// bitmap), so its count alone does not say which kind these 11 are. rhwp's own
+/// `resolve_single_border_style` resolves `image_fill`/`gradient` off the same `fill_type` match,
+/// so a fill is never both — measured directly against this fixture's real bytes: all 11 are
+/// `FillType::Gradient`, none are `FillType::Image`. `feature_picture_fill_now_accepted_and_carries_a_resource`
+/// (below) is the test that proves a REAL picture fill becomes a resource, using a fixture that has one.
 #[test]
-fn feature_nested_table_source_facts_and_from_office_refusal() {
+fn feature_nested_table_source_facts_and_digest_parity() {
     let manifest = load_fixture_manifest();
     for id in ["feature-nested-table-hwp", "feature-nested-table-hwpx"] {
         let (bytes, format, result) = read_feature_fixture(&manifest, id);
@@ -1321,7 +1348,7 @@ fn feature_nested_table_source_facts_and_from_office_refusal() {
         assert!(tables >= 2, "{id}: expected at least a top-level table plus one nested table, found {tables}");
 
         let picture_fill_cells = count_matching_cells(&result.blocks, &|c: &Cell| c.background_image.is_some());
-        assert_eq!(picture_fill_cells, 11, "{id}: expected 11 Cell.background_image picture-fill cells, found {picture_fill_cells}");
+        assert_eq!(picture_fill_cells, 11, "{id}: expected 11 Cell.background_image cells, found {picture_fill_cells}");
 
         assert!(
             result.images.len() >= 18,
@@ -1329,51 +1356,71 @@ fn feature_nested_table_source_facts_and_from_office_refusal() {
             result.images.len()
         );
 
-        let err = ValidatedRenderTree::from_office(OfficeAdapterInput {
+        assert_feature_digest_parity(id, format, &bytes, &result);
+
+        // This fixture's own `Cell.background_image` is `mapping.rs`'s MERGED field (real picture
+        // OR a synthesized gradient bitmap) — the count-pin above only proves 11 cells have SOME
+        // background, not which kind. `rhwp`'s own `resolve_single_border_style` resolves
+        // `image_fill`/`gradient` off the SAME `fill_type` match, so a fill is never both; measured
+        // directly here (fixture-real facts, not an assumption carried over from before S6-4 could
+        // tell the two apart): all 11 of this fixture's flagged cells are `FillType::Gradient`, none
+        // are `FillType::Image` — so the tree must carry 11 gradient declarations and ZERO resource
+        // references. `feature_picture_fill_now_accepted_and_carries_a_resource` (below) is the test
+        // that proves a REAL picture fill becomes a resource, using a fixture that actually has one.
+        let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
             format,
             source_name: id,
             source_bytes: &bytes,
             result: &result,
             resources: BTreeMap::new(),
         })
-        .expect_err(
-            "{id}: from_office was expected to refuse on this fixture's own Cell.background_image cells, same as the dedicated refusal fixture",
-        );
-        assert_eq!(
-            err,
-            OfficeAdapterError::CellBackgroundImagePresent,
-            "{id}: from_office refused with an unexpected error — report this, do not silently reclassify it"
-        );
+        .unwrap_or_else(|e| panic!("{id}: from_office failed unexpectedly: {e:?} — report this, do not skip it"));
+        let value: serde_json::Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let nodes = value["nodes"].as_array().unwrap();
+        let resourced_cells = nodes
+            .iter()
+            .filter(|n| n["type"] == "tableCell" && n["data"]["backgroundResourceId"].is_u64())
+            .count();
+        let gradient_cells = nodes
+            .iter()
+            .filter(|n| n["type"] == "tableCell" && n["data"]["backgroundGradient"].is_object())
+            .count();
+        assert_eq!(resourced_cells, 0, "{id}: this fixture's fills are all gradients, none are real pictures — a resourced cell here would mean a synthesized bitmap was fabricated into a document resource");
+        assert_eq!(gradient_cells, 11, "{id}: expected all 11 gradient-fill cells to carry a backgroundGradient declaration, found {gradient_cells}");
     }
 }
 
-/// The one true refusal boundary this sprint asked for by name: `feature-picture-fill-refusal-hwpx`
-/// must make `from_office` refuse, asserted by its EXACT error — no canonical-side digest is built,
-/// because a refusal has no tree.
+/// `feature-picture-fill-refusal-hwpx` was the one fixture this sprint's earlier stages named
+/// specifically for a picture-fill refusal boundary. S6-4 removed that boundary — the document now
+/// exports and builds a tree, so this asserts acceptance and the same resource-carrying proof the
+/// nested-table test above uses, rather than a refusal that no longer happens.
 #[test]
-fn feature_picture_fill_refusal_is_a_typed_from_office_error() {
+fn feature_picture_fill_now_accepted_and_carries_a_resource() {
     let manifest = load_fixture_manifest();
     let id = "feature-picture-fill-refusal-hwpx";
     let (bytes, format, result) = read_feature_fixture(&manifest, id);
 
-    // Count-pin first: the manifest's own `why` says this document's only unexportable content is
-    // one cell picture fill with no master page and no anchored object ahead of it.
+    // Count-pin first: the manifest's own `why` says this document's only unexportable-before-S6-4
+    // content is one cell picture fill with no master page and no anchored object ahead of it.
     let picture_fill_cells = count_matching_cells(&result.blocks, &|c: &Cell| c.background_image.is_some());
     assert!(picture_fill_cells >= 1, "{id}: expected at least one Cell.background_image picture-fill cell, found {picture_fill_cells}");
 
-    let err = ValidatedRenderTree::from_office(OfficeAdapterInput {
+    let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
         format,
         source_name: id,
         source_bytes: &bytes,
         result: &result,
         resources: BTreeMap::new(),
     })
-    .expect_err(format!("{id}: from_office was expected to refuse").as_str());
-    assert_eq!(
-        err,
-        OfficeAdapterError::CellBackgroundImagePresent,
-        "{id}: from_office refused with an unexpected error — report this, do not silently reclassify it"
-    );
+    .unwrap_or_else(|e| panic!("{id}: from_office failed unexpectedly: {e:?} — report this, do not skip it"));
+    let value: serde_json::Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+    let resourced_cells = value["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|n| n["type"] == "tableCell" && n["data"]["backgroundResourceId"].is_u64())
+        .count();
+    assert!(resourced_cells >= 1, "{id}: expected at least one tableCell with a backgroundResourceId");
 }
 
 /// Count-pins the nested-table fixture's own image identity fact (used by the defect-to-fixture

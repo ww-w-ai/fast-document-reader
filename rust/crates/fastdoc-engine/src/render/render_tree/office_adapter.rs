@@ -26,7 +26,7 @@ use crate::render::office::office_block::{
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use swiftshim::{CGSize, NSColor, NSTextAlignment, SwiftString};
+use swiftshim::{CGSize, NSColor, NSImage, NSTextAlignment, SwiftString};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedOfficeResource {
@@ -55,11 +55,6 @@ pub enum OfficeAdapterError {
     /// document a real reader produced; carried rather than panicked so a reader that some day
     /// breaks that contract fails with a name, not a crash.
     AnchoredObjectTargetMissing(i64),
-    /// A `Table`'s own `TableFormat.background_image` is `Some` — decoded pixels, not a document
-    /// fact serializable onto `wire::Table`.
-    TableBackgroundImagePresent,
-    /// A `TableCell`'s own `background_image` is `Some` — same reason, cell-scoped.
-    CellBackgroundImagePresent,
     /// An `OfficeHeaderFooter` or `OfficeFootnote` named a section index (`.section`) that does
     /// not exist among `OfficeReadResult.sections` — a document fact the tree has no section to
     /// attach it to, never silently reassigned to section 0.
@@ -684,6 +679,16 @@ impl<'a> Ctx<'a> {
         id
     }
 
+    /// S6-4: a table/cell's own PICTURE fill, decoded — registered the same way `map_anchored_content`'s
+    /// `Image` arm does, no `source_key` for the identical reason (`register_resource_bytes`'s own
+    /// doc: a decoded fill never had a document-declared string id).
+    fn background_resource(&mut self, image: &NSImage) -> u64 {
+        let bytes: &[u8] = image.data.as_ref().map(|d| d.0.as_slice()).unwrap_or(&[]);
+        let intrinsic = wire::Size { width: image.size.width, height: image.size.height };
+        let mime = sniff_image_mime(bytes).to_string();
+        self.register_resource_bytes(bytes, mime, Some(intrinsic), None)
+    }
+
     /// Maps a run of sibling blocks (a section's flow, or a table cell's contents) into node ids
     /// for the caller to hang under `parent_id`. `base_index`, when `Some`, is this slice's own
     /// offset into `result.blocks` — the only case pagination re-keying applies, since the four
@@ -1204,10 +1209,6 @@ impl<'a> Ctx<'a> {
         format: &TableFormat,
         table_id: u64,
     ) -> Result<(Vec<u64>, wire::NodePayload), OfficeAdapterError> {
-        if format.background_image.is_some() {
-            return Err(OfficeAdapterError::TableBackgroundImagePresent);
-        }
-
         // Pass 1: natural anchor placement, purely to learn the grid's true column count.
         let mut occupied: BTreeSet<(usize, usize)> = BTreeSet::new();
         let mut natural: Vec<Vec<(usize, usize, usize)>> = Vec::with_capacity(rows.len());
@@ -1240,9 +1241,6 @@ impl<'a> Ctx<'a> {
             let mut entries: Vec<(usize, Option<&Cell>, usize, usize)> =
                 Vec::with_capacity(row_cells.len());
             for (cell, &(col, row_span, col_span)) in row_cells.iter().zip(natural[r].iter()) {
-                if cell.background_image.is_some() {
-                    return Err(OfficeAdapterError::CellBackgroundImagePresent);
-                }
                 for rr in r..r + row_span {
                     for cc in col..col + col_span {
                         occupied2.insert((rr, cc));
@@ -1263,8 +1261,22 @@ impl<'a> Ctx<'a> {
                 let cell_id = self.new_node_id();
                 let (cell_children, cell_payload) = if let Some(cell) = cell_opt {
                     let cell_children = self.map_blocks(&cell.blocks, None, cell_id)?;
-                    let cell_payload =
+                    let mut cell_payload =
                         convert_cell(cell, r as u32, col as u32, row_span as u32, col_span as u32);
+                    // S6-4: `cell.background_image` alone cannot be trusted here — it is
+                    // `mapping.rs`'s MERGED field (a real picture OR the synthesized gradient
+                    // bitmap, `fill_image(...).or_else(gradient_image(...))`). Only
+                    // `cell.background_gradient` being `None` proves the real picture won; when it
+                    // is `Some`, `background_image` (if set at all) is that synthetic bitmap and
+                    // must never become a resource — carrying it would fabricate a document
+                    // picture out of a rendering convenience.
+                    cell_payload.background_resource_id = if cell.background_gradient.is_none() {
+                        cell.background_image.as_ref().map(|img| self.background_resource(img))
+                    } else {
+                        None
+                    };
+                    cell_payload.background_gradient =
+                        cell.background_gradient.as_ref().map(convert_gradient);
                     (cell_children, cell_payload)
                 } else {
                     (vec![], empty_filler_cell(r as u32, col as u32))
@@ -1307,6 +1319,15 @@ impl<'a> Ctx<'a> {
             } else {
                 vec![]
             };
+        // S6-4: same disambiguation as the per-cell case above — `format.background_image` is
+        // `mapping.rs`'s merged field (real picture OR synthetic gradient bitmap); only when
+        // `format.background_gradient` is `None` does it prove a real picture won.
+        let background_resource_id = if format.background_gradient.is_none() {
+            format.background_image.as_ref().map(|img| self.background_resource(img))
+        } else {
+            None
+        };
+        let background_gradient = format.background_gradient.as_ref().map(convert_gradient);
         let style = wire::TableStyle {
             default_uniform_border: uniform_border(format.default_border_color, format.default_border_width),
             default_shading: format.default_shading.map(convert_color),
@@ -1316,6 +1337,8 @@ impl<'a> Ctx<'a> {
             repeat_header_rows: format.repeat_header_rows,
             page_break_policy: format.page_break_policy.map(convert_page_break_policy),
             outer_margin: format.outer_margin.as_ref().map(insets_finite),
+            background_resource_id,
+            background_gradient,
         };
         let table_payload = wire::NodePayload::Table(wire::Table {
             grid_widths,
@@ -1345,9 +1368,14 @@ fn empty_filler_cell(row: u32, column: u32) -> wire::TableCell {
         diagonal: None,
         style_shading: None,
         style_uniform_border: None,
+        background_resource_id: None,
+        background_gradient: None,
     }
 }
 
+/// Everything but `background_resource_id`/`background_gradient` — the caller (`map_table`'s own
+/// cell loop) patches those two in afterward, since resolving a resource needs `&mut self` and
+/// this is a free function.
 fn convert_cell(cell: &Cell, row: u32, column: u32, row_span: u32, column_span: u32) -> wire::TableCell {
     wire::TableCell {
         row,
@@ -1364,6 +1392,8 @@ fn convert_cell(cell: &Cell, row: u32, column: u32, row_span: u32, column_span: 
         diagonal: cell.diagonal.as_ref().map(convert_cell_diagonal),
         style_shading: cell.style_shading.map(convert_color),
         style_uniform_border: uniform_border(cell.style_border_color, cell.style_border_width),
+        background_resource_id: None,
+        background_gradient: None,
     }
 }
 
@@ -1756,6 +1786,14 @@ fn convert_paragraph_anchor_align(
     }
 }
 
+/// S6-4: `office_block::OfficeGradient` -> `wire::Gradient` — a declaration, never a bitmap.
+fn convert_gradient(g: &office_block::OfficeGradient) -> wire::Gradient {
+    wire::Gradient {
+        stops: g.stops.iter().copied().map(convert_color).collect(),
+        angle_degrees: g.angle_degrees,
+    }
+}
+
 fn convert_color(c: NSColor) -> wire::Color {
     use swiftshim::color_font::NSColorSpaceName;
     wire::Color {
@@ -2049,6 +2087,59 @@ mod tests {
         assert!(tags.contains(&"tableRow"));
         assert!(tags.contains(&"tableCell"));
         assert!(tags.contains(&"paragraph"));
+    }
+
+    fn dummy_image() -> swiftshim::NSImage {
+        swiftshim::NSImage::withSize(CGSize::new(1.0, 1.0))
+    }
+
+    /// S6-4: a cell's real picture fill becomes a resource reference, never a refusal — and never
+    /// a `background_gradient` (the two are mutually exclusive by construction).
+    #[test]
+    fn a_cell_picture_fill_becomes_a_resource_reference_not_a_refusal() {
+        let mut result = OfficeReadResult::default();
+        let mut cell = Cell::new_with_spans(vec![], 1, 1);
+        cell.background_image = Some(dummy_image());
+        result.blocks.push(OfficeBlock::Table {
+            rows: vec![vec![cell]],
+            header_rows: 0,
+            column_widths: vec![],
+            format: TableFormat::default(),
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).expect("must not refuse");
+        let value: serde_json::Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let cell_node = value["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "tableCell").unwrap();
+        assert!(cell_node["data"]["backgroundResourceId"].is_u64(), "expected a resource id, got {cell_node:?}");
+        assert!(cell_node["data"]["backgroundGradient"].is_null());
+        assert_eq!(value["resources"].as_array().unwrap().len(), 1);
+    }
+
+    /// S6-4's other half: a gradient-only fill (no real picture) carries stops+angle as a
+    /// declaration, never a rasterized bitmap — no `resources` entry is created for it.
+    #[test]
+    fn a_gradient_only_fill_carries_a_declaration_not_a_bitmap() {
+        let mut result = OfficeReadResult::default();
+        let mut format = TableFormat::default();
+        format.background_gradient = Some(office_block::OfficeGradient {
+            stops: vec![NSColor::srgb(1.0, 0.0, 0.0, 1.0),
+                        NSColor::srgb(0.0, 0.0, 1.0, 1.0)],
+            angle_degrees: Some(45.0),
+        });
+        result.blocks.push(OfficeBlock::Table {
+            rows: vec![],
+            header_rows: 0,
+            column_widths: vec![],
+            format,
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).expect("must not refuse");
+        let value: serde_json::Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let table_node = value["nodes"].as_array().unwrap().iter().find(|n| n["type"] == "table").unwrap();
+        let style = &table_node["data"]["style"];
+        assert!(style["backgroundResourceId"].is_null());
+        let stops = style["backgroundGradient"]["stops"].as_array().unwrap();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(style["backgroundGradient"]["angleDegrees"], 45.0);
+        assert!(value["resources"].as_array().unwrap().is_empty(), "a synthesized gradient bitmap must never become a resource");
     }
 
     #[test]

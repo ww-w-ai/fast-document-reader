@@ -86,13 +86,14 @@ const EXPECTED_KEYS: &[&str] = &[
     "OfficeBlock.ListItem.numbering",
 ];
 
-const TABLE_EXPECTED_DECISIONS: usize = 45;
+const TABLE_EXPECTED_DECISIONS: usize = 47;
 const TABLE_EXPECTED_KEYS: &[&str] = &[
     "Cell.blocks",
     "Cell.row_span",
     "Cell.col_span",
     "Cell.background_color",
     "Cell.background_image",
+    "Cell.background_gradient",
     "Cell.border_color",
     "Cell.border_width",
     "Cell.edge_borders",
@@ -123,6 +124,7 @@ const TABLE_EXPECTED_KEYS: &[&str] = &[
     "TableFormat.default_border_width",
     "TableFormat.default_shading",
     "TableFormat.background_image",
+    "TableFormat.background_gradient",
     "TableFormat.source_width",
     "TableFormat.edge_borders",
     "TableFormat.default_padding",
@@ -166,11 +168,13 @@ pub enum AccountingError {
     },
 }
 
+/// S6-4 removed this file's last `Refused` producer (the two background-fill fields) — every
+/// field this file accounts for is now `Mapped` or `Deferred`, so the variant that used to exist
+/// for the third case was removed with it rather than left never-constructed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecisionKind {
     Mapped,
     Deferred,
-    Refused,
 }
 
 struct DecisionToken {
@@ -229,12 +233,6 @@ impl FieldDecisionLedger {
             .filter(|kind| matches!(kind, DecisionKind::Deferred))
             .count()
     }
-    pub fn refused_count(&self) -> usize {
-        self.decisions
-            .values()
-            .filter(|kind| matches!(kind, DecisionKind::Refused))
-            .count()
-    }
     pub fn mapped_count(&self) -> usize {
         self.decisions
             .values()
@@ -253,12 +251,6 @@ fn deferred(key: &'static str) -> DecisionToken {
     DecisionToken {
         key,
         kind: DecisionKind::Deferred,
-    }
-}
-fn refused(key: &'static str) -> DecisionToken {
-    DecisionToken {
-        key,
-        kind: DecisionKind::Refused,
     }
 }
 
@@ -610,6 +602,7 @@ pub(crate) fn account_table_cell_source_layers(
         col_span,
         background_color,
         background_image,
+        background_gradient,
         border_color,
         border_width,
         edge_borders: cell_edge_borders,
@@ -623,7 +616,11 @@ pub(crate) fn account_table_cell_source_layers(
         style_border_width,
     } = cell;
     ledger.record(deferred("Cell.blocks"))?;
-    ledger.record(refused("Cell.background_image"))?;
+    // S6-4: a real picture becomes a resource reference (`office_adapter::background_resource`,
+    // S6-2's mechanism) and a declared gradient becomes `wire::Gradient` — the mutual exclusion
+    // that used to make one field ambiguous is now two fields, each honestly mapped.
+    ledger.record(mapped("Cell.background_image"))?;
+    ledger.record(mapped("Cell.background_gradient"))?;
     ledger.record(mapped("Cell.edge_borders"))?;
     ledger.record(mapped("Cell.edge_padding"))?;
     record!(
@@ -680,6 +677,7 @@ pub(crate) fn account_table_cell_source_layers(
         default_border_width,
         default_shading,
         background_image: table_background_image,
+        background_gradient: table_background_gradient,
         source_width,
         edge_borders: table_edge_borders,
         default_padding,
@@ -687,7 +685,8 @@ pub(crate) fn account_table_cell_source_layers(
         page_break_policy,
         outer_margin,
     } = table_format;
-    ledger.record(refused("TableFormat.background_image"))?;
+    ledger.record(mapped("TableFormat.background_image"))?;
+    ledger.record(mapped("TableFormat.background_gradient"))?;
     ledger.record(mapped("TableFormat.edge_borders"))?;
     record!(
         ledger,
@@ -721,9 +720,11 @@ pub(crate) fn account_table_cell_source_layers(
     let _ = (
         blocks,
         background_image,
+        background_gradient,
         cell_edge_borders,
         cell_edge_padding,
         table_background_image,
+        table_background_gradient,
         table_edge_borders,
         rows,
     );
@@ -1038,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn table_expected_keys_are_exactly_forty_five() {
+    fn table_expected_keys_are_exactly_forty_seven() {
         assert_eq!(TABLE_EXPECTED_KEYS.len(), TABLE_EXPECTED_DECISIONS);
     }
 
@@ -1090,6 +1091,7 @@ mod tests {
             col_span: 3,
             background_color: Some(color),
             background_image: None,
+            background_gradient: None,
             border_color: Some(color),
             border_width: Some(1.0),
             edge_borders: Some(edges),
@@ -1107,6 +1109,7 @@ mod tests {
             default_border_width: Some(1.0),
             default_shading: Some(color),
             background_image: None,
+            background_gradient: None,
             source_width: Some(200.0),
             edge_borders: Some(edges),
             default_padding: Some(padding),
@@ -1123,17 +1126,20 @@ mod tests {
         (cell, diagonal, side, edges, padding, format, table)
     }
 
+    /// S6-4: the two background fields flipped refused -> mapped, and two new
+    /// (`Cell`/`TableFormat`).background_gradient` keys joined already mapped — 45 -> 47 total,
+    /// 41 -> 45 mapped, 2 deferred unchanged. Nothing is refused any more (`DecisionKind::Refused`
+    /// was removed from this file along with its last producer — see that enum's own doc).
     #[test]
-    fn s2a1c3_exact_forty_five_field_ledger_classifies_41_2_2() {
+    fn s2a1c3_exact_forty_seven_field_ledger_classifies_45_2() {
         let (cell, diagonal, side, edges, padding, format, table) = table_source_fixture();
         let ledger = account_table_cell_source_layers(
             &cell, &diagonal, &side, &edges, &padding, &format, &table,
         )
         .unwrap();
-        assert_eq!(ledger.decision_count(), 45);
-        assert_eq!(ledger.mapped_count(), 41);
+        assert_eq!(ledger.decision_count(), 47);
+        assert_eq!(ledger.mapped_count(), 45);
         assert_eq!(ledger.deferred_count(), 2);
-        assert_eq!(ledger.refused_count(), 2);
     }
 
     #[test]

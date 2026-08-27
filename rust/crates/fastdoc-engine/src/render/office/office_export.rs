@@ -32,10 +32,6 @@ pub enum NotExportable {
     /// A span already has a resolved substitute face. Font resolution belongs to the host and runs
     /// after the read, so a reader producing one means that order changed.
     ResolvedFontDescriptor,
-    /// A table's own picture fill is decoded pixels, not a document fact, and is not serialized.
-    TableBackgroundImage,
-    /// A cell's own picture fill is decoded pixels, not a document fact, and is not serialized.
-    CellBackgroundImage,
 }
 
 impl NotExportable {
@@ -43,12 +39,6 @@ impl NotExportable {
         match self {
             Self::ResolvedFontDescriptor => {
                 "a span carries a resolved font descriptor, which cannot cross to a host"
-            }
-            Self::TableBackgroundImage => {
-                "a table carries a decoded background image, which cannot cross to a host"
-            }
-            Self::CellBackgroundImage => {
-                "a cell carries a decoded background image, which cannot cross to a host"
             }
         }
     }
@@ -82,10 +72,7 @@ fn check_blocks(blocks: &[OfficeBlock]) -> Result<(), NotExportable> {
                     return Err(NotExportable::ResolvedFontDescriptor);
                 }
             }
-            OfficeBlock::Table { rows, format, .. } => {
-                if format.background_image.is_some() {
-                    return Err(NotExportable::TableBackgroundImage);
-                }
+            OfficeBlock::Table { rows, .. } => {
                 for row in rows {
                     for cell in row {
                         check_cell(cell)?;
@@ -101,9 +88,6 @@ fn check_blocks(blocks: &[OfficeBlock]) -> Result<(), NotExportable> {
 }
 
 fn check_cell(cell: &Cell) -> Result<(), NotExportable> {
-    if cell.background_image.is_some() {
-        return Err(NotExportable::CellBackgroundImage);
-    }
     check_blocks(&cell.blocks)
 }
 
@@ -126,7 +110,7 @@ mod tests {
         HeaderFooterApplicability, OfficeAnchoredObject, OfficeHeaderFooter, OfficeMasterObject,
         OfficeMasterObjectContent, OfficeMasterPage, ParagraphFormat, Span, TableFormat,
     };
-    use swiftshim::{CGRect, CGSize, NSFontDescriptor, NSImage};
+    use swiftshim::{CGRect, CGSize, NSColor, NSFontDescriptor, NSImage};
 
     fn plain_paragraph(spans: Vec<Span>) -> OfficeBlock {
         OfficeBlock::Paragraph {
@@ -236,8 +220,13 @@ mod tests {
         assert_eq!(assert_exportable(&result), Ok(()));
     }
 
+    /// S6-4: a table's real picture fill serializes honestly into the envelope like an anchored
+    /// object's image already did since S6-2 (`NSImage` derives `Serialize`) — this boundary was
+    /// refusing AND silently skipping (`#[serde(skip)]`) something it could already carry. Both
+    /// halves check the fix: `assert_exportable` accepts, and the encoded bytes are actually
+    /// present in the JSON — proving this is not a refusal lifted while the data still vanishes.
     #[test]
-    fn refuses_a_table_background_image() {
+    fn does_not_refuse_a_table_background_image_and_serializes_it() {
         let format = TableFormat {
             background_image: Some(dummy_image()),
             ..TableFormat::default()
@@ -251,14 +240,16 @@ mod tests {
             }],
             ..OfficeReadResult::default()
         };
-        assert_eq!(
-            assert_exportable(&result),
-            Err(NotExportable::TableBackgroundImage)
+        assert_eq!(assert_exportable(&result), Ok(()));
+        let json = to_json(&result).unwrap();
+        assert!(
+            json.contains("\"background_image\""),
+            "the table's real picture must appear in the envelope, not vanish silently"
         );
     }
 
     #[test]
-    fn refuses_a_cell_background_image() {
+    fn does_not_refuse_a_cell_background_image_and_serializes_it() {
         let cell = Cell {
             background_image: Some(dummy_image()),
             ..Cell::default()
@@ -272,14 +263,13 @@ mod tests {
             }],
             ..OfficeReadResult::default()
         };
-        assert_eq!(
-            assert_exportable(&result),
-            Err(NotExportable::CellBackgroundImage)
-        );
+        assert_eq!(assert_exportable(&result), Ok(()));
+        let json = to_json(&result).unwrap();
+        assert!(json.contains("\"background_image\""));
     }
 
     #[test]
-    fn refuses_a_background_image_in_a_nested_table_cell() {
+    fn does_not_refuse_a_background_image_in_a_nested_table_cell() {
         let inner_cell = Cell {
             background_image: Some(dummy_image()),
             ..Cell::default()
@@ -303,9 +293,38 @@ mod tests {
             }],
             ..OfficeReadResult::default()
         };
-        assert_eq!(
-            assert_exportable(&result),
-            Err(NotExportable::CellBackgroundImage)
+        assert_eq!(assert_exportable(&result), Ok(()));
+    }
+
+    /// A gradient-only fill (no real picture) exports its DECLARATION, never a rasterized bitmap —
+    /// see `office_block::OfficeGradient`'s own doc for why the two fields are never both set.
+    #[test]
+    fn a_gradient_declaration_serializes_without_a_background_image() {
+        let format = TableFormat {
+            background_gradient: Some(super::super::office_block::OfficeGradient {
+                stops: vec![
+                    NSColor::srgb(1.0, 0.0, 0.0, 1.0),
+                    NSColor::srgb(0.0, 0.0, 1.0, 1.0),
+                ],
+                angle_degrees: Some(45.0),
+            }),
+            ..TableFormat::default()
+        };
+        let result = OfficeReadResult {
+            blocks: vec![OfficeBlock::Table {
+                rows: vec![],
+                header_rows: 0,
+                column_widths: vec![],
+                format,
+            }],
+            ..OfficeReadResult::default()
+        };
+        assert_eq!(assert_exportable(&result), Ok(()));
+        let json = to_json(&result).unwrap();
+        assert!(json.contains("\"background_gradient\""));
+        assert!(
+            !json.contains("\"background_image\":{"),
+            "no real image was declared — a synthesized bitmap must never appear in its place"
         );
     }
 

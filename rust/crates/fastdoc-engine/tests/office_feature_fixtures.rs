@@ -12,9 +12,10 @@
 //! the resulting `OfficeReadResult`: a `Span.column_layout` whose `count` is actually `> 1`, a
 //! `Cell.diagonal`, a `Span.form_control`, a nested `OfficeBlock::Table` inside a cell, a
 //! `Cell.background_image` (a picture fill), pre-decoded bytes in `OfficeReadResult.images`, and —
-//! the one true refusal boundary — `office_export::assert_exportable` returning
-//! `Err(NotExportable::CellBackgroundImage)` for a document whose only unexportable content is that
-//! picture fill. "It parsed without error" is never accepted as an anchor here: every assertion
+//! S6-4's own proof — `office_export::to_json` actually carrying that picture fill's bytes into
+//! the exported envelope (`assert_exportable` no longer refuses it; the boundary this file used to
+//! anchor on was the fact this content was DROPPED, and that fact no longer holds).
+//! "It parsed without error" is never accepted as an anchor here: every assertion
 //! first pins the expected COUNT (`assert!(... >= N)` or `assert_eq!`) before it inspects contents,
 //! so a walk that silently found nothing fails loudly rather than passing vacuously.
 //!
@@ -32,7 +33,7 @@
 
 use fastdoc_engine::render::office::hwp_reader::HwpReader;
 use fastdoc_engine::render::office::office_block::{Cell, OfficeBlock, OfficeReadResult};
-use fastdoc_engine::render::office::office_export::{assert_exportable, NotExportable};
+use fastdoc_engine::render::office::office_export::{assert_exportable, to_json};
 use swiftshim::Data;
 
 /// `Vendor/rhwp-src/samples/<relative>`, resolved from `CARGO_MANIFEST_DIR` (this crate is
@@ -318,22 +319,26 @@ fn hwpx_nested_table_and_resources_arrive() {
 }
 
 // -------------------------------------------------------------------------------------------
-// picture-fill refusal (export boundary) — issue2083_hide_fill_page.hwpx
+// picture-fill export (S6-4) — issue2083_hide_fill_page.hwpx
 // -------------------------------------------------------------------------------------------
 
+/// S6-4: this fixture's ONE unexportable-before-S6-4 fact was a cell picture fill — no master
+/// page, no anchored object ahead of it in `assert_exportable`'s own check order (the manifest's
+/// own `why`). It now exports, and the picture's bytes are proven present in the envelope, not
+/// silently dropped the way `#[serde(skip)]` used to drop it before this sprint.
 #[test]
-fn hwpx_picture_fill_is_refused_at_the_export_boundary() {
+fn hwpx_picture_fill_now_exports_with_its_bytes_present() {
     assert_matches_manifest("feature-picture-fill-refusal-hwpx", "issue2083_hide_fill_page.hwpx");
     let result = read("issue2083_hide_fill_page.hwpx");
-    // Pin the anchor is actually present before asking whether it is refused — a document with
-    // zero picture fills would trivially fail to export for an unrelated reason.
+    // Pin the anchor is actually present before asking whether it exports — a document with
+    // zero picture fills would trivially export for an unrelated reason.
     let cell_fills = cell_background_image_count(&result);
     assert!(cell_fills >= 1, "issue2083_hide_fill_page.hwpx: expected at least 1 cell with a picture fill, found {cell_fills}");
-    let verdict = assert_exportable(&result);
-    assert_eq!(
-        verdict,
-        Err(NotExportable::CellBackgroundImage),
-        "issue2083_hide_fill_page.hwpx: expected assert_exportable to refuse specifically for a cell picture fill, got {verdict:?}"
+    assert_eq!(assert_exportable(&result), Ok(()));
+    let json = to_json(&result).unwrap();
+    assert!(
+        json.contains("\"background_image\""),
+        "issue2083_hide_fill_page.hwpx: the cell's real picture must appear in the envelope, not vanish silently"
     );
 }
 
@@ -348,7 +353,7 @@ fn coverage_table_is_documented_here_not_only_in_the_return_value() {
     // |------------------------------------------|----------|------------|-------------|-------------|--------------------------------|---------------------------------------|
     // | multi-column authority                    | n/a      | n/a        | NOT COVERED | NOT COVERED | feature-multi-column-hwp      | feature-multi-column-hwpx            |
     // | nested/rich tables                        | n/a      | n/a        | NOT COVERED | NOT COVERED | feature-nested-table-hwp      | feature-nested-table-hwpx            |
-    // | picture-fill refusal (export boundary)    | n/a      | n/a        | NOT COVERED | NOT COVERED | NOT COVERED (see why, below)  | feature-picture-fill-refusal-hwpx    |
+    // | picture-fill export (S6-4)                | n/a      | n/a        | NOT COVERED | NOT COVERED | NOT COVERED (see why, below)  | feature-picture-fill-refusal-hwpx    |
     // | form controls                              | n/a      | n/a        | NOT COVERED | NOT COVERED | feature-form-control-hwp      | feature-form-control-hwpx            |
     // | diagonals                                  | n/a      | n/a        | NOT COVERED | NOT COVERED | feature-diagonal-hwp          | feature-diagonal-hwpx                |
     // | annotations (reviewer comments)            | n/a      | n/a        | NOT COVERED | NOT COVERED | NOT COVERED (architectural)   | NOT COVERED (architectural)          |
@@ -365,12 +370,12 @@ fn coverage_table_is_documented_here_not_only_in_the_return_value() {
     // for this family, was opened and measured 0 comments, confirming the hardcode rather than
     // contradicting it.
     //
-    // Picture-fill refusal on HWP: every real HWP document found in the corpus that carries a
-    // picture fill (`tac-img-02.hwp`, both `2025 행정업무운영편람(최종)` files, `exam_kor.hwp`) also
-    // carries a master page or an anchored object, both of which `office_export::assert_exportable`
-    // checks BEFORE it reaches a cell's picture fill — so the top-level call returns
-    // `Err(MasterPages)`/`Err(AnchoredObjects)` for those files, never `Err(CellBackgroundImage)`.
-    // The underlying DATA fact (`Cell.background_image` present) IS proven for HWP, by
-    // `hwp_nested_table_and_resources_arrive` above; only the export boundary's specific refusal
-    // reason is uncovered for HWP.
+    // Picture-fill export on HWP (as opposed to HWPX): S6-2/S6-3/S6-4 each lifted one of
+    // `assert_exportable`'s refusals in turn (anchored objects, master pages, then picture fills),
+    // so as of S6-4 there is no longer a refusal boundary to anchor this family's HWP row on — the
+    // real HWP documents that carry a picture fill (`tac-img-02.hwp`, both `2025 행정업무운영편람
+    // (최종)` files, `exam_kor.hwp`) now export cleanly, same as the HWPX fixture does. The
+    // underlying DATA fact (`Cell.background_image` present) IS proven for HWP, by
+    // `hwp_nested_table_and_resources_arrive` above; only a DEDICATED HWP fixture exercising
+    // `to_json`'s own byte-presence proof (this file's HWPX test, above) is uncovered.
 }

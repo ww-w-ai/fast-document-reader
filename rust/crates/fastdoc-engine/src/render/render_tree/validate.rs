@@ -565,6 +565,17 @@ fn validate_payload(
                 return Err(invalid("table source column widths are invalid"));
             }
             check_colors(table_colors(v))?;
+            // S6-4: mutually exclusive by construction (`office_adapter::map_table`'s own
+            // priority — see `wire::TableStyle.background_resource_id`'s doc) — never both.
+            if v.style.background_resource_id.is_some() && v.style.background_gradient.is_some() {
+                return Err(invalid("table background must not carry both a resource and a gradient"));
+            }
+            if let Some(id) = v.style.background_resource_id {
+                require_resource(id, resources)?;
+            }
+            if let Some(gradient) = &v.style.background_gradient {
+                validate_gradient(gradient)?;
+            }
             validate_table(node, v, nodes)?;
         }
         P::TableRow(v) if v.height.is_some_and(|x| !finite_nonnegative(x)) => {
@@ -597,6 +608,15 @@ fn validate_payload(
                 validate_drawn_border_width(&diagonal.side)?;
             }
             check_colors(table_cell_colors(v))?;
+            if v.background_resource_id.is_some() && v.background_gradient.is_some() {
+                return Err(invalid("cell background must not carry both a resource and a gradient"));
+            }
+            if let Some(id) = v.background_resource_id {
+                require_resource(id, resources)?;
+            }
+            if let Some(gradient) = &v.background_gradient {
+                validate_gradient(gradient)?;
+            }
         }
         P::Image(v) => {
             require_resource(v.resource_id, resources)?;
@@ -785,6 +805,23 @@ fn valid_color(c: &wire::Color) -> bool {
         .all(|x| x.is_finite() && (0.0..=1.0).contains(&x))
 }
 
+/// S6-4: `wire::Gradient` isn't a fixed-size color slot the array-based `check_colors` can carry
+/// (a declared stop count varies), so its stops are validated directly here — at least two
+/// (`office_block::OfficeGradient`'s own gate: `mapping.rs`'s `gradient_declaration` never
+/// produces one with fewer), every stop finite, and the angle finite when present.
+fn validate_gradient(g: &wire::Gradient) -> Result<(), DecodeError> {
+    if g.stops.len() < 2 {
+        return Err(invalid("gradient must declare at least two stops"));
+    }
+    if g.stops.iter().any(|c| !valid_color(c)) {
+        return Err(invalid("gradient stop color is invalid"));
+    }
+    if g.angle_degrees.is_some_and(|a| !a.is_finite()) {
+        return Err(invalid("gradient angle is invalid"));
+    }
+    Ok(())
+}
+
 fn check_colors<const N: usize>(
     colors: [(&'static str, Option<&wire::Color>); N],
 ) -> Result<(), DecodeError> {
@@ -952,6 +989,8 @@ pub(super) fn table_cell_colors(v: &wire::TableCell) -> [(&'static str, Option<&
         diagonal,
         style_shading,
         style_uniform_border,
+        background_resource_id: _,
+        background_gradient: _,
     } = v;
     let [top, right, bottom, left, inside_horizontal, inside_vertical] =
         border_set_colors(direct_edge_borders.as_ref());
@@ -995,6 +1034,8 @@ pub(super) fn table_colors(v: &wire::Table) -> [(&'static str, Option<&wire::Col
         repeat_header_rows: _,
         page_break_policy: _,
         outer_margin: _,
+        background_resource_id: _,
+        background_gradient: _,
     } = style;
     let [top, right, bottom, left, inside_horizontal, inside_vertical] =
         border_set_colors(edge_borders.as_ref());

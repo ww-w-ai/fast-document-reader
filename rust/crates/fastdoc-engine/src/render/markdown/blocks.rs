@@ -435,6 +435,8 @@ fn map_table_cell<'a>(
             diagonal: None,
             style_shading: None,
             style_uniform_border: None,
+            background_resource_id: None,
+            background_gradient: None,
         }),
     });
     out.push(id);

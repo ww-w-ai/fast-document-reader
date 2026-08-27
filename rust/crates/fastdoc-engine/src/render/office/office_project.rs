@@ -432,6 +432,23 @@ impl Projector {
     /// from. Unlike `map_image`/`map_vector` (ordinary in-flow pictures), NO `source_key` is
     /// required: an anchored object's `NSImage`/vector paths never had a document-declared string
     /// id to round-trip, only decoded bytes/paths (`register_resource_bytes`'s own doc).
+    /// S6-4's reverse of `office_adapter::background_resource`: a resource id -> its decoded
+    /// bytes, the same base64/`NSImage::fromData` round trip `anchored_content`'s `Image` arm uses
+    /// (kept as a separate method — a background fill has no content NODE of its own to route
+    /// through, only a raw resource reference on `TableStyle`/`TableCell`).
+    fn background_resource(&mut self, resource_id: u64) -> Result<swiftshim::NSImage, ProjectionError> {
+        let resource = self.resources.get(&resource_id).cloned().ok_or_else(|| {
+            ProjectionError::Malformed(format!("background fill referenced missing resource {resource_id}"))
+        })?;
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&resource.bytes_base64)
+            .map_err(|e| ProjectionError::Malformed(format!("resource bytes did not decode: {e}")))?;
+        swiftshim::NSImage::fromData(&Data(bytes)).ok_or_else(|| {
+            ProjectionError::Malformed("background fill bytes did not decode as an image".to_string())
+        })
+    }
+
     fn anchored_content(
         &mut self,
         content_id: u64,
@@ -761,17 +778,32 @@ impl Projector {
                     return Err(ProjectionError::Malformed("row child was not a cell".to_string()));
                 };
                 let blocks = self.map_blocks(&cell_node.children, 0)?;
-                row_out.push(convert_cell_back(tc.clone(), blocks));
+                let mut cell = convert_cell_back(tc.clone(), blocks);
+                // S6-4: mutually exclusive by construction (`office_adapter::map_table`'s own
+                // priority) — at most one of the two is `Some` on any wire cell.
+                cell.background_image = tc
+                    .background_resource_id
+                    .map(|id| self.background_resource(id))
+                    .transpose()?;
+                cell.background_gradient = tc.background_gradient.as_ref().map(convert_gradient_back);
+                row_out.push(cell);
             }
             rows.push(row_out);
         }
 
         let column_widths = t.source_column_widths.clone();
+        let background_image = t
+            .style
+            .background_resource_id
+            .map(|id| self.background_resource(id))
+            .transpose()?;
+        let background_gradient = t.style.background_gradient.as_ref().map(convert_gradient_back);
         let format = TableFormat {
             default_border_color: t.style.default_uniform_border.as_ref().and_then(|b| b.color).map(convert_color_back),
             default_border_width: t.style.default_uniform_border.as_ref().and_then(|b| b.width_points),
             default_shading: t.style.default_shading.map(convert_color_back),
-            background_image: None,
+            background_image,
+            background_gradient,
             source_width: t.style.source_width_points,
             edge_borders: t.style.edge_borders.as_ref().map(convert_edge_borders_back),
             default_padding: t.style.default_padding.as_ref().map(optional_insets_to_edge_padding),
@@ -906,6 +938,14 @@ fn convert_color_back(c: wire::Color) -> NSColor {
     }
 }
 
+/// S6-4's reverse of `office_adapter::convert_gradient`.
+fn convert_gradient_back(g: &wire::Gradient) -> ob::OfficeGradient {
+    ob::OfficeGradient {
+        stops: g.stops.iter().map(|c| convert_color_back(c.clone())).collect(),
+        angle_degrees: g.angle_degrees,
+    }
+}
+
 fn convert_glyphs_back(v: wire::ListNumberingGlyphs) -> ob::ListNumberingGlyphs {
     use wire::ListNumberingGlyphs as G;
     match v {
@@ -1018,7 +1058,10 @@ fn convert_cell_back(tc: wire::TableCell, blocks: Vec<OfficeBlock>) -> Cell {
         row_span: tc.row_span as i64,
         col_span: tc.column_span as i64,
         background_color: tc.direct_shading.map(convert_color_back),
+        // S6-4: patched onto the return value by `map_table`'s own loop, which alone has the
+        // `&mut self` a resource lookup needs (this free function has none).
         background_image: None,
+        background_gradient: None,
         border_color: tc.direct_uniform_border.as_ref().and_then(|b| b.color).map(convert_color_back),
         border_width: tc.direct_uniform_border.as_ref().and_then(|b| b.width_points),
         edge_borders: tc.direct_edge_borders.as_ref().map(convert_edge_borders_back),

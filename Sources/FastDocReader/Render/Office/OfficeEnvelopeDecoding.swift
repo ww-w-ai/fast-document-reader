@@ -39,6 +39,16 @@ struct WireImage: Decodable {
     }
 }
 
+/// A gradient fill DECLARATION on the wire — `office_block::OfficeGradient`'s own JSON, never a
+/// rasterized bitmap (that stays `WireImage`, decoded separately into `backgroundImage`).
+struct WireGradient: Decodable {
+    let stops: [WireColor]
+    let angleDegrees: CGFloat?
+    var gradient: OfficeGradient {
+        OfficeGradient(stops: stops.map { $0.color }, angleDegrees: angleDegrees)
+    }
+}
+
 struct WireColor: Decodable {
     /// Which initialiser the reader chose. Carried rather than assumed: `OdtReader` builds device
     /// RGB and the other readers build sRGB, and the same three components in the two spaces are

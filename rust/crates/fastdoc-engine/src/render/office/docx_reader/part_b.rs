@@ -1077,6 +1077,7 @@ impl super::DocxReader {
                         col_span: col_span as i64,
                         background_color: Self::cell_shading(tc_pr),
                         background_image: None,
+                        background_gradient: None,
                         border_color,
                         border_width,
                         edge_borders: None,

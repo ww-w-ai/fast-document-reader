@@ -846,6 +846,18 @@ enum HwpReader {
         return image
     }
 
+    /// The SAME gradient `gradientImage` above rasterizes into a fixed-size preview bitmap, carried
+    /// instead as the document's own DECLARATION (stops + angle) — mirrors
+    /// `fastdoc-engine`'s `mapping.rs::gradient_declaration`. `nil` on the same "single stop is a
+    /// plain fill" rule `gradientImage` already applies, so the two never disagree about whether a
+    /// fill counts as a gradient at all — only about what they carry it AS.
+    private static func gradientDeclaration(_ gradient: HwpGradient?) -> OfficeGradient? {
+        guard let gradient else { return nil }
+        let stops = gradient.colors.compactMap { color($0) }
+        guard stops.count >= 2 else { return nil }
+        return OfficeGradient(stops: stops, angleDegrees: gradient.angle.map { CGFloat($0) })
+    }
+
     /// HWP paragraph `align` → the block's `NSTextAlignment?`, resolved exactly the way
     /// `DocxReader.alignmentFromJc` does: `"both"`/`"justify"`/`"distribute"` → `.justified`
     /// (`NSTextAlignment` has no distributed case, so distribute collapses to justify — same choice
@@ -1390,8 +1402,12 @@ enum HwpReader {
             // A PICTURE fill on the table is one image behind the whole grid — the rounded box a
             // Korean document draws around an annotation. Painted once by `GridTextTable`, never
             // repeated per cell, which is what turns one frame into a wall of frames.
-            format.backgroundImage = shapes.fillImage(tableFill?.bgImage)
-                ?? gradientImage(tableFill?.bgGradient)
+            let tableRealImage = shapes.fillImage(tableFill?.bgImage)
+            format.backgroundImage = tableRealImage ?? gradientImage(tableFill?.bgGradient)
+            // The DECLARATION half of the same fact — see `Cell.backgroundGradient`'s own doc.
+            // `nil` whenever a real picture won above, mirroring the same `real_image.is_none()`
+            // priority `mapping.rs` resolves at read time, so the two are never both "the answer".
+            format.backgroundGradient = tableRealImage == nil ? gradientDeclaration(tableFill?.bgGradient) : nil
             // A single-stop gradient is a plain fill, and one that could not be drawn still reads
             // closer to the document as its first colour than as blank paper.
             if format.defaultShading == nil, format.backgroundImage == nil,
@@ -1587,12 +1603,18 @@ enum HwpReader {
         // had deliberately turned off (measured: 423 of the 편람's 821 definitions are all-off).
         let fill = borderFill(forId: c.borderFillId, in: borderFills)
         var shading = fill.flatMap { color($0.bg) }
-        let fillImage = shapes.fillImage(fill?.bgImage) ?? gradientImage(fill?.bgGradient)
+        let realImage = shapes.fillImage(fill?.bgImage)
+        let fillImage = realImage ?? gradientImage(fill?.bgGradient)
+        // The DECLARATION half of the same fact — see `Cell.backgroundGradient`'s own doc. `nil`
+        // whenever a real picture won above, mirroring `mapping.rs`'s `real_image.is_none()`
+        // priority at read time.
+        let fillGradient = realImage == nil ? gradientDeclaration(fill?.bgGradient) : nil
         if shading == nil, fillImage == nil,
            let stops = fill?.bgGradient?.colors, !stops.isEmpty { shading = color(stops[0]) }
         return Cell(blocks: blocks, rowSpan: c.rowSpan, colSpan: c.colSpan,
                     backgroundColor: shading,
                     backgroundImage: fillImage,
+                    backgroundGradient: fillGradient,
                     edgeBorders: edgeBorders(forFillId: c.borderFillId, in: borderFills),
                     verticalAlignment: vAlign, edgePadding: edges,
                     diagonal: cellDiagonal(fill))

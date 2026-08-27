@@ -333,6 +333,23 @@ impl Default for UnderlineStyle {
     }
 }
 
+// swift: Render/Office/OfficeBlock.swift:198-206
+/// A gradient fill the document DECLARED — stops and angle, exactly as stated, never a rendered
+/// bitmap. S6-4: `Cell.background_image`/`TableFormat.background_image` merge a real document
+/// picture with a reader-SYNTHESIZED 64×64 gradient bitmap into one `Option<NSImage>` (`HwpReader
+/// .gradientImage`/`mapping.rs`'s own `gradient_image`, kept for the host's existing draw path),
+/// which the wire tree cannot tell apart from an authored picture without carrying the bitmap as
+/// if the document had declared it — a fabrication. This field is the document's own fact instead:
+/// populated ONLY when no real picture won the fill (`fill_image` returned `None`), mirroring the
+/// same `fill_image(...).or_else(gradient_image(...))` priority the image field already resolves
+/// by, so the two fields are never both "the deciding one" for the same cell/table.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct OfficeGradient {
+    pub stops: Vec<NSColor>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub angle_degrees: Option<CGFloat>,
+}
+
 // swift: Render/Office/OfficeBlock.swift:201-206
 /// One cell of a table row. Only ANCHOR cells — the top-left corner of a merge — appear in
 /// `OfficeBlock.table`'s `rows`; a grid position covered by another cell's `row_span`/`col_span` is
@@ -371,12 +388,21 @@ pub struct Cell {
     /// Korean document is built out of. A reader that knows only `background_color` renders all of
     /// them as blank paper. `nil` everywhere else, and nil from `mapJSON` alone (the bytes need the
     /// parse handle, so `HwpReader.read` is what fills it).
-    /// NOT serialised — decoded pixels, not a document fact. Only `HwpReader` fills this (HWP has
-    /// no archive a host could resolve a picture from later); the zip readers leave it nil and the
-    /// host loads the picture from the archive it already holds. `assert_exportable` refuses a tree
-    /// where it is set, so this cannot become a silently blank table.
-    #[serde(skip)]
+    /// Only `HwpReader` fills this (HWP has no archive a host could resolve a picture from later);
+    /// the zip readers leave it nil and the host loads the picture from the archive it already
+    /// holds. S6-4: SERIALISED as ordinary decoded bytes (`NSImage` already derives `Serialize`,
+    /// the same shape `OfficeMasterObjectContent::Image` used honestly since S6-2) — previously
+    /// `#[serde(skip)]` and refused by `assert_exportable`, which silently dropped a real picture
+    /// from the schema-v4 envelope the moment the refusal was lifted without this change too. See
+    /// `background_gradient` just below for the other half of this field's old ambiguity.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub background_image: Option<NSImage>,
+    // swift: Render/Office/OfficeBlock.swift:231a
+    /// See `OfficeGradient`'s own doc (above `Cell`) for why this exists beside `background_image`
+    /// rather than folded into it. `nil` whenever a real picture won the fill, or the source
+    /// declared no gradient at all.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub background_gradient: Option<OfficeGradient>,
     // swift: Render/Office/OfficeBlock.swift:232-238
     /// The cell's own border colour/width (docx `w:tcPr/w:tcBorders`, odt cell-style borders) —
     /// either or both may be `nil`, in which case `TableBlockBuilder`'s existing theme default
@@ -472,15 +498,16 @@ pub struct Cell {
 impl PartialEq for Cell {
     fn eq(&self, other: &Self) -> bool {
         let Self {
-            blocks, row_span, col_span, background_color, background_image, border_color,
-            border_width, edge_borders, width, vertical_alignment, padding, edge_padding,
-            diagonal, style_shading, style_border_color, style_border_width,
+            blocks, row_span, col_span, background_color, background_image, background_gradient,
+            border_color, border_width, edge_borders, width, vertical_alignment, padding,
+            edge_padding, diagonal, style_shading, style_border_color, style_border_width,
         } = self;
         blocks == &other.blocks
             && row_span == &other.row_span
             && col_span == &other.col_span
             && background_color == &other.background_color
             && image_eq(background_image, &other.background_image)
+            && background_gradient == &other.background_gradient
             && border_color == &other.border_color
             && border_width == &other.border_width
             && edge_borders == &other.edge_borders
@@ -507,6 +534,7 @@ impl Default for Cell {
             col_span: 1,
             background_color: None,
             background_image: None,
+            background_gradient: None,
             border_color: None,
             border_width: None,
             edge_borders: None,
@@ -544,6 +572,7 @@ impl Cell {
             col_span,
             background_color: None,
             background_image: None,
+            background_gradient: None,
             border_color: None,
             border_width: None,
             edge_borders: None,
@@ -581,6 +610,7 @@ impl Cell {
             col_span,
             background_color,
             background_image,
+            background_gradient: None,
             border_color,
             border_width,
             edge_borders,
@@ -843,12 +873,15 @@ pub struct TableFormat {
     /// cell — HWP's rounded annotation box is exactly this: one image behind a table whose cells
     /// declare nothing at all (55 tables in one measured manual). Filled by `HwpReader.read`, nil
     /// for every other format and for `mapJSON` alone.
-    /// NOT serialised — decoded pixels, not a document fact. Only `HwpReader` fills this (HWP has
-    /// no archive a host could resolve a picture from later); the zip readers leave it nil and the
-    /// host loads the picture from the archive it already holds. `assert_exportable` refuses a tree
-    /// where it is set, so this cannot become a silently blank table.
-    #[serde(skip)]
+    /// Only `HwpReader` fills this (HWP has no archive a host could resolve a picture from later);
+    /// the zip readers leave it nil and the host loads the picture from the archive it already
+    /// holds. S6-4: SERIALISED — see `Cell.background_image`'s own doc for why the old
+    /// `#[serde(skip)]` had to go together with the refusal that used to guard it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub background_image: Option<NSImage>,
+    /// See `Cell.background_gradient`'s own doc — same split, table-scoped.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub background_gradient: Option<OfficeGradient>,
     // swift: Render/Office/OfficeBlock.swift:509-525
     /// The table's own total width in POINTS as the SOURCE document laid it out (docx `w:tblGrid`
     /// twips summed, HWP's HWPUNIT column widths summed, ODF `style:column-width` summed) — `nil`
@@ -930,13 +963,14 @@ impl PartialEq for TableFormat {
     fn eq(&self, other: &Self) -> bool {
         let Self {
             default_border_color, default_border_width, default_shading, background_image,
-            source_width, edge_borders, default_padding, repeat_header_rows, page_break_policy,
-            outer_margin,
+            background_gradient, source_width, edge_borders, default_padding, repeat_header_rows,
+            page_break_policy, outer_margin,
         } = self;
         default_border_color == &other.default_border_color
             && default_border_width == &other.default_border_width
             && default_shading == &other.default_shading
             && image_eq(background_image, &other.background_image)
+            && background_gradient == &other.background_gradient
             && source_width == &other.source_width
             && edge_borders == &other.edge_borders
             && default_padding == &other.default_padding
