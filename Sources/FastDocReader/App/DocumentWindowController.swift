@@ -571,6 +571,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         if let settled = settledFootnotePages { return settled }
         if let cached = cachedFootnotePages { return cached }
         var out: [Int: [Int]] = [:]
+        var placed = Set<Int>()
         if let storage = textView.textStorage, storage.length > 0,
            let lm = textView.layoutManager, pageBandDelegate.paginates {
             let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
@@ -587,7 +588,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                     guard page >= 0 else { return }
                     // A document may cite the same note twice; it is drawn once, on the first page
                     // that cites it, because two copies of one note is worse than a distant one.
-                    if !out.values.contains(where: { $0.contains(number) }) {
+                    // Kept in a set rather than searched for across the pages assigned so far: this
+                    // runs once per marker, and scanning every page's array each time is quadratic
+                    // in the note count on exactly the documents that have many.
+                    if placed.insert(number).inserted {
                         out[Int(page), default: []].append(number)
                     }
                 }
