@@ -164,6 +164,96 @@ bool fastdoc_office_band_sides(const FastdocOfficeDocument *handle, double colum
                                bool headers_on, bool footers_on, bool separates_pages,
                                double desk_gap, bool has_desk_gap, double *out);
 
+/* S5C2-01: every SHEET a paged document prints as, from the scalars printSheets already resolves
+ * (pitch and top_margin are scalar addition/max and are NOT crossed separately — S5C-2's own plan
+ * says why). count is the host's own live printPageCount.
+ *
+ * Fills out[0..count*4] as [x, y, width, height] per sheet, in the same order the host's own
+ * PagePagination.sheets returns them, and sets *out_count to the number written. Returns false
+ * (fastdoc_take_last_error names it) when out_capacity is smaller than count * 4, or on a NULL
+ * handle/out/out_count.
+ *
+ * handle is unused beyond the NULL check — this arithmetic needs no document state — but the
+ * export is shaped over the handle for consistency with this file's other S5C1/S5C2 exports. */
+bool fastdoc_office_sheets(const FastdocOfficeDocument *handle, long long count, double width,
+                           double text_origin_y, double leading_band, double pitch,
+                           double top_margin, double desk_gap, double *out, size_t out_capacity,
+                           size_t *out_count);
+
+/* One laid-out ROW, mirroring page_pagination::LaidOutRow field for field —
+ * fastdoc_office_table_placement's flat rows array, sliced per table by row_offset/row_count. */
+typedef struct {
+    long long first_char;
+    double top;
+    double bottom;
+    double first_line_top;
+    bool can_break_above;
+} FastdocLaidOutRow;
+
+/* One laid-out TABLE, mirroring page_pagination::LaidOutTable except that rows is replaced by an
+ * offset/count into fastdoc_office_table_placement's flat rows array — the same shape
+ * FastdocTableResizeTableDesc already uses for tables-then-cells. */
+typedef struct {
+    long long first_char;
+    double visual_top;
+    double bottom;
+    double first_line_top;
+    long long last_char;
+    size_t row_offset;
+    size_t row_count;
+    bool keeps_whole;
+} FastdocLaidOutTable;
+
+/* One first_char -> (height, top_inset) entry — the wire shape both already_pushed's input and
+ * tables_to_push's output use. */
+typedef struct {
+    long long key;
+    double height;
+    double top_inset;
+} FastdocTableMetricsEntry;
+
+/* One page -> height entry — note_bands's wire shape. The host may pass these in any order: the
+ * engine builds a HashMap from them and neither tables_to_push nor oversized_pieces reads that
+ * map in iteration order, only by key lookup. */
+typedef struct {
+    long long page;
+    double value;
+} FastdocNoteBandEntry;
+
+/* One first_char -> last_char entry — already_oversized's wire shape (input) and
+ * oversized_pieces's wire shape (output). */
+typedef struct {
+    long long key;
+    long long value;
+} FastdocI64Entry;
+
+/* S5C2-01: which tables must move whole to the next page (tables_to_push) and which pieces fit on
+ * no page at all (oversized_pieces), from a completed layout — settlePagedTables's arithmetic
+ * half, over the S5C-1 handle for consistency (unused beyond the NULL check; both Rust functions
+ * are pure).
+ *
+ * joining_unopened_boundaries is NOT answered here — it has exactly one caller, pageSheets, which
+ * S5C-2's own contract leaves deriving from printSheets untouched.
+ *
+ * tables/rows are the host's laidOutTables() walk, flattened: each table names its own slice of
+ * rows by row_offset/row_count. already_pushed/note_bands/already_oversized are the settle loop's
+ * carried state, each a flat array of entries in any order.
+ *
+ * Fills out_push/out_oversized — each SORTED BY KEY, so two runs over the same document answer
+ * identically regardless of Rust's own randomized HashMap iteration order — and sets
+ * *out_push_count/*out_oversized_count to the number of entries written. Returns false
+ * (fastdoc_take_last_error names it) when either output buffer is too small, when a table
+ * descriptor's row_offset/row_count runs past the flat rows buffer, or on a NULL handle/required
+ * pointer. A safe upper bound for both output capacities is table_count + row_count. */
+bool fastdoc_office_table_placement(
+    const FastdocOfficeDocument *handle, const FastdocLaidOutTable *tables, size_t table_count,
+    const FastdocLaidOutRow *rows, size_t row_count, double page_content_height, double band,
+    double leading_band, bool split_tables, const FastdocTableMetricsEntry *already_pushed,
+    size_t already_pushed_count, const FastdocNoteBandEntry *note_bands, size_t note_bands_count,
+    const FastdocI64Entry *already_oversized, size_t already_oversized_count,
+    FastdocTableMetricsEntry *out_push, size_t out_push_capacity, size_t *out_push_count,
+    FastdocI64Entry *out_oversized, size_t out_oversized_capacity, size_t *out_oversized_count);
+
 /* One cell's own geometry, mirroring the arithmetic in
  * Render/TableBlockBuilder.swift:977-988. */
 typedef struct {

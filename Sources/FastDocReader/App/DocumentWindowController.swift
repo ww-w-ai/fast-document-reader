@@ -2087,19 +2087,53 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
               let storage = textView.textStorage, storage.length > 0 else { return false }
         let tables = laidOutTables()
         guard !tables.isEmpty else { return false }
-        let next = PagePagination.tablesToPush(tables,
+        let next: [Int: PagePagination.TableMetrics]
+        let oversized: [Int: Int]
+        #if FMD_RUST_ENGINE
+        // S5C2-02: the engine's own decision for the SAME inputs the host would otherwise compute
+        // this from. `nil` — no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()`
+        // names which) — falls back to the host's own arithmetic below, the same failure
+        // direction S5C-1 established for the band query. `splitTables` is read fresh from
+        // `PageViewOptionsStore` on every call, so the toggle still reaches this decision exactly
+        // as it always has (invariant 64).
+        if let placement = mdDocument?.officeEngineHandle?.tablePlacement(
+            tables: tables, pageContentHeight: pageBandDelegate.pageContentHeight,
+            band: pageBandDelegate.band, leadingBand: pageBandDelegate.leadingBand,
+            splitTables: PageViewOptionsStore.current.splitTables,
+            alreadyPushed: pageBandDelegate.pushedTables, noteBands: pageBandDelegate.noteBands,
+            alreadyOversized: pageBandDelegate.oversizedPieces) {
+            next = placement.pushed
+            oversized = placement.oversized
+        } else {
+            next = PagePagination.tablesToPush(tables,
                                                pageContentHeight: pageBandDelegate.pageContentHeight,
                                                band: pageBandDelegate.band,
                                                leadingBand: pageBandDelegate.leadingBand,
                                                splitTables: PageViewOptionsStore.current.splitTables,
                                                alreadyPushed: pageBandDelegate.pushedTables,
                                                noteBands: pageBandDelegate.noteBands)
-        let oversized = PagePagination.oversizedPieces(tables,
+            oversized = PagePagination.oversizedPieces(tables,
                                                        pageContentHeight: pageBandDelegate.pageContentHeight,
                                                        band: pageBandDelegate.band,
                                                        leadingBand: pageBandDelegate.leadingBand,
                                                        noteBands: pageBandDelegate.noteBands,
                                                        alreadyOversized: pageBandDelegate.oversizedPieces)
+        }
+        #else
+        next = PagePagination.tablesToPush(tables,
+                                           pageContentHeight: pageBandDelegate.pageContentHeight,
+                                           band: pageBandDelegate.band,
+                                           leadingBand: pageBandDelegate.leadingBand,
+                                           splitTables: PageViewOptionsStore.current.splitTables,
+                                           alreadyPushed: pageBandDelegate.pushedTables,
+                                           noteBands: pageBandDelegate.noteBands)
+        oversized = PagePagination.oversizedPieces(tables,
+                                                   pageContentHeight: pageBandDelegate.pageContentHeight,
+                                                   band: pageBandDelegate.band,
+                                                   leadingBand: pageBandDelegate.leadingBand,
+                                                   noteBands: pageBandDelegate.noteBands,
+                                                   alreadyOversized: pageBandDelegate.oversizedPieces)
+        #endif
         let orphans = pageBandDelegate.pullToNextPage
             .union(orphanRunStarts(in: oversized))
         guard next != pageBandDelegate.pushedTables
@@ -3704,12 +3738,27 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard pageBandDelegate.isActive, let width = pagedDocumentWidth else { return [] }
         let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
                                          band: pageBandDelegate.band)
+        let topMargin = PagePagination.topMargin(declared: pagedMarginTop,
+                                                  band: pageBandDelegate.band - pageDeskGap)
+        #if FMD_RUST_ENGINE
+        // S5C2-02: the engine's own answer for the SAME inputs the host would otherwise compute
+        // this from. `nil` — no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()`
+        // names which) — falls back to the host's own arithmetic below, the same failure
+        // direction S5C-1 established for the band query. `pageSheets` keeps deriving from
+        // THIS property rather than asking the engine a second time, so screen and print can
+        // never source from two different answers (invariant 59).
+        if let engineSheets = mdDocument?.officeEngineHandle?.sheets(
+            count: printPageCount, width: width, textOriginY: textView.textContainerOrigin.y,
+            leadingBand: pageBandDelegate.leadingBand, pitch: pitch, topMargin: topMargin,
+            deskGap: pageDeskGap) {
+            return engineSheets
+        }
+        #endif
         return PagePagination.sheets(count: printPageCount, width: width,
                                      textOriginY: textView.textContainerOrigin.y,
                                      leadingBand: pageBandDelegate.leadingBand,
                                      pitch: pitch,
-                                     topMargin: PagePagination.topMargin(declared: pagedMarginTop,
-                                                                          band: pageBandDelegate.band - pageDeskGap),
+                                     topMargin: topMargin,
                                      deskGap: pageDeskGap)
     }
 

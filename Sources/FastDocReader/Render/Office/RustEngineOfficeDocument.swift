@@ -75,5 +75,129 @@ final class RustOfficeDocumentHandle {
         answeredQueries += 1
         return PageBandGeometry.Sides(header: CGFloat(out[0]), footer: CGFloat(out[1]), band: CGFloat(out[2]))
     }
+
+    /// S5C2-01: every SHEET a paged document prints as — `printSheets`'s own arithmetic, from the
+    /// scalars it already resolves (`pitch` and `topMargin` are scalar addition/`max` and stay
+    /// host-side; the plan states why). `nil` when the engine could not answer (a bad payload —
+    /// `RustEngineMeasure.lastErrorKind()` names which) or `count <= 0`, matching
+    /// `PagePagination.sheets`'s own empty-array answer for a non-positive count.
+    func sheets(
+        count: Int, width: CGFloat, textOriginY: CGFloat, leadingBand: CGFloat,
+        pitch: CGFloat, topMargin: CGFloat, deskGap: CGFloat
+    ) -> [CGRect]? {
+        guard count > 0 else { return [] }
+        var raw = [Double](repeating: 0, count: count * 4)
+        var outCount = 0
+        let answered = raw.withUnsafeMutableBufferPointer { buffer -> Bool in
+            withUnsafeMutablePointer(to: &outCount) { countPtr in
+                fastdoc_office_sheets(
+                    handle, Int64(count), Double(width), Double(textOriginY), Double(leadingBand),
+                    Double(pitch), Double(topMargin), Double(deskGap),
+                    buffer.baseAddress, buffer.count, countPtr)
+            }
+        }
+        guard answered else { return nil }
+        answeredQueries += 1
+        var out: [CGRect] = []
+        out.reserveCapacity(outCount)
+        for i in 0..<outCount {
+            out.append(CGRect(x: raw[i * 4], y: raw[i * 4 + 1], width: raw[i * 4 + 2], height: raw[i * 4 + 3]))
+        }
+        return out
+    }
+
+    /// S5C2-01: which tables must move whole to the next page and which pieces fit on no page at
+    /// all — `settlePagedTables`'s arithmetic half (`tables_to_push`/`oversized_pieces`), from a
+    /// completed layout the host already walked (`laidOutTables()`). `nil` when the engine could
+    /// not answer — the host falls back to its own `PagePagination` arithmetic at the call site,
+    /// the same failure direction S5C-1 established for the band query.
+    func tablePlacement(
+        tables: [PagePagination.LaidOutTable], pageContentHeight: CGFloat, band: CGFloat,
+        leadingBand: CGFloat, splitTables: Bool,
+        alreadyPushed: [Int: PagePagination.TableMetrics], noteBands: [Int: CGFloat],
+        alreadyOversized: [Int: Int]
+    ) -> (pushed: [Int: PagePagination.TableMetrics], oversized: [Int: Int])? {
+        var ffiRows: [FastdocLaidOutRow] = []
+        ffiRows.reserveCapacity(tables.reduce(0) { $0 + $1.rows.count })
+        var ffiTables: [FastdocLaidOutTable] = []
+        ffiTables.reserveCapacity(tables.count)
+        for t in tables {
+            let rowOffset = ffiRows.count
+            for r in t.rows {
+                ffiRows.append(FastdocLaidOutRow(
+                    first_char: Int64(r.firstChar), top: Double(r.top), bottom: Double(r.bottom),
+                    first_line_top: Double(r.firstLineTop), can_break_above: r.canBreakAbove))
+            }
+            ffiTables.append(FastdocLaidOutTable(
+                first_char: Int64(t.firstChar), visual_top: Double(t.visualTop),
+                bottom: Double(t.bottom), first_line_top: Double(t.firstLineTop),
+                last_char: Int64(t.lastChar), row_offset: rowOffset, row_count: t.rows.count,
+                keeps_whole: t.keepsWhole))
+        }
+        let ffiAlreadyPushed = alreadyPushed.map {
+            FastdocTableMetricsEntry(key: Int64($0.key), height: Double($0.value.height),
+                                     top_inset: Double($0.value.topInset))
+        }
+        let ffiNoteBands = noteBands.map {
+            FastdocNoteBandEntry(page: Int64($0.key), value: Double($0.value))
+        }
+        let ffiAlreadyOversized = alreadyOversized.map {
+            FastdocI64Entry(key: Int64($0.key), value: Int64($0.value))
+        }
+        // A safe upper bound for BOTH outputs (the FFI doc's own statement): `tablesToPush`/
+        // `oversizedPieces` each register at most one entry per unbreakable group, at most one
+        // per row, plus the already-carried keys.
+        let capacity = max(ffiTables.count + ffiRows.count, 1)
+        var outPush = [FastdocTableMetricsEntry](
+            repeating: FastdocTableMetricsEntry(key: 0, height: 0, top_inset: 0), count: capacity)
+        var outOversized = [FastdocI64Entry](
+            repeating: FastdocI64Entry(key: 0, value: 0), count: capacity)
+        var outPushCount = 0
+        var outOversizedCount = 0
+
+        let answered = ffiTables.withUnsafeBufferPointer { tablesBuf in
+            ffiRows.withUnsafeBufferPointer { rowsBuf in
+                ffiAlreadyPushed.withUnsafeBufferPointer { pushBuf in
+                    ffiNoteBands.withUnsafeBufferPointer { noteBuf in
+                        ffiAlreadyOversized.withUnsafeBufferPointer { oversizedBuf in
+                            outPush.withUnsafeMutableBufferPointer { outPushBuf in
+                                outOversized.withUnsafeMutableBufferPointer { outOversizedBuf -> Bool in
+                                    withUnsafeMutablePointer(to: &outPushCount) { outPushCountPtr in
+                                        withUnsafeMutablePointer(to: &outOversizedCount) { outOversizedCountPtr in
+                                            fastdoc_office_table_placement(
+                                                handle,
+                                                tablesBuf.baseAddress, tablesBuf.count,
+                                                rowsBuf.baseAddress, rowsBuf.count,
+                                                Double(pageContentHeight), Double(band), Double(leadingBand),
+                                                splitTables,
+                                                pushBuf.baseAddress, pushBuf.count,
+                                                noteBuf.baseAddress, noteBuf.count,
+                                                oversizedBuf.baseAddress, oversizedBuf.count,
+                                                outPushBuf.baseAddress, outPushBuf.count, outPushCountPtr,
+                                                outOversizedBuf.baseAddress, outOversizedBuf.count,
+                                                outOversizedCountPtr)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        guard answered else { return nil }
+        answeredQueries += 1
+        var pushed: [Int: PagePagination.TableMetrics] = [:]
+        for i in 0..<outPushCount {
+            let e = outPush[i]
+            pushed[Int(e.key)] = PagePagination.TableMetrics(height: CGFloat(e.height), topInset: CGFloat(e.top_inset))
+        }
+        var oversized: [Int: Int] = [:]
+        for i in 0..<outOversizedCount {
+            let e = outOversized[i]
+            oversized[Int(e.key)] = Int(e.value)
+        }
+        return (pushed, oversized)
+    }
 }
 #endif

@@ -640,6 +640,347 @@ pub unsafe extern "C" fn fastdoc_office_band_sides(
     }
 }
 
+/// S5C2-01: every SHEET a paged document prints as, from the scalars `printSheets` already
+/// resolves (`page_pagination::PagePagination::sheets`'s own doc explains why `pitch` and
+/// `top_margin` are not crossed separately — they are scalar addition/`max`, and the divergence
+/// invariant 59 guards against is never at risk from that arithmetic agreeing). `count` is the
+/// host's own `printPageCount` (a LIVE layout answer, unavailable to the engine — the host still
+/// decides how many pages there are).
+///
+/// Fills `out[0..count*4]` as `[x, y, width, height]` per sheet, in the SAME order
+/// `PagePagination.sheets` returns them, and sets `*out_count` to the sheet count actually
+/// written (`0` for a document that does not paginate, matching the host's own empty-array
+/// answer). Returns `false` (`fastdoc_take_last_error` names it) when `out_capacity` is smaller
+/// than `count * 4` — the host must size its buffer from the SAME `count` it passed in, which it
+/// always knows ahead of the call.
+///
+/// # Safety
+/// `handle` must be either NULL or a live pointer `fastdoc_office_open` returned that has not been
+/// closed (unused beyond the NULL check — this arithmetic needs no document state, but the export
+/// is shaped over the handle for consistency with this file's other S5C1/S5C2 exports). `out` must
+/// describe a writable buffer of at least `out_capacity` `f64`s, and `out_count` a writable
+/// `usize`, both for the duration of the call.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn fastdoc_office_sheets(
+    handle: *const FastdocOfficeDocument,
+    count: i64,
+    width: f64,
+    text_origin_y: f64,
+    leading_band: f64,
+    pitch: f64,
+    top_margin: f64,
+    desk_gap: f64,
+    out: *mut f64,
+    out_capacity: usize,
+    out_count: *mut usize,
+) -> bool {
+    clear_last_error();
+    if handle.is_null() || out.is_null() || out_count.is_null() {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return false;
+    }
+    let sheets: Vec<swiftshim::CGRect> = guard_scalar(Vec::new(), move || {
+        fastdoc_engine::render::office::page_pagination::PagePagination::sheets(
+            count, width, text_origin_y, leading_band, pitch, top_margin, desk_gap,
+        )
+    });
+    let Some(needed) = sheets.len().checked_mul(4) else {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "sheet count overflowed the output buffer size",
+        ));
+        return false;
+    };
+    if needed > out_capacity {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "out buffer too small for the sheet count",
+        ));
+        return false;
+    }
+    if needed > 0 {
+        let out_slice = std::slice::from_raw_parts_mut(out, needed);
+        for (i, rect) in sheets.iter().enumerate() {
+            out_slice[i * 4] = rect.minX();
+            out_slice[i * 4 + 1] = rect.minY();
+            out_slice[i * 4 + 2] = rect.width();
+            out_slice[i * 4 + 3] = rect.height();
+        }
+    }
+    *out_count = sheets.len();
+    true
+}
+
+/// One laid-out ROW, mirroring `page_pagination::LaidOutRow` field for field —
+/// `fastdoc_office_table_placement`'s flat `rows` array, sliced per table by `row_offset`/
+/// `row_count`. `#[repr(C)]` so the layout is exactly what the header declares.
+#[repr(C)]
+pub struct FastdocLaidOutRow {
+    pub first_char: i64,
+    pub top: CGFloat,
+    pub bottom: CGFloat,
+    pub first_line_top: CGFloat,
+    pub can_break_above: bool,
+}
+
+/// One laid-out TABLE, mirroring `page_pagination::LaidOutTable` except that `rows` is replaced by
+/// an offset/count into `fastdoc_office_table_placement`'s flat `rows` array — the same
+/// offset/count shape `FastdocTableResizeTableDesc` already uses for tables-then-cells. `#[repr(C)]`
+/// so the layout is exactly what the header declares.
+#[repr(C)]
+pub struct FastdocLaidOutTable {
+    pub first_char: i64,
+    pub visual_top: CGFloat,
+    pub bottom: CGFloat,
+    pub first_line_top: CGFloat,
+    pub last_char: i64,
+    pub row_offset: usize,
+    pub row_count: usize,
+    pub keeps_whole: bool,
+}
+
+/// One `first_char -> (height, top_inset)` entry, mirroring `page_pagination::TableMetrics` keyed
+/// by the character it belongs to — the wire shape both `already_pushed`'s input and
+/// `tables_to_push`'s output use, so one struct serves both directions. `#[repr(C)]` so the layout
+/// is exactly what the header declares.
+#[repr(C)]
+pub struct FastdocTableMetricsEntry {
+    pub key: i64,
+    pub height: CGFloat,
+    pub top_inset: CGFloat,
+}
+
+/// One `page -> height` entry — `note_bands`'s wire shape. The host SORTS this array by `page`
+/// before crossing (S5C-2's own contract: an unordered `HashMap` crossing as a flat array could
+/// answer differently between two runs of the same document if the engine's OWN map-building ever
+/// depended on encounter order, which `tables_to_push`/`oversized_pieces` do not — but the contract
+/// is stated here rather than left to be true only because nothing currently exploits it).
+/// `#[repr(C)]` so the layout is exactly what the header declares.
+#[repr(C)]
+pub struct FastdocNoteBandEntry {
+    pub page: i64,
+    pub value: CGFloat,
+}
+
+/// One `first_char -> last_char` entry — `already_oversized`'s wire shape (input) and
+/// `oversized_pieces`'s wire shape (output). `#[repr(C)]` so the layout is exactly what the header
+/// declares.
+#[repr(C)]
+pub struct FastdocI64Entry {
+    pub key: i64,
+    pub value: i64,
+}
+
+/// S5C2-01: which tables must move whole to the next page (`tables_to_push`) and which pieces fit
+/// on no page at all (`oversized_pieces`), from a completed layout — `settlePagedTables`'s whole
+/// arithmetic half, over the S5C-1 handle for consistency with this file's other exports (unused
+/// beyond the NULL check; both Rust functions are pure and need no document state, since every
+/// fact they need is already IN the laid-out tables and rows the host walked).
+///
+/// `joining_unopened_boundaries` is NOT answered here. It has exactly one caller, `pageSheets`,
+/// and S5C-2's own contract leaves `pageSheets` deriving from `printSheets` untouched — exporting
+/// an FFI surface with no wiring to call it would reproduce, on a smaller scale, the zero-caller
+/// state this sprint exists to fix on `tables_to_push`/`oversized_pieces`/`sheets` themselves. The
+/// pure Rust function remains available in `page_pagination.rs` for the sprint that DOES move
+/// `pageSheets`.
+///
+/// `tables`/`rows` are the host's `laidOutTables()` walk, flattened: each table names its own
+/// slice of `rows` by `row_offset`/`row_count`, exactly as `FastdocTableResizeTableDesc` names its
+/// slice of `cells`. `already_pushed`/`note_bands`/`already_oversized` are the settle loop's
+/// carried state, each a flat array of entries (the host may pass them in any order — the engine
+/// builds a `HashMap` from them and neither `tables_to_push` nor `oversized_pieces` reads that map
+/// in iteration order, only by key lookup).
+///
+/// Fills `out_push`/`out_oversized` — each SORTED BY KEY, so two runs over the same document answer
+/// identically regardless of Rust's own randomized `HashMap` iteration order — and sets
+/// `*out_push_count`/`*out_oversized_count` to the number of entries actually written. Returns
+/// `false` (`fastdoc_take_last_error` names it) when either output buffer is smaller than the
+/// engine's own answer needs, when a table descriptor's `row_offset`/`row_count` runs past the flat
+/// `rows` buffer, or on a NULL handle/required pointer. A safe upper bound for both output
+/// capacities is `table_count + row_count` — `tables_to_push` registers at most one entry per
+/// unbreakable group (at most one per row) plus the already-carried keys, and `oversized_pieces`
+/// the same; a caller that does not want to reason about the exact bound may simply pass that sum.
+///
+/// # Safety
+/// `handle` must be either NULL or a live pointer `fastdoc_office_open` returned that has not been
+/// closed. `tables`/`table_count`, `rows`/`row_count`, `already_pushed`/`already_pushed_count`,
+/// `note_bands`/`note_bands_count` and `already_oversized`/`already_oversized_count` describe
+/// readable buffers for the duration of the call. `out_push`/`out_push_capacity`,
+/// `out_push_count`, `out_oversized`/`out_oversized_capacity` and `out_oversized_count` describe
+/// writable buffers/scalars for the duration of the call.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn fastdoc_office_table_placement(
+    handle: *const FastdocOfficeDocument,
+    tables: *const FastdocLaidOutTable,
+    table_count: usize,
+    rows: *const FastdocLaidOutRow,
+    row_count: usize,
+    page_content_height: f64,
+    band: f64,
+    leading_band: f64,
+    split_tables: bool,
+    already_pushed: *const FastdocTableMetricsEntry,
+    already_pushed_count: usize,
+    note_bands: *const FastdocNoteBandEntry,
+    note_bands_count: usize,
+    already_oversized: *const FastdocI64Entry,
+    already_oversized_count: usize,
+    out_push: *mut FastdocTableMetricsEntry,
+    out_push_capacity: usize,
+    out_push_count: *mut usize,
+    out_oversized: *mut FastdocI64Entry,
+    out_oversized_capacity: usize,
+    out_oversized_count: *mut usize,
+) -> bool {
+    use fastdoc_engine::render::office::page_pagination::{
+        LaidOutRow, LaidOutTable, PagePagination, TableMetrics,
+    };
+
+    clear_last_error();
+    if handle.is_null()
+        || (table_count > 0 && tables.is_null())
+        || (row_count > 0 && rows.is_null())
+        || (already_pushed_count > 0 && already_pushed.is_null())
+        || (note_bands_count > 0 && note_bands.is_null())
+        || (already_oversized_count > 0 && already_oversized.is_null())
+        || out_push_count.is_null()
+        || out_oversized_count.is_null()
+    {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return false;
+    }
+
+    let table_descs: &[FastdocLaidOutTable] = if table_count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(tables, table_count)
+    };
+    let flat_rows: &[FastdocLaidOutRow] = if row_count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(rows, row_count)
+    };
+
+    let mut laid_out_tables: Vec<LaidOutTable> = Vec::with_capacity(table_descs.len());
+    for t in table_descs {
+        let row_end = t.row_offset.checked_add(t.row_count);
+        let table_rows: Vec<LaidOutRow> = match row_end {
+            Some(row_end) if row_end <= flat_rows.len() => flat_rows[t.row_offset..row_end]
+                .iter()
+                .map(|r| LaidOutRow::new(r.first_char, r.top, r.bottom, r.first_line_top, r.can_break_above))
+                .collect(),
+            _ => {
+                set_last_error(&FfiFailure::new(
+                    FfiErrorKind::InvalidArgument,
+                    "a table descriptor's row_offset/row_count runs past the flat rows buffer",
+                ));
+                return false;
+            }
+        };
+        laid_out_tables.push(LaidOutTable::new(
+            t.first_char,
+            t.visual_top,
+            t.bottom,
+            t.first_line_top,
+            Some(t.last_char),
+            table_rows,
+            t.keeps_whole,
+        ));
+    }
+
+    let already_pushed_map: std::collections::HashMap<i64, TableMetrics> = if already_pushed_count
+        == 0
+    {
+        std::collections::HashMap::new()
+    } else {
+        std::slice::from_raw_parts(already_pushed, already_pushed_count)
+            .iter()
+            .map(|e| (e.key, TableMetrics::new(e.height, e.top_inset)))
+            .collect()
+    };
+    let note_bands_map: std::collections::HashMap<i64, CGFloat> = if note_bands_count == 0 {
+        std::collections::HashMap::new()
+    } else {
+        std::slice::from_raw_parts(note_bands, note_bands_count)
+            .iter()
+            .map(|e| (e.page, e.value))
+            .collect()
+    };
+    let already_oversized_map: std::collections::HashMap<i64, i64> = if already_oversized_count
+        == 0
+    {
+        std::collections::HashMap::new()
+    } else {
+        std::slice::from_raw_parts(already_oversized, already_oversized_count)
+            .iter()
+            .map(|e| (e.key, e.value))
+            .collect()
+    };
+
+    let (mut pushed, mut oversized): (Vec<(i64, TableMetrics)>, Vec<(i64, i64)>) = guard_scalar(
+        (Vec::new(), Vec::new()),
+        move || {
+            let pushed = PagePagination::tables_to_push(
+                &laid_out_tables,
+                page_content_height,
+                band,
+                leading_band,
+                split_tables,
+                &already_pushed_map,
+                &note_bands_map,
+            );
+            let oversized = PagePagination::oversized_pieces(
+                &laid_out_tables,
+                page_content_height,
+                band,
+                leading_band,
+                &note_bands_map,
+                &already_oversized_map,
+            );
+            (pushed.into_iter().collect(), oversized.into_iter().collect())
+        },
+    );
+    // SORTED BY KEY — the engine's `HashMap` iteration order is randomized per process, and this
+    // is the seam that would otherwise let two runs of the same document answer differently.
+    pushed.sort_by_key(|(k, _)| *k);
+    oversized.sort_by_key(|(k, _)| *k);
+
+    if pushed.len() > out_push_capacity || oversized.len() > out_oversized_capacity {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "out buffer too small for the answer",
+        ));
+        return false;
+    }
+    if !pushed.is_empty() {
+        let out_slice = std::slice::from_raw_parts_mut(out_push, pushed.len());
+        for (i, (key, metrics)) in pushed.iter().enumerate() {
+            out_slice[i] = FastdocTableMetricsEntry {
+                key: *key,
+                height: metrics.height,
+                top_inset: metrics.top_inset,
+            };
+        }
+    }
+    *out_push_count = pushed.len();
+    if !oversized.is_empty() {
+        let out_slice = std::slice::from_raw_parts_mut(out_oversized, oversized.len());
+        for (i, (key, value)) in oversized.iter().enumerate() {
+            out_slice[i] = FastdocI64Entry { key: *key, value: *value };
+        }
+    }
+    *out_oversized_count = oversized.len();
+    true
+}
+
 /// One cell's own geometry, mirroring `fastdoc_engine::render::table_resize_math::TableResizeCell`
 /// field for field. `#[repr(C)]` so the layout is exactly what the header declares.
 #[repr(C)]
