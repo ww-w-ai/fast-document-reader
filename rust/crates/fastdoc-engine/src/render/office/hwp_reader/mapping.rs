@@ -283,8 +283,29 @@ impl HwpReader {
             })), &column_authority)?;
             // Embedded pictures are fetched here (they need the live handle); drawings were already
             // rendered inside `mapJSON` and must survive that — hence a merge rather than an assignment.
+            //
+            // `collect_images` only ever sees the slice it is handed — a running header/footer's own
+            // `.blocks` and a footnote's own `.blocks` are NOT inside `result.blocks` (S4-02 lifted
+            // them into their own top-level arrays specifically so a header could be drawn once per
+            // page rather than once per paragraph), so a walk over `result.blocks` alone silently
+            // never fetches a picture that lives only in one of those three. Measured: 400 real
+            // documents through `fastdoc_read_office_tree`, `MissingResource("hwpimg:N")` on ~55 of
+            // them, and the FIRST one traced (`resolve_resource`'s own miss log) named `hwpimg:1` — a
+            // key `office_adapter.rs` asked for while building a HEADER node, never fetched because
+            // this call only walked `result.blocks`. Four separate walks, one per array that can
+            // carry an `.image`, all merged into the SAME map `resolve_resource` reads from.
             for (k, v) in Self::collect_images(handle, &result.blocks) {
                 result.images.insert(SwiftString::from(k), v);
+            }
+            for hf in result.headers.iter().chain(result.footers.iter()) {
+                for (k, v) in Self::collect_images(handle, &hf.blocks) {
+                    result.images.insert(SwiftString::from(k), v);
+                }
+            }
+            for footnote in &result.footnotes {
+                for (k, v) in Self::collect_images(handle, &footnote.blocks) {
+                    result.images.insert(SwiftString::from(k), v);
+                }
             }
             // `.resolvingFontSubstitution()` is applied HERE, at HWP's own single dispatch point
             // (invariant 44 — HWP bypasses `DocumentTypes.readOffice` entirely, so it needs its own

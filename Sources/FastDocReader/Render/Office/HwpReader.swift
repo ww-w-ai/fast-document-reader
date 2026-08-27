@@ -92,7 +92,18 @@ enum HwpReader {
         }
         // Embedded pictures are fetched here (they need the live handle); drawings were already
         // rendered inside `mapJSON` and must survive that — hence a merge rather than an assignment.
-        result.images.merge(collectImages(handle: handle, blocks: result.blocks)) { _, new in new }
+        //
+        // FOUR walks, not one. A running header's, a footer's and a footnote's blocks are NOT inside
+        // `result.blocks` — they are lifted into their own top-level arrays so a band can be drawn
+        // once per page rather than once per paragraph — so a walk over `result.blocks` alone never
+        // fetches a picture that lives only in one of those. Measured on 648 real HWP documents:
+        // 48 of them carry a `hwpimg:` id in a band that this fetch never asked the handle for, and
+        // the reader then draws that band with the picture missing. The engine's own port had the
+        // identical gap (`hwp_reader/mapping.rs`), found first and fixed in the same commit.
+        for blocks in [result.blocks] + result.headers.map(\.blocks) + result.footers.map(\.blocks)
+            + result.footnotes.map(\.blocks) {
+            result.images.merge(collectImages(handle: handle, blocks: blocks)) { _, new in new }
+        }
         // `.resolvingFontSubstitution()` is applied HERE, at HWP's own single dispatch point
         // (invariant 44 — HWP bypasses `DocumentTypes.readOffice` entirely, so it needs its own
         // call rather than `readOffice`'s), NOT inside `mapJSON`: `mapJSON` stays a pure JSON->
