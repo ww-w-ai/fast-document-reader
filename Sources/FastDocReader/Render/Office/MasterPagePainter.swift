@@ -13,6 +13,15 @@ struct MasterPageContent {
     var pageContentWidth: CGFloat?
 }
 
+/// One VISIBLE page's selection question, batched to the engine as ONE call per draw pass rather
+/// than once per page — `MasterPagePainter.draw(_:sheets:…)` assembles the batch itself, from the
+/// same `sectionOfPage` and veto set it already reads. Mirrors `applicablePage`'s own two
+/// arguments beyond the template list (S5C3-04).
+struct MasterPageSelectionQuery {
+    var pageIndex: Int
+    var section: Int?
+}
+
 /// Paints the template a Korean document repeats behind every page — the full-page artwork, the tab
 /// down the outer edge, the ruled title line and the page number.
 ///
@@ -61,23 +70,52 @@ enum MasterPagePainter {
     /// (`DocumentWindowController.hiddenPageNumberPages`) — passed down to the page's `PAGE` field
     /// only; the rest of the template (title, artwork) is untouched. Defaults to "never hidden" for
     /// every caller that has no such veto (docx/odt, and every HWP page that never declared one).
+    ///
+    /// `templateSelection` is S5C3-04's engine crossing: given every page this pass is about to
+    /// draw, it answers each one's applicable template index (or `nil` for "no template applies"),
+    /// in ONE call — never once per page, which is the shape the plan rejected twice. `nil` — the
+    /// default, and the whole answer whenever `FMD_RUST_ENGINE` is off — falls back to
+    /// `applicablePage` for the whole batch, unchanged from before this parameter existed. A `nil`
+    /// ENTRY inside a non-`nil` array is a real engine answer ("no template applies"), not a gap;
+    /// it is trusted rather than re-asked of the host.
     static func draw(_ content: MasterPageContent, sheets: [CGRect], totalPages: Int,
                      visibleRect: NSRect, sectionOfPage: (Int) -> Int? = { _ in nil },
                      hidesPageNumber: (Int) -> Bool = { _ in false },
-                     displayedPageNumber: (Int) -> Int = { $0 + 1 }) {
+                     displayedPageNumber: (Int) -> Int = { $0 + 1 },
+                     templateSelection: (([MasterPageSelectionQuery]) -> [Int?]?)? = nil) {
         guard !content.pages.isEmpty, !sheets.isEmpty else { return }
+        // THE VISIBLE BATCH for this draw pass, gathered once and with the section veto already
+        // applied — so neither answer below is ever asked about a vetoed page.
+        var visible: [(index: Int, sheet: CGRect, section: Int?)] = []
+        visible.reserveCapacity(sheets.count)
         for (index, sheet) in sheets.enumerated() where sheet.intersects(visibleRect) {
             let section = sectionOfPage(index)
             // THE SECTION'S OWN VETO, before anything is chosen: a section that hides its master
             // page shows none, however many templates the document declares for it.
             if let section, content.sectionsHidingMasterPage.contains(section) { continue }
-            guard let page = applicablePage(content.pages, pageIndex: index,
-                                            section: section) else { continue }
+            visible.append((index, sheet, section))
+        }
+        guard !visible.isEmpty else { return }
+        // ONE crossing for the whole batch, not one per page.
+        let engineAnswers = templateSelection?(
+            visible.map { MasterPageSelectionQuery(pageIndex: $0.index, section: $0.section) })
+        for (offset, entry) in visible.enumerated() {
+            let page: OfficeMasterPage?
+            if let engineAnswers, offset < engineAnswers.count {
+                if let templateIndex = engineAnswers[offset], content.pages.indices.contains(templateIndex) {
+                    page = content.pages[templateIndex]
+                } else {
+                    page = nil
+                }
+            } else {
+                page = applicablePage(content.pages, pageIndex: entry.index, section: entry.section)
+            }
+            guard let page else { continue }
             for object in page.objects {
-                draw(object, onSheet: sheet, pageIndex: index, totalPages: totalPages,
+                draw(object, onSheet: entry.sheet, pageIndex: entry.index, totalPages: totalPages,
                      content: content, visibleRect: visibleRect,
-                     pageNumberHidden: hidesPageNumber(index),
-                     shownPageNumber: displayedPageNumber(index))
+                     pageNumberHidden: hidesPageNumber(entry.index),
+                     shownPageNumber: displayedPageNumber(entry.index))
             }
         }
     }

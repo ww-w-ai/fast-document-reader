@@ -199,5 +199,60 @@ final class RustOfficeDocumentHandle {
         }
         return (pushed, oversized)
     }
+
+    /// S5C3-04: `MasterPagePainter.applicablePage` plus the section veto (`:73`), ported to Rust
+    /// (`master_page_selection`) and answered batched over every VISIBLE page `draw(_:sheets:…)`
+    /// assembles — one crossing per draw pass, matching every other query on this page. `nil` —
+    /// no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()` names which) — is
+    /// `MasterPagePainter.draw`'s own signal to fall back to `applicablePage` for the whole batch,
+    /// the same failure direction S5C-1 established for every query above.
+    ///
+    /// A `nil` ENTRY inside the returned array is a real answer, not a failure: it is the engine's
+    /// own "-1, no template applies" (no candidates for the page's section, or the section is
+    /// vetoed) — `applicablePage`'s own `nil` return, not a gap for the host to fill in.
+    func masterTemplateSelection(
+        templates: [OfficeMasterPage], vetoedSections: Set<Int>,
+        pages: [(pageIndex: Int, section: Int?)]
+    ) -> [Int?]? {
+        guard !pages.isEmpty else { return [] }
+        let ffiTemplates = templates.map {
+            FastdocMasterTemplateDesc(section: Int64($0.section), applies_to: $0.appliesTo.wireTag)
+        }
+        let ffiVetoed = vetoedSections.map(Int64.init)
+        let ffiPages = pages.map {
+            FastdocMasterPageQuery(page_index: Int64($0.pageIndex), has_section: $0.section != nil,
+                                   section: Int64($0.section ?? 0))
+        }
+        var out = [Int64](repeating: -1, count: pages.count)
+        let answered = ffiTemplates.withUnsafeBufferPointer { templatesBuf in
+            ffiVetoed.withUnsafeBufferPointer { vetoedBuf in
+                ffiPages.withUnsafeBufferPointer { pagesBuf in
+                    out.withUnsafeMutableBufferPointer { outBuf in
+                        fastdoc_office_master_selection(
+                            templatesBuf.baseAddress, templatesBuf.count,
+                            vetoedBuf.baseAddress, vetoedBuf.count,
+                            pagesBuf.baseAddress, pagesBuf.count,
+                            outBuf.baseAddress, outBuf.count)
+                    }
+                }
+            }
+        }
+        guard answered else { return nil }
+        answeredQueries += 1
+        return out.map { $0 >= 0 ? Int($0) : nil }
+    }
+}
+
+private extension HeaderFooterApplicability {
+    /// The wire tag `fastdoc_office_master_selection`'s own comment defines: `0` = `.defaultPages`,
+    /// `1` = `.firstPage`, `2` = `.evenPages` — the same three-way vocabulary a master page shares
+    /// with a running header/footer.
+    var wireTag: Int32 {
+        switch self {
+        case .defaultPages: return 0
+        case .firstPage: return 1
+        case .evenPages: return 2
+        }
+    }
 }
 #endif

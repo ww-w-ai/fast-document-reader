@@ -188,8 +188,29 @@ final class ReaderTextView: NSTextView {
                                visibleRect: visibleRect,
                                sectionOfPage: { wc.sectionOfPage($0) },
                                hidesPageNumber: { wc.hiddenPageNumberPages.contains($0) },
-                               displayedPageNumber: { wc.displayedPageNumber($0) })
+                               displayedPageNumber: { wc.displayedPageNumber($0) },
+                               templateSelection: masterTemplateSelectionClosure(wc, content))
         drawAnchoredObjects(wc, content: content, sheets: sheets)
+    }
+
+    /// S5C3-04: the engine crossing `MasterPagePainter.draw` uses for the batch it assembles —
+    /// ONE call per draw pass, never one per page. `nil` is `draw`'s own signal to fall back to
+    /// `applicablePage`, so this returns `nil` whenever the flag is off (the `#else` half below,
+    /// which is the WHOLE function on a flag-off build) or the document has no engine handle (the
+    /// same failure direction S5C-1 established for every query before this one).
+    private func masterTemplateSelectionClosure(
+        _ wc: DocumentWindowController, _ content: MasterPageContent
+    ) -> (([MasterPageSelectionQuery]) -> [Int?]?)? {
+        #if FMD_RUST_ENGINE
+        guard let handle = wc.mdDocument?.officeEngineHandle else { return nil }
+        return { queries in
+            handle.masterTemplateSelection(
+                templates: content.pages, vetoedSections: content.sectionsHidingMasterPage,
+                pages: queries.map { ($0.pageIndex, $0.section) })
+        }
+        #else
+        return nil
+        #endif
     }
 
     /// Objects the document pinned to the PAPER at a particular place in the text — a cover's
