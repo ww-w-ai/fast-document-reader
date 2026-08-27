@@ -2322,9 +2322,31 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// reservation the current layout was not built against.
     func settleFootnoteBands() -> Bool {
         guard !footnotes.isEmpty, pageBandDelegate.paginates, !footnoteBandsSettled else { return false }
-        let proposed = proposedNoteBands()
-        switch FootnoteBandSettle.step(proposed: proposed, history: footnoteBandHistory,
-                                       cap: maxPagedTableSettles) {
+        let outcome: FootnoteBandSettle.Outcome
+        #if FMD_RUST_ENGINE
+        // S5D1-03: the engine's own answer for the SAME round the host would otherwise compute —
+        // `FootnoteBandSettle.step` plus the proposal arithmetic that feeds it
+        // (`proposedNoteBands`), in one call. `nil` — no handle, or a bad payload
+        // (`RustEngineMeasure.lastErrorKind()` names which) — falls back to the host's own
+        // arithmetic, the same failure direction S5C-1 established for every query on this page.
+        // `resolve` is where that choice is made, and it is a named function so a test can watch
+        // it: nothing here constructs a window controller. The bridge answers a COMPLETE outcome or `nil`; a partial reply is refused whole,
+        // never trusted half-way.
+        outcome = FootnoteBandSettle.resolve(
+            engine: mdDocument?.officeEngineHandle?.footnoteBandSettle(
+                pages: footnotePages.map { page, numbers in
+                    (pageIndex: page, noteHeights: numbers.compactMap { footnoteHeights[$0] },
+                     separator: footnoteSeparator(forPage: page))
+                },
+                history: footnoteBandHistory, pageContentHeight: pageBandDelegate.pageContentHeight,
+                cap: maxPagedTableSettles),
+            host: FootnoteBandSettle.step(proposed: proposedNoteBands(), history: footnoteBandHistory,
+                                          cap: maxPagedTableSettles))
+        #else
+        outcome = FootnoteBandSettle.step(proposed: proposedNoteBands(), history: footnoteBandHistory,
+                                          cap: maxPagedTableSettles)
+        #endif
+        switch outcome {
         case let .retry(bands):
             footnoteBandHistory.append(bands)
             pageBandDelegate.noteBands = bands

@@ -76,6 +76,23 @@ pub struct Sides {
     pub band: CGFloat,
 }
 
+/// The document's own declared rule above its footnotes, as much of `OfficeFootnoteSeparator` as
+/// `separator_allowance` needs — mirrors `FootnotePainter.separatorAllowance`'s own four fields.
+/// A page whose section resolved to no separator at all crosses as `None`, kept distinct from
+/// `Some` with `is_declared == false` (a separator struct the document never populated) even
+/// though both answer the reader's own default — the two are different FACTS on the host side
+/// (`footnoteSeparator(forPage:)`'s own `nil` vs. `OfficeFootnoteSeparator.isDeclared`) and this
+/// keeps them distinct at the boundary too, matching S5C-3's own "nothing invented" rule.
+// swift: Render/Office/OfficeBlock.swift:1148-1170
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FootnoteSeparatorDesc {
+    pub is_declared: bool,
+    pub line_type: i64,
+    pub line_width_pt: CGFloat,
+    pub margin_top_pt: CGFloat,
+    pub margin_bottom_pt: CGFloat,
+}
+
 impl PageBandGeometry {
     /// The space a document itself puts between one page's last body line and the next page's
     /// first: its bottom margin plus the next page's top margin. Both are the PAPER margins — a
@@ -223,6 +240,26 @@ impl PageBandGeometry {
         separator_allowance.max(0.0) + drawn.iter().sum::<CGFloat>() + between.max(0.0)
     }
 
+    /// How much room a page's footnote separator claims above the notes themselves: the rule
+    /// line's own width (or nothing, for a document that declared a line TYPE of "none") plus its
+    /// top and bottom margins — or the reader's own minimum, `None`/undeclared, exactly matching
+    /// `FootnotePainter.separatorAllowance`'s `guard let separator, separator.isDeclared else {
+    /// return defaultSeparatorAllowance }`.
+    ///
+    /// Pure arithmetic ported unchanged so the reservation (`footnote_band_height`, above) and the
+    /// separator `FootnotePainter.draw` actually paints agree to the point — a difference here puts
+    /// a note over the last line of body text, the same failure that function's own comment names.
+    // swift: Render/Office/FootnotePainter.swift:22,30-34
+    pub fn separator_allowance(separator: Option<&FootnoteSeparatorDesc>) -> CGFloat {
+        const DEFAULT_SEPARATOR_ALLOWANCE: CGFloat = 8.0;
+        let Some(separator) = separator else { return DEFAULT_SEPARATOR_ALLOWANCE };
+        if !separator.is_declared {
+            return DEFAULT_SEPARATOR_ALLOWANCE;
+        }
+        let rule = if separator.line_type == 0 { 0.0 } else { separator.line_width_pt.max(0.5) };
+        separator.margin_top_pt + rule + separator.margin_bottom_pt
+    }
+
     /// How tall this run of blocks is once BUILT and laid out at `columnWidth` — the one place that
     /// answers it, for a running head and for a footnote alike.
     ///
@@ -338,3 +375,50 @@ impl PageBandGeometry {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn declared(line_type: i64, line_width_pt: CGFloat, margin_top_pt: CGFloat,
+                margin_bottom_pt: CGFloat) -> FootnoteSeparatorDesc {
+        FootnoteSeparatorDesc { is_declared: true, line_type, line_width_pt, margin_top_pt, margin_bottom_pt }
+    }
+
+    /// No resolved separator at all — the host's `footnoteSeparator(forPage:)` returned `nil` —
+    /// falls back to the reader's own minimum, matching `FootnotePainter.separatorAllowance`'s
+    /// `defaultSeparatorAllowance`.
+    #[test]
+    fn no_separator_falls_back_to_the_default() {
+        assert_eq!(PageBandGeometry::separator_allowance(None), 8.0);
+    }
+
+    /// A separator struct that carries no declaration (`is_declared == false`) answers the same
+    /// default as `None` — the two are different FACTS at the boundary but the same ANSWER.
+    #[test]
+    fn undeclared_separator_falls_back_to_the_default() {
+        let sep = FootnoteSeparatorDesc {
+            is_declared: false, line_type: 1, line_width_pt: 2.0, margin_top_pt: 3.0, margin_bottom_pt: 4.0,
+        };
+        assert_eq!(PageBandGeometry::separator_allowance(Some(&sep)), 8.0);
+    }
+
+    /// `lineType == 0` ("no rule") drops the line width entirely — only the margins remain.
+    #[test]
+    fn line_type_zero_reserves_no_rule_width() {
+        let sep = declared(0, 5.0, 1.0, 2.0);
+        assert_eq!(PageBandGeometry::separator_allowance(Some(&sep)), 3.0);
+    }
+
+    /// A declared rule reserves its own width, floored at 0.5pt so a hairline still gets room.
+    #[test]
+    fn declared_line_reserves_its_own_width_with_a_hairline_floor() {
+        let thin = declared(1, 0.1, 1.0, 1.0);
+        assert_eq!(PageBandGeometry::separator_allowance(Some(&thin)), 2.5,
+                   "a near-zero width floors at 0.5pt, not the authored 0.1pt");
+        let wide = declared(1, 3.0, 1.0, 1.0);
+        assert_eq!(PageBandGeometry::separator_allowance(Some(&wide)), 5.0,
+                   "a rule wider than the floor reserves its own authored width");
+    }
+}
+

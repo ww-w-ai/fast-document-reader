@@ -338,6 +338,53 @@ bool fastdoc_office_master_selection(const FastdocMasterTemplateDesc *templates,
                                      const FastdocMasterPageQuery *pages, size_t page_count,
                                      long long *out_template_index, size_t out_capacity);
 
+/* One page's footnote inputs to the settle round: its own cited notes' heights (a slice into
+ * the shared note_heights buffer via note_offset/note_count) and its own section's resolved
+ * separator. has_separator == false is footnoteSeparator(forPage:)'s own nil — no separator for
+ * this page's section at all, distinct from separator_is_declared == false (a separator struct
+ * the document never populated). */
+typedef struct {
+    long long page_index;
+    size_t note_offset;
+    size_t note_count;
+    bool has_separator;
+    bool separator_is_declared;
+    long long separator_line_type;
+    double separator_line_width_pt;
+    double separator_margin_top_pt;
+    double separator_margin_bottom_pt;
+    double separator_note_spacing_pt;
+} FastdocFootnotePageDesc;
+
+/* One earlier round's proposal, its own slice into the flat history_entries buffer (the settle's
+ * own carried history, oldest round first). */
+typedef struct {
+    size_t entry_offset;
+    size_t entry_count;
+} FastdocFootnoteHistoryRoundDesc;
+
+/* S5D1-02: FootnoteBandSettle.step (invariant 98) plus the proposal arithmetic that feeds it
+ * (footnote_band_height/separator_allowance), batched into one round-trip per settle round. The
+ * host still supplies the note heights and resolves page-to-section/the separator for each page;
+ * the engine answers only what to do with the round that just finished.
+ *
+ * out_bands[0..*out_count], sorted by page, is the settle's bands for this round. *out_outcome
+ * names which kind of answer it is (0 = retry, run again with these bands; 1 = stop, these bands
+ * are final) and *out_stop_reason names why a stop happened (0 = still, 1 = cycle, 2 = cap;
+ * meaningless, left at -1, when *out_outcome is retry). Returns false
+ * (fastdoc_take_last_error names it) on a NULL required argument, an offset/count that runs past
+ * its flat buffer, or an output buffer smaller than the answer needs. A safe upper bound for
+ * out_capacity is page_count. */
+bool fastdoc_office_footnote_band_settle(const FastdocFootnotePageDesc *pages, size_t page_count,
+                                         const double *note_heights, size_t note_heights_count,
+                                         const FastdocFootnoteHistoryRoundDesc *history_rounds,
+                                         size_t history_round_count,
+                                         const FastdocNoteBandEntry *history_entries,
+                                         size_t history_entry_count,
+                                         double page_content_height, long long cap,
+                                         FastdocNoteBandEntry *out_bands, size_t out_capacity,
+                                         size_t *out_count, int *out_outcome, int *out_stop_reason);
+
 void fastdoc_string_free(char *s);
 
 #endif

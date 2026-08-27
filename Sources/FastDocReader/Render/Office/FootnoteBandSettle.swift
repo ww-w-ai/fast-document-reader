@@ -105,6 +105,20 @@ enum FootnoteBandSettle {
         case stop([Int: CGFloat], StopReason)
     }
 
+    /// Which answer this round uses: the engine's when it gave one, the host's own otherwise —
+    /// the failure direction S5C-1 set for every engine query on this page.
+    ///
+    /// This is one line, and it is out here rather than inline in
+    /// `DocumentWindowController.settleFootnoteBands` for a reason invariant 103 names: no test
+    /// constructs a window controller, so inside that method the difference between USING the
+    /// engine's answer and asking for it and throwing it away is invisible — a mutation that
+    /// discards the reply leaves every footnote test green. Out here the choice is a value a test
+    /// can watch. `host` is an autoclosure so the fallback arithmetic is not paid when the engine
+    /// answered, which is the common case.
+    static func resolve(engine: Outcome?, host: @autoclosure () -> Outcome) -> Outcome {
+        engine ?? host()
+    }
+
     /// The stopping rule.
     ///
     /// - Parameters:

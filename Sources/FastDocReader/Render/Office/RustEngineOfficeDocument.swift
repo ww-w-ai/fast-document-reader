@@ -241,6 +241,96 @@ final class RustOfficeDocumentHandle {
         answeredQueries += 1
         return out.map { $0 >= 0 ? Int($0) : nil }
     }
+    /// S5D1-03: `FootnoteBandSettle.step` plus the proposal arithmetic that feeds it
+    /// (`PageBandGeometry.footnoteBandHeight`/`FootnotePainter.separatorAllowance`), answered by
+    /// the engine for ONE settle round (`s5d1.md`'s "the ANSWERS move, the host still supplies the
+    /// heights" row). `nil` — no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()`
+    /// names which) — is `settleFootnoteBands`'s own signal to fall back to the host's own
+    /// `FootnoteBandSettle.step` for the whole round, the same failure direction S5C-1 established
+    /// for every query on this page.
+    ///
+    /// `pages` is this round's proposal inputs, one entry per page this round is proposing a band
+    /// for — `(pageIndex, noteHeights, separator)`, the separator already RESOLVED
+    /// (`footnoteSeparator(forPage:)`) rather than asked of the engine — `s5d1.md`: "The engine
+    /// must never be asked to resolve it." `history` is every earlier round's proposal, oldest
+    /// first, exactly as `footnoteBandHistory` already holds it. `pageContentHeight`/`cap` mirror
+    /// `FootnoteBandSettle.clamped`/`step`'s own scalars.
+    func footnoteBandSettle(
+        pages: [(pageIndex: Int, noteHeights: [CGFloat], separator: OfficeFootnoteSeparator?)],
+        history: [[Int: CGFloat]], pageContentHeight: CGFloat, cap: Int
+    ) -> FootnoteBandSettle.Outcome? {
+        var flatHeights: [Double] = []
+        var ffiPages: [FastdocFootnotePageDesc] = []
+        ffiPages.reserveCapacity(pages.count)
+        for page in pages {
+            let offset = flatHeights.count
+            flatHeights.append(contentsOf: page.noteHeights.map(Double.init))
+            let sep = page.separator
+            ffiPages.append(FastdocFootnotePageDesc(
+                page_index: Int64(page.pageIndex), note_offset: offset, note_count: page.noteHeights.count,
+                has_separator: sep != nil, separator_is_declared: sep?.isDeclared ?? false,
+                separator_line_type: Int64(sep?.lineType ?? 0), separator_line_width_pt: Double(sep?.lineWidthPt ?? 0),
+                separator_margin_top_pt: Double(sep?.marginTopPt ?? 0), separator_margin_bottom_pt: Double(sep?.marginBottomPt ?? 0),
+                separator_note_spacing_pt: Double(sep?.noteSpacingPt ?? 0)))
+        }
+        var flatHistoryEntries: [FastdocNoteBandEntry] = []
+        var ffiRounds: [FastdocFootnoteHistoryRoundDesc] = []
+        ffiRounds.reserveCapacity(history.count)
+        for round in history {
+            let offset = flatHistoryEntries.count
+            flatHistoryEntries.append(contentsOf: round.map {
+                FastdocNoteBandEntry(page: Int64($0.key), value: Double($0.value))
+            })
+            ffiRounds.append(FastdocFootnoteHistoryRoundDesc(
+                entry_offset: offset, entry_count: flatHistoryEntries.count - offset))
+        }
+        // A safe upper bound (the FFI doc's own statement): the settle registers at most one
+        // band per page proposed this round.
+        let capacity = max(pages.count, 1)
+        var outBands = [FastdocNoteBandEntry](repeating: FastdocNoteBandEntry(page: 0, value: 0), count: capacity)
+        var outCount = 0
+        var outOutcome: Int32 = -1
+        var outStopReason: Int32 = -1
+        let answered = ffiPages.withUnsafeBufferPointer { pagesBuf in
+            flatHeights.withUnsafeBufferPointer { heightsBuf in
+                ffiRounds.withUnsafeBufferPointer { roundsBuf in
+                    flatHistoryEntries.withUnsafeBufferPointer { entriesBuf in
+                        outBands.withUnsafeMutableBufferPointer { outBuf -> Bool in
+                            withUnsafeMutablePointer(to: &outCount) { outCountPtr in
+                                withUnsafeMutablePointer(to: &outOutcome) { outOutcomePtr in
+                                    withUnsafeMutablePointer(to: &outStopReason) { outStopReasonPtr in
+                                        fastdoc_office_footnote_band_settle(
+                                            pagesBuf.baseAddress, pagesBuf.count,
+                                            heightsBuf.baseAddress, heightsBuf.count,
+                                            roundsBuf.baseAddress, roundsBuf.count,
+                                            entriesBuf.baseAddress, entriesBuf.count,
+                                            Double(pageContentHeight), Int64(cap),
+                                            outBuf.baseAddress, outBuf.count, outCountPtr,
+                                            outOutcomePtr, outStopReasonPtr)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        guard answered else { return nil }
+        answeredQueries += 1
+        var bands: [Int: CGFloat] = [:]
+        for i in 0..<outCount {
+            bands[Int(outBands[i].page)] = CGFloat(outBands[i].value)
+        }
+        if outOutcome == 0 { return .retry(bands) }
+        let reason: FootnoteBandSettle.StopReason
+        switch outStopReason {
+        case 1: reason = .cycle
+        case 2: reason = .cap
+        default: reason = .still
+        }
+        return .stop(bands, reason)
+    }
+
 }
 
 private extension HeaderFooterApplicability {

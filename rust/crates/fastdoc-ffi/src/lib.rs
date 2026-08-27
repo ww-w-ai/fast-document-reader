@@ -1363,6 +1363,235 @@ pub unsafe extern "C" fn fastdoc_office_master_selection(
     true
 }
 
+/// One page's footnote inputs to the settle round — its own cited notes' heights (a slice into
+/// the caller's shared `note_heights` buffer, named by offset/count exactly as
+/// `FastdocLaidOutTable` names its own slice of `rows`) and its own section's separator, resolved
+/// the same way `footnoteSeparator(forPage:)` resolves it (`has_separator == false` is that
+/// function's own `nil` — no separator for this page's section at all, distinct from a separator
+/// struct the document never populated, `separator_is_declared == false`). `#[repr(C)]` so the
+/// layout is exactly what the header declares.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FastdocFootnotePageDesc {
+    pub page_index: i64,
+    pub note_offset: usize,
+    pub note_count: usize,
+    pub has_separator: bool,
+    pub separator_is_declared: bool,
+    pub separator_line_type: i64,
+    pub separator_line_width_pt: CGFloat,
+    pub separator_margin_top_pt: CGFloat,
+    pub separator_margin_bottom_pt: CGFloat,
+    pub separator_note_spacing_pt: CGFloat,
+}
+
+/// One EARLIER round's proposal, its own slice into the flat `history_entries` buffer, oldest
+/// round first — the same offset/count shape `FastdocLaidOutTable` uses for tables-then-rows,
+/// applied here to the settle's OWN history (`footnoteBandHistory`, the host's carried state).
+/// `#[repr(C)]` so the layout is exactly what the header declares.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FastdocFootnoteHistoryRoundDesc {
+    pub entry_offset: usize,
+    pub entry_count: usize,
+}
+
+/// `fastdoc_office_footnote_band_settle` — S5D1-02: `FootnoteBandSettle.step` (invariant 98) plus
+/// the proposal arithmetic that feeds it (`footnote_band_height`/`separator_allowance`,
+/// S5D1-01), batched into ONE round-trip per settle round — the shape `s5d1.md`'s API section
+/// requires. The host still supplies the note HEIGHTS (S5D-2's own row, not this one) and still
+/// resolves page-to-section and the separator FOR each page; the engine answers only what to do
+/// with the round that just finished.
+///
+/// **In:** `pages`/`page_count` — every page this round is proposing a band for, each naming its
+/// own slice of `note_heights`. `history_rounds`/`history_entries` — every earlier round's
+/// proposal, oldest first, exactly as `footnoteBandHistory` already holds it. `page_content_height`
+/// — the single scalar `FootnoteBandSettle.clamped` clamps every page's raw band against
+/// (`pageBandDelegate.pageContentHeight`, uniform across a render). `cap` — the round budget,
+/// matching `maxPagedTableSettles`.
+///
+/// **Out:** `out_bands[0..*out_count]`, SORTED BY page, is the settle's bands for this round —
+/// the RETRY proposal or the STOP ruling, whichever `step` returned; `*out_outcome` names which
+/// (`0` = retry, run again with these bands; `1` = stop, these bands are final) and
+/// `*out_stop_reason` names why a stop happened (`0` = still, `1` = cycle, `2` = cap;
+/// meaningless — and left at `-1` — when `*out_outcome` is retry), mirroring `StopReason`'s own
+/// three-way vocabulary. Carried across even though the host's own `settleFootnoteBands` discards
+/// it (`case let .stop(bands, _)`): the bridge has to rebuild Swift's `.stop(bands, StopReason)`,
+/// and a reason invented at the boundary is worse than the real one travelling. Returns `false`
+/// (`fastdoc_take_last_error` names it) on a NULL required argument, a page descriptor's
+/// `note_offset`/`note_count` running past `note_heights`, a round descriptor's
+/// `entry_offset`/`entry_count` running past `history_entries`, or an output buffer smaller than
+/// the answer needs. A safe upper bound for `out_capacity` is `page_count` — the settle registers
+/// at most one band per page proposed this round.
+///
+/// # Safety
+/// `pages`/`page_count`, `note_heights`/`note_heights_count`, `history_rounds`/
+/// `history_round_count` and `history_entries`/`history_entry_count` describe readable buffers for
+/// the duration of the call. `out_bands`/`out_capacity`, `out_count`, `out_outcome` and
+/// `out_stop_reason` describe writable buffers/scalars for the duration of the call.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn fastdoc_office_footnote_band_settle(
+    pages: *const FastdocFootnotePageDesc,
+    page_count: usize,
+    note_heights: *const CGFloat,
+    note_heights_count: usize,
+    history_rounds: *const FastdocFootnoteHistoryRoundDesc,
+    history_round_count: usize,
+    history_entries: *const FastdocNoteBandEntry,
+    history_entry_count: usize,
+    page_content_height: CGFloat,
+    cap: i64,
+    out_bands: *mut FastdocNoteBandEntry,
+    out_capacity: usize,
+    out_count: *mut usize,
+    out_outcome: *mut i32,
+    out_stop_reason: *mut i32,
+) -> bool {
+    use fastdoc_engine::render::office::footnote_band_settle::{FootnoteBandSettle, Outcome, StopReason};
+    use fastdoc_engine::render::office::page_band_geometry::{FootnoteSeparatorDesc, PageBandGeometry};
+    use std::collections::HashMap;
+
+    clear_last_error();
+    if (page_count > 0 && pages.is_null())
+        || (note_heights_count > 0 && note_heights.is_null())
+        || (history_round_count > 0 && history_rounds.is_null())
+        || (history_entry_count > 0 && history_entries.is_null())
+        || out_count.is_null()
+        || out_outcome.is_null()
+        || out_stop_reason.is_null()
+    {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return false;
+    }
+
+    let page_descs: &[FastdocFootnotePageDesc] = if page_count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(pages, page_count)
+    };
+    let flat_note_heights: &[CGFloat] = if note_heights_count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(note_heights, note_heights_count)
+    };
+    let round_descs: &[FastdocFootnoteHistoryRoundDesc] = if history_round_count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(history_rounds, history_round_count)
+    };
+    let flat_history_entries: &[FastdocNoteBandEntry] = if history_entry_count == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(history_entries, history_entry_count)
+    };
+
+    // THIS ROUND'S PROPOSAL — S5D1-01's ported arithmetic, page by page, over each page's own
+    // slice of the shared heights buffer.
+    let mut proposed: HashMap<i64, CGFloat> = HashMap::new();
+    for page in page_descs {
+        let note_end = page.note_offset.checked_add(page.note_count);
+        let heights: &[CGFloat] = match note_end {
+            Some(note_end) if note_end <= flat_note_heights.len() => {
+                &flat_note_heights[page.note_offset..note_end]
+            }
+            _ => {
+                set_last_error(&FfiFailure::new(
+                    FfiErrorKind::InvalidArgument,
+                    "a page descriptor's note_offset/note_count runs past the flat note_heights buffer",
+                ));
+                return false;
+            }
+        };
+        let separator = page.has_separator.then_some(FootnoteSeparatorDesc {
+            is_declared: page.separator_is_declared,
+            line_type: page.separator_line_type,
+            line_width_pt: page.separator_line_width_pt,
+            margin_top_pt: page.separator_margin_top_pt,
+            margin_bottom_pt: page.separator_margin_bottom_pt,
+        });
+        let allowance = PageBandGeometry::separator_allowance(separator.as_ref());
+        let spacing = if page.has_separator { page.separator_note_spacing_pt } else { 0.0 };
+        let raw = PageBandGeometry::footnote_band_height(heights, allowance, spacing);
+        let clamped = FootnoteBandSettle::clamped(raw, page_content_height);
+        if clamped > 0.0 {
+            proposed.insert(page.page_index, clamped);
+        }
+    }
+
+    // THE HISTORY — every earlier round, oldest first, each its own slice of the shared entries
+    // buffer.
+    let mut history: Vec<HashMap<i64, CGFloat>> = Vec::with_capacity(round_descs.len());
+    for round in round_descs {
+        let entry_end = round.entry_offset.checked_add(round.entry_count);
+        let entries: &[FastdocNoteBandEntry] = match entry_end {
+            Some(entry_end) if entry_end <= flat_history_entries.len() => {
+                &flat_history_entries[round.entry_offset..entry_end]
+            }
+            _ => {
+                set_last_error(&FfiFailure::new(
+                    FfiErrorKind::InvalidArgument,
+                    "a history round's entry_offset/entry_count runs past the flat history_entries buffer",
+                ));
+                return false;
+            }
+        };
+        history.push(entries.iter().map(|e| (e.page, e.value)).collect());
+    }
+
+    // `-1` is not a tag `step` can ever answer with (`0` = retry, `1` = stop) — the sentinel that
+    // tells a caught panic's fallback apart from a genuine answer, the same shape
+    // `fastdoc_office_master_selection`'s length check gives a panic no way to masquerade as an
+    // empty-but-real reply.
+    let (bands, outcome_tag, stop_tag): (Vec<(i64, CGFloat)>, i32, i32) =
+        guard_scalar((Vec::new(), -1, -1), move || {
+            match FootnoteBandSettle::step(&proposed, &history, cap) {
+                Outcome::Retry(bands) => (bands.into_iter().collect(), 0, -1),
+                Outcome::Stop(bands, reason) => {
+                    let tag = match reason {
+                        StopReason::Still => 0,
+                        StopReason::Cycle => 1,
+                        StopReason::Cap => 2,
+                    };
+                    (bands.into_iter().collect(), 1, tag)
+                }
+            }
+        });
+    if outcome_tag < 0 {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "internal: the settle round did not answer",
+        ));
+        return false;
+    }
+
+    // SORTED BY KEY — the engine's `HashMap` iteration order is randomized per process, and this
+    // is the seam that would otherwise let two runs of the same document answer differently.
+    let mut sorted_bands = bands;
+    sorted_bands.sort_by_key(|(page, _)| *page);
+
+    if sorted_bands.len() > out_capacity {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "out buffer too small for the answer",
+        ));
+        return false;
+    }
+    if !sorted_bands.is_empty() {
+        let out = std::slice::from_raw_parts_mut(out_bands, sorted_bands.len());
+        for (i, (page, value)) in sorted_bands.iter().enumerate() {
+            out[i] = FastdocNoteBandEntry { page: *page, value: *value };
+        }
+    }
+    *out_count = sorted_bands.len();
+    *out_outcome = outcome_tag;
+    *out_stop_reason = stop_tag;
+    true
+}
+
 /// `s` must be NULL or a pointer this library returned and has not already freed.
 #[no_mangle]
 pub unsafe extern "C" fn fastdoc_string_free(s: *mut c_char) {
