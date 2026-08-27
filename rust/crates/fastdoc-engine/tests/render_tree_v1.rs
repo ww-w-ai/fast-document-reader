@@ -2,7 +2,7 @@ use fastdoc_engine::render::render_tree::{
     resolve_cell_borders, resolve_cell_padding, Alignment, BorderDeclaration, BorderLineStyle,
     BorderSet, DecodeError, DocumentFormat, DrawnBorder, Empty, Image, Insets, NodePayload,
     OptionalInsets, RenderDocumentDraft, RenderNodeDraft, RenderResourceDraft, RenderSourceDraft,
-    RenderTreeBuilder, Size, SourceKind, ValidatedRenderTree,
+    RenderTreeBuilder, Size, SourceKind, Unsupported, ValidatedRenderTree,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -691,6 +691,69 @@ fn image_without_display_width_fraction_key_decodes_to_none() {
     let encoded: Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
     let node_index = image_node_index(&encoded);
     assert!(encoded["nodes"][node_index]["data"]["displayWidthFraction"].is_null());
+}
+
+/// Builds a minimal one-`Unsupported`-node tree through the public typed builder (same
+/// construction pattern as `build_with_image_fraction`), so `intrinsic_size` reaches
+/// `validate.rs`'s `valid_size()` check directly — a chart/SmartArt/OLE placeholder occupies
+/// real space on the page, so a NaN/negative size must be rejected exactly the way an image's is.
+fn build_with_unsupported_size(width: f64, height: f64) -> Result<ValidatedRenderTree, DecodeError> {
+    let document = RenderDocumentDraft {
+        format: DocumentFormat::PlainText,
+        editable: false,
+        root_node_id: 1,
+        source_ids: vec![],
+        default_locale: None,
+        declared_faces: Default::default(),
+        default_body_font_size: 0.0,
+    };
+    let mut builder = RenderTreeBuilder::new("unsupported-size-test", document);
+    builder.add_node(RenderNodeDraft {
+        id: 1,
+        parent_id: None,
+        children: vec![2],
+        source_spans: vec![],
+        edit: None,
+        payload: NodePayload::Document(Empty {}),
+    });
+    builder.add_node(RenderNodeDraft {
+        id: 2,
+        parent_id: Some(1),
+        children: vec![],
+        source_spans: vec![],
+        edit: None,
+        payload: NodePayload::Unsupported(Unsupported {
+            source_format_tag: "officeGraphic".into(),
+            reason: "Chart 1".into(),
+            preserved_text: None,
+            resource_ids: vec![],
+            intrinsic_size: Size { width, height },
+            alignment: Alignment::Right,
+        }),
+    });
+    builder.build()
+}
+
+#[test]
+fn unsupported_graphic_with_a_valid_size_is_accepted() {
+    build_with_unsupported_size(42.0, 17.0).expect("a finite, non-negative size must validate");
+}
+
+#[test]
+fn unsupported_graphic_nan_or_negative_size_is_rejected() {
+    for (width, height) in [
+        (f64::NAN, 17.0),
+        (42.0, f64::NAN),
+        (-1.0, 17.0),
+        (42.0, -1.0),
+        (f64::INFINITY, 17.0),
+    ] {
+        let result = build_with_unsupported_size(width, height);
+        assert!(
+            result.is_err(),
+            "size ({width}, {height}) should have been rejected, not carried"
+        );
+    }
 }
 
 #[test]

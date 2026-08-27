@@ -534,9 +534,10 @@ fn a_real_hwp_document_s_font_table_round_trips_by_name() {
 /// `hwpx-01-saved.hwpx` is this unit's own acceptance document — a genuinely MULTI-section tree
 /// (more than one `Section` node under the document root). `project` walks every section in order
 /// and reconstructs `blocks`/`headers`/`footers`/`footnotes` across all of them (proven by
-/// `a_fact_only_the_second_section_carries_still_surfaces_its_own_named_gap` below, which puts an
-/// unresolvable fact in the SECOND section and checks that IT is what surfaces, rather than
-/// trusting this refusal alone) — the ONLY refusal left on a document with no such fact is the
+/// `a_second_sections_ordinary_content_walks_cleanly_and_only_the_sections_gap_remains` below,
+/// which puts ordinary content in the SECOND section and checks that nothing earlier than the
+/// trailing gap surfaces — note that this is no longer the walk-ORDERING proof it once was, for
+/// the reason that test's own doc gives) — the ONLY refusal left on such a document is the
 /// per-section `sections` DECLARATIONS array, which `wire::Section` has no fields to rebuild
 /// (`footnote_separator`/`page_border`/`hides_header`/`hides_footer`/`hides_master_page`/
 /// `is_vertical` — see this module's own doc).
@@ -610,21 +611,45 @@ fn a_span_with_a_drawn_column_separator_round_trips_its_layout() {
 /// Proof that the SECOND section is actually walked, not just the first — `project` always ends by
 /// refusing `Field("sections")` for a genuine multi-section tree (see the test above), so that
 /// refusal alone cannot tell "every section got processed" apart from "only the first one did,
-/// and the final gate just happens to fire before anything downstream would notice". This fixture
-/// puts an unresolvable fact in the SECOND section's body: if `project` returns `Field("sections")`
-/// here it stopped at the top without ever reaching section two, and if it returns section two's
-/// own named gap it reached that content — which is what it returns.
+/// and the final gate just happens to fire before anything downstream would notice".
 ///
-/// The unresolvable fact used to be a span's own `comment_ids`, and this test's own failure message
-/// said what to do when that gap closed: replace it, do not weaken the test. It closed in S6-6 —
-/// `wire::Comment.source_id` let the projection resolve a body-anchored comment instead of sending
-/// the whole document to the fallback — so the fact is now an `UnsupportedGraphic`, which
-/// `map_block` refuses unconditionally (`Field("unsupportedGraphic.size")`) and, like the comment
-/// before it, refuses DURING the walk rather than at the final gate. That ordering is the entire
-/// mechanism: a fact that only fires after the walk would prove nothing about whether the walk
-/// happened.
+/// This test used to prove that by placing an UNRESOLVABLE fact in the SECOND section's body — a
+/// per-block refusal reached DURING the walk, before the trailing `sections` gate, so which name
+/// came back told you whether the walk actually reached section two. That fact was a span's own
+/// `comment_ids` until S6-6 (`wire::Comment.source_id` let the projection resolve a body-anchored
+/// comment instead of bailing), then an `UnsupportedGraphic` until S6-8 closed THAT gap too
+/// (`office_adapter`'s `UnsupportedGraphic` arm now carries `size`/`alignment` through the wire
+/// tree instead of discarding them — see `office_adapter.rs`/`wire::Unsupported`). Both times this
+/// test's own failure message said the same thing: replace the fact, do not weaken the assertion.
+///
+/// After S6-8 there is no third fact left. Every `ProjectionError::Field` this module can still
+/// return is either the trailing `sections` gap itself, or one of `Image`/`Vector`'s `*.sourceKey`
+/// checks — and those are defensive checks against a MALFORMED wire tree, not something a real
+/// `OfficeReadResult` can produce (`office_adapter`'s `map_image`/`map_vector` set `source_key`
+/// unconditionally, on every path, so a legitimately-built tree never has `resource_id: None` and
+/// `source_key: None` together). So this test can no longer distinguish "the walk reached section
+/// two and failed there" from "the walk never reached section two" using a per-block refusal —
+/// there isn't one left to use.
+///
+/// What it proves INSTEAD, and what remains genuinely true: `blocks`/`headers`/`footers`/
+/// `footnotes` for BOTH sections are built successfully (`office_project.rs` inserts `"blocks"`
+/// into the result map — built from every section's own `map_blocks` call — BEFORE the
+/// `is_multi_section` check that returns `Field("sections")`, not after), so an ORDINARY paragraph
+/// in the second section round-trips cleanly and the only reason `project` still fails is the
+/// still-real `sections` declarations gap. This is weaker than the walk-ordering proof the two
+/// prior facts gave — it no longer separately confirms per-block failures inside section two
+/// surface ahead of `sections` — but it does still confirm section two's own content is not
+/// skipped or malformed.
+///
+/// If a future change closes the `sections` gap too (`wire::Section` growing the five fields it is
+/// currently missing — `footnote_separator`/`page_border`/`hides_header`/`hides_footer`/
+/// `hides_master_page`/`is_vertical`, this module's own top-of-file doc), replace THIS test with a
+/// real success-path comparison. Do not, in the meantime, invent a fact that only fires AFTER the
+/// walk (that proves nothing about whether the walk happened — see the second paragraph above) as
+/// a way to keep this test's original stronger shape; that would be exactly the kind of assertion
+/// this test's message has twice warned against relaxing.
 #[test]
-fn a_fact_only_the_second_section_carries_still_surfaces_its_own_named_gap() {
+fn a_second_sections_ordinary_content_walks_cleanly_and_only_the_sections_gap_remains() {
     let result = OfficeReadResult {
         blocks: vec![
             OfficeBlock::Paragraph {
@@ -634,10 +659,12 @@ fn a_fact_only_the_second_section_carries_still_surfaces_its_own_named_gap() {
                 tab_stops: vec![],
                 format: ParagraphFormat::default(),
             },
-            OfficeBlock::UnsupportedGraphic {
-                label: "section two graphic".into(),
-                size: swiftshim::CGSize { width: 10.0, height: 10.0 },
+            OfficeBlock::Paragraph {
+                spans: vec![plain_span("section two body")],
+                rtl: false,
                 alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
             },
         ],
         sections: vec![
@@ -650,23 +677,23 @@ fn a_fact_only_the_second_section_carries_still_surfaces_its_own_named_gap() {
     };
     let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
         format: DocumentFormat::Docx,
-        source_name: "two-sections-second-has-a-comment.docx",
-        source_bytes: b"two-sections-second-has-a-comment.docx",
+        source_name: "two-sections-second-has-ordinary-content.docx",
+        source_bytes: b"two-sections-second-has-ordinary-content.docx",
         result: &result,
         resources: BTreeMap::new(),
     })
     .unwrap_or_else(|e| panic!("from_office failed: {e:?}"));
     match project(&tree) {
         Ok(_) => panic!(
-            "project succeeded on an UnsupportedGraphic — the gap this test relies on has been \
-             closed; replace it with a different fact the walk itself refuses, do NOT relax the \
-             assertion (this exact instruction is what kept the test honest when the previous \
-             fact, a span's comment_ids, was resolved in S6-6)"
+            "project succeeded on a genuine multi-section tree — the `sections` gap this test \
+             relies on has been closed; replace this test with a real success-path comparison \
+             instead (see this test's own doc comment)"
         ),
         Err(ProjectionError::Field(name)) => assert_eq!(
-            name, "unsupportedGraphic.size",
-            "expected the SECOND section's own unresolvable fact to surface, not `sections` — a \
-             `sections` result here would mean the walk stopped at the first section"
+            name, "sections",
+            "expected the trailing whole-document `sections` gap, which only fires AFTER both \
+             sections' blocks are fully built — a different name here means section two's own \
+             ordinary content failed to walk, which this fixture does not intend"
         ),
         Err(e) => panic!("project returned an unexpected error shape: {e:?}"),
     }

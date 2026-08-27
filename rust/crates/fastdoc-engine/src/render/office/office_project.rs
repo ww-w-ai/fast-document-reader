@@ -22,13 +22,18 @@
 //!   `hides_header`, `hides_footer`, `hides_master_page`, `is_vertical`) have no home anywhere in
 //!   `wire::Section` to reconstruct them from.
 //! - a span's own `comment_ids`: a wire `TextRun.commentIds` entry names a comment by a wire id
-//!   this adapter minted, and `office_adapter::Ctx.comment_id_by_source` — the map back to the
-//!   source's own opaque id string that resolved it — is adapter-internal build state, never
-//!   serialized into the wire tree. Any run carrying one returns
+//!   this adapter minted, and the map back to the source's own opaque id string is adapter-internal
+//!   build state that is never serialized. A run carrying one therefore USED to return
 //!   `ProjectionError::Field("span.comment_ids")`, sending the WHOLE document back to
-//!   `office_export::to_json(&OfficeReadResult)`. `annotations.comments` itself IS projected
-//!   (`comments`, below) whenever every span's `comment_ids` is empty — an orphan comment (no
-//!   in-body range at all) never sets one, so it reaches here and is listed. `OfficeComment.id` is
+//!   `office_export::to_json(&OfficeReadResult)` — which meant every document with a comment
+//!   anchored in its body silently bypassed this projector, invisibly, because the fallback's
+//!   output is correct. `wire::Comment.source_id` closed that: the tree now carries the source's
+//!   own id on the comment itself, so `resolve_comment_source_id` reads the map out of the tree
+//!   rather than needing the adapter's build state. A dangling id — one no comment in the tree
+//!   declares — is `ProjectionError::Malformed`, not `Field`: it is a broken tree, not a fact the
+//!   schema cannot express. `annotations.comments` itself IS projected (`comments`, below),
+//!   whether or not a span references it — an orphan comment (no in-body range at all) simply
+//!   references nothing. `OfficeComment.id` is
 //!   read from `wire::Comment.source_id`, which carries the document's own opaque id (docx's
 //!   `w:id`, an odt `office:name`) unchanged. That field was added because the alternatives were
 //!   both dishonest: `wire::Comment.id` is only ever this adapter's fresh mint, so stamping it in
@@ -226,18 +231,15 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
         None => (None, None, None, None, None, None, None, None),
     };
 
-    // Every comment reaching this point is an orphan: a span carrying `comment_ids` makes
-    // `convert_run` bail with `ProjectionError::Field("span.comment_ids")` before any block is
-    // even finished, which sends the WHOLE document back to
-    // `office_export::to_json(&OfficeReadResult)` — this module's own top-of-file doc names why (a
-    // span's `comment_ids` cannot roundtrip through the wire tree). `id` is the one
-    // `OfficeComment` field this reconstruction cannot honestly restore: it is meant to be the
-    // DOCUMENT's own opaque id (docx's `w:id` attribute, an odt `office:name` — the shipped reader
-    // preserves it verbatim), and the wire tree never carries that string anywhere — only
-    // `office_adapter::Ctx.comment_id_by_source`, adapter-internal build state, ever held it.
-    // `wire::Comment.id` is a fresh sequential mint with no document meaning of its own; stamping
-    // it in here (even stringified) would be inventing a fact the source never stated, exactly the
-    // failure shape invariant 108 names — a specific value written where "unknown" belongs. Left
+    // Comments reaching this point may be anchored or orphaned alike — a span carrying
+    // `comment_ids` no longer sends the document to the fallback, because `wire::Comment.source_id`
+    // carries the DOCUMENT's own opaque id (docx's `w:id`, an odt `office:name`) and
+    // `resolve_comment_source_id` reads it straight out of the tree. `id` is taken from that field
+    // verbatim. Before it existed this was the one `OfficeComment` field this reconstruction could
+    // not honestly restore: `wire::Comment.id` is a fresh sequential mint with no document meaning
+    // of its own, so stamping it in (even stringified) would have invented a fact the source never
+    // stated — exactly the failure shape invariant 108 names, a specific value written where
+    // "unknown" belongs. Left
     // empty instead, deliberately, so a caller comparing against the real source id sees a visible
     // gap rather than a plausible-looking wrong answer. Closing this gap for real needs
     // `wire::Comment` to carry the source's own id string, which is `office_adapter.rs`'s fix, not
@@ -753,9 +755,11 @@ impl Projector {
             wire::NodePayload::Formula(f) => {
                 Ok(OfficeBlock::Formula { latex: SwiftString::from(f.source.clone()) })
             }
-            wire::NodePayload::Unsupported(_) => {
-                Err(ProjectionError::Field("unsupportedGraphic.size".to_string()))
-            }
+            wire::NodePayload::Unsupported(u) => Ok(OfficeBlock::UnsupportedGraphic {
+                label: SwiftString::from(u.reason.clone()),
+                size: CGSize::new(u.intrinsic_size.width, u.intrinsic_size.height),
+                alignment: alignment_back(u.alignment),
+            }),
             other => Err(ProjectionError::Malformed(format!("unexpected flow child: {other:?}"))),
         }
     }
@@ -1289,7 +1293,7 @@ mod tests {
 
     fn projected(result: &ob::OfficeReadResult) -> ProjectedEnvelope {
         let tree = ValidatedRenderTree::from_office(input(result)).expect("tree builds");
-        let json = project(&tree).expect("project succeeds — this fixture has no comment_ids and one section");
+        let json = project(&tree).expect("project succeeds — this fixture declares one section");
         serde_json::from_str(&json).expect("project's output is valid schema-v4 JSON")
     }
 
@@ -1370,11 +1374,14 @@ mod tests {
 
     /// Defect 2 (S6-7): `project` hardcoded `"comments": []` unconditionally, so an ORPHAN comment
     /// (no `w:commentRangeStart`/`office:annotation-end` anywhere — no span ever sets
-    /// `comment_ids`) was silently eaten even on a successful tree projection. This fixture MUST
-    /// have no span carrying `comment_ids`: a comment WITH a body range instead hits `convert_run`'s
-    /// bail and falls back to `office_export::to_json(&OfficeReadResult)`, which was already correct
-    /// before this fix and would pass even with `comments: []` still hardcoded — proving nothing
-    /// about this change. Reverting the fix (hardcoding `[]` again) makes `comments` empty here.
+    /// `comment_ids`) was silently eaten even on a successful tree projection. This fixture keeps
+    /// a comment with NO referencing span deliberately, because that is the case the hardcode ate:
+    /// when the defect was found, a comment WITH a body range did not reach this code at all — it
+    /// hit `convert_run`'s bail and fell back to `office_export::to_json(&OfficeReadResult)`, which
+    /// was already correct and would have passed with `comments: []` still hardcoded, proving
+    /// nothing. That bail is gone (S6-6), so an anchored comment now reaches here too; this fixture
+    /// stays orphan-only so it keeps biting the ORPHAN path specifically rather than being carried
+    /// by the anchored one. Reverting the fix (hardcoding `[]` again) makes `comments` empty here.
     #[test]
     fn an_orphan_comment_with_no_referencing_span_is_still_projected() {
         let mut result = ob::OfficeReadResult::default();
@@ -1416,6 +1423,36 @@ mod tests {
             SwiftString::from("5"),
             "the comment must come back with the id the DOCUMENT gave it, never our own mint and \
              never empty"
+        );
+    }
+
+    /// S6-8's unblock: `office_adapter`'s `UnsupportedGraphic` arm used to discard `size` and
+    /// `alignment` (`size: _, alignment: _`), which is what forced this exact arm to refuse
+    /// `ProjectionError::Field("unsupportedGraphic.size")` — every document with a chart, SmartArt
+    /// diagram or OLE object bypassed the canonical tree entirely. This asserts specific
+    /// NON-default values (a size that is not `0x0`, an alignment that is not `.natural`) survive
+    /// the full `OfficeBlock -> wire -> OfficeBlock` round trip, so a regression that reconstructs
+    /// a default instead of the tree's actual value cannot hide behind a fixture that happens to
+    /// use the default.
+    #[test]
+    fn an_unsupported_graphics_size_and_alignment_round_trip_through_project() {
+        let mut result = ob::OfficeReadResult::default();
+        result.blocks.push(OfficeBlock::UnsupportedGraphic {
+            label: SwiftString::from("Chart 1"),
+            size: CGSize::new(42.0, 17.0),
+            alignment: Some(NSTextAlignment::Right),
+        });
+        let doc = projected(&result);
+        let OfficeBlock::UnsupportedGraphic { label, size, alignment } = &doc.blocks[0] else {
+            panic!("expected an UnsupportedGraphic block, got {:?}", doc.blocks[0]);
+        };
+        assert_eq!(*label, SwiftString::from("Chart 1"));
+        assert_eq!(size.width, 42.0, "the tree's own width, not a guessed 0");
+        assert_eq!(size.height, 17.0, "the tree's own height, not a guessed 0");
+        assert_eq!(
+            *alignment,
+            Some(NSTextAlignment::Right),
+            "the tree's own alignment, not a guessed absence"
         );
     }
 }

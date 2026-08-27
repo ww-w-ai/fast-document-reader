@@ -783,6 +783,12 @@ fn validate_payload(
             for id in &v.resource_ids {
                 require_resource(*id, resources)?;
             }
+            // Same check `P::Image` runs on `intrinsic_size` above — a placeholder occupies real
+            // space on the page, so a NaN/negative size must not pass any more than an image's
+            // would.
+            if !valid_size(&v.intrinsic_size) {
+                return Err(invalid("unsupported graphic size is invalid"));
+            }
         }
         P::Paragraph(v) => {
             validate_paragraph_style(&v.style)?;

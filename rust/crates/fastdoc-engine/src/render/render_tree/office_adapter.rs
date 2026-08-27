@@ -893,7 +893,7 @@ impl<'a> Ctx<'a> {
             OfficeBlock::Image { id, size, alignment } => {
                 (vec![], self.map_image_or_vector(id, *size, *alignment)?)
             }
-            OfficeBlock::UnsupportedGraphic { label, size: _, alignment: _ } => {
+            OfficeBlock::UnsupportedGraphic { label, size, alignment } => {
                 let reason = if label.as_str().is_empty() {
                     "unsupported graphic".to_string()
                 } else {
@@ -904,6 +904,8 @@ impl<'a> Ctx<'a> {
                     reason,
                     preserved_text: None,
                     resource_ids: vec![],
+                    intrinsic_size: wire::Size { width: size.width, height: size.height },
+                    alignment: alignment.map(convert_alignment).unwrap_or(wire::Alignment::Natural),
                 });
                 (vec![], payload)
             }
@@ -2989,5 +2991,57 @@ mod tests {
         let a = ValidatedRenderTree::from_office(input(&result)).unwrap();
         let b = ValidatedRenderTree::from_office(input(&result)).unwrap();
         assert_eq!(a.encode_json().unwrap(), b.encode_json().unwrap());
+    }
+
+    /// A chart/SmartArt/OLE placeholder occupies real space on the page — losing its size changes
+    /// the document's layout, not just its decoration. `map_single_block`'s `UnsupportedGraphic`
+    /// arm used to discard `size`/`alignment` (`size: _, alignment: _`), which is what forced
+    /// `office_project::project` to refuse every document carrying one. This asserts the specific
+    /// non-default values a real document declares — width 42, height 17, `.right` — survive into
+    /// the wire node rather than a coincidental default (`0x0`/`.natural`) that would pass even if
+    /// the fields were still being thrown away and re-invented as zero.
+    #[test]
+    fn an_unsupported_graphics_size_and_alignment_survive_into_the_wire_node() {
+        let mut result = OfficeReadResult::default();
+        result.blocks.push(OfficeBlock::UnsupportedGraphic {
+            label: SwiftString::from("Chart 1"),
+            size: CGSize::new(42.0, 17.0),
+            alignment: Some(NSTextAlignment::Right),
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let node = value["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "unsupported")
+            .expect("an unsupported node exists");
+        assert_eq!(node["data"]["reason"], "Chart 1");
+        assert_eq!(node["data"]["intrinsicSize"]["width"], 42.0);
+        assert_eq!(node["data"]["intrinsicSize"]["height"], 17.0);
+        assert_eq!(node["data"]["alignment"], "right");
+    }
+
+    /// The `None` (source stated no alignment) case, spelled `wire::Alignment::Natural` — the same
+    /// convention `Image.alignment`/`alignment_back` already use, not a second `Option<Alignment>`
+    /// wrapper. Asserted separately from the `Some` case above so a regression that always writes
+    /// `"natural"` regardless of input cannot hide behind the other test's non-default value.
+    #[test]
+    fn an_unsupported_graphic_with_no_declared_alignment_writes_natural() {
+        let mut result = OfficeReadResult::default();
+        result.blocks.push(OfficeBlock::UnsupportedGraphic {
+            label: SwiftString::from("SmartArt"),
+            size: CGSize::new(5.0, 5.0),
+            alignment: None,
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let node = value["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "unsupported")
+            .expect("an unsupported node exists");
+        assert_eq!(node["data"]["alignment"], "natural");
     }
 }

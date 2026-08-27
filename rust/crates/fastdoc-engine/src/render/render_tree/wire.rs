@@ -72,6 +72,17 @@ impl Default for VerticalPosition {
     }
 }
 
+/// Only for `#[serde(default)]` on a field added to an EXISTING struct after documents already
+/// carrying it shipped (`Unsupported.alignment`) — `Natural` is already this schema's spelling of
+/// "the source stated no alignment of its own" (`alignment_back`, `office_project.rs`), so a
+/// fixture written before this field existed decodes exactly as if the source had said nothing,
+/// never a guessed `Left`/`Center`/etc.
+impl Default for Alignment {
+    fn default() -> Self {
+        Self::Natural
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EnvelopeV1 {
@@ -237,7 +248,7 @@ pub struct Color {
     pub space: ColorSpace,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Size {
     pub width: f64,
@@ -924,6 +935,29 @@ pub struct Unsupported {
     pub preserved_text: Option<String>,
     #[serde(default)]
     pub resource_ids: Vec<u64>,
+    /// The space this placeholder reserves on the page — a chart/SmartArt/OLE object is not
+    /// decoration, so losing its size changes the document's layout. Same field, same type as
+    /// `Image.intrinsic_size` (there is no second spelling of "a size" in this schema); carried
+    /// unconditionally rather than wrapped in `Option`, matching that field's own shape, because
+    /// `OfficeBlock::UnsupportedGraphic.size` is a plain `CGSize`, never absent. `#[serde(default)]`
+    /// (unlike `Image.intrinsic_size`, which predates this schema and has always required it) is
+    /// this field's own backward-compat need: `Unsupported` shipped before this field existed, so
+    /// an already-serialized document with no `intrinsicSize` key must still decode. `office_adapter`
+    /// always sets a real value regardless — the default is a decode fallback, never something the
+    /// adapter itself relies on.
+    #[serde(default)]
+    pub intrinsic_size: Size,
+    /// `OfficeBlock::UnsupportedGraphic.alignment` is `Option<NSTextAlignment>` — `None` means the
+    /// source stated no alignment of its own, not that the placeholder has no alignment. Spelled
+    /// the same way `Image.alignment` already spells that (`alignment_back`'s own
+    /// `wire::Alignment::Natural => None` arm, `office_project.rs`): a non-optional `Alignment`
+    /// whose `Natural` variant IS "not stated", rather than a second `Option<Alignment>` wrapper
+    /// around a type that already has a way to say so. `#[serde(default)]` for the same
+    /// backward-compat reason as `intrinsic_size` immediately above — `Alignment::default()` is
+    /// `Natural`, i.e. "not stated", so a pre-existing document decodes exactly as if it had said
+    /// nothing.
+    #[serde(default)]
+    pub alignment: Alignment,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
