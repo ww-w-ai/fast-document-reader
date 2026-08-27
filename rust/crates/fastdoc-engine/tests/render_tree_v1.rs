@@ -869,13 +869,13 @@ fn every_required_malformed_schema_mutation_is_killed() {
             "section-reference-order",
             Box::new(|v| {
                 let mut header = v["nodes"][22].clone();
-                header["id"] = 27.into();
+                header["id"] = 300.into();
                 v["nodes"].as_array_mut().unwrap().push(header);
                 v["nodes"][0]["children"]
                     .as_array_mut()
                     .unwrap()
-                    .push(27.into());
-                v["nodes"][1]["data"]["headerIds"] = serde_json::json!([27, 23]);
+                    .push(300.into());
+                v["nodes"][1]["data"]["headerIds"] = serde_json::json!([300, 23]);
             }),
         ),
         (
@@ -913,13 +913,13 @@ fn every_required_malformed_schema_mutation_is_killed() {
             "table-overlap",
             Box::new(|v| {
                 let mut cell = v["nodes"][15].clone();
-                cell["id"] = 27.into();
+                cell["id"] = 300.into();
                 cell["data"]["column"] = 1.into();
                 cell["data"]["columnSpan"] = 1.into();
                 v["nodes"][14]["children"]
                     .as_array_mut()
                     .unwrap()
-                    .push(27.into());
+                    .push(300.into());
                 v["nodes"].as_array_mut().unwrap().push(cell);
             }),
         ),

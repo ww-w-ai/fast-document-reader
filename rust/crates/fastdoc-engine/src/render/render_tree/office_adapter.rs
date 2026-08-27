@@ -52,9 +52,12 @@ pub enum OfficeAdapterError {
     /// `OfficeReadResult.master_pages` is non-empty — decoded 바탕쪽 artwork that cannot cross into
     /// the wire tree, the same fact `office_export::assert_exportable` refuses.
     MasterPagePresent,
-    /// `OfficeReadResult.anchored_objects` is non-empty — the same undroppable decoded content as
-    /// a master page, reached through a different field.
-    AnchoredObjectPresent,
+    /// An `OfficeAnchoredObject.block_index` names a position `OfficeReadResult.blocks` does not
+    /// hold a mapped node for — the reader's own contract (mapping.rs) leaves an empty paragraph
+    /// carrier at that index rather than dropping the block, so this should never fire for a
+    /// document a real reader produced; carried rather than panicked so a reader that some day
+    /// breaks that contract fails with a name, not a crash.
+    AnchoredObjectTargetMissing(i64),
     /// A `Table`'s own `TableFormat.background_image` is `Some` — decoded pixels, not a document
     /// fact serializable onto `wire::Table`.
     TableBackgroundImagePresent,
@@ -87,9 +90,6 @@ pub(super) fn from_office(
     let result = input.result;
     if !result.master_pages.is_empty() {
         return Err(OfficeAdapterError::MasterPagePresent);
-    }
-    if !result.anchored_objects.is_empty() {
-        return Err(OfficeAdapterError::AnchoredObjectPresent);
     }
 
     let mut ctx = Ctx::new(result, &input.resources);
@@ -153,6 +153,7 @@ pub(super) fn from_office(
     // headers/footers/footnotes too.
     let starts = if result.sections.is_empty() { vec![0] } else { section_starts(result) };
 
+    let mut anchored_objects_placed = 0usize;
     for idx in 0..section_count {
         let decl = result.sections.get(idx);
         let start = starts.get(idx).copied().unwrap_or(0).min(result.blocks.len());
@@ -176,15 +177,30 @@ pub(super) fn from_office(
             payload: wire::NodePayload::Flow(wire::Empty {}),
         });
 
+        // Owned by whichever section's `start..end` its `block_index` falls in — the carrier
+        // paragraph mapping.rs left at that index is already one of this section's OWN blocks
+        // (just mapped, above), so `block_node_id` already has it. Built here rather than in the
+        // header/footer/footnote pre-pass because that pass runs BEFORE any block has a node id.
+        let mut anchored_ids = Vec::new();
+        for obj in &result.anchored_objects {
+            let block_index = obj.block_index as usize;
+            if obj.block_index >= 0 && block_index >= start && block_index < end {
+                anchored_ids.push(ctx.build_anchored_object_node(obj, section_id)?);
+                anchored_objects_placed += 1;
+            }
+        }
+
         let mut children = Vec::with_capacity(
             1 + header_children_by_section[idx].len()
                 + footer_children_by_section[idx].len()
-                + footnote_children_by_section[idx].len(),
+                + footnote_children_by_section[idx].len()
+                + anchored_ids.len(),
         );
         children.push(flow_id);
         children.extend(header_children_by_section[idx].iter().copied());
         children.extend(footer_children_by_section[idx].iter().copied());
         children.extend(footnote_children_by_section[idx].iter().copied());
+        children.extend(anchored_ids);
 
         let mut header_ids = std::mem::take(&mut header_ids_by_section[idx]);
         header_ids.sort_unstable();
@@ -221,6 +237,19 @@ pub(super) fn from_office(
             edit: None,
             payload: section_payload,
         });
+    }
+    // Section ranges tile `0..result.blocks.len()` exactly (`starts` is built from that same
+    // array), so the only way an `OfficeAnchoredObject` never matched any section's range above
+    // is a `block_index` outside it — negative or past the end. Refused by name rather than
+    // silently dropping the object the loop above never reached.
+    if anchored_objects_placed != result.anchored_objects.len() {
+        let missing = result
+            .anchored_objects
+            .iter()
+            .find(|obj| obj.block_index < 0 || obj.block_index as usize >= result.blocks.len())
+            .map(|obj| obj.block_index)
+            .unwrap_or(-1);
+        return Err(OfficeAdapterError::AnchoredObjectTargetMissing(missing));
     }
 
     ctx.nodes.push(wire::Node {
@@ -396,6 +425,12 @@ struct Ctx<'a> {
     /// first occurrence), per the deterministic string->id map this adapter promises everywhere
     /// else (comments, resources).
     bookmark_id_by_name: BTreeMap<String, u64>,
+    /// `OfficeReadResult.blocks` index -> the node id `map_single_block`/`map_list_group` gave it,
+    /// built as the flow is walked so an `OfficeAnchoredObject.block_index` (S6-2) can be resolved
+    /// to the node it travels with without a second pass over the tree. A `ListItem` is recorded
+    /// under its OWN index (not its group's `List` id), matching the one-index-per-source-block
+    /// contract every other index list here already keeps.
+    block_node_id: BTreeMap<i64, u64>,
 }
 
 impl<'a> Ctx<'a> {
@@ -428,6 +463,7 @@ impl<'a> Ctx<'a> {
             bookmarks: Vec::new(),
             comment_id_by_source: BTreeMap::new(),
             bookmark_id_by_name: BTreeMap::new(),
+            block_node_id: BTreeMap::new(),
         }
     }
 
@@ -605,10 +641,28 @@ impl<'a> Ctx<'a> {
                 (&data.0, sniff_image_mime(&data.0).to_string())
             }
         };
+        let id = self.register_resource_bytes(bytes, mime, intrinsic, Some(key.to_string()));
+        self.resource_by_key.insert(key.to_string(), id);
+        Ok(id)
+    }
+
+    /// The hash-dedup half of `resolve_resource`, pulled out so a resource with no document key
+    /// at all — an anchored object's `NSImage`, decoded straight from `OfficeMasterObjectContent`
+    /// rather than looked up by an `.image(id:)` string — can still land in the SAME resource
+    /// table and get the SAME cross-document dedup an ordinary picture does. `source_key` is
+    /// `None` here on purpose: `wire::Resource.source_key`'s own doc says `None` means "a
+    /// producer whose document never declared such a key", which is exactly this case, not an
+    /// omission to fill in later.
+    fn register_resource_bytes(
+        &mut self,
+        bytes: &[u8],
+        mime: String,
+        intrinsic: Option<wire::Size>,
+        source_key: Option<String>,
+    ) -> u64 {
         let hash = format!("{:x}", Sha256::digest(bytes));
         if let Some(&id) = self.resource_by_hash.get(&hash) {
-            self.resource_by_key.insert(key.to_string(), id);
-            return Ok(id);
+            return id;
         }
         let id = self.new_resource_id();
         use base64::Engine;
@@ -620,11 +674,10 @@ impl<'a> Ctx<'a> {
             byte_length: bytes.len() as u64,
             bytes_base64,
             intrinsic_size: intrinsic,
-            source_key: Some(key.to_string()),
+            source_key,
         });
-        self.resource_by_key.insert(key.to_string(), id);
         self.resource_by_hash.insert(hash, id);
-        Ok(id)
+        id
     }
 
     /// Maps a run of sibling blocks (a section's flow, or a table cell's contents) into node ids
@@ -756,6 +809,9 @@ impl<'a> Ctx<'a> {
                 edit: None,
                 payload,
             });
+            if let Some(index) = idx {
+                self.block_node_id.insert(*index, item_id);
+            }
             item_ids.push(item_id);
         }
 
@@ -844,6 +900,9 @@ impl<'a> Ctx<'a> {
             edit: None,
             payload,
         });
+        if let Some(index) = block_index {
+            self.block_node_id.insert(index, node_id);
+        }
         Ok(node_id)
     }
 
@@ -910,6 +969,149 @@ impl<'a> Ctx<'a> {
             alignment: alignment.map(convert_alignment).unwrap_or(wire::Alignment::Natural),
             source_key: Some(id_key.as_str().to_string()),
         })
+    }
+
+    /// The content half of an `OfficeMasterObject` — an `Image`/`Vector`/`Flow` node built the
+    /// SAME way an in-flow one is (`map_image`/`map_vector`/the ordinary block walk), never a new
+    /// vocabulary. `content_id`'s own doc says why: the anchor semantics are what S6-2 adds, not
+    /// the content shapes.
+    ///
+    /// Unlike `map_image`/`map_vector` above, there is no document-declared string key here —
+    /// `OfficeMasterObjectContent::Image` carries decoded pixels directly (`swiftshim::NSImage`),
+    /// not an `.image(id:)` reference — so this registers the bytes straight into the resource
+    /// table (`register_resource_bytes`) rather than resolving one.
+    fn map_anchored_content(
+        &mut self,
+        content: &office_block::OfficeMasterObjectContent,
+        parent_id: u64,
+    ) -> Result<u64, OfficeAdapterError> {
+        let node_id = self.new_node_id();
+        let (children, payload) = match content {
+            office_block::OfficeMasterObjectContent::Image(image) => {
+                let bytes: &[u8] = image.data.as_ref().map(|d| d.0.as_slice()).unwrap_or(&[]);
+                let intrinsic = wire::Size { width: image.size.width, height: image.size.height };
+                let mime = sniff_image_mime(bytes).to_string();
+                let resource_id =
+                    self.register_resource_bytes(bytes, mime, Some(intrinsic.clone()), None);
+                (
+                    vec![],
+                    wire::NodePayload::Image(wire::Image {
+                        resource_id,
+                        intrinsic_size: intrinsic,
+                        display_size: None,
+                        display_width_fraction: None,
+                        alignment: wire::Alignment::Natural,
+                        alt_text: None,
+                    }),
+                )
+            }
+            // A pre-rendered drawing (raw PDF bytes, `HwpShapeRenderer`'s own output) is not
+            // structured paths — carried as a picture the same way the host already treats a
+            // rasterised vector fallback (`Ctx.vector_graphics`'s own doc: "the host installs a
+            // rasterised fallback of the same drawing into `images`"). Not reachable through
+            // `OfficeReadResult.anchored_objects` today (mapping.rs only ever pushes `Image`/
+            // `Vector` there — verified by inspection, not fabricated) but IS reachable once S6-3
+            // reads a master page's own objects, which share this exact content vocabulary; this
+            // arm exists so that day does not find an unhandled variant.
+            office_block::OfficeMasterObjectContent::Drawing(data) => {
+                let mime = sniff_image_mime(&data.0).to_string();
+                let intrinsic = wire::Size { width: 0.0, height: 0.0 };
+                let resource_id =
+                    self.register_resource_bytes(&data.0, mime, Some(intrinsic.clone()), None);
+                (
+                    vec![],
+                    wire::NodePayload::Image(wire::Image {
+                        resource_id,
+                        intrinsic_size: intrinsic,
+                        display_size: None,
+                        display_width_fraction: None,
+                        alignment: wire::Alignment::Natural,
+                        alt_text: None,
+                    }),
+                )
+            }
+            office_block::OfficeMasterObjectContent::Vector(graphic) => {
+                let paths = graphic.paths.iter().map(convert_vector_path).collect();
+                (
+                    vec![],
+                    wire::NodePayload::Vector(wire::Vector {
+                        resource_id: None,
+                        paths,
+                        intrinsic_size: wire::Size { width: graphic.size.width, height: graphic.size.height },
+                        display_size: None,
+                        alignment: wire::Alignment::Natural,
+                        source_key: None,
+                    }),
+                )
+            }
+            // Rhwp emits a text box's words as ordinary sibling blocks (`Text`'s own doc), so
+            // this is the SAME `Flow` shape a footnote body already is — `map_blocks` unchanged,
+            // no `base_index` because these blocks are not part of the document's own pagination
+            // index space (`keep_with_next`/`page_break`/... are stated against `OfficeReadResult
+            // .blocks`, never against text nested inside an anchored object).
+            office_block::OfficeMasterObjectContent::Text(blocks) => {
+                let children = self.map_blocks(blocks, None, node_id)?;
+                (children, wire::NodePayload::Flow(wire::Empty {}))
+            }
+        };
+        self.nodes.push(wire::Node {
+            id: node_id,
+            parent_id: Some(parent_id),
+            children,
+            source_spans: vec![],
+            edit: None,
+            payload,
+        });
+        Ok(node_id)
+    }
+
+    /// One `OfficeAnchoredObject` as a node: the anchor semantics (frame, which reference the
+    /// frame is measured against, the paragraph rule when `y` is not yet knowable) plus a child
+    /// node for its content. `parent_id` is the owning SECTION — the same level a header/footer/
+    /// footnote attaches at, since an anchored object is not part of any one flow's ordinary
+    /// sibling order.
+    fn build_anchored_object_node(
+        &mut self,
+        obj: &office_block::OfficeAnchoredObject,
+        parent_id: u64,
+    ) -> Result<u64, OfficeAdapterError> {
+        let anchored_to_id = *self
+            .block_node_id
+            .get(&obj.block_index)
+            .ok_or(OfficeAdapterError::AnchoredObjectTargetMissing(obj.block_index))?;
+        let node_id = self.new_node_id();
+        let content_id = self.map_anchored_content(&obj.object.content, node_id)?;
+        // `y` is final only when there is no paragraph rule to complete it later — see
+        // `wire::AnchoredObject`'s own doc for why the two are mutually exclusive rather than
+        // "y, corrected afterward": a placeholder number surviving into the tree is exactly the
+        // guessed value invariant 31/81 both reject.
+        let (y, paragraph_anchor) = match &obj.paragraph_anchor {
+            Some(anchor) => (
+                None,
+                Some(wire::ParagraphAnchor {
+                    align: convert_paragraph_anchor_align(anchor.align),
+                    offset: anchor.offset,
+                }),
+            ),
+            None => (Some(obj.object.frame.origin.y), None),
+        };
+        self.nodes.push(wire::Node {
+            id: node_id,
+            parent_id: Some(parent_id),
+            children: vec![content_id],
+            source_spans: vec![],
+            edit: None,
+            payload: wire::NodePayload::AnchoredObject(wire::AnchoredObject {
+                x: obj.object.frame.origin.x,
+                width: obj.object.frame.size.width,
+                height: obj.object.frame.size.height,
+                y,
+                paragraph_anchor,
+                anchored_to_id,
+                content_id,
+            }),
+        });
+        Ok(node_id)
     }
 
     /// Builds a `Table` node's row/cell subtree, and returns the `TableRow` child ids alongside
@@ -1471,6 +1673,16 @@ fn convert_alignment(v: NSTextAlignment) -> wire::Alignment {
     }
 }
 
+fn convert_paragraph_anchor_align(
+    v: office_block::ParagraphAnchorAlign,
+) -> wire::ParagraphAnchorAlign {
+    match v {
+        office_block::ParagraphAnchorAlign::Top => wire::ParagraphAnchorAlign::Top,
+        office_block::ParagraphAnchorAlign::Center => wire::ParagraphAnchorAlign::Center,
+        office_block::ParagraphAnchorAlign::Bottom => wire::ParagraphAnchorAlign::Bottom,
+    }
+}
+
 fn convert_color(c: NSColor) -> wire::Color {
     use swiftshim::color_font::NSColorSpaceName;
     wire::Color {
@@ -1935,16 +2147,163 @@ mod tests {
         assert_eq!(err, OfficeAdapterError::MasterPagePresent);
     }
 
+    /// S6-2: a paper-/page-relative anchored object (no `paragraph_anchor`) becomes a node whose
+    /// `y` is FINAL, attached under its section alongside a `Vector` content child — never an
+    /// `unsupportedGraphic`, never a refusal.
     #[test]
-    fn anchored_object_present_is_refused() {
+    fn anchored_object_with_a_final_y_becomes_a_node() {
+        let mut result = OfficeReadResult::default();
+        result.blocks.push(OfficeBlock::Paragraph {
+            spans: vec![],
+            rtl: false,
+            alignment: None,
+            tab_stops: vec![],
+            format: ParagraphFormat::default(),
+        });
+        result.anchored_objects.push(office_block::OfficeAnchoredObject {
+            block_index: 0,
+            object: OfficeMasterObject {
+                frame: CGRect::new(10.0, 20.0, 30.0, 40.0),
+                content: OfficeMasterObjectContent::Vector(one_path(PathSpec {
+                    commands: vec![HwpPathCommand::Move(swiftshim::CGPoint { x: 0.0, y: 0.0 })],
+                    stroke: None,
+                    fill: None,
+                    arrow_start: false,
+                    arrow_end: false,
+                })),
+            },
+            paragraph_anchor: None,
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).expect("must not refuse");
+        let tags = tree.node_tags();
+        assert!(tags.contains(&"anchoredObject"), "expected an anchoredObject node, got {tags:?}");
+        assert!(tags.contains(&"vector"), "expected its content child, got {tags:?}");
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let node = value["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "anchoredObject")
+            .unwrap();
+        assert_eq!(node["data"]["x"], 10.0);
+        assert_eq!(node["data"]["y"], 20.0, "paper/page-relative: y must be FINAL, not dropped");
+        assert_eq!(node["data"]["width"], 30.0);
+        assert_eq!(node["data"]["height"], 40.0);
+        assert!(node["data"]["paragraphAnchor"].is_null());
+        let anchored_to = node["data"]["anchoredToId"].as_u64().unwrap();
+        let content = node["data"]["contentId"].as_u64().unwrap();
+        let target = value["nodes"].as_array().unwrap().iter().find(|n| n["id"] == anchored_to).unwrap();
+        assert_eq!(target["type"], "paragraph", "must point at the empty-paragraph carrier");
+        let content_node =
+            value["nodes"].as_array().unwrap().iter().find(|n| n["id"] == content).unwrap();
+        assert_eq!(content_node["type"], "vector");
+    }
+
+    /// WHICH block it is anchored to, not merely that it is anchored to one.
+    ///
+    /// The two tests around this one both declare a single block, so `block_index` can only ever
+    /// resolve to the one node there is — measured: replacing the lookup key with a constant `0`
+    /// changed nothing and the whole crate still passed. A document anchors objects to different
+    /// paragraphs, and an off-by-one there puts a seal on the wrong page with every value still
+    /// well-formed. Two blocks, anchored to the SECOND, is the smallest fixture that can tell.
+    #[test]
+    fn an_anchored_object_names_the_block_it_was_declared_against() {
+        let mut result = OfficeReadResult::default();
+        for text in ["first", "second"] {
+            result.blocks.push(OfficeBlock::Paragraph {
+                spans: vec![Span { text: SwiftString::from(text.to_string()), ..Default::default() }],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            });
+        }
+        result.anchored_objects.push(office_block::OfficeAnchoredObject {
+            block_index: 1,
+            object: OfficeMasterObject {
+                frame: CGRect::new(1.0, 2.0, 3.0, 4.0),
+                content: OfficeMasterObjectContent::Text(vec![]),
+            },
+            paragraph_anchor: None,
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).expect("must not refuse");
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let nodes = value["nodes"].as_array().unwrap();
+        let anchored = nodes.iter().find(|n| n["type"] == "anchoredObject").unwrap();
+        let target_id = anchored["data"]["anchoredToId"].as_u64().unwrap();
+        let target = nodes.iter().find(|n| n["id"] == target_id).unwrap();
+        // The carrier is the paragraph whose own text run says "second".
+        let text: Vec<&str> = nodes
+            .iter()
+            .filter(|n| n["parentId"] == target["id"] && n["type"] == "textRun")
+            .filter_map(|n| n["data"]["text"].as_str())
+            .collect();
+        assert_eq!(text, vec!["second"],
+                   "the object was declared against block 1 and must name THAT paragraph");
+    }
+
+    /// S6-2's other half: a paragraph-relative object's `y` is NOT carried — invariant 31/81 both
+    /// say a value only layout can complete must not ship a guessed number. `paragraphAnchor`
+    /// carries the rule instead.
+    #[test]
+    fn anchored_object_with_a_paragraph_rule_carries_no_y() {
+        let mut result = OfficeReadResult::default();
+        result.blocks.push(OfficeBlock::Paragraph {
+            spans: vec![],
+            rtl: false,
+            alignment: None,
+            tab_stops: vec![],
+            format: ParagraphFormat::default(),
+        });
+        result.anchored_objects.push(office_block::OfficeAnchoredObject {
+            block_index: 0,
+            object: OfficeMasterObject {
+                frame: CGRect::new(10.0, 0.0, 30.0, 40.0),
+                content: OfficeMasterObjectContent::Vector(one_path(PathSpec {
+                    commands: vec![HwpPathCommand::Move(swiftshim::CGPoint { x: 0.0, y: 0.0 })],
+                    stroke: None,
+                    fill: None,
+                    arrow_start: false,
+                    arrow_end: false,
+                })),
+            },
+            paragraph_anchor: Some(office_block::ParagraphAnchor {
+                align: office_block::ParagraphAnchorAlign::Bottom,
+                offset: 155.3,
+            }),
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).expect("must not refuse");
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let node = value["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "anchoredObject")
+            .unwrap();
+        assert!(node["data"]["y"].is_null(), "paragraph-relative: y is not yet known, must not ship a placeholder");
+        assert_eq!(node["data"]["paragraphAnchor"]["align"], "bottom");
+        assert_eq!(node["data"]["paragraphAnchor"]["offset"], 155.3);
+    }
+
+    /// A `block_index` no section's range ever reaches (past the end of `result.blocks`) is a
+    /// reader/adapter contract violation, not a silent drop.
+    #[test]
+    fn anchored_object_with_a_dangling_block_index_is_a_typed_error() {
         let mut result = OfficeReadResult::default();
         result.anchored_objects.push(office_block::OfficeAnchoredObject {
             block_index: 0,
-            object: OfficeMasterObject { frame: CGRect::zero(), content: OfficeMasterObjectContent::Text(vec![]) },
+            object: OfficeMasterObject {
+                frame: CGRect::zero(),
+                content: OfficeMasterObjectContent::Text(vec![]),
+            },
             paragraph_anchor: None,
         });
         let err = ValidatedRenderTree::from_office(input(&result)).unwrap_err();
-        assert_eq!(err, OfficeAdapterError::AnchoredObjectPresent);
+        assert_eq!(err, OfficeAdapterError::AnchoredObjectTargetMissing(0));
     }
 
     #[test]

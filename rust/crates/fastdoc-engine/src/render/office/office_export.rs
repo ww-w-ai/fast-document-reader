@@ -35,9 +35,6 @@ pub enum NotExportable {
     /// The result carries a 바탕쪽 (HWP master page) — decoded pictures and pre-rendered drawings
     /// that are not part of the serialized envelope.
     MasterPages,
-    /// The result carries an object anchored to the paper — the same undroppable decoded content
-    /// as a master page, reached through a different field.
-    AnchoredObjects,
     /// A table's own picture fill is decoded pixels, not a document fact, and is not serialized.
     TableBackgroundImage,
     /// A cell's own picture fill is decoded pixels, not a document fact, and is not serialized.
@@ -52,9 +49,6 @@ impl NotExportable {
             }
             Self::MasterPages => {
                 "the result carries a master page, whose decoded artwork cannot cross to a host"
-            }
-            Self::AnchoredObjects => {
-                "the result carries an anchored object, whose decoded content cannot cross to a host"
             }
             Self::TableBackgroundImage => {
                 "a table carries a decoded background image, which cannot cross to a host"
@@ -73,9 +67,6 @@ impl NotExportable {
 pub fn assert_exportable(result: &OfficeReadResult) -> Result<(), NotExportable> {
     if !result.master_pages.is_empty() {
         return Err(NotExportable::MasterPages);
-    }
-    if !result.anchored_objects.is_empty() {
-        return Err(NotExportable::AnchoredObjects);
     }
     check_blocks(&result.blocks)?;
     for header in &result.headers {
@@ -229,8 +220,14 @@ mod tests {
         assert_eq!(assert_exportable(&result), Err(NotExportable::MasterPages));
     }
 
+    /// S6-2: an anchored object serializes honestly into the envelope like everything else here
+    /// (`OfficeAnchoredObject`/`OfficeMasterObject`/`OfficeMasterObjectContent` all already derive
+    /// `Serialize`/`Deserialize` — this boundary was refusing something it could already carry).
+    /// The Swift decode side already reads it too (`OfficeEnvelopeDecoding.swift`,
+    /// `ReaderTextView.swift`'s `officeAnchoredObjects`), which is the native HWP reader's own
+    /// path, not this export's — this test only proves the ENGINE's export half no longer refuses.
     #[test]
-    fn refuses_non_empty_anchored_objects() {
+    fn does_not_refuse_non_empty_anchored_objects() {
         let result = OfficeReadResult {
             anchored_objects: vec![OfficeAnchoredObject {
                 block_index: 0,
@@ -242,10 +239,7 @@ mod tests {
             }],
             ..OfficeReadResult::default()
         };
-        assert_eq!(
-            assert_exportable(&result),
-            Err(NotExportable::AnchoredObjects)
-        );
+        assert_eq!(assert_exportable(&result), Ok(()));
     }
 
     #[test]

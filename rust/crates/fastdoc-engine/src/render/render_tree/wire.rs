@@ -170,6 +170,7 @@ node_payloads! {
     Formula => "formula" (Formula), Diagram => "diagram" (Diagram), RawHtml => "rawHtml" (RawHtml),
     Footnote => "footnote" (Footnote), Header => "header" (HeaderFooter), Footer => "footer" (HeaderFooter),
     FormControl => "formControl" (FormControl), Unsupported => "unsupported" (Unsupported),
+    AnchoredObject => "anchoredObject" (AnchoredObject),
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -775,6 +776,51 @@ pub struct Footnote {
     pub label: Option<String>,
     pub number: u64,
     pub body_flow_id: u64,
+}
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+/// An object the document pins OFF the ordinary flow — S6-2's `OfficeAnchoredObject` mirror.
+///
+/// The content itself is never re-invented: `content_id` names an existing `Image`/`Vector`/
+/// `Flow` child node, the same vocabulary an in-flow picture or a footnote body already uses.
+/// What is new here is the ANCHOR semantics those content nodes have no field for — the
+/// reference frame, where in it the offset is measured from, and which block this object travels
+/// with.
+///
+/// `x`/`width`/`height` are always final (`office_block::OfficeMasterObject.frame`'s x/width/
+/// height are settled at read time for every reference kind, paper/page/paragraph alike —
+/// invariant 81's first half). `y` is final ONLY for a paper- or page-relative object; a
+/// paragraph-relative one leaves it `None` and carries `paragraph_anchor` instead, because only
+/// layout — after this tree is built — knows where the anchoring line landed (invariant 81's
+/// second half, invariant 31's whole reason this is a RULE and not a guessed number). Exactly one
+/// of `y`/`paragraph_anchor` is present; `validate.rs` is the place that would enforce it if this
+/// ever needs policing beyond the adapter's own construction.
+pub struct AnchoredObject {
+    pub x: f64,
+    pub width: f64,
+    pub height: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paragraph_anchor: Option<ParagraphAnchor>,
+    /// The node this object travels with — the empty-paragraph carrier the reader leaves at
+    /// `OfficeAnchoredObject.block_index` rather than dropping the block outright (mapping.rs's
+    /// own contract), so pagination and reflow still see a place for it.
+    pub anchored_to_id: u64,
+    pub content_id: u64,
+}
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParagraphAnchor {
+    pub align: ParagraphAnchorAlign,
+    pub offset: f64,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ParagraphAnchorAlign {
+    Top,
+    Center,
+    Bottom,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

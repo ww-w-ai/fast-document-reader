@@ -1299,16 +1299,18 @@ fn feature_form_control_digest_parity() {
 }
 
 /// `feature-nested-table-{hwp,hwpx}` carry 11 `Cell.background_image` picture-fill cells AND at
-/// least one anchored object — verified empirically (not assumed): `from_office` checks
-/// `OfficeReadResult.anchored_objects` UNCONDITIONALLY at the top of the function, before it ever
-/// reaches a table cell, so BOTH nested-table fixtures refuse with `AnchoredObjectPresent`, never
-/// reaching the `CellBackgroundImagePresent` check their picture fills would otherwise trigger.
-/// This is a real, worth-stating fact about check ORDER, not a guess — first assumed
-/// `CellBackgroundImagePresent` here and corrected it against the actual error. So this test does
-/// NOT call `assert_feature_digest_parity` (there is no tree to digest) — it count-pins the
-/// SOURCE-side facts the manifest claims directly on `OfficeReadResult`, and asserts the refusal by
-/// its exact error, matching the treatment `feature_picture_fill_refusal_is_a_typed_from_office_error`
-/// gives the dedicated refusal fixture.
+/// least one anchored object. Before S6-2, `from_office` checked `OfficeReadResult.anchored_objects`
+/// UNCONDITIONALLY at the top of the function, before it ever reached a table cell, so BOTH
+/// nested-table fixtures refused with `AnchoredObjectPresent`, never reaching the
+/// `CellBackgroundImagePresent` check their picture fills would otherwise trigger — a real,
+/// worth-stating fact about check ORDER, not a guess. S6-2 removed that unconditional refusal (the
+/// tree now carries an anchored object, S6-1's sibling item), so these fixtures now refuse ONE
+/// step further in, on the picture-fill cells S6-4 has not yet reached — `CellBackgroundImagePresent`,
+/// the check this comment originally assumed before correcting itself against the pre-S6-2 error.
+/// So this test does NOT call `assert_feature_digest_parity` (there is still no tree to digest) —
+/// it count-pins the SOURCE-side facts the manifest claims directly on `OfficeReadResult`, and
+/// asserts the refusal by its exact error, matching the treatment
+/// `feature_picture_fill_refusal_is_a_typed_from_office_error` gives the dedicated refusal fixture.
 #[test]
 fn feature_nested_table_source_facts_and_from_office_refusal() {
     let manifest = load_fixture_manifest();
@@ -1339,7 +1341,7 @@ fn feature_nested_table_source_facts_and_from_office_refusal() {
         );
         assert_eq!(
             err,
-            OfficeAdapterError::AnchoredObjectPresent,
+            OfficeAdapterError::CellBackgroundImagePresent,
             "{id}: from_office refused with an unexpected error — report this, do not silently reclassify it"
         );
     }

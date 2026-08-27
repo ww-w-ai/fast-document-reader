@@ -93,6 +93,7 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
         hide_page_number: BTreeSet::new(),
         restart: Vec::new(),
         font_sizes: Vec::new(),
+        node_index: HashMap::new(),
     };
 
     let root_id = envelope.document.root_node_id;
@@ -114,6 +115,7 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     let mut headers: Vec<OfficeHeaderFooter> = Vec::new();
     let mut footers: Vec<OfficeHeaderFooter> = Vec::new();
     let mut footnotes: Vec<OfficeFootnote> = Vec::new();
+    let mut anchored_objects: Vec<ob::OfficeAnchoredObject> = Vec::new();
     let mut first_section: Option<wire::Section> = None;
 
     for &section_id in &root.children {
@@ -131,6 +133,10 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
         }
 
         let mut flow_id: Option<u64> = None;
+        // Resolved AFTER `map_blocks` below, once `node_index` actually names this section's own
+        // block node ids — an `AnchoredObject`'s `anchoredToId` cannot be turned into a
+        // `block_index` any earlier than that.
+        let mut pending_anchored: Vec<wire::AnchoredObject> = Vec::new();
         for &child_id in &section_node.children {
             let child = proj.get(child_id)?.clone();
             match &child.payload {
@@ -144,6 +150,7 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
                 wire::NodePayload::Footnote(fnote) => {
                     footnotes.push(proj.footnote(&child, fnote.clone())?)
                 }
+                wire::NodePayload::AnchoredObject(ao) => pending_anchored.push(ao.clone()),
                 other => {
                     return Err(ProjectionError::Malformed(format!(
                         "unexpected section child payload: {other:?}"
@@ -157,6 +164,10 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
 
         let section_blocks = proj.map_blocks(&flow_children, blocks.len() as i64)?;
         blocks.extend(section_blocks);
+
+        for ao in pending_anchored {
+            anchored_objects.push(proj.anchored_object(ao)?);
+        }
     }
     let section = first_section
         .ok_or_else(|| ProjectionError::Malformed("no section was found".to_string()))?;
@@ -240,7 +251,7 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
         return Err(ProjectionError::Field("sections".to_string()));
     }
     result.insert("sections".to_string(), to_value(&Vec::<ob::OfficeSectionDeclaration>::new())?);
-    result.insert("anchored_objects".to_string(), to_value(&Vec::<ob::OfficeAnchoredObject>::new())?);
+    result.insert("anchored_objects".to_string(), to_value(&anchored_objects)?);
     // Same ambiguity as `sections` immediately above, for the single-section case: `section_start_blocks`
     // is coupled to `sections` one-for-one (`OfficeReadResult`'s own field docs — "indexed the same
     // way `section_start_blocks` is"), so a tree that cannot tell whether ANY section was declared
@@ -334,6 +345,12 @@ struct Projector {
     /// Every text run's resolved `fontSizePoints`, in traversal order — the raw material
     /// `default_body_font_size` is reconstructed from (see this module's own doc).
     font_sizes: Vec<f64>,
+    /// Node id -> its own position in the reconstructed `blocks`/`OfficeAnchoredObject.block_index`
+    /// index space, recorded as each top-level flow block is mapped (`map_single_block`/
+    /// `map_list_item`) — S6-2's reverse of `office_adapter::Ctx.block_node_id`. An anchored
+    /// object's `anchoredToId` (`wire::AnchoredObject`) is looked up here to reconstruct
+    /// `block_index`.
+    node_index: HashMap<u64, i64>,
 }
 
 impl Projector {
@@ -375,6 +392,81 @@ impl Projector {
         Ok(OfficeFootnote { number: fnote.number as i64, blocks, section: None })
     }
 
+    /// S6-2's reverse of `office_adapter::build_anchored_object_node`: `anchoredToId` -> the
+    /// carrier's own position in `blocks` (already recorded in `node_index` by the time this
+    /// runs — see `project`'s per-section ordering), `contentId` -> an `OfficeMasterObject`
+    /// (`anchored_content`, below), and exactly one of `y`/`paragraphAnchor` back into
+    /// `paragraph_anchor` — never both, never neither (the wire shape's own invariant).
+    fn anchored_object(
+        &mut self,
+        ao: wire::AnchoredObject,
+    ) -> Result<ob::OfficeAnchoredObject, ProjectionError> {
+        let block_index = *self.node_index.get(&ao.anchored_to_id).ok_or_else(|| {
+            ProjectionError::Malformed(format!(
+                "anchoredObject.anchoredToId {} names no block in this document's own flow",
+                ao.anchored_to_id
+            ))
+        })?;
+        let y = ao.y.unwrap_or(0.0);
+        let paragraph_anchor = ao.paragraph_anchor.map(|pa| ob::ParagraphAnchor {
+            align: convert_paragraph_anchor_align_back(pa.align),
+            offset: pa.offset,
+        });
+        let content = self.anchored_content(ao.content_id)?;
+        Ok(ob::OfficeAnchoredObject {
+            block_index,
+            object: ob::OfficeMasterObject {
+                frame: swiftshim::CGRect::new(ao.x, y, ao.width, ao.height),
+                content,
+            },
+            paragraph_anchor,
+        })
+    }
+
+    /// The content half — an existing `Image`/`Vector`/`Flow` node, read back into
+    /// `OfficeMasterObjectContent` the same shape `office_adapter::map_anchored_content` built it
+    /// from. Unlike `map_image`/`map_vector` (ordinary in-flow pictures), NO `source_key` is
+    /// required: an anchored object's `NSImage`/vector paths never had a document-declared string
+    /// id to round-trip, only decoded bytes/paths (`register_resource_bytes`'s own doc).
+    fn anchored_content(
+        &mut self,
+        content_id: u64,
+    ) -> Result<ob::OfficeMasterObjectContent, ProjectionError> {
+        let node = self.get(content_id)?.clone();
+        match &node.payload {
+            wire::NodePayload::Image(img) => {
+                let resource = self.resources.get(&img.resource_id).cloned().ok_or_else(|| {
+                    ProjectionError::Malformed(format!(
+                        "anchored image referenced missing resource {}",
+                        img.resource_id
+                    ))
+                })?;
+                use base64::Engine;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(&resource.bytes_base64)
+                    .map_err(|e| ProjectionError::Malformed(format!("resource bytes did not decode: {e}")))?;
+                let image = swiftshim::NSImage::fromData(&Data(bytes)).ok_or_else(|| {
+                    ProjectionError::Malformed("anchored image bytes did not decode as an image".to_string())
+                })?;
+                Ok(ob::OfficeMasterObjectContent::Image(image))
+            }
+            wire::NodePayload::Vector(v) => {
+                let paths: Vec<PathSpec> = v.paths.iter().map(convert_vector_path_back).collect();
+                Ok(ob::OfficeMasterObjectContent::Vector(VectorGraphic {
+                    paths,
+                    size: CGSize::new(v.intrinsic_size.width, v.intrinsic_size.height),
+                }))
+            }
+            wire::NodePayload::Flow(_) => {
+                let blocks = self.map_blocks(&node.children, 0)?;
+                Ok(ob::OfficeMasterObjectContent::Text(blocks))
+            }
+            other => Err(ProjectionError::Malformed(format!(
+                "anchoredObject.contentId named an unexpected node payload: {other:?}"
+            ))),
+        }
+    }
+
     /// Walks a run of sibling node ids (a flow's own children) into `OfficeBlock`s, unwrapping the
     /// wire tree's synthetic `List` wrapper back into the flat `ListItem` blocks the office model
     /// uses (see `office_adapter::map_list_group`'s own doc: office format never nests items under
@@ -396,11 +488,13 @@ impl Projector {
                             ));
                         };
                         out.push(self.map_list_item(&item_node.children, li.clone(), i)?);
+                        self.node_index.insert(item_id, i);
                         i += 1;
                     }
                 }
                 _ => {
                     out.push(self.map_single_block(&node, i)?);
+                    self.node_index.insert(id, i);
                     i += 1;
                 }
             }
@@ -655,6 +749,16 @@ fn convert_hf_applicability(v: wire::HeaderFooterApplicability) -> ob::HeaderFoo
         wire::HeaderFooterApplicability::DefaultPages => ob::HeaderFooterApplicability::DefaultPages,
         wire::HeaderFooterApplicability::FirstPage => ob::HeaderFooterApplicability::FirstPage,
         wire::HeaderFooterApplicability::EvenPages => ob::HeaderFooterApplicability::EvenPages,
+    }
+}
+
+fn convert_paragraph_anchor_align_back(
+    v: wire::ParagraphAnchorAlign,
+) -> ob::ParagraphAnchorAlign {
+    match v {
+        wire::ParagraphAnchorAlign::Top => ob::ParagraphAnchorAlign::Top,
+        wire::ParagraphAnchorAlign::Center => ob::ParagraphAnchorAlign::Center,
+        wire::ParagraphAnchorAlign::Bottom => ob::ParagraphAnchorAlign::Bottom,
     }
 }
 

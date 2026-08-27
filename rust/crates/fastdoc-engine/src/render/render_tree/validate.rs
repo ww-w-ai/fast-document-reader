@@ -653,6 +653,44 @@ fn validate_payload(
                 ));
             }
         },
+        // S6-2: `y`/`paragraphAnchor` are mutually exclusive and exactly one must be present —
+        // the wire shape's own invariant (`wire::AnchoredObject`'s doc), enforced here rather
+        // than left to a producer's own discipline, the same posture `displaySize`/
+        // `displayWidthFraction`'s mutual exclusion above already takes for `Image`.
+        P::AnchoredObject(v) => {
+            if !v.x.is_finite() || !finite_nonnegative(v.width) || !finite_nonnegative(v.height) {
+                return Err(invalid("anchored object frame is invalid"));
+            }
+            match (&v.y, &v.paragraph_anchor) {
+                (Some(y), None) => {
+                    if !y.is_finite() {
+                        return Err(invalid("anchored object frame is invalid"));
+                    }
+                }
+                (None, Some(anchor)) => {
+                    if !anchor.offset.is_finite() {
+                        return Err(invalid("anchored object paragraph rule is invalid"));
+                    }
+                }
+                _ => {
+                    return Err(invalid(
+                        "anchored object must carry exactly one of y or paragraphAnchor",
+                    ));
+                }
+            }
+            if !nodes.contains_key(&v.anchored_to_id) {
+                return Err(invalid("anchored object's anchoredToId is missing"));
+            }
+            match nodes.get(&v.content_id) {
+                Some(target)
+                    if matches!(target.payload, P::Image(_) | P::Vector(_) | P::Flow(_)) => {}
+                _ => {
+                    return Err(invalid(
+                        "anchored object's contentId is missing or has the wrong kind",
+                    ));
+                }
+            }
+        }
         P::Section(v) => {
             sorted_unique_nonzero(v.header_ids.iter().copied(), "section header")?;
             sorted_unique_nonzero(v.footer_ids.iter().copied(), "section footer")?;

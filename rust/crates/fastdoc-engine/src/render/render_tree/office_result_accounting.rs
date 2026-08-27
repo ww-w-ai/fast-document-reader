@@ -253,8 +253,11 @@ pub(crate) fn account_office_read_result(
     ledger.record(mapped("OfficeReadResult.page_footer_distance"))?;
     let _ = master_pages;
     ledger.record(refused("OfficeReadResult.master_pages"))?;
+    // S6-2: an anchored object's frame/content/paragraph rule now becomes an `anchoredObject`
+    // node (`office_adapter::from_office`), never dropped — see `account_anchored_object` and
+    // `account_paragraph_anchor` below for the field-by-field accounting of what that node carries.
     let _ = anchored_objects;
-    ledger.record(refused("OfficeReadResult.anchored_objects"))?;
+    ledger.record(mapped("OfficeReadResult.anchored_objects"))?;
 
     ledger.finish()
 }
@@ -425,6 +428,11 @@ pub(crate) fn account_master_object(
     ledger.finish_expected(KEYS, KEYS.len())
 }
 
+/// S6-2: `office_adapter::build_anchored_object_node`/`map_anchored_content` carry every one of
+/// these three fields into the tree (`block_index` -> `anchoredToId`, `object` -> the frame plus
+/// an `Image`/`Vector`/`Flow` content child, `paragraph_anchor` -> `wire::ParagraphAnchor` when
+/// present). Unlike `account_master_object`/`account_master_page` just above — still refused,
+/// master pages are S6-3's item — this ledger records the mapping S6-2 actually did.
 pub(crate) fn account_anchored_object(
     anchored: &OfficeAnchoredObject,
 ) -> Result<FieldDecisionLedger, AccountingError> {
@@ -441,7 +449,7 @@ pub(crate) fn account_anchored_object(
     } = anchored;
     let _ = (block_index, object, paragraph_anchor);
     for key in KEYS {
-        ledger.record(refused(key))?;
+        ledger.record(mapped(key))?;
     }
     ledger.finish_expected(KEYS, KEYS.len())
 }
@@ -454,7 +462,7 @@ pub(crate) fn account_paragraph_anchor(
     let ParagraphAnchor { align, offset } = anchor;
     let _ = (align, offset);
     for key in KEYS {
-        ledger.record(refused(key))?;
+        ledger.record(mapped(key))?;
     }
     ledger.finish_expected(KEYS, KEYS.len())
 }
@@ -541,11 +549,13 @@ mod tests {
         );
     }
 
-    /// The master-page and anchored-object families are refused wholesale at the result level, so
-    /// their own ledgers are the only record of what that refusal actually covers. Untested, they
-    /// are dead code that documents nothing.
+    /// The master-page family is still refused wholesale at the result level (S6-3's item), so
+    /// its own ledgers are the only record of what that refusal actually covers. The
+    /// anchored-object family is S6-2's: `account_anchored_object`/`account_paragraph_anchor`
+    /// record `mapped` for every field now that `office_adapter::from_office` actually carries
+    /// them into the tree.
     #[test]
-    fn refused_page_furniture_families_are_exhaustively_accounted() {
+    fn refused_page_furniture_and_mapped_anchored_object_families_are_exhaustively_accounted() {
         let object = OfficeMasterObject {
             frame: swiftshim::CGRect::new(0.0, 0.0, 1.0, 1.0),
             content: OfficeMasterObjectContent::Text(Vec::new()),
@@ -571,7 +581,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(anchored.decision_count(), 3);
-        assert_eq!(anchored.refused_count(), 3);
+        assert_eq!(anchored.mapped_count(), 3);
 
         let anchor = account_paragraph_anchor(&ParagraphAnchor {
             align: ParagraphAnchorAlign::Top,
@@ -579,7 +589,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(anchor.decision_count(), 2);
-        assert_eq!(anchor.refused_count(), 2);
+        assert_eq!(anchor.mapped_count(), 2);
     }
 
     #[test]
@@ -609,7 +619,7 @@ mod tests {
             ("OfficeReadResult.page_header_distance", Mapped),
             ("OfficeReadResult.page_footer_distance", Mapped),
             ("OfficeReadResult.master_pages", Refused),
-            ("OfficeReadResult.anchored_objects", Refused),
+            ("OfficeReadResult.anchored_objects", Mapped),
             ("OfficeReadResult.hide_page_number_blocks", Derived),
             ("OfficeReadResult.page_number_restart_blocks", Derived),
         ];

@@ -80,7 +80,9 @@ pub fn adapter_error_kind(error: &OfficeAdapterError) -> &'static str {
     match error {
         OfficeAdapterError::MissingResource(_) => "OfficeAdapterError::MissingResource",
         OfficeAdapterError::MasterPagePresent => "OfficeAdapterError::MasterPagePresent",
-        OfficeAdapterError::AnchoredObjectPresent => "OfficeAdapterError::AnchoredObjectPresent",
+        OfficeAdapterError::AnchoredObjectTargetMissing(_) => {
+            "OfficeAdapterError::AnchoredObjectTargetMissing"
+        }
         OfficeAdapterError::TableBackgroundImagePresent => {
             "OfficeAdapterError::TableBackgroundImagePresent"
         }

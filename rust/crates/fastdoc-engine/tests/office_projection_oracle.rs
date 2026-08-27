@@ -291,6 +291,95 @@ fn a_vector_graphic_alone_round_trips_its_source_key_through_the_vector_branch()
     assert_projection_matches(&result, "vector-source-key.hwp");
 }
 
+/// S6-2 — an anchored object round-trips through the SAME oracle every other office fact does:
+/// `to_json` (schema-v4, `office_export.rs` no longer refuses it) against `project` (the wire
+/// tree, `office_adapter::build_anchored_object_node` + `office_project::anchored_object`), built
+/// from one `OfficeReadResult` neither function can see the other's answer for. Covers both halves
+/// of `wire::AnchoredObject`'s own invariant: a paper-relative object here (`y` final,
+/// `paragraph_anchor` absent) — the paragraph-relative half (`y` absent, `paragraph_anchor`
+/// present) is `a_paragraph_anchored_object_round_trips_with_no_final_y` below, since a single
+/// result can only ever carry one or the other for a given object.
+#[test]
+fn an_anchored_object_round_trips_its_frame_and_vector_content() {
+    use fastdoc_engine::render::office::office_block::{
+        OfficeAnchoredObject, OfficeMasterObject, OfficeMasterObjectContent,
+    };
+    use swiftshim::CGRect;
+    let result = OfficeReadResult {
+        blocks: vec![OfficeBlock::Paragraph {
+            spans: vec![],
+            rtl: false,
+            alignment: None,
+            tab_stops: vec![],
+            format: ParagraphFormat::default(),
+        }],
+        anchored_objects: vec![OfficeAnchoredObject {
+            block_index: 0,
+            object: OfficeMasterObject {
+                frame: CGRect::new(12.5, 34.0, 48.0, 48.0),
+                content: OfficeMasterObjectContent::Vector(VectorGraphic {
+                    paths: vec![PathSpec {
+                        commands: vec![PathCommand::Move(CGPoint::new(0.0, 0.0))],
+                        stroke: None,
+                        fill: None,
+                        arrow_start: false,
+                        arrow_end: false,
+                    }],
+                    size: CGSize::new(48.0, 48.0),
+                }),
+            },
+            paragraph_anchor: None,
+        }],
+        default_body_font_size: 11.0,
+        ..OfficeReadResult::default()
+    };
+    assert_projection_matches(&result, "anchored-vector.hwp");
+}
+
+/// The paragraph-relative half: `paragraph_anchor` present, `object.frame.origin.y` a
+/// placeholder — `to_json` serializes that placeholder verbatim (it is a real, if meaningless,
+/// number on the `OfficeReadResult` side), while `project` reconstructs it as `0.0` from
+/// `wire::AnchoredObject.y == None` (`office_project::anchored_object`'s own doc). So the
+/// placeholder used here IS `0.0`, the only value the two sides are contracted to agree on — a
+/// real reader's placeholder value is never read back by anything, `paragraph_anchor` alone is.
+#[test]
+fn a_paragraph_anchored_object_round_trips_with_no_final_y() {
+    use fastdoc_engine::render::office::office_block::{
+        OfficeAnchoredObject, OfficeMasterObject, OfficeMasterObjectContent, ParagraphAnchor,
+        ParagraphAnchorAlign,
+    };
+    use swiftshim::CGRect;
+    let result = OfficeReadResult {
+        blocks: vec![OfficeBlock::Paragraph {
+            spans: vec![],
+            rtl: false,
+            alignment: None,
+            tab_stops: vec![],
+            format: ParagraphFormat::default(),
+        }],
+        anchored_objects: vec![OfficeAnchoredObject {
+            block_index: 0,
+            object: OfficeMasterObject {
+                frame: CGRect::new(342.6, 0.0, 48.0, 48.0),
+                content: OfficeMasterObjectContent::Vector(VectorGraphic {
+                    paths: vec![PathSpec {
+                        commands: vec![PathCommand::Move(CGPoint::new(0.0, 0.0))],
+                        stroke: None,
+                        fill: None,
+                        arrow_start: false,
+                        arrow_end: false,
+                    }],
+                    size: CGSize::new(48.0, 48.0),
+                }),
+            },
+            paragraph_anchor: Some(ParagraphAnchor { align: ParagraphAnchorAlign::Top, offset: 155.3 }),
+        }],
+        default_body_font_size: 11.0,
+        ..OfficeReadResult::default()
+    };
+    assert_projection_matches(&result, "anchored-paragraph.hwp");
+}
+
 /// The document's own font table — S4 Pass C's unit: `wire::Document.declared_faces` now carries
 /// what `hwp_reader::mapping.rs` reads off the document (`nominated_substitute`, `is_embedded`,
 /// `type_info`), and `project` reads it back rather than emitting `{}`. Two entries, one with every
