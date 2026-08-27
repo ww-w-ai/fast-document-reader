@@ -1451,13 +1451,15 @@ final class OfficeDocumentTests: XCTestCase {
         ])
         let (doc, _) = try openOffice(zip)
         XCTAssertEqual(doc.officeComments.count, 2)
-        XCTAssertEqual(doc.officeComments[0].author, "Alice")
-        XCTAssertEqual(doc.officeComments[0].text, "First comment")
-        XCTAssertEqual(doc.officeComments[0].dateISO, "2024-01-01T00:00:00Z")
-        XCTAssertEqual(doc.officeComments[0].number, 1)
-        XCTAssertEqual(doc.officeComments[1].author, "Bob")
-        XCTAssertEqual(doc.officeComments[1].text, "Second comment")
-        XCTAssertEqual(doc.officeComments[1].number, 2)
+        let first = try XCTUnwrap(doc.officeComments.first)
+        XCTAssertEqual(first.author, "Alice")
+        XCTAssertEqual(first.text, "First comment")
+        XCTAssertEqual(first.dateISO, "2024-01-01T00:00:00Z")
+        XCTAssertEqual(first.number, 1)
+        let second = try XCTUnwrap(doc.officeComments.dropFirst().first)
+        XCTAssertEqual(second.author, "Bob")
+        XCTAssertEqual(second.text, "Second comment")
+        XCTAssertEqual(second.number, 2)
 
         guard case .paragraph(let spans, _, _, _, _) = doc.officeBlocks.first else {
             return XCTFail("expected a paragraph")
@@ -1488,10 +1490,15 @@ final class OfficeDocumentTests: XCTestCase {
             ("word/comments.xml", Data(comments.utf8)),
         ])
         let (doc, _) = try openOffice(zip)
+        // Indexing straight into `officeComments` here KILLS THE PROCESS when the reader returns
+        // none, taking every test after this one in the class with it — which is how this class
+        // came to be skipped wholesale under `FMD_RUST_ENGINE=1` and how anything else broken in
+        // it stayed invisible. A failure must stay a failure.
         XCTAssertEqual(doc.officeComments.count, 1)
-        XCTAssertEqual(doc.officeComments[0].id, "5")
-        XCTAssertEqual(doc.officeComments[0].author, "Carol")
-        XCTAssertEqual(doc.officeComments[0].number, 1)
+        let comment = try XCTUnwrap(doc.officeComments.first)
+        XCTAssertEqual(comment.id, "5")
+        XCTAssertEqual(comment.author, "Carol")
+        XCTAssertEqual(comment.number, 1)
         guard case .paragraph(let spans, _, _, _, _) = doc.officeBlocks.first else {
             return XCTFail("expected a paragraph")
         }
@@ -1530,11 +1537,12 @@ final class OfficeDocumentTests: XCTestCase {
         let zip = buildZip([("content.xml", Data(content.utf8))])
         let (doc, _) = try openOffice(zip, ext: "odt", uti: "org.oasis-open.opendocument.text")
         XCTAssertEqual(doc.officeComments.count, 1)
-        XCTAssertEqual(doc.officeComments[0].id, "c1")
-        XCTAssertEqual(doc.officeComments[0].author, "Dana")
-        XCTAssertEqual(doc.officeComments[0].dateISO, "2024-02-02T00:00:00Z")
-        XCTAssertEqual(doc.officeComments[0].text, "Odt comment text")
-        XCTAssertEqual(doc.officeComments[0].number, 1)
+        let odtComment = try XCTUnwrap(doc.officeComments.first)
+        XCTAssertEqual(odtComment.id, "c1")
+        XCTAssertEqual(odtComment.author, "Dana")
+        XCTAssertEqual(odtComment.dateISO, "2024-02-02T00:00:00Z")
+        XCTAssertEqual(odtComment.text, "Odt comment text")
+        XCTAssertEqual(odtComment.number, 1)
 
         guard case .paragraph(let spans, _, _, _, _) = doc.officeBlocks.first else {
             return XCTFail("expected a paragraph")
@@ -1562,8 +1570,9 @@ final class OfficeDocumentTests: XCTestCase {
         let zip = buildZip([("content.xml", Data(content.utf8))])
         let (doc, _) = try openOffice(zip, ext: "odt", uti: "org.oasis-open.opendocument.text")
         XCTAssertEqual(doc.officeComments.count, 1)
-        XCTAssertEqual(doc.officeComments[0].author, "Eve")
-        XCTAssertEqual(doc.officeComments[0].text, "Point note")
+        let pointNote = try XCTUnwrap(doc.officeComments.first)
+        XCTAssertEqual(pointNote.author, "Eve")
+        XCTAssertEqual(pointNote.text, "Point note")
         guard case .paragraph(let spans, _, _, _, _) = doc.officeBlocks.first else {
             return XCTFail("expected a paragraph")
         }
