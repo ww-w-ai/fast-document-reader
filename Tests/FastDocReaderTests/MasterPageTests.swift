@@ -277,6 +277,78 @@ final class MasterPageSheetClipTests: XCTestCase {
     }
 }
 
+/// `sectionsHidingMasterPage` — a section that says "no 바탕쪽" gets none, however many templates it
+/// declares (`MasterPagePainter.swift:71-74`). Drives the SHEET-WALK overload, which no other test
+/// in this file calls, using the same flipped-bitmap harness `MasterPageSheetClipTests` built —
+/// an object is a solid black image so "drew nothing" is a pixel read rather than a fresh mechanism.
+final class MasterPageSectionVetoTests: XCTestCase {
+
+    private func blackImage(size: NSSize) -> NSImage {
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor.black.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        image.unlockFocus()
+        return image
+    }
+
+    /// One sheet, one master page belonging to section 2 with a black square covering the middle of
+    /// it, drawn through `draw(_:sheets:totalPages:visibleRect:sectionOfPage:)`. Returns whether ink
+    /// landed at the square's centre.
+    private func drewInk(hiding: Set<Int>, sectionOfPage: @escaping (Int) -> Int?) throws -> Bool {
+        let sheet = CGRect(x: 10, y: 10, width: 80, height: 100)
+        let object = OfficeMasterObject(frame: CGRect(x: 0, y: 0, width: 60, height: 60),
+                                        content: .image(blackImage(size: NSSize(width: 60, height: 60))))
+        let page = OfficeMasterPage(section: 2, appliesTo: .defaultPages, objects: [object])
+        let content = MasterPageContent(pages: [page], sectionsHidingMasterPage: hiding,
+                                        theme: RenderTheme(baseFontSize: 13),
+                                        documentDefaultFontSize: 11, pageContentWidth: 80)
+
+        // The same flipped-bitmap setup `MasterPageSheetClipTests` uses — a real CTM, not
+        // `lockFocusFlipped`, which leaves the clip and the picture in two different coordinate
+        // systems and would measure the harness instead of the painter.
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 100, pixelsHigh: 120, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let g = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = g
+        NSColor.white.setFill(); NSRect(x: 0, y: 0, width: 100, height: 120).fill()
+        let flip = NSAffineTransform()
+        flip.translateX(by: 0, yBy: 120)
+        flip.scaleX(by: 1, yBy: -1)
+        flip.concat()
+        MasterPagePainter.draw(content, sheets: [sheet], totalPages: 1,
+                               visibleRect: NSRect(x: 0, y: 0, width: 100, height: 120),
+                               sectionOfPage: sectionOfPage)
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let colour = rep.colorAt(x: 40, y: 40)?.usingColorSpace(.deviceRGB) else { return false }
+        return colour.redComponent < 0.5 && colour.greenComponent < 0.5 && colour.blueComponent < 0.5
+    }
+
+    func testASectionOnTheHideListDrawsNothing() throws {
+        let drewInk = try drewInk(hiding: [2], sectionOfPage: { _ in 2 })
+        XCTAssertFalse(drewInk, "section 2 vetoed its own master page — nothing should have painted")
+    }
+
+    func testASectionNotOnTheHideListStillDrawsItsTemplate() throws {
+        // Selective, not a global switch: the SAME page's template still paints when the veto names
+        // a different section.
+        let drewInk = try drewInk(hiding: [5], sectionOfPage: { _ in 2 })
+        XCTAssertTrue(drewInk, "the veto names a different section — section 2's template should still paint")
+    }
+
+    func testTheVetoDoesNotFireWhenTheSectionOfThePageIsUnknown() throws {
+        // `sectionOfPage` returning nil is "the parser never said where a section starts"
+        // (`MasterPagePainter.swift:70`'s `if let section` guard) — even naming section 2 on the hide
+        // list must not suppress the fallback-to-every-template page this produces.
+        let drewInk = try drewInk(hiding: [2], sectionOfPage: { _ in nil })
+        XCTAssertTrue(drewInk, "an unknown section must fall back to every template, not to the veto")
+    }
+}
+
 /// Where an object the document pins to the PAPER lands — rhwp's own placement rule, restated for
 /// the two references this reader can honour (invariant 78).
 final class AnchoredObjectPlacementTests: XCTestCase {
