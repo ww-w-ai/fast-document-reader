@@ -38,9 +38,10 @@ mod ffi_guard;
 
 use fastdoc_engine::render::office::hwp_reader::mapping::HwpReader;
 use fastdoc_engine::render::office::{
-    docx_reader::DocxReader, odt_reader::OdtReader, office_block::OfficeReadResult,
-    office_markdown_serializer::OfficeMarkdownSerializer, office_project, projection_ledger,
-    zip_archive::ZipArchive,
+    docx_reader::DocxReader, odt_reader::OdtReader, office_block::HeaderFooterApplicability,
+    office_block::OfficeReadResult, office_markdown_serializer::OfficeMarkdownSerializer,
+    master_page_selection::{select_master_templates, MasterPageQuery, MasterTemplateDescriptor},
+    office_project, projection_ledger, zip_archive::ZipArchive,
 };
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
 use ffi_guard::{guard_envelope, guard_json, guard_scalar, FfiErrorKind, FfiFailure};
@@ -1233,6 +1234,133 @@ pub unsafe extern "C" fn fastdoc_table_resize_cell_widths_batch(
             false
         }
     }
+}
+
+/// One master-page TEMPLATE descriptor — `(section, appliesTo)`, mirroring `OfficeMasterPage`'s
+/// own two selection fields (`OfficeBlock.swift`). `#[repr(C)]` so the layout is exactly what the
+/// header declares.
+///
+/// `applies_to` is `HeaderFooterApplicability`'s wire tag, the same three-way vocabulary a master
+/// page shares with a running header/footer: `0` = `.defaultPages`, `1` = `.firstPage`, `2` =
+/// `.evenPages`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FastdocMasterTemplateDesc {
+    pub section: i64,
+    pub applies_to: i32,
+}
+
+/// One VISIBLE page's selection query — `(pageIndex, section?)`, mirroring
+/// `MasterPagePainter.applicablePage`'s own two arguments beyond the template list. Position `i`
+/// in the caller's array answers to `out_template_index[i]`. `has_section == false` matches
+/// `applicablePage`'s own `nil` fallback: every template is a candidate, not none. `#[repr(C)]` so
+/// the layout is exactly what the header declares.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FastdocMasterPageQuery {
+    pub page_index: i64,
+    pub has_section: bool,
+    pub section: i64,
+}
+
+/// `fastdoc_office_master_selection` — S5C3-01/03: `MasterPagePainter.applicablePage` plus the
+/// section veto (`:73`), ported as a pure function (`office::master_page_selection`) and exposed
+/// batched over every visible page in ONE call, the shape `s5c3.md`'s API section requires ("the
+/// host's own loop is per page … one crossing per page at scroll frequency is the shape this plan
+/// rejected"). Retires S5C3-06a, deleted in this same change.
+///
+/// **In:** `templates`/`template_count` — the document's own master-page descriptors, in the SAME
+/// order the caller's array holds them (an output index below names a position in THAT array, not
+/// a Rust-side reordering). `vetoed_sections`/`vetoed_section_count` — the section-veto set
+/// (`MasterPageContent.sectionsHidingMasterPage`). `pages`/`page_count` — one entry per VISIBLE
+/// sheet this draw pass is walking.
+///
+/// **Out:** `out_template_index[i]` is the applicable template's index into the caller's own
+/// `templates` array for `pages[i]`, or `-1` for "no template applies" (no candidates for the
+/// page's section, or the page's section is vetoed).
+///
+/// # Safety
+/// `templates`/`template_count`, `vetoed_sections`/`vetoed_section_count` and `pages`/`page_count`
+/// describe readable buffers for the duration of the call. `out_template_index` describes a
+/// writable buffer of at least `page_count` `i64`s for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_office_master_selection(
+    templates: *const FastdocMasterTemplateDesc,
+    template_count: usize,
+    vetoed_sections: *const i64,
+    vetoed_section_count: usize,
+    pages: *const FastdocMasterPageQuery,
+    page_count: usize,
+    out_template_index: *mut i64,
+    out_capacity: usize,
+) -> bool {
+    clear_last_error();
+    if (template_count > 0 && templates.is_null())
+        || (vetoed_section_count > 0 && vetoed_sections.is_null())
+        || (page_count > 0 && (pages.is_null() || out_template_index.is_null()))
+        || page_count > out_capacity
+    {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument or out buffer too small",
+        ));
+        return false;
+    }
+    // MARSHAL IN — owned copies of the template descriptors (mapped into the engine's own
+    // vocabulary), a set for O(1) veto membership (what `sectionsHidingMasterPage.contains`
+    // needs), and owned page queries.
+    let template_descs: Vec<MasterTemplateDescriptor> = if template_count == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(templates, template_count)
+            .iter()
+            .map(|d| MasterTemplateDescriptor {
+                section: d.section,
+                applies_to: match d.applies_to {
+                    1 => HeaderFooterApplicability::FirstPage,
+                    2 => HeaderFooterApplicability::EvenPages,
+                    _ => HeaderFooterApplicability::DefaultPages,
+                },
+            })
+            .collect()
+    };
+    let vetoed: std::collections::HashSet<i64> = if vetoed_section_count == 0 {
+        std::collections::HashSet::new()
+    } else {
+        std::slice::from_raw_parts(vetoed_sections, vetoed_section_count)
+            .iter()
+            .copied()
+            .collect()
+    };
+    let page_queries: Vec<MasterPageQuery> = if page_count == 0 {
+        Vec::new()
+    } else {
+        std::slice::from_raw_parts(pages, page_count)
+            .iter()
+            .map(|q| MasterPageQuery {
+                page_index: q.page_index,
+                section: q.has_section.then_some(q.section),
+            })
+            .collect()
+    };
+    let answers: Vec<i64> = guard_scalar(Vec::new(), move || {
+        select_master_templates(&template_descs, &vetoed, &page_queries)
+            .into_iter()
+            .map(|index| index.map(|i| i as i64).unwrap_or(-1))
+            .collect()
+    });
+    if answers.len() != page_count {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "internal: answer count did not match page_count",
+        ));
+        return false;
+    }
+    if page_count > 0 {
+        let out = std::slice::from_raw_parts_mut(out_template_index, page_count);
+        out.copy_from_slice(&answers);
+    }
+    true
 }
 
 /// `s` must be NULL or a pointer this library returned and has not already freed.

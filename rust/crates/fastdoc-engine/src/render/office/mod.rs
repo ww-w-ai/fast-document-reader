@@ -22,3 +22,4 @@ pub mod office_markdown_serializer;
 pub mod office_export;
 pub mod office_project;
 pub mod projection_ledger;
+pub mod master_page_selection;

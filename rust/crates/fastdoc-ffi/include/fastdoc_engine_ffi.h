@@ -308,6 +308,36 @@ bool fastdoc_table_resize_cell_widths_batch(const FastdocTableResizeTableDesc *t
                                             const FastdocTableResizeCell *cells, size_t cell_count,
                                             double *out_widths);
 
+/* One master-page TEMPLATE descriptor, (section, appliesTo) mirroring OfficeMasterPage's own two
+ * selection fields. applies_to is HeaderFooterApplicability's wire tag: 0 = defaultPages,
+ * 1 = firstPage, 2 = evenPages. */
+typedef struct {
+    long long section;
+    int applies_to;
+} FastdocMasterTemplateDesc;
+
+/* One VISIBLE page's selection query, (pageIndex, section?) mirroring
+ * MasterPagePainter.applicablePage's own two arguments beyond the template list.
+ * has_section == false matches applicablePage's own nil fallback: every template is a candidate,
+ * not none. */
+typedef struct {
+    long long page_index;
+    bool has_section;
+    long long section;
+} FastdocMasterPageQuery;
+
+/* S5C3-01/03: MasterPagePainter.applicablePage plus the section veto (:73), ported as a pure
+ * function and batched over every visible page in ONE call per draw pass. out_template_index[i]
+ * is the applicable template's index into the caller's own templates array for pages[i], or -1
+ * for "no template applies" (no candidates for the page's section, or the page's section is
+ * vetoed). */
+bool fastdoc_office_master_selection(const FastdocMasterTemplateDesc *templates,
+                                     size_t template_count,
+                                     const long long *vetoed_sections,
+                                     size_t vetoed_section_count,
+                                     const FastdocMasterPageQuery *pages, size_t page_count,
+                                     long long *out_template_index, size_t out_capacity);
+
 void fastdoc_string_free(char *s);
 
 #endif
