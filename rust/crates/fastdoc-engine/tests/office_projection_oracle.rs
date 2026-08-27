@@ -611,19 +611,20 @@ fn a_span_with_a_drawn_column_separator_round_trips_its_layout() {
 /// refusing `Field("sections")` for a genuine multi-section tree (see the test above), so that
 /// refusal alone cannot tell "every section got processed" apart from "only the first one did,
 /// and the final gate just happens to fire before anything downstream would notice". This fixture
-/// puts an unresolvable fact (a span's own `comment_ids`) in the SECOND section's body: if `project`
-/// returns `Field("sections")` here it stopped at the top without ever reaching section two, and if
-/// it returns `Field("comments")` it reached section two's own content — which is what it returns.
+/// puts an unresolvable fact in the SECOND section's body: if `project` returns `Field("sections")`
+/// here it stopped at the top without ever reaching section two, and if it returns section two's
+/// own named gap it reached that content — which is what it returns.
+///
+/// The unresolvable fact used to be a span's own `comment_ids`, and this test's own failure message
+/// said what to do when that gap closed: replace it, do not weaken the test. It closed in S6-6 —
+/// `wire::Comment.source_id` let the projection resolve a body-anchored comment instead of sending
+/// the whole document to the fallback — so the fact is now an `UnsupportedGraphic`, which
+/// `map_block` refuses unconditionally (`Field("unsupportedGraphic.size")`) and, like the comment
+/// before it, refuses DURING the walk rather than at the final gate. That ordering is the entire
+/// mechanism: a fact that only fires after the walk would prove nothing about whether the walk
+/// happened.
 #[test]
 fn a_fact_only_the_second_section_carries_still_surfaces_its_own_named_gap() {
-    let comment = fastdoc_engine::render::office::office_block::OfficeComment {
-        id: "c1".into(),
-        author: None,
-        date_iso: None,
-        text: "a review comment".into(),
-        number: 1,
-    };
-    let commented_span = Span { comment_ids: vec!["c1".into()], ..plain_span("section two body") };
     let result = OfficeReadResult {
         blocks: vec![
             OfficeBlock::Paragraph {
@@ -633,15 +634,12 @@ fn a_fact_only_the_second_section_carries_still_surfaces_its_own_named_gap() {
                 tab_stops: vec![],
                 format: ParagraphFormat::default(),
             },
-            OfficeBlock::Paragraph {
-                spans: vec![commented_span],
-                rtl: false,
+            OfficeBlock::UnsupportedGraphic {
+                label: "section two graphic".into(),
+                size: swiftshim::CGSize { width: 10.0, height: 10.0 },
                 alignment: None,
-                tab_stops: vec![],
-                format: ParagraphFormat::default(),
             },
         ],
-        comments: vec![comment],
         sections: vec![
             fastdoc_engine::render::office::office_block::OfficeSectionDeclaration::default(),
             fastdoc_engine::render::office::office_block::OfficeSectionDeclaration::default(),
@@ -660,11 +658,13 @@ fn a_fact_only_the_second_section_carries_still_surfaces_its_own_named_gap() {
     .unwrap_or_else(|e| panic!("from_office failed: {e:?}"));
     match project(&tree) {
         Ok(_) => panic!(
-            "project succeeded on a span with an unresolved comment id — the comments gap this \
-             test relies on has been closed; replace with a different unresolvable fact"
+            "project succeeded on an UnsupportedGraphic — the gap this test relies on has been \
+             closed; replace it with a different fact the walk itself refuses, do NOT relax the \
+             assertion (this exact instruction is what kept the test honest when the previous \
+             fact, a span's comment_ids, was resolved in S6-6)"
         ),
         Err(ProjectionError::Field(name)) => assert_eq!(
-            name, "span.comment_ids",
+            name, "unsupportedGraphic.size",
             "expected the SECOND section's own unresolvable fact to surface, not `sections` — a \
              `sections` result here would mean the walk stopped at the first section"
         ),

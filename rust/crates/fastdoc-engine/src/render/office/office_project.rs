@@ -92,10 +92,15 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     // Bookmark NAMES, not ids — `Span.bookmarks` (`office_block::Span`) is a list of names, the
     // same vocabulary `office_adapter::resolve_bookmark` minted these wire ids FROM, so this
     // reverse lookup loses nothing: `wire::Bookmark.name` already IS the source's own bookmark
-    // name (unlike a wire comment id, which is a fresh mint with no source string anywhere in the
-    // tree — see `Projector::comments` below for why that one stays lossy).
+    // name. The comment map beside it is the same shape and exists for the same reason: a wire
+    // comment id is a fresh mint, and `wire::Comment.source_id` is what turns it back into the id
+    // the DOCUMENT gave that comment. Before that field existed this projection could not resolve a
+    // run's `commentIds` at all and bailed on the whole document, so every document with a comment
+    // anchored in its body bypassed the canonical tree entirely.
     let bookmark_names: HashMap<u64, String> =
         envelope.annotations.bookmarks.iter().map(|b| (b.id, b.name.clone())).collect();
+    let comment_source_ids: HashMap<u64, String> =
+        envelope.annotations.comments.iter().map(|c| (c.id, c.source_id.clone())).collect();
     let mut proj = Projector {
         by_id,
         resources,
@@ -108,6 +113,7 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
         restart: Vec::new(),
         node_index: HashMap::new(),
         bookmark_names,
+        comment_source_ids,
     };
 
     let root_id = envelope.document.root_node_id;
@@ -356,6 +362,10 @@ struct Projector {
     /// field's own construction in `project` for why this round-trips honestly while comment ids
     /// (below) do not.
     bookmark_names: HashMap<u64, String>,
+    /// `TextRun.commentIds` entry -> the id the DOCUMENT gave that comment, from
+    /// `wire::Comment.source_id`. See `project`'s own comment for why this map is what removed a
+    /// whole-document fallback rather than merely a missing field.
+    comment_source_ids: HashMap<u64, String>,
 }
 
 impl Projector {
@@ -373,6 +383,18 @@ impl Projector {
         self.bookmark_names.get(&id).map(|name| SwiftString::from(name.clone())).ok_or_else(|| {
             ProjectionError::Malformed(format!(
                 "textRun.bookmarkIds named bookmark {id}, which annotations.bookmarks does not contain"
+            ))
+        })
+    }
+
+    /// `TextRun.commentIds` entry -> the source's own comment id, mirroring
+    /// `resolve_bookmark_name` exactly. A run naming a comment id `annotations.comments` does not
+    /// contain is a malformed tree, not a silently dropped comment — the same standard bookmarks
+    /// are held to.
+    fn resolve_comment_source_id(&self, id: u64) -> Result<SwiftString, ProjectionError> {
+        self.comment_source_ids.get(&id).map(|s| SwiftString::from(s.clone())).ok_or_else(|| {
+            ProjectionError::Malformed(format!(
+                "textRun.commentIds named comment {id}, which annotations.comments does not contain"
             ))
         })
     }
@@ -612,9 +634,11 @@ impl Projector {
 
     fn convert_run(&mut self, run: wire::TextRun) -> Result<Span, ProjectionError> {
         let column_layout = run.column_flow.as_ref().map(column_layout_back);
-        if !run.comment_ids.is_empty() {
-            return Err(ProjectionError::Field("span.comment_ids".to_string()));
-        }
+        let comment_ids = run
+            .comment_ids
+            .iter()
+            .map(|&id| self.resolve_comment_source_id(id))
+            .collect::<Result<Vec<_>, _>>()?;
         let bookmarks = run
             .bookmark_ids
             .iter()
@@ -656,7 +680,7 @@ impl Projector {
             subscripted,
             rtl: matches!(run.direction, Some(wire::Direction::RightToLeft)),
             bookmarks,
-            comment_ids: vec![],
+            comment_ids,
             text_color: run.style.foreground.map(convert_color_back),
             highlight_color: run.style.background.map(convert_color_back),
             letter_spacing_percent: run.style.letter_spacing_percent,
@@ -1267,6 +1291,52 @@ mod tests {
         let tree = ValidatedRenderTree::from_office(input(result)).expect("tree builds");
         let json = project(&tree).expect("project succeeds — this fixture has no comment_ids and one section");
         serde_json::from_str(&json).expect("project's output is valid schema-v4 JSON")
+    }
+
+    /// S6-6's first unblock: a comment ANCHORED IN THE BODY used to send the whole document back
+    /// to the legacy exporter. `convert_run` returned `ProjectionError::Field("span.comment_ids")`
+    /// for any run carrying one, because a wire comment id is a fresh mint and nothing in the tree
+    /// said which source comment it stood for — the map lived in `office_adapter`'s build state and
+    /// was thrown away. So every commented document bypassed the canonical tree entirely, and the
+    /// bypass was invisible: the fallback output is correct, so nothing failed.
+    ///
+    /// `wire::Comment.source_id` supplied the missing half, and the bail became a lookup. This test
+    /// is what proves the tree path is now TAKEN rather than merely available: it asserts the span
+    /// comes back naming the document's own comment id. Reinstating the bail makes `project` fail
+    /// outright here rather than silently answer from the other path.
+    #[test]
+    fn a_comment_anchored_in_the_body_no_longer_sends_the_whole_document_to_the_fallback() {
+        let mut result = ob::OfficeReadResult::default();
+        result.comments.push(OfficeComment {
+            id: SwiftString::from("7"),
+            author: Some(SwiftString::from("Dana")),
+            date_iso: None,
+            text: SwiftString::from("Anchored comment"),
+            number: 1,
+        });
+        result.blocks.push(OfficeBlock::Paragraph {
+            spans: vec![Span {
+                text: SwiftString::from("Commented text."),
+                comment_ids: vec![SwiftString::from("7")],
+                ..Default::default()
+            }],
+            rtl: false,
+            alignment: None,
+            tab_stops: vec![],
+            format: ParagraphFormat::default(),
+        });
+        let doc = projected(&result);
+        let OfficeBlock::Paragraph { spans, .. } = &doc.blocks[0] else {
+            panic!("expected a paragraph");
+        };
+        assert_eq!(
+            spans[0].comment_ids,
+            vec![SwiftString::from("7")],
+            "the run must name the comment by the id the DOCUMENT gave it, resolved through the \
+             tree rather than by falling back out of it"
+        );
+        assert_eq!(doc.comments.len(), 1, "and the comment itself is still listed");
+        assert_eq!(doc.comments[0].id, SwiftString::from("7"));
     }
 
     /// Defect 1 (S6-7): `convert_run` hardcoded `bookmarks: vec![]` for every span, so an internal
