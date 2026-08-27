@@ -1485,12 +1485,33 @@ final class MarkdownDocument: NSDocument {
         // settle loop then adds up whichever notes a page turns out to cite (invariant 98) without
         // re-building any of them — it runs up to eight times, and re-typesetting every note on
         // every round is the one cost that would make the fixpoint too expensive to have.
-        let footnoteHeights: [Int: CGFloat] = officeFootnotes.reduce(into: [:]) { out, note in
-            out[note.number] = PageBandGeometry.builtHeight(
-                of: note.blocks, theme: theme, columnWidth: bandColumn,
-                documentDefaultFontSize: officeDefaultBodyFontSize,
-                pageContentWidth: officePageContentWidth)
+        func hostFootnoteHeights() -> [Int: CGFloat] {
+            officeFootnotes.reduce(into: [:]) { out, note in
+                out[note.number] = PageBandGeometry.builtHeight(
+                    of: note.blocks, theme: theme, columnWidth: bandColumn,
+                    documentDefaultFontSize: officeDefaultBodyFontSize,
+                    pageContentWidth: officePageContentWidth)
+            }
         }
+        #if FMD_RUST_ENGINE
+        // S5D-2: the engine's own answer for the SAME question this render would otherwise
+        // measure note by note — `PageBandGeometry::built_height`, batched into one crossing.
+        // `resolveNoteHeights` is the named seam a test can watch: it rejects the WHOLE reply
+        // rather than trust a map missing a number THIS render is about to draw (two independent
+        // parses of the same bytes are never assumed to agree on order, only on the numbers a
+        // document declared — `s5d2.md`'s own risk section). `nil` — no handle, a bad payload, or a
+        // number this render holds that the engine's reply does not name — falls back to the
+        // host's own loop above, unchanged.
+        let footnoteHeights: [Int: CGFloat] = PageBandGeometry.resolveNoteHeights(
+            hostNumbers: officeFootnotes.map(\.number),
+            engine: officeEngineHandle?.footnoteHeights(
+                count: officeFootnotes.count, columnWidth: bandColumn,
+                pageContentWidth: officePageContentWidth,
+                documentDefaultFontSize: officeDefaultBodyFontSize)
+        ) ?? hostFootnoteHeights()
+        #else
+        let footnoteHeights: [Int: CGFloat] = hostFootnoteHeights()
+        #endif
         wc.configurePageBand(pageContentHeight: officePageContentHeight, band: sides.band,
                              footnotes: officeFootnotes, footnoteHeights: footnoteHeights,
                              footnoteSeparators: officeSections.enumerated().reduce(into: [:]) {

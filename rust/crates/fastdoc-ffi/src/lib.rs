@@ -1592,6 +1592,93 @@ pub unsafe extern "C" fn fastdoc_office_footnote_band_settle(
     true
 }
 
+/// One footnote's own answer — `(number, height)`, mirroring `FastdocNoteBandEntry`'s "entry
+/// struct, not parallel arrays" shape (`s5d2.md`'s own API section: "번호와 높이가 갈라질 수
+/// 없게"). `#[repr(C)]` so the layout is exactly what the header declares.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FastdocFootnoteHeightDesc {
+    pub number: i64,
+    pub height: CGFloat,
+}
+
+/// `fastdoc_office_footnote_heights` — S5D-2: `PageBandGeometry::built_height`, called once per
+/// footnote this handle's own parse holds, batched into ONE crossing (S5C-3's own batch
+/// discipline — never once per note). Calls no new arithmetic; the port is exactly
+/// `footnote_heights`, which calls `built_height` unchanged.
+///
+/// Keyed by the document's own NUMBER (`OfficeFootnote.number`), never position — the host's own
+/// `officeFootnotes` comes from a SEPARATE parse of the same bytes (`DocumentTypes.readOffice`'s
+/// `RustEngine.readOffice`, not this handle's `read_office`), and an index into this handle's own
+/// array has no guaranteed relationship to the host's array once the two paths diverge — `s5d2.md`'s
+/// own risk section.
+///
+/// **Out:** `out_entries[0..returned]`, in the SAME order this handle's own `footnotes` are held
+/// (not sorted — there is no `HashMap` here to randomize). Returns the count actually written, or a
+/// NEGATIVE value on any refusal (`fastdoc_take_last_error` names it): a NULL handle, an output
+/// buffer smaller than the footnote count, or the first note `built_height` itself could not
+/// measure (no measurer installed, or an unresolved attachment). A refusal is never a partial
+/// count — the whole batch is refused together, matching `footnote_heights`' own `Err`-on-first-miss
+/// contract, because a map short one entry reserves that note's page short by exactly its height
+/// (invariant 98's corrupt half).
+///
+/// # Safety
+/// `handle` must be either NULL or a live pointer `fastdoc_office_open` returned that has not been
+/// closed. `out_entries`/`out_capacity` describe a writable buffer for the duration of the call.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn fastdoc_office_footnote_heights(
+    handle: *const FastdocOfficeDocument,
+    column_width: f64,
+    page_content_width: f64,
+    has_page_content_width: bool,
+    document_default_font_size: f64,
+    out_entries: *mut FastdocFootnoteHeightDesc,
+    out_capacity: usize,
+) -> i64 {
+    clear_last_error();
+    if handle.is_null() || (out_capacity > 0 && out_entries.is_null()) {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return -1;
+    }
+    let handle_ref: &FastdocOfficeDocument = &*handle;
+    let page_content_width = has_page_content_width.then_some(page_content_width);
+    let heights: Option<Vec<(i64, CGFloat)>> = guard_scalar(None, move || {
+        let result = &handle_ref.result;
+        let theme = fastdoc_engine::render::render_theme::RenderTheme::current(document_default_font_size);
+        match fastdoc_engine::render::office::page_band_geometry::PageBandGeometry::footnote_heights(
+            &result.footnotes, &theme, column_width, document_default_font_size, page_content_width,
+        ) {
+            Ok(entries) => Some(entries),
+            Err(error) => {
+                set_last_error(&FfiFailure::new(
+                    FfiErrorKind::HostTextMeasurerMissing,
+                    format!("{error}"),
+                ));
+                None
+            }
+        }
+    });
+    let Some(entries) = heights else { return -1 };
+    if entries.len() > out_capacity {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "out buffer too small for the footnote count",
+        ));
+        return -1;
+    }
+    if !entries.is_empty() {
+        let out = std::slice::from_raw_parts_mut(out_entries, entries.len());
+        for (i, (number, height)) in entries.iter().enumerate() {
+            out[i] = FastdocFootnoteHeightDesc { number: *number, height: *height };
+        }
+    }
+    entries.len() as i64
+}
+
 /// `s` must be NULL or a pointer this library returned and has not already freed.
 #[no_mangle]
 pub unsafe extern "C" fn fastdoc_string_free(s: *mut c_char) {

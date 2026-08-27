@@ -7,7 +7,7 @@
 //! observe "nothing was ever installed" is a process that never calls `install`/`install_callbacks`
 //! at all — this file, and nothing else in it.
 
-use fastdoc_engine::render::office::office_block::{OfficeBlock, ParagraphFormat, Span};
+use fastdoc_engine::render::office::office_block::{OfficeBlock, OfficeFootnote, ParagraphFormat, Span};
 use fastdoc_engine::render::office::page_band_geometry::{MeasureError, PageBandGeometry};
 use fastdoc_engine::render::render_theme::RenderTheme;
 use swiftshim::font_provider::{FaceId, FaceInfo, FontProvider};
@@ -79,4 +79,33 @@ fn an_empty_header_still_measures_zero_even_with_nothing_installed() {
     // succeeds in a process where asking would refuse.
     let theme = RenderTheme::current(12.0);
     assert_eq!(PageBandGeometry::built_height(&[], &theme, 400.0, 12.0, None), Ok(0.0));
+}
+
+/// S5D-2: a map is complete or it does not exist. `footnote_heights` refuses the WHOLE batch on
+/// the FIRST note it cannot measure — even though an earlier note in the same list already
+/// measured cleanly to `0` without ever asking the port. A map short one entry would reserve that
+/// note's page short by exactly its height, invariant 98's corrupt half; the caller must get every
+/// height or none.
+#[test]
+fn the_first_unmeasurable_note_refuses_the_whole_batch_not_just_its_own_entry() {
+    ensure_font_provider_installed();
+    assert!(!swiftshim::text_measure::is_installed(),
+            "this file must never install a measurer — that is the whole point of it living alone");
+
+    let theme = RenderTheme::current(12.0);
+    let empty = OfficeFootnote { number: 1, blocks: vec![], section: None };
+    let drawing = OfficeFootnote {
+        number: 2,
+        blocks: vec![OfficeBlock::Paragraph {
+            spans: vec![Span { text: "a note with real text".into(), ..Span::default() }],
+            rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(),
+        }],
+        section: None,
+    };
+
+    let result = PageBandGeometry::footnote_heights(&[empty, drawing], &theme, 400.0, 12.0, None);
+
+    assert_eq!(result, Err(MeasureError::NoMeasurer),
+               "the second note cannot be measured, so the WHOLE answer must refuse — never a map \
+               carrying the first note's height alone");
 }

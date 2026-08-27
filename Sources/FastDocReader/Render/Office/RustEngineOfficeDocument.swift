@@ -28,6 +28,20 @@ final class RustOfficeDocumentHandle {
     /// reports, retrievable through `RustEngineMeasure.lastErrorKind()` immediately after this
     /// initializer returns `nil`.
     init?(data: Data, extension ext: String) {
+        // The two process-global ports every query through this handle depends on, installed by
+        // the side that OPENS the handle rather than left to call order. Both are idempotent.
+        //
+        // Measured, not assumed: with neither installed, opening a real `.hwp` succeeds and the
+        // first band query PANICS inside the engine (`swiftshim/src/font_provider.rs:133`), which
+        // `guard_scalar` turns into a refusal — so the reader silently answers from its own
+        // arithmetic and the engine is never actually asked anything. That is the state the app
+        // shipped in for HWP: `DocumentTypes` branches to `HwpReader` (`DocumentTypes.swift:121`)
+        // BEFORE `RustEngine.readOffice`, which is the only place that installed the font world,
+        // and nothing in `Sources/` installed the measurer at all. HWP is also the only format
+        // whose footnotes reach `OfficeReadResult.footnotes`, so it is exactly the format the
+        // footnote queries need.
+        RustEngineFonts.install()
+        RustEngineMeasure.install()
         let opened: OpaquePointer? = data.withUnsafeBytes { buffer -> OpaquePointer? in
             guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else { return nil }
             return ext.withCString { extensionC in
@@ -329,6 +343,38 @@ final class RustOfficeDocumentHandle {
         default: reason = .still
         }
         return .stop(bands, reason)
+    }
+
+    /// S5D-2: every footnote's own height, `[number: height]`, from a document this handle already
+    /// holds — `PageBandGeometry::built_height`, called once per note and batched into ONE
+    /// crossing (never once per note, S5C-3's own batch discipline). `nil` — no handle, or a bad
+    /// payload (`RustEngineMeasure.lastErrorKind()` names which) — is `MarkdownDocument`'s own
+    /// signal to fall back to its own `PageBandGeometry.builtHeight` loop, the same failure
+    /// direction S5C-1 established for every query on this page.
+    ///
+    /// `count` sizes the reply buffer — the caller already knows how many footnotes its OWN parse
+    /// holds (`officeFootnotes.count`), which may differ from how many this handle's parse holds
+    /// (two independent reads of the same bytes, `s5d2.md`'s own risk section); the reply is keyed
+    /// by NUMBER either way, so `PageBandGeometry.resolveNoteHeights` is what reconciles the two,
+    /// not this call.
+    func footnoteHeights(count: Int, columnWidth: CGFloat, pageContentWidth: CGFloat?,
+                         documentDefaultFontSize: CGFloat) -> [Int: CGFloat]? {
+        let capacity = max(count, 1)
+        var out = [FastdocFootnoteHeightDesc](repeating: FastdocFootnoteHeightDesc(number: 0, height: 0),
+                                              count: capacity)
+        let filled = out.withUnsafeMutableBufferPointer { buf in
+            fastdoc_office_footnote_heights(
+                handle, Double(columnWidth), Double(pageContentWidth ?? 0), pageContentWidth != nil,
+                Double(documentDefaultFontSize), buf.baseAddress, buf.count)
+        }
+        guard filled >= 0 else { return nil }
+        answeredQueries += 1
+        var result: [Int: CGFloat] = [:]
+        result.reserveCapacity(Int(filled))
+        for i in 0..<Int(filled) {
+            result[Int(out[i].number)] = CGFloat(out[i].height)
+        }
+        return result
     }
 
 }

@@ -385,6 +385,26 @@ bool fastdoc_office_footnote_band_settle(const FastdocFootnotePageDesc *pages, s
                                          FastdocNoteBandEntry *out_bands, size_t out_capacity,
                                          size_t *out_count, int *out_outcome, int *out_stop_reason);
 
+/* One footnote's own answer: (number, height). An entry struct rather than parallel arrays so
+ * the number and height can never come apart. */
+typedef struct {
+    long long number;
+    double height;
+} FastdocFootnoteHeightDesc;
+
+/* S5D-2: PageBandGeometry::built_height, called once per footnote this handle's own parse holds,
+ * batched into one crossing. Keyed by the document's own number (OfficeFootnote.number), never
+ * position. Fills out_entries[0..returned] in the same order this handle's own footnotes are
+ * held. Returns the count actually written, or a NEGATIVE value on any refusal
+ * (fastdoc_take_last_error names it) -- a NULL handle, an output buffer smaller than the footnote
+ * count, or the first note built_height itself could not measure. A refusal is never a partial
+ * count -- the whole batch is refused together. */
+long long fastdoc_office_footnote_heights(const FastdocOfficeDocument *handle, double column_width,
+                                          double page_content_width, bool has_page_content_width,
+                                          double document_default_font_size,
+                                          FastdocFootnoteHeightDesc *out_entries,
+                                          size_t out_capacity);
+
 void fastdoc_string_free(char *s);
 
 #endif

@@ -10,32 +10,13 @@ import XCTest
 /// only place a whole class of failure can appear: the bytes handed over, the string encoding
 /// coming back, the ownership of that string. A pure-Rust test cannot see any of it.
 final class RustEngineBridgeTests: XCTestCase {
-    /// `swiftshim::text_measure`'s `MEASURER` is a process-global `OnceLock` shared by every test
-    /// in this binary, so "nothing has been installed yet" can only ever be observed ONCE per
-    /// process, and it must be observed before anything else in this file's growing test count
-    /// calls `RustEngineFonts.install()`/`RustEngineMeasure.install()` (both idempotent, so safe to
-    /// call any number of times AFTER this). `+setUp()` — unlike instance test order, which this
-    /// file's own history found to be empirically alphabetical rather than guaranteed — is
-    /// documented by XCTest to run exactly once, before every instance test method in this class.
-    /// Anchoring the absence check here (rather than in whichever test happens to sort first)
-    /// keeps every later test free to install without racing this one.
-    private static var beforeMeasurerInstall: (answer: CGFloat?, kind: String?)?
-
-    override class func setUp() {
-        super.setUp()
-        guard let data = try? fixture("docs/fixtures/office/paged-visual/prosepages.docx") else {
-            return   // absent corpus: the tests that need it skip individually, same as always
-        }
-        // Fonts and the measurer are two SEPARATE process-global one-shots (S2B, S5-02). Reading a
-        // real docx with NEITHER installed panics — the font world is a precondition of reading at
-        // all, not of measuring — and this file cannot control whether some OTHER test file in the
-        // same binary already installed fonts by the time this class's tests run. Installing fonts
-        // here (idempotent either way) isolates the check to the one global this file actually
-        // means to observe as absent: the measurer.
-        RustEngineFonts.install()
-        let answer = RustEngineMeasure.headerBandHeight(data, extension: "docx", columnWidth: 400, footer: false)
-        beforeMeasurerInstall = (answer, RustEngineMeasure.lastErrorKind())
-    }
+    // "Nothing has been installed yet" USED to be observable once per process (a `+setUp()` here
+    // captured it before any instance test could install either global) — `RustOfficeDocumentHandle
+    // .init` now installs both itself (S5D-2's precondition fix), so opening a handle ANYWHERE in
+    // this binary, in any other test file, makes the absence permanently unobservable within a
+    // shared process. That check moved to its own opt-in probe, run alone, the same shape the Rust
+    // side already uses for the same reason: `EngineInstallPreconditionProbeTests`
+    // (`FMD_INSTALL_PRECONDITION_PROBE`).
 
     /// The shipping Swift implementation is the reference even in a Rust-enabled build.
     /// Never route this helper through `DocumentTypes.readOffice`: that dispatches to Rust under
@@ -432,13 +413,8 @@ final class RustEngineBridgeTests: XCTestCase {
         let shortData = try Self.fixture("docs/fixtures/office/paged-visual/prosepages.docx")
         let tallData = try Self.fixture("testdocs/everything/GnBS_IM_20260401.docx")
 
-        // Captured once in `+setUp()`, guaranteed to have run before any instance test in this
-        // class — see that override's own doc comment for why this can no longer be observed here.
-        let beforeMeasurerInstall = try XCTUnwrap(Self.beforeMeasurerInstall,
-                                             "class setUp must have captured this before any test ran")
-        XCTAssertNil(beforeMeasurerInstall.answer, "with no measurer installed the engine cannot answer a height question")
-        XCTAssertEqual(beforeMeasurerInstall.kind, "hostTextMeasurerMissing")
-
+        // The "no measurer yet" half of this test moved to `EngineInstallPreconditionProbeTests`
+        // (class doc comment above) — installing here is what the rest of this test needs.
         RustEngineFonts.install()
         RustEngineMeasure.install()
 

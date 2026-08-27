@@ -312,6 +312,36 @@ impl PageBandGeometry {
         Ok(measurer.measure(&resolved, column_width))
     }
 
+    /// EVERY footnote's own height, `(number, built_height)` per entry — S5D-2: the input the
+    /// settle's own band arithmetic adds up (`footnote_band_height`, above), now measured here
+    /// instead of once per render on the host side. Calls `built_height` UNCHANGED, one note at a
+    /// time; no new arithmetic. Keyed by the document's own number (`OfficeFootnote.number`), never
+    /// position — the host reads this back by number too (`s5d2.md`'s own reason: two independent
+    /// parses of the same bytes must never be assumed to agree on ORDER, only on the numbers a
+    /// document actually declared).
+    ///
+    /// `Err` on the FIRST note that cannot be measured — never a map missing just that one entry. A
+    /// map short one footnote reserves that page's band short by exactly its height, which is
+    /// invariant 98's corrupt half (a note drawn over the body); the caller must have every height
+    /// or none.
+    // swift: Render/Office/PageBandGeometry.swift — resolveNoteHeights consumes this answer, not a
+    // Swift-side twin of this loop.
+    pub fn footnote_heights(
+        footnotes: &[crate::render::office::office_block::OfficeFootnote],
+        theme: &RenderTheme,
+        column_width: CGFloat,
+        document_default_font_size: CGFloat,
+        page_content_width: Option<CGFloat>,
+    ) -> Result<Vec<(i64, CGFloat)>, MeasureError> {
+        footnotes
+            .iter()
+            .map(|note| {
+                Self::built_height(&note.blocks, theme, column_width, document_default_font_size, page_content_width)
+                    .map(|height| (note.number, height))
+            })
+            .collect()
+    }
+
     /// Does this ONE entry have anything for the reader to put in a band — the question every gate
     /// that used to ask `blocks.isEmpty` should be asking instead. Built through the same
     /// `OfficeTextBuilder` as everything else, so a format whose header parses into blocks that build
@@ -384,6 +414,30 @@ mod tests {
                 margin_bottom_pt: CGFloat) -> FootnoteSeparatorDesc {
         FootnoteSeparatorDesc { is_declared: true, line_type, line_width_pt, margin_top_pt, margin_bottom_pt }
     }
+
+    use crate::render::office::office_block::OfficeFootnote;
+
+    fn empty_note(number: i64) -> OfficeFootnote {
+        OfficeFootnote { number, blocks: vec![], section: None }
+    }
+
+    /// No footnotes at all — the empty answer, no measurer needed.
+    #[test]
+    fn no_footnotes_answers_no_entries() {
+        let theme = RenderTheme::current(11.0);
+        let out = PageBandGeometry::footnote_heights(&[], &theme, 300.0, 11.0, None);
+        assert_eq!(out, Ok(vec![]));
+    }
+
+    /// A footnote whose blocks are empty builds to nothing and measures `0` WITHOUT a measurer —
+    /// `built_height`'s own short-circuit, called unchanged.
+    #[test]
+    fn a_footnote_with_no_blocks_measures_zero_without_a_measurer() {
+        let theme = RenderTheme::current(11.0);
+        let out = PageBandGeometry::footnote_heights(&[empty_note(3)], &theme, 300.0, 11.0, None);
+        assert_eq!(out, Ok(vec![(3, 0.0)]));
+    }
+
 
     /// No resolved separator at all — the host's `footnoteSeparator(forPage:)` returned `nil` —
     /// falls back to the reader's own minimum, matching `FootnotePainter.separatorAllowance`'s

@@ -163,6 +163,31 @@ enum PageBandGeometry {
         return layout.usedRect(for: container).height
     }
 
+    /// S5D-2's seam: reconciles the engine's own footnote-height answer with the notes this
+    /// document is ACTUALLY going to draw. Present in BOTH builds, no `#if` guard — the branch
+    /// judgment itself (not just the arithmetic either side of it) is what a unit test needs to
+    /// watch, and a pure function is what makes that observable without constructing a window
+    /// controller.
+    ///
+    /// `hostNumbers` is this render's own footnote list (`officeFootnotes.map(\.number)`) — the
+    /// numbers that will actually be drawn, from THIS parse. `engine` is the engine's own reply, or
+    /// `nil` when it could not answer at all. Two independent reads of the same bytes are not
+    /// assumed to agree on ORDER, only on the numbers a document actually declared — so a number
+    /// this render holds that the engine's reply does not name rejects the WHOLE map, never just
+    /// that one entry (invariant 98's corrupt half: a map short one note reserves its page short by
+    /// exactly that note's height). A number the engine names that this render does not hold is
+    /// simply ignored — nothing draws it, so nothing needs its height.
+    static func resolveNoteHeights(hostNumbers: [Int], engine: [Int: CGFloat]?) -> [Int: CGFloat]? {
+        guard let engine else { return nil }
+        var out: [Int: CGFloat] = [:]
+        out.reserveCapacity(hostNumbers.count)
+        for number in hostNumbers {
+            guard let height = engine[number] else { return nil }
+            out[number] = height
+        }
+        return out
+    }
+
     /// Does this ONE entry have anything for the reader to put in a band — the question every gate
     /// that used to ask `blocks.isEmpty` should be asking instead. Built through the same
     /// `OfficeTextBuilder` as everything else, so a format whose header parses into blocks that build
