@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import AppKit
 import CFastdocEngine
 import Foundation
@@ -338,4 +337,3 @@ enum RustEngineMeasure {
         return object["kind"] as? String
     }
 }
-#endif

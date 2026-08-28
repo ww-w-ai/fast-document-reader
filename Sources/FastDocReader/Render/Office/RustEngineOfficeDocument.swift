@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import CFastdocEngine
 import Foundation
 
@@ -391,4 +390,3 @@ private extension HeaderFooterApplicability {
         }
     }
 }
-#endif

@@ -824,7 +824,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // `lastClipWidth` is still written (below, in the shared path) because both resize gates
         // de-duplicate against it — pinning the COLUMN must not strand the GATE.
         if let page = pagedWidth {
-            let widthMoved = abs(clipWidth - lastClipWidth) > 0.5
             lastClipWidth = clipWidth
             textInsetUpdateCount += 1
             // The sheet is the DOCUMENT's: its own left margin positions the text and its own right
@@ -2093,7 +2092,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard !tables.isEmpty else { return false }
         let next: [Int: PagePagination.TableMetrics]
         let oversized: [Int: Int]
-        #if FMD_RUST_ENGINE
         // S5C2-02: the engine's own decision for the SAME inputs the host would otherwise compute
         // this from. `nil` — no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()`
         // names which) — falls back to the host's own arithmetic below, the same failure
@@ -2123,21 +2121,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                                                        noteBands: pageBandDelegate.noteBands,
                                                        alreadyOversized: pageBandDelegate.oversizedPieces)
         }
-        #else
-        next = PagePagination.tablesToPush(tables,
-                                           pageContentHeight: pageBandDelegate.pageContentHeight,
-                                           band: pageBandDelegate.band,
-                                           leadingBand: pageBandDelegate.leadingBand,
-                                           splitTables: PageViewOptionsStore.current.splitTables,
-                                           alreadyPushed: pageBandDelegate.pushedTables,
-                                           noteBands: pageBandDelegate.noteBands)
-        oversized = PagePagination.oversizedPieces(tables,
-                                                   pageContentHeight: pageBandDelegate.pageContentHeight,
-                                                   band: pageBandDelegate.band,
-                                                   leadingBand: pageBandDelegate.leadingBand,
-                                                   noteBands: pageBandDelegate.noteBands,
-                                                   alreadyOversized: pageBandDelegate.oversizedPieces)
-        #endif
         let orphans = pageBandDelegate.pullToNextPage
             .union(orphanRunStarts(in: oversized))
         guard next != pageBandDelegate.pushedTables
@@ -2323,7 +2306,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     func settleFootnoteBands() -> Bool {
         guard !footnotes.isEmpty, pageBandDelegate.paginates, !footnoteBandsSettled else { return false }
         let outcome: FootnoteBandSettle.Outcome
-        #if FMD_RUST_ENGINE
         // S5D1-03: the engine's own answer for the SAME round the host would otherwise compute —
         // `FootnoteBandSettle.step` plus the proposal arithmetic that feeds it
         // (`proposedNoteBands`), in one call. `nil` — no handle, or a bad payload
@@ -2342,10 +2324,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                 cap: maxPagedTableSettles),
             host: FootnoteBandSettle.step(proposed: proposedNoteBands(), history: footnoteBandHistory,
                                           cap: maxPagedTableSettles))
-        #else
-        outcome = FootnoteBandSettle.step(proposed: proposedNoteBands(), history: footnoteBandHistory,
-                                          cap: maxPagedTableSettles)
-        #endif
         switch outcome {
         case let .retry(bands):
             footnoteBandHistory.append(bands)
@@ -3766,7 +3744,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                                          band: pageBandDelegate.band)
         let topMargin = PagePagination.topMargin(declared: pagedMarginTop,
                                                   band: pageBandDelegate.band - pageDeskGap)
-        #if FMD_RUST_ENGINE
         // S5C2-02: the engine's own answer for the SAME inputs the host would otherwise compute
         // this from. `nil` — no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()`
         // names which) — falls back to the host's own arithmetic below, the same failure
@@ -3779,7 +3756,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             deskGap: pageDeskGap) {
             return engineSheets
         }
-        #endif
         return PagePagination.sheets(count: printPageCount, width: width,
                                      textOriginY: textView.textContainerOrigin.y,
                                      leadingBand: pageBandDelegate.leadingBand,
@@ -3793,7 +3769,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// function rather than a second copy of the formula: a printout whose page count disagreed with
     /// the painter's would put the trailing footer on the wrong sheet.
     var printPageCount: Int {
-        guard let lm = textView.layoutManager, let tc = textView.textContainer else { return 1 }
+        guard let lm = textView.layoutManager, textView.textContainer != nil else { return 1 }
         let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
                                          band: pageBandDelegate.band)
         // Measured from the LAST LINE, never from `usedRect` minus the trailing band. `usedRect`

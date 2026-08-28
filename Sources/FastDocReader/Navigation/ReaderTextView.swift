@@ -201,16 +201,12 @@ final class ReaderTextView: NSTextView {
     private func masterTemplateSelectionClosure(
         _ wc: DocumentWindowController, _ content: MasterPageContent
     ) -> (([MasterPageSelectionQuery]) -> [Int?]?)? {
-        #if FMD_RUST_ENGINE
         guard let handle = wc.mdDocument?.officeEngineHandle else { return nil }
         return { queries in
             handle.masterTemplateSelection(
                 templates: content.pages, vetoedSections: content.sectionsHidingMasterPage,
                 pages: queries.map { ($0.pageIndex, $0.section) })
         }
-        #else
-        return nil
-        #endif
     }
 
     /// Objects the document pinned to the PAPER at a particular place in the text — a cover's
@@ -223,7 +219,7 @@ final class ReaderTextView: NSTextView {
     private func drawAnchoredObjects(_ wc: DocumentWindowController,
                                      content: MasterPageContent, sheets: [CGRect]) {
         let objects = wc.mdDocument?.officeAnchoredObjects ?? []
-        guard !objects.isEmpty, let lm = layoutManager, let tc = textContainer,
+        guard !objects.isEmpty, let lm = layoutManager,
               let storage = textStorage, storage.length > 0 else { return }
         let pitch = PagePagination.pitch(pageContentHeight: wc.pageBandDelegate.pageContentHeight,
                                          band: wc.pageBandDelegate.band)

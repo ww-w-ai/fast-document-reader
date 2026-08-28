@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import Foundation
 import CFastdocEngine
 
@@ -135,4 +134,3 @@ enum RustEngineTableResize {
         }
     }
 }
-#endif

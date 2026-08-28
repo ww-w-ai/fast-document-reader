@@ -125,19 +125,22 @@ enum DocumentTypes {
     }
 
     static func readOffice(_ archive: ZipArchive, extension ext: String) throws -> OfficeReadResult {
-        guard let reader = officeReaderType(for: ext) else {
+        // A REGISTRATION check, not a dispatch: the engine reads every office format and takes the
+        // extension itself. What this still answers is whether the extension is one this app claims
+        // at all, which is a different failure with a different message than "the engine could not
+        // read it" — and `officeReaderType` is where that list lives.
+        guard officeReaderType(for: ext) != nil else {
             throw NSError(domain: "ai.ww-w.fast-md-reader", code: 3, userInfo: [
                 NSLocalizedDescriptionKey: "\".\(ext)\" is registered as an office format but has no reader.",
             ])
         }
-        #if FMD_RUST_ENGINE
-        // The ported engine reads the document, and NOTHING catches it if it cannot.
+        // The engine reads the document, and NOTHING catches it if it cannot.
         //
-        // It used to fall through to the Swift reader below, which made the app robust and the port
+        // It used to fall through to the Swift reader, which made the app robust and the port
         // unmeasurable: an engine that failed on every document would have looked exactly like one
-        // that worked, and the Swift readers this build no longer calls are not going to exist on
-        // Windows or Android to catch anything there. The engine has to stand on its own here for
-        // standing on its own elsewhere to mean something.
+        // that worked, and the Swift readers are not going to exist on Windows or Android to catch
+        // anything there. The engine has to stand on its own here for standing on its own elsewhere
+        // to mean something.
         //
         // The Swift readers are still in the tree and still under test — as the REFERENCE the
         // engine is checked against, which is the one job they keep.
@@ -155,18 +158,6 @@ enum DocumentTypes {
             ])
         }
         return ported.resolvingFontSubstitution()
-        #else
-        // `.resolvingFontSubstitution()` is applied HERE, once, for both docx/docm/dotx/dotm AND
-        // odt — the single funnel invariant 29 already makes both readers share, so neither
-        // `DocxReader` nor `OdtReader` has to call it (or forget to). See
-        // `FontSubstitutionResolver`'s file doc for why this belongs at read time.
-        #if DEBUG
-        try DocumentEngineTrace.record(
-            fileClass: ext.lowercased() == "odt" ? "odt" : "docx",
-            extension: ext, engine: "swift", seam: "M-ZIP-SWIFT-DISPATCH")
-        #endif
-        return try reader.read(archive).resolvingFontSubstitution()
-        #endif
     }
 
 

@@ -60,7 +60,6 @@ enum HeadlessExtract {
                 // `HwpReader.read` before `ZipArchive(data:)`, then feed the SAME serializer the zip
                 // office path uses (invariant 40 — one block vocabulary → Markdown). Only the reader
                 // differs; the serializer is shared.
-                #if FMD_RUST_ENGINE
                 // The ported engine answers BOTH families here, HWP included, and nothing catches
                 // it if it cannot. Its own dispatch branches on the extension before opening an
                 // archive, for the same reason this code used to: a `.hwp` is CFB binary and would
@@ -80,18 +79,6 @@ enum HeadlessExtract {
                 // Font discovery belongs to this AppKit host. The engine deliberately sends HWP
                 // over before substitution because an opaque NSFontDescriptor cannot cross JSON.
                 let result = unresolved.resolvingFontSubstitution()
-                #else
-                #if DEBUG
-                if DocumentTypes.isHwp(ext) {
-                    try DocumentEngineTrace.record(
-                        fileClass: ext, extension: ext, engine: "swift",
-                        seam: "M-HWP-SWIFT-EXTRACT")
-                }
-                #endif
-                let result = try DocumentTypes.isHwp(ext)
-                    ? HwpReader.read(data)
-                    : DocumentTypes.readOffice(try ZipArchive(data: data), extension: ext)
-                #endif
                 let body = OfficeMarkdownSerializer.serialize(result.blocks, footnotes: result.footnotes)
                 out(header(for: url.lastPathComponent, body: body) + body)
                 return 0

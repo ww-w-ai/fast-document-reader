@@ -179,8 +179,6 @@ struct DeclaredFace: Equatable {
     var declaredKind: DeclaredFontKind? { nil }
 }
 
-#if FMD_RUST_ENGINE
 /// Declared here, not beside the decoder: Swift synthesises `Decodable` only in the file that
 /// declares the type. See `OfficeBlock.swift`'s decoding section for the whole picture.
 extension DeclaredFace: Decodable {}
-#endif

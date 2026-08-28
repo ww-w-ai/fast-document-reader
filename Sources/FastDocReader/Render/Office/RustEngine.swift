@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import Foundation
 import CFastdocEngine
 
@@ -142,4 +141,3 @@ enum RustEngine {
         return String(cString: result)
     }
 }
-#endif

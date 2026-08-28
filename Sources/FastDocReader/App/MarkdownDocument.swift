@@ -209,7 +209,6 @@ final class MarkdownDocument: NSDocument {
     /// trip is not). `nil` for every other kind.
     private(set) var officeArchive: ZipArchive?
 
-    #if FMD_RUST_ENGINE
     /// S5C1-01/03: the engine's own read of THIS document, opened in `setOfficeContent` (the seam
     /// both `read(from:)` and `reloadDocument` pass through) and closed automatically by ARC when
     /// this property is reassigned or this document deallocates — `RustOfficeDocumentHandle.deinit`
@@ -218,7 +217,6 @@ final class MarkdownDocument: NSDocument {
     /// which is the close-then-reopen a reload needs: the handle can never answer with pre-reload
     /// content once `setOfficeContent` has run for the new bytes.
     private(set) var officeEngineHandle: RustOfficeDocumentHandle?
-    #endif
 
     /// Embedded office image bytes PRE-DECODED at read time, keyed by the `.image` block's id (see
     /// `OfficeReadResult.images`). The zip-backed readers (`DocxReader`/`OdtReader`) leave this `[:]`
@@ -431,7 +429,6 @@ final class MarkdownDocument: NSDocument {
             // failure here on purpose: `readOffice` returning nil throws, the way the zip path and
             // `--extract` already do, rather than degrading to the reader this build believes it no
             // longer uses.
-            #if FMD_RUST_ENGINE
             #if DEBUG
             try DocumentEngineTrace.record(
                 fileClass: ext.lowercased(), extension: ext, engine: "rust",
@@ -443,14 +440,6 @@ final class MarkdownDocument: NSDocument {
                 ])
             }
             let result = unresolved.resolvingFontSubstitution()
-            #else
-            #if DEBUG
-            try DocumentEngineTrace.record(
-                fileClass: ext.lowercased(), extension: ext, engine: "swift",
-                seam: "M-HWP-SWIFT-OPEN")
-            #endif
-            let result = try HwpReader.read(data)
-            #endif
             setOfficeContent(
                 blocks: result.blocks, comments: result.comments, archive: nil,
                 images: result.images, defaultBodyFontSize: result.defaultBodyFontSize,
@@ -528,7 +517,6 @@ final class MarkdownDocument: NSDocument {
         lineGridPitch: CGFloat? = nil,
         documentData: Data? = nil, documentExtension: String? = nil
     ) {
-        #if FMD_RUST_ENGINE
         // S5C1-03: this is the ONE seam `read(from:ofType:)` and `reloadDocument` both pass
         // through, so it is where the handle is opened — close-then-reopen, never leaked, never
         // stranded. Assigning `officeEngineHandle` to a NEW value (or to `nil`, when no bytes were
@@ -540,7 +528,6 @@ final class MarkdownDocument: NSDocument {
         self.officeEngineHandle = documentData.flatMap { data in
             documentExtension.flatMap { ext in RustOfficeDocumentHandle(data: data, extension: ext) }
         }
-        #endif
         self.officeBlocks = blocks
         self.officeComments = comments
         self.officeArchive = archive
@@ -648,7 +635,6 @@ final class MarkdownDocument: NSDocument {
                 // Same reader as the open above, deliberately: a reload that reads with a different
                 // one re-renders the same bytes differently, which is the regression the note above
                 // records for the body size and applies whole here.
-                #if FMD_RUST_ENGINE
                 #if DEBUG
                 try DocumentEngineTrace.record(
                     fileClass: ext.lowercased(), extension: ext, engine: "rust",
@@ -658,14 +644,6 @@ final class MarkdownDocument: NSDocument {
                     return .failure("The document engine could not read this \(ext.uppercased()) file.")
                 }
                 let result = unresolved.resolvingFontSubstitution()
-                #else
-                #if DEBUG
-                try DocumentEngineTrace.record(
-                    fileClass: ext.lowercased(), extension: ext, engine: "swift",
-                    seam: "M-HWP-SWIFT-RELOAD")
-                #endif
-                let result = try HwpReader.read(data)
-                #endif
                 return .office(result, archive: nil, defaultBodyFontSize: result.defaultBodyFontSize, data: data)
             }
             let archive = try ZipArchive(data: data)
@@ -1492,7 +1470,6 @@ final class MarkdownDocument: NSDocument {
                     pageContentWidth: officePageContentWidth)
             }
         }
-        #if FMD_RUST_ENGINE
         // S5D-2: the engine's own answer for the SAME question this render would otherwise measure
         // note by note — `PageBandGeometry::built_height`, batched into ONE crossing.
         // `resolveNoteHeights` rejects the WHOLE reply rather than trust a map missing a number
@@ -1506,9 +1483,6 @@ final class MarkdownDocument: NSDocument {
             documentDefaultFontSize: officeDefaultBodyFontSize)
         return PageBandGeometry.resolveNoteHeights(hostNumbers: officeFootnotes.map(\.number),
                                                    engine: reply) ?? hostFootnoteHeights()
-        #else
-        return hostFootnoteHeights()
-        #endif
     }
 
     func applyPageBand(to wc: DocumentWindowController, theme: RenderTheme? = nil,
@@ -1525,7 +1499,6 @@ final class MarkdownDocument: NSDocument {
         let headers = options.header ? officeHeaders : []
         let footers = options.footer ? officeFooters : []
         let bandColumn = officePageContentWidth ?? readingColumn
-        #if FMD_RUST_ENGINE
         // S5C1-03: the engine's own decision, from the document this handle already read, for the
         // SAME inputs the host would otherwise compute this from. A `nil` answer — no handle (this
         // document's engine read refused, or it was built from hand-supplied blocks with no bytes
@@ -1547,18 +1520,6 @@ final class MarkdownDocument: NSDocument {
                                            separatesPages: options.separatesPages,
                                            deskGap: forPrinting ? 0 : nil))
             : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
-        #else
-        let sides = officePageContentHeight != nil
-            ? PageBandGeometry.measure(headers: headers, footers: footers,
-                                       theme: theme, columnWidth: bandColumn,
-                                       documentDefaultFontSize: officeDefaultBodyFontSize,
-                                       pageContentWidth: officePageContentWidth,
-                                       pageMarginTop: officePageMarginTop,
-                                       pageMarginBottom: officePageMarginBottom,
-                                       separatesPages: options.separatesPages,
-                                       deskGap: forPrinting ? 0 : nil)
-            : PageBandGeometry.Sides(header: 0, footer: 0, band: 0)
-        #endif
         // Each note's own height, measured ONCE per render at the column it will be drawn at. The
         // settle loop then adds up whichever notes a page turns out to cite (invariant 98) without
         // re-building any of them — it runs up to eight times, and re-typesetting every note on

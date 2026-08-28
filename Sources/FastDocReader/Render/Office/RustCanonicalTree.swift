@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import Foundation
 
 /// The typed decode target for the new-shape Rust export's wire envelope.
@@ -125,4 +124,3 @@ extension RustCanonicalEnvelope {
         return try JSONSerialization.data(withJSONObject: ok)
     }
 }
-#endif

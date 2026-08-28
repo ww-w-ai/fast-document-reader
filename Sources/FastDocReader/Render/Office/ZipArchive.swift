@@ -253,7 +253,6 @@ private extension Data {
     }
 }
 
-#if FMD_RUST_ENGINE
 extension ZipArchive {
     /// The bytes this archive was built from, for handing to the ported engine — which parses the
     /// container itself and so needs the file, not this reader's view of it.
@@ -262,4 +261,3 @@ extension ZipArchive {
     /// stays private there, and a build without the engine has no way to ask for it.
     var sourceBytes: Data { data }
 }
-#endif

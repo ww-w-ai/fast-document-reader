@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import AppKit
 
 // The parts of the engine's envelope that Swift cannot synthesise: AppKit's own value types, and
@@ -328,4 +327,3 @@ extension OfficeBlock: Decodable {
         }
     }
 }
-#endif

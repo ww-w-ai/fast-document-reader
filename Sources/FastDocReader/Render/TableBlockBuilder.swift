@@ -993,7 +993,6 @@ enum TableBlockBuilder {
         let whole = NSRange(location: 0, length: storage.length)
         var touched: [NSRange] = []
 
-        #if FMD_RUST_ENGINE
         // S5B2b cutover: the per-cell arithmetic crosses to the engine
         // (`fastdoc_table_resize_cell_widths_batch`, via `RustEngineTableResize`), but the LIVE
         // traversal and write-back stay exactly Swift's — `RustEngine` reads a whole document;
@@ -1061,41 +1060,6 @@ enum TableBlockBuilder {
                 touched.append(entry.range)
             }
         }
-        #else
-        var edgesByTable: [ObjectIdentifier: [CGFloat]] = [:]
-        storage.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
-            guard let ps = value as? NSParagraphStyle,
-                  let block = ps.textBlocks.first as? NSTextTableBlock,
-                  let table = block.table as? GridTextTable, !table.columnProportions.isEmpty else { return }
-            let key = ObjectIdentifier(table)
-            let edges = edgesByTable[key] ?? {
-                let e = table.edges(forWidth: width); edgesByTable[key] = e; return e
-            }()
-            // Read BOTH horizontal edges back, never one of them twice. With per-edge borders the
-            // left and right widths legitimately differ (a table with no outer rule but an inner one
-            // has left 0 and right 1), and doubling the left produced a target that never matched
-            // what `build` had already set — so every cell "changed" on every reflow: real work, and
-            // a visible re-snap of the whole table right after it was drawn. `build` already left a
-            // non-owner side at width 0 (see its Step B/C), so subtracting it in full here costs
-            // nothing extra — the old halving existed only to model AppKit's collapsing, which no
-            // longer runs.
-            guard let target = localCellTargetWidth(
-                edges: edges, numberOfColumns: table.numberOfColumns,
-                startingColumn: block.startingColumn, columnSpan: block.columnSpan,
-                padLeft: block.width(for: .padding, edge: .minX),
-                padRight: block.width(for: .padding, edge: .maxX),
-                borderLeft: block.width(for: .border, edge: .minX),
-                borderRight: block.width(for: .border, edge: .maxX))
-            else { return }
-            // Only cells whose width actually MOVES are touched. This pass runs on every reflow AND
-            // in `display(_:)`'s tail, where the column usually hasn't changed at all — recording
-            // every cell unconditionally meant invalidating the whole document to set widths to the
-            // values they already had.
-            guard abs(block.contentWidth - target) > 0.5 else { return }
-            block.setContentWidth(target, type: .absoluteValueType)
-            touched.append(range)
-        }
-        #endif
 
         // Widths changed on the shared block objects; nudge layout to pick them up — ONCE, over the
         // span they cover, not once per cell. Measured on a 62-table Korean form (1,702 cell

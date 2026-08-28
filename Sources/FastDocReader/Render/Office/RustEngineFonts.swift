@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import AppKit
 import CFastdocEngine
 
@@ -171,4 +170,3 @@ enum RustEngineFonts {
         buffer[bytes.count] = 0
     }
 }
-#endif

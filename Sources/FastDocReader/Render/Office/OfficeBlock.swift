@@ -1522,7 +1522,6 @@ struct OfficeFormControl: Hashable {
     }
 }
 
-#if FMD_RUST_ENGINE
 // MARK: - Decoding the ported engine's envelope
 //
 // Compiled ONLY into a build that asked for the Rust engine, so the shipped app carries none of it.
@@ -1896,4 +1895,3 @@ extension CellDiagonal.Direction: Decodable {
 }
 extension ListNumbering.Glyphs: Decodable {}
 extension OfficeFormControl.Kind: Decodable {}
-#endif
