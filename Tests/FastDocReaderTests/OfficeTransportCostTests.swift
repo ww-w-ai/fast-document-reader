@@ -83,6 +83,18 @@ final class OfficeTransportCostTests: XCTestCase {
         }
         let vocabMs = Date().timeIntervalSince(vocabStart) * 1000
 
+        // A ceiling for pooling `format` and `edge_borders` was attempted here and could NOT be
+        // measured without doing the work: `ParagraphFormat` has required fields
+        // (`contextualSpacing`, `borderEdges`, and the decoder names another each time one is
+        // supplied), so a paragraph cannot be decoded without its format object at all. That is
+        // itself the finding — pooling them is a SCHEMA change, not a smaller payload, which is why
+        // it is a bigger step than pooling pictures was.
+        //
+        // What can be said from the numbers below: the vocabulary costs ~590 ms for roughly 30,000
+        // decoded objects, and `format` + `edge_borders` are 16,358 of them. At that average the
+        // pooling is worth ~300 ms — an ESTIMATE from a mean, not a measurement, and recorded as
+        // one.
+
         print(String(
             format: """
             TRANSPORT %@
@@ -99,3 +111,4 @@ final class OfficeTransportCostTests: XCTestCase {
             decoded.blocks.count, decoded.images.count))
     }
 }
+
