@@ -774,6 +774,47 @@ fn validate_payload(
                     return Err(invalid("page band distance is invalid"));
                 }
             }
+            if let Some(fs) = &v.footnote_separator {
+                // `line_width_points` alone stays `finite_nonnegative`: it is a stroke WIDTH, the
+                // same kind of fact `validate_drawn_border_width` already guards, and this format
+                // shares its code space with a border edge's line type (`wire::FootnoteSeparator`'s
+                // own doc). The other four are POSITIONS — how far a margin sits, how long a rule
+                // runs — the same kind of fact `validate_optional_insets` already relaxed for cell
+                // padding after measuring genuine negative values on real documents (that
+                // function's own comment: -309.84 on 2 of 674 cells). The same rhwp HWPUNIT/100
+                // conversion produces the identical shape here: a real section in this repo's own
+                // `blank2010.hwp` fixture carries `length_pt: -0.01` and `margin_top_pt: -0.01`,
+                // both rounding artifacts near zero rather than a meaningfully negative margin, and
+                // the shipped Swift reader already carries them untouched. Refusing them would make
+                // this validator stricter than the app it replaces, on a fixture this sprint's own
+                // oracle test opens.
+                if !finite_nonnegative(fs.line_width_points) {
+                    return Err(invalid("footnote separator line width is invalid"));
+                }
+                let positions = [fs.margin_top_points, fs.margin_bottom_points, fs.note_spacing_points];
+                if positions.iter().any(|x| !x.is_finite())
+                    || fs.length_points.is_some_and(|x| !x.is_finite())
+                {
+                    return Err(invalid("footnote separator is invalid"));
+                }
+                if fs.color.is_some_and(|c| !valid_color(&c)) {
+                    return Err(invalid("footnote separator color is invalid"));
+                }
+            }
+            if let Some(pb) = &v.page_border {
+                // Same posture as a cell's own padding (`validate_optional_insets`): a distance
+                // from the paper's own edge, not a width, so only NaN/infinity refuse.
+                let spacing = [pb.spacing.top, pb.spacing.right, pb.spacing.bottom, pb.spacing.left];
+                if spacing.iter().any(|x| !x.is_finite()) {
+                    return Err(invalid("page border spacing is invalid"));
+                }
+                if pb.background.is_some_and(|c| !valid_color(&c)) {
+                    return Err(invalid("page border background color is invalid"));
+                }
+                if let Some(borders) = &pb.borders {
+                    validate_border_set(borders, false)?;
+                }
+            }
         }
         P::Unsupported(v) => {
             if v.source_format_tag.is_empty() || v.reason.is_empty() {

@@ -216,17 +216,36 @@ pub(super) fn from_office(
             start: decl.and_then(|d| d.page_number_start),
             hidden: false,
         };
-        let line_grid_points = decl.and_then(|d| d.line_grid_pitch).or(result.line_grid_pitch);
+        // EFFECTIVE, not declared: a section that named neither is laid out on the document's, and
+        // the two flags beside them are what keep `project` from reporting the inherited value as a
+        // declaration the source never made (invariant 108).
+        let declared_line_grid = decl.and_then(|d| d.line_grid_pitch);
+        let line_grid_points = declared_line_grid.or(result.line_grid_pitch);
         let columns = column_flow_for_layout(first_declared_column_layout(slice))?.map(|flow| {
             wire::SectionColumns { count: flow.count, widths: flow.widths, gaps: flow.gaps }
         });
+        let footnote_separator =
+            decl.and_then(|d| d.footnote_separator.as_ref()).map(convert_footnote_separator);
+        let page_border = decl.and_then(|d| d.page_border.as_ref()).map(convert_page_border);
+        let hides_header = decl.is_some_and(|d| d.hides_header);
+        let hides_footer = decl.is_some_and(|d| d.hides_footer);
+        let hides_master_page = decl.is_some_and(|d| d.hides_master_page);
+        let is_vertical = decl.is_some_and(|d| d.is_vertical);
         let section_payload = wire::NodePayload::Section(wire::Section {
             paper,
+            paper_is_declared: declared.is_some(),
+            line_grid_is_declared: declared_line_grid.is_some(),
             columns,
             header_ids,
             footer_ids,
             page_numbering,
             line_grid_points,
+            footnote_separator,
+            page_border,
+            hides_header,
+            hides_footer,
+            hides_master_page,
+            is_vertical,
         });
         ctx.nodes.push(wire::Node {
             id: section_id,
@@ -272,6 +291,9 @@ pub(super) fn from_office(
             .map(|(name, face)| (name.to_string(), face.clone()))
             .collect(),
         default_body_font_size: result.default_body_font_size,
+        declared_section_count: result.sections.len() as u32,
+        document_paper: result_page_geometry(result).map(|geo| build_paper(&geo, result)),
+        line_grid_points: result.line_grid_pitch,
     };
     let mut builder = RenderTreeBuilder::new("fastdoc-office-adapter", document);
 
@@ -1838,6 +1860,37 @@ fn convert_gradient(g: &office_block::OfficeGradient) -> wire::Gradient {
     }
 }
 
+/// `office_block::OfficeFootnoteSeparator` -> `wire::FootnoteSeparator`, field for field — every
+/// length already arrives in points from the reader, nothing here converts units.
+fn convert_footnote_separator(fs: &office_block::OfficeFootnoteSeparator) -> wire::FootnoteSeparator {
+    wire::FootnoteSeparator {
+        line_type: fs.line_type,
+        line_width_points: fs.line_width_pt,
+        color: fs.color.map(convert_color),
+        length_points: fs.length_pt,
+        margin_top_points: fs.margin_top_pt,
+        margin_bottom_points: fs.margin_bottom_pt,
+        note_spacing_points: fs.note_spacing_pt,
+    }
+}
+
+/// `office_block::OfficePageBorder` -> `wire::PageBorder`. `borders` reuses `convert_edge_borders`
+/// — the SAME per-edge decode a table cell's border gets, so invariant 47's "a SUPPRESSED edge is
+/// not a missing one" distinction is not re-implemented here.
+fn convert_page_border(pb: &office_block::OfficePageBorder) -> wire::PageBorder {
+    wire::PageBorder {
+        borders: pb.borders.as_ref().map(convert_edge_borders),
+        background: pb.background.map(convert_color),
+        spacing: wire::Insets {
+            top: pb.spacing.top,
+            right: pb.spacing.right,
+            bottom: pb.spacing.bottom,
+            left: pb.spacing.left,
+        },
+        measured_from_paper: pb.measured_from_paper,
+    }
+}
+
 fn convert_color(c: NSColor) -> wire::Color {
     use swiftshim::color_font::NSColorSpaceName;
     wire::Color {
@@ -1899,9 +1952,10 @@ fn sanitize_tab_stops(stops: &[office_block::TabStop]) -> Vec<wire::TabStop> {
 mod tests {
     use super::*;
     use crate::render::office::office_block::{
-        ListNumbering, OfficeMasterObject, OfficeMasterObjectContent, ParagraphFormat,
+        ListNumbering, OfficeFootnoteSeparator, OfficeMasterObject, OfficeMasterObjectContent,
+        OfficePageBorder, OfficeSectionDeclaration, ParagraphFormat,
     };
-    use swiftshim::CGRect;
+    use swiftshim::{CGRect, NSEdgeInsets};
 
     fn input(result: &OfficeReadResult) -> OfficeAdapterInput<'_> {
         OfficeAdapterInput {
@@ -3043,5 +3097,274 @@ mod tests {
             .find(|n| n["type"] == "unsupported")
             .expect("an unsupported node exists");
         assert_eq!(node["data"]["alignment"], "natural");
+    }
+
+    /// A fully non-default section declaration — every one of `OfficeSectionDeclaration`'s six
+    /// previously-refused fields set to a value that is NOT that field's default — survives the
+    /// adapter into `wire::Section`, field for field. Asserting non-default values throughout is
+    /// deliberate: a fixture that happened to use the default could not catch a regression that
+    /// silently reconstructs the default instead of the declared value.
+    #[test]
+    fn a_section_declaring_every_new_field_survives_into_the_wire_section() {
+        let section = OfficeSectionDeclaration {
+            footnote_separator: Some(OfficeFootnoteSeparator {
+                line_type: 3,
+                line_width_pt: 0.75,
+                color: Some(NSColor::srgb(0.1, 0.2, 0.3, 1.0)),
+                length_pt: Some(144.0),
+                margin_top_pt: 5.0,
+                margin_bottom_pt: 3.0,
+                note_spacing_pt: 1.5,
+            }),
+            page_border: Some(OfficePageBorder {
+                borders: Some(EdgeBorders {
+                    top: Some(BorderDecl::Drawn(BorderSide {
+                        width: 2.0,
+                        color: Some(NSColor::srgb(0.5, 0.5, 0.5, 1.0)),
+                        style: office_block::BorderLineStyle::Dashed,
+                    })),
+                    left: None,
+                    bottom: None,
+                    right: None,
+                    inside_h: None,
+                    inside_v: None,
+                }),
+                background: Some(NSColor::srgb(0.8, 0.8, 0.9, 1.0)),
+                spacing: NSEdgeInsets { top: 12.0, left: 12.0, bottom: 12.0, right: 12.0 },
+                measured_from_paper: true,
+            }),
+            paper: None,
+            hides_header: true,
+            hides_footer: true,
+            hides_master_page: true,
+            page_number_start: Some(7),
+            line_grid_pitch: Some(18.0),
+            is_vertical: true,
+        };
+        let result = OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![section],
+            ..OfficeReadResult::default()
+        };
+        let tree = from_office(input(&result)).expect("canonicalizes");
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let node = value["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "section")
+            .expect("a section node exists");
+        let data = &node["data"];
+        assert_eq!(data["footnoteSeparator"]["lineType"], 3);
+        assert_eq!(data["footnoteSeparator"]["lineWidthPoints"], 0.75);
+        assert_eq!(data["footnoteSeparator"]["lengthPoints"], 144.0);
+        assert_eq!(data["footnoteSeparator"]["marginTopPoints"], 5.0);
+        assert_eq!(data["footnoteSeparator"]["marginBottomPoints"], 3.0);
+        assert_eq!(data["footnoteSeparator"]["noteSpacingPoints"], 1.5);
+        assert!(data["footnoteSeparator"]["color"].is_object());
+        assert_eq!(data["pageBorder"]["measuredFromPaper"], true);
+        assert_eq!(data["pageBorder"]["spacing"]["top"], 12.0);
+        assert!(data["pageBorder"]["borders"]["top"].is_object());
+        assert!(data["pageBorder"]["background"].is_object());
+        assert_eq!(data["hidesHeader"], true);
+        assert_eq!(data["hidesFooter"], true);
+        assert_eq!(data["hidesMasterPage"], true);
+        assert_eq!(data["isVertical"], true);
+        assert_eq!(data["pageNumbering"]["start"], 7);
+        assert_eq!(data["lineGridPoints"], 18.0);
+    }
+
+    /// A section declaring NOTHING new (every one of the six at its default/`None`) must carry
+    /// those defaults through too — the opposite regression from the test above, and the one a
+    /// `hides_header: true` fixture alone could not catch (defaulting `false` to `true` silently
+    /// would look the same as a passing default-to-default round trip if only the non-default
+    /// fixture existed).
+    #[test]
+    fn a_section_declaring_none_of_the_new_fields_carries_no_veto_and_no_frame() {
+        let result = OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![OfficeSectionDeclaration::default()],
+            ..OfficeReadResult::default()
+        };
+        let tree = from_office(input(&result)).expect("canonicalizes");
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        let node = value["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["type"] == "section")
+            .expect("a section node exists");
+        let data = &node["data"];
+        assert!(data["footnoteSeparator"].is_null());
+        assert!(data["pageBorder"].is_null());
+        assert_eq!(data["hidesHeader"], false);
+        assert_eq!(data["hidesFooter"], false);
+        assert_eq!(data["hidesMasterPage"], false);
+        assert_eq!(data["isVertical"], false);
+    }
+
+    /// A NaN in one of the footnote separator's POSITION fields must still stop canonicalization —
+    /// relaxing them from `finite_nonnegative` to `is_finite` (to admit the genuine small negative
+    /// values real HWP documents produce, see `validate.rs`'s own comment) must not also admit NaN.
+    #[test]
+    fn a_nan_footnote_separator_margin_fails_canonicalization() {
+        let result = OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![OfficeSectionDeclaration {
+                footnote_separator: Some(OfficeFootnoteSeparator {
+                    margin_top_pt: f64::NAN,
+                    ..OfficeFootnoteSeparator::default()
+                }),
+                ..OfficeSectionDeclaration::default()
+            }],
+            ..OfficeReadResult::default()
+        };
+        assert!(
+            matches!(from_office(input(&result)), Err(OfficeAdapterError::Canonicalization(_))),
+            "a NaN footnote separator margin must stop canonicalization"
+        );
+    }
+
+    /// A NEGATIVE footnote separator line WIDTH must still be refused — unlike the position fields
+    /// above, `line_width_points` stays `finite_nonnegative` (it is a stroke width, not a margin),
+    /// so this must not have been loosened alongside them.
+    #[test]
+    fn a_negative_footnote_separator_line_width_fails_canonicalization() {
+        let result = OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![OfficeSectionDeclaration {
+                footnote_separator: Some(OfficeFootnoteSeparator {
+                    line_width_pt: -1.0,
+                    ..OfficeFootnoteSeparator::default()
+                }),
+                ..OfficeSectionDeclaration::default()
+            }],
+            ..OfficeReadResult::default()
+        };
+        assert!(
+            matches!(from_office(input(&result)), Err(OfficeAdapterError::Canonicalization(_))),
+            "a negative footnote separator line width must stop canonicalization"
+        );
+    }
+
+    /// The genuine near-zero negative this repo measured on a real document (`blank2010.hwp`:
+    /// `length_pt: -0.01`, `margin_top_pt: -0.01`) must NOT be refused — a regression back to
+    /// `finite_nonnegative` on the position fields would silently reject that real fixture again.
+    #[test]
+    fn a_small_negative_footnote_separator_position_still_canonicalizes() {
+        let result = OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![OfficeSectionDeclaration {
+                footnote_separator: Some(OfficeFootnoteSeparator {
+                    length_pt: Some(-0.01),
+                    margin_top_pt: -0.01,
+                    ..OfficeFootnoteSeparator::default()
+                }),
+                ..OfficeSectionDeclaration::default()
+            }],
+            ..OfficeReadResult::default()
+        };
+        from_office(input(&result))
+            .expect("a small negative footnote separator position must still canonicalize");
+    }
+
+    /// NaN in the page border's spacing must fail, the same way a NaN paragraph metric does.
+    #[test]
+    fn a_nan_page_border_spacing_fails_canonicalization() {
+        let result = OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![OfficeSectionDeclaration {
+                page_border: Some(OfficePageBorder {
+                    borders: None,
+                    background: None,
+                    spacing: NSEdgeInsets { top: f64::NAN, left: 0.0, bottom: 0.0, right: 0.0 },
+                    measured_from_paper: false,
+                }),
+                ..OfficeSectionDeclaration::default()
+            }],
+            ..OfficeReadResult::default()
+        };
+        assert!(
+            matches!(from_office(input(&result)), Err(OfficeAdapterError::Canonicalization(_))),
+            "a NaN page border spacing must stop canonicalization"
+        );
+    }
+
+    /// The tree's own record of how many sections the SOURCE declared
+    /// (`wire::Document.declared_section_count`) — `0` when the source declared none at all (the
+    /// synthetic single-section fallback docx/odt always build), and the real count otherwise. This
+    /// is what `office_project::project` reads to tell that ambiguity apart; a regression that
+    /// always writes `0`, or always writes `sections.len().max(1)`, breaks it silently unless this
+    /// field is asserted directly.
+    #[test]
+    fn declared_section_count_reflects_zero_and_nonzero_source_declarations() {
+        let no_sections = OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            ..OfficeReadResult::default()
+        };
+        let tree = from_office(input(&no_sections)).expect("canonicalizes");
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        assert_eq!(value["document"]["declaredSectionCount"], 0);
+
+        let one_section = OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![OfficeSectionDeclaration::default()],
+            ..OfficeReadResult::default()
+        };
+        let tree = from_office(input(&one_section)).expect("canonicalizes");
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+        assert_eq!(value["document"]["declaredSectionCount"], 1);
     }
 }

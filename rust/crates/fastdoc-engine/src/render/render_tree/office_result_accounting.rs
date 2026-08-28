@@ -386,18 +386,10 @@ pub(crate) fn account_section_declaration(
         line_grid_pitch,
         is_vertical,
     } = section;
-    let _ = (paper, page_number_start, line_grid_pitch);
-    ledger.record(mapped("OfficeSectionDeclaration.paper"))?;
-    ledger.record(mapped("OfficeSectionDeclaration.page_number_start"))?;
-    ledger.record(mapped("OfficeSectionDeclaration.line_grid_pitch"))?;
-    // These six are REFUSED together, and `hides_header` / `hides_footer` are not a milder case
-    // than the other four: no line anywhere reads them on the way to the tree
-    // (`office_adapter.rs` never mentions either), and `office_project` reconstructs no section
-    // declaration at all -- a document with more than one section is refused outright, and a
-    // document with one gets `[]`. Calling them `derived` said the tree could get them back, which
-    // is a strictly stronger claim than `refused` and was never true (invariant 107). They move
-    // back to `Mapped` when `wire::Section` gains somewhere to put them, not before.
     let _ = (
+        paper,
+        page_number_start,
+        line_grid_pitch,
         footnote_separator,
         page_border,
         hides_header,
@@ -405,12 +397,21 @@ pub(crate) fn account_section_declaration(
         hides_master_page,
         is_vertical,
     );
-    ledger.record(refused("OfficeSectionDeclaration.footnote_separator"))?;
-    ledger.record(refused("OfficeSectionDeclaration.page_border"))?;
-    ledger.record(refused("OfficeSectionDeclaration.hides_header"))?;
-    ledger.record(refused("OfficeSectionDeclaration.hides_footer"))?;
-    ledger.record(refused("OfficeSectionDeclaration.hides_master_page"))?;
-    ledger.record(refused("OfficeSectionDeclaration.is_vertical"))?;
+    ledger.record(mapped("OfficeSectionDeclaration.paper"))?;
+    ledger.record(mapped("OfficeSectionDeclaration.page_number_start"))?;
+    ledger.record(mapped("OfficeSectionDeclaration.line_grid_pitch"))?;
+    // These six moved from REFUSED to MAPPED once `wire::Section` gained somewhere to put them
+    // (`footnote_separator`/`page_border`/`hides_header`/`hides_footer`/`hides_master_page`/
+    // `is_vertical` — `wire.rs`'s own field list) and `office_adapter::from_office` started
+    // carrying every one of them onto the tree, with `office_project::project` reconstructing them
+    // back for real instead of refusing `ProjectionError::Field("sections")` for any document that
+    // declared more than one section.
+    ledger.record(mapped("OfficeSectionDeclaration.footnote_separator"))?;
+    ledger.record(mapped("OfficeSectionDeclaration.page_border"))?;
+    ledger.record(mapped("OfficeSectionDeclaration.hides_header"))?;
+    ledger.record(mapped("OfficeSectionDeclaration.hides_footer"))?;
+    ledger.record(mapped("OfficeSectionDeclaration.hides_master_page"))?;
+    ledger.record(mapped("OfficeSectionDeclaration.is_vertical"))?;
     ledger.finish_expected(KEYS, KEYS.len())
 }
 
@@ -551,12 +552,12 @@ mod tests {
     fn section_and_restart_accounting_are_exhaustive() {
         let section = account_section_declaration(&OfficeSectionDeclaration::default()).unwrap();
         assert_eq!(section.decision_count(), 9);
-        assert_eq!(section.mapped_count(), 3);
-        // Nothing in a section declaration is DERIVED. `hides_header` / `hides_footer` were
-        // counted here until the tree was asked to produce them and could not: see the comment
-        // beside their `refused` calls.
+        // All nine are MAPPED now: `wire::Section` carries every one of
+        // `OfficeSectionDeclaration`'s fields, and `office_project::project` reconstructs them for
+        // real instead of refusing a multi-section document outright.
+        assert_eq!(section.mapped_count(), 9);
         assert_eq!(section.derived_count(), 0);
-        assert_eq!(section.refused_count(), 6);
+        assert_eq!(section.refused_count(), 0);
 
         let restart = account_page_number_restart(&OfficePageNumberRestart {
             block: 0,
@@ -570,9 +571,10 @@ mod tests {
     /// S6-3's `master_pages` was the last top-level field this ledger still recorded `refused` —
     /// with it now `mapped` alongside S6-2's `anchored_objects`, every one of the 27 is `mapped`
     /// or `derived`; `refused_count()` for THIS ledger is honestly zero. A sub-ledger further down
-    /// the same object graph (`OfficeSectionDeclaration`'s own five fields, `account_section`)
-    /// still records `refused` — this assertion is about the TOP-LEVEL 27 only. (S6-5a added
-    /// `pictures_declared_without_bytes`, `mapped` — see that field's own doc.)
+    /// the same object graph (`OfficeSectionDeclaration`'s own six fields, `account_section`) used
+    /// to still record `refused` — closed too, once `wire::Section` gained somewhere to carry them
+    /// — so this assertion is about the TOP-LEVEL 27 only, not a claim the sub-ledger differs any
+    /// more. (S6-5a added `pictures_declared_without_bytes`, `mapped` — see that field's own doc.)
     #[test]
     fn account_office_read_result_records_exactly_twenty_six_decisions() {
         let result = OfficeReadResult::default();

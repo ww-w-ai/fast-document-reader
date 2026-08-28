@@ -130,6 +130,31 @@ pub struct Document {
     /// the same thing those fixtures meant by carrying nothing.
     #[serde(default)]
     pub default_body_font_size: f64,
+    /// How many `Section`s the SOURCE itself declared — `office_adapter::from_office`'s own
+    /// `section_count = result.sections.len().max(1)` always builds at least one `Section` node,
+    /// so a tree with exactly one cannot otherwise tell "the source declared none" (the synthetic
+    /// document-wide case docx/odt always build) from "declared exactly one" apart, and
+    /// `office_project::project` needs that distinction to know whether `sections` should
+    /// reconstruct to `[]` or to a one-element array (invariant 108: an empty collection standing
+    /// in for "we were not told" is the failure, not a fact). `0` here means the source declared
+    /// none. `#[serde(default)]`: fixtures written before this field existed predate multi-section
+    /// carrying and were all single/no-section documents, for which `0` is the same fallback
+    /// `project` already used.
+    #[serde(default)]
+    pub declared_section_count: u32,
+    /// The page the DOCUMENT itself states, carried verbatim from the source's own
+    /// `page_content_*`/`page_margin_*` fields. Separate from any `Section.paper` because a section
+    /// that declared no page of its own still needs an effective one to lay out against, so the
+    /// adapter fills `Section.paper` with this — and a projector reading the document's geometry
+    /// back off section zero would then report whatever section zero happened to declare instead.
+    /// The two layers are different facts and each is carried once.
+    #[serde(default)]
+    pub document_paper: Option<Paper>,
+    /// The 원고지 line pitch the DOCUMENT itself states, carried verbatim, for the same reason as
+    /// `document_paper` above: `Section.line_grid_points` is the EFFECTIVE pitch, which falls back
+    /// to this one, so it cannot also serve as the record of what the document said.
+    #[serde(default)]
+    pub line_grid_points: Option<f64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -523,10 +548,56 @@ pub struct PageNumbering {
     pub hidden: bool,
 }
 
+/// The rule above a section's footnotes, and the air around them — HWP-only, `nil` on every
+/// other format and on an HWP section that declared none. Mirrors
+/// `office_block::OfficeFootnoteSeparator` field for field; see that struct's own doc for why each
+/// length is already resolved to points before it reaches here.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FootnoteSeparator {
+    pub line_type: i64,
+    pub line_width_points: f64,
+    #[serde(default)]
+    pub color: Option<Color>,
+    #[serde(default)]
+    pub length_points: Option<f64>,
+    pub margin_top_points: f64,
+    pub margin_bottom_points: f64,
+    pub note_spacing_points: f64,
+}
+
+/// The frame a section rules around its own page — reuses `BorderSet`/`Color`/`Insets` rather than
+/// a second per-edge border type, so invariant 47's "a SUPPRESSED edge is not a missing one"
+/// distinction is decoded once, not twice. Mirrors `office_block::OfficePageBorder`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageBorder {
+    #[serde(default)]
+    pub borders: Option<BorderSet>,
+    #[serde(default)]
+    pub background: Option<Color>,
+    pub spacing: Insets,
+    pub measured_from_paper: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Section {
+    /// The EFFECTIVE sheet this section is laid out on — its own when it declared one, otherwise
+    /// the document's (`Document.document_paper`). Read `paper_is_declared` before reporting this
+    /// as something the section stated: `OfficeSectionDeclaration.paper`'s own contract is that
+    /// `nil` means "this section stated no page of its own", and invariant 73 is what happens when
+    /// that distinction is lost (a 612pt appendix page typeset on the body's 555pt sheet).
     pub paper: Option<Paper>,
+    /// This section named a sheet of its OWN, rather than inheriting the document's. Without this
+    /// bit an inherited page is indistinguishable from a declared one, which is invariant 108's
+    /// shape — an effective value standing where the truth is "we were not told".
+    #[serde(default)]
+    pub paper_is_declared: bool,
+    /// This section named a line pitch of its OWN. Same reason as `paper_is_declared`:
+    /// `line_grid_points` below is the effective pitch, not a record of who declared it.
+    #[serde(default)]
+    pub line_grid_is_declared: bool,
     pub columns: Option<SectionColumns>,
     #[serde(default)]
     pub header_ids: Vec<u64>,
@@ -536,6 +607,25 @@ pub struct Section {
     pub page_numbering: PageNumbering,
     #[serde(default)]
     pub line_grid_points: Option<f64>,
+    /// The rule above this section's footnotes. `#[serde(default)]`: golden fixtures written
+    /// before multi-section carrying predate this field.
+    #[serde(default)]
+    pub footnote_separator: Option<FootnoteSeparator>,
+    /// The frame this section rules around its page, when it declares one.
+    #[serde(default)]
+    pub page_border: Option<PageBorder>,
+    /// The section turned its own running header off — a veto, not a preference.
+    #[serde(default)]
+    pub hides_header: bool,
+    #[serde(default)]
+    pub hides_footer: bool,
+    #[serde(default)]
+    pub hides_master_page: bool,
+    /// The section is set VERTICALLY. Recorded, not honoured — see
+    /// `office_block::OfficeSectionDeclaration.is_vertical`'s own doc for why this stays in the
+    /// vocabulary even though nothing draws it.
+    #[serde(default)]
+    pub is_vertical: bool,
 }
 /// The document's own pagination instructions for ONE paragraph-class block.
 ///

@@ -458,6 +458,9 @@ fn public_typed_builder_uses_the_same_checked_canonicalization() {
         default_locale: None,
         declared_faces: Default::default(),
         default_body_font_size: 0.0,
+        declared_section_count: 0,
+        document_paper: None,
+        line_grid_points: None,
     };
     let mut builder = RenderTreeBuilder::new("builder-test", document);
     builder.add_source(RenderSourceDraft {
@@ -607,6 +610,9 @@ fn build_with_image_fraction(fraction: Option<f64>) -> Result<ValidatedRenderTre
         default_locale: None,
         declared_faces: Default::default(),
         default_body_font_size: 0.0,
+        declared_section_count: 0,
+        document_paper: None,
+        line_grid_points: None,
     };
     let mut builder = RenderTreeBuilder::new("image-fraction-test", document);
     builder.add_resource(RenderResourceDraft {
@@ -706,6 +712,9 @@ fn build_with_unsupported_size(width: f64, height: f64) -> Result<ValidatedRende
         default_locale: None,
         declared_faces: Default::default(),
         default_body_font_size: 0.0,
+        declared_section_count: 0,
+        document_paper: None,
+        line_grid_points: None,
     };
     let mut builder = RenderTreeBuilder::new("unsupported-size-test", document);
     builder.add_node(RenderNodeDraft {

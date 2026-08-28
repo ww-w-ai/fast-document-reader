@@ -13,9 +13,9 @@ use fastdoc_engine::render::office::office_block::{
     Cell, OfficeBlock, OfficeReadResult, ParagraphFormat, Span, TableFormat,
 };
 use fastdoc_engine::render::office::office_export::to_json;
-use fastdoc_engine::render::office::office_project::{project, ProjectionError};
+use fastdoc_engine::render::office::office_project::project;
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
-use swiftshim::{CGSize, Data};
+use swiftshim::{CGSize, Data, NSColor, NSEdgeInsets};
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -440,11 +440,12 @@ fn is_a_documented_real_document_gap(diff: &str) -> bool {
     // module's own doc names — a span whose declared size happens to equal the reconstructed
     // document default nulls out on the project side, so it is only ever "present only on to_json".
     (diff.contains("/font_size ") && diff.ends_with("(present only on to_json)"))
-    // `sections` / `section_start_blocks`: the single-`Section`-node ambiguity this module's own
-    // doc names — every real single-section HWP/HWPX sample in this corpus declares exactly one
-    // section, which a synthetic single section is indistinguishable from in the wire tree.
-    || diff.starts_with("/sections (length ")
-    || diff.starts_with("/section_start_blocks (length ")
+    // `sections` / `section_start_blocks`: the ONE remaining ambiguity this module's own doc
+    // names — `wire::Document.declared_section_count == 0`, a source that declared no section at
+    // all, which the synthetic single-section tree docx/odt always build is indistinguishable
+    // from. No real HWP/HWPX sample in this corpus hits it (every one declares at least one
+    // section), so this predicate is defensive rather than presently exercised; kept for a future
+    // format or fixture that does declare none.
 }
 
 /// Runs the oracle on a real HWP/HWPX document and asserts every residual diff is one of this
@@ -532,45 +533,26 @@ fn a_real_hwp_document_s_font_table_round_trips_by_name() {
 }
 
 /// `hwpx-01-saved.hwpx` is this unit's own acceptance document — a genuinely MULTI-section tree
-/// (more than one `Section` node under the document root). `project` walks every section in order
-/// and reconstructs `blocks`/`headers`/`footers`/`footnotes` across all of them (proven by
-/// `a_second_sections_ordinary_content_walks_cleanly_and_only_the_sections_gap_remains` below,
-/// which puts ordinary content in the SECOND section and checks that nothing earlier than the
-/// trailing gap surfaces — note that this is no longer the walk-ORDERING proof it once was, for
-/// the reason that test's own doc gives) — the ONLY refusal left on such a document is the
-/// per-section `sections` DECLARATIONS array, which `wire::Section` has no fields to rebuild
-/// (`footnote_separator`/`page_border`/`hides_header`/`hides_footer`/`hides_master_page`/
-/// `is_vertical` — see this module's own doc).
+/// (more than one `Section` node under the document root), and this sprint's own real success-path
+/// comparison for it: `wire::Section` now carries every one of `OfficeSectionDeclaration`'s six
+/// previously-refused fields, so `project` no longer refuses `Field("sections")` on this document
+/// at all. Runs the same documented-gap oracle the single-section `blank2010.hwp` test uses
+/// (`assert_projects_within_documented_gaps`) rather than strict equality, because a real document
+/// can still carry this module's OTHER named gaps (the `font_size` mode-reconstruction heuristic);
+/// what changed is that `/sections` and `/section_start_blocks` are no longer among them for a
+/// document that declares more than one section (`is_a_documented_real_document_gap`'s own doc).
 #[test]
-fn a_real_multi_section_hwpx_document_names_exactly_the_sections_gap() {
+fn a_real_multi_section_hwpx_document_projects_within_documented_gaps() {
     let bytes = rhwp_saved_fixture("hwpx-01-saved.hwpx");
     let data = Data::fromBytes(bytes.clone());
     let result = HwpReader::read_before_host_font_substitution(&data)
         .unwrap_or_else(|e| panic!("hwpx-01-saved.hwpx: HwpReader::read failed: {e:?}"));
-    let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
-        format: DocumentFormat::Hwpx,
-        source_name: "hwpx-01-saved.hwpx",
-        source_bytes: &bytes,
-        result: &result,
-        resources: BTreeMap::new(),
-    })
-    .unwrap_or_else(|e| panic!("hwpx-01-saved.hwpx: from_office failed: {e:?}"));
     assert!(
         result.sections.len() > 1,
         "hwpx-01-saved.hwpx: expected the source itself to declare more than one section — if it \
          no longer does, this is not this test's acceptance document any more"
     );
-    match project(&tree) {
-        Ok(_) => panic!(
-            "hwpx-01-saved.hwpx: project succeeded — the `sections` declarations gap this test \
-             names has been closed; replace this test with the real diff comparison instead"
-        ),
-        Err(ProjectionError::Field(name)) => assert_eq!(
-            name, "sections",
-            "hwpx-01-saved.hwpx: project refused a DIFFERENT field than the recorded gap"
-        ),
-        Err(e) => panic!("hwpx-01-saved.hwpx: project returned an unexpected error shape: {e:?}"),
-    }
+    assert_projects_within_documented_gaps(&bytes, "hwpx-01-saved.hwpx", DocumentFormat::Hwpx);
 }
 
 /// A span whose column layout DRAWS a separator (`separator_type != 0`) — the branch
@@ -608,48 +590,66 @@ fn a_span_with_a_drawn_column_separator_round_trips_its_layout() {
     assert_projection_matches(&result, "drawn-column-separator.docx");
 }
 
-/// Proof that the SECOND section is actually walked, not just the first — `project` always ends by
-/// refusing `Field("sections")` for a genuine multi-section tree (see the test above), so that
-/// refusal alone cannot tell "every section got processed" apart from "only the first one did,
-/// and the final gate just happens to fire before anything downstream would notice".
-///
-/// This test used to prove that by placing an UNRESOLVABLE fact in the SECOND section's body — a
-/// per-block refusal reached DURING the walk, before the trailing `sections` gate, so which name
-/// came back told you whether the walk actually reached section two. That fact was a span's own
-/// `comment_ids` until S6-6 (`wire::Comment.source_id` let the projection resolve a body-anchored
-/// comment instead of bailing), then an `UnsupportedGraphic` until S6-8 closed THAT gap too
-/// (`office_adapter`'s `UnsupportedGraphic` arm now carries `size`/`alignment` through the wire
-/// tree instead of discarding them — see `office_adapter.rs`/`wire::Unsupported`). Both times this
-/// test's own failure message said the same thing: replace the fact, do not weaken the assertion.
-///
-/// After S6-8 there is no third fact left. Every `ProjectionError::Field` this module can still
-/// return is either the trailing `sections` gap itself, or one of `Image`/`Vector`'s `*.sourceKey`
-/// checks — and those are defensive checks against a MALFORMED wire tree, not something a real
-/// `OfficeReadResult` can produce (`office_adapter`'s `map_image`/`map_vector` set `source_key`
-/// unconditionally, on every path, so a legitimately-built tree never has `resource_id: None` and
-/// `source_key: None` together). So this test can no longer distinguish "the walk reached section
-/// two and failed there" from "the walk never reached section two" using a per-block refusal —
-/// there isn't one left to use.
-///
-/// What it proves INSTEAD, and what remains genuinely true: `blocks`/`headers`/`footers`/
-/// `footnotes` for BOTH sections are built successfully (`office_project.rs` inserts `"blocks"`
-/// into the result map — built from every section's own `map_blocks` call — BEFORE the
-/// `is_multi_section` check that returns `Field("sections")`, not after), so an ORDINARY paragraph
-/// in the second section round-trips cleanly and the only reason `project` still fails is the
-/// still-real `sections` declarations gap. This is weaker than the walk-ordering proof the two
-/// prior facts gave — it no longer separately confirms per-block failures inside section two
-/// surface ahead of `sections` — but it does still confirm section two's own content is not
-/// skipped or malformed.
-///
-/// If a future change closes the `sections` gap too (`wire::Section` growing the five fields it is
-/// currently missing — `footnote_separator`/`page_border`/`hides_header`/`hides_footer`/
-/// `hides_master_page`/`is_vertical`, this module's own top-of-file doc), replace THIS test with a
-/// real success-path comparison. Do not, in the meantime, invent a fact that only fires AFTER the
-/// walk (that proves nothing about whether the walk happened — see the second paragraph above) as
-/// a way to keep this test's original stronger shape; that would be exactly the kind of assertion
-/// this test's message has twice warned against relaxing.
+/// A genuine two-section document, walked and compared byte-for-byte against `to_json` —
+/// `assert_projection_matches` diffs EVERY field, so this is strictly stronger than a proof that
+/// section two's content merely walks: it also proves each section's own six previously-refused
+/// fields (`footnote_separator`, `page_border`, `hides_header`, `hides_footer`,
+/// `hides_master_page`, `is_vertical`) reconstruct correctly, and — the point this fixture is built
+/// to pin — that section TWO's declaration is read from section two's own node, not duplicated or
+/// defaulted from section one. Section one stays `OfficeSectionDeclaration::default()`; section two
+/// carries a non-default value on every one of those six fields plus `page_number_start` and
+/// `line_grid_pitch`, so a projector that silently read section one's declaration twice, or
+/// defaulted section two's, fails this comparison at a named JSON pointer rather than passing by
+/// accident.
 #[test]
-fn a_second_sections_ordinary_content_walks_cleanly_and_only_the_sections_gap_remains() {
+fn a_second_sections_ordinary_content_walks_cleanly_and_carries_its_own_declaration() {
+    use fastdoc_engine::render::office::office_block::{
+        BorderDecl, BorderLineStyle, BorderSide, EdgeBorders, OfficeFootnoteSeparator,
+        OfficePageBorder, OfficeSectionDeclaration, PaperGeometry,
+    };
+
+    let section_two = OfficeSectionDeclaration {
+        footnote_separator: Some(OfficeFootnoteSeparator {
+            line_type: 1,
+            line_width_pt: 0.5,
+            color: Some(NSColor::srgb(0.2, 0.2, 0.2, 1.0)),
+            length_pt: Some(72.0),
+            margin_top_pt: 6.0,
+            margin_bottom_pt: 4.0,
+            note_spacing_pt: 2.0,
+        }),
+        page_border: Some(OfficePageBorder {
+            borders: Some(EdgeBorders {
+                top: Some(BorderDecl::Drawn(BorderSide {
+                    width: 1.0,
+                    color: Some(NSColor::srgb(0.0, 0.0, 0.0, 1.0)),
+                    style: BorderLineStyle::Solid,
+                })),
+                left: Some(BorderDecl::Suppressed),
+                bottom: None,
+                right: None,
+                inside_h: None,
+                inside_v: None,
+            }),
+            background: Some(NSColor::srgb(0.9, 0.9, 0.9, 1.0)),
+            spacing: NSEdgeInsets { top: 10.0, left: 10.0, bottom: 10.0, right: 10.0 },
+            measured_from_paper: true,
+        }),
+        paper: Some(PaperGeometry {
+            content_width: 400.0,
+            content_height: 600.0,
+            margin_left: 60.0,
+            margin_top: 60.0,
+            margin_right: 60.0,
+            margin_bottom: 60.0,
+        }),
+        hides_header: true,
+        hides_footer: true,
+        hides_master_page: true,
+        page_number_start: Some(1),
+        line_grid_pitch: Some(20.0),
+        is_vertical: true,
+    };
     let result = OfficeReadResult {
         blocks: vec![
             OfficeBlock::Paragraph {
@@ -667,34 +667,10 @@ fn a_second_sections_ordinary_content_walks_cleanly_and_only_the_sections_gap_re
                 format: ParagraphFormat::default(),
             },
         ],
-        sections: vec![
-            fastdoc_engine::render::office::office_block::OfficeSectionDeclaration::default(),
-            fastdoc_engine::render::office::office_block::OfficeSectionDeclaration::default(),
-        ],
+        sections: vec![OfficeSectionDeclaration::default(), section_two],
         section_start_blocks: vec![0, 1],
         default_body_font_size: 11.0,
         ..OfficeReadResult::default()
     };
-    let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
-        format: DocumentFormat::Docx,
-        source_name: "two-sections-second-has-ordinary-content.docx",
-        source_bytes: b"two-sections-second-has-ordinary-content.docx",
-        result: &result,
-        resources: BTreeMap::new(),
-    })
-    .unwrap_or_else(|e| panic!("from_office failed: {e:?}"));
-    match project(&tree) {
-        Ok(_) => panic!(
-            "project succeeded on a genuine multi-section tree — the `sections` gap this test \
-             relies on has been closed; replace this test with a real success-path comparison \
-             instead (see this test's own doc comment)"
-        ),
-        Err(ProjectionError::Field(name)) => assert_eq!(
-            name, "sections",
-            "expected the trailing whole-document `sections` gap, which only fires AFTER both \
-             sections' blocks are fully built — a different name here means section two's own \
-             ordinary content failed to walk, which this fixture does not intend"
-        ),
-        Err(e) => panic!("project returned an unexpected error shape: {e:?}"),
-    }
+    assert_projection_matches(&result, "two-sections-second-has-its-own-declaration.docx");
 }

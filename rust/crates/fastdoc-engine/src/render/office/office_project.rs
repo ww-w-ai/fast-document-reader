@@ -10,17 +10,15 @@
 //!
 //! Known, deliberate exceptions to that rule — narrow, named here rather than silently defaulted,
 //! and reported by the sprint's evidence file rather than hidden:
-//! - `sections` / `section_start_blocks`: emitted as `[]` for a tree with exactly one `Section`
-//!   node, which cannot tell "the source declared no sections" (the synthetic single-section case
-//!   docx/odt always build) from "the source declared exactly one, with nothing this projector can
-//!   otherwise see" apart — both build the identical tree. A tree with MORE than one `Section` node
-//!   carries no such ambiguity (`office_adapter::from_office`'s own `section_count =
-//!   result.sections.len().max(1)` proves the source declared that many), so `project` walks every
-//!   section in order and honestly reconstructs `blocks`/`headers`/`footers`/`footnotes` across all
-//!   of them — but still refuses `ProjectionError::Field("sections")` there rather than guess: five
-//!   of `OfficeSectionDeclaration`'s six fields (`footnote_separator`, `page_border`,
-//!   `hides_header`, `hides_footer`, `hides_master_page`, `is_vertical`) have no home anywhere in
-//!   `wire::Section` to reconstruct them from.
+//! - `sections` / `section_start_blocks`: emitted as `[]` when `wire::Document.declared_section_count`
+//!   is `0` — the one case a tree cannot otherwise tell "the source declared no sections" (the
+//!   synthetic single-section case docx/odt always build) from "declared exactly one" apart, since
+//!   both build an identical single-`Section` tree. Any other count reconstructs for real:
+//!   `wire::Section` carries all six of `OfficeSectionDeclaration`'s fields (`footnote_separator`,
+//!   `page_border`, `hides_header`, `hides_footer`, `hides_master_page`, `is_vertical`, alongside
+//!   `paper`/`columns`/`page_numbering`/`line_grid_points`), so `project` walks every section in
+//!   order and reconstructs `blocks`/`headers`/`footers`/`footnotes`/`sections`/
+//!   `section_start_blocks` across all of them.
 //! - a span's own `comment_ids`: a wire `TextRun.commentIds` entry names a comment by a wire id
 //!   this adapter minted, and the map back to the source's own opaque id string is adapter-internal
 //!   build state that is never serialized. A run carrying one therefore USED to return
@@ -58,7 +56,7 @@ use crate::render::office::office_block::{
 };
 use crate::render::render_tree::wire;
 use crate::render::render_tree::ValidatedRenderTree;
-use swiftshim::{CGPoint, CGSize, Data, NSColor, NSTextAlignment, SwiftString};
+use swiftshim::{CGPoint, CGSize, Data, NSColor, NSEdgeInsets, NSTextAlignment, SwiftString};
 
 /// What this projector could not honestly derive from the tree — a named field, never a guess.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,12 +127,18 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     // `section_count = result.sections.len().max(1)` is how `office_adapter::from_office` decides
     // how many `Section` nodes to build (see that function's own doc), so more than one here is
     // proof the source declared more than one — never a synthetic document-wide fallback, which
-    // only ever produces exactly one. See this module's own doc for what that certainty buys and
-    // costs: `blocks`/`headers`/`footers`/`footnotes` are honestly reconstructable by walking every
-    // section in order (below); the per-section DECLARATIONS (`sections`, and the block-index list
-    // coupled to it one-for-one, `section_start_blocks`) are not, and are refused rather than
-    // guessed — see where `is_multi_section` is used, near the end of this function.
+    // only ever produces exactly one. `declared_section_count` is the tree's own record of what
+    // `result.sections.len()` actually was (`wire::Document`'s own doc), which is what lets a tree
+    // with exactly one `Section` node tell "the source declared none" (the synthetic document-wide
+    // case) from "declared exactly one" apart — the two build an identical tree otherwise.
     let is_multi_section = root.children.len() > 1;
+    let declared_section_count = envelope.document.declared_section_count as usize;
+    if is_multi_section && declared_section_count != root.children.len() {
+        return Err(ProjectionError::Malformed(format!(
+            "declaredSectionCount {declared_section_count} disagrees with {} section nodes",
+            root.children.len()
+        )));
+    }
 
     let mut blocks: Vec<OfficeBlock> = Vec::new();
     let mut headers: Vec<OfficeHeaderFooter> = Vec::new();
@@ -143,6 +147,11 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     let mut anchored_objects: Vec<ob::OfficeAnchoredObject> = Vec::new();
     let mut master_pages: Vec<ob::OfficeMasterPage> = Vec::new();
     let mut first_section: Option<wire::Section> = None;
+    // Every section's own declaration and where its blocks begin — walked alongside `blocks`
+    // below so `section_start_blocks[i]` is the real index into the reconstructed `blocks`, not a
+    // guess (`ProjectionError`'s module doc explains why this used to be an accepted `[]`).
+    let mut wire_sections: Vec<wire::Section> = Vec::new();
+    let mut section_start_blocks: Vec<i64> = Vec::new();
 
     for (section_index, &section_id) in root.children.iter().enumerate() {
         let section_node = proj.get(section_id)?.clone();
@@ -155,8 +164,9 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
             }
         };
         if first_section.is_none() {
-            first_section = Some(section);
+            first_section = Some(section.clone());
         }
+        wire_sections.push(section);
 
         let mut flow_id: Option<u64> = None;
         // Resolved AFTER `map_blocks` below, once `node_index` actually names this section's own
@@ -191,6 +201,7 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
             .ok_or_else(|| ProjectionError::Malformed("section has no flow child".to_string()))?;
         let flow_children = proj.get(flow_id)?.children.clone();
 
+        section_start_blocks.push(blocks.len() as i64);
         let section_blocks = proj.map_blocks(&flow_children, blocks.len() as i64)?;
         blocks.extend(section_blocks);
 
@@ -198,8 +209,13 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
             anchored_objects.push(proj.anchored_object(ao)?);
         }
     }
-    let section = first_section
-        .ok_or_else(|| ProjectionError::Malformed("no section was found".to_string()))?;
+    // Nothing reads section zero any more -- the document's own sheet and line grid are carried on
+    // `wire::Document` rather than inferred from the first section, which is what stopped an
+    // inherited page from being reported as that section's declaration. A tree with no section at
+    // all is still a shape this projector cannot work with, so the check stays.
+    if first_section.is_none() {
+        return Err(ProjectionError::Malformed("no section was found".to_string()));
+    }
 
     // Read, not reconstructed. The tree carries the document's own default on the document, and
     // each run carries only the size it declared, so there is nothing left to infer here. This
@@ -217,7 +233,7 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
         page_margin_bottom,
         page_header_distance,
         page_footer_distance,
-    ) = match &section.paper {
+    ) = match &envelope.document.document_paper {
         Some(paper) => (
             Some(paper.width_points - paper.margins.left - paper.margins.right),
             Some(paper.margins.left),
@@ -239,11 +255,7 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     // not honestly restore: `wire::Comment.id` is a fresh sequential mint with no document meaning
     // of its own, so stamping it in (even stringified) would have invented a fact the source never
     // stated — exactly the failure shape invariant 108 names, a specific value written where
-    // "unknown" belongs. Left
-    // empty instead, deliberately, so a caller comparing against the real source id sees a visible
-    // gap rather than a plausible-looking wrong answer. Closing this gap for real needs
-    // `wire::Comment` to carry the source's own id string, which is `office_adapter.rs`'s fix, not
-    // this projector's. `number` has no such gap: both readers assign it 1-indexed in this exact
+    // "unknown" belongs. `number` has no such gap either: both readers assign it 1-indexed in this exact
     // array's own order (`docx_reader::parse_comments` sorts its result by it; `OdtReader`'s
     // counter builds `result.comments` in that same push order), so this array's position after
     // sorting by wire id IS the display number, not a guess.
@@ -291,26 +303,26 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     result.insert("footers".to_string(), to_value(&footers)?);
     result.insert("footnotes".to_string(), to_value(&footnotes)?);
     result.insert("master_pages".to_string(), to_value(&master_pages)?);
-    // A tree with exactly one `Section` node is genuinely ambiguous (see this module's own doc):
-    // it cannot tell "the source declared no sections" from "declared exactly one, with nothing
-    // else this projector can see" apart, so `[]` is the accepted exception there. More than one
-    // `Section` node carries no such ambiguity — `is_multi_section` above is proof the source
-    // declared that many — so guessing `[]` there would not be resolving an ambiguity, it would be
-    // reporting zero declared sections for a document that named several. Refused instead: five of
-    // `OfficeSectionDeclaration`'s six fields (`footnote_separator`, `page_border`, `hides_header`,
-    // `hides_footer`, `hides_master_page`, `is_vertical`) have no home anywhere in `wire::Section`
-    // (`wire.rs`'s own field list) to reconstruct them from.
-    if is_multi_section {
-        return Err(ProjectionError::Field("sections".to_string()));
+    // `declared_section_count == 0` is the one genuine ambiguity left (see `wire::Document`'s own
+    // doc on the field): a tree with exactly one `Section` node built from a source that declared
+    // NONE looks identical to one that declared exactly one. `[]` is the honest answer there —
+    // reporting a section the source never declared would be the guess, not this. Any other count
+    // (0 sections is the only one still special-cased; 1 or more all now reconstruct for real)
+    // walks every `Section` node this projector already collected in `wire_sections` and converts
+    // it field for field, `sections[i]` in the same order the source declared them and
+    // `section_start_blocks[i]` the real index `blocks` grows to at that section's own turn in the
+    // walk above — not a guess, and not `Field("sections")` any more.
+    if declared_section_count == 0 {
+        result.insert("sections".to_string(), to_value(&Vec::<ob::OfficeSectionDeclaration>::new())?);
+        result.insert("anchored_objects".to_string(), to_value(&anchored_objects)?);
+        result.insert("section_start_blocks".to_string(), to_value(&Vec::<i64>::new())?);
+    } else {
+        let sections: Vec<ob::OfficeSectionDeclaration> =
+            wire_sections.iter().map(convert_section_declaration_back).collect();
+        result.insert("sections".to_string(), to_value(&sections)?);
+        result.insert("anchored_objects".to_string(), to_value(&anchored_objects)?);
+        result.insert("section_start_blocks".to_string(), to_value(&section_start_blocks)?);
     }
-    result.insert("sections".to_string(), to_value(&Vec::<ob::OfficeSectionDeclaration>::new())?);
-    result.insert("anchored_objects".to_string(), to_value(&anchored_objects)?);
-    // Same ambiguity as `sections` immediately above, for the single-section case: `section_start_blocks`
-    // is coupled to `sections` one-for-one (`OfficeReadResult`'s own field docs — "indexed the same
-    // way `section_start_blocks` is"), so a tree that cannot tell whether ANY section was declared
-    // cannot honestly say where one starts either. `[]` here is the same accepted exception, not an
-    // independent guess.
-    result.insert("section_start_blocks".to_string(), to_value(&Vec::<i64>::new())?);
     result.insert(
         "keep_with_next_blocks".to_string(),
         to_value(&proj.keep_with_next.into_iter().collect::<Vec<_>>())?,
@@ -324,7 +336,10 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
         to_value(&proj.hide_page_number.into_iter().collect::<Vec<_>>())?,
     );
     result.insert("page_number_restart_blocks".to_string(), to_value(&proj.restart)?);
-    insert_opt(&mut result, "line_grid_pitch", section.line_grid_points);
+    // The DOCUMENT's own pitch, not section zero's effective one -- section zero's falls back to
+    // this, so reading it back off the section would report a section's declaration as the
+    // document's whenever section zero happened to declare one.
+    insert_opt(&mut result, "line_grid_pitch", envelope.document.line_grid_points);
 
     Ok(serde_json::Value::Object(result).to_string())
 }
@@ -1002,6 +1017,80 @@ fn convert_page_number_field_back(v: wire::PageNumberField) -> ob::PageNumberFie
     }
 }
 
+/// `wire::Paper` -> `office_block::PaperGeometry`: inverts `office_adapter::build_paper`'s own
+/// `content_width = width_points - margins.left - margins.right` (and the height equivalent) —
+/// the same arithmetic `page_content_width` above already runs for the document-level fields.
+fn paper_geometry_back(p: &wire::Paper) -> ob::PaperGeometry {
+    ob::PaperGeometry {
+        content_width: p.width_points - p.margins.left - p.margins.right,
+        content_height: p.height_points - p.margins.top - p.margins.bottom,
+        margin_left: p.margins.left,
+        margin_right: p.margins.right,
+        margin_top: p.margins.top,
+        margin_bottom: p.margins.bottom,
+    }
+}
+
+/// `wire::FootnoteSeparator` -> `office_block::OfficeFootnoteSeparator`, the reverse of
+/// `office_adapter::convert_footnote_separator`.
+fn convert_footnote_separator_back(fs: &wire::FootnoteSeparator) -> ob::OfficeFootnoteSeparator {
+    ob::OfficeFootnoteSeparator {
+        line_type: fs.line_type,
+        line_width_pt: fs.line_width_points,
+        color: fs.color.map(convert_color_back),
+        length_pt: fs.length_points,
+        margin_top_pt: fs.margin_top_points,
+        margin_bottom_pt: fs.margin_bottom_points,
+        note_spacing_pt: fs.note_spacing_points,
+    }
+}
+
+/// `wire::PageBorder` -> `office_block::OfficePageBorder`, the reverse of
+/// `office_adapter::convert_page_border` — `borders` goes back through the same
+/// `convert_edge_borders_back` a cell's border set uses.
+fn convert_page_border_back(pb: &wire::PageBorder) -> ob::OfficePageBorder {
+    ob::OfficePageBorder {
+        borders: pb.borders.as_ref().map(convert_edge_borders_back),
+        background: pb.background.map(convert_color_back),
+        spacing: NSEdgeInsets {
+            top: pb.spacing.top,
+            left: pb.spacing.left,
+            bottom: pb.spacing.bottom,
+            right: pb.spacing.right,
+        },
+        measured_from_paper: pb.measured_from_paper,
+    }
+}
+
+/// `wire::Section` -> `office_block::OfficeSectionDeclaration`, one array element for one
+/// `Section` node — called only once `declared_section_count` (`wire::Document`'s own doc) has
+/// already ruled out the single-section-means-none ambiguity `sections: []` exists for.
+///
+/// `paper` is reconstructed from `wire::Section.paper` as-is, which is NOT the same claim as the
+/// other five: `office_adapter::from_office` fills that field with the DOCUMENT-level fallback
+/// (`result_page_geometry`) whenever a section declares no paper of its own, so a section that
+/// declared nothing here reconstructs as though it declared the document's geometry explicitly.
+/// `wire::Section` has no bit recording which case it was — flagged in this sprint's own report
+/// rather than fixed here, since closing it needs a new wire field, out of this unit's scope.
+fn convert_section_declaration_back(s: &wire::Section) -> ob::OfficeSectionDeclaration {
+    ob::OfficeSectionDeclaration {
+        footnote_separator: s.footnote_separator.as_ref().map(convert_footnote_separator_back),
+        page_border: s.page_border.as_ref().map(convert_page_border_back),
+        // `s.paper` is the EFFECTIVE sheet, which the adapter fills from the document when the
+        // section named none. Reporting it unconditionally would state a declaration the source
+        // never made -- `OfficeSectionDeclaration.paper`'s own contract is that `nil` means "this
+        // section stated no page of its own" (invariant 73 is the defect that contract exists to
+        // prevent). Same for the line pitch below.
+        paper: if s.paper_is_declared { s.paper.as_ref().map(paper_geometry_back) } else { None },
+        hides_header: s.hides_header,
+        hides_footer: s.hides_footer,
+        hides_master_page: s.hides_master_page,
+        page_number_start: s.page_numbering.start,
+        line_grid_pitch: if s.line_grid_is_declared { s.line_grid_points } else { None },
+        is_vertical: s.is_vertical,
+    }
+}
+
 fn convert_color_back(c: wire::Color) -> NSColor {
     match c.space {
         wire::ColorSpace::Srgb => NSColor::srgb(c.red, c.green, c.blue, c.alpha),
@@ -1282,18 +1371,30 @@ mod tests {
         }
     }
 
-    /// The two top-level arrays `project`'s own callers (`fastdoc_read_office_json`) actually read
-    /// — decoded through the SAME `OfficeBlock`/`OfficeComment` types the encoder used, so these
-    /// tests assert on the round-tripped Rust values rather than guessing this module's JSON shape.
+    /// The top-level arrays `project`'s own callers (`fastdoc_read_office_json`) actually read —
+    /// decoded through the SAME `OfficeBlock`/`OfficeComment`/`OfficeSectionDeclaration` types the
+    /// encoder used, so these tests assert on the round-tripped Rust values rather than guessing
+    /// this module's JSON shape.
     #[derive(serde::Deserialize)]
     struct ProjectedEnvelope {
         blocks: Vec<OfficeBlock>,
         comments: Vec<OfficeComment>,
+        #[serde(default)]
+        sections: Vec<ob::OfficeSectionDeclaration>,
+        #[serde(default)]
+        section_start_blocks: Vec<i64>,
+        /// The DOCUMENT's own page and line grid, decoded here so a test can check them against a
+        /// section's — the two are separate facts and the pair is what proves neither layer is
+        /// reading the other's answer.
+        #[serde(default)]
+        page_content_width: Option<f64>,
+        #[serde(default)]
+        line_grid_pitch: Option<f64>,
     }
 
     fn projected(result: &ob::OfficeReadResult) -> ProjectedEnvelope {
         let tree = ValidatedRenderTree::from_office(input(result)).expect("tree builds");
-        let json = project(&tree).expect("project succeeds — this fixture declares one section");
+        let json = project(&tree).expect("project succeeds on this fixture");
         serde_json::from_str(&json).expect("project's output is valid schema-v4 JSON")
     }
 
@@ -1454,5 +1555,252 @@ mod tests {
             Some(NSTextAlignment::Right),
             "the tree's own alignment, not a guessed absence"
         );
+    }
+
+    /// The one genuine ambiguity `declared_section_count` exists to resolve (`wire::Document`'s
+    /// own doc): a source that declared NO sections builds the identical single-`Section` tree a
+    /// source that declared exactly one does. `[]` is the honest answer for the former; a real
+    /// one-element array — carrying the declared value, not a default — for the latter.
+    #[test]
+    /// The document's own page is a DIFFERENT fact from any section's, and a section that named no
+    /// page of its own must not come back claiming the document's. `office_adapter` deliberately
+    /// fills `wire::Section.paper` with the document's geometry so the section has an effective
+    /// sheet to lay out against; reading that back as a DECLARATION is what
+    /// `OfficeSectionDeclaration.paper`'s own contract forbids (`nil` = "this section stated no page
+    /// of its own"), and invariant 73 is the defect that contract exists to prevent -- a 612pt
+    /// appendix page typeset on the body's 555pt sheet. The two assertions here are the two halves:
+    /// the document keeps its geometry, and the section does not borrow it.
+    #[test]
+    fn a_section_that_declared_no_page_does_not_report_the_documents_as_its_own() {
+        let result = ob::OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![ob::OfficeSectionDeclaration {
+                hides_header: true,
+                ..ob::OfficeSectionDeclaration::default()
+            }],
+            page_content_width: Some(400.0),
+            page_content_height: Some(600.0),
+            page_margin_left: Some(50.0),
+            page_margin_right: Some(50.0),
+            page_margin_top: Some(60.0),
+            page_margin_bottom: Some(60.0),
+            line_grid_pitch: Some(15.0),
+            ..ob::OfficeReadResult::default()
+        };
+        let doc = projected(&result);
+        assert_eq!(
+            doc.page_content_width,
+            Some(400.0),
+            "the document's own page must survive -- it is carried on `wire::Document`"
+        );
+        assert_eq!(doc.line_grid_pitch, Some(15.0), "the document's own line grid must survive");
+        assert_eq!(doc.sections.len(), 1);
+        assert!(doc.sections[0].hides_header, "the fixture's section really is a declared one");
+        assert_eq!(
+            doc.sections[0].paper, None,
+            "this section named no page, so it must report none -- reporting the document's would \
+             state a declaration the source never made"
+        );
+        assert_eq!(
+            doc.sections[0].line_grid_pitch, None,
+            "same for the line grid: inherited is not declared"
+        );
+    }
+
+    /// The other half of the pair above, and the reason a single `paper_is_declared` bit is not
+    /// enough on its own: a section that DID name its own page must still report it, and the
+    /// document's own geometry must not be overwritten by that section's. Before
+    /// `wire::Document.document_paper` existed, `project` read the document's page and line grid off
+    /// section zero, so a section declaring either one silently replaced the document's answer.
+    #[test]
+    fn a_section_that_declared_its_own_page_reports_it_without_replacing_the_documents() {
+        let result = ob::OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![ob::OfficeSectionDeclaration {
+                paper: Some(ob::PaperGeometry {
+                    content_width: 300.0,
+                    content_height: 500.0,
+                    margin_left: 10.0,
+                    margin_top: 20.0,
+                    margin_right: 30.0,
+                    margin_bottom: 40.0,
+                }),
+                line_grid_pitch: Some(9.0),
+                ..ob::OfficeSectionDeclaration::default()
+            }],
+            page_content_width: Some(400.0),
+            page_content_height: Some(600.0),
+            page_margin_left: Some(50.0),
+            page_margin_right: Some(50.0),
+            page_margin_top: Some(60.0),
+            page_margin_bottom: Some(60.0),
+            line_grid_pitch: Some(15.0),
+            ..ob::OfficeReadResult::default()
+        };
+        let doc = projected(&result);
+        let declared = doc.sections[0].paper.expect("the section declared a page of its own");
+        assert_eq!(declared.content_width, 300.0, "the SECTION's width, not the document's 400");
+        assert_eq!(doc.sections[0].line_grid_pitch, Some(9.0), "the section's own pitch");
+        assert_eq!(
+            doc.page_content_width,
+            Some(400.0),
+            "the DOCUMENT's width, not the section's 300 -- the two layers are separate facts"
+        );
+        assert_eq!(doc.line_grid_pitch, Some(15.0), "the document's own pitch, not the section's 9");
+    }
+
+    fn zero_declared_sections_projects_empty_and_one_declared_projects_one_real_element() {
+        let none_declared = ob::OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            ..ob::OfficeReadResult::default()
+        };
+        let doc = projected(&none_declared);
+        assert_eq!(
+            doc.sections.len(),
+            0,
+            "a source that declared no sections must project an empty array, not a synthesised one"
+        );
+
+        let one_declared = ob::OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![ob::OfficeSectionDeclaration {
+                hides_header: true,
+                is_vertical: true,
+                page_number_start: Some(3),
+                ..ob::OfficeSectionDeclaration::default()
+            }],
+            ..ob::OfficeReadResult::default()
+        };
+        let doc = projected(&one_declared);
+        assert_eq!(
+            doc.sections.len(),
+            1,
+            "a source that declared exactly one section must project one real element"
+        );
+        assert!(doc.sections[0].hides_header, "the declared value, not the default false");
+        assert!(doc.sections[0].is_vertical, "the declared value, not the default false");
+        assert_eq!(doc.sections[0].page_number_start, Some(3));
+    }
+
+    /// `section_start_blocks[i]` must be the real index each section's own blocks begin at in the
+    /// reconstructed `blocks` array — not `[]`, and not a guess. Section one contributes two
+    /// blocks, so section two must start at index 2, never 1 or 0.
+    #[test]
+    fn section_start_blocks_matches_the_source_s_own_indices_for_a_two_section_document() {
+        let paragraph = |text: &str| OfficeBlock::Paragraph {
+            spans: vec![Span { text: text.into(), ..Span::default() }],
+            rtl: false,
+            alignment: None,
+            tab_stops: vec![],
+            format: ParagraphFormat::default(),
+        };
+        let result = ob::OfficeReadResult {
+            blocks: vec![
+                paragraph("section one, block zero"),
+                paragraph("section one, block one"),
+                paragraph("section two, block zero"),
+            ],
+            sections: vec![
+                ob::OfficeSectionDeclaration::default(),
+                ob::OfficeSectionDeclaration { is_vertical: true, ..ob::OfficeSectionDeclaration::default() },
+            ],
+            section_start_blocks: vec![0, 2],
+            default_body_font_size: 11.0,
+            ..ob::OfficeReadResult::default()
+        };
+        let doc = projected(&result);
+        assert_eq!(
+            doc.section_start_blocks,
+            vec![0, 2],
+            "section two's own blocks begin at index 2, not a guessed 1 or an empty list"
+        );
+        assert_eq!(doc.blocks.len(), 3, "all three blocks, across both sections, are present");
+    }
+
+    /// A single declared section carrying a non-default value on every one of the six
+    /// previously-refused fields round-trips through `project` as that value, never the default —
+    /// the same non-default discipline `an_unsupported_graphics_size_and_alignment_round_trip_through_project`
+    /// above already applies to a different field family.
+    #[test]
+    fn a_declared_section_s_new_fields_round_trip_as_the_declared_value_not_the_default() {
+        let section = ob::OfficeSectionDeclaration {
+            footnote_separator: Some(ob::OfficeFootnoteSeparator {
+                line_type: 2,
+                line_width_pt: 0.6,
+                color: Some(NSColor::srgb(0.4, 0.4, 0.4, 1.0)),
+                length_pt: Some(100.0),
+                margin_top_pt: 4.0,
+                margin_bottom_pt: 2.0,
+                note_spacing_pt: 1.0,
+            }),
+            page_border: Some(ob::OfficePageBorder {
+                borders: Some(EdgeBorders {
+                    top: Some(BorderDecl::Suppressed),
+                    left: None,
+                    bottom: None,
+                    right: None,
+                    inside_h: None,
+                    inside_v: None,
+                }),
+                background: Some(NSColor::srgb(0.7, 0.6, 0.5, 1.0)),
+                spacing: NSEdgeInsets { top: 9.0, left: 9.0, bottom: 9.0, right: 9.0 },
+                measured_from_paper: true,
+            }),
+            paper: None,
+            hides_header: true,
+            hides_footer: true,
+            hides_master_page: true,
+            page_number_start: Some(2),
+            line_grid_pitch: Some(15.0),
+            is_vertical: true,
+        };
+        let result = ob::OfficeReadResult {
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            sections: vec![section.clone()],
+            ..ob::OfficeReadResult::default()
+        };
+        let doc = projected(&result);
+        assert_eq!(doc.sections.len(), 1);
+        let got = &doc.sections[0];
+        assert!(got.hides_header && got.hides_footer && got.hides_master_page && got.is_vertical);
+        assert_eq!(got.page_number_start, section.page_number_start);
+        assert_eq!(got.line_grid_pitch, section.line_grid_pitch);
+        let fs = got.footnote_separator.as_ref().expect("footnote separator carried");
+        assert_eq!(fs.line_type, 2);
+        assert_eq!(fs.line_width_pt, 0.6);
+        assert_eq!(fs.length_pt, Some(100.0));
+        let pb = got.page_border.as_ref().expect("page border carried");
+        assert!(pb.measured_from_paper);
+        assert_eq!(pb.spacing.top, 9.0);
     }
 }

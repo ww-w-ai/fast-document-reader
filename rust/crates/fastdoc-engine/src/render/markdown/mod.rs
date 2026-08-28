@@ -225,6 +225,14 @@ pub fn produce(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, M
         // font declaration at all — the reader's own theme decides — so there is nothing to carry
         // and zero hides nothing (see `wire::Document`'s own field doc).
         default_body_font_size: 0.0,
+        // No `Section` node exists anywhere in this tree (this producer's `Document` parents
+        // blocks directly) — 0 is "not applicable", the same posture `default_body_font_size`
+        // above takes for a format that carries no such fact at all.
+        declared_section_count: 0,
+        // This producer builds no `Section` node at all, so there is no document sheet or
+        // line grid to record -- `None` here is "the source stated none", not a default.
+        document_paper: None,
+        line_grid_points: None,
     };
     let mut builder = RenderTreeBuilder::new("fastdoc-markdown-producer", document);
 
