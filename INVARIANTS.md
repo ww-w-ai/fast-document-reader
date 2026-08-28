@@ -693,3 +693,20 @@ this file tells you why, and why the obvious alternative does not work.
     **The baseline is a one-way door.** That binary cannot be rebuilt from this branch — the readers it used are no longer wired to anything a build produces. Keep a copy of a pre-cutover build if this comparison is ever wanted again; a fresh `make-app.sh` will not give you one, and the test cannot tell you it has stopped comparing two things.
 
     **The rule: a differential test names one implementation by a path, not by a property, so it cannot notice when that path stops being the other implementation.** Say in the test what the baseline must be, and record which build produced the numbers.
+
+117. **A WALL-CLOCK BASELINE IS ONLY A BASELINE WHILE IT IS RE-MEASURED BESIDE THE THING IT IS COMPARED TO — a number from a quieter hour reads as a regression that was never there.** Found in P4c, at the point the performance-recovery run stopped to check its own work. The plan's opening measurement recorded `first_paint` at **526 ms**; the integrated re-measure after P0–P4c reported **924.4 ms**, and the natural reading was that work had simply moved out of `read_parse` (2,966 → 1,375.5) and into the paint. That reading would have been acted on: the next step was to prove P2c's lazy pictures were not being fetched for the whole document at first paint.
+
+    Two things were done instead of reasoning about it. First the hypothesis was **killed by code** — `reconcileMedia` gathers `officeLoad` only inside `if onScreen(r)`, every call site is behind `DispatchQueue.main.async`, and the probe stops its timer before `spin(2)`, so no picture fetch can land in that stage. Second, the base commit `117f388` was checked out into a temporary worktree, its engine built there, and the SAME probe run on the SAME machine within the hour:
+
+    | | plan's recorded baseline | re-measured, same day | after P0–P4c |
+    |---|---|---|---|
+    | read_parse | 2,966 | **3,771.7** | 1,375.5 |
+    | first_paint | 526 | **895.3** | 924.4 |
+    | scroll median | 48.8 | **60.6** | 50.6 |
+    | footprint after readthrough | 475 | **521.2** | 427.9 |
+
+    **`first_paint` had not regressed at all** — 924.4 against a true baseline of 895.3 is +3.3%, inside this machine's spread. And the error ran in BOTH directions: scroll looked flat (48.8 → 50.6) when it had improved 16.5%, and memory after a readthrough looked worse when it had improved 17.9%.
+
+    Why the first numbers were lower is `[미확인]`, and deliberately left that way rather than guessed at: same day, same command, same release configuration. `CLAUDE.md` already records that this suite is flaky under load — a quiet machine finishes it in ~14 s and a busy one in 40–55 s — and this probe reads the wall clock straight through that. The old figures are not called wrong; they are dropped from the comparison, because a number whose conditions cannot be reconstructed cannot be compared against.
+
+    **The rule: gates count (invariant 113), but the wall-clock numbers a REPORT carries need the same discipline in a weaker form — re-measure the baseline beside the new build, on the same machine, in the same hour, or say the comparison is not one.** The cost of the rule is one worktree and one probe run. The cost of skipping it was nearly a night spent hunting a 400 ms cause that did not exist.
