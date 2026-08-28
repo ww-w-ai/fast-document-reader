@@ -241,11 +241,22 @@ extension OfficeMasterObject.Content: Decodable {
         let (c, key) = try singleKey(decoder)
         switch key.stringValue {
         case "Image":
-            guard let image = try c.decode(WireImage.self, forKey: key).image else {
+            let wire = try c.decode(WireImage.self, forKey: key)
+            if let image = wire.image {
+                self = .image(image)
+            } else if wire.dataKey != nil {
+                // The wire named a pooled picture and the pool does not hold it. Before pictures
+                // were pooled this could only mean "an image with no bytes at all", and throwing
+                // took the WHOLE document down with it — the failure P2c and P2d spent themselves
+                // removing for every other kind of picture. So reserve the declared box and draw
+                // nothing in it, which is what the reader already does for a picture a document
+                // names but has no bytes for (invariant 1's rule, `appendImage`).
+                self = .image(NSImage(size: wire.size.size))
+            } else {
+                // No key and no bytes: the wire itself is malformed, not the pool incomplete.
                 throw DecodingError.dataCorruptedError(forKey: key, in: c,
                                                        debugDescription: "host image has no bytes")
             }
-            self = .image(image)
         case "Drawing": self = .drawing(try c.decode(Data.self, forKey: key))
         case "Vector": self = .vector(try c.decode(HwpShapeRenderer.VectorGraphic.self, forKey: key))
         case "Text": self = .text(try c.decode([OfficeBlock].self, forKey: key))

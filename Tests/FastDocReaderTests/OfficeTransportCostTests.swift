@@ -56,8 +56,19 @@ final class OfficeTransportCostTests: XCTestCase {
         // measurement is the parse and not a copy of a payload this size.
         let bytes = Data(bytesNoCopy: payload, count: payloadBytes, deallocator: .none)
         let rawStart = Date()
-        _ = try JSONSerialization.jsonObject(with: bytes)
+        let raw = try JSONSerialization.jsonObject(with: bytes)
         let rawMs = Date().timeIntervalSince(rawStart) * 1000
+
+        // The picture pool, for the bare decode below. A `WireImage` resolves its key against it,
+        // and a master-page picture whose key resolves to nothing is a THROWN decode, not a missing
+        // picture — so measuring the vocabulary without binding the pool measures a failure.
+        var pool: [String: Data] = [:]
+        if let object = raw as? [String: Any],
+           let encoded = object["picture_pool"] as? [String: String] {
+            for (key, base64) in encoded {
+                pool[key] = Data(base64Encoded: base64)
+            }
+        }
 
         // The vocabulary alone, with the SAME decoder settings the host uses and without the
         // vector-painting pass — so the two halves of `decodeOffice` can be told apart. Painting a
@@ -67,7 +78,9 @@ final class OfficeTransportCostTests: XCTestCase {
         let vocabDecoder = JSONDecoder()
         vocabDecoder.keyDecodingStrategy = .convertFromSnakeCase
         let vocabStart = Date()
-        let bare = try vocabDecoder.decode(OfficeReadResult.self, from: bytes)
+        let bare = try PictureBytes.withPool(pool) {
+            try vocabDecoder.decode(OfficeReadResult.self, from: bytes)
+        }
         let vocabMs = Date().timeIntervalSince(vocabStart) * 1000
 
         print(String(
