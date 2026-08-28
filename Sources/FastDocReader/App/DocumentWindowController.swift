@@ -2204,7 +2204,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// The notes this render is drawing and how tall each one is, measured once by
     /// `MarkdownDocument` at the column they will be drawn at (`configurePageBand`).
     private(set) var footnotes: [OfficeFootnote] = []
-    private var footnoteHeights: [Int: CGFloat] = [:]
+    private(set) var footnoteHeights: [Int: CGFloat] = [:]
     /// What each SECTION said about the rule above its notes, keyed by section index — only the
     /// sections that said something (`OfficeFootnoteSeparator.isDeclared`), so a page that resolves
     /// to a silent section falls back to the reader's own minimum rather than to a zeroed struct.
@@ -2279,7 +2279,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// What this layout says each page should reserve for the notes cited on it — the proposal half
     /// of the fixpoint. Clamped per page, so a note taller than its own sheet cannot reserve the
     /// page out of existence (`FootnoteBandSettle.clamped`).
-    private func proposedNoteBands() -> [Int: CGFloat] {
+    /// Internal, not private, for one caller outside this file: the test that checks it against the
+    /// payload the ENGINE is handed for the same round. The two are separate computations of the
+    /// same question — which notes a page cites and how tall that makes its band — and only the
+    /// engine's was ever checked, because `resolve`'s `host:` is an autoclosure that never runs
+    /// while a handle answers. So on every real document this arithmetic is dead at runtime and
+    /// alive only for a document whose handle failed to open, which is the one case nothing was
+    /// looking at.
+    func proposedNoteBands() -> [Int: CGFloat] {
         guard !footnotes.isEmpty else { return [:] }
         let content = pageBandDelegate.pageContentHeight
         var out: [Int: CGFloat] = [:]
