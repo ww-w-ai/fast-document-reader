@@ -301,6 +301,7 @@ dependencies = [
 name = "fastdoc-ffi"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "blake3",
  "fastdoc-engine",
  "serde",

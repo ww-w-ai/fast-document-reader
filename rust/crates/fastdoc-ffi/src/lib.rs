@@ -36,7 +36,7 @@
 
 mod ffi_guard;
 
-use fastdoc_engine::render::office::hwp_reader::mapping::HwpReader;
+use fastdoc_engine::render::office::hwp_reader::mapping::{HwpReader, PictureBytes, RetainedParse};
 use fastdoc_engine::render::office::{
     docx_reader::DocxReader, odt_reader::OdtReader, office_block::HeaderFooterApplicability,
     office_block::OfficeReadResult, office_markdown_serializer::OfficeMarkdownSerializer,
@@ -493,6 +493,9 @@ pub struct FastdocOfficeDocument {
     /// result the same way `fastdoc_read_office_json` does without being told again — the caller
     /// cannot get it wrong on the second call, because there is no second call to get wrong.
     extension_: String,
+    /// Whatever this document's pictures can only be fetched from, kept alive for as long as the
+    /// host holds the document (P2b). `None` for docx/odt, which have a zip the host holds itself.
+    retained: Option<RetainedParse>,
     /// The name the adapter and the refusal ledger record this document under. Derived at open
     /// from the extension, exactly as `fastdoc_read_office_json` derives it, so a document that
     /// falls back leaves the same line in the ledger whichever door it came through.
@@ -531,9 +534,10 @@ pub unsafe extern "C" fn fastdoc_office_open(
         return std::ptr::null_mut();
     };
     guard_scalar(std::ptr::null_mut(), move || {
-        match read_office(data, extension) {
-            Ok(result) => Box::into_raw(Box::new(FastdocOfficeDocument {
+        match read_office_retaining_parse(data, extension) {
+            Ok((result, retained)) => Box::into_raw(Box::new(FastdocOfficeDocument {
                 result,
+                retained,
                 extension_: extension.to_string(),
                 source_name: format!("document.{extension}"),
             })),
@@ -561,6 +565,76 @@ pub unsafe extern "C" fn fastdoc_office_close(handle: *mut FastdocOfficeDocument
         }
     })
 }
+
+/// One embedded picture's bytes, base64, from the parse this handle still holds.
+///
+/// P2b: an HWP's pictures are reachable only through the rhwp parse that produced the document —
+/// there is no archive to re-open, which is why the reader used to decode all of them during the
+/// read and hand them over in one map. Keeping the parse alive lets a host ask for the one picture
+/// it is about to draw instead.
+///
+/// `key` is the id the document's own blocks carry (`"hwpimg:3"`), so a caller passes back exactly
+/// what it was given rather than reconstructing an index. Returns NULL for a key this document
+/// does not have, for a document with no retained parse (docx/odt — their pictures come from the
+/// zip the host holds), and for a malformed key: all three mean "ask somewhere else", and the
+/// caller's fallback is the same for each.
+///
+/// # Safety
+/// `handle` must be a live pointer `fastdoc_office_open` returned that has not been closed, and
+/// `key` must be a NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_office_image_base64(
+    handle: *const FastdocOfficeDocument,
+    key: *const c_char,
+) -> *mut c_char {
+    clear_last_error();
+    if handle.is_null() || key.is_null() {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return std::ptr::null_mut();
+    }
+    let document = &*handle;
+    let Ok(key) = CStr::from_ptr(key).to_str() else {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "key is not valid UTF-8",
+        ));
+        return std::ptr::null_mut();
+    };
+    guard_json(move || {
+        let retained = document.retained.as_ref().ok_or_else(|| {
+            FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "this document keeps no parse to fetch pictures from",
+            )
+        })?;
+        // The id parse AND the crop both live in the engine's own resolver, the same one the
+        // read's image walk uses. Re-spelling either here is how this call would start answering
+        // bytes the reader never drew — which it did, until the byte-identity gate caught a cropped
+        // picture coming back uncropped.
+        match retained.picture_for_id(key) {
+            PictureBytes::Bytes(data) => {
+                use base64::Engine;
+                Ok(base64::engine::general_purpose::STANDARD.encode(&data.0))
+            }
+            PictureBytes::DeclaredWithoutBytes => Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "the document names this picture but declares no bytes for it",
+            )),
+            PictureBytes::Undecodable => Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "this picture's bytes did not decode",
+            )),
+            PictureBytes::NotAPictureOfThisDocument => Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "key does not name an embedded HWP picture",
+            )),
+        }
+    })
+}
+
 
 /// The schema-v4 export of a document this handle ALREADY read — `fastdoc_read_office_json`
 /// without its read.
@@ -1751,24 +1825,40 @@ pub unsafe extern "C" fn fastdoc_string_free(s: *mut c_char) {
 /// swift: `DocumentTypes.readOffice`'s reader half — the dispatch only, WITHOUT
 /// `.resolvingFontSubstitution()`, which is AppKit's and stays on the host.
 fn read_office(data: &[u8], extension: &str) -> Result<OfficeReadResult, ReadOfficeError> {
+    read_office_retaining_parse(data, extension).map(|(result, _)| result)
+}
+
+/// The same read, keeping alive whatever the document's pictures can only be fetched FROM.
+///
+/// P2b: only HWP has such a thing. An `.hwp` is CFB binary, so its embedded pictures are reachable
+/// only through the rhwp parse that produced the document — which is why the reader decodes every
+/// one of them during the read, and why a 10.7 MB document exports 54 MB of base64. docx and odt
+/// have no equivalent: their pictures live in a zip the HOST already holds open, which is exactly
+/// why they never had this problem.
+///
+/// `None` for those formats, therefore, is not a gap. It is the honest answer to "what does this
+/// document need kept open" for a document that needs nothing kept open.
+fn read_office_retaining_parse(
+    data: &[u8],
+    extension: &str,
+) -> Result<(OfficeReadResult, Option<RetainedParse>), ReadOfficeError> {
     // HWP is answered BEFORE the archive is opened, not after. `.hwp` is CFB binary rather than a
     // zip, so opening one as an archive fails and the reader would never be reached — which is how
     // the host's own dispatch does it too (`DocumentTypes.isHwp` branches ahead of `ZipArchive`).
     if matches!(extension.to_lowercase().as_str(), "hwp" | "hwpx") {
-        return HwpReader::read_before_host_font_substitution(&swiftshim::Data::fromBytes(
-            data.to_vec(),
-        ))
-        .map_err(ReadOfficeError::Hwp);
+        return HwpReader::read_retaining_parse(&swiftshim::Data::fromBytes(data.to_vec()), false)
+            .map(|(result, retained)| (result, Some(retained)))
+            .map_err(ReadOfficeError::Hwp);
     }
     let archive = ZipArchive::new(swiftshim::Data::fromBytes(data.to_vec()))
         .map_err(|_| ReadOfficeError::InvalidArchive)?;
     match extension.to_lowercase().as_str() {
-        "docx" | "docm" | "dotx" | "dotm" => {
-            DocxReader::read(&archive).map_err(|error| ReadOfficeError::Reader(error.to_string()))
-        }
-        "odt" => {
-            OdtReader::read(&archive).map_err(|error| ReadOfficeError::Reader(format!("{error:?}")))
-        }
+        "docx" | "docm" | "dotx" | "dotm" => DocxReader::read(&archive)
+            .map(|result| (result, None))
+            .map_err(|error| ReadOfficeError::Reader(error.to_string())),
+        "odt" => OdtReader::read(&archive)
+            .map(|result| (result, None))
+            .map_err(|error| ReadOfficeError::Reader(format!("{error:?}"))),
         other => Err(ReadOfficeError::UnsupportedExtension(other.to_owned())),
     }
 }

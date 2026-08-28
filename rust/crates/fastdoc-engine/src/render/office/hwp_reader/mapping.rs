@@ -145,6 +145,55 @@ mod crop_tests {
 // swift: Render/Office/HwpReader.swift:36 (parameter type)
 pub type RhwpHandle = *mut std::ffi::c_void;
 
+/// A live rhwp parse, kept past the read that produced it.
+///
+/// P2b: HWP pictures can only be fetched from the parse the document came from — an `.hwp` is CFB
+/// binary, so unlike a docx there is no archive to re-open later. That is the whole reason
+/// `read_mapped` decodes EVERY embedded picture during the read: after `rhwp_close` the pixels are
+/// unreachable. Keeping the parse alive for as long as the host holds the document turns "decode
+/// all of them now, in case" into "decode the one being drawn, when it is drawn".
+///
+/// Owns the handle: `Drop` closes it exactly once, so a caller cannot forget and cannot double-close.
+pub struct RetainedParse(RhwpHandle);
+
+impl RetainedParse {
+    /// One picture's FINAL bytes for the id a block carries, from this still-open parse.
+    ///
+    /// Goes through the same `HwpReader::picture_for_id` the read's own image walk uses, so a
+    /// cropped occurrence (`"hwpimg:1!crop=..."`) answers the CROPPED bytes here exactly as it
+    /// does there. Fetching the raw picture and leaving the crop to the caller would be a second
+    /// spelling of the crop rule, and the two would drift — the reader would draw an uncropped
+    /// picture the moment a host asked for one on demand instead of taking it from the read.
+    pub fn picture_for_id(&self, id: &str) -> PictureBytes {
+        HwpReader::picture_for_id(self.0, id)
+    }
+}
+
+/// What a picture id resolves to against a live parse — four ANSWERS, not one nullable one.
+///
+/// "This document names a picture with no bytes behind it" and "this key is not a picture of this
+/// document's" are different facts, and the read already keeps them apart
+/// (`OfficeReadResult.pictures_declared_without_bytes` exists for exactly that reason, invariant
+/// 108's shape). Collapsing them into `Option` at this seam would put the distinction back in the
+/// caller's hands, where it has already been got wrong once.
+pub enum PictureBytes {
+    /// Not an embedded-HWP picture id at all (a linked image's URL, or a caller's typo).
+    NotAPictureOfThisDocument,
+    /// The document names this picture but declares no bytes for it — an empty `binDataIDRef`, an
+    /// external link, or bin_data_id's own "no bin data" sentinel.
+    DeclaredWithoutBytes,
+    /// rhwp answered, but the base64 it gave does not decode.
+    Undecodable,
+    /// The bytes to draw, crop applied.
+    Bytes(Data),
+}
+
+impl Drop for RetainedParse {
+    fn drop(&mut self) {
+        HwpReader::rhwp_close(self.0);
+    }
+}
+
 impl HwpReader {
     // swift: Render/Office/HwpReader.swift:45-59
     // swift: `enum MapError: Swift.Error, Equatable, LocalizedError`
@@ -231,7 +280,7 @@ impl HwpReader {
     /// `String -> OfficeReadResult`, unit-tested with synthetic JSON, no FFI needed).
     // swift: Render/Office/HwpReader.swift:62-102
     pub fn read(data: &Data) -> Result<OfficeReadResult, MapError> {
-        Self::read_mapped(data, true)
+        Self::read_mapped(data, true).map(|(result, _)| result)
     }
 
     /// Reads for a host process that owns font discovery and substitution.
@@ -240,10 +289,25 @@ impl HwpReader {
     /// serialized into the JSON envelope and reconstructed elsewhere. The C FFI therefore takes
     /// this path and lets the host apply the same substitution pass after decoding.
     pub fn read_before_host_font_substitution(data: &Data) -> Result<OfficeReadResult, MapError> {
-        Self::read_mapped(data, false)
+        Self::read_mapped(data, false).map(|(result, _)| result)
     }
 
-    fn read_mapped(data: &Data, resolve_fonts: bool) -> Result<OfficeReadResult, MapError> {
+    /// The same read, keeping the parse alive so pictures can be fetched from it later (P2b).
+    ///
+    /// Every caller above drops the `RetainedParse` immediately, which closes the handle exactly
+    /// where the old code called `rhwp_close` — so there is ONE read implementation, not a copy
+    /// with a different lifetime rule. A copy is how the two would drift.
+    pub fn read_retaining_parse(
+        data: &Data,
+        resolve_fonts: bool,
+    ) -> Result<(OfficeReadResult, RetainedParse), MapError> {
+        Self::read_mapped(data, resolve_fonts)
+    }
+
+    fn read_mapped(
+        data: &Data,
+        resolve_fonts: bool,
+    ) -> Result<(OfficeReadResult, RetainedParse), MapError> {
         if data.0.is_empty() {
             return Err(MapError::ParseFailed);
         }
@@ -255,6 +319,11 @@ impl HwpReader {
         let Some(handle) = Self::rhwp_open(data) else { return Err(MapError::ParseFailed) }; // parse failure -> null handle
         // `defer { rhwp_close(handle) }` in the Swift original — run via this closure's return path
         // so `rhwp_close` fires on every exit, error included.
+        // Owned from HERE, before anything can fail. The read below has many failure exits, and the
+        // old code closed the handle after all of them with one unconditional call; handing the
+        // handle to the caller instead would have leaked it on every error path. Taking ownership
+        // first means `Drop` closes it on those paths and the successful path moves it out.
+        let retained = RetainedParse(handle);
         let outcome: Result<OfficeReadResult, MapError> = (|| {
             let Some(json) = Self::rhwp_document_json_owned(handle) else { return Err(MapError::ParseFailed) };
             // The value-based column reconciliation (S2A2-06) needs the RAW document, not the JSON
@@ -331,8 +400,11 @@ impl HwpReader {
                 Ok(result)
             }
         })();
-        Self::rhwp_close(handle);
-        outcome
+        // The parse goes to the caller rather than being closed here. Every caller that does not
+        // want it drops it on the next line, which closes it — the behaviour this line used to
+        // spell directly, now spelled by ownership so it cannot be forgotten at one call site and
+        // not another. On an error, `retained` is dropped here instead, which closes it too.
+        outcome.map(|result| (result, retained))
     }
 
     /// Walk the mapped blocks (recursively, INCLUDING table cells) for every `.image(id:)` whose id
@@ -360,32 +432,21 @@ impl HwpReader {
                         || !id.starts_with(HwpReader::HWP_IMAGE_PREFIX) {
                         return;
                     }
-                    // The id may carry the crop this occurrence applies (`hwpimg:5!crop=x,y,w,h`), so
-                    // the same original shown twice at different crops keeps two entries.
-                    let body = &id[HwpReader::HWP_IMAGE_PREFIX.len()..];
-                    let parts: Vec<&str> = body.split(HwpReader::HWP_CROP_SEPARATOR).collect();
-                    let Ok(bin_data_id) = parts[0].parse::<u16>() else { return };
-                    // rhwp is the truth here: `None` means the document names a picture with NO
-                    // bytes behind it — an empty `binDataIDRef`, an external link, or bin_data_id's
-                    // own "no bin data" sentinel (`0`). That is a FACT about the document, recorded
-                    // as a positive statement rather than just leaving the key out of `out` — see
-                    // `OfficeReadResult.pictures_declared_without_bytes` for why the two cases (this,
-                    // vs. a caller's resource map simply being incomplete) must never collapse into
-                    // one "missing" meaning.
-                    let Some(b64) = HwpReader::image_base64(handle, bin_data_id) else {
-                        without_bytes.insert(id);
-                        return;
-                    };
-                    let Some(data) = Data::base64Encoded(&b64) else { return };
-                    if parts.len() > 1 {
-                        if let Some(box_) = HwpReader::crop_box(parts[1]) {
-                            if let Some(cropped) = HwpReader::cropped_image_data(&data, box_) {
-                                out.insert(id, cropped);
-                                return;
-                            }
+                    // ONE resolver, shared with `RetainedParse::picture_for_id`, so the id parse
+                    // and the crop have a single spelling. `DeclaredWithoutBytes` is recorded as a
+                    // positive statement rather than just leaving the key out of `out` — see
+                    // `OfficeReadResult.pictures_declared_without_bytes` for why the two cases
+                    // (this, vs. a caller's resource map simply being incomplete) must never
+                    // collapse into one "missing" meaning.
+                    match HwpReader::picture_for_id(handle, &id) {
+                        PictureBytes::Bytes(data) => {
+                            out.insert(id, data);
                         }
+                        PictureBytes::DeclaredWithoutBytes => {
+                            without_bytes.insert(id);
+                        }
+                        PictureBytes::NotAPictureOfThisDocument | PictureBytes::Undecodable => {}
                     }
-                    out.insert(id, data);
                 }
                 OfficeBlock::Table { rows, .. } => {
                     for row in rows {
@@ -403,6 +464,36 @@ impl HwpReader {
             walk(handle, block, &mut out, &mut without_bytes);
         }
         (out, without_bytes)
+    }
+
+    /// One picture's final bytes for the id a block carries — the id parse and the crop, once.
+    ///
+    /// Both the read's own image walk (`collect_images`) and an on-demand fetch from a still-open
+    /// parse (`RetainedParse::picture_for_id`) go through here, because they must answer the same
+    /// bytes for the same id. A cropped occurrence carries its crop IN the id
+    /// (`"hwpimg:5!crop=x,y,w,h"`, so the same original shown twice at different crops keeps two
+    /// entries), and a fetch that skipped the crop would hand back a picture the reader never drew.
+    pub fn picture_for_id(handle: RhwpHandle, id: &str) -> PictureBytes {
+        let Some(body) = id.strip_prefix(Self::HWP_IMAGE_PREFIX) else {
+            return PictureBytes::NotAPictureOfThisDocument;
+        };
+        let parts: Vec<&str> = body.split(Self::HWP_CROP_SEPARATOR).collect();
+        let Ok(bin_data_id) = parts[0].parse::<u16>() else {
+            return PictureBytes::NotAPictureOfThisDocument;
+        };
+        // rhwp is the truth here: `None` means the document names a picture with NO bytes behind it.
+        let Some(b64) = Self::image_base64(handle, bin_data_id) else {
+            return PictureBytes::DeclaredWithoutBytes;
+        };
+        let Some(data) = Data::base64Encoded(&b64) else { return PictureBytes::Undecodable };
+        if parts.len() > 1 {
+            if let Some(box_) = Self::crop_box(parts[1]) {
+                if let Some(cropped) = Self::cropped_image_data(&data, box_) {
+                    return PictureBytes::Bytes(cropped);
+                }
+            }
+        }
+        PictureBytes::Bytes(data)
     }
 
     /// The id prefix `mapBlock` stamps on an embedded HWP image — kept in ONE place so the writer

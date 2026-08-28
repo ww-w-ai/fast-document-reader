@@ -150,6 +150,17 @@ void fastdoc_office_close(FastdocOfficeDocument *handle);
 char *fastdoc_office_content_json(const FastdocOfficeDocument *handle,
                                   const unsigned char *bytes, size_t len);
 
+/* One embedded picture's bytes, base64, from the parse this handle still holds. An .hwp is CFB
+ * binary, so its pictures are reachable only through the parse that produced the document — which
+ * is why the reader used to decode every one of them during the read. `key` is the id the
+ * document's own blocks carry ("hwpimg:3"), including a crop variant ("hwpimg:3!crop=..."), whose
+ * bytes come back ALREADY CROPPED — the same bytes the read would have embedded under that key,
+ * resolved by the same code, so a host can take a picture from here or from the read and draw the
+ * same thing. Returns a string the caller frees with fastdoc_string_free, or NULL for
+ * a key this document does not have, for a malformed key, and for a document that keeps no parse
+ * (docx/odt — their pictures come from the zip the host holds). All three mean "ask elsewhere". */
+char *fastdoc_office_image_base64(const FastdocOfficeDocument *handle, const char *key);
+
 /* S5C1-02: the band query re-expressed over an open handle — the engine's own decision for a
  * document's running header, footer AND combined band, in one call, from a document it already
  * holds rather than one it re-reads.

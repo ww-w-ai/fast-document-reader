@@ -22,6 +22,13 @@ swiftshim = { path = "../swiftshim" }
 # code to the graph — only a new edge to it.
 serde_json = { version = "1.0.151", features = ["raw_value"] }
 
+# `fastdoc_office_image_base64` (P2b) re-encodes the bytes the engine's picture resolver returns:
+# that resolver answers BYTES so that the crop is applied by the same code the read uses, and this
+# boundary is the one place that has to spell them for C. `tests/office_image_on_demand.rs` decodes
+# both sides of its byte-identity comparison with it too. Already in `Cargo.lock` via
+# `fastdoc-engine`, so this adds no new third-party code to the graph — only a new edge to it.
+base64 = "0.22"
+
 # `fastdoc_read_office_tree`'s envelope (S2B-03) splices an already-encoded tree in verbatim via
 # `serde_json::value::RawValue`, whose passthrough only fires from inside a `#[derive(Serialize)]`
 # struct. Already in `Cargo.lock` at the same version via `fastdoc-engine` and `serde_json` above,
