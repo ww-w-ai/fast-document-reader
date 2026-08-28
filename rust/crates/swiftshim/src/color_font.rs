@@ -571,12 +571,28 @@ pub struct NSImage {
 }
 
 impl NSImage {
+    /// The picture's SIZE, without decoding the picture.
+    ///
+    /// Nothing in this port ever draws from an `NSImage` — the host does that, from `data`. Every
+    /// caller here wants two numbers, and `image::load_from_memory` was decoding whole bitmaps to
+    /// produce them: measured on one government manual, 214.8 ms of a 950 ms read, 23% of the
+    /// engine's entire time for a document (`engine_stage_cost.rs`). Reading the header answers the
+    /// same question.
+    ///
+    /// This is slightly weaker as a validity check than a full decode — a file with a good header
+    /// and a corrupt body now passes here and fails later, where the host tries to draw it. That is
+    /// the behaviour a picture already has when a document names one it has no bytes for: the box
+    /// is reserved and nothing is painted in it (invariant 1). Bytes that are not an image at all
+    /// still answer `None`, because a format cannot be guessed for them.
     pub fn fromData(data: &Data) -> Option<Self> {
-        let decoded = image::load_from_memory(&data.0).ok()?;
+        let reader = image::ImageReader::new(std::io::Cursor::new(&data.0))
+            .with_guessed_format()
+            .ok()?;
+        let (width, height) = reader.into_dimensions().ok()?;
         Some(Self {
             size: crate::geometry::CGSize {
-                width: decoded.width() as crate::geometry::CGFloat,
-                height: decoded.height() as crate::geometry::CGFloat,
+                width: width as crate::geometry::CGFloat,
+                height: height as crate::geometry::CGFloat,
             },
             data: Some(data.clone()),
             data_key: None,
@@ -628,5 +644,36 @@ impl NSGradient {
     }
     pub fn draw(&self, _rect: crate::geometry::CGRect, _angle: CGFloat) {
         todo!("swift: NSGradient.draw(in:angle:) — phase B (drawing, host-resident in practice)")
+    }
+}
+
+#[cfg(test)]
+mod image_size_tests {
+    use super::*;
+
+    /// A picture's size is `NSImage::fromData`'s whole contract — nothing in this port draws, so
+    /// the two numbers ARE the value. Nothing checked them until reading them stopped requiring a
+    /// full decode (a 214.8 ms saving on one real document, `engine_stage_cost.rs`): changing the
+    /// width by seven pixels left the entire workspace green.
+    #[test]
+    fn a_pictures_size_is_the_size_its_header_declares() {
+        for (width, height) in [(1u32, 1u32), (3, 5), (64, 17)] {
+            let mut encoded = std::io::Cursor::new(Vec::new());
+            image::RgbaImage::new(width, height)
+                .write_to(&mut encoded, image::ImageFormat::Png)
+                .expect("the test can encode a PNG");
+            let image = NSImage::fromData(&Data(encoded.into_inner()))
+                .expect("a PNG this crate just wrote is readable");
+            assert_eq!(image.size.width, width as crate::geometry::CGFloat);
+            assert_eq!(image.size.height, height as crate::geometry::CGFloat);
+        }
+    }
+
+    /// Bytes that are not a picture answer `None` rather than a picture of no size — the caller's
+    /// `?` is what keeps a non-image out of the layout, and it only works if this says so.
+    #[test]
+    fn bytes_that_are_not_a_picture_are_not_a_picture() {
+        assert!(NSImage::fromData(&Data(b"this is not an image".to_vec())).is_none());
+        assert!(NSImage::fromData(&Data(Vec::new())).is_none());
     }
 }
