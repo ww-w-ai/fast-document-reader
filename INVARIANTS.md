@@ -661,9 +661,13 @@ this file tells you why, and why the obvious alternative does not work.
 
     | | of 669 real documents |
     |---|---|
-    | took the canonical-tree path | 656, and **658 after the tab-stop fix below** |
-    | fell back to the reader path | 13 — `MissingResource` 11 (docx/odt with pictures), `Canonicalization` 2 (fixed) |
+    | took the canonical-tree path | 656 → **658** after the tab-stop fix below |
+    | fell back to the reader path | 13 → **11**, all `MissingResource` (docx/odt with pictures) |
     | `read_office` returned NULL | 0 |
+
+    Re-measured after the fix: `ok=658 failed=11`, `Canonicalization` gone. The two censuses agree
+    exactly, which is worth having — they call DIFFERENT exported symbols
+    (`fastdoc_read_office_tree` and `fastdoc_read_office_json`) and arrive at the same 669/658/11.
 
     **The two `Canonicalization` refusals were a real defect, and the census is what surfaced them.**
     That variant's own doc comment says it "should never happen for a correctly implemented adapter",
@@ -679,3 +683,13 @@ this file tells you why, and why the obvious alternative does not work.
     **What this costs is validation, not correctness.** The output is identical either way — `project` round-trips (invariant 112's oracle) and `to_json(&result)` is the same shape — but a document that falls back never passes through the tree's validation. So S4's claim reads more broadly than it holds: every shipping payload is derived from a validated tree *unless the document keeps its pictures in its own archive*, which no test said out loud until this census could see all 669 documents.
 
     **The rule: when a refusal is the design, say so where the refusal is counted.** A `MissingResource` that no caller can avoid is not a defect waiting to be fixed, and leaving it unexplained invites someone to "fix" it by populating the map — which would trade a validation gap for a memory and first-paint one.
+
+116. **THE PORT'S ONLY END-TO-END PARITY CHECK NEEDS A BINARY FROM BEFORE THE CUTOVER, AND THAT BINARY IS NOT REPRODUCIBLE FROM THIS BRANCH.** S10's parity axis is `extract_matches_swift.rs`: it drives real `.docx`/`.odt` through this engine's `--extract` and compares the bytes against an installed FastDocReader's `--extract` for the same file. Its own doc calls this "the only check in the workspace that can tell a faithful port from a plausible one", and it is right — nothing else in either suite reads a real document with both implementations.
+
+    **What it compares changed under it when S9 landed, silently.** The app no longer reads office documents with the Swift readers; it links this engine. Point `FMD_EXTRACT_SWIFT` at a CURRENT build and only the serializer half is still independent (the host keeps `OfficeMarkdownSerializer.swift`, `HeadlessExtract.swift:82`) — the reader half compares the engine with itself and passes for the wrong reason. Point it at a build from before the cutover and both halves are independent, which is the check as written.
+
+    S10's run used the installed `2026-08-19` build, the last one that shipped the Swift readers: **574 real documents, 566 byte-identical, 8 refused by both, 0 differing.** The repo's own corpus separately: 21 of 21 identical.
+
+    **The baseline is a one-way door.** That binary cannot be rebuilt from this branch — the readers it used are no longer wired to anything a build produces. Keep a copy of a pre-cutover build if this comparison is ever wanted again; a fresh `make-app.sh` will not give you one, and the test cannot tell you it has stopped comparing two things.
+
+    **The rule: a differential test names one implementation by a path, not by a property, so it cannot notice when that path stops being the other implementation.** Say in the test what the baseline must be, and record which build produced the numbers.

@@ -7,6 +7,16 @@
 //! three ever reads a document. A transliteration can pass all of them and still put a table's
 //! columns in the wrong order.
 //!
+//! **What the baseline is depends on which binary you point it at, and after S9 that matters.**
+//! The app no longer reads office documents with the Swift readers — it links this engine. So:
+//! - point `FMD_EXTRACT_SWIFT` at a build from BEFORE the cutover and this compares both halves,
+//!   the reader and the serializer, against an independent implementation of each. That is the
+//!   check this file was written for.
+//! - point it at a CURRENT build and only the serializer half is independent (the app reads through
+//!   this engine and serialises with `OfficeMarkdownSerializer.swift`, which is still the host's
+//!   own code — `HeadlessExtract.swift:82`). Still a real comparison, but a narrower one, and
+//!   worth knowing you are making rather than discovering later.
+//!
 //! Ignored by default because the corpus is real user documents that this repository cannot ship
 //! and the baseline is a signed application that only exists on a Mac. Run it explicitly with
 //! both environment variables set:
