@@ -3726,9 +3726,69 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // never drawn through a table. Derived from `printSheets` rather than computed again: two
         // copies of this arithmetic is exactly how the screen and the paper would come to disagree
         // about where a page is, and the whole promise of the paged view is that they cannot.
-        return PagePagination.joiningUnopenedBoundaries(printSheets,
-                                                        openedBoundaries: pageBandDelegate.openedBoundaries)
+        let opened = pageBandDelegate.openedBoundaries
+        if let memo = joinedGridMemo, memo.key == printGridKey, memo.opened == opened {
+            return memo.sheets
+        }
+        pageGridComputations += 1
+        let joined = PagePagination.joiningUnopenedBoundaries(printSheets,
+                                                              openedBoundaries: opened)
+        joinedGridMemo = (printGridKey, opened, joined)
+        return joined
     }
+
+    /// Everything `printSheets` derives the grid from, as VALUES — the memo below is keyed on this
+    /// rather than dirtied by a flag, which is the whole reason it can exist at all.
+    ///
+    /// `rectForPage` used to carry a comment rejecting a cache here, and its reason was sound for the
+    /// cache it was rejecting: "a cache would need invalidating from every reflow path in the
+    /// controller". A value key needs no invalidation — when a reflow moves any of these numbers the
+    /// key stops matching and the grid is rebuilt on the spot, and when none of them moved there was
+    /// nothing to rebuild. What that comment underestimated is the OTHER half: AppKit asks
+    /// `rectForPage` a few times per page, and every draw pass asks three times over
+    /// (`drawPageSheets`, `drawMasterPages`, `PageNumberDeskView.draw`), so "a handful of arithmetic"
+    /// is a handful per PAGE — 542 rectangles and an engine crossing, per frame and per printed page.
+    ///
+    /// The engine handle is in the key because it is what decides WHICH implementation answers; the
+    /// two agree numerically (that is what `MasterPageEngineParityTests` is for), so this is about
+    /// never serving a grid from a handle that has since been replaced, not about the numbers.
+    private struct PageGridKey: Equatable {
+        let pageCount: Int
+        let width: CGFloat
+        let textOriginY: CGFloat
+        let leadingBand: CGFloat
+        let pitch: CGFloat
+        let topMargin: CGFloat
+        let deskGap: CGFloat
+        let engine: ObjectIdentifier?
+    }
+
+    /// `nil` exactly when `printSheets` is empty — the paged view is off, or the reader did not
+    /// paginate. Computing it is a few scalars; building the grid it keys is the expensive part.
+    private var printGridKey: PageGridKey? {
+        guard pageBandDelegate.isActive, let width = pagedDocumentWidth else { return nil }
+        return PageGridKey(
+            pageCount: printPageCount,
+            width: width,
+            textOriginY: textView.textContainerOrigin.y,
+            leadingBand: pageBandDelegate.leadingBand,
+            pitch: PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
+                                        band: pageBandDelegate.band),
+            topMargin: PagePagination.topMargin(declared: pagedMarginTop,
+                                                band: pageBandDelegate.band - pageDeskGap),
+            deskGap: pageDeskGap,
+            engine: mdDocument?.officeEngineHandle.map(ObjectIdentifier.init))
+    }
+
+    private var printGridMemo: (key: PageGridKey, sheets: [CGRect])?
+    private var joinedGridMemo: (key: PageGridKey?, opened: Set<Int>, sheets: [CGRect])?
+
+    /// How many times a full page grid has been BUILT — the print grid or the joined one. The
+    /// deterministic axis invariant 113 asks for, and it has to be its own counter rather than
+    /// `RustOfficeDocumentHandle.answeredQueries`: the host-arithmetic branch below rebuilds exactly
+    /// the same 542 rectangles while answering no query at all, so the shared counter cannot see the
+    /// regression this one exists to catch.
+    private(set) var pageGridComputations = 0
 
     // MARK: - Print (⌘P)
 
@@ -3746,29 +3806,27 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// half; that case keeps AppKit's own line-aware pagination and only takes the paper size from
     /// the document.
     var printSheets: [CGRect] {
-        guard pageBandDelegate.isActive, let width = pagedDocumentWidth else { return [] }
-        let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
-                                         band: pageBandDelegate.band)
-        let topMargin = PagePagination.topMargin(declared: pagedMarginTop,
-                                                  band: pageBandDelegate.band - pageDeskGap)
+        guard let key = printGridKey else { return [] }
+        if let memo = printGridMemo, memo.key == key { return memo.sheets }
+        pageGridComputations += 1
         // S5C2-02: the engine's own answer for the SAME inputs the host would otherwise compute
         // this from. `nil` — no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()`
         // names which) — falls back to the host's own arithmetic below, the same failure
         // direction S5C-1 established for the band query. `pageSheets` keeps deriving from
         // THIS property rather than asking the engine a second time, so screen and print can
         // never source from two different answers (invariant 59).
-        if let engineSheets = mdDocument?.officeEngineHandle?.sheets(
-            count: printPageCount, width: width, textOriginY: textView.textContainerOrigin.y,
-            leadingBand: pageBandDelegate.leadingBand, pitch: pitch, topMargin: topMargin,
-            deskGap: pageDeskGap) {
-            return engineSheets
-        }
-        return PagePagination.sheets(count: printPageCount, width: width,
-                                     textOriginY: textView.textContainerOrigin.y,
-                                     leadingBand: pageBandDelegate.leadingBand,
-                                     pitch: pitch,
-                                     topMargin: topMargin,
-                                     deskGap: pageDeskGap)
+        let sheets = mdDocument?.officeEngineHandle?.sheets(
+            count: key.pageCount, width: key.width, textOriginY: key.textOriginY,
+            leadingBand: key.leadingBand, pitch: key.pitch, topMargin: key.topMargin,
+            deskGap: key.deskGap)
+            ?? PagePagination.sheets(count: key.pageCount, width: key.width,
+                                     textOriginY: key.textOriginY,
+                                     leadingBand: key.leadingBand,
+                                     pitch: key.pitch,
+                                     topMargin: key.topMargin,
+                                     deskGap: key.deskGap)
+        printGridMemo = (key, sheets)
+        return sheets
     }
 
     /// How many pages the reader itself thinks this document has — the SAME number

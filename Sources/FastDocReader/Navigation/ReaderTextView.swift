@@ -318,10 +318,10 @@ final class ReaderTextView: NSTextView {
         return sheets[page - 1]
     }
 
-    /// Recomputed per call rather than cached for the job's duration, deliberately: a cache would
-    /// need invalidating from every reflow path in the controller, and the computation is a handful
-    /// of arithmetic over numbers layout already holds. AppKit asks for this a few times per page,
-    /// not per glyph.
+    /// AppKit asks for this a few times per PAGE, so on a 542-page document one print job asks for
+    /// the whole grid a couple of thousand times. The controller answers from a value-keyed memo
+    /// (`DocumentWindowController.printGridKey`), which is why this can stay a plain property read
+    /// rather than a cache this view has to hold and invalidate for the job's duration.
     private var printSheetsForThisJob: [CGRect] {
         (window?.windowController as? DocumentWindowController)?.printSheets ?? []
     }
