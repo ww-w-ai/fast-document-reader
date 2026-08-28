@@ -15,12 +15,18 @@
 
 use std::ffi::{CStr, CString};
 
-/// Measured at `117f388` on `2025_행정업무운영편람_최종.hwp` (10.7 MB, 542 pages, 109 pictures):
-/// 77,946,260 bytes, of which 53,937,512 (69%) are base64'd pictures. The remaining 24,008,748 is
-/// the vocabulary's own description of the document. P2c takes the picture bytes out of this
-/// payload entirely, so this ceiling is expected to FALL — a test that then fails by being too
-/// generous is not a failure, it is the next ceiling asking to be written down.
-const RECORDED_CEILING: usize = 77_946_260;
+/// Measured on `2025_행정업무운영편람_최종.hwp` (10.7 MB, 542 pages, 109 pictures).
+///
+/// At `117f388`: 77,946,260 bytes, of which 53,937,512 (69%) were base64'd pictures.
+/// At P2c: **27,169,703** — every picture the document NAMED is now carried by reference and
+/// fetched when something draws it (`fastdoc_office_image_base64`), which took 50,774,496 bytes
+/// out of the payload. What remains of the picture bytes is 3,163,016 in table fills and anchored
+/// objects, which carry pixels in the vocabulary itself and have no key to be fetched by
+/// (`office_picture_key_split.rs` measures that split and gates the keyed half at zero).
+///
+/// The ceiling is the measurement, not a budget with slack: a change that puts bytes back fails
+/// here, and a change that removes more is the next ceiling asking to be written down.
+const RECORDED_CEILING: usize = 27_169_703;
 
 /// Document paths come from the environment, and `cargo test` runs this binary with its CWD set to
 /// the PACKAGE directory — so a path written relative to the repo (`testdocs/...`, the way every

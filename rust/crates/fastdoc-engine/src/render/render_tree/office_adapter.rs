@@ -46,9 +46,6 @@ pub struct OfficeAdapterInput<'a> {
 /// semantic tree has no honest place to put — never a silent drop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OfficeAdapterError {
-    /// A block referenced a resource key (`OfficeBlock::Image.id` or `.background_image`'s key)
-    /// that is absent from `OfficeAdapterInput.resources`.
-    MissingResource(String),
     /// An `OfficeAnchoredObject.block_index` names a position `OfficeReadResult.blocks` does not
     /// hold a mapped node for — the reader's own contract (mapping.rs) leaves an empty paragraph
     /// carrier at that index rather than dropping the block, so this should never fire for a
@@ -417,10 +414,12 @@ struct Ctx<'a> {
     /// established have NO bytes anywhere, ever (not "not yet resolved" — genuinely absent: an
     /// empty binary-item reference, an external link). Consulted only when a key is in neither
     /// `reader_images` nor `resources_input`: that ordering means an actual resource always wins
-    /// over this fact if one somehow exists under the same key, and a key naming NEITHER map nor
-    /// this set is still the caller-error `MissingResource` this adapter always raised — this set
-    /// only ever WEAKENS a would-be error into an intentionally empty `Image` node, never the
-    /// reverse. See `wire::Image.resource_id`'s own doc for what the node looks like.
+    /// over this fact if one somehow exists under the same key. A key in this set becomes an
+    /// intentionally empty `Image` node — see `wire::Image.resource_id`'s own doc — while a key in
+    /// neither map and not in this set is carried BY REFERENCE for the host to resolve at draw
+    /// time (`register_resource_by_reference`). Since P2c the HWP reader no longer fetches its
+    /// pictures at read, so it establishes this set only for the documents it still walks; the
+    /// same fact is otherwise answered on demand, by a fetch returning nothing for that key.
     pictures_declared_without_bytes: &'a std::collections::HashSet<SwiftString>,
     /// `OfficeReadResult.vector_graphics` — inline vector drawings keyed the same way a raster
     /// picture is (`OfficeBlock::Image.id`). Consulted BEFORE `reader_images`/`resources_input`
@@ -667,17 +666,29 @@ impl<'a> Ctx<'a> {
             return Ok(id);
         }
         let from_caller = self.resources_input.get(key);
-        let (bytes, mime): (&[u8], String) = match from_caller {
-            Some(resolved) => (&resolved.bytes, resolved.mime_type.clone()),
-            None => {
-                let data = self
-                    .reader_images
-                    .get(&SwiftString::from(key.to_string()))
-                    .ok_or_else(|| OfficeAdapterError::MissingResource(key.to_string()))?;
-                (&data.0, sniff_image_mime(&data.0).to_string())
-            }
+        let bytes_and_mime: Option<(&[u8], String)> = match from_caller {
+            Some(resolved) => Some((&resolved.bytes, resolved.mime_type.clone())),
+            None => self
+                .reader_images
+                .get(&SwiftString::from(key.to_string()))
+                .map(|data| (data.0.as_slice(), sniff_image_mime(&data.0).to_string())),
         };
-        let id = self.register_resource_bytes(bytes, mime, intrinsic, Some(key.to_string()));
+        let id = match bytes_and_mime {
+            Some((bytes, mime)) => {
+                self.register_resource_bytes(bytes, mime, intrinsic, Some(key.to_string()))
+            }
+            // P2c: nobody here has the bytes, and that is now a legitimate state rather than an
+            // error. The DOCUMENT named this key — `resolve_resource` is only ever called with an
+            // id a block carries — so the resource is recorded BY REFERENCE and whoever draws it
+            // asks for it then, which for HWP is `fastdoc_office_image_base64` against the parse
+            // P2b keeps open, and for docx/odt is the archive the host already holds.
+            //
+            // Refusing instead is what made one absent picture cost the WHOLE document its tree
+            // (13 of 669 real documents fell back to schema-v4 that way, every one of them for a
+            // `MissingResource`). A reader that draws 108 pictures and one placeholder is strictly
+            // better than one that quietly re-reads the entire file through the older path.
+            None => self.register_resource_by_reference(key.to_string(), intrinsic),
+        };
         self.resource_by_key.insert(key.to_string(), id);
         Ok(id)
     }
@@ -713,6 +724,33 @@ impl<'a> Ctx<'a> {
             source_key,
         });
         self.resource_by_hash.insert(hash, id);
+        id
+    }
+
+    /// A resource the document named but nobody here holds the bytes for — recorded so an image
+    /// node can point at something the host resolves by key at draw time.
+    ///
+    /// `application/octet-stream` is the honest MIME: the format is sniffed FROM the bytes, and
+    /// there are none to sniff. Naming a plausible one instead ("image/png") would be a fact
+    /// nothing established, which is the shape invariant 108 is about. Nothing downstream decides
+    /// anything from it — the host sniffs the bytes it receives, exactly as it does for an image
+    /// it pulls out of a zip.
+    ///
+    /// Dedup is by KEY here, not by hash: a hash needs bytes. Two different keys naming the same
+    /// picture therefore get two resources where an embedded pair would have got one. That costs
+    /// entries in a table whose rows are now a few dozen bytes each, and it is the only price this
+    /// path pays.
+    fn register_resource_by_reference(&mut self, key: String, intrinsic: Option<wire::Size>) -> u64 {
+        let id = self.new_resource_id();
+        self.resources.push(wire::Resource {
+            id,
+            mime_type: "application/octet-stream".to_string(),
+            sha256: None,
+            byte_length: None,
+            bytes_base64: None,
+            intrinsic_size: intrinsic,
+            source_key: Some(key),
+        });
         id
     }
 
@@ -956,8 +994,8 @@ impl<'a> Ctx<'a> {
 
     /// An `OfficeBlock::Image`'s key resolves to a `Vector` node when `vector_graphics` names it,
     /// and to a raster `Image` node otherwise — see the `vector_graphics` field's own doc for why
-    /// the vector always wins when a key names both. A key naming neither is `MissingResource`,
-    /// same as the pure-raster path always was.
+    /// the vector always wins when a key names both. A key naming neither is carried by reference,
+    /// same as the pure-raster path.
     fn map_image_or_vector(
         &mut self,
         id_key: &SwiftString,
@@ -2163,10 +2201,11 @@ mod tests {
         assert_eq!(sizes, vec![13.5], "an explicitly declared size survives even at the default");
     }
 
-    /// HWP hands its pictures over already decoded, in the result itself. If the adapter consulted
-    /// only the caller's resource map, every HWP picture would be `MissingResource` unless the
-    /// caller copied the bytes across first — and the ledger's claim that `images` is mapped would
-    /// be false.
+    /// A reader that DOES hand its pictures over decoded (a docx/odt one, or the HWP reader before
+    /// P2c made its pictures lazy) has them in the result itself. If the adapter consulted only the
+    /// caller's resource map, those bytes would never reach the tree — every such picture would be
+    /// carried by reference instead, and the ledger's claim that `images` is mapped would be false.
+    /// This is the branch that keeps `reader_images` ahead of that fallback.
     #[test]
     fn a_reader_decoded_picture_resolves_without_the_caller_supplying_it() {
         const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01];
@@ -2496,15 +2535,38 @@ mod tests {
     }
 
     #[test]
-    fn missing_resource_is_a_typed_error() {
+    fn a_resource_nobody_holds_the_bytes_for_is_carried_by_reference() {
         let mut result = OfficeReadResult::default();
         result.blocks.push(OfficeBlock::Image {
             id: SwiftString::from("img:1"),
             size: CGSize::new(10.0, 10.0),
             alignment: None,
         });
-        let err = ValidatedRenderTree::from_office(input(&result)).unwrap_err();
-        assert_eq!(err, OfficeAdapterError::MissingResource("img:1".to_string()));
+        // P2c: this used to refuse the WHOLE document (`MissingResource`), which cost 13 of 669
+        // real documents their tree over one absent picture. The key the document declared is
+        // recorded instead, for whoever draws it to resolve.
+        let tree = from_office(input(&result)).expect("carried by reference");
+        let value: serde_json::Value =
+            serde_json::from_slice(&tree.encode_json().expect("encodes")).unwrap();
+        let resource = value["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["sourceKey"] == "img:1")
+            .expect("the declared key is recorded")
+            .clone();
+        for absent in ["sha256", "byteLength", "bytesBase64"] {
+            assert!(
+                resource.get(absent).is_none(),
+                "a resource with no bytes must not state {absent}: {resource}"
+            );
+        }
+        // And the image node points AT it — a recorded resource nothing references would satisfy
+        // the assertion above while drawing nothing.
+        let referenced = value["nodes"].as_array().unwrap().iter().any(|n| {
+            n["type"] == "image" && n["data"]["resourceId"] == resource["id"]
+        });
+        assert!(referenced, "no image node points at the recorded resource: {value}");
     }
 
     fn vector_result(graphic: VectorGraphic) -> OfficeReadResult {

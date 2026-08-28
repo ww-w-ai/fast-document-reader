@@ -2258,6 +2258,19 @@ final class MarkdownDocument: NSDocument {
             let cacheKey = "\(fileURL?.path ?? "")|\(id)" as NSString
             if let c = MarkdownDocument.officeImageCache.object(forKey: cacheKey) {
                 loadOfficePixels(c, nil, r)
+            } else if let bytes = officeEngineHandle?.picture(id: id) {
+                // P2c: an HWP's pictures used to arrive with the read — every one of them decoded,
+                // cropped and base64'd whether or not anything drew it (109 pictures, 50.8 MB of a
+                // 78 MB payload on the 편람). The parse stays open now, so the picture is fetched
+                // here, where something is about to draw it. This is the archive branch below in a
+                // different clothing: a format with no archive asking the parse that still has one.
+                //
+                // Cached like an archive picture, under the same key, so scrolling back over a
+                // picture does not re-decode it — and so the cost of this branch is paid once per
+                // picture per document rather than once per reconcile.
+                let image = NSImage(data: bytes)
+                if let image { MarkdownDocument.officeImageCache.setObject(image, forKey: cacheKey) }
+                loadOfficePixels(image, bytes, r)
             } else if loadingEverything {
                 // Printing cannot wait for a callback: the print operation is built and run on this
                 // same turn, so an asynchronous decode lands after the PDF has already been written.

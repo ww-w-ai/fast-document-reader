@@ -159,11 +159,11 @@ pub struct RetainedParse(RhwpHandle);
 impl RetainedParse {
     /// One picture's FINAL bytes for the id a block carries, from this still-open parse.
     ///
-    /// Goes through the same `HwpReader::picture_for_id` the read's own image walk uses, so a
-    /// cropped occurrence (`"hwpimg:1!crop=..."`) answers the CROPPED bytes here exactly as it
-    /// does there. Fetching the raw picture and leaving the crop to the caller would be a second
-    /// spelling of the crop rule, and the two would drift — the reader would draw an uncropped
-    /// picture the moment a host asked for one on demand instead of taking it from the read.
+    /// Goes through `HwpReader::picture_for_id`, the one place an id becomes bytes, so a cropped
+    /// occurrence (`"hwpimg:1!crop=..."`) answers the CROPPED bytes. Fetching the raw picture and
+    /// leaving the crop to the caller would be a second spelling of the crop rule — which is
+    /// exactly what the first version of this did, and the byte-identity gate caught it drawing an
+    /// uncropped picture where the document crops one.
     pub fn picture_for_id(&self, id: &str) -> PictureBytes {
         HwpReader::picture_for_id(self.0, id)
     }
@@ -350,44 +350,23 @@ impl HwpReader {
                 let b64 = Self::image_base64(handle, id)?;
                 Data::base64Encoded(&b64)
             })), &column_authority)?;
-            // Embedded pictures are fetched here (they need the live handle); drawings were already
-            // rendered inside `mapJSON` and must survive that — hence a merge rather than an assignment.
+            // P2c: keyed pictures are NOT fetched here any more. Every one of them used to be
+            // decoded, cropped, and carried in `result.images` — 109 of them on the 편람, 50.8 MB
+            // of the payload's 53.9 MB of picture bytes (94.1%; measured by
+            // `office_picture_key_split.rs`) — whether or not anything was ever going to draw one.
+            // The reason it had to be done at read was that the parse closed at the read's end;
+            // P2b keeps it open, so the picture is fetched when something is about to draw it, the
+            // way a docx's has always been fetched from its archive.
             //
-            // `collect_images` only ever sees the slice it is handed — a running header/footer's own
-            // `.blocks` and a footnote's own `.blocks` are NOT inside `result.blocks` (S4-02 lifted
-            // them into their own top-level arrays specifically so a header could be drawn once per
-            // page rather than once per paragraph), so a walk over `result.blocks` alone silently
-            // never fetches a picture that lives only in one of those three. Measured: 400 real
-            // documents through `fastdoc_read_office_tree`, `MissingResource("hwpimg:N")` on ~55 of
-            // them, and the FIRST one traced (`resolve_resource`'s own miss log) named `hwpimg:1` — a
-            // key `office_adapter.rs` asked for while building a HEADER node, never fetched because
-            // this call only walked `result.blocks`. Four separate walks, one per array that can
-            // carry an `.image`, all merged into the SAME map `resolve_resource` reads from.
-            let (found, without_bytes) = Self::collect_images(handle, &result.blocks);
-            for (k, v) in found {
-                result.images.insert(SwiftString::from(k), v);
-            }
-            for k in without_bytes {
-                result.pictures_declared_without_bytes.insert(SwiftString::from(k));
-            }
-            for hf in result.headers.iter().chain(result.footers.iter()) {
-                let (found, without_bytes) = Self::collect_images(handle, &hf.blocks);
-                for (k, v) in found {
-                    result.images.insert(SwiftString::from(k), v);
-                }
-                for k in without_bytes {
-                    result.pictures_declared_without_bytes.insert(SwiftString::from(k));
-                }
-            }
-            for footnote in &result.footnotes {
-                let (found, without_bytes) = Self::collect_images(handle, &footnote.blocks);
-                for (k, v) in found {
-                    result.images.insert(SwiftString::from(k), v);
-                }
-                for k in without_bytes {
-                    result.pictures_declared_without_bytes.insert(SwiftString::from(k));
-                }
-            }
+            // What that costs: `pictures_declared_without_bytes` is now empty rather than listing
+            // the pictures rhwp has no bytes for. That set was a by-product of fetching all of them
+            // — the very work this removes — and the same fact is still answered, on demand and to
+            // the same accuracy, by `fastdoc_office_image_base64` returning nothing for that key.
+            //
+            // A table/cell FILL and an anchored object are NOT affected: those carry decoded pixels
+            // in the vocabulary itself (`OfficeMasterObjectContent::Image(NSImage)`), not an
+            // `.image(id:)` reference, so they have no key to be fetched by. They are 5.9% of the
+            // picture bytes, which is why deferring them is not worth a vocabulary change.
             // `.resolvingFontSubstitution()` is applied HERE, at HWP's own single dispatch point
             // (invariant 44 — HWP bypasses `DocumentTypes.readOffice` entirely, so it needs its own
             // call rather than `readOffice`'s), NOT inside `mapJSON`: `mapJSON` stays a pure JSON->
@@ -407,70 +386,11 @@ impl HwpReader {
         outcome.map(|result| (result, retained))
     }
 
-    /// Walk the mapped blocks (recursively, INCLUDING table cells) for every `.image(id:)` whose id
-    /// is an embedded HWP image (`"hwpimg:<binDataId>"`), fetch its bytes via the live `handle`, and
-    /// return them keyed by the SAME id string the block carries — the key `reconcileMedia` looks up.
-    /// A linked (external-URL) image has no `hwpimg:` id and no embedded bytes, so it is skipped here
-    /// and resolved by the URL path instead, exactly like a linked docx/odt image.
-    // swift: Render/Office/HwpReader.swift:103-140
-    fn collect_images(
-        handle: RhwpHandle,
-        blocks: &[OfficeBlock],
-    ) -> (std::collections::HashMap<String, Data>, std::collections::HashSet<String>) {
-        let mut out: std::collections::HashMap<String, Data> = std::collections::HashMap::new();
-        let mut without_bytes: std::collections::HashSet<String> = std::collections::HashSet::new();
-        fn walk(
-            handle: RhwpHandle,
-            block: &OfficeBlock,
-            out: &mut std::collections::HashMap<String, Data>,
-            without_bytes: &mut std::collections::HashSet<String>,
-        ) {
-            match block {
-                OfficeBlock::Image { id, .. } => {
-                    let id = id.to_string();
-                    if out.contains_key(&id) || without_bytes.contains(&id)
-                        || !id.starts_with(HwpReader::HWP_IMAGE_PREFIX) {
-                        return;
-                    }
-                    // ONE resolver, shared with `RetainedParse::picture_for_id`, so the id parse
-                    // and the crop have a single spelling. `DeclaredWithoutBytes` is recorded as a
-                    // positive statement rather than just leaving the key out of `out` — see
-                    // `OfficeReadResult.pictures_declared_without_bytes` for why the two cases
-                    // (this, vs. a caller's resource map simply being incomplete) must never
-                    // collapse into one "missing" meaning.
-                    match HwpReader::picture_for_id(handle, &id) {
-                        PictureBytes::Bytes(data) => {
-                            out.insert(id, data);
-                        }
-                        PictureBytes::DeclaredWithoutBytes => {
-                            without_bytes.insert(id);
-                        }
-                        PictureBytes::NotAPictureOfThisDocument | PictureBytes::Undecodable => {}
-                    }
-                }
-                OfficeBlock::Table { rows, .. } => {
-                    for row in rows {
-                        for cell in row {
-                            for b in &cell.blocks {
-                                walk(handle, b, out, without_bytes);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        for block in blocks {
-            walk(handle, block, &mut out, &mut without_bytes);
-        }
-        (out, without_bytes)
-    }
-
     /// One picture's final bytes for the id a block carries — the id parse and the crop, once.
     ///
-    /// Both the read's own image walk (`collect_images`) and an on-demand fetch from a still-open
-    /// parse (`RetainedParse::picture_for_id`) go through here, because they must answer the same
-    /// bytes for the same id. A cropped occurrence carries its crop IN the id
+    /// The one place a picture id becomes bytes. Until P2c the read walked every block and called
+    /// this for all of them; now only `RetainedParse::picture_for_id` does, when something is
+    /// about to draw one. A cropped occurrence carries its crop IN the id
     /// (`"hwpimg:5!crop=x,y,w,h"`, so the same original shown twice at different crops keeps two
     /// entries), and a fetch that skipped the crop would hand back a picture the reader never drew.
     pub fn picture_for_id(handle: RhwpHandle, id: &str) -> PictureBytes {

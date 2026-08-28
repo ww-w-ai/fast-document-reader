@@ -31,6 +31,7 @@
 //! resolves fonts against a host `FontProvider` only the macOS app installs, and panics in a Rust
 //! test (`office_reader_reachability.rs`'s doc comment on `assert_reachable`).
 
+use fastdoc_engine::render::office::hwp_reader::mapping::PictureBytes;
 use fastdoc_engine::render::office::hwp_reader::HwpReader;
 use fastdoc_engine::render::office::office_block::{Cell, OfficeBlock, OfficeReadResult};
 use fastdoc_engine::render::office::office_export::{assert_exportable, to_json};
@@ -57,6 +58,28 @@ fn read(relative: &str) -> OfficeReadResult {
     let data = Data::fromBytes(bytes);
     HwpReader::read_before_host_font_substitution(&data)
         .unwrap_or_else(|e| panic!("{relative}: HwpReader::read_before_host_font_substitution failed: {e:?}"))
+}
+
+/// The bytes behind this document's first inline picture, fetched the way a host fetches one.
+///
+/// P2c: the read no longer pre-decodes pictures into `OfficeReadResult.images` — an `.hwp` keeps
+/// its parse open instead, and a picture is fetched when something is about to draw it. So "the
+/// embedded picture's bytes actually arrive", which is what these fixtures check, is asked through
+/// that door rather than by looking for a map the reader stopped filling.
+fn first_inline_picture_bytes(relative: &str) -> Option<Vec<u8>> {
+    let data = Data::fromBytes(sample(relative));
+    let (result, retained) = HwpReader::read_retaining_parse(&data, false)
+        .unwrap_or_else(|e| panic!("{relative}: HwpReader::read_retaining_parse failed: {e:?}"));
+    let mut ids: Vec<String> = Vec::new();
+    walk(&result.blocks, &mut |b| {
+        if let OfficeBlock::Image { id, .. } = b {
+            ids.push(id.to_string());
+        }
+    });
+    ids.iter().find_map(|id| match retained.picture_for_id(id) {
+        PictureBytes::Bytes(data) if !data.0.is_empty() => Some(data.0.clone()),
+        _ => None,
+    })
 }
 
 /// The `expectedSha256` a `featureFixtures` id carries in `Tests/Baseline/fixtures.json`, read at
@@ -290,8 +313,9 @@ fn hwp_nested_table_and_resources_arrive() {
     let cell_fills = cell_background_image_count(&result);
     assert!(cell_fills >= 1, "tac-img-02.hwp: expected at least 1 cell with a picture fill, found {cell_fills}");
     assert!(
-        !result.images.is_empty(),
-        "tac-img-02.hwp: expected OfficeReadResult.images to pre-decode at least 1 embedded picture, found none"
+        first_inline_picture_bytes("tac-img-02.hwp").is_some_and(|b| !b.is_empty()),
+        "tac-img-02.hwp: no inline picture produced bytes from the open parse — an embedded \
+         picture must still be reachable, it is just fetched now instead of pre-decoded"
     );
     let inline_images = {
         let mut n = 0usize;
@@ -313,8 +337,9 @@ fn hwpx_nested_table_and_resources_arrive() {
     let cell_fills = cell_background_image_count(&result);
     assert!(cell_fills >= 1, "tac-img-02.hwpx: expected at least 1 cell with a picture fill, found {cell_fills}");
     assert!(
-        !result.images.is_empty(),
-        "tac-img-02.hwpx: expected OfficeReadResult.images to pre-decode at least 1 embedded picture, found none"
+        first_inline_picture_bytes("tac-img-02.hwpx").is_some_and(|b| !b.is_empty()),
+        "tac-img-02.hwpx: no inline picture produced bytes from the open parse — an embedded \
+         picture must still be reachable, it is just fetched now instead of pre-decoded"
     );
 }
 

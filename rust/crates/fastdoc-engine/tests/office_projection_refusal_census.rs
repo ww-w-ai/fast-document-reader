@@ -35,10 +35,14 @@
 use fastdoc_engine::render::office::docx_reader::DocxReader;
 use fastdoc_engine::render::office::hwp_reader::mapping::HwpReader;
 use fastdoc_engine::render::office::odt_reader::OdtReader;
-use fastdoc_engine::render::office::office_block::{OfficeBlock, OfficeReadResult};
+use fastdoc_engine::render::office::office_block::{
+    OfficeAnchoredObject, OfficeBlock, OfficeMasterObject, OfficeMasterObjectContent,
+    OfficeReadResult,
+};
 use fastdoc_engine::render::office::projection_ledger::adapter_error_kind;
 use fastdoc_engine::render::office::zip_archive::ZipArchive;
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
+use swiftshim::geometry::{CGPoint, CGRect};
 use swiftshim::{CGSize, SwiftString};
 
 use std::collections::BTreeMap;
@@ -335,20 +339,28 @@ fn refusal_census_over_every_registered_fixture() {
 /// The corroboration `refusal_census_over_every_registered_fixture` used to get from "at least
 /// one real fixture refuses" — removed because that made the census fail on the day this crate
 /// succeeds at its own goal (`INVARIANTS.md` 109). This proves the SAME thing (the adapter can
-/// still produce `MissingResource`, and `outcome_for`/`adapter_error_kind` can still name it) with
-/// an input that refuses by CONSTRUCTION rather than by a real document's current defect: a block
-/// naming a resource key the caller's `resources` map does not contain is a programming error
-/// (the caller forgot to fill it in), never a document fact — the exact case S6-5a's own fix
-/// (`OfficeReadResult.pictures_declared_without_bytes`) deliberately did NOT weaken
-/// (`office_adapter::Ctx::resolve_resource` keeps its full strictness for it) — so this can never
-/// stop refusing the way a real fixture's bug can.
+/// still refuse, and `outcome_for`/`adapter_error_kind` can still NAME the refusal) with an input
+/// that refuses by CONSTRUCTION rather than by a real document's current defect.
+///
+/// It used to use a missing resource key. P2c made that case legal — an unresolved key is now
+/// carried by reference for the host to fetch — so the construction moved to an anchored object
+/// naming a block index that does not exist. That is a reader-contract violation rather than a
+/// document fact (`mapping.rs` leaves an empty paragraph carrier at every anchored index rather
+/// than dropping the block), so like the old one it can never stop refusing the way a real
+/// fixture's bug can.
 #[test]
-fn office_result_forces_missing_resource_by_omitting_the_resource_map() {
+fn office_result_forces_a_refusal_by_anchoring_to_a_block_that_does_not_exist() {
     let mut result = OfficeReadResult::default();
-    result.blocks.push(OfficeBlock::Image {
-        id: SwiftString::from("this-key-is-never-in-resources-or-images".to_string()),
-        size: CGSize { width: 10.0, height: 10.0 },
-        alignment: None,
+    result.anchored_objects.push(OfficeAnchoredObject {
+        block_index: 99,
+        object: OfficeMasterObject {
+            frame: CGRect {
+                origin: CGPoint { x: 0.0, y: 0.0 },
+                size: CGSize { width: 10.0, height: 10.0 },
+            },
+            content: OfficeMasterObjectContent::Text(Vec::new()),
+        },
+        paragraph_anchor: None,
     });
 
     let err = ValidatedRenderTree::from_office(OfficeAdapterInput {
@@ -358,13 +370,11 @@ fn office_result_forces_missing_resource_by_omitting_the_resource_map() {
         result: &result,
         resources: BTreeMap::new(),
     })
-    .expect_err("a block naming a resource key absent from both maps must refuse, by construction");
+    .expect_err("an anchored object naming no block must refuse, by construction");
 
     assert_eq!(
         err,
-        fastdoc_engine::render::render_tree::OfficeAdapterError::MissingResource(
-            "this-key-is-never-in-resources-or-images".to_string()
-        ),
-        "expected exactly the caller-omitted-the-key refusal, got a different kind: {err:?}"
+        fastdoc_engine::render::render_tree::OfficeAdapterError::AnchoredObjectTargetMissing(99),
+        "expected exactly the anchored-target refusal, got a different kind: {err:?}"
     );
 }

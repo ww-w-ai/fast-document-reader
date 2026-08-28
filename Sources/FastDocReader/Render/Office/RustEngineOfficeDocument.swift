@@ -83,6 +83,29 @@ final class RustOfficeDocumentHandle {
         return RustEngine.decodeOffice(json)
     }
 
+    /// One embedded picture's bytes, fetched from the parse this handle still holds.
+    ///
+    /// P2c: an `.hwp` has no archive, so the reader used to receive every picture's pixels inside
+    /// the read's own payload — 109 of them on the 편람, 54 MB of the 78 MB it shipped, decoded
+    /// whether or not any of them was ever on screen. This is the docx/odt shape for a format that
+    /// could not have it before: the picture is fetched when something is about to draw it.
+    ///
+    /// `id` is the id the block itself carries, crop and all (`"hwpimg:3!crop=..."`), and the bytes
+    /// come back already cropped — the engine resolves the id through the same code its read used,
+    /// so a picture taken from here and one taken from a read are the same bytes.
+    ///
+    /// `nil` for a picture this document does not have, for a document that keeps no parse
+    /// (docx/odt — their pictures come from the archive the host holds), and for one the document
+    /// declared without bytes. All three mean the same thing to a caller: ask elsewhere.
+    func picture(id: String) -> Data? {
+        answeredQueries += 1
+        guard let base64 = id.withCString({ fastdoc_office_image_base64(handle, $0) }) else {
+            return nil
+        }
+        defer { fastdoc_string_free(base64) }
+        return Data(base64Encoded: String(cString: base64))
+    }
+
     deinit {
         fastdoc_office_close(handle)
     }

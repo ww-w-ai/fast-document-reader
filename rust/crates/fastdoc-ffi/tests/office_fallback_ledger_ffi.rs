@@ -262,7 +262,7 @@ fn an_accepted_fixture_comes_back_from_the_projection_path() {
 /// fall back on (that is HWP-only), so ANY docx declaring an image refuses at this FFI boundary,
 /// forever, by construction.
 #[test]
-fn a_refused_fixture_still_comes_back_from_the_reader_path_and_the_ledger_names_it() {
+fn a_docx_with_an_unresolvable_image_is_accepted_now_and_still_exports_the_same_bytes() {
     let _lock = LEDGER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let bytes = docx_zip_bytes_with_unresolvable_image();
     let archive = ZipArchive::new(swiftshim::Data::fromBytes(bytes.clone()))
@@ -270,16 +270,24 @@ fn a_refused_fixture_still_comes_back_from_the_reader_path_and_the_ledger_names_
     let result =
         DocxReader::read(&archive).unwrap_or_else(|e| panic!("DocxReader::read failed: {e}"));
 
-    let expected_kind = ValidatedRenderTree::from_office(OfficeAdapterInput {
+    // P2c: this document is no longer refused. An image key nobody holds bytes for is carried BY
+    // REFERENCE now, so the adapter accepts it and the host fetches the picture when it draws one.
+    // That is the third time this file's own "do not depend on a document staying broken" lesson
+    // has come due — it was written twice above and still shaped this test.
+    //
+    // What survives, and is worth keeping, is the property the fallback existed to protect: a host
+    // calling this symbol gets the SAME schema-v4 export either way. So this now asserts the
+    // acceptance AND the equality, and that nothing was logged as a fallback.
+    ValidatedRenderTree::from_office(OfficeAdapterInput {
         format: DocumentFormat::Docx,
         source_name: "document.docx",
         source_bytes: &bytes,
         result: &result,
         resources: BTreeMap::new(),
     })
-    .err()
-    .map(|e| projection_ledger::adapter_error_kind(&e).to_string())
-    .expect("this fixture is refused by from_office (an unresolvable image, by construction)");
+    .unwrap_or_else(|e| {
+        panic!("a docx declaring an unresolvable image must be accepted by reference now: {e:?}")
+    });
 
     let reader_json = to_json(&result).expect("to_json accepts this fixture (no master page/anchored object)");
 
@@ -290,18 +298,28 @@ fn a_refused_fixture_still_comes_back_from_the_reader_path_and_the_ledger_names_
     assert_canonically_equal(
         &ffi_output,
         &reader_json,
-        "refused fixture: FFI output must equal office_export::to_json unchanged",
+        "FFI output must equal office_export::to_json whichever path produced it",
     );
 
     let entries = projection_ledger::snapshot();
-    let matching: Vec<_> = entries
-        .iter()
-        .filter(|e| e.document_name == "document.docx" && e.kind == expected_kind)
+    assert!(
+        entries.iter().all(|e| e.document_name != "document.docx"),
+        "nothing should have fallen back for this document any more, ledger says: {entries:?}"
+    );
+
+    // The instrument itself still has to work, or the assertion above is satisfied by a ledger
+    // that records nothing at all. Proven by construction rather than by finding a document that
+    // fails — which is exactly the dependency this test just had to shed.
+    projection_ledger::record("probe.docx", "Probe", "the ledger records what it is given");
+    let matching: Vec<_> = projection_ledger::snapshot()
+        .into_iter()
+        .filter(|e| e.document_name == "probe.docx" && e.kind == "Probe")
         .collect();
     assert_eq!(
         matching.len(),
         1,
-        "expected exactly one ledger entry for document.docx under kind {expected_kind:?}, got: {entries:?}"
+        "the ledger did not record an entry handed straight to it, so the emptiness assertion \
+         above proves nothing"
     );
 }
 
@@ -319,7 +337,7 @@ fn the_ledgers_per_kind_counts_match_from_office_called_directly_over_several_fi
     // This set used to lean on `issue2083_hide_fill_page.hwpx`, which declares three sections and
     // was refused by `project` as `Field("sections")`. S6 gave a multi-section document's
     // declarations a home, that refusal went away, and the vacuity guard below fired — correctly.
-    // It is the SAME mistake `a_refused_fixture_still_comes_back_...` above already records
+    // It is the SAME mistake `a_docx_with_an_unresolvable_image_...` above already records
     // (INVARIANTS.md 109): a test that needs a real document to STAY broken breaks every time that
     // document gets fixed, and fixing it is this roadmap's whole job. The lesson was written one
     // function up and not applied here.
@@ -406,9 +424,15 @@ fn the_ledgers_per_kind_counts_match_from_office_called_directly_over_several_fi
         let _ = call_read_office_json(bytes, extension);
     }
 
-    assert!(
-        !expected_by_kind.is_empty(),
-        "this fixture set must contain at least one refusal for the cross-check to be meaningful"
+    // NOT "this set must contain a refusal" — that is the dependency this file has now been
+    // bitten by three times (INVARIANTS.md 109). After P2c these fixtures produce zero refusals,
+    // which is the roadmap succeeding, and the cross-check below is still the statement worth
+    // making: whatever `from_office`/`project` refuse, the ledger records exactly that and no
+    // more. A zero on both sides would be vacuous on its own, so the instrument is proven
+    // separately, by construction, immediately below.
+    println!(
+        "LEDGER cross-check over {} fixtures: {expected_by_kind:?}",
+        fixtures.len()
     );
 
     // The ledger's whole snapshot IS this test's window: it was cleared immediately above and
@@ -426,5 +450,15 @@ fn the_ledgers_per_kind_counts_match_from_office_called_directly_over_several_fi
         "ledger's per-kind counts (from the real FFI symbol) must equal from_office's own \
          per-kind counts (called directly on the same bytes) — a non-emptiness check would pass \
          even if some refusals were swallowed"
+    );
+
+    // Positive control: the comparison above is only meaningful if a refusal WOULD show up in it.
+    projection_ledger::clear();
+    projection_ledger::record("probe.docx", "Probe", "a refusal reaches the snapshot");
+    assert_eq!(
+        projection_ledger::snapshot().len(),
+        1,
+        "the ledger did not record a refusal handed straight to it, so the comparison above \
+         proves nothing"
     );
 }

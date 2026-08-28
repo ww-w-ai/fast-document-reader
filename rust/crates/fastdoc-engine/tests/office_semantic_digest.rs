@@ -453,12 +453,25 @@ fn digest_block_src(ctx: &SrcCtx<'_>, block: &OfficeBlock) -> DigestBlock {
             form_controls: vec![],
         },
         OfficeBlock::Image { id, .. } => {
+            // Same identity rule as `digest_from_tree_json`: the CONTENT hash when bytes are on
+            // hand, and the declared key otherwise. P2c stopped pre-decoding an HWP's pictures, so
+            // this side has no bytes for one — and if the two sides spelled that differently, every
+            // parity check would fail on a picture that is in fact identical on both.
             let sha = ctx
                 .result
                 .images
                 .get(id)
                 .map(|data| sha256_hex(&data.0))
-                .or_else(|| ctx.resources.get(id.as_str()).map(|bytes| sha256_hex(bytes)));
+                .or_else(|| ctx.resources.get(id.as_str()).map(|bytes| sha256_hex(bytes)))
+                .or_else(|| {
+                    // A key naming a VECTOR drawing is not a picture: the tree turns it into a
+                    // `Vector` node with no resource at all, so labelling it here would diverge
+                    // from the canonical side in the opposite direction. Same for one the document
+                    // declared without bytes — nothing will ever resolve it.
+                    let is_vector = ctx.result.vector_graphics.contains_key(id);
+                    let declared_empty = ctx.result.pictures_declared_without_bytes.contains(id);
+                    (!is_vector && !declared_empty).then(|| format!("by-reference:{id}"))
+                });
             DigestBlock {
                 kind: DigestKind::Image { resource_sha256: sha },
                 text: String::new(),
@@ -635,7 +648,20 @@ fn digest_from_tree_json(root: &serde_json::Value) -> OfficeSemanticDigest {
         .as_array()
         .expect("envelope.resources must be an array")
         .iter()
-        .map(|r| (r["id"].as_u64().expect("resource.id"), r["sha256"].as_str().expect("resource.sha256").to_string()))
+        // A picture's identity is its CONTENT hash when the tree carries the bytes, and the key the
+        // document declared it under when it does not (P2c: an HWP's pictures are fetched on
+        // demand, so the tree names them rather than embedding them). Both are stable identities
+        // for a parity digest — what must never happen is two different pictures sharing one, which
+        // neither does: a hash is content-addressed, and a key is unique within its document.
+        .map(|r| {
+            let id = r["id"].as_u64().expect("resource.id");
+            let identity = r["sha256"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| r["sourceKey"].as_str().map(|k| format!("by-reference:{k}")))
+                .expect("a resource states either its content hash or the key it is fetched by");
+            (id, identity)
+        })
         .collect();
 
     let comments_by_id: HashMap<u64, String> = root["annotations"]["comments"]
@@ -1341,10 +1367,29 @@ fn feature_nested_table_source_facts_and_digest_parity() {
         let picture_fill_cells = count_matching_cells(&result.blocks, &|c: &Cell| c.background_image.is_some());
         assert_eq!(picture_fill_cells, 11, "{id}: expected 11 Cell.background_image cells, found {picture_fill_cells}");
 
+        // P2c: the read no longer pre-decodes pictures (they are fetched when something draws
+        // one), so the count that used to be over `OfficeReadResult.images` is over what the
+        // DOCUMENT declares — which is the fixture fact this pin was always about. Counted from
+        // the tree's own resource table so it also proves the declarations survive the adapter.
+        let declared = ValidatedRenderTree::from_office(OfficeAdapterInput {
+            format,
+            source_name: id,
+            source_bytes: &bytes,
+            result: &result,
+            resources: BTreeMap::new(),
+        })
+        .unwrap_or_else(|e| panic!("{id}: from_office refused: {e:?}"));
+        let declared_json: serde_json::Value =
+            serde_json::from_slice(&declared.encode_json().expect("encodes")).unwrap();
+        let declared_pictures = declared_json["resources"]
+            .as_array()
+            .expect("resources")
+            .iter()
+            .filter(|r| r["sourceKey"].as_str().is_some_and(|k| k.starts_with("hwpimg:")))
+            .count();
         assert!(
-            result.images.len() >= 18,
-            "{id}: expected at least 18 pre-decoded OfficeReadResult.images entries, found {}",
-            result.images.len()
+            declared_pictures >= 18,
+            "{id}: expected at least 18 document-declared pictures in the tree, found {declared_pictures}"
         );
 
         assert_feature_digest_parity(id, format, &bytes, &result);
@@ -1440,7 +1485,31 @@ fn feature_nested_table_image_identity_is_present_on_the_source_side() {
         }
         count_images(&result.blocks, &mut inline_images);
         assert!(inline_images >= 1, "{id}: expected at least one inline OfficeBlock::Image, found {inline_images}");
-        assert!(!result.images.is_empty(), "{id}: expected OfficeReadResult.images to be non-empty");
+        // P2c: identity now lives in the id the block carries, not in a map the read pre-filled —
+        // that id is what a host passes to `fastdoc_office_image_base64` and what the tree records
+        // as a resource's `sourceKey`, so an empty or unkeyed one loses the picture just as surely
+        // as an empty `images` map used to.
+        let mut ids: Vec<String> = Vec::new();
+        fn collect_ids(blocks: &[OfficeBlock], out: &mut Vec<String>) {
+            for block in blocks {
+                match block {
+                    OfficeBlock::Image { id, .. } => out.push(id.to_string()),
+                    OfficeBlock::Table { rows, .. } => {
+                        for row in rows {
+                            for cell in row {
+                                collect_ids(&cell.blocks, out);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        collect_ids(&result.blocks, &mut ids);
+        assert!(
+            ids.iter().any(|i| i.starts_with("hwpimg:")),
+            "{id}: no inline picture carries an embedded-HWP id, so nothing can fetch it: {ids:?}"
+        );
     }
 }
 

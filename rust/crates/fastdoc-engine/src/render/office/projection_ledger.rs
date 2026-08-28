@@ -78,7 +78,6 @@ pub fn clear() {
 /// own callers can never name the same variant two different ways.
 pub fn adapter_error_kind(error: &OfficeAdapterError) -> &'static str {
     match error {
-        OfficeAdapterError::MissingResource(_) => "OfficeAdapterError::MissingResource",
         OfficeAdapterError::AnchoredObjectTargetMissing(_) => {
             "OfficeAdapterError::AnchoredObjectTargetMissing"
         }
