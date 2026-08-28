@@ -113,14 +113,27 @@ final class CorpusRenderProbeTests: XCTestCase {
             }
         }
 
-        print("""
+        let summary = """
         corpus render probe
           found=\(found) rendered=\(rendered) readThrew=\(readThrew) \
         enumerationErrorsSkippedPast=\(enumerationErrors)
           tables=\(tables) cellParagraphs=\(cellParagraphs)
-        """)
+        """
+        print(summary)
         for f in failures.prefix(40) { print("  FAIL \(f)") }
         if failures.count > 40 { print("  … \(failures.count - 40) more") }
+
+        // And the same report to a FILE, when asked for one. A gate that cannot show its numbers is
+        // not a gate: measured on a 1,982-document run, the per-document lines and this whole
+        // summary were lost to stdout interleaving between xctest and the swift-testing runner —
+        // the last line in the captured file was a document path with the OTHER runner's banner
+        // spliced into the middle of it. The pass/fail verdict survived because it travels a
+        // different channel; the evidence for it did not. `stdout` stays as it was: it is what names
+        // the offending document when a trap takes the process down before any of this runs.
+        if let out = ProcessInfo.processInfo.environment["FMD_RENDER_CORPUS_OUT"] {
+            let report = ([summary] + failures.map { "  FAIL \($0)" }).joined(separator: "\n") + "\n"
+            try report.write(toFile: out, atomically: true, encoding: .utf8)
+        }
 
         // Deliberately NOT asserting `readThrew == 0`: a corpus contains genuinely broken and
         // password-protected files, and this probe's job is to surface a CRASH in the render path,

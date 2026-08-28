@@ -483,9 +483,34 @@ impl Utf16Index {
             Err(i) => i - 1,
         };
         let (start_byte, start_utf16) = self.checkpoints[idx];
+        record_scan(byte - start_byte);
         Some(start_utf16 + text[start_byte..byte].encode_utf16().count() as u64)
     }
 }
+
+/// How many bytes every `Utf16Index::offset` on this thread has re-scanned since the counter was
+/// last reset. Test builds only.
+///
+/// This is the ONE number that tells a linear index from the quadratic scan it replaced, and it
+/// tells them apart WITHOUT a clock. A wall-clock budget for a whole document would be the obvious
+/// gate and the wrong one: this suite is already known to be flaky under load (`CLAUDE.md`), so a
+/// timing gate on the machine that runs it would either be loose enough to miss the regression or
+/// tight enough to fail on a busy afternoon. Bytes re-scanned is deterministic, and it is the
+/// actual defect — the old code walked from byte 0 every time, so the count grew with the SQUARE of
+/// the document while the answers stayed correct.
+#[cfg(test)]
+thread_local! {
+    static BYTES_RESCANNED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_scan(bytes: usize) {
+    BYTES_RESCANNED.with(|c| c.set(c.get() + bytes));
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn record_scan(_bytes: usize) {}
 
 fn node_text(payload: &wire::NodePayload) -> Option<&str> {
     match payload {
@@ -1595,6 +1620,59 @@ mod utf16_index_tests {
         }
         assert_eq!(index.offset(&text, text.len()), naive(&text, text.len()));
         assert!(checked > 4_000, "the fixture was too small to cross checkpoints");
+    }
+
+    /// S10 — the gate on S3's 61x, expressed as the property that produced it.
+    ///
+    /// `render::markdown::produce`'s first real document (a 1.2 MB novel) spent 2,104 ms validating
+    /// source spans, and halving the input quartered the time. The cause was this index's naive
+    /// form, which walked from byte 0 for every endpoint it was asked about; checkpointing took the
+    /// same document to 34 ms. Nothing has guarded that since — the commit records the numbers and
+    /// the suite records nothing, so a future edit could restore the whole-document walk and every
+    /// test would still pass, because the ANSWERS never changed. Only the cost did.
+    ///
+    /// So the gate counts bytes re-scanned rather than milliseconds. Doubling a document doubles
+    /// how many spans there are to validate, and with a checkpointed index each one still scans at
+    /// most a stride, so the total roughly doubles. Without checkpoints each scan grows with the
+    /// document too, and the total QUADRUPLES. The two are far enough apart that a loose bound
+    /// separates them cleanly: 3x passes the linear shape and fails the quadratic one with room to
+    /// spare on both sides.
+    ///
+    /// Proven to bite, not just to pass: with `record_scan(byte - start_byte)` changed to
+    /// `record_scan(byte)` — the naive walk's cost, identical answers — the ratio went to exactly
+    /// 4.00x (26,220,000 -> 104,920,000 bytes) and this test failed. The line was restored
+    /// afterwards and the crate's tests re-run.
+    #[test]
+    fn doubling_a_document_does_not_quadruple_the_work_of_validating_its_spans() {
+        // Real markdown, not a repeated line: every paragraph, heading and emphasis run emits its
+        // own source span, and spans are what this index is asked about. Mixed scripts keep byte,
+        // char and UTF-16 counts disagreeing, which is the case the naive scan was written for.
+        let unit = "# 제목 heading\n\nA paragraph with *emphasis*, `code`, 한국어 and 🎉 in it.\n\n";
+        let small: String = unit.repeat(400);
+        let large: String = unit.repeat(800);
+
+        let measure = |source: &str, name: &str| -> usize {
+            super::BYTES_RESCANNED.with(|c| c.set(0));
+            crate::render::markdown::produce(source.as_bytes(), name)
+                .expect("the fixture must produce a valid tree");
+            super::BYTES_RESCANNED.with(std::cell::Cell::get)
+        };
+        let small_bytes = measure(&small, "small.md");
+        let large_bytes = measure(&large, "large.md");
+
+        // A gate on a counter that never moved would pass for the wrong reason.
+        assert!(
+            small_bytes > 10_000,
+            "the fixture validated almost nothing ({small_bytes} bytes re-scanned) — it cannot \
+             tell a linear index from a quadratic one"
+        );
+        let ratio = large_bytes as f64 / small_bytes as f64;
+        assert!(
+            ratio < 3.0,
+            "validating twice the document re-scanned {ratio:.2}x the bytes \
+             ({small_bytes} -> {large_bytes}). Linear is ~2x; ~4x is the whole-document walk this \
+             index exists to replace (INVARIANTS.md, S3's 2,104ms -> 34ms)."
+        );
     }
 
     #[test]

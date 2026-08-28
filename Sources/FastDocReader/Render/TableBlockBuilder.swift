@@ -1068,8 +1068,8 @@ enum TableBlockBuilder {
         // 14× gap on 2.8× the cells, because each `invalidateLayout` call re-walks what follows it.
         // One call over the union is the same instruction to the layout manager, paid once. The
         // union is taken by MIN/MAX over every touched range rather than `touched.first`/`.last`,
-        // because the engine branch collects `touched` table-by-table (pass 2), not necessarily in
-        // ascending document order the way the single-pass `#else` walk always produced it.
+        // which costs nothing and does not depend on the walk above happening to append in
+        // ascending document order.
         guard let lower = touched.map({ $0.location }).min(),
               let upperBound = touched.map({ $0.location + $0.length }).max(),
               let lm = storage.layoutManagers.first else { return touched.count }

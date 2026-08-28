@@ -159,6 +159,81 @@ final class RustEngineTableResizeCutoverTests: XCTestCase {
         XCTAssertEqual(moved, 0, "the second resize at the same width must not re-snap a single cell")
     }
 
+    /// S10 — the gate on S8B's remaining +1.22 ms, expressed as the property that bought it back.
+    ///
+    /// The engine path cost +4.3 ms per resize when it landed, and the measurement said where: the
+    /// FFI boundary itself was 0.35 ms, while 2.4 ms was grouping the cells and 1.6 ms was building
+    /// the payload from those groups — two extra walks of the storage. Fusing them into the walk
+    /// that already finds the cells took the median from 6.05+ ms to 5.86 ms and left +1.22 ms
+    /// against the engine-free path, which is the number this roadmap carries into S10.
+    ///
+    /// Nothing guarded the fusion. Splitting it back into two passes is the natural shape to write
+    /// (collect, then build) and every existing test would still pass, because the WIDTHS would be
+    /// identical — that is what makes this a latency regression rather than a defect, and latency
+    /// is what no other test here can see.
+    ///
+    /// So this counts traversals instead of milliseconds, for the same reason the markdown
+    /// producer's own gate does (`validate.rs`, S3's 2,104 ms): this suite is flaky under load, so
+    /// a clock-based budget is either too loose to catch the regression or too tight to survive a
+    /// busy machine. A counting `NSTextStorage` records every attribute query `resizeTables` makes;
+    /// one walk asks about each attribute run once, and each extra walk adds another full sweep.
+    ///
+    /// Proven to bite: with the `addCell` calls moved into a second `storage.enumerateAttribute`
+    /// pass — same widths, every other test still green — the query count on this fixture went from
+    /// 2,915 to 5,830 against a one-walk cost of 2,915, and this test failed. The line was restored
+    /// afterwards and the whole suite re-run.
+    func testTheResizeWalksTheStorageOnceRatherThanOncePerLayerItReplaced() throws {
+        /// Counts the attribute queries AppKit's `enumerateAttribute` makes on its way through.
+        /// Only the primitive is overridden, so the storage behaves exactly like the real one.
+        final class CountingTextStorage: NSTextStorage {
+            private let backing = NSTextStorage()
+            var attributeQueries = 0
+            var counting = false
+
+            override var string: String { backing.string }
+            override func attributes(at location: Int, effectiveRange range: NSRangePointer?)
+                -> [NSAttributedString.Key: Any] {
+                if counting { attributeQueries += 1 }
+                return backing.attributes(at: location, effectiveRange: range)
+            }
+            override func replaceCharacters(in range: NSRange, with str: String) {
+                backing.replaceCharacters(in: range, with: str)
+                edited(.editedCharacters, range: range, changeInLength: str.utf16.count - range.length)
+            }
+            override func setAttributes(_ attrs: [NSAttributedString.Key: Any]?, range: NSRange) {
+                backing.setAttributes(attrs, range: range)
+                edited(.editedAttributes, range: range, changeInLength: 0)
+            }
+        }
+
+        let data = try Self.fixture("tables/tago-tables.odt")
+        let attr = try attributedString(for: data, extension: "odt", columnWidth: 600)
+        let storage = CountingTextStorage()
+        storage.setAttributedString(attr)
+
+        // What ONE walk costs on this document, measured on the same object rather than assumed
+        // from its length: `enumerateAttribute` asks once per attribute run, and how many runs a
+        // real document has is not something a test should be guessing at.
+        storage.counting = true
+        storage.enumerateAttribute(.paragraphStyle, in: NSRange(location: 0, length: storage.length)) { _, _, _ in }
+        let oneWalk = storage.attributeQueries
+        XCTAssertGreaterThan(oneWalk, 20, "the fixture is too small to tell one walk from two")
+
+        storage.attributeQueries = 0
+        let touched = TableBlockBuilder.resizeTables(in: storage, toWidth: 520)
+        let duringResize = storage.attributeQueries
+        // A resize that touched nothing would make this pass without testing anything.
+        XCTAssertGreaterThan(touched, 0, "the resize moved no cell — it never reached the walk")
+
+        XCTAssertLessThan(Double(duringResize), Double(oneWalk) * 1.5, """
+            resizeTables made \(duringResize) attribute queries where one walk of this document is \
+            \(oneWalk). It is walking the storage more than once again — the two extra passes \
+            (grouping the cells, then building the payload from them) were measured at 2.4 ms and \
+            1.6 ms of the +4.3 ms this path once cost, and fusing them into the finding walk is what \
+            took the median to 5.86 ms.
+            """)
+    }
+
     /// The engine branch builds its payload INSIDE the walk that finds the cells, which is only
     /// sound because a table's cells are contiguous in document order — `textBlocks.first` is the
     /// OUTERMOST block, so a nested table's paragraphs map to the table enclosing them and a
