@@ -7,31 +7,20 @@ import XCTest
 /// scoped run IDs provide attribution, while serial execution keeps AppKit document construction
 /// deterministic.
 final class S1BPathMutationTests: XCTestCase {
-    private var configuration: String {
-        #if FMD_RUST_ENGINE
-        return "rust-enabled"
-        #else
-        return "default"
-        #endif
-    }
     override func setUp() {
         super.setUp()
         DocumentEngineTrace.reset()
     }
 
-    /// The seam a HWP GUI open/reload actually runs through in THIS configuration. Naming the
-    /// swift seam unconditionally made these tests assert the state S7 exists to end — the GUI read
-    /// HWP with `HwpReader` while `--extract` read the same bytes with the engine. Deriving it from
-    /// `configuration` keeps the test measuring "the dispatch seam fires and a fault at it is fatal"
-    /// rather than pinning which reader wins, which is the behaviour contract's job
+    /// The seam a HWP GUI open/reload runs through. These named the SWIFT seam while the GUI still
+    /// read HWP with `HwpReader` and `--extract` read the same bytes with the engine; S7 ended that
+    /// split and S9 removed the branch, so there is one seam per surface and it is named once here
+    /// rather than at each of its six uses. What this file measures is "the dispatch seam fires and
+    /// a fault at it is fatal" — WHICH reader wins is the behaviour contract's job
     /// (`Tests/Baseline/behavior.json`), not this file's.
-    private var hwpOpenSeam: String {
-        configuration == "rust-enabled" ? "M-HWP-RUST-OPEN" : "M-HWP-SWIFT-OPEN"
-    }
-    private var hwpReloadSeam: String {
-        configuration == "rust-enabled" ? "M-HWP-RUST-RELOAD" : "M-HWP-SWIFT-RELOAD"
-    }
-    private var hwpEngine: String { configuration == "rust-enabled" ? "rust" : "swift" }
+    private let hwpOpenSeam = "M-HWP-RUST-OPEN"
+    private let hwpReloadSeam = "M-HWP-RUST-RELOAD"
+    private let hwpEngine = "rust"
 
     private func fixture(_ name: String) -> URL {
         URL(fileURLWithPath: #filePath)
@@ -42,35 +31,27 @@ final class S1BPathMutationTests: XCTestCase {
     private func assertFault(_ runID: String, _ seam: String) {
         XCTAssertEqual(DocumentEngineTrace.faults(runID: runID), ["F-\(seam)"])
         XCTAssertEqual(DocumentEngineTrace.snapshot(runID: runID).map(\.seam), [seam])
-        let defaultKillers: Set<String> = [
-            "M-HWP-SWIFT-OPEN", "M-HWP-SWIFT-RELOAD", "M-HWP-SWIFT-EXTRACT",
-            "M-PLAIN-NAV-REJECTION", "M-OFFICE-SAVE-REJECTION",
-        ]
-        let rustKillers: Set<String> = [
+        let killers: Set<String> = [
             "M-HWP-RUST-EXTRACT", "M-HWP-RUST-OPEN", "M-HWP-RUST-RELOAD",
             "M-PLAIN-NAV-REJECTION", "M-OFFICE-SAVE-REJECTION",
         ]
-        let designated = configuration == "default" && defaultKillers.contains(seam)
-            || configuration == "rust-enabled" && rustKillers.contains(seam)
+        let designated = killers.contains(seam)
         let role = designated && !runID.contains("hwpx") ? "killer" : "corroboration"
         let killerTests = [
-            "M-HWP-SWIFT-OPEN": "S1BPathMutationTests/testHwpSwiftOpenControlThenMutation",
-            "M-HWP-SWIFT-RELOAD": "S1BPathMutationTests/testHwpSwiftReloadControlThenMutation",
-            "M-HWP-RUST-OPEN": "S1BPathMutationTests/testHwpSwiftOpenControlThenMutation",
-            "M-HWP-RUST-RELOAD": "S1BPathMutationTests/testHwpSwiftReloadControlThenMutation",
-            "M-HWP-SWIFT-EXTRACT": "S1BPathMutationTests/testHwpExtractControlThenConfigurationMutation",
-            "M-HWP-RUST-EXTRACT": "S1BPathMutationTests/testHwpExtractControlThenConfigurationMutation",
+            "M-HWP-RUST-OPEN": "S1BPathMutationTests/testHwpOpenControlThenMutation",
+            "M-HWP-RUST-RELOAD": "S1BPathMutationTests/testHwpReloadControlThenMutation",
+            "M-HWP-RUST-EXTRACT": "S1BPathMutationTests/testHwpExtractControlThenMutation",
             "M-PLAIN-NAV-REJECTION": "S1BPathMutationTests/testPlainTextNavigationRejectionControlThenMutation",
             "M-OFFICE-SAVE-REJECTION": "S1BPathMutationTests/testOfficeSaveRejectionControlThenMutationLeavesSourceUntouched",
         ]
         let killerTest = killerTests[seam] ?? "missing"
         print("S1B_MUTATION {\"id\":\"\(seam)\",\"faultId\":\"F-\(seam)\","
-              + "\"configuration\":\"\(configuration)\",\"role\":\"\(role)\","
+              + "\"role\":\"\(role)\","
               + "\"controlPassed\":true,\"mutatedFailed\":true,"
               + "\"killerTest\":\"\(killerTest)\"}")
     }
 
-    func testHwpSwiftOpenControlThenMutation() throws {
+    func testHwpOpenControlThenMutation() throws {
         for name in ["blank2010.hwp", "hwpx-01-saved.hwpx"] {
             let url = fixture(name)
             let data = try Data(contentsOf: url)
@@ -95,7 +76,7 @@ final class S1BPathMutationTests: XCTestCase {
         }
     }
 
-    func testHwpSwiftReloadControlThenMutation() throws {
+    func testHwpReloadControlThenMutation() throws {
         for name in ["blank2010.hwp", "hwpx-01-saved.hwpx"] {
             let url = fixture(name)
             let ext = url.pathExtension
@@ -116,17 +97,12 @@ final class S1BPathMutationTests: XCTestCase {
         }
     }
 
-    func testHwpExtractControlThenConfigurationMutation() throws {
+    func testHwpExtractControlThenMutation() throws {
         for name in ["blank2010.hwp", "hwpx-01-saved.hwpx"] {
             let url = fixture(name)
             let ext = url.pathExtension
-            #if FMD_RUST_ENGINE
             let seam = "M-HWP-RUST-EXTRACT"
             let expectedEngine = "rust"
-            #else
-            let seam = "M-HWP-SWIFT-EXTRACT"
-            let expectedEngine = "swift"
-            #endif
             let control = "extract-control-\(ext)"
             XCTAssertEqual(DocumentEngineTrace.withRun(control, entryPoint: "extract") {
                 HeadlessExtract.run([url.path])

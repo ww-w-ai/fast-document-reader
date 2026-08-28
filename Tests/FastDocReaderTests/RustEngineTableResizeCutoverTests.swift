@@ -2,7 +2,6 @@ import XCTest
 import AppKit
 @testable import FastDocReader
 
-#if FMD_RUST_ENGINE
 
 /// S5B2b-03/04: proves the cutover on a REAL document through the REAL reflow entry point —
 /// `TableBlockBuilder.resizeTables(in:toWidth:)`, the exact function `DocumentWindowController`
@@ -216,7 +215,6 @@ final class RustEngineTableResizeCutoverTests: XCTestCase {
         return out
     }
 }
-#endif
 
 /// S5B2b-05: the reflow latency on the heaviest real table document, measured again after the
 /// cutover. Permanently-skipped probe (same convention as `GiantTableDeferralLatencyProbe`),
@@ -262,11 +260,7 @@ final class RustEngineTableResizeLatencyProbe: XCTestCase {
         let t2 = Date()
         TableBlockBuilder.resizeTables(in: storage, toWidth: width)
         let secondCallMs = ms(t2)
-        #if FMD_RUST_ENGINE
         let branch = "FMD_RUST_ENGINE=1 (engine, ONE FFI call for the whole document)"
-        #else
-        let branch = "FMD_RUST_ENGINE off (host local formula, no FFI)"
-        #endif
         print(String(format: "  [%@] resizeTables width-changed %8.2f ms · width-unchanged %8.2f ms",
                      branch, firstCallMs, secondCallMs))
     }

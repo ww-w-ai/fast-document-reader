@@ -3,9 +3,9 @@ import CFastdocEngine
 
 /// The ported Rust engine, as this app calls it.
 ///
-/// Compiled ONLY into a build that asked for it (`FMD_RUST_ENGINE=1`, see `Package.swift`). The
-/// shipped app does not contain this file's code, which is what lets the two readers coexist while
-/// the ported one is still being checked against the one that ships.
+/// This is the reader every build links (S9). The Swift readers beside it are no longer a second
+/// shipped path — they are the REFERENCE the tests check this one against, which is the one job
+/// they keep.
 ///
 /// Ownership follows the same rule the HWP parser's FFI already established: every string the
 /// library returns is freed by the library, so each call here pairs its pointer with a `defer`.

@@ -41,9 +41,6 @@ var swiftSettings: [SwiftSetting] = [.swiftLanguageMode(.v5)]
 
 targets.append(.binaryTarget(name: "FastdocEngine", path: enginePath))
 appDependencies.append("FastdocEngine")
-// Still DEFINED, and deliberately: the `#if` branches are removed file by file in S9-1 and the
-// define is what keeps every step in between compiling. It goes when the last branch does.
-swiftSettings.append(.define("FMD_RUST_ENGINE"))
 
 targets.append(
     .executableTarget(

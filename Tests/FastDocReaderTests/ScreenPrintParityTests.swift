@@ -139,7 +139,6 @@ final class ScreenPrintParityTests: XCTestCase {
                       "no breaks in, none invented on either path")
     }
 
-    #if FMD_RUST_ENGINE
     // MARK: - S5C2-03/05: the engine's own sheets are the SAME sheets the screen draws
 
     /// A real fixture, opened the way the app opens one. `openPagedDocument`'s synthetic blocks
@@ -268,5 +267,4 @@ final class ScreenPrintParityTests: XCTestCase {
                           "down to the next page, so its top is lower — through the engine's own " +
                           "decision, not just the host's")
     }
-    #endif
 }

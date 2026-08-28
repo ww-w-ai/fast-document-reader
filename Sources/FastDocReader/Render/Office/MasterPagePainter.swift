@@ -74,8 +74,8 @@ enum MasterPagePainter {
     /// `templateSelection` is S5C3-04's engine crossing: given every page this pass is about to
     /// draw, it answers each one's applicable template index (or `nil` for "no template applies"),
     /// in ONE call — never once per page, which is the shape the plan rejected twice. `nil` — the
-    /// default, and the whole answer whenever `FMD_RUST_ENGINE` is off — falls back to
-    /// `applicablePage` for the whole batch, unchanged from before this parameter existed. A `nil`
+    /// default, and what a document with no engine handle produces — falls back to `applicablePage`
+    /// for the whole batch, unchanged from before this parameter existed. A `nil`
     /// ENTRY inside a non-`nil` array is a real engine answer ("no template applies"), not a gap;
     /// it is trusted rather than re-asked of the host.
     static func draw(_ content: MasterPageContent, sheets: [CGRect], totalPages: Int,

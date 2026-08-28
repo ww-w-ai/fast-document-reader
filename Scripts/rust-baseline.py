@@ -26,55 +26,14 @@ EXPECTED = {
     "sources": 6,
     "variants": 70,
 }
-CONFIGURATIONS = {"default", "rust-enabled"}
 ORACLE_KINDS = {"semantic", "file", "document", "host", "negative"}
 EVIDENCE_MODES = {"test", "negative"}
 MUTATION_APPLICABILITY = {"required", "inherited", "none"}
 MUTATION_IDS = {
     "M-SWIFT-REF-DOCX", "M-SWIFT-REF-ODT", "M-RUST-BRIDGE-MARKDOWN",
-    "M-RUST-BRIDGE-TREE", "M-HWP-SWIFT-OPEN", "M-HWP-SWIFT-RELOAD",
-    "M-HWP-SWIFT-EXTRACT", "M-HWP-RUST-EXTRACT", "M-ZIP-SWIFT-DISPATCH",
-    "M-ZIP-RUST-DISPATCH", "M-PLAIN-NAV-REJECTION", "M-OFFICE-SAVE-REJECTION",
-}
-ENGINE_BY_CLASS = {
-    "markdown": {entry: "swift" for entry in IDS},
-    "plain-text": {entry: "swift" for entry in IDS},
-    "docx": {
-        "gui-open": "mixed",
-        "gui-reload": "mixed",
-        "extract": "mixed",
-        "pdf": "mixed",
-        "quick-look": "mixed",
-        "derived-navigation": "mixed",
-        "edit-save": "swift",
-    },
-    "odt": {
-        "gui-open": "mixed",
-        "gui-reload": "mixed",
-        "extract": "mixed",
-        "pdf": "mixed",
-        "quick-look": "mixed",
-        "derived-navigation": "mixed",
-        "edit-save": "swift",
-    },
-    "hwp": {
-        "gui-open": "swift",
-        "gui-reload": "swift",
-        "extract": "rust",
-        "pdf": "swift",
-        "quick-look": "swift",
-        "derived-navigation": "swift",
-        "edit-save": "swift",
-    },
-    "hwpx": {
-        "gui-open": "swift",
-        "gui-reload": "swift",
-        "extract": "rust",
-        "pdf": "swift",
-        "quick-look": "swift",
-        "derived-navigation": "swift",
-        "edit-save": "swift",
-    },
+    "M-RUST-BRIDGE-TREE", "M-HWP-RUST-OPEN", "M-HWP-RUST-RELOAD",
+    "M-HWP-RUST-EXTRACT", "M-ZIP-RUST-DISPATCH", "M-PLAIN-NAV-REJECTION",
+    "M-OFFICE-SAVE-REJECTION",
 }
 LITERALS = {
     "markdown": b"# Baseline\n\nDeterministic **Markdown** fixture.\n",
@@ -248,16 +207,16 @@ def behavior(root=ROOT):
 def validate_behavior_data(d, root=ROOT):
     contracts = d.get("contracts", [])
     mutations = d.get("mutations", [])
-    if d.get("version") != 1 or set(d.get("configurations", [])) != CONFIGURATIONS:
-        raise Error("behavior: version/configurations invalid")
+    if d.get("version") != 2:
+        raise Error("behavior: version invalid")
     pairs = {(c.get("class"), c.get("entryPointId")) for c in contracts}
     expected_pairs = {(c, entry) for c in CLASSES for entry in IDS}
     if len(contracts) != 42 or pairs != expected_pairs:
         raise Error("behavior: exactly 42 unique class/entry contracts required")
     mutation_ids = {m.get("id") for m in mutations}
-    if len(mutations) != 12 or mutation_ids != MUTATION_IDS:
+    if len(mutations) != 10 or mutation_ids != MUTATION_IDS:
         raise Error("behavior: frozen mutation registry differs")
-    if any(not all(m.get(k) for k in ("faultId", "killerTest", "configuration", "targetSeam")) for m in mutations):
+    if any(not all(m.get(k) for k in ("faultId", "killerTest", "targetSeam")) for m in mutations):
         raise Error("behavior: malformed mutation")
     _, extension_classes = extensions(root)
     for contract in contracts:
@@ -272,13 +231,9 @@ def validate_behavior_data(d, root=ROOT):
         representative = contract.get("representativeExtension")
         if extension_classes.get(representative) != contract["class"]:
             raise Error("behavior: representative extension belongs to another class")
-        expected = contract.get("expectedEngineByConfiguration", {})
-        if set(expected) != CONFIGURATIONS or not set(expected.values()) <= {"swift", "rust", "host", "none"}:
-            raise Error("behavior: engine expectations invalid")
-        per_config = contract.get("mutationByConfiguration", {})
-        if set(per_config) != CONFIGURATIONS:
-            raise Error("behavior: mutation configurations invalid")
-        for item in per_config.values():
+        if contract.get("expectedEngine") not in {"swift", "rust", "host", "none"}:
+            raise Error("behavior: engine expectation invalid")
+        for item in [contract.get("mutation", {})]:
             applicability = item.get("applicability")
             mutation_id = item.get("id")
             reason = item.get("reason")
@@ -320,8 +275,10 @@ def cells(es, mp, root=ROOT):
     for x in xs:
         for e in es:
             app = e["expectedApplicability"][cs[x]]
-            engine = ENGINE_BY_CLASS[cs[x]][e["id"]]
             contract = by_pair[(cs[x], e["id"])]
+            # The engine identity has ONE home — the behaviour contract. It used to be restated
+            # in a table here, and that copy went stale the moment S7 moved HWP to the engine.
+            engine = contract["expectedEngine"]
             out.append(
                 {
                     "extension": x,
@@ -341,7 +298,7 @@ def cells(es, mp, root=ROOT):
                         "evidenceMode": contract["evidenceMode"],
                         "representativeExtension": contract["representativeExtension"],
                     },
-                    "mutation": contract["mutationByConfiguration"],
+                    "mutation": contract["mutation"],
                 }
             )
     return out
@@ -511,25 +468,20 @@ def s1b_evidence(a):
             elif line.startswith("S1B_CONTRACT "):
                 exercised.append(json.loads(line.removeprefix("S1B_CONTRACT ")))
     expected_contracts = {
-        (contract["class"], contract["entryPointId"], configuration): contract
-        for contract in contracts
-        for configuration in CONFIGURATIONS
+        (contract["class"], contract["entryPointId"]): contract for contract in contracts
     }
-    observed_keys = [
-        (item.get("class"), item.get("entryPointId"), item.get("configuration"))
-        for item in exercised
-    ]
-    if len(exercised) != 84 or len(set(observed_keys)) != 84 or set(observed_keys) != set(expected_contracts):
-        raise Error("S1B requires exactly 84 unique class/entry/configuration executions")
+    observed_keys = [(item.get("class"), item.get("entryPointId")) for item in exercised]
+    if len(exercised) != 42 or len(set(observed_keys)) != 42 or set(observed_keys) != set(expected_contracts):
+        raise Error("S1B requires exactly 42 unique class/entry executions")
     for item, key in zip(exercised, observed_keys):
         contract = expected_contracts[key]
-        expected_engine = contract["expectedEngineByConfiguration"][key[2]]
+        expected_engine = contract["expectedEngine"]
         expected_events = [] if expected_engine == "none" else [expected_engine]
         if item.get("controlAssertions", 0) <= 0:
             raise Error(f"S1B contract {key} performed zero assertions")
         if item.get("expectedEngine") != expected_engine:
             raise Error(f"S1B contract {key} engine expectation differs from registry")
-        if item.get("runId") != f"oracle-{key[0]}-{key[1]}-{key[2]}":
+        if item.get("runId") != f"oracle-{key[0]}-{key[1]}":
             raise Error(f"S1B contract {key} run ID differs")
         if item.get("representativeExtension") != contract["representativeExtension"]:
             raise Error(f"S1B contract {key} representative extension differs")
@@ -548,9 +500,6 @@ def s1b_evidence(a):
         expected_fault = mutation_registry[mutation_id]["faultId"]
         if killers[0].get("faultId") != expected_fault:
             raise Error(f"S1B mutation {mutation_id} fault ID differs")
-        allowed = mutation_registry[mutation_id]["configuration"]
-        if allowed != "both" and killers[0].get("configuration") != allowed:
-            raise Error(f"S1B mutation {mutation_id} killed in wrong configuration")
         if any(item.get("role") not in {"killer", "corroboration"} for item in records):
             raise Error(f"S1B mutation {mutation_id} has invalid evidence role")
         for item in records:
@@ -573,10 +522,10 @@ def s1b_evidence(a):
         raise Error("S1B requires exactly four successful DOCX/ODT bridge comparisons")
     result = {
         "behaviorContracts": {"expected": 42, "observed": len(contracts)},
-        "exercisedContractConfigurations": {"expected": 84, "observed": len(exercised)},
+        "exercisedContracts": {"expected": 42, "observed": len(exercised)},
         "matrixCellsPopulated": {"expected": 490, "observed": 490},
         "comparedDocuments": {"expected": 4, "observed": len(comparisons)},
-        "killedMutations": {"expected": 12, "observed": len(MUTATION_IDS)},
+        "killedMutations": {"expected": 10, "observed": len(MUTATION_IDS)},
         "survivingMutations": 0,
     }
     rendered = json.dumps(result, indent=2) + "\n"

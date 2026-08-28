@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import XCTest
 @testable import FastDocReader
 
@@ -656,4 +655,3 @@ final class RustEngineBridgeTests: XCTestCase {
         }
     }
 }
-#endif

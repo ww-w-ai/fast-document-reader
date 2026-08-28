@@ -11,14 +11,6 @@ final class S1BBehaviorOracleTests: XCTestCase {
         let data: Data
     }
 
-    private var configuration: String {
-        #if FMD_RUST_ENGINE
-        return "rust-enabled"
-        #else
-        return "default"
-        #endif
-    }
-
     func testEveryRepresentativeBehaviorContractInThisConfiguration() async throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -46,7 +38,7 @@ final class S1BBehaviorOracleTests: XCTestCase {
             let input = directory.appendingPathComponent("baseline.\(fixture.ext)")
             try fixture.data.write(to: input)
             for entryPoint in entryPoints {
-                let runID = "oracle-\(fixture.fileClass)-\(entryPoint)-\(configuration)"
+                let runID = "oracle-\(fixture.fileClass)-\(entryPoint)"
                 DocumentEngineTrace.beginRun(runID, entryPoint: entryPoint)
                 var assertions = 0
                 do {
@@ -70,7 +62,6 @@ final class S1BBehaviorOracleTests: XCTestCase {
                 let evidence: [String: Any] = [
                     "class": fixture.fileClass,
                     "entryPointId": entryPoint,
-                    "configuration": configuration,
                     "runId": runID,
                     "representativeExtension": fixture.ext,
                     "oracleId": "O-\(fixture.fileClass.uppercased())-\(entryPoint.uppercased())",
@@ -108,7 +99,7 @@ final class S1BBehaviorOracleTests: XCTestCase {
             XCTAssertEqual(HeadlessExtract.run([input.path]), 0)
             return 1
         case "pdf":
-            let output = directory.appendingPathComponent("\(fixture.fileClass)-\(configuration).pdf")
+            let output = directory.appendingPathComponent("\(fixture.fileClass).pdf")
             XCTAssertEqual(HeadlessPDF.run([input.path, "-o", output.path, "-f"]), 0)
             XCTAssertTrue(try Data(contentsOf: output).starts(with: Array("%PDF".utf8)))
             return 2
@@ -171,9 +162,8 @@ final class S1BBehaviorOracleTests: XCTestCase {
         for contract in contracts {
             let fileClass = try XCTUnwrap(contract["class"] as? String)
             let entryPoint = try XCTUnwrap(contract["entryPointId"] as? String)
-            let byConfiguration = try XCTUnwrap(
-                contract["expectedEngineByConfiguration"] as? [String: String])
-            result[fileClass, default: [:]][entryPoint] = try XCTUnwrap(byConfiguration[configuration])
+            result[fileClass, default: [:]][entryPoint] =
+                try XCTUnwrap(contract["expectedEngine"] as? String)
         }
         return result
     }

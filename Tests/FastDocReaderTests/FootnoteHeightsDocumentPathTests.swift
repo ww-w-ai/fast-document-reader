@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import XCTest
 @testable import FastDocReader
 
@@ -62,4 +61,3 @@ final class FootnoteHeightsDocumentPathTests: XCTestCase {
                       "every note measured zero — this proves nothing about the arithmetic")
     }
 }
-#endif

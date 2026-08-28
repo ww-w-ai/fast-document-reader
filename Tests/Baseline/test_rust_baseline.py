@@ -90,12 +90,12 @@ class BaselineTests(unittest.TestCase):
         self.assertEqual(490, len({(c["extension"], c["entryPointId"]) for c in cells}))
         self.assertTrue(all(c["applicability"] in baseline.APPS for c in cells))
         self.assertTrue(all(c["oracle"].get("id") for c in cells))
-        self.assertTrue(all(set(c["mutation"]) == baseline.CONFIGURATIONS for c in cells))
+        self.assertTrue(all(c["mutation"].get("applicability") for c in cells))
 
     def test_behavior_registry_is_closed_and_has_frozen_mutations(self):
         contracts, mutations = baseline.behavior()
         self.assertEqual(42, len(contracts))
-        self.assertEqual(12, len(mutations))
+        self.assertEqual(10, len(mutations))
         self.assertEqual(baseline.MUTATION_IDS, {m["id"] for m in mutations})
 
     def test_every_alias_cell_inherits_only_its_same_class_entry_contract(self):
@@ -108,7 +108,7 @@ class BaselineTests(unittest.TestCase):
             contract = by_pair[(cell["fileClass"], cell["entryPointId"])]
             representative = cell["oracle"]["representativeExtension"]
             self.assertEqual(classes[representative], cell["fileClass"])
-            self.assertEqual(contract["mutationByConfiguration"], cell["mutation"])
+            self.assertEqual(contract["mutation"], cell["mutation"])
             self.assertEqual(contract["oracleId"], cell["oracle"]["id"])
 
     def test_behavior_registry_rejects_missing_contract_and_unknown_mutation(self):
@@ -118,7 +118,7 @@ class BaselineTests(unittest.TestCase):
         with self.assertRaises(baseline.Error):
             baseline.validate_behavior_data(missing)
         unknown = copy.deepcopy(document)
-        unknown["contracts"][0]["mutationByConfiguration"]["default"] = {
+        unknown["contracts"][0]["mutation"] = {
             "applicability": "required",
             "id": "M-UNKNOWN",
             "reason": "test",
@@ -156,12 +156,8 @@ class BaselineTests(unittest.TestCase):
                 f"Test Case '-[FastDocReaderTests.{class_name} {method_name}]' passed"
             )
         for mutation in mutations:
-            configuration = mutation["configuration"]
-            if configuration == "both":
-                configuration = "default"
             lines.append("S1B_MUTATION " + json.dumps({
-                "id": mutation["id"], "faultId": mutation["faultId"],
-                "configuration": configuration, "role": "killer",
+                "id": mutation["id"], "faultId": mutation["faultId"], "role": "killer",
                 "controlPassed": True, "mutatedFailed": True,
                 "killerTest": mutation["killerTest"],
             }))
@@ -171,21 +167,18 @@ class BaselineTests(unittest.TestCase):
                     "extension": extension, "api": api, "result": "equal",
                 }))
         for contract in baseline.behavior()[0]:
-            for configuration in baseline.CONFIGURATIONS:
-                lines.append("S1B_CONTRACT " + json.dumps({
-                    "class": contract["class"],
-                    "entryPointId": contract["entryPointId"],
-                    "configuration": configuration,
-                    "runId": f"oracle-{contract['class']}-{contract['entryPointId']}-{configuration}",
-                    "representativeExtension": contract["representativeExtension"],
-                    "oracleId": contract["oracleId"],
-                    "controlAssertions": 1,
-                    "expectedEngine": contract["expectedEngineByConfiguration"][configuration],
-                    "expectedEvents": [] if contract["expectedEngineByConfiguration"][configuration] == "none"
-                        else [contract["expectedEngineByConfiguration"][configuration]],
-                    "observedEvents": [] if contract["expectedEngineByConfiguration"][configuration] == "none"
-                        else [contract["expectedEngineByConfiguration"][configuration]],
-                }))
+            engine = contract["expectedEngine"]
+            lines.append("S1B_CONTRACT " + json.dumps({
+                "class": contract["class"],
+                "entryPointId": contract["entryPointId"],
+                "runId": f"oracle-{contract['class']}-{contract['entryPointId']}",
+                "representativeExtension": contract["representativeExtension"],
+                "oracleId": contract["oracleId"],
+                "controlAssertions": 1,
+                "expectedEngine": engine,
+                "expectedEvents": [] if engine == "none" else [engine],
+                "observedEvents": [] if engine == "none" else [engine],
+            }))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "s1b.log"
             path.write_text("\n".join(lines) + "\n")
@@ -242,12 +235,18 @@ class BaselineTests(unittest.TestCase):
             (cell["extension"], cell["entryPointId"]): cell["engineClaim"]
             for cell in cells
         }
-        self.assertEqual("mixed", claims[("docx", "gui-open")])
-        self.assertEqual("mixed", claims[("odt", "pdf")])
-        self.assertEqual("mixed", claims[("docx", "quick-look")])
-        self.assertEqual("swift", claims[("hwp", "gui-reload")])
-        self.assertEqual("swift", claims[("hwpx", "quick-look")])
+        # One engine per surface now — "mixed" meant "differs by build configuration", and there
+        # is one configuration. HWP's GUI surfaces moved to the engine in S7, which the table this
+        # used to read from never learned.
+        self.assertEqual("rust", claims[("docx", "gui-open")])
+        self.assertEqual("rust", claims[("odt", "pdf")])
+        self.assertEqual("rust", claims[("docx", "quick-look")])
+        self.assertEqual("rust", claims[("hwp", "gui-reload")])
+        self.assertEqual("rust", claims[("hwpx", "quick-look")])
         self.assertEqual("rust", claims[("hwp", "extract")])
+        # Markdown and plain text are NOT ported — the contract still says so, and that is the
+        # remaining scope, not an omission.
+        self.assertEqual("swift", claims[("md", "gui-open")])
 
     def test_odt_mimetype_is_first_and_uncompressed(self):
         with zipfile.ZipFile(io.BytesIO(baseline.zipbytes("odt"))) as archive:

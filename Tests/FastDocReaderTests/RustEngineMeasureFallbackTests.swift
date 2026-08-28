@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import XCTest
 import AppKit
 import CFastdocEngine
@@ -131,4 +130,3 @@ final class RustEngineMeasureFallbackTests: XCTestCase {
                              "bold glyphs are wider: at a width the regular face fits, the bold one must wrap — if the trait step no-ops, both measure the same font and this cannot happen")
     }
 }
-#endif

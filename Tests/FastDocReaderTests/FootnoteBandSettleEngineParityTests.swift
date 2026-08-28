@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import XCTest
 @testable import FastDocReader
 
@@ -221,4 +220,3 @@ final class FootnoteBandSettleEngineParityTests: XCTestCase {
               + "included): \(engineUs)us, over \(iterations) iterations of a 10-page/5-note round")
     }
 }
-#endif

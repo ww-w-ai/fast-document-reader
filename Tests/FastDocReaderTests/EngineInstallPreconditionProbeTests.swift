@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import XCTest
 @testable import FastDocReader
 
@@ -42,4 +41,3 @@ final class EngineInstallPreconditionProbeTests: XCTestCase {
             """)
     }
 }
-#endif

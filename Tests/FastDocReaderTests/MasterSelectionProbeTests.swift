@@ -1,9 +1,7 @@
 import XCTest
 import AppKit
 import Darwin
-#if FMD_RUST_ENGINE
 import CFastdocEngine
-#endif
 @testable import FastDocReader
 
 /// S5C3-06 — the probe `.ww-w-ai/cowork-sprint/plans/s5c3.md` ("What the probe reports, and who
@@ -148,7 +146,6 @@ final class MasterSelectionProbeTests: XCTestCase {
         // (S5C3-06a). Not measured in the live draw path (there is none yet, pre-S5C3-04) — this is a
         // probe-local replica of the marshal-in/guard/marshal-out sequence the real export will pay,
         // built from THIS document's own master pages, veto set and per-visible-page section answers.
-        #if FMD_RUST_ENGINE
         if let content = wc.masterPageContent, !content.pages.isEmpty {
             measureSelectionAddedCost(content: content, sheets: sheets, sectionOfPage: wc.sectionOfPage,
                                       n: max(requestedN, 30))
@@ -157,11 +154,6 @@ final class MasterSelectionProbeTests: XCTestCase {
                  + "page content was empty at probe time (PageViewOptionsStore.current.masterPage off, "
                  + "or the fixture declares no 바탕쪽) — numbers 3/4 not measured\"")
         }
-        #else
-        perf("stage=master_selection metric=selection_added note=\"NOT MEASURED — this test binary "
-             + "was built without FMD_RUST_ENGINE, so fastdoc_office_master_selection is not "
-             + "linked. Rebuild with FMD_RUST_ENGINE=1 swift build/test to get numbers 3/4.\"")
-        #endif
 
         // MARK: Number 5 — total `--pdf` time, today, and (disclosed) the projected figure with the
         // engine. `--pdf` never calls the engine's selection today (S5C3-04 is not done), so "with
@@ -185,7 +177,6 @@ final class MasterSelectionProbeTests: XCTestCase {
         }
         perf("stage=master_selection metric=pdf_total_today n=1 median=\(f(pdfMs)) max=\(f(pdfMs)) "
              + "pages=\(printedPages) note=\"number 5 — no divisor, a whole-job total\"")
-        #if FMD_RUST_ENGINE
         if let addedPerCall = Self.lastSelectionAggregateMedianMs, printedPages > 0 {
             let projected = pdfMs + addedPerCall
             perf("stage=master_selection metric=pdf_total_with_engine_PROJECTED n=1 "
@@ -195,10 +186,8 @@ final class MasterSelectionProbeTests: XCTestCase {
                  + "aggregate (median), since S5C3-03 batches every visible page into one call per "
                  + "draw/print pass\"")
         }
-        #endif
     }
 
-    #if FMD_RUST_ENGINE
     /// Carries number 3's median out of `measureSelectionAddedCost` to the `--pdf` projection
     /// below — a stored static rather than a return value because `testMasterSelectionCost` is one
     /// long XCTest method and this keeps the print-projection step reading as a continuation of the
@@ -288,5 +277,4 @@ final class MasterSelectionProbeTests: XCTestCase {
                                + "marshal-out sequence, NOT inside the shipped draw path (no engine "
                                + "call exists there before S5C3-04)")
     }
-    #endif
 }

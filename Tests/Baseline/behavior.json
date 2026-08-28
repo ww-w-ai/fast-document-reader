@@ -1,9 +1,5 @@
 {
-  "version": 1,
-  "configurations": [
-    "default",
-    "rust-enabled"
-  ],
+  "version": 2,
   "contracts": [
     {
       "class": "markdown",
@@ -11,25 +7,15 @@
       "oracleId": "O-MARKDOWN-GUI-OPEN",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "md",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "markdown",
@@ -37,25 +23,15 @@
       "oracleId": "O-MARKDOWN-GUI-RELOAD",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentReloadTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "md",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "markdown",
@@ -63,25 +39,15 @@
       "oracleId": "O-MARKDOWN-EXTRACT",
       "oracleKind": "file",
       "harness": "HeadlessExtractTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "md",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "markdown",
@@ -89,25 +55,15 @@
       "oracleId": "O-MARKDOWN-PDF",
       "oracleKind": "document",
       "harness": "HeadlessPDFTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "md",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "markdown",
@@ -115,25 +71,15 @@
       "oracleId": "O-MARKDOWN-QUICK-LOOK",
       "oracleKind": "host",
       "harness": "QuickLookPreviewTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "md",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "markdown",
@@ -141,25 +87,15 @@
       "oracleId": "O-MARKDOWN-DERIVED-NAVIGATION",
       "oracleKind": "semantic",
       "harness": "OutlinePanelTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "md",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "markdown",
@@ -167,25 +103,15 @@
       "oracleId": "O-MARKDOWN-EDIT-SAVE",
       "oracleKind": "file",
       "harness": "DocumentSaveTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "md",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "plain-text",
@@ -193,25 +119,15 @@
       "oracleId": "O-PLAIN-TEXT-GUI-OPEN",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "txt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "plain-text",
@@ -219,25 +135,15 @@
       "oracleId": "O-PLAIN-TEXT-GUI-RELOAD",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentReloadTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "txt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "plain-text",
@@ -245,25 +151,15 @@
       "oracleId": "O-PLAIN-TEXT-EXTRACT",
       "oracleKind": "file",
       "harness": "HeadlessExtractTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "txt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "plain-text",
@@ -271,25 +167,15 @@
       "oracleId": "O-PLAIN-TEXT-PDF",
       "oracleKind": "document",
       "harness": "HeadlessPDFTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "txt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "plain-text",
@@ -297,25 +183,15 @@
       "oracleId": "O-PLAIN-TEXT-QUICK-LOOK",
       "oracleKind": "host",
       "harness": "QuickLookPreviewTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "txt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "plain-text",
@@ -323,25 +199,15 @@
       "oracleId": "O-PLAIN-TEXT-DERIVED-NAVIGATION",
       "oracleKind": "negative",
       "harness": "OutlinePanelTests",
-      "expectedEngineByConfiguration": {
-        "default": "none",
-        "rust-enabled": "none"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "required",
-          "id": "M-PLAIN-NAV-REJECTION",
-          "reason": "plain-text navigation rejection"
-        },
-        "rust-enabled": {
-          "applicability": "required",
-          "id": "M-PLAIN-NAV-REJECTION",
-          "reason": "plain-text navigation rejection"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "txt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "none",
+      "mutation": {
+        "applicability": "required",
+        "id": "M-PLAIN-NAV-REJECTION",
+        "reason": "plain-text navigation rejection"
+      }
     },
     {
       "class": "plain-text",
@@ -349,25 +215,15 @@
       "oracleId": "O-PLAIN-TEXT-EDIT-SAVE",
       "oracleKind": "file",
       "harness": "DocumentSaveTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "swift"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        },
-        "rust-enabled": {
-          "applicability": "none",
-          "id": null,
-          "reason": "outside the bounded S1B critical-path mutation set"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "txt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "swift",
+      "mutation": {
+        "applicability": "none",
+        "id": null,
+        "reason": "outside the bounded S1B critical-path mutation set"
+      }
     },
     {
       "class": "docx",
@@ -375,25 +231,15 @@
       "oracleId": "O-DOCX-GUI-OPEN",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "required",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "required",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "docx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "required",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "docx",
@@ -401,25 +247,15 @@
       "oracleId": "O-DOCX-GUI-RELOAD",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentReloadTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "docx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "docx",
@@ -427,25 +263,15 @@
       "oracleId": "O-DOCX-EXTRACT",
       "oracleKind": "file",
       "harness": "HeadlessExtractTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "required",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "required",
-          "id": "M-RUST-BRIDGE-MARKDOWN",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "docx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "required",
+        "id": "M-RUST-BRIDGE-MARKDOWN",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "docx",
@@ -453,25 +279,15 @@
       "oracleId": "O-DOCX-PDF",
       "oracleKind": "document",
       "harness": "HeadlessPDFTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "docx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "docx",
@@ -479,25 +295,15 @@
       "oracleId": "O-DOCX-QUICK-LOOK",
       "oracleKind": "host",
       "harness": "QuickLookPreviewTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "docx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "docx",
@@ -505,25 +311,15 @@
       "oracleId": "O-DOCX-DERIVED-NAVIGATION",
       "oracleKind": "semantic",
       "harness": "OutlinePanelTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "docx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "docx",
@@ -531,25 +327,15 @@
       "oracleId": "O-DOCX-EDIT-SAVE",
       "oracleKind": "negative",
       "harness": "DocumentSaveTests",
-      "expectedEngineByConfiguration": {
-        "default": "none",
-        "rust-enabled": "none"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "required",
-          "id": "M-OFFICE-SAVE-REJECTION",
-          "reason": "shared Office read-only rejection"
-        },
-        "rust-enabled": {
-          "applicability": "required",
-          "id": "M-OFFICE-SAVE-REJECTION",
-          "reason": "shared Office read-only rejection"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "docx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "none",
+      "mutation": {
+        "applicability": "required",
+        "id": "M-OFFICE-SAVE-REJECTION",
+        "reason": "shared Office read-only rejection"
+      }
     },
     {
       "class": "odt",
@@ -557,25 +343,15 @@
       "oracleId": "O-ODT-GUI-OPEN",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "odt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "odt",
@@ -583,25 +359,15 @@
       "oracleId": "O-ODT-GUI-RELOAD",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentReloadTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "odt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "odt",
@@ -609,25 +375,15 @@
       "oracleId": "O-ODT-EXTRACT",
       "oracleKind": "file",
       "harness": "HeadlessExtractTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-RUST-BRIDGE-MARKDOWN",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "odt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-RUST-BRIDGE-MARKDOWN",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "odt",
@@ -635,25 +391,15 @@
       "oracleId": "O-ODT-PDF",
       "oracleKind": "document",
       "harness": "HeadlessPDFTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "odt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "odt",
@@ -661,25 +407,15 @@
       "oracleId": "O-ODT-QUICK-LOOK",
       "oracleKind": "host",
       "harness": "QuickLookPreviewTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "odt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "odt",
@@ -687,25 +423,15 @@
       "oracleId": "O-ODT-DERIVED-NAVIGATION",
       "oracleKind": "semantic",
       "harness": "OutlinePanelTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-ZIP-SWIFT-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-ZIP-RUST-DISPATCH",
-          "reason": "shared zip-office dispatch seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "odt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-ZIP-RUST-DISPATCH",
+        "reason": "shared zip-office dispatch seam"
+      }
     },
     {
       "class": "odt",
@@ -713,25 +439,15 @@
       "oracleId": "O-ODT-EDIT-SAVE",
       "oracleKind": "negative",
       "harness": "DocumentSaveTests",
-      "expectedEngineByConfiguration": {
-        "default": "none",
-        "rust-enabled": "none"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-OFFICE-SAVE-REJECTION",
-          "reason": "shared Office read-only rejection"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-OFFICE-SAVE-REJECTION",
-          "reason": "shared Office read-only rejection"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "odt",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "none",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-OFFICE-SAVE-REJECTION",
+        "reason": "shared Office read-only rejection"
+      }
     },
     {
       "class": "hwp",
@@ -739,25 +455,15 @@
       "oracleId": "O-HWP-GUI-OPEN",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "required",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        },
-        "rust-enabled": {
-          "applicability": "required",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwp",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "required",
+        "id": "M-HWP-RUST-OPEN",
+        "reason": "shared HWP open seam"
+      }
     },
     {
       "class": "hwp",
@@ -765,25 +471,15 @@
       "oracleId": "O-HWP-GUI-RELOAD",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentReloadTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "required",
-          "id": "M-HWP-SWIFT-RELOAD",
-          "reason": "shared HWP reload seam"
-        },
-        "rust-enabled": {
-          "applicability": "required",
-          "id": "M-HWP-SWIFT-RELOAD",
-          "reason": "shared HWP reload seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwp",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "required",
+        "id": "M-HWP-RUST-RELOAD",
+        "reason": "shared HWP reload seam"
+      }
     },
     {
       "class": "hwp",
@@ -791,25 +487,15 @@
       "oracleId": "O-HWP-EXTRACT",
       "oracleKind": "file",
       "harness": "HeadlessExtractTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "required",
-          "id": "M-HWP-SWIFT-EXTRACT",
-          "reason": "configuration-specific HWP extract seam"
-        },
-        "rust-enabled": {
-          "applicability": "required",
-          "id": "M-HWP-RUST-EXTRACT",
-          "reason": "configuration-specific HWP extract seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwp",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "required",
+        "id": "M-HWP-RUST-EXTRACT",
+        "reason": "configuration-specific HWP extract seam"
+      }
     },
     {
       "class": "hwp",
@@ -817,25 +503,15 @@
       "oracleId": "O-HWP-PDF",
       "oracleKind": "document",
       "harness": "HeadlessPDFTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwp",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-HWP-RUST-OPEN",
+        "reason": "shared HWP open seam"
+      }
     },
     {
       "class": "hwp",
@@ -843,25 +519,15 @@
       "oracleId": "O-HWP-QUICK-LOOK",
       "oracleKind": "host",
       "harness": "QuickLookPreviewTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwp",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-HWP-RUST-OPEN",
+        "reason": "shared HWP open seam"
+      }
     },
     {
       "class": "hwp",
@@ -869,25 +535,15 @@
       "oracleId": "O-HWP-DERIVED-NAVIGATION",
       "oracleKind": "semantic",
       "harness": "OutlinePanelTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwp",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-HWP-RUST-OPEN",
+        "reason": "shared HWP open seam"
+      }
     },
     {
       "class": "hwp",
@@ -895,25 +551,15 @@
       "oracleId": "O-HWP-EDIT-SAVE",
       "oracleKind": "negative",
       "harness": "DocumentSaveTests",
-      "expectedEngineByConfiguration": {
-        "default": "none",
-        "rust-enabled": "none"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "required",
-          "id": "M-OFFICE-SAVE-REJECTION",
-          "reason": "shared Office read-only rejection"
-        },
-        "rust-enabled": {
-          "applicability": "required",
-          "id": "M-OFFICE-SAVE-REJECTION",
-          "reason": "shared Office read-only rejection"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwp",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "none",
+      "mutation": {
+        "applicability": "required",
+        "id": "M-OFFICE-SAVE-REJECTION",
+        "reason": "shared Office read-only rejection"
+      }
     },
     {
       "class": "hwpx",
@@ -921,25 +567,15 @@
       "oracleId": "O-HWPX-GUI-OPEN",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwpx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-HWP-RUST-OPEN",
+        "reason": "shared HWP open seam"
+      }
     },
     {
       "class": "hwpx",
@@ -947,25 +583,15 @@
       "oracleId": "O-HWPX-GUI-RELOAD",
       "oracleKind": "semantic",
       "harness": "MarkdownDocumentReloadTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-RELOAD",
-          "reason": "shared HWP reload seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-RELOAD",
-          "reason": "shared HWP reload seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwpx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-HWP-RUST-RELOAD",
+        "reason": "shared HWP reload seam"
+      }
     },
     {
       "class": "hwpx",
@@ -973,25 +599,15 @@
       "oracleId": "O-HWPX-EXTRACT",
       "oracleKind": "file",
       "harness": "HeadlessExtractTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-EXTRACT",
-          "reason": "configuration-specific HWP extract seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-HWP-RUST-EXTRACT",
-          "reason": "configuration-specific HWP extract seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwpx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-HWP-RUST-EXTRACT",
+        "reason": "configuration-specific HWP extract seam"
+      }
     },
     {
       "class": "hwpx",
@@ -999,25 +615,15 @@
       "oracleId": "O-HWPX-PDF",
       "oracleKind": "document",
       "harness": "HeadlessPDFTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwpx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-HWP-RUST-OPEN",
+        "reason": "shared HWP open seam"
+      }
     },
     {
       "class": "hwpx",
@@ -1025,25 +631,15 @@
       "oracleId": "O-HWPX-QUICK-LOOK",
       "oracleKind": "host",
       "harness": "QuickLookPreviewTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwpx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-HWP-RUST-OPEN",
+        "reason": "shared HWP open seam"
+      }
     },
     {
       "class": "hwpx",
@@ -1051,25 +647,15 @@
       "oracleId": "O-HWPX-DERIVED-NAVIGATION",
       "oracleKind": "semantic",
       "harness": "OutlinePanelTests",
-      "expectedEngineByConfiguration": {
-        "default": "swift",
-        "rust-enabled": "rust"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-HWP-SWIFT-OPEN",
-          "reason": "shared HWP open seam"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwpx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "rust",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-HWP-RUST-OPEN",
+        "reason": "shared HWP open seam"
+      }
     },
     {
       "class": "hwpx",
@@ -1077,25 +663,15 @@
       "oracleId": "O-HWPX-EDIT-SAVE",
       "oracleKind": "negative",
       "harness": "DocumentSaveTests",
-      "expectedEngineByConfiguration": {
-        "default": "none",
-        "rust-enabled": "none"
-      },
-      "mutationByConfiguration": {
-        "default": {
-          "applicability": "inherited",
-          "id": "M-OFFICE-SAVE-REJECTION",
-          "reason": "shared Office read-only rejection"
-        },
-        "rust-enabled": {
-          "applicability": "inherited",
-          "id": "M-OFFICE-SAVE-REJECTION",
-          "reason": "shared Office read-only rejection"
-        }
-      },
       "evidenceMode": "test",
       "representativeExtension": "hwpx",
-      "inheritsFrom": null
+      "inheritsFrom": null,
+      "expectedEngine": "none",
+      "mutation": {
+        "applicability": "inherited",
+        "id": "M-OFFICE-SAVE-REJECTION",
+        "reason": "shared Office read-only rejection"
+      }
     }
   ],
   "mutations": [
@@ -1103,84 +679,60 @@
       "id": "M-SWIFT-REF-DOCX",
       "faultId": "F-M-SWIFT-REF-DOCX",
       "killerTest": "RustEngineBridgeTests/testS1BDeterministicDocxAndOdtBridgeComparisonsAndMutations",
-      "configuration": "rust-enabled",
       "targetSeam": "M-SWIFT-REF-DOCX"
     },
     {
       "id": "M-SWIFT-REF-ODT",
       "faultId": "F-M-SWIFT-REF-ODT",
       "killerTest": "RustEngineBridgeTests/testS1BDeterministicDocxAndOdtBridgeComparisonsAndMutations",
-      "configuration": "rust-enabled",
       "targetSeam": "M-SWIFT-REF-ODT"
     },
     {
       "id": "M-RUST-BRIDGE-MARKDOWN",
       "faultId": "F-M-RUST-BRIDGE-MARKDOWN",
       "killerTest": "RustEngineBridgeTests/testS1BDeterministicDocxAndOdtBridgeComparisonsAndMutations",
-      "configuration": "rust-enabled",
       "targetSeam": "M-RUST-BRIDGE-MARKDOWN"
     },
     {
       "id": "M-RUST-BRIDGE-TREE",
       "faultId": "F-M-RUST-BRIDGE-TREE",
       "killerTest": "RustEngineBridgeTests/testS1BDeterministicDocxAndOdtBridgeComparisonsAndMutations",
-      "configuration": "rust-enabled",
       "targetSeam": "M-RUST-BRIDGE-TREE"
     },
     {
-      "id": "M-HWP-SWIFT-OPEN",
-      "faultId": "F-M-HWP-SWIFT-OPEN",
-      "killerTest": "S1BPathMutationTests/testHwpSwiftOpenControlThenMutation",
-      "configuration": "default",
-      "targetSeam": "M-HWP-SWIFT-OPEN"
+      "id": "M-HWP-RUST-OPEN",
+      "faultId": "F-M-HWP-RUST-OPEN",
+      "killerTest": "S1BPathMutationTests/testHwpOpenControlThenMutation",
+      "targetSeam": "M-HWP-RUST-OPEN"
     },
     {
-      "id": "M-HWP-SWIFT-RELOAD",
-      "faultId": "F-M-HWP-SWIFT-RELOAD",
-      "killerTest": "S1BPathMutationTests/testHwpSwiftReloadControlThenMutation",
-      "configuration": "default",
-      "targetSeam": "M-HWP-SWIFT-RELOAD"
-    },
-    {
-      "id": "M-HWP-SWIFT-EXTRACT",
-      "faultId": "F-M-HWP-SWIFT-EXTRACT",
-      "killerTest": "S1BPathMutationTests/testHwpExtractControlThenConfigurationMutation",
-      "configuration": "default",
-      "targetSeam": "M-HWP-SWIFT-EXTRACT"
+      "id": "M-HWP-RUST-RELOAD",
+      "faultId": "F-M-HWP-RUST-RELOAD",
+      "killerTest": "S1BPathMutationTests/testHwpReloadControlThenMutation",
+      "targetSeam": "M-HWP-RUST-RELOAD"
     },
     {
       "id": "M-HWP-RUST-EXTRACT",
       "faultId": "F-M-HWP-RUST-EXTRACT",
-      "killerTest": "S1BPathMutationTests/testHwpExtractControlThenConfigurationMutation",
-      "configuration": "rust-enabled",
+      "killerTest": "S1BPathMutationTests/testHwpExtractControlThenMutation",
       "targetSeam": "M-HWP-RUST-EXTRACT"
-    },
-    {
-      "id": "M-ZIP-SWIFT-DISPATCH",
-      "faultId": "F-M-ZIP-SWIFT-DISPATCH",
-      "killerTest": "OfficeDocumentTests/testS1BZipOfficeDispatchControlThenConfigurationMutation",
-      "configuration": "default",
-      "targetSeam": "M-ZIP-SWIFT-DISPATCH"
     },
     {
       "id": "M-ZIP-RUST-DISPATCH",
       "faultId": "F-M-ZIP-RUST-DISPATCH",
       "killerTest": "OfficeDocumentTests/testS1BZipOfficeDispatchControlThenConfigurationMutation",
-      "configuration": "rust-enabled",
       "targetSeam": "M-ZIP-RUST-DISPATCH"
     },
     {
       "id": "M-PLAIN-NAV-REJECTION",
       "faultId": "F-M-PLAIN-NAV-REJECTION",
       "killerTest": "S1BPathMutationTests/testPlainTextNavigationRejectionControlThenMutation",
-      "configuration": "both",
       "targetSeam": "M-PLAIN-NAV-REJECTION"
     },
     {
       "id": "M-OFFICE-SAVE-REJECTION",
       "faultId": "F-M-OFFICE-SAVE-REJECTION",
       "killerTest": "S1BPathMutationTests/testOfficeSaveRejectionControlThenMutationLeavesSourceUntouched",
-      "configuration": "both",
       "targetSeam": "M-OFFICE-SAVE-REJECTION"
     }
   ]

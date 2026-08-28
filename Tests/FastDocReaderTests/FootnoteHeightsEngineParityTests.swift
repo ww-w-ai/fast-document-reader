@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import XCTest
 @testable import FastDocReader
 
@@ -108,4 +107,3 @@ final class FootnoteHeightsEngineParityTests: XCTestCase {
         XCTAssertEqual(resolved?[3], 22)
     }
 }
-#endif

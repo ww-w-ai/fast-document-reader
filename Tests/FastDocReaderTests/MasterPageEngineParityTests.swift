@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import XCTest
 import AppKit
 @testable import FastDocReader
@@ -238,4 +237,3 @@ final class MasterPageEngineParityTests: XCTestCase {
         return colour.redComponent < 0.5 && colour.greenComponent < 0.5 && colour.blueComponent < 0.5
     }
 }
-#endif

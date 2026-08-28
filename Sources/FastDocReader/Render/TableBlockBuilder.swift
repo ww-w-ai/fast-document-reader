@@ -966,9 +966,10 @@ enum TableBlockBuilder {
     /// the table's own column count (a corrupt or stale block), the same refusal the inline
     /// `guard c1 > c0, c1 < edges.count` used to express before this was pulled out.
     ///
-    /// Deliberately NOT behind `#if FMD_RUST_ENGINE` — it is pure geometry with no engine call in
-    /// it, so a test can reach it in EITHER build configuration to get the same host-formula answer
-    /// `resizeTables`'s `#else` branch writes when the flag is off.
+    /// Pure geometry, with no engine call in it — which is the whole reason it is a function.
+    /// `resizeTables` now asks the engine, so this is what a test computes INDEPENDENTLY to check
+    /// the engine's answer against, and what `resizeTables` itself falls back to when the engine
+    /// cannot answer. A reference the thing under test does not share is the point.
     static func localCellTargetWidth(
         edges: [CGFloat], numberOfColumns: Int, startingColumn: Int, columnSpan: Int,
         padLeft: CGFloat, padRight: CGFloat, borderLeft: CGFloat, borderRight: CGFloat

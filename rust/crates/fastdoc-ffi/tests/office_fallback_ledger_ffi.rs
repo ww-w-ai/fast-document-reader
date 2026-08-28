@@ -314,7 +314,23 @@ fn a_refused_fixture_still_comes_back_from_the_reader_path_and_the_ledger_names_
 #[test]
 fn the_ledgers_per_kind_counts_match_from_office_called_directly_over_several_fixtures() {
     let _lock = LEDGER_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // The by-construction refusal comes FIRST, and it is what keeps this comparison meaningful.
+    //
+    // This set used to lean on `issue2083_hide_fill_page.hwpx`, which declares three sections and
+    // was refused by `project` as `Field("sections")`. S6 gave a multi-section document's
+    // declarations a home, that refusal went away, and the vacuity guard below fired — correctly.
+    // It is the SAME mistake `a_refused_fixture_still_comes_back_...` above already records
+    // (INVARIANTS.md 109): a test that needs a real document to STAY broken breaks every time that
+    // document gets fixed, and fixing it is this roadmap's whole job. The lesson was written one
+    // function up and not applied here.
+    //
+    // `docx_zip_bytes_with_unresolvable_image` refuses for a PERMANENT property of the export under
+    // test rather than for a defect: this FFI symbol always calls `from_office` with an empty
+    // `resources` map and docx has no reader-side pre-decode to fall back on, so a docx declaring
+    // an image refuses here forever. The real HWP documents stay in the set as the ACCEPTED side —
+    // a cross-check that only ever saw refusals would be just as blind.
     let fixtures: Vec<(DocumentFormat, &str, Vec<u8>)> = vec![
+        (DocumentFormat::Docx, "document.docx", docx_zip_bytes_with_unresolvable_image()),
         (DocumentFormat::Hwp, "so-sueop.hwp", rhwp_fixture("samples", "SO-SUEOP.hwp")),
         (
             DocumentFormat::Hwp,
@@ -337,9 +353,24 @@ fn the_ledgers_per_kind_counts_match_from_office_called_directly_over_several_fi
     let mut expected_by_kind: BTreeMap<String, usize> = BTreeMap::new();
 
     for (format, name, bytes) in &fixtures {
-        let result = HwpReader::read_before_host_font_substitution(&swiftshim::Data::fromBytes(bytes.clone()))
-            .unwrap_or_else(|e| panic!("{name}: HwpReader::read failed: {e:?}"));
-        let extension = if matches!(format, DocumentFormat::Hwpx) { "hwpx" } else { "hwp" };
+        // Each fixture is read by ITS OWN reader — the same one the FFI symbol dispatches to for
+        // that extension — so the direct side and the ledger side are asking about one document.
+        let (result, extension) = match format {
+            DocumentFormat::Docx => {
+                let archive = ZipArchive::new(swiftshim::Data::fromBytes(bytes.clone()))
+                    .unwrap_or_else(|e| panic!("{name}: not a valid zip: {e:?}"));
+                let read = DocxReader::read(&archive)
+                    .unwrap_or_else(|e| panic!("{name}: DocxReader::read failed: {e}"));
+                (read, "docx")
+            }
+            _ => {
+                let read = HwpReader::read_before_host_font_substitution(
+                    &swiftshim::Data::fromBytes(bytes.clone()),
+                )
+                .unwrap_or_else(|e| panic!("{name}: HwpReader::read failed: {e:?}"));
+                (read, if matches!(format, DocumentFormat::Hwpx) { "hwpx" } else { "hwp" })
+            }
+        };
         let source_name = format!("document.{extension}");
         let direct = ValidatedRenderTree::from_office(OfficeAdapterInput {
             format: *format,

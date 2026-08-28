@@ -6,11 +6,10 @@ import CFastdocEngine
 /// document and hands the host an answer; here the host already holds the live `NSTextStorage`
 /// and asks the engine to do the subtraction for one table at a time).
 ///
-/// WIRED INTO the production reflow path since S5B2b: a build carrying `FMD_RUST_ENGINE` takes
-/// `TableBlockBuilder.resizeTables`'s per-cell widths from here. A build without the flag still
-/// runs the host's own formula — `Package.swift:14,33` reads the flag at manifest-evaluation
-/// time, so a shipping build does not contain this file at all, and the two formulas live side by
-/// side until S9 removes the flag.
+/// WIRED INTO the production reflow path since S5B2b: `TableBlockBuilder.resizeTables` takes its
+/// per-cell widths from here. The host's own formula (`localCellTargetWidth`) stays as the
+/// independent reference a test checks this against, and as what `resizeTables` writes when this
+/// cannot answer.
 enum RustEngineTableResize {
     /// One cell's own geometry — `TableBlockBuilder.resizeTables`'s four `block.width(for:edge:)`
     /// reads plus the span that picks its slice of the shared grid.

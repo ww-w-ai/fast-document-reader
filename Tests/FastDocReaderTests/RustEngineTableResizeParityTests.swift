@@ -1,4 +1,3 @@
-#if FMD_RUST_ENGINE
 import XCTest
 import AppKit
 @testable import FastDocReader
@@ -108,4 +107,3 @@ final class RustEngineTableResizeParityTests: XCTestCase {
         assertParity(attr, width: 500)
     }
 }
-#endif
