@@ -10,7 +10,8 @@
 
 use fastdoc_engine::render::office::hwp_reader::HwpReader;
 use fastdoc_engine::render::office::office_block::{
-    Cell, OfficeBlock, OfficeReadResult, ParagraphFormat, Span, TableFormat,
+    Cell, HeaderFooterApplicability, OfficeBlock, OfficeHeaderFooter, OfficePageNumberRestart,
+    OfficeReadResult, ParagraphFormat, Span, TableFormat,
 };
 use fastdoc_engine::render::office::office_export::to_json;
 use fastdoc_engine::render::office::office_project::project;
@@ -673,4 +674,64 @@ fn a_second_sections_ordinary_content_walks_cleanly_and_carries_its_own_declarat
         ..OfficeReadResult::default()
     };
     assert_projection_matches(&result, "two-sections-second-has-its-own-declaration.docx");
+}
+
+/// THE THREE FIELDS THE ACCOUNTING LEDGER CALLED REFUSED.
+///
+/// `office_result_accounting` recorded `OfficeHeaderFooter.applies_to`,
+/// `OfficePageNumberRestart.block` and `.number` as REFUSED — "the canonical tree cannot carry
+/// this" — while the adapter has been carrying all three (`office_adapter.rs:591`, `:653`) and the
+/// projection has been reading them back (`office_project.rs:431`, `:635`). The ledger was stale,
+/// in the conservative direction: it under-reported the tree's fidelity, and a sprint planning what
+/// the tree still cannot express would have read three gaps that are not there.
+///
+/// A label is not evidence, so the label is not changed on the strength of reading the code. This
+/// is the round trip that says so: a first-page-only header, an even-pages footer, and a section
+/// whose page numbering restarts at 7 — projected back and compared canonically, whole.
+#[test]
+fn header_applicability_and_a_page_number_restart_project_identically() {
+    let result = OfficeReadResult {
+        blocks: vec![
+            OfficeBlock::Paragraph {
+                spans: vec![plain_span("first page body")],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            },
+            OfficeBlock::Paragraph {
+                spans: vec![plain_span("the page numbering starts over here")],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            },
+        ],
+        headers: vec![OfficeHeaderFooter {
+            applies_to: HeaderFooterApplicability::FirstPage,
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![plain_span("title page head")],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            section: None,
+        }],
+        footers: vec![OfficeHeaderFooter {
+            applies_to: HeaderFooterApplicability::EvenPages,
+            blocks: vec![OfficeBlock::Paragraph {
+                spans: vec![plain_span("left-hand foot")],
+                rtl: false,
+                alignment: None,
+                tab_stops: vec![],
+                format: ParagraphFormat::default(),
+            }],
+            section: None,
+        }],
+        page_number_restart_blocks: vec![OfficePageNumberRestart { block: 1, number: 7 }],
+        default_body_font_size: 11.0,
+        ..OfficeReadResult::default()
+    };
+    assert_projection_matches(&result, "header-applicability-and-restart.docx");
 }

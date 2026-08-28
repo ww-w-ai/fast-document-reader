@@ -316,9 +316,14 @@ pub(crate) fn account_office_header_footer(
         blocks,
         section,
     } = header_footer;
-    record!(ledger, "OfficeHeaderFooter", blocks);
-    let _ = applies_to;
-    ledger.record(refused("OfficeHeaderFooter.applies_to"))?;
+    // MAPPED, not refused. This entry said the canonical tree could not carry which pages a running
+    // head applies to, while `office_adapter.rs:591` has been converting it onto
+    // `wire::HeaderFooter.applies_to` and `office_project.rs:431` reading it back. The label was
+    // stale in the CONSERVATIVE direction — it under-reported the tree, and a sprint reading this
+    // ledger to plan what the tree still cannot express would have found a gap that is not there.
+    // Proven by round trip, not by reading the code:
+    // `office_projection_oracle::header_applicability_and_a_page_number_restart_project_identically`.
+    record!(ledger, "OfficeHeaderFooter", blocks, applies_to);
     let _ = section;
     ledger.record(derived("OfficeHeaderFooter.section"))?;
     ledger.finish_expected(OFFICE_HEADER_FOOTER_KEYS, OFFICE_HEADER_FOOTER_KEYS.len())
@@ -354,9 +359,19 @@ pub(crate) fn account_page_number_restart(
     ];
     let mut ledger = FieldDecisionLedger::new();
     let OfficePageNumberRestart { block, number } = restart;
+    // DERIVED, not refused — and the pair was the clearest sign the label was stale, because the
+    // document-level list that holds these was already recorded as `derived` two hundred lines up.
+    // A list cannot be derivable while its own elements are refused.
+    //
+    // `block` is the paragraph's INDEX, which the tree keeps as the node's position rather than as
+    // a number (`office_adapter.rs:653` writes `ParagraphPagination.page_number_restart` onto the
+    // node itself); `number` rides there unchanged. Walking nodes in source order recovers both
+    // (`office_project.rs:635`), which is what makes this derived rather than mapped: the source
+    // shape and the canonical shape are not the same. Proven by round trip —
+    // `office_projection_oracle::header_applicability_and_a_page_number_restart_project_identically`.
     let _ = (block, number);
-    ledger.record(refused("OfficePageNumberRestart.block"))?;
-    ledger.record(refused("OfficePageNumberRestart.number"))?;
+    ledger.record(derived("OfficePageNumberRestart.block"))?;
+    ledger.record(derived("OfficePageNumberRestart.number"))?;
     ledger.finish_expected(KEYS, KEYS.len())
 }
 
@@ -529,9 +544,11 @@ mod tests {
         };
         let ledger = account_office_header_footer(&header_footer).unwrap();
         assert_eq!(ledger.decision_count(), 3);
-        assert_eq!(ledger.mapped_count(), 1);
+        // `applies_to` moved mapped-ward, which is where the adapter and the projection had it all
+        // along — see this function's own note.
+        assert_eq!(ledger.mapped_count(), 2);
         assert_eq!(ledger.derived_count(), 1);
-        assert_eq!(ledger.refused_count(), 1);
+        assert_eq!(ledger.refused_count(), 0);
     }
 
     #[test]
@@ -565,7 +582,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(restart.decision_count(), 2);
-        assert_eq!(restart.refused_count(), 2);
+        // Both fields ride on the node the restart belongs to and come back by walking nodes in
+        // source order, so they are derived rather than refused. With these two, THIS ledger and
+        // every sub-ledger under it record no refusal at all: there is nothing in the office
+        // vocabulary the canonical tree cannot carry.
+        assert_eq!(restart.derived_count(), 2);
+        assert_eq!(restart.refused_count(), 0);
     }
 
     /// S6-3's `master_pages` was the last top-level field this ledger still recorded `refused` —
