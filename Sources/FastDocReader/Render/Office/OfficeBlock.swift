@@ -1277,14 +1277,17 @@ struct OfficeReadResult: Equatable {
     var images: [String: Data] = [:]
     var vectorGraphics: [String: HwpShapeRenderer.VectorGraphic] = [:]
     /// The document's own default BODY run size in points — the other half of `OfficeTextBuilder`'s
-    /// font-size model (`documentDefaultFontSize`), used to scale every absolute size to the reader's
-    /// base. For HWP this is the Normal("바탕글") style's char-shape base size, decoded from the rhwp
-    /// envelope's `defaultFontSizePt` (or `11` when rhwp emitted null — the document declared none).
-    /// ONLY `HwpReader` populates this: the zip readers (`DocxReader`/`OdtReader`) surface the same
-    /// value through `DocumentTypes.officeDefaultBodyFontSize(archive:)` instead and leave this at
-    /// its `11` default, because HWP has no `ZipArchive` to run that shared path against and rhwp
-    /// already carries the value in the parse it just did — no second FFI call (invariant 29's HWP
-    /// branch owns this the same way docx/odt own theirs through the reader lookup).
+    /// font-size model (`documentDefaultFontSize`), which every absolute size is scaled against so
+    /// the reader's zoom multiplies on top of the document's own rhythm rather than replacing it
+    /// (invariant 36).
+    ///
+    /// Answered by the SAME parse that produced these blocks, in all three readers. It used to be
+    /// reachable only through `DocumentTypes.officeDefaultBodyFontSize`, a second entry point that
+    /// opened the archive AGAIN for this one number, so every zip open paid two full parses of the
+    /// same file; and under the engine that second call was an FFI whose scalar return had nowhere
+    /// to say "could not read", so a document declaring 11 and a document the engine could not open
+    /// gave the same answer. HWP was the exception that showed the way — rhwp carries the value in
+    /// the parse it just did, and its own branch never made the second call.
     var defaultBodyFontSize: CGFloat = 11
     /// What the document's OWN font table says about each family it names, keyed by that name. Read
     /// only when a declared family cannot be resolved on this machine — 99.5% of font slots across

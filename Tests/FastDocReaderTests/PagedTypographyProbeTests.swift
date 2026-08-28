@@ -28,7 +28,7 @@ final class PagedTypographyProbeTests: XCTestCase {
             } else {
                 let archive = try ZipArchive(data: data)
                 result = try DocumentTypes.readOffice(archive, extension: ext)
-                defaultBody = DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext)
+                defaultBody = result.defaultBodyFontSize
             }
             report(name: url.lastPathComponent + " [\(ext)]", result: result, defaultBody: defaultBody)
         }
@@ -183,7 +183,7 @@ final class PagedHeadingWeightProbeTests: XCTestCase {
             guard !DocumentTypes.isHwp(ext) else { continue }
             let archive = try ZipArchive(data: try Data(contentsOf: url))
             let result = try DocumentTypes.readOffice(archive, extension: ext)
-            let defaultBody = DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext)
+            let defaultBody = result.defaultBodyFontSize
             guard let page = result.pageContentWidth else { continue }
 
             let out = OfficeTextBuilder.build(result.blocks, theme: RenderTheme.current(size: defaultBody),

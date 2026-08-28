@@ -169,6 +169,14 @@ impl OdtReader {
         Ok(OfficeReadResult {
             blocks,
             comments,
+            // The document's own default body run size, answered by the SAME parse that produced
+            // these blocks. It used to be reachable only through a separate entry point that opened
+            // the archive again for this one number -- so a host asking for both paid two full
+            // parses, and its scalar return had nowhere to say "could not read", which made the
+            // caller's fallback and a document that genuinely declares 11 indistinguishable. HWP has
+            // always answered it off its own parse (`OfficeReadResult.default_body_font_size`); this
+            // is the zip half catching up.
+            default_body_font_size: Self::document_default_body_font_size(archive),
             page_content_width: page.as_ref().map(|p| p.content),
             page_margin_left: page.as_ref().map(|p| p.left),
             page_margin_right: page.as_ref().map(|p| p.right),

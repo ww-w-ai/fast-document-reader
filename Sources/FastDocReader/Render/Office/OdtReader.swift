@@ -99,6 +99,7 @@ enum OdtReader: OfficeDocumentReader {
         return OfficeReadResult(
             blocks: bodyBlocks + noteBlocks,
             comments: notes.comments.sorted { $0.number < $1.number },
+            defaultBodyFontSize: Self.documentDefaultBodyFontSize(archive),
             pageContentWidth: page?.content,
             pageMarginLeft: page?.left, pageMarginRight: page?.right,
             pageContentHeight: page?.height,

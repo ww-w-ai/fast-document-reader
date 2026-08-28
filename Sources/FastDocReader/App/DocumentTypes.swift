@@ -169,22 +169,6 @@ enum DocumentTypes {
         #endif
     }
 
-    /// The other half of `OfficeTextBuilder.build`'s font-size model (see its `documentDefaultFontSize`
-    /// doc) — the source document's own default body run size, via the SAME reader lookup `readOffice`
-    /// uses, so the two can never name different readers for the same extension. `11` (the fallback
-    /// both `DocxReader` and `OdtReader` already return when a document declares no default of its
-    /// own) for an extension with no registered reader — this is a lookup for rendering, not a second
-    /// place that validates the extension, so it degrades rather than throws.
-    static func officeDefaultBodyFontSize(_ archive: ZipArchive, extension ext: String) -> CGFloat {
-        #if FMD_RUST_ENGINE
-        // The engine answers this too — see `readOffice` for why nothing falls back to the Swift
-        // reader here either. This was the SECOND way the app still reached it, and a build that
-        // left it in place would have been calling the reader it believes it no longer uses.
-        return RustEngine.officeDefaultBodyFontSize(archive.sourceBytes, extension: ext) ?? 11
-        #else
-        return officeReaderType(for: ext)?.documentDefaultBodyFontSize(archive) ?? 11
-        #endif
-    }
 
     /// Content types for the Open panel's filter.
     static var openPanelTypes: [UTType] {

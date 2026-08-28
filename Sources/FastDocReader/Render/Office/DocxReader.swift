@@ -81,6 +81,7 @@ enum DocxReader: OfficeDocumentReader {
             body: body, tag: "w:footerReference", relationships: relationships, archive: archive,
             styleInfo: styleInfo, numbering: numbering)
         return OfficeReadResult(blocks: bodyBlocks + noteBlocks, comments: officeComments,
+                                defaultBodyFontSize: Self.documentDefaultBodyFontSize(archive),
                                 pageContentWidth: page?.content,
                                 pageMarginLeft: page?.left, pageMarginRight: page?.right,
                                 pageContentHeight: page?.height,

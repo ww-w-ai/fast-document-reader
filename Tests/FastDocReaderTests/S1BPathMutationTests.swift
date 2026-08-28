@@ -19,6 +19,20 @@ final class S1BPathMutationTests: XCTestCase {
         DocumentEngineTrace.reset()
     }
 
+    /// The seam a HWP GUI open/reload actually runs through in THIS configuration. Naming the
+    /// swift seam unconditionally made these tests assert the state S7 exists to end — the GUI read
+    /// HWP with `HwpReader` while `--extract` read the same bytes with the engine. Deriving it from
+    /// `configuration` keeps the test measuring "the dispatch seam fires and a fault at it is fatal"
+    /// rather than pinning which reader wins, which is the behaviour contract's job
+    /// (`Tests/Baseline/behavior.json`), not this file's.
+    private var hwpOpenSeam: String {
+        configuration == "rust-enabled" ? "M-HWP-RUST-OPEN" : "M-HWP-SWIFT-OPEN"
+    }
+    private var hwpReloadSeam: String {
+        configuration == "rust-enabled" ? "M-HWP-RUST-RELOAD" : "M-HWP-SWIFT-RELOAD"
+    }
+    private var hwpEngine: String { configuration == "rust-enabled" ? "rust" : "swift" }
+
     private func fixture(_ name: String) -> URL {
         URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -32,12 +46,18 @@ final class S1BPathMutationTests: XCTestCase {
             "M-HWP-SWIFT-OPEN", "M-HWP-SWIFT-RELOAD", "M-HWP-SWIFT-EXTRACT",
             "M-PLAIN-NAV-REJECTION", "M-OFFICE-SAVE-REJECTION",
         ]
+        let rustKillers: Set<String> = [
+            "M-HWP-RUST-EXTRACT", "M-HWP-RUST-OPEN", "M-HWP-RUST-RELOAD",
+            "M-PLAIN-NAV-REJECTION", "M-OFFICE-SAVE-REJECTION",
+        ]
         let designated = configuration == "default" && defaultKillers.contains(seam)
-            || configuration == "rust-enabled" && seam == "M-HWP-RUST-EXTRACT"
+            || configuration == "rust-enabled" && rustKillers.contains(seam)
         let role = designated && !runID.contains("hwpx") ? "killer" : "corroboration"
         let killerTests = [
             "M-HWP-SWIFT-OPEN": "S1BPathMutationTests/testHwpSwiftOpenControlThenMutation",
             "M-HWP-SWIFT-RELOAD": "S1BPathMutationTests/testHwpSwiftReloadControlThenMutation",
+            "M-HWP-RUST-OPEN": "S1BPathMutationTests/testHwpSwiftOpenControlThenMutation",
+            "M-HWP-RUST-RELOAD": "S1BPathMutationTests/testHwpSwiftReloadControlThenMutation",
             "M-HWP-SWIFT-EXTRACT": "S1BPathMutationTests/testHwpExtractControlThenConfigurationMutation",
             "M-HWP-RUST-EXTRACT": "S1BPathMutationTests/testHwpExtractControlThenConfigurationMutation",
             "M-PLAIN-NAV-REJECTION": "S1BPathMutationTests/testPlainTextNavigationRejectionControlThenMutation",
@@ -61,17 +81,17 @@ final class S1BPathMutationTests: XCTestCase {
             try DocumentEngineTrace.withRun(control, entryPoint: "gui-open") {
                 try document.read(from: data, ofType: "public.data")
             }
-            XCTAssertEqual(DocumentEngineTrace.snapshot(runID: control).map(\.engine), ["swift"])
+            XCTAssertEqual(DocumentEngineTrace.snapshot(runID: control).map(\.engine), [hwpEngine])
 
             let mutated = "open-mutated-\(ext)"
             let killed = MarkdownDocument()
             killed.fileURL = url
             XCTAssertThrowsError(try DocumentEngineTrace.withRun(
-                mutated, entryPoint: "gui-open", faults: ["M-HWP-SWIFT-OPEN"]
+                mutated, entryPoint: "gui-open", faults: [hwpOpenSeam]
             ) {
                 try killed.read(from: data, ofType: "public.data")
             })
-            assertFault(mutated, "M-HWP-SWIFT-OPEN")
+            assertFault(mutated, hwpOpenSeam)
         }
     }
 
@@ -83,16 +103,16 @@ final class S1BPathMutationTests: XCTestCase {
             _ = DocumentEngineTrace.withRun(control, entryPoint: "gui-reload") {
                 MarkdownDocument.reloadOutcome(url: url, kind: .office, extension: ext)
             }
-            XCTAssertEqual(DocumentEngineTrace.snapshot(runID: control).map(\.engine), ["swift"])
+            XCTAssertEqual(DocumentEngineTrace.snapshot(runID: control).map(\.engine), [hwpEngine])
 
             let mutated = "reload-mutated-\(ext)"
             let outcome = DocumentEngineTrace.withRun(
-                mutated, entryPoint: "gui-reload", faults: ["M-HWP-SWIFT-RELOAD"]
+                mutated, entryPoint: "gui-reload", faults: [hwpReloadSeam]
             ) {
                 MarkdownDocument.reloadOutcome(url: url, kind: .office, extension: ext)
             }
             guard case .failure = outcome else { return XCTFail("reload mutation survived") }
-            assertFault(mutated, "M-HWP-SWIFT-RELOAD")
+            assertFault(mutated, hwpReloadSeam)
         }
     }
 
@@ -173,7 +193,7 @@ final class S1BPathMutationTests: XCTestCase {
         XCTAssertTrue(try Data(contentsOf: output).starts(with: Array("%PDF".utf8)))
         let events = DocumentEngineTrace.snapshot(runID: "hwp-pdf")
         XCTAssertEqual(events.map(\.entryPoint), ["pdf"])
-        XCTAssertEqual(events.map(\.seam), ["M-HWP-SWIFT-OPEN"])
+        XCTAssertEqual(events.map(\.seam), [hwpOpenSeam])
     }
 
     @MainActor
@@ -186,7 +206,7 @@ final class S1BPathMutationTests: XCTestCase {
         XCTAssertFalse(controller.view.subviews.isEmpty, "Quick Look installed no content")
         let events = DocumentEngineTrace.snapshot(runID: "hwp-quick-look")
         XCTAssertEqual(events.map(\.entryPoint), ["quick-look"])
-        XCTAssertEqual(events.map(\.seam), ["M-HWP-SWIFT-OPEN"])
+        XCTAssertEqual(events.map(\.seam), [hwpOpenSeam])
     }
 }
 #endif

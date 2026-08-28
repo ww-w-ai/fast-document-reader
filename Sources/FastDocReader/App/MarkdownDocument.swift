@@ -424,12 +424,33 @@ final class MarkdownDocument: NSDocument {
         // `DocumentTypes.hwpExtensions` ARE the HWP dispatch (invariant 29); the zip path below is
         // unchanged for docx/odt.
         if DocumentTypes.isHwp(ext) {
+            // The ported engine answers HWP too, and `--extract` has routed through it since S4
+            // (`HeadlessExtract.swift`). This window did not, so an engine build read the SAME file
+            // with one reader headless and another on screen — not a fallback but a different
+            // engine, which is exactly what invariant 29's single funnel forbids. Nothing catches a
+            // failure here on purpose: `readOffice` returning nil throws, the way the zip path and
+            // `--extract` already do, rather than degrading to the reader this build believes it no
+            // longer uses.
+            #if FMD_RUST_ENGINE
+            #if DEBUG
+            try DocumentEngineTrace.record(
+                fileClass: ext.lowercased(), extension: ext, engine: "rust",
+                seam: "M-HWP-RUST-OPEN")
+            #endif
+            guard let unresolved = RustEngine.readOffice(data, extension: ext) else {
+                throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
+                    NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
+                ])
+            }
+            let result = unresolved.resolvingFontSubstitution()
+            #else
             #if DEBUG
             try DocumentEngineTrace.record(
                 fileClass: ext.lowercased(), extension: ext, engine: "swift",
                 seam: "M-HWP-SWIFT-OPEN")
             #endif
             let result = try HwpReader.read(data)
+            #endif
             setOfficeContent(
                 blocks: result.blocks, comments: result.comments, archive: nil,
                 images: result.images, defaultBodyFontSize: result.defaultBodyFontSize,
@@ -458,7 +479,9 @@ final class MarkdownDocument: NSDocument {
         setOfficeContent(
             blocks: result.blocks, comments: result.comments, archive: archive,
             images: result.images,
-            defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext),
+            // Off the read itself, the way the HWP branch above always did — every reader answers
+            // this in the parse it just performed, so there is no second entry point to call.
+            defaultBodyFontSize: result.defaultBodyFontSize,
             pageContentWidth: result.pageContentWidth,
                 pageMarginLeft: result.pageMarginLeft, pageMarginRight: result.pageMarginRight,
                 pageContentHeight: result.pageContentHeight,
@@ -622,18 +645,33 @@ final class MarkdownDocument: NSDocument {
             // 11 — that made a ⌘R reload of an HWP whose declared body size ≠ 11 render differently
             // from its first open, the exact regression invariant 29 forbids).
             if DocumentTypes.isHwp(ext) {
+                // Same reader as the open above, deliberately: a reload that reads with a different
+                // one re-renders the same bytes differently, which is the regression the note above
+                // records for the body size and applies whole here.
+                #if FMD_RUST_ENGINE
+                #if DEBUG
+                try DocumentEngineTrace.record(
+                    fileClass: ext.lowercased(), extension: ext, engine: "rust",
+                    seam: "M-HWP-RUST-RELOAD")
+                #endif
+                guard let unresolved = RustEngine.readOffice(data, extension: ext) else {
+                    return .failure("The document engine could not read this \(ext.uppercased()) file.")
+                }
+                let result = unresolved.resolvingFontSubstitution()
+                #else
                 #if DEBUG
                 try DocumentEngineTrace.record(
                     fileClass: ext.lowercased(), extension: ext, engine: "swift",
                     seam: "M-HWP-SWIFT-RELOAD")
                 #endif
                 let result = try HwpReader.read(data)
+                #endif
                 return .office(result, archive: nil, defaultBodyFontSize: result.defaultBodyFontSize, data: data)
             }
             let archive = try ZipArchive(data: data)
             let result = try DocumentTypes.readOffice(archive, extension: ext)
             return .office(result, archive: archive,
-                           defaultBodyFontSize: DocumentTypes.officeDefaultBodyFontSize(archive, extension: ext),
+                           defaultBodyFontSize: result.defaultBodyFontSize,
                            data: data)
         } catch {
             return .failure(error.localizedDescription)

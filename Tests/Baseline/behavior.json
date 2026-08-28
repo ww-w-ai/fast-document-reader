@@ -741,7 +741,7 @@
       "harness": "MarkdownDocumentTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
@@ -767,7 +767,7 @@
       "harness": "MarkdownDocumentReloadTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
@@ -819,7 +819,7 @@
       "harness": "HeadlessPDFTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
@@ -845,7 +845,7 @@
       "harness": "QuickLookPreviewTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
@@ -871,7 +871,7 @@
       "harness": "OutlinePanelTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
@@ -923,7 +923,7 @@
       "harness": "MarkdownDocumentTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
@@ -949,7 +949,7 @@
       "harness": "MarkdownDocumentReloadTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
@@ -1001,7 +1001,7 @@
       "harness": "HeadlessPDFTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
@@ -1027,7 +1027,7 @@
       "harness": "QuickLookPreviewTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
@@ -1053,7 +1053,7 @@
       "harness": "OutlinePanelTests",
       "expectedEngineByConfiguration": {
         "default": "swift",
-        "rust-enabled": "swift"
+        "rust-enabled": "rust"
       },
       "mutationByConfiguration": {
         "default": {
