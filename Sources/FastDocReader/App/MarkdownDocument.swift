@@ -1926,13 +1926,51 @@ final class MarkdownDocument: NSDocument {
     // MARK: - Images / diagrams (lazy: only on-screen media hold pixels)
 
     /// Decoded-image cache keyed by resolved absolute URL string (muya's loadImageMap).
-    private static let imageCache = NSCache<NSString, NSImage>()
+    static let imageCache = NSCache<NSString, NSImage>()
 
     /// Decoded-image cache for office documents, keyed by "path|archive entry id" (see the cache
     /// key comment in `reconcileMedia` for why the id alone is not enough). Separate from
     /// `imageCache`: an office id and a markdown src string share no format, so keeping them apart
     /// avoids having to prove they can never collide.
-    private static let officeImageCache = NSCache<NSString, NSImage>()
+    static let officeImageCache = NSCache<NSString, NSImage>()
+
+    /// A CEILING, in bytes of decoded pixels, on each cache.
+    ///
+    /// Invariant 65 established WHEN these are emptied — when the last document closes — and left
+    /// the size between those moments unbounded, on the reading that `NSCache` "already evicts under
+    /// real memory pressure". It does, eventually and at the system's discretion; what it will not
+    /// do is stop one session from holding every picture of every document opened since launch,
+    /// which is exactly the shape invariant 65 measured (224 MB with nothing open, 471 MB after 44
+    /// hours). A limit is the half that was missing, and it costs one number.
+    ///
+    /// 256 MB is deliberately generous rather than tuned: the reference document's own decoded
+    /// pictures are a fraction of it, so a reader scrolling one report never evicts anything and
+    /// nothing about invariant 65's "scrolling back to a picture is instant" changes. It bites on
+    /// the case that has no floor — a long session across many documents.
+    ///
+    /// **A limit only works if the entries carry a cost.** `NSCache` treats a costless insert as
+    /// free, so a cache whose `totalCostLimit` is set and whose `setObject` calls pass no cost is
+    /// exactly as unbounded as one with no limit, and looks configured. That is what
+    /// `ImageCacheCeilingTests` gates, and why `cache(_:_:forKey:)` below is the only door in.
+    static let imageCacheByteCeiling = 256 * 1024 * 1024
+
+    /// The decoded size of one picture, in bytes — what it actually occupies, not what its file
+    /// was. Taken from the representation's own pixel dimensions rather than the image's point
+    /// size, because a 2× picture is four times the pixels at the same `size`.
+    static func decodedByteCost(_ image: NSImage) -> Int {
+        let pixels = image.representations.reduce(0) { $0 + $1.pixelsWide * $1.pixelsHigh }
+        if pixels > 0 { return pixels * 4 }
+        // No pixel-backed representation (a PDF-backed one, say) — fall back to the point size,
+        // which is the only extent it has. Never zero: a costless entry is an uncounted one.
+        return max(1, Int(image.size.width * image.size.height) * 4)
+    }
+
+    /// The ONE door into either cache. Both limits are installed here, on first use, so there is no
+    /// second place that could set one and forget the other.
+    static func cache(_ cache: NSCache<NSString, NSImage>, _ image: NSImage, forKey key: NSString) {
+        if cache.totalCostLimit == 0 { cache.totalCostLimit = imageCacheByteCeiling }
+        cache.setObject(image, forKey: key, cost: decodedByteCost(image))
+    }
 
     /// Decoded pixels outlive the document that needed them, and that is what a reader sees as the app
     /// never giving memory back. Both caches are keyed so nothing COLLIDES across documents (the
@@ -2235,7 +2273,7 @@ final class MarkdownDocument: NSDocument {
                     load(MarkdownDocument.needsAccessImage(), r)
                 } else {
                     MarkdownDocument.loadImage(url) { [weak wc] img in
-                        if let img { MarkdownDocument.imageCache.setObject(img, forKey: url.absoluteString as NSString) }
+                        if let img { MarkdownDocument.cache(MarkdownDocument.imageCache, img, forKey: url.absoluteString as NSString) }
                         if wc != nil { load(img, r) }
                     }
                 }
@@ -2269,7 +2307,7 @@ final class MarkdownDocument: NSDocument {
                 // picture does not re-decode it — and so the cost of this branch is paid once per
                 // picture per document rather than once per reconcile.
                 let image = NSImage(data: bytes)
-                if let image { MarkdownDocument.officeImageCache.setObject(image, forKey: cacheKey) }
+                if let image { MarkdownDocument.cache(MarkdownDocument.officeImageCache, image, forKey: cacheKey) }
                 loadOfficePixels(image, bytes, r)
             } else if loadingEverything {
                 // Printing cannot wait for a callback: the print operation is built and run on this
@@ -2278,11 +2316,11 @@ final class MarkdownDocument: NSDocument {
                 // it, the single one the opening viewport had already cached. Reading the archive
                 // entry and decoding it here costs the same work on this thread instead of another.
                 let (img, bytes) = MarkdownDocument.loadOfficeImageSync(archive: officeArchive, id: id)
-                if let img { MarkdownDocument.officeImageCache.setObject(img, forKey: cacheKey) }
+                if let img { MarkdownDocument.cache(MarkdownDocument.officeImageCache, img, forKey: cacheKey) }
                 loadOfficePixels(img, bytes, r)
             } else {
                 MarkdownDocument.loadOfficeImage(archive: officeArchive, id: id) { [weak wc] img, bytes in
-                    if let img { MarkdownDocument.officeImageCache.setObject(img, forKey: cacheKey) }
+                    if let img { MarkdownDocument.cache(MarkdownDocument.officeImageCache, img, forKey: cacheKey) }
                     if wc != nil { loadOfficePixels(img, bytes, r) }
                 }
             }
