@@ -363,55 +363,14 @@ pub extern "C" fn fastdoc_take_last_error() -> *mut c_char {
     })
 }
 
-/// The document's own default BODY run size in points — the other half of the typography's
-/// font-size model, which the host asks for separately because the read result does not carry it
-/// for a zip-backed document.
-///
-/// Returns 11 for anything it cannot read, which is the same value the host's own fallback used:
-/// the number Word ASSUMES when a document declares none (see invariant 62's third case — 11 is
-/// what Word WRITES, 10 is what it assumes, and this is the reader's declared-nothing default).
-///
-/// # Safety
-/// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn fastdoc_office_default_body_font_size(
-    bytes: *const u8,
-    len: usize,
-    extension_: *const c_char,
-) -> f64 {
-    const DECLARED_NOTHING: f64 = 11.0;
-    if bytes.is_null() || extension_.is_null() {
-        return DECLARED_NOTHING;
-    }
-    let data = std::slice::from_raw_parts(bytes, len);
-    let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
-        return DECLARED_NOTHING;
-    };
-    guard_scalar(DECLARED_NOTHING, move || {
-        let Ok(archive) = ZipArchive::new(swiftshim::Data::fromBytes(data.to_vec())) else {
-            return DECLARED_NOTHING;
-        };
-        match extension.to_lowercase().as_str() {
-            "docx" | "docm" | "dotx" | "dotm" => {
-                DocxReader::document_default_body_font_size(&archive)
-            }
-            "odt" => OdtReader::document_default_body_font_size(&archive),
-            _ => DECLARED_NOTHING,
-        }
-    })
-}
-
-/// Frees a string this library returned. Passing anything else is undefined.
-///
-/// # Safety
 /// The running header (or footer) band height for a document, decided in the engine and measured
 /// through the host's installed text measurer.
 ///
 /// Returns a NEGATIVE sentinel when it cannot answer — no measurer installed, the document
 /// unreadable, or a band carrying something whose size the engine does not know. A height is never
 /// negative, so the sentinel cannot be mistaken for an answer, and `fastdoc_take_last_error` names
-/// which case it was. Same shape as `fastdoc_office_default_body_font_size`: a scalar return has
-/// nowhere to put an envelope, so the failure goes where the existing contract already says to look.
+/// which case it was. A scalar return has nowhere to put an envelope, so the failure goes where the
+/// existing contract already says to look.
 ///
 /// # Safety
 /// `bytes`/`len` describe a readable buffer for the duration of the call, and `extension` is a

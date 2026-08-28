@@ -38,7 +38,6 @@ char *fastdoc_read_office_tree(const unsigned char *bytes, size_t len, const cha
 
 // The document's own default body run size in points, or 11 when it declares none or cannot be
 // read. Asked for separately because the read result does not carry it for a zip-backed document.
-double fastdoc_office_default_body_font_size(const unsigned char *bytes, size_t len, const char *extension);
 
 // Frees a string returned by this library.
 
