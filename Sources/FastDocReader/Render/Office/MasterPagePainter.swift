@@ -120,6 +120,104 @@ enum MasterPagePainter {
         }
     }
 
+    /// A 바탕쪽's artwork is drawn on EVERY page it applies to, on every draw pass, and this is a
+    /// draw-time painter with no layout phase to prepare anything in — so whatever these two cases
+    /// do, they do sixty times a second while a reader scrolls.
+    ///
+    /// Measured on the 542-page reference document, by skipping one `case` at a time and re-running
+    /// the whole-reader probe: a scrolled viewport cost a median **55.0 ms**, and skipping the image
+    /// case alone took it to **16.0 ms**. Skipping the text case took it to 48.5 and the vector case
+    /// to 46.8, so neither of those is where the time is — it is the artwork, and it is the DECODE
+    /// rather than the composite. An `NSImage` built from compressed bytes holds the bytes, not a
+    /// bitmap, and every `draw(in:)` decodes a full page of JPEG again; `NSImage(data:)` in the
+    /// `.drawing` case is worse still, since it re-reads the PDF as well.
+    ///
+    /// So each is decoded ONCE and the decoded form is what gets drawn. Identity is the object's
+    /// own — the content is a document's, held for the document's lifetime, so an entry stays valid
+    /// as long as anything can ask for it, and a re-read makes new objects that miss and refill.
+    /// The cap is a backstop against a session that opens hundreds of documents, not a working-set
+    /// estimate: a master page carries a handful of objects.
+    ///
+    /// This is NOT `MarkdownDocument.officeImageCache`: that one is keyed by the id a BLOCK carries
+    /// and answers "what pixels belong at this attachment", which is a different question from
+    /// "what have I already decoded" and is asked on a different path (invariant 1's lazy pixels).
+    /// How many times artwork has been scaled to a drawn size — the deterministic axis the gate in
+    /// `MasterPageArtworkCacheTests` reads, for the reason invariant 113 gives: the PIXELS are the
+    /// same either way, so the whole suite stays green if someone scales it again every frame, and
+    /// the only thing that moves is the cost.
+    private(set) static var artworkRasterisations = 0
+
+    /// The SOURCE is held alongside the scaled copy, and that is load-bearing rather than tidy.
+    /// `ObjectIdentifier` is an address: let the original go and the next `NSImage` can be handed
+    /// the same one, and the cache would then answer with a picture from a document that is no
+    /// longer open. Holding the source makes the address unrecyclable for as long as the entry it
+    /// keys can be found. (Found by the gate below, which read zero rasterisations on its second
+    /// test because the first test's artwork had been freed and its address reused.)
+    private static var scaledArtwork: [ArtworkKey: (source: NSImage, ready: NSImage)] = [:]
+    private static var decodedDrawings: [Data: NSImage] = [:]
+    private static let cacheCap = 64
+
+    private struct ArtworkKey: Hashable {
+        let image: ObjectIdentifier
+        let pixelWidth: Int
+        let pixelHeight: Int
+    }
+
+    /// The artwork at the size it is actually DRAWN, in device pixels, built once per size.
+    ///
+    /// Decoding once is not enough — measured. Wrapping the decoded `CGImage` in a fresh `NSImage`
+    /// and drawing that took the median viewport from 51.3 ms to 48.6, which says the cost is not
+    /// the decode but the RESAMPLE: a full page of artwork is several thousand pixels on a side and
+    /// every frame scaled all of it down to a 395pt-wide sheet. Scaling once and blitting the result
+    /// is what removes it.
+    ///
+    /// The pixel size is in the key rather than assumed, so magnifying the page does not serve a
+    /// blurry copy: a bigger `ctm` scale is a different key and re-renders at the resolution that
+    /// zoom now needs.
+    private static func scaled(_ image: NSImage, to rect: NSRect) -> NSImage {
+        // PAPER GETS THE ORIGINAL. A printed page is rendered at the printer's resolution, not the
+        // screen's, and serving it a bitmap sized for a 395pt-wide sheet would put a screen-sized
+        // picture into the PDF — a silent fidelity loss that `--pdf` reports no error for and that
+        // only shows up on the page. The cache exists to make SCROLLING cheap; printing happens once.
+        //
+        // The question is PRINTING, not "is this context the screen": `cacheDisplay(in:to:)` draws
+        // into a bitmap the caller owns and is how both the reader's own probe and this file's gate
+        // make a draw provably happen, and excluding it would turn the cache off in exactly the
+        // measurements that judge it. `NSPrintOperation.current` names the one case that matters.
+        guard NSPrintOperation.current == nil else { return image }
+        let scale = abs(NSGraphicsContext.current?.cgContext.ctm.a ?? 2)
+        let pixelWidth = max(1, Int((rect.width * scale).rounded()))
+        let pixelHeight = max(1, Int((rect.height * scale).rounded()))
+        let key = ArtworkKey(image: ObjectIdentifier(image), pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+        if let hit = scaledArtwork[key] { return hit.ready }
+        artworkRasterisations += 1
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: pixelWidth, pixelsHigh: pixelHeight,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return image }
+        rep.size = rect.size
+        guard let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return image }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = ctx
+        ctx.imageInterpolation = .high
+        image.draw(in: NSRect(origin: .zero, size: rect.size), from: .zero,
+                   operation: .copy, fraction: 1)
+        NSGraphicsContext.restoreGraphicsState()
+        let ready = NSImage(size: rect.size)
+        ready.addRepresentation(rep)
+        if scaledArtwork.count >= cacheCap { scaledArtwork.removeAll() }
+        scaledArtwork[key] = (image, ready)
+        return ready
+    }
+
+    private static func decoded(_ pdf: Data) -> NSImage? {
+        if let hit = decodedDrawings[pdf] { return hit }
+        guard let image = NSImage(data: pdf) else { return nil }
+        if decodedDrawings.count >= cacheCap { decodedDrawings.removeAll() }
+        decodedDrawings[pdf] = image
+        return image
+    }
+
     /// ONE object, on ONE sheet — shared by the master page and by an object the document pinned to
     /// the paper at a particular place in the text (`OfficeAnchoredObject`). They differ only in
     /// WHICH pages they appear on; where they go on a page, and how they are drawn, is one rule.
@@ -145,10 +243,10 @@ enum MasterPagePainter {
             // `respectFlipped` because this view IS flipped and an image drawn without it arrives
             // upside down — the one place that matters in this file, since the artwork here is a
             // whole page of it.
-            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
-                       respectFlipped: true, hints: nil)
+            scaled(image, to: rect).draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                                         respectFlipped: true, hints: nil)
         case .drawing(let pdf):
-            guard let image = NSImage(data: pdf) else { return }
+            guard let image = decoded(pdf) else { return }
             image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
                        respectFlipped: true, hints: nil)
         case .vector(let graphic):

@@ -1,0 +1,131 @@
+import XCTest
+import AppKit
+@testable import FastDocReader
+
+/// The gate on the single most expensive thing a scrolled frame of a paged Korean document did.
+///
+/// A 바탕쪽's full-page artwork is drawn on every page the template applies to, on every draw pass,
+/// and `MasterPagePainter` is a draw-time painter with no layout phase to prepare anything in. So it
+/// scaled a several-thousand-pixel picture down to a 395pt-wide sheet sixty times a second.
+///
+/// Measured on the 542-page reference document with the whole-reader probe, one `case` skipped at a
+/// time: a scrolled viewport cost a median **55.0 ms**, and skipping the image case alone took it to
+/// **16.0 ms** — while skipping the text case gave 48.5 and the vector case 46.8, so neither of those
+/// is where the time was. Decoding once and drawing a fresh `NSImage` around the `CGImage` was not
+/// enough either (48.6 ms): the cost is the RESAMPLE, not the decode, which is why the cache is
+/// keyed by the size the artwork is actually drawn at. With it, **51.3 → 41.2 ms**.
+///
+/// Nothing else could see this. The pixels are identical either way — that is what makes it a
+/// latency regression rather than a defect, and latency is what no other test here can see
+/// (invariant 113). So this counts rasterisations, the way S8B's resize gate counts attribute
+/// queries and `PageGridMemoTests` counts grid builds.
+final class MasterPageArtworkCacheTests: XCTestCase {
+
+    /// Scrolling redraws the same artwork at the same size, frame after frame. It must be scaled
+    /// once, no matter how many frames ask for it.
+    func testArtworkIsScaledOncePerSizeRatherThanOncePerDrawPass() throws {
+        let content = contentWithArtwork()
+        let sheets = [CGRect(x: 0, y: 0, width: 200, height: 260)]
+
+        let before = MasterPagePainter.artworkRasterisations
+        for _ in 0..<10 {
+            withOffscreenBitmap(width: 200, height: 260) {
+                MasterPagePainter.draw(content, sheets: sheets, totalPages: 1,
+                                       visibleRect: NSRect(x: 0, y: 0, width: 200, height: 260))
+            }
+        }
+        let rasterised = MasterPagePainter.artworkRasterisations - before
+
+        XCTAssertGreaterThan(rasterised, 0, """
+            ten draw passes scaled the artwork zero times, which means the image case was never \
+            reached and nothing below is being tested — check the sheet actually intersects the \
+            visible rect and the template actually applies to page 0.
+            """)
+        XCTAssertEqual(rasterised, 1, """
+            ten draw passes over the SAME artwork at the SAME size scaled it \\(rasterised) times. \
+            Scrolling redraws the same page furniture every frame; on the 542-page reference \
+            document rescaling it per frame is 39 ms of a 55 ms viewport.
+            """)
+    }
+
+    /// The other half, and the one that keeps the cache honest: a MAGNIFIED page is drawn at more
+    /// device pixels, and must be scaled for that, not served the bitmap made for the unmagnified
+    /// one. Without this a cache that ignores the drawn size passes the test above perfectly while
+    /// serving a zoomed-in reader a blurry picture.
+    ///
+    /// The sheet is NOT what changes here — an object's frame is its own, so a bigger sheet draws
+    /// the same 200×260 box and is correctly a cache hit. What changes the drawn size is the
+    /// transform, which is what page zoom actually is (invariant 46's neighbourhood: a paged press
+    /// is a view transform and rebuilds nothing).
+    func testAMagnifiedPageIsScaledAgainRatherThanServedTheUnmagnifiedBitmap() throws {
+        let content = contentWithArtwork()
+        let sheets = [CGRect(x: 0, y: 0, width: 200, height: 260)]
+        let visible = NSRect(x: 0, y: 0, width: 200, height: 260)
+
+        let before = MasterPagePainter.artworkRasterisations
+        withOffscreenBitmap(width: 200, height: 260, scale: 1) {
+            MasterPagePainter.draw(content, sheets: sheets, totalPages: 1, visibleRect: visible)
+        }
+        let afterFirst = MasterPagePainter.artworkRasterisations
+        XCTAssertEqual(afterFirst - before, 1, "the unmagnified size must have been scaled once")
+
+        withOffscreenBitmap(width: 400, height: 520, scale: 2) {
+            MasterPagePainter.draw(content, sheets: sheets, totalPages: 1, visibleRect: visible)
+        }
+        XCTAssertEqual(MasterPagePainter.artworkRasterisations - afterFirst, 1,
+                       "a page drawn at twice the device resolution must be scaled for that "
+                       + "resolution, not served the bitmap made for the smaller one")
+
+        // And back again: returning to the size already in hand must not scale anything.
+        let afterSecond = MasterPagePainter.artworkRasterisations
+        withOffscreenBitmap(width: 200, height: 260, scale: 1) {
+            MasterPagePainter.draw(content, sheets: sheets, totalPages: 1, visibleRect: visible)
+        }
+        XCTAssertEqual(MasterPagePainter.artworkRasterisations, afterSecond,
+                       "zooming back out must find the bitmap it already made")
+    }
+
+    // MARK: - Fixtures
+
+    /// One template, applying to every page, carrying one full-page picture — the shape a Korean
+    /// document's 바탕쪽 has.
+    private func contentWithArtwork() -> MasterPageContent {
+        let object = OfficeMasterObject(frame: CGRect(x: 0, y: 0, width: 200, height: 260),
+                                        content: .image(artwork(width: 1200, height: 1560)))
+        let page = OfficeMasterPage(section: 1, appliesTo: .defaultPages, objects: [object])
+        return MasterPageContent(pages: [page], sectionsHidingMasterPage: [],
+                                 theme: RenderTheme(baseFontSize: 13),
+                                 documentDefaultFontSize: 11, pageContentWidth: 180)
+    }
+
+    /// Deliberately much larger than the sheet it is drawn on — that size difference IS the cost
+    /// this gate exists for, and an artwork the size of its box would not exercise the resample.
+    private func artwork(width: Int, height: Int) -> NSImage {
+        let size = NSSize(width: CGFloat(width), height: CGFloat(height))
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSColor.systemTeal.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        image.unlockFocus()
+        return image
+    }
+
+    private func withOffscreenBitmap(width: Int, height: Int, scale: CGFloat = 1,
+                                     _ body: () -> Void) {
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+            let g = NSGraphicsContext(bitmapImageRep: rep) else {
+            return XCTFail("could not make an offscreen context to draw into")
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = g
+        let flip = NSAffineTransform()
+        flip.translateX(by: 0, yBy: CGFloat(height))
+        flip.scaleX(by: scale, yBy: -scale)
+        flip.concat()
+        body()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+}
