@@ -23,6 +23,29 @@ enum RustEngine {
     /// a document that decoded most of the way.
     static let schemaVersion = 4
 
+    /// How many times the engine has PARSED a document's bytes in this process.
+    ///
+    /// P1: the app read every office document twice — once through `readOffice` for its content,
+    /// once through `RustOfficeDocumentHandle` for the queries — and no test could see it, because
+    /// both reads produce identical answers. Two reads and one read are indistinguishable by their
+    /// results, exactly as invariant 103 says asking and using are; a count is what makes the
+    /// second read observable at all.
+    ///
+    /// Incremented by the two entry points that cause a parse (`fastdoc_read_office_json` and
+    /// `fastdoc_office_open`) and by nothing else — `fastdoc_office_content_json` borrows a parse
+    /// that already happened, which is the whole point of it.
+    private(set) static var documentReads = 0
+
+    /// Test seam: `documentReads` is a process-wide total, so a test measures a DELTA across the
+    /// work it is judging rather than an absolute that every earlier test has already moved.
+    static func countingDocumentReads<T>(_ body: () throws -> T) rethrows -> (value: T, reads: Int) {
+        let before = documentReads
+        let value = try body()
+        return (value, documentReads - before)
+    }
+
+    static func noteDocumentRead() { documentReads += 1 }
+
     /// The document, read by the engine, in this app's own vocabulary.
     ///
     /// Returns nil when the engine could not read it, when it read something it cannot hand over
@@ -43,6 +66,7 @@ enum RustEngine {
         }
         #endif
         RustEngineFonts.install()
+        noteDocumentRead()
         let json: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { raw -> UnsafeMutablePointer<CChar>? in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
             return ext.withCString { extensionC in
@@ -59,7 +83,16 @@ enum RustEngine {
             return nil
         }
         defer { fastdoc_string_free(json) }
+        return decodeOffice(json)
+    }
 
+    /// The engine's JSON turned into this app's vocabulary — the half of `readOffice` that has
+    /// nothing to do with reading.
+    ///
+    /// Split out so the export a handle serves (`fastdoc_office_content_json`) crosses the SAME
+    /// decoder, version check and vector-painting pass. Two decoders for one wire format is the
+    /// shape that drifts (this file's own `unifyTerminator` lesson, one layer up).
+    static func decodeOffice(_ json: UnsafeMutablePointer<CChar>) -> OfficeReadResult? {
         let bytes = Data(bytesNoCopy: json, count: strlen(json), deallocator: .none)
         let decoder = JSONDecoder()
         // The engine names fields the way Rust does. This is what saves every type in the

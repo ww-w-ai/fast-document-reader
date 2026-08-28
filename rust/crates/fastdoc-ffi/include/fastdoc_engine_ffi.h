@@ -140,6 +140,16 @@ FastdocOfficeDocument *fastdoc_office_open(const unsigned char *bytes, size_t le
  * doc already makes for a double-freed string, extended to this second owned resource. */
 void fastdoc_office_close(FastdocOfficeDocument *handle);
 
+/* The schema-v4 export of a document this handle ALREADY read — fastdoc_read_office_json without
+ * its read. The app used to read every office document twice (once for its content, once to open
+ * the handle); this is the call that makes the second read unnecessary. bytes/len are the
+ * document's own source bytes, which the caller already holds — they are taken rather than stored
+ * so the handle does not keep a second copy of the document alive. Returns a JSON string the
+ * caller frees with fastdoc_string_free, or NULL on failure (fastdoc_take_last_error names why).
+ * The bytes are indistinguishable from fastdoc_read_office_json's, deliberately. */
+char *fastdoc_office_content_json(const FastdocOfficeDocument *handle,
+                                  const unsigned char *bytes, size_t len);
+
 /* S5C1-02: the band query re-expressed over an open handle — the engine's own decision for a
  * document's running header, footer AND combined band, in one call, from a document it already
  * holds rather than one it re-reads.

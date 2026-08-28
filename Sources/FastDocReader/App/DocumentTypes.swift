@@ -120,7 +120,25 @@ enum DocumentTypes {
     /// net, not the path.
     private static let zipBackedOfficeExtensions: Set<String> = ["docx", "docm", "dotx", "dotm", "odt"]
 
-    static func readOffice(_ archive: ZipArchive, extension ext: String) throws -> OfficeReadResult {
+    /// Where a caller that will keep asking this document questions receives the handle its read
+    /// already opened.
+    ///
+    /// P1: reading a document and opening a handle to it are the SAME parse, and the app was
+    /// paying for both — `read(from:)` called the export, then `setOfficeContent` opened a handle
+    /// on the same bytes, 565 ms thrown away on a 10.7 MB HWP. Passing one of these says "I am the
+    /// caller that will ask again, hand me what you opened."
+    ///
+    /// `nil` — the default, and every existing caller — is the one-question caller: the tests, the
+    /// reference comparisons, `--extract`, `--pdf`. Those take the export path unchanged, so
+    /// nothing about a headless read moves, including which process-global ports get installed.
+    final class OfficeHandleBox {
+        var handle: RustOfficeDocumentHandle?
+        init() {}
+    }
+
+    static func readOffice(
+        _ archive: ZipArchive, extension ext: String, keepingHandleIn box: OfficeHandleBox? = nil
+    ) throws -> OfficeReadResult {
         // A REGISTRATION check, not a dispatch: the engine reads every office format and takes the
         // extension itself. What this still answers is whether the extension is one this app claims
         // at all, which is a different failure with a different message than "the engine could not
@@ -148,7 +166,16 @@ enum DocumentTypes {
             fileClass: ext.lowercased() == "odt" ? "odt" : "docx",
             extension: ext, engine: "rust", seam: "M-ZIP-RUST-DISPATCH")
         #endif
-        guard let ported = RustEngine.readOffice(archive.sourceBytes, extension: ext) else {
+        let ported: OfficeReadResult?
+        if let box {
+            // One parse, two consumers: the handle IS the read, and the content borrows it.
+            let opened = RustOfficeDocumentHandle(data: archive.sourceBytes, extension: ext)
+            box.handle = opened
+            ported = opened?.officeContent(bytes: archive.sourceBytes)
+        } else {
+            ported = RustEngine.readOffice(archive.sourceBytes, extension: ext)
+        }
+        guard let ported else {
             throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
                 NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
             ])

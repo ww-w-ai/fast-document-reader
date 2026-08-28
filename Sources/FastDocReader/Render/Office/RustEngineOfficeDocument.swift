@@ -48,7 +48,39 @@ final class RustOfficeDocumentHandle {
             }
         }
         guard let opened else { return nil }
+        RustEngine.noteDocumentRead()
         self.handle = opened
+    }
+
+    /// This document's content, in the app's own vocabulary, from the read this handle ALREADY
+    /// paid for.
+    ///
+    /// P1: before this existed, `MarkdownDocument.read(from:)` asked `RustEngine.readOffice` for
+    /// the content (a full read) and then opened a handle for the queries (the SAME full read
+    /// again). Measured on `2025_행정업무운영편람_최종.hwp`: 565 ms thrown away per open, which is
+    /// 47% of what the entire pre-cutover build spent producing that document's `--extract`.
+    ///
+    /// `data` must be the bytes this handle was opened from. The engine needs them only to record
+    /// the source's own sha256 and length; nothing is re-parsed. Passing different bytes would
+    /// therefore not answer a different document, it would mislabel this one — which is why the
+    /// only caller is the one that just opened the handle from those same bytes.
+    func officeContent(bytes data: Data) -> OfficeReadResult? {
+        answeredQueries += 1
+        let json: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { raw in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
+            return fastdoc_office_content_json(handle, base, raw.count)
+        }
+        guard let json else {
+            if let diagnostic = fastdoc_take_last_error() {
+                defer { fastdoc_string_free(diagnostic) }
+                FileHandle.standardError.write(
+                    Data("fastdoc: \(String(cString: diagnostic))\n".utf8)
+                )
+            }
+            return nil
+        }
+        defer { fastdoc_string_free(json) }
+        return RustEngine.decodeOffice(json)
     }
 
     deinit {

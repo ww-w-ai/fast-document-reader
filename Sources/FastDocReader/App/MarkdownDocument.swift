@@ -434,7 +434,10 @@ final class MarkdownDocument: NSDocument {
                 fileClass: ext.lowercased(), extension: ext, engine: "rust",
                 seam: "M-HWP-RUST-OPEN")
             #endif
-            guard let unresolved = RustEngine.readOffice(data, extension: ext) else {
+            // One parse. The handle IS the read, and the content borrows it — see
+            // `DocumentTypes.OfficeHandleBox` for why the two used to be separate parses.
+            let handle = RustOfficeDocumentHandle(data: data, extension: ext)
+            guard let unresolved = handle?.officeContent(bytes: data) else {
                 throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
                     NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
                 ])
@@ -460,11 +463,12 @@ final class MarkdownDocument: NSDocument {
                 sections: result.sections,
                 anchoredObjects: result.anchoredObjects,
                 lineGridPitch: result.lineGridPitch,
-                documentData: data, documentExtension: ext)
+                documentData: data, documentExtension: ext, engineHandle: handle)
             return
         }
         let archive = try ZipArchive(data: data)
-        let result = try DocumentTypes.readOffice(archive, extension: ext)
+        let opened = DocumentTypes.OfficeHandleBox()
+        let result = try DocumentTypes.readOffice(archive, extension: ext, keepingHandleIn: opened)
         setOfficeContent(
             blocks: result.blocks, comments: result.comments, archive: archive,
             images: result.images,
@@ -488,7 +492,7 @@ final class MarkdownDocument: NSDocument {
                 sections: result.sections,
                 anchoredObjects: result.anchoredObjects,
                 lineGridPitch: result.lineGridPitch,
-                documentData: data, documentExtension: ext)
+                documentData: data, documentExtension: ext, engineHandle: opened.handle)
     }
 
     /// The office-document seam `read(from:)` and `reloadDocument` both go through: the parser's
@@ -515,7 +519,8 @@ final class MarkdownDocument: NSDocument {
         sections: [OfficeSectionDeclaration] = [],
         anchoredObjects: [OfficeAnchoredObject] = [],
         lineGridPitch: CGFloat? = nil,
-        documentData: Data? = nil, documentExtension: String? = nil
+        documentData: Data? = nil, documentExtension: String? = nil,
+        engineHandle: RustOfficeDocumentHandle? = nil
     ) {
         // S5C1-03: this is the ONE seam `read(from:ofType:)` and `reloadDocument` both pass
         // through, so it is where the handle is opened — close-then-reopen, never leaked, never
@@ -525,7 +530,13 @@ final class MarkdownDocument: NSDocument {
         // separate close call to forget. A document a `documentData`/`documentExtension` pair
         // cannot open through the engine (unreadable, or the flag's own build) leaves this `nil`,
         // and every query below falls back to the host's own answer.
-        self.officeEngineHandle = documentData.flatMap { data in
+        // P1: `engineHandle` is the handle the READ already opened, handed straight through.
+        // Opening one here instead would parse the same bytes a second time — 565 ms on a 10.7 MB
+        // HWP, discarded, because the two parses cannot disagree. Callers that build blocks by
+        // hand (every test that does not read a real file) pass neither, and get `nil`, and every
+        // query below falls back to the host's own answer exactly as before. The `documentData`
+        // path remains for a caller that has bytes but no handle; it is no longer the read path.
+        self.officeEngineHandle = engineHandle ?? documentData.flatMap { data in
             documentExtension.flatMap { ext in RustOfficeDocumentHandle(data: data, extension: ext) }
         }
         self.officeBlocks = blocks
@@ -596,7 +607,12 @@ final class MarkdownDocument: NSDocument {
         /// engine's handle for the NEW content; without carrying them here, a reload would call
         /// `setOfficeContent` with no bytes to open, and every band query afterward would silently
         /// keep answering from the handle `read(from:)` opened for the FILE'S PREVIOUS CONTENT.
-        case office(OfficeReadResult, archive: ZipArchive?, defaultBodyFontSize: CGFloat, data: Data)
+        /// `handle` is the one the read already opened (P1) — carried so ⌘R re-reads the file
+        /// ONCE, exactly as a first open now does. A reload that opened its own handle would parse
+        /// the document twice and could not disagree with itself about it, which is why nothing
+        /// caught that it did.
+        case office(OfficeReadResult, archive: ZipArchive?, defaultBodyFontSize: CGFloat, data: Data,
+                    handle: RustOfficeDocumentHandle?)
         case text(TextFile)
         case failure(String)
     }
@@ -640,17 +656,20 @@ final class MarkdownDocument: NSDocument {
                     fileClass: ext.lowercased(), extension: ext, engine: "rust",
                     seam: "M-HWP-RUST-RELOAD")
                 #endif
-                guard let unresolved = RustEngine.readOffice(data, extension: ext) else {
+                let handle = RustOfficeDocumentHandle(data: data, extension: ext)
+                guard let unresolved = handle?.officeContent(bytes: data) else {
                     return .failure("The document engine could not read this \(ext.uppercased()) file.")
                 }
                 let result = unresolved.resolvingFontSubstitution()
-                return .office(result, archive: nil, defaultBodyFontSize: result.defaultBodyFontSize, data: data)
+                return .office(result, archive: nil, defaultBodyFontSize: result.defaultBodyFontSize,
+                               data: data, handle: handle)
             }
             let archive = try ZipArchive(data: data)
-            let result = try DocumentTypes.readOffice(archive, extension: ext)
+            let opened = DocumentTypes.OfficeHandleBox()
+            let result = try DocumentTypes.readOffice(archive, extension: ext, keepingHandleIn: opened)
             return .office(result, archive: archive,
                            defaultBodyFontSize: result.defaultBodyFontSize,
-                           data: data)
+                           data: data, handle: opened.handle)
         } catch {
             return .failure(error.localizedDescription)
         }
@@ -674,7 +693,7 @@ final class MarkdownDocument: NSDocument {
         if let url = fileURL {
             let ext = url.pathExtension.isEmpty ? (untitledExtension ?? "") : url.pathExtension
             switch Self.reloadOutcome(url: url, kind: kind, extension: ext) {
-            case .office(let result, let archive, let defaultBodyFontSize, let rereadData):
+            case .office(let result, let archive, let defaultBodyFontSize, let rereadData, let rereadHandle):
                 // Re-parse the archive, same as the initial read — never through the text-decode
                 // path (invariant: an office document's bytes are never handed to
                 // `TextEncodingDetector`). `defaultBodyFontSize` is carried through too, so a
@@ -698,7 +717,8 @@ final class MarkdownDocument: NSDocument {
                                  sections: result.sections,
                                  anchoredObjects: result.anchoredObjects,
                                  lineGridPitch: result.lineGridPitch,
-                                 documentData: rereadData, documentExtension: ext)
+                                 documentData: rereadData, documentExtension: ext,
+                                 engineHandle: rereadHandle)
             case .text(let reread):
                 // The undo stack holds source OFFSETS into the text we're replacing. Re-reading the
                 // file can move every one of them (the file may have changed behind us), so an undo

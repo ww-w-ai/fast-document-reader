@@ -1025,7 +1025,7 @@ final class OfficeDocumentTests: XCTestCase {
         try doc.read(from: data, ofType: "org.openxmlformats.wordprocessingml.document")
         XCTAssertEqual(doc.officeDefaultBodyFontSize, 10)
 
-        guard case .office(_, _, let reloadedDefault, _) =
+        guard case .office(_, _, let reloadedDefault, _, _) =
             MarkdownDocument.reloadOutcome(url: url, kind: .office, extension: "docx")
         else { return XCTFail("expected a successful office reload") }
         XCTAssertEqual(reloadedDefault, doc.officeDefaultBodyFontSize,

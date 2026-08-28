@@ -489,6 +489,14 @@ pub unsafe extern "C" fn fastdoc_office_header_band_height(
 /// in a `defer` at a call site, so a reload (close-then-reopen) can never strand or double-free it.
 pub struct FastdocOfficeDocument {
     result: OfficeReadResult,
+    /// What this document was opened AS. Kept so `fastdoc_office_content_json` can package the
+    /// result the same way `fastdoc_read_office_json` does without being told again — the caller
+    /// cannot get it wrong on the second call, because there is no second call to get wrong.
+    extension_: String,
+    /// The name the adapter and the refusal ledger record this document under. Derived at open
+    /// from the extension, exactly as `fastdoc_read_office_json` derives it, so a document that
+    /// falls back leaves the same line in the ledger whichever door it came through.
+    source_name: String,
 }
 
 /// Reads an office document ONCE and hands back an opaque handle every later query borrows,
@@ -524,7 +532,11 @@ pub unsafe extern "C" fn fastdoc_office_open(
     };
     guard_scalar(std::ptr::null_mut(), move || {
         match read_office(data, extension) {
-            Ok(result) => Box::into_raw(Box::new(FastdocOfficeDocument { result })),
+            Ok(result) => Box::into_raw(Box::new(FastdocOfficeDocument {
+                result,
+                extension_: extension.to_string(),
+                source_name: format!("document.{extension}"),
+            })),
             Err(error) => {
                 set_last_error(&FfiFailure::from(error));
                 std::ptr::null_mut()
@@ -547,6 +559,55 @@ pub unsafe extern "C" fn fastdoc_office_close(handle: *mut FastdocOfficeDocument
         if !handle.is_null() {
             drop(Box::from_raw(handle));
         }
+    })
+}
+
+/// The schema-v4 export of a document this handle ALREADY read — `fastdoc_read_office_json`
+/// without its read.
+///
+/// P1: the app was reading every office document twice. `MarkdownDocument.read(from:)` called
+/// `fastdoc_read_office_json` (read + tree + projection + base64 + JSON), and then
+/// `setOfficeContent` opened a handle, which called `read_office` on the same bytes AGAIN. On a
+/// 10.7 MB HWP that second read is 565 ms — 47% of what the whole pre-cutover build spent on
+/// `--extract` for the same file — and nothing consumed it. The handle exists precisely so a cost
+/// is paid once at open; this export lets the CONTENT be one of the things that borrows it.
+///
+/// `bytes`/`len` are the document's own source bytes, which the caller already holds. They are
+/// taken rather than stored because the adapter needs them only to record the source's sha256 and
+/// length (`office_adapter.rs:300`), and keeping a second copy of a 10.7 MB document alive inside
+/// the handle would buy that record with memory the host is already paying for.
+///
+/// Returns NULL on a genuine failure, with the reason retrievable through
+/// `fastdoc_take_last_error` — the same shape, and the same silent-fallback behaviour on a tree
+/// refusal, as `fastdoc_read_office_json`. A host cannot tell the two exports' bytes apart, which
+/// is the point: this is the same door, entered from a document that is already open.
+///
+/// # Safety
+/// `handle` must be a live pointer `fastdoc_office_open` returned that has not been closed, and
+/// `bytes` must point to `len` readable bytes for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_office_content_json(
+    handle: *const FastdocOfficeDocument,
+    bytes: *const u8,
+    len: usize,
+) -> *mut c_char {
+    clear_last_error();
+    if handle.is_null() || bytes.is_null() {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return std::ptr::null_mut();
+    }
+    let document = &*handle;
+    let data = std::slice::from_raw_parts(bytes, len);
+    guard_json(move || {
+        project_or_fall_back(
+            &document.extension_,
+            &document.source_name,
+            data,
+            &document.result,
+        )
     })
 }
 
