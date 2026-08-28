@@ -121,7 +121,18 @@ fn office_section_field_census() {
         walk(&dir, &mut files);
     }
     files.sort();
-    files.truncate(400);
+    // The whole corpus, not a prefix of it. This walk finds 669 office documents and used to stop
+    // at 400 without saying so, which biases every count below by the 269 it never opened — and
+    // those are not a random 269, they are whatever sorts last. Ask for a cap with `FMD_SECTION_FIELD_CENSUS_LIMIT` if a
+    // quick run is wanted; what it dropped is printed with the result (INVARIANTS.md 111).
+    let found = files.len();
+    if let Some(limit) = std::env::var("FMD_SECTION_FIELD_CENSUS_LIMIT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        files.truncate(limit);
+    }
+    let dropped = found - files.len();
 
     const NAMES: [&str; 6] = [
         "footnote_separator",
@@ -162,6 +173,9 @@ fn office_section_field_census() {
     }
 
     println!("=== office_section_field_census ===");
+    if dropped > 0 {
+        println!("CAPPED: {dropped} of {found} documents were NOT examined");
+    }
     println!("total examined: {}", files.len());
     println!("read successfully: {read_ok}");
     println!("multi-section (sections.len() > 1): {multi_section}");

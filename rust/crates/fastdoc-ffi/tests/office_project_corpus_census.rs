@@ -70,7 +70,25 @@ fn office_project_corpus_census() {
         walk(&dir, &mut files);
     }
     files.sort();
-    files.truncate(400);
+    // The whole corpus, not a prefix of it. This walk used to stop at 400 of the 669 office
+    // documents it finds, and the cap was silent — the census reported "took tree path: 400,
+    // fell back: 0" and read as "nothing falls back". Every document that DOES fall back was in
+    // the 269 it never examined: `GnBS_IM_20260401.docx`,
+    // `사업타당성검토보고서_덕소5B구역.docx`, `카카오톡대화_피고진성호.docx`,
+    // `OpenAPI활용가이드_특일정보_v1.4.docx` and `tago-tables.odt` all sort past the cut.
+    // A cap that removes exactly the cases a census exists to count is worse than no census
+    // (INVARIANTS.md 111 — a scope narrowed for a good reason is an unread scope by Friday).
+    //
+    // A cap is still available for a quick run, but it must be ASKED for, and what it dropped is
+    // printed with the result rather than left to be inferred from a number that looks complete.
+    let found = files.len();
+    let limit = std::env::var("FMD_OFFICE_PROJECT_CENSUS_LIMIT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok());
+    if let Some(limit) = limit {
+        files.truncate(limit);
+    }
+    let dropped = found - files.len();
 
     let mut took_tree_path = 0usize;
     let mut null_returns = 0usize; // read_office itself failed, before from_office/project ran
@@ -100,6 +118,13 @@ fn office_project_corpus_census() {
     }
 
     println!("=== office_project_corpus_census ===");
+    if dropped > 0 {
+        println!(
+            "CAPPED: {dropped} of {found} documents were NOT examined \
+             (FMD_OFFICE_PROJECT_CENSUS_LIMIT={})",
+            files.len()
+        );
+    }
     println!("total examined: {}", files.len());
     println!("took tree path (project succeeded): {took_tree_path}");
     println!("fell back to reader path (project or from_office refused): {}",

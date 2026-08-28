@@ -632,3 +632,50 @@ this file tells you why, and why the obvious alternative does not work.
     **The corpus gate got its evidence back.** `CorpusRenderProbeTests` reads, builds, lays out and re-solves every office document under three real directories. Its verdict travels one channel and its numbers another, and on a 1,982-document run the numbers were lost to stdout interleaving between xctest and the swift-testing runner — the last captured line was a document path with the other runner's banner spliced into the middle of it, which reads exactly like the trap signature the test's own doc comment describes. It was not a trap; the run had passed. `FMD_RENDER_CORPUS_OUT` now writes the report to a file. Current: **found=2029 rendered=2029 readThrew=0**, 18,776 tables, 1,039,017 cell paragraphs, no crash, 736 s.
 
     **The rule: when an optimisation leaves the answers unchanged, find the countable thing it changed and gate that.** Bytes re-scanned, walks taken, queries made — all deterministic, all immune to the machine's mood, and each one names the regression in its own failure message.
+
+114. **A CENSUS THAT STOPS AT N DOES NOT REPORT ON N — it reports on a sample chosen by sort order, and sort order is not random.** Found in S10 while collecting the corpus evidence, and the number it produced was the reassuring kind. `office_project_corpus_census.rs` walks four directories, sorts, and runs every document through the production `fastdoc_read_office_json`, tabulating how many took the canonical-tree path and how many fell back to the reader. It reported:
+
+    ```
+    total examined: 400
+    took tree path (project succeeded): 400
+    fell back to reader path: 0
+    ```
+
+    Read as "nothing falls back", which is exactly what S4's claim wants to hear. But the walk finds **669** office documents and `files.truncate(400)` dropped 269 of them, silently. And the five documents in this repo's own `testdocs` that DO fall back — `GnBS_IM_20260401.docx`, `사업타당성검토보고서_덕소5B구역.docx`, `카카오톡대화_피고진성호.docx`, `OpenAPI활용가이드_특일정보_v1.4.docx`, `tago-tables.odt` — **all five sort past the cut.** The census excluded precisely the cases it exists to count.
+
+    It was found by accident: a different measurement (invariant 112's payload census, which walks `testdocs` and has no cap) showed those five refusing the tree, which could not be reconciled with "0 fallbacks" until the cut was checked.
+
+    **Four censuses had the same cap on the same walk** — `office_project_corpus_census`, `office_corpus_census`, `office_unsupported_graphic_census`, `office_section_field_census`. One of them, `office_corpus_census`, had a real reason (reproducing a leader's `ok=385 / failed=15` baseline over the same 400) and that reason expired the moment `CLAUDE.md` started citing it as the authority on how many documents the tree accepts. A cap that was a deliberate choice for one measurement becomes an unread scope by the next sprint, the same way `-p fastdoc-engine` did (invariant 111).
+
+    All four now walk the whole corpus by default, take a cap only when asked (`FMD_*_CENSUS_LIMIT`), and PRINT what a cap dropped, so no run can read as complete when it was not.
+
+    **The rule: a truncated population must announce its truncation in the same breath as its counts.** "400 examined, 0 fell back" and "400 of 669 examined, 0 fell back" are different claims, and only the second one is honest about being unable to support the first.
+
+115. **THE CANONICAL TREE CANNOT CARRY A ZIP DOCUMENT'S PICTURES, AND THAT IS THE LAZY-MEDIA DESIGN RATHER THAN A HOLE.** Measured in S10, after invariant 114 uncapped the census and the fallback rate went from a reassuring 0 to a real 13 of 669. Eleven of those thirteen refuse as `MissingResource`, and every one is a docx or an odt.
+
+    **No production call site has ever built a non-empty `resources` map.** `fastdoc_read_office_json`, `fastdoc_read_office_tree` and every other caller pass `BTreeMap::new()`. HWP is unaffected because its pictures ride inside `OfficeReadResult.images` (rhwp pre-decodes them), so the adapter finds them; a docx or odt keeps its pictures in the archive and the reader emits only the relationship target (`word/media/image1.png`), so `resolve_resource` asks for a key nothing supplied.
+
+    **Filling the map would be a first-paint regression, not a fix.** `office_project.rs:818` decodes each resource and inserts its bytes into the projected `result.images`, so a docx that today returns a payload with NO picture bytes — measured: a 10.2 MB docx exports 922,833 bytes, a 1.8 MB one exports 6,943 — would start returning every picture inline, at open time, on the main path. That is exactly the eager-media shape the host's lazy `reconcileMedia` exists to avoid, and it is the same lever invariant 112 names: pictures are two thirds of what a payload weighs.
+
+    So the fallback is doing its job for those eleven, and the numbers to keep in mind are:
+
+    | | of 669 real documents |
+    |---|---|
+    | took the canonical-tree path | 656, and **658 after the tab-stop fix below** |
+    | fell back to the reader path | 13 — `MissingResource` 11 (docx/odt with pictures), `Canonicalization` 2 (fixed) |
+    | `read_office` returned NULL | 0 |
+
+    **The two `Canonicalization` refusals were a real defect, and the census is what surfaced them.**
+    That variant's own doc comment says it "should never happen for a correctly implemented adapter",
+    and it was happening on two real documents: `Invariant("tab stops are not finite strictly
+    increasing positions")`. `sanitize_tab_stops` sorted and stopped there, while the validator
+    demands STRICTLY increasing — so a paragraph declaring `[30.0, 30.0, 30.0, 30.0]`, all Left, all
+    with the same leader (measured: 2 of the 21 paragraphs in `rowbreak-problem-pages.hwp` that carry
+    stops at all) sorted cleanly and refused the whole document. A tab stop list is a set of
+    positions: a document naming one position four times has said one thing four times. Duplicates
+    now collapse first-declared-wins, and NaN/infinite/negative positions are dropped rather than
+    carried into a tree that would be refused entire. Both documents take the tree path now.
+
+    **What this costs is validation, not correctness.** The output is identical either way — `project` round-trips (invariant 112's oracle) and `to_json(&result)` is the same shape — but a document that falls back never passes through the tree's validation. So S4's claim reads more broadly than it holds: every shipping payload is derived from a validated tree *unless the document keeps its pictures in its own archive*, which no test said out loud until this census could see all 669 documents.
+
+    **The rule: when a refusal is the design, say so where the refusal is counted.** A `MissingResource` that no caller can avoid is not a defect waiting to be fixed, and leaving it unexplained invites someone to "fix" it by populating the map — which would trade a validation gap for a memory and first-paint one.

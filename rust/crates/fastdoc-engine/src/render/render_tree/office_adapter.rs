@@ -1935,9 +1935,35 @@ fn insets_finite(ep: &EdgePadding) -> wire::OptionalInsets {
 /// Nothing is dropped: a stop the source states out of contract reaches the validator and fails the
 /// document loudly, because a silently deleted tab stop is a document that renders wrong with no
 /// way to find out why.
+/// A paragraph's declared tab stops as the tree requires them: finite, non-negative, and STRICTLY
+/// increasing.
+///
+/// Sorting alone is not enough, and the gap was reachable from real documents. A tab stop list is a
+/// set of positions — a document that names the same position more than once has said one thing
+/// twice, not two things — but the validator reads a repeated position as a list that is not
+/// strictly increasing and refuses the whole tree. Measured: `rowbreak-problem-pages.hwp` (and its
+/// `.hwpx` twin) declares `[30.0, 30.0, 30.0, 30.0]`, all Left, all with the same leader, in 2 of
+/// its 21 paragraphs that carry stops at all. Both documents refused canonicalisation and fell back
+/// to the reader path, which is the one refusal kind whose own doc comment says it "should never
+/// happen for a correctly implemented adapter".
+///
+/// So duplicates are collapsed and unusable positions are dropped:
+/// - the sort is STABLE and by position, so among stops sharing a position the FIRST the document
+///   declared is the one kept — the same choice a later declaration at an occupied position gets in
+///   the formats themselves;
+/// - a position that is NaN, infinite or negative is not a position, and is removed rather than
+///   carried into a tree that would then be refused as a whole.
+///
+/// No measured document declares two stops at one position with DIFFERENT alignments or leaders, so
+/// nothing here is known to discard a real distinction; if one ever does, first-wins is the rule
+/// this function applies and states rather than a silent arbitrary pick.
 fn sanitize_tab_stops(stops: &[office_block::TabStop]) -> Vec<wire::TabStop> {
-    let mut sorted: Vec<&office_block::TabStop> = stops.iter().collect();
+    let mut sorted: Vec<&office_block::TabStop> = stops
+        .iter()
+        .filter(|ts| ts.position.is_finite() && ts.position >= 0.0)
+        .collect();
     sorted.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.dedup_by(|a, b| a.position == b.position);
     sorted
         .into_iter()
         .map(|ts| wire::TabStop {
@@ -1946,6 +1972,79 @@ fn sanitize_tab_stops(stops: &[office_block::TabStop]) -> Vec<wire::TabStop> {
             leader: convert_tab_leader(ts.leader),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tab_stop_tests {
+    use super::sanitize_tab_stops;
+    use crate::render::office::office_block::{TabAlignment, TabLeader, TabStop};
+
+    fn stop(position: f64, alignment: TabAlignment) -> TabStop {
+        TabStop { position, alignment, leader: TabLeader::None }
+    }
+
+    /// The real document's shape: one position declared four times, which the validator reads as a
+    /// list that is not strictly increasing and refuses the WHOLE tree over.
+    #[test]
+    fn a_position_declared_more_than_once_is_carried_once() {
+        let stops = vec![
+            stop(30.0, TabAlignment::Left),
+            stop(30.0, TabAlignment::Left),
+            stop(30.0, TabAlignment::Left),
+            stop(30.0, TabAlignment::Left),
+        ];
+        let sanitized = sanitize_tab_stops(&stops);
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].position_points, 30.0);
+    }
+
+    /// Among stops sharing a position, the one the document declared FIRST is the one kept — stated
+    /// rather than left to whatever the sort happens to do.
+    #[test]
+    fn among_stops_at_one_position_the_first_declared_wins() {
+        let stops = vec![
+            stop(72.0, TabAlignment::Center),
+            stop(72.0, TabAlignment::Right),
+            stop(36.0, TabAlignment::Left),
+        ];
+        let sanitized = sanitize_tab_stops(&stops);
+        assert_eq!(sanitized.len(), 2);
+        assert_eq!(sanitized[0].position_points, 36.0);
+        assert_eq!(sanitized[1].position_points, 72.0);
+        assert!(matches!(sanitized[1].alignment, super::wire::TabAlignment::Center));
+    }
+
+    /// A position that is not a position at all is dropped here rather than carried into a tree the
+    /// validator would then refuse in its entirety.
+    #[test]
+    fn a_position_that_is_not_finite_or_is_negative_is_not_a_tab_stop() {
+        let stops = vec![
+            stop(f64::NAN, TabAlignment::Left),
+            stop(-5.0, TabAlignment::Left),
+            stop(f64::INFINITY, TabAlignment::Left),
+            stop(18.0, TabAlignment::Left),
+        ];
+        let sanitized = sanitize_tab_stops(&stops);
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].position_points, 18.0);
+    }
+
+    /// The result is what the validator demands, checked by the validator's own rule rather than by
+    /// restating it: strictly increasing, finite, non-negative.
+    #[test]
+    fn the_result_is_strictly_increasing() {
+        let stops = vec![
+            stop(90.0, TabAlignment::Right),
+            stop(30.0, TabAlignment::Left),
+            stop(30.0, TabAlignment::Left),
+            stop(60.0, TabAlignment::Center),
+            stop(90.0, TabAlignment::Left),
+        ];
+        let sanitized = sanitize_tab_stops(&stops);
+        let positions: Vec<f64> = sanitized.iter().map(|t| t.position_points).collect();
+        assert_eq!(positions, vec![30.0, 60.0, 90.0]);
+        assert!(positions.windows(2).all(|w| w[0] < w[1]));
+    }
 }
 
 #[cfg(test)]

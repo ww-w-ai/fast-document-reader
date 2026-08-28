@@ -75,7 +75,25 @@ fn office_tree_census_after_s6_5a() {
         walk(&root.join(sub), &mut files);
     }
     files.sort();
-    files.truncate(400);
+    // The WHOLE corpus by default — 669 office documents, not the first 400.
+    //
+    // The cap was here to reproduce the leader's own walk against its `ok=385 / failed=15`
+    // baseline, which was a good reason for one measurement and the wrong default to leave behind:
+    // `CLAUDE.md` cites this census as the authority on how many documents the canonical tree
+    // accepts, and that is a live judgement, not a re-measurement. The 269 documents past the cut
+    // are also where the interesting answers are — every document whose projection falls back to
+    // the reader path sorts past it (`office_project_corpus_census.rs` says which).
+    //
+    // To reproduce the historical baseline, ask for the cap: FMD_OFFICE_TREE_CENSUS_LIMIT=400.
+    // What a cap dropped is printed with the result, so no run can read as complete when it wasn't.
+    let found = files.len();
+    if let Some(limit) = std::env::var("FMD_OFFICE_TREE_CENSUS_LIMIT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        files.truncate(limit);
+    }
+    let dropped = found - files.len();
 
     let mut ok = 0usize;
     let mut failed_by_kind: BTreeMap<String, usize> = BTreeMap::new();
@@ -124,6 +142,9 @@ fn office_tree_census_after_s6_5a() {
 
     let failed: usize = failed_by_kind.values().sum();
     println!("\n=== S6-5a office_tree census, {} documents (via fastdoc_read_office_tree) ===", files.len());
+    if dropped > 0 {
+        println!("CAPPED: {dropped} of {found} documents were NOT examined");
+    }
     println!("ok={ok} failed={failed}");
     for (kind, count) in &failed_by_kind {
         let examples = examples_by_kind.get(kind).cloned().unwrap_or_default();

@@ -208,7 +208,16 @@ final class HwpLineSpacingProbeTests: XCTestCase {
     /// changes the page, and by how much. Reports total height and the resolved line-height
     /// distribution so a before/after can be compared by re-running it across the change.
     func testMeasureLaidOutHeightOfRealDocuments() throws {
-        let files = try corpusFiles().prefix(24)
+        // A sample, and it says so. Laying out a real document at its paged geometry is the
+        // expensive end of these probes, so this one stops at 24 — but a truncated population that
+        // does not announce its truncation reads as a whole corpus, which is how a census once
+        // reported "nothing falls back" while every document that does sorted past its cut
+        // (INVARIANTS.md 114).
+        let all = try corpusFiles()
+        let files = all.prefix(24)
+        if all.count > files.count {
+            print("LSPROBE3 SAMPLED: \(files.count) of \(all.count) documents laid out")
+        }
         for url in files {
             guard let data = try? Data(contentsOf: url),
                   let result = try? HwpReader.read(data) else { continue }
