@@ -2,16 +2,28 @@
 import PackageDescription
 import Foundation
 
-// The ported Rust engine is OPT-IN, and the default build stays exactly what it was: pure Swift,
-// no Rust toolchain, no extra binary. It is still being proven against the shipped reader, so the
-// two readers coexist and either can be built — which is also the only way to compare them.
+// The Rust engine is the document reader. It was opt-in while it was being proven against the
+// shipped Swift reader; S9 ended that, so every build links it and the Swift readers keep their
+// place only as the differential oracle the tests compare against (`Render/Office/DocxReader.swift`
+// et al. — 44 test files, zero production callers).
 //
-//   ./Scripts/build-engine.sh                 # produces Vendor/FastdocEngine.xcframework
-//   FMD_RUST_ENGINE=1 ./Scripts/make-app.sh   # links it, and takes its path at runtime
+//   ./Scripts/build-engine.sh   # produces Vendor/FastdocEngine.xcframework; make-app.sh runs it
 //
-// Read at manifest-evaluation time on purpose: a `.binaryTarget` naming a path that does not exist
-// fails the manifest outright, so the target has to be absent unless the build asked for it.
-let rustEngine = ProcessInfo.processInfo.environment["FMD_RUST_ENGINE"] == "1"
+// The xcframework is NOT committed (66 MB, and this repo is public). `RhwpNative` is committed for
+// a reason that does not apply here — its source fork lives outside this repo and there is no
+// script to rebuild it from a clean checkout, while `build-engine.sh` is right there.
+//
+// A `.binaryTarget` naming a path that does not exist fails the manifest OUTRIGHT, which reads as
+// an unrelated SwiftPM error rather than "you have not built the engine yet". So the path is
+// checked here and the manifest says what to do about it.
+let enginePath = "Vendor/FastdocEngine.xcframework"
+if !FileManager.default.fileExists(atPath: enginePath) {
+    print("""
+        error: \(enginePath) is missing. Build it first:
+            ./Scripts/build-engine.sh
+        (`Scripts/make-app.sh` does this for you.)
+        """)
+}
 
 var targets: [Target] = [
     // rhwp (Rust, MIT) HWP/HWPX parser, prebuilt as a static-library xcframework.
@@ -27,11 +39,11 @@ var appDependencies: [Target.Dependency] = [
 
 var swiftSettings: [SwiftSetting] = [.swiftLanguageMode(.v5)]
 
-if rustEngine {
-    targets.append(.binaryTarget(name: "FastdocEngine", path: "Vendor/FastdocEngine.xcframework"))
-    appDependencies.append("FastdocEngine")
-    swiftSettings.append(.define("FMD_RUST_ENGINE"))
-}
+targets.append(.binaryTarget(name: "FastdocEngine", path: enginePath))
+appDependencies.append("FastdocEngine")
+// Still DEFINED, and deliberately: the `#if` branches are removed file by file in S9-1 and the
+// define is what keeps every step in between compiling. It goes when the last branch does.
+swiftSettings.append(.define("FMD_RUST_ENGINE"))
 
 targets.append(
     .executableTarget(

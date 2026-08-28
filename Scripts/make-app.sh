@@ -11,6 +11,16 @@ if [[ -z "${DEVELOPER_DIR:-}" && -d /Applications/Xcode.app ]]; then
 fi
 
 CONFIG="${1:-debug}"
+
+# The engine is a hard dependency of every build (S9) and its xcframework is NOT committed — 66 MB
+# in a public repo's permanent history, against a build script that is right here. So build it when
+# it is absent. A `.binaryTarget` naming a missing path fails the MANIFEST, which surfaces as an
+# unrelated SwiftPM error rather than "you have not built the engine yet".
+if [[ ! -d Vendor/FastdocEngine.xcframework ]]; then
+  echo "==> Vendor/FastdocEngine.xcframework missing — building it"
+  ./Scripts/build-engine.sh
+fi
+
 swift build -c "$CONFIG"
 BIN="$(swift build -c "$CONFIG" --show-bin-path)/FastDocReader"
 APP="FastDocReader.app"
