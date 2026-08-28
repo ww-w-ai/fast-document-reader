@@ -302,7 +302,7 @@ enum OdtReader: OfficeDocumentReader {
     /// A SEPARATE entry point from `read()` rather than a second return value: `read()`'s signature
     /// (`[OfficeBlock]`) is a call-site contract `DocumentTypes.readOffice`/`MarkdownDocument` depend
     /// on. Reached ONLY through `DocumentTypes.officeDefaultBodyFontSize`, never called directly by
-    /// `MarkdownDocument` — see `DocumentTypes.officeReaderType`'s doc for why. `11` — the same
+    /// `MarkdownDocument` — see `DocumentTypes.zipBackedOfficeExtensions`' doc for why. `11` — the same
     /// default `OfficeTextBuilder.build` itself falls back to — is returned when the document
     /// declares no `style:default-style` at all, or one with no font size.
     static func documentDefaultBodyFontSize(_ archive: ZipArchive) -> CGFloat {

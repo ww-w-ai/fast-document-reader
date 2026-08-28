@@ -2,11 +2,13 @@ import Foundation
 import UniformTypeIdentifiers
 import CoreGraphics
 
-/// What `DocumentTypes.officeReaderType(for:)` returns a TYPE conforming to — `DocxReader` and
-/// `OdtReader` both conform (see each), so the one switch in this file can hand back a reader for
-/// EITHER "parse the archive" (`readOffice`) or "what's this document's own default body size"
-/// (`officeDefaultBodyFontSize`) without a second switch that could name a different reader for the
-/// same extension (see `officeReaderType`'s own doc for why that divergence is the thing to avoid).
+/// The shape a REFERENCE office reader has: `DocxReader` and `OdtReader` both conform.
+///
+/// Nothing in the app calls one. The engine reads every office document (`readOffice` below), and
+/// these readers are the oracle its answers are checked against — which is the one job they keep
+/// (S9). This protocol stays in the app target because it names that contract, not because the app
+/// reaches through it; `RustEngineBridgeTests` fails the build's own suite if a production source
+/// file ever names one of the readers again.
 protocol OfficeDocumentReader {
     static func read(_ archive: ZipArchive) throws -> OfficeReadResult
     static func documentDefaultBodyFontSize(_ archive: ZipArchive) -> CGFloat
@@ -74,11 +76,11 @@ enum DocumentTypes {
     /// outright); `.odt` gained a reader in R3, so it belongs here now.
     /// `.docm`/`.dotx`/`.dotm` (Word macro-enabled document/template, and template) share the exact
     /// same `word/document.xml` shape as `.docx` — this app only ever reads XML out of the zip, so
-    /// macros are never executed, just never even looked at. They route to `DocxReader` below.
+    /// macros are never executed, just never even looked at. They are zip-backed, like `.docx`.
     static let officeExtensions = ["docx", "docm", "dotx", "dotm", "odt"] + hwpExtensions
 
-    /// Hangul Word Processor, read-only via `HwpReader.read(Data)` (rhwp FFI). Kept SEPARATE from the
-    /// zip-backed `officeReaderType` switch because HWP does NOT take a `ZipArchive`: an `.hwpx` is a
+    /// Hangul Word Processor, read-only through the engine's own HWP path (rhwp). Kept SEPARATE from
+    /// `zipBackedOfficeExtensions` because HWP does NOT take a `ZipArchive`: an `.hwpx` is a
     /// zip but an `.hwp` is CFB binary, and rhwp parses BOTH from raw `Data` itself — so HWP must
     /// branch BEFORE `ZipArchive(data:)` (see `MarkdownDocument.read(from:)` and `HeadlessExtract`).
     /// These are folded into `officeExtensions` above so `kind`, `opensInApp` and the open panel all
@@ -86,8 +88,8 @@ enum DocumentTypes {
     /// `read(from:)` plus THIS list are the single dispatch for HWP (invariant 29 — no second switch).
     static let hwpExtensions = ["hwp", "hwpx"]
 
-    /// True for `.hwp`/`.hwpx` — the one predicate every read path checks to route to `HwpReader.read`
-    /// (raw `Data`) instead of the zip pipeline. Kept here so the string list lives in ONE place.
+    /// True for `.hwp`/`.hwpx` — the one predicate every read path checks to route to the raw-`Data`
+    /// HWP branch instead of the zip pipeline. Kept here so the string list lives in ONE place.
     static func isHwp(_ ext: String) -> Bool { hwpExtensions.contains(ext.lowercased()) }
 
     static func opensInApp(_ ext: String) -> Bool {
@@ -103,33 +105,27 @@ enum DocumentTypes {
         return .plainText
     }
 
-    /// The ONE switch that decides which parser owns which office extension — everything that needs
-    /// "which reader for this extension" (`readOffice` below AND `officeDefaultBodyFontSize`) goes
-    /// through THIS lookup rather than each keeping its own `case "docx"…` list. A second, divergent
-    /// switch is exactly how `.odt` shipped unreachable: it was registered here and in Info.plist
-    /// (making the file reachable to the APP), but every read path still said `DocxReader.read`
-    /// unconditionally (nothing made the bytes reachable to `OdtReader`). Returns `nil` for an
-    /// extension that's in `officeExtensions` but has no case below — a programmer error, not a
-    /// malformed file — and both callers below turn that into their own failure mode (throw / 11pt
-    /// fallback) rather than silently guessing Word.
-    private static func officeReaderType(for ext: String) -> OfficeDocumentReader.Type? {
-        switch ext.lowercased() {
-        case "docx", "docm", "dotx", "dotm": return DocxReader.self
-        case "odt": return OdtReader.self
-        // hwp/hwpx are DELIBERATELY absent: HWP takes raw `Data`, not a `ZipArchive`, so it can't
-        // conform to `OfficeDocumentReader` and never reaches `readOffice`/`officeDefaultBodyFontSize`
-        // — it branches to `HwpReader.read` before `ZipArchive(data:)` (see `isHwp`). Returning nil
-        // here means readOffice throws if HWP ever wrongly reached it, a safety net, not the path.
-        default: return nil
-        }
-    }
+    /// The office extensions that arrive as a ZIP ARCHIVE, and are therefore the ones `readOffice`
+    /// below is willing to be handed.
+    ///
+    /// This used to be a switch returning the Swift reader that owned each extension. It answers a
+    /// smaller question now, because the app no longer picks a reader at all: the engine reads every
+    /// office document and takes the extension itself, so what is left to decide is only whether the
+    /// extension is one this app claims — which is a different failure, with a different message,
+    /// than "the engine could not read it".
+    ///
+    /// hwp/hwpx are DELIBERATELY absent: an `.hwpx` is a zip but an `.hwp` is CFB binary, and both
+    /// are parsed from raw `Data`, so HWP branches BEFORE `ZipArchive(data:)` (see `isHwp`) and can
+    /// never reach here. Their absence means `readOffice` throws if one ever wrongly did — a safety
+    /// net, not the path.
+    private static let zipBackedOfficeExtensions: Set<String> = ["docx", "docm", "dotx", "dotm", "odt"]
 
     static func readOffice(_ archive: ZipArchive, extension ext: String) throws -> OfficeReadResult {
         // A REGISTRATION check, not a dispatch: the engine reads every office format and takes the
         // extension itself. What this still answers is whether the extension is one this app claims
         // at all, which is a different failure with a different message than "the engine could not
-        // read it" — and `officeReaderType` is where that list lives.
-        guard officeReaderType(for: ext) != nil else {
+        // read it" — and `zipBackedOfficeExtensions` is where that list lives.
+        guard zipBackedOfficeExtensions.contains(ext.lowercased()) else {
             throw NSError(domain: "ai.ww-w.fast-md-reader", code: 3, userInfo: [
                 NSLocalizedDescriptionKey: "\".\(ext)\" is registered as an office format but has no reader.",
             ])

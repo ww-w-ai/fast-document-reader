@@ -654,4 +654,51 @@ final class RustEngineBridgeTests: XCTestCase {
                             "RustEngineMeasure.swift must not branch on \(token) — it maps an already-flattened payload only")
         }
     }
+
+    /// S9 — the Swift office readers are the ENGINE'S ORACLE, and nothing else. This fails the suite
+    /// if a production source file names one again.
+    ///
+    /// The isolation is real today: `DocumentTypes.readOffice` calls the engine and throws when it
+    /// cannot read a document, with no second reader behind it. But until this test existed, that was
+    /// guaranteed by a paragraph of comment. A future edit reintroducing `try DocxReader.read(archive)`
+    /// as a rescue would be the easiest change in this repo to justify and the hardest to notice: the
+    /// app would get more robust and the port would go back to being unmeasurable, because an engine
+    /// that failed on every document would look exactly like one that worked. It is also a fallback
+    /// that cannot exist on the platforms this engine was ported FOR — there is no `DocxReader.swift`
+    /// on Windows or Android to rescue anything there.
+    ///
+    /// Comments are stripped before the search, deliberately. The readers are named in prose all over
+    /// this codebase — `OfficeBlock.swift` alone cites `DocxReader.isOn` and `HwpReader.read` half a
+    /// dozen times to say where a field comes from — and a check that could not tell a citation from a
+    /// call would have to be either useless or a nuisance, and would be deleted either way.
+    func testNoProductionSourceCallsASwiftOfficeReader() throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Sources/FastDocReader")
+        // The reader files themselves are the exception: they define what the search looks for.
+        let oracles: Set<String> = ["DocxReader.swift", "OdtReader.swift", "HwpReader.swift"]
+        let readerNames = ["DocxReader", "OdtReader", "HwpReader"]
+
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(
+            at: sources, includingPropertiesForKeys: nil))
+        var scanned = 0
+        var offences: [String] = []
+        for case let url as URL in enumerator where url.pathExtension == "swift" {
+            guard !oracles.contains(url.lastPathComponent) else { continue }
+            let source = try String(contentsOf: url, encoding: .utf8)
+            scanned += 1
+            for (number, line) in source.components(separatedBy: "\n").enumerated() {
+                let code = line.components(separatedBy: "//")[0]
+                for name in readerNames where code.contains(name) {
+                    offences.append("\(url.lastPathComponent):\(number + 1): \(line.trimmingCharacters(in: .whitespaces))")
+                }
+            }
+        }
+        // A walk that found nothing would pass this test for the wrong reason.
+        XCTAssertGreaterThan(scanned, 40, "the source walk did not reach the app's files")
+        XCTAssertEqual(offences, [], """
+            A production source file names a Swift office reader. Those readers are the oracle the             engine is checked against; the app must not reach one. Offending lines:
+            \(offences.joined(separator: "\n"))
+            """)
+    }
 }
