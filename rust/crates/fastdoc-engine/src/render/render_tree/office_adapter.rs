@@ -706,9 +706,9 @@ impl<'a> Ctx<'a> {
         self.resources.push(wire::Resource {
             id,
             mime_type: mime,
-            sha256: hash.clone(),
-            byte_length: bytes.len() as u64,
-            bytes_base64,
+            sha256: Some(hash.clone()),
+            byte_length: Some(bytes.len() as u64),
+            bytes_base64: Some(bytes_base64),
             intrinsic_size: intrinsic,
             source_key,
         });

@@ -127,16 +127,8 @@ fn validate_resources(
     sorted_unique_nonzero(tree.resources.iter().map(|r| r.id), "resource")?;
     let mut hashes = BTreeMap::<&str, Vec<u8>>::new();
     for resource in &tree.resources {
-        if !valid_hash(&resource.sha256) || !valid_mime(&resource.mime_type) {
-            return Err(invalid("resource hash or MIME is invalid"));
-        }
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&resource.bytes_base64)
-            .map_err(|_| invalid("resource base64 is invalid"))?;
-        if bytes.len() as u64 != resource.byte_length
-            || format!("{:x}", Sha256::digest(&bytes)) != resource.sha256
-        {
-            return Err(invalid("resource length/hash differs from embedded bytes"));
+        if !valid_mime(&resource.mime_type) {
+            return Err(invalid("resource MIME is invalid"));
         }
         if resource
             .intrinsic_size
@@ -145,8 +137,46 @@ fn validate_resources(
         {
             return Err(invalid("resource intrinsic size is invalid"));
         }
-        if hashes.insert(&resource.sha256, bytes).is_some() {
-            return Err(invalid("duplicate content-addressed resource hash"));
+        // P2a: the bytes and the two facts derived from them are one thing, so they arrive
+        // together or not at all. Checked in BOTH directions: a rule stated only as "if bytes,
+        // then hash" is satisfied by a resource that carries a hash and no bytes — a number
+        // nothing produced, which is invariant 108's shape.
+        match (&resource.sha256, resource.byte_length, &resource.bytes_base64) {
+            (Some(sha256), Some(byte_length), Some(bytes_base64)) => {
+                if !valid_hash(sha256) {
+                    return Err(invalid("resource hash is invalid"));
+                }
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(bytes_base64)
+                    .map_err(|_| invalid("resource base64 is invalid"))?;
+                if bytes.len() as u64 != byte_length
+                    || format!("{:x}", Sha256::digest(&bytes)) != *sha256
+                {
+                    return Err(invalid("resource length/hash differs from embedded bytes"));
+                }
+                if hashes.insert(sha256.as_str(), bytes).is_some() {
+                    return Err(invalid("duplicate content-addressed resource hash"));
+                }
+            }
+            (None, None, None) => {
+                // Carried by reference. The document still holds the picture, so something has to
+                // say WHICH picture — without a `source_key` this resource names nothing, and an
+                // image node pointing at it would resolve to a blank rather than to a failure.
+                if resource
+                    .source_key
+                    .as_deref()
+                    .is_none_or(|key| key.trim().is_empty())
+                {
+                    return Err(invalid(
+                        "resource carries neither bytes nor a source key, so nothing can resolve it",
+                    ));
+                }
+            }
+            _ => {
+                return Err(invalid(
+                    "resource states some of bytes/hash/length but not all three",
+                ))
+            }
         }
     }
     Ok(tree.resources.iter().map(|r| (r.id, r)).collect())

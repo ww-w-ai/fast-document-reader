@@ -132,6 +132,60 @@ mod tests {
         );
     }
 
+    /// P2a — a resource's bytes, hash and length are one fact, and the validator says so in BOTH
+    /// directions.
+    ///
+    /// A rule written only as "if there are bytes there must be a hash" is satisfied by a resource
+    /// that states a hash and carries no bytes — a number nothing produced, which is invariant
+    /// 108's shape. So each of the three is dropped on its own here, and the pair that survives
+    /// (all three, or none of the three) is asserted to survive.
+    #[test]
+    fn a_resource_states_its_bytes_hash_and_length_together_or_states_none_of_them() {
+        // All three, unchanged: this is the shape every export produces today, and it must pass —
+        // otherwise the refusals below prove nothing about the RULE, only that the fixture broke.
+        super::ValidatedRenderTree::try_from_wire(fixture())
+            .expect("the exhaustive fixture carries all three and must still validate");
+
+        let mut no_bytes = fixture();
+        no_bytes.resources[0].bytes_base64 = None;
+        assert_invariant(no_bytes, "some of bytes/hash/length but not all three");
+
+        let mut no_hash = fixture();
+        no_hash.resources[0].sha256 = None;
+        assert_invariant(no_hash, "some of bytes/hash/length but not all three");
+
+        let mut no_length = fixture();
+        no_length.resources[0].byte_length = None;
+        assert_invariant(no_length, "some of bytes/hash/length but not all three");
+
+        // None of the three, WITH a source key: carried by reference. This is the shape P2c
+        // produces, and it has to validate — the whole point of P2a is that this becomes legal.
+        let mut by_reference = fixture();
+        by_reference.resources[0].sha256 = None;
+        by_reference.resources[0].byte_length = None;
+        by_reference.resources[0].bytes_base64 = None;
+        by_reference.resources[0].source_key = Some("hwpimg:1".to_string());
+        super::ValidatedRenderTree::try_from_wire(by_reference)
+            .expect("a resource the document itself names may be carried by reference");
+
+        // None of the three and no key: this resource names nothing. An image node pointing at it
+        // would resolve to a blank rather than to a failure, so the refusal happens here.
+        let mut nameless = fixture();
+        nameless.resources[0].sha256 = None;
+        nameless.resources[0].byte_length = None;
+        nameless.resources[0].bytes_base64 = None;
+        nameless.resources[0].source_key = None;
+        assert_invariant(nameless, "neither bytes nor a source key");
+
+        // A key that is only whitespace names nothing either.
+        let mut blank_key = fixture();
+        blank_key.resources[0].sha256 = None;
+        blank_key.resources[0].byte_length = None;
+        blank_key.resources[0].bytes_base64 = None;
+        blank_key.resources[0].source_key = Some("   ".to_string());
+        assert_invariant(blank_key, "neither bytes nor a source key");
+    }
+
     #[test]
     fn typed_non_finite_s2a1b_metrics_reach_their_validator_branches() {
         let mut letter = fixture();

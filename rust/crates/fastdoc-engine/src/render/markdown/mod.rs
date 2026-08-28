@@ -166,9 +166,9 @@ impl<'a> Ctx<'a> {
         self.resources.push(RenderResourceDraft {
             id,
             mime_type: "text/uri-list".to_string(),
-            sha256: hash.clone(),
-            byte_length: bytes.len() as u64,
-            bytes_base64,
+            sha256: Some(hash.clone()),
+            byte_length: Some(bytes.len() as u64),
+            bytes_base64: Some(bytes_base64),
             intrinsic_size: None,
             source_key: None,
         });

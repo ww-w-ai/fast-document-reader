@@ -488,14 +488,31 @@ impl Projector {
     /// bytes, the same base64/`NSImage::fromData` round trip `anchored_content`'s `Image` arm uses
     /// (kept as a separate method — a background fill has no content NODE of its own to route
     /// through, only a raw resource reference on `TableStyle`/`TableCell`).
+    /// The bytes a resource carries, decoded — or a refusal naming the resource that carries none.
+    ///
+    /// P2a: a resource may be carried BY REFERENCE (`source_key` names the picture, the document
+    /// still holds it). Everything that needs actual pixels HERE — a decoded background fill, a
+    /// master page's artwork — is something the reader synthesized rather than something the
+    /// document named, so it always carries its bytes. Reaching this with none is a real defect,
+    /// and it says so instead of painting a blank.
+    fn resource_bytes(&self, resource: &wire::Resource) -> Result<Vec<u8>, ProjectionError> {
+        use base64::Engine;
+        let base64 = resource.bytes_base64.as_ref().ok_or_else(|| {
+            ProjectionError::Malformed(format!(
+                "resource {} carries no bytes, and this use needs pixels rather than a reference",
+                resource.id
+            ))
+        })?;
+        base64::engine::general_purpose::STANDARD
+            .decode(base64)
+            .map_err(|e| ProjectionError::Malformed(format!("resource bytes did not decode: {e}")))
+    }
+
     fn background_resource(&mut self, resource_id: u64) -> Result<swiftshim::NSImage, ProjectionError> {
         let resource = self.resources.get(&resource_id).cloned().ok_or_else(|| {
             ProjectionError::Malformed(format!("background fill referenced missing resource {resource_id}"))
         })?;
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&resource.bytes_base64)
-            .map_err(|e| ProjectionError::Malformed(format!("resource bytes did not decode: {e}")))?;
+        let bytes = self.resource_bytes(&resource)?;
         swiftshim::NSImage::fromData(&Data(bytes)).ok_or_else(|| {
             ProjectionError::Malformed("background fill bytes did not decode as an image".to_string())
         })
@@ -521,10 +538,7 @@ impl Projector {
                         "anchored image referenced missing resource {resource_id}"
                     ))
                 })?;
-                use base64::Engine;
-                let bytes = base64::engine::general_purpose::STANDARD
-                    .decode(&resource.bytes_base64)
-                    .map_err(|e| ProjectionError::Malformed(format!("resource bytes did not decode: {e}")))?;
+                let bytes = self.resource_bytes(&resource)?;
                 let image = swiftshim::NSImage::fromData(&Data(bytes)).ok_or_else(|| {
                     ProjectionError::Malformed("anchored image bytes did not decode as an image".to_string())
                 })?;
@@ -811,11 +825,14 @@ impl Projector {
             .source_key
             .clone()
             .ok_or_else(|| ProjectionError::Field("resource.sourceKey".to_string()))?;
-        use base64::Engine;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&resource.bytes_base64)
-            .map_err(|e| ProjectionError::Malformed(format!("resource bytes did not decode: {e}")))?;
-        self.images.insert(SwiftString::from(key.clone()), Data(bytes));
+        // A resource carried BY REFERENCE (P2a) names its picture and stops there: the block below
+        // still carries `key`, and whoever draws it asks the still-open document for those pixels
+        // when it needs them. Putting an entry in `self.images` is what makes an export carry the
+        // picture, so NOT putting one is the whole of how an export stops carrying it.
+        if resource.bytes_base64.is_some() {
+            let bytes = self.resource_bytes(&resource)?;
+            self.images.insert(SwiftString::from(key.clone()), Data(bytes));
+        }
         Ok(OfficeBlock::Image {
             id: SwiftString::from(key),
             size: CGSize::new(img.intrinsic_size.width, img.intrinsic_size.height),

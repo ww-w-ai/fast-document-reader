@@ -618,9 +618,9 @@ fn build_with_image_fraction(fraction: Option<f64>) -> Result<ValidatedRenderTre
     builder.add_resource(RenderResourceDraft {
         id: 1,
         mime_type: "image/png".into(),
-        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into(),
-        byte_length: 0,
-        bytes_base64: String::new(),
+        sha256: Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".into()),
+        byte_length: Some(0),
+        bytes_base64: Some(String::new()),
         intrinsic_size: None,
         source_key: None,
     });
@@ -1425,8 +1425,11 @@ fn expected_detail(id: &str) -> &'static str {
         "edit-exact-cover" => "do not exactly cover",
         "resource-base64" => "base64 is invalid",
         "resource-length" | "resource-sha" => "length/hash differs",
-        "resource-mime" => "hash or MIME is invalid",
-        "resource-mime-token" => "hash or MIME is invalid",
+        // P2a split "resource hash or MIME is invalid" into two branches, because a resource may
+        // now legitimately carry no hash at all. These two mutate the MIME, so they must land on
+        // the MIME branch — a test that accepted either message would stop telling them apart.
+        "resource-mime" => "resource MIME is invalid",
+        "resource-mime-token" => "resource MIME is invalid",
         "resource-dimension" => "intrinsic size is invalid",
         "unsupported-provenance" => "provenance is empty",
         "document-editability" => "invalid editable source authority",

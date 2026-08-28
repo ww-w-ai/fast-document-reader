@@ -1055,9 +1055,25 @@ pub struct Unsupported {
 pub struct Resource {
     pub id: u64,
     pub mime_type: String,
-    pub sha256: String,
-    pub byte_length: u64,
-    pub bytes_base64: String,
+    /// The bytes, and the two facts that only exist BECAUSE of the bytes.
+    ///
+    /// P2a: these three are present together or absent together, never one without the others —
+    /// a hash and a length are things you get by looking at bytes, so a resource that carries
+    /// neither cannot honestly state either. `validate.rs` enforces exactly that, and enforces it
+    /// in both directions, because "always Some" and "always None" are each a rule that only one
+    /// half of a two-sided check would catch.
+    ///
+    /// Absent means CARRIED BY REFERENCE: the document holds this picture, `source_key` names it,
+    /// and whoever wants the pixels asks the still-open document for them. That is what lets a
+    /// 10.7 MB HWP stop base64ing 54 MB of pictures into every export of itself (P2c). It is not
+    /// "we lost the bytes" — a resource with no bytes and no `source_key` is a resource nobody can
+    /// resolve, and the validator refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byte_length: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes_base64: Option<String>,
     pub intrinsic_size: Option<Size>,
     /// The id the document itself used for this resource (`"hwpimg:3"`, a docx `rId`) —
     /// schema-v4's `images` map is keyed by this string, not by `id`. `None` for a producer
