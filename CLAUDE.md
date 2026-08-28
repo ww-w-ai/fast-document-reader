@@ -108,7 +108,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 117 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 118 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -126,6 +126,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | keyboard navigation, reading cursor, margin numbers, jump | 14, 15, 71 |
 | editing, save, text encoding, splice render | 16, 17, 18, 19, 20 |
 | reflow, resize, `precomputeLayout`, first-paint cost | 24, 25, 32, 48, 49, 55, 56, 113, 117 |
+| scroll cost, what a draw pass does per frame, page furniture | 113, 117, 118 |
 | office readers (docx / odt / hwp), dispatch, rhwp, headings | 29, 33, 44, 45, 73, 75, 78, 79, 81, 94, 110, 112, 115 |
 | tests, corpus probes, "is this check actually reached" | 5, 29, 30, 34, 35, 41, 103, 104, 106, 109, 110, 111, 112, 113, 114, 116 |
 | `RenderTheme` tokens, `OfficeTextBuilder`, style resolution | 36, 37, 97, 107 |
@@ -133,7 +134,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | fonts, per-script slots, substitution | 52, 53, 93, 95 |
 | the engine's measurement port (`RustEngineMeasure`), terminator attributes | 51, 105 |
 | the comments panel | 38 |
-| paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62, 77, 78 |
+| paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62, 77, 78, 118 |
 | footnotes — the band fixpoint, where a note lands, the settle's round budget | 98, 99 |
 | printing, `--pdf`, `--extract`, anything headless | 40, 59, 66, 70, 102, 116 |
 | a table that crosses a page boundary | 61, 64, 72, 96 |

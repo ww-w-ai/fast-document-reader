@@ -710,3 +710,24 @@ this file tells you why, and why the obvious alternative does not work.
     Why the first numbers were lower is `[미확인]`, and deliberately left that way rather than guessed at: same day, same command, same release configuration. `CLAUDE.md` already records that this suite is flaky under load — a quiet machine finishes it in ~14 s and a busy one in 40–55 s — and this probe reads the wall clock straight through that. The old figures are not called wrong; they are dropped from the comparison, because a number whose conditions cannot be reconstructed cannot be compared against.
 
     **The rule: gates count (invariant 113), but the wall-clock numbers a REPORT carries need the same discipline in a weaker form — re-measure the baseline beside the new build, on the same machine, in the same hour, or say the comparison is not one.** The cost of the rule is one worktree and one probe run. The cost of skipping it was nearly a night spent hunting a 400 ms cause that did not exist.
+
+118. **A SCROLLED FRAME'S COST IS THIS APP'S OWN DRAW CODE, NOT TEXTKIT — and on a paged Korean document almost all of it was the 바탕쪽's artwork being resampled sixty times a second.** P5 set out to put a gate under the scroll number the roadmap had carried unguarded (median 50.6 ms, worst 140.8) and expected the cause to be layout or glyph generation. It was neither, and the measurement that settled it took one line: returning from `ReaderTextView.drawBackground` immediately after `super`.
+
+    | what was drawn | median viewport |
+    |---|---|
+    | everything | 51.3 ms |
+    | nothing of ours | **2.1 ms** |
+    | + page sheets | 5.2 |
+    | + `drawMasterPages` | **58.2** |
+
+    Inside that: the master-page batch ~51 ms, anchored objects 2.7. Inside the batch, one `case` skipped at a time — `.image` alone 16.0, `.text` alone 48.5, `.vector` alone 46.8. **The artwork.**
+
+    **The cost is the RESAMPLE, not the decode.** Wrapping the decoded `CGImage` in a fresh `NSImage` took 51.3 → 48.6. Caching the artwork already scaled to the size it is DRAWN at — magnification in the key, so a zoom re-renders instead of stretching — took it to **41.2**.
+
+    Three things this cost, recorded so they are not re-earned:
+
+    - **Printing must keep the original.** A bitmap sized for a 395pt screen sheet in a print context puts a screen-resolution picture into the PDF, which `--pdf` reports no error for. The predicate is `NSPrintOperation.current`, NOT `currentContextDrawingToScreen()`: `cacheDisplay(in:to:)` is not "the screen", and it is how both the reader's probe and the gate make a draw provably happen, so the obvious predicate turns the cache off in exactly the measurements that judge it. Verified: the reference document still prints to 17,341,890 bytes with 131 image XObjects.
+    - **`ObjectIdentifier` is an address.** Key a cache by it and a freed original lets the next `NSImage` inherit the same one, so the cache answers with a picture from a document that is no longer open. The gate found this itself, reading zero rasterisations on a test whose artwork had been freed. The entry holds the source alongside the scaled copy, which makes the address unrecyclable while the key can still be found.
+    - **Rasterising only the part that lands on the paper buys nothing.** An artwork can be bigger than its sheet (2652×1940 device pixels was measured) and the clip hides the result without stopping the blit, so cutting the cached bitmap down to the sheet looked obvious. Measured: 40.8 vs 41.2 — inside the noise. It was reverted. The remaining ~30 ms is the blit of an already-correctly-sized bitmap (`.image` skipped entirely is 10.8 ms), and neither caching nor clipping touches it; the next lever is not redrawing unchanged page furniture at all.
+
+    **The rule: before optimising a draw, find out how much of the frame is yours.** One early return answered it here, and it pointed at a feature nobody suspected instead of at the text engine everybody would have.
