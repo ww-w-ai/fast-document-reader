@@ -377,7 +377,14 @@ enum OfficeTextBuilder {
     /// cell and `cellContent` the ones between a cell's own paragraphs; the document's own paragraph
     /// separators were the third case and were never covered. Same function, same ALLOW-list, so a
     /// separator next to an attachment/link/underline still falls back to exactly what it had.
-    private static func unifyParagraphTerminators(in result: NSMutableAttributedString) {
+    ///
+    /// Kept `internal`, not `private`, for one other caller: `RustEngineMeasure` builds a paragraph
+    /// from the engine's own runs and has to finish it the SAME way, because the port's answer is
+    /// compared against this builder's. Calling this rather than re-implementing it is the reason a
+    /// paragraph whose first run is an ATTACHMENT — a logo opening a running header — cannot drift:
+    /// the allow-list refuses there, and a port that copied "the first font" instead would attribute
+    /// a terminator this side deliberately leaves bare.
+    static func unifyParagraphTerminators(in result: NSMutableAttributedString) {
         guard result.length > 0 else { return }
         let ns = result.string as NSString
         var paragraphs: [NSRange] = []

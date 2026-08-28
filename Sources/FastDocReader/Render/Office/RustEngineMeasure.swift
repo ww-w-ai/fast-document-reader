@@ -59,16 +59,11 @@ enum RustEngineMeasure {
 
         for (index, paragraph) in (paragraphs ?? UnsafeBufferPointer<FastdocTextMeasureParagraph>(start: nil, count: 0)).enumerated() {
             let start = result.length
-            var firstRunFont: NSFont?
             for run in runs ?? UnsafeBufferPointer<FastdocTextMeasureRun>(start: nil, count: 0)
             where run.paragraph_index == index {
                 switch run.kind {
                 case FastdocTextMeasureRunKindText:
-                    let piece = attributedRun(for: run)
-                    if firstRunFont == nil, piece.length > 0 {
-                        firstRunFont = piece.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
-                    }
-                    result.append(piece)
+                    result.append(attributedRun(for: run))
                 case FastdocTextMeasureRunKindAttachment:
                     result.append(attributedAttachment(for: run))
                 default:
@@ -80,27 +75,28 @@ enum RustEngineMeasure {
             // builds a paragraph in (`result.append("\n"); let paragraphRange = ...; addAttribute`).
             // A paragraph with no runs (a blank line) still gets its style on the lone "\n", which
             // is what makes an EMPTY paragraph's line height agree with the host's own answer too.
-            // WITH THE PARAGRAPH'S OWN FONT — specifically its FIRST run's, not its last: the host's
-            // own `unifyTerminator` (`OfficeTextBuilder.swift:1690`) copies the attributes AT THE
-            // PARAGRAPH'S START (`result.attributes(at: paragraph.location, ...)`), never the last
-            // run's. The two agree for the overwhelming majority of paragraphs, where every run
-            // shares one font — which is why the earlier `lastRunFont` version measured a real paged
-            // header correctly (single font throughout) while still being the wrong rule in general.
-            // It surfaced on a footnote whose FIRST run is the citation number at the document's own
-            // default size and whose LAST run is the note's smaller body text: `lastRunFont` gave the
-            // terminator the body's small size, TextKit's invisible trailing line fragment measured
-            // short against it, and the note's reserved band came out 6.3pt shorter than the host's
-            // own build for every note in the fixture (`FootnoteHeightsDocumentPathTests`). An
-            // unattributed terminator is still wrong for the reason recorded below — it fell to a
-            // default face and reported 14.0pt where the host's own build reported 13.0 on a real
-            // paged header — so this stays attributed, just to the correct end of the paragraph.
-            result.append(NSAttributedString(
-                string: "\n", attributes: firstRunFont.map { [.font: $0] } ?? [:]))
+            // It is appended BARE here for the same reason the host appends it bare: what it ends up
+            // carrying is decided by the host's own pass below, not here.
+            result.append(NSAttributedString(string: "\n"))
             let paragraphRange = NSRange(location: start, length: result.length - start)
             if paragraphRange.length > 0 {
                 result.addAttribute(.paragraphStyle, value: paragraphStyle(for: paragraph), range: paragraphRange)
             }
         }
+
+        // Finish every paragraph THROUGH THE HOST'S OWN PASS rather than a second implementation of
+        // it. A terminator's font is not cosmetic here: left bare it falls to AppKit's Helvetica 12,
+        // TextKit measures the invisible trailing line fragment against that, and this port reported
+        // 14.0pt where the host's own build reported 13.0 on a real paged header. Attributing it
+        // from the wrong end of the paragraph is just as wrong in the other direction — a footnote
+        // whose first run is the citation number at the document's default size and whose last run
+        // is the note's smaller body text came out 6.3pt short for every note in the fixture
+        // (`FootnoteHeightsDocumentPathTests`) when the LAST run's font was used. The host resolved
+        // both by copying the attributes at the paragraph's START through an allow-list; calling
+        // that function is what keeps the two sides from answering differently about a paragraph
+        // that opens with an attachment, where the allow-list refuses and no "first font" exists to
+        // copy in the first place.
+        OfficeTextBuilder.unifyParagraphTerminators(in: result)
 
         guard result.length > 0 else { return 0 }
 
