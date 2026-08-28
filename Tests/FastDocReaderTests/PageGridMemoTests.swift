@@ -44,13 +44,22 @@ import AppKit
 /// numbers above are measured rather than reasoned about.
 final class PageGridMemoTests: XCTestCase {
 
+    /// `PageViewOptionsStore.current` is a UserDefaults-backed PREFERENCE, not a test fixture: a
+    /// test that sets it and walks away has changed what the app does for every later test in this
+    /// process — and, on a developer's machine, for the app itself. Measured the hard way: leaving
+    /// the outline OFF here made the whole-reader probe report a 2.2 ms median viewport and 713
+    /// read-through steps, which reads as a spectacular optimisation and is a document with no
+    /// pages drawn on it. What it chose is restored, not overwritten with a guess at the default.
+    private var savedOptions: PageViewOptions?
+
     override func setUp() {
         super.setUp()
+        savedOptions = PageViewOptionsStore.intent
         PageViewOptionsStore.current = PageViewOptions(outline: true)
     }
 
     override func tearDown() {
-        PageViewOptionsStore.current = PageViewOptions(outline: false)
+        if let savedOptions { PageViewOptionsStore.current = savedOptions }
         super.tearDown()
     }
 

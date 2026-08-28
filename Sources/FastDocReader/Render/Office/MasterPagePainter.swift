@@ -147,21 +147,49 @@ enum MasterPagePainter {
     /// the only thing that moves is the cost.
     private(set) static var artworkRasterisations = 0
 
-    /// The SOURCE is held alongside the scaled copy, and that is load-bearing rather than tidy.
-    /// `ObjectIdentifier` is an address: let the original go and the next `NSImage` can be handed
-    /// the same one, and the cache would then answer with a picture from a document that is no
-    /// longer open. Holding the source makes the address unrecyclable for as long as the entry it
-    /// keys can be found. (Found by the gate below, which read zero rasterisations on its second
-    /// test because the first test's artwork had been freed and its address reused.)
-    private static var scaledArtwork: [ArtworkKey: (source: NSImage, ready: NSImage)] = [:]
+    /// One cached picture: the scaled copy that gets drawn, and THE SOURCE, which is held
+    /// deliberately rather than tidily. `ObjectIdentifier` is an address — let the original go and
+    /// the next `NSImage` can be handed the same one, and the cache would then answer with a
+    /// picture from a document that is no longer open. Holding the source makes the address
+    /// unrecyclable for as long as the entry keyed by it can be found. (Found by the gate below,
+    /// which read zero rasterisations on its second test because the first test's artwork had been
+    /// freed and its address reused.)
+    private final class Artwork {
+        let source: NSImage
+        let ready: NSImage
+        let bytes: Int
+        init(source: NSImage, ready: NSImage, bytes: Int) {
+            self.source = source
+            self.ready = ready
+            self.bytes = bytes
+        }
+    }
+
+    /// **Bounded in BYTES, not in entries.** The first version of this cache capped it at 64 entries
+    /// and that is not a bound at all: a single scaled artwork was measured at 2652×1940 device
+    /// pixels — 20 MB — so sixty-four of them is a third of a gigabyte. The integrated re-measure
+    /// caught it, reporting the footprint after a full read-through at 640 MB against 521 at the
+    /// start of this run, and it is exactly the trade this app must not make: 10 ms a frame is not
+    /// worth hundreds of megabytes.
+    ///
+    /// `NSCache` rather than a dictionary because eviction has to be least-recently-used — the
+    /// artwork a reader is looking at now is the one to keep, and a dictionary can only drop
+    /// everything. Its own cost accounting is what enforces the ceiling, so every insert charges.
+    /// 24 MB, chosen by measuring the cliff rather than by taste. On the reference document the
+    /// median viewport is 40.9 ms at 24 MB, 41.0 at 48 and 40.8 at 32 — flat — and **48.5 at 16 MB
+    /// and again at 4**, because one of its artworks alone is 20 MB and a ceiling under that
+    /// thrashes on it every frame. So this is the smallest bound that keeps the whole win.
+    static let artworkByteCeiling = 24 * 1024 * 1024
+
+    private static let scaledArtwork: NSCache<NSString, Artwork> = {
+        let cache = NSCache<NSString, Artwork>()
+        cache.totalCostLimit = artworkByteCeiling
+        return cache
+    }()
+
     private static var decodedDrawings: [Data: NSImage] = [:]
     private static let cacheCap = 64
 
-    private struct ArtworkKey: Hashable {
-        let image: ObjectIdentifier
-        let pixelWidth: Int
-        let pixelHeight: Int
-    }
 
     /// The artwork at the size it is actually DRAWN, in device pixels, built once per size.
     ///
@@ -188,8 +216,12 @@ enum MasterPagePainter {
         let scale = abs(NSGraphicsContext.current?.cgContext.ctm.a ?? 2)
         let pixelWidth = max(1, Int((rect.width * scale).rounded()))
         let pixelHeight = max(1, Int((rect.height * scale).rounded()))
-        let key = ArtworkKey(image: ObjectIdentifier(image), pixelWidth: pixelWidth, pixelHeight: pixelHeight)
-        if let hit = scaledArtwork[key] { return hit.ready }
+        // The address itself, not its hash: two live objects can share a hash and would then be
+        // served each other's artwork. The entry holds the source, so while a key can be found the
+        // address behind it cannot have been recycled.
+        let address = UInt(bitPattern: Unmanaged.passUnretained(image).toOpaque())
+        let key = "\(address)|\(pixelWidth)x\(pixelHeight)" as NSString
+        if let hit = scaledArtwork.object(forKey: key) { return hit.ready }
         artworkRasterisations += 1
         guard let rep = NSBitmapImageRep(
             bitmapDataPlanes: nil, pixelsWide: pixelWidth, pixelsHigh: pixelHeight,
@@ -205,8 +237,9 @@ enum MasterPagePainter {
         NSGraphicsContext.restoreGraphicsState()
         let ready = NSImage(size: rect.size)
         ready.addRepresentation(rep)
-        if scaledArtwork.count >= cacheCap { scaledArtwork.removeAll() }
-        scaledArtwork[key] = (image, ready)
+        let bytes = pixelWidth * pixelHeight * 4
+        scaledArtwork.setObject(Artwork(source: image, ready: ready, bytes: bytes),
+                                forKey: key, cost: bytes)
         return ready
     }
 

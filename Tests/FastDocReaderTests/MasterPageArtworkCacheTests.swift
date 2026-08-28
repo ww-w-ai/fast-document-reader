@@ -85,6 +85,48 @@ final class MasterPageArtworkCacheTests: XCTestCase {
                        "zooming back out must find the bitmap it already made")
     }
 
+    /// The ceiling, and why it is in BYTES.
+    ///
+    /// The first version of this cache capped it at 64 ENTRIES, which is not a bound: one scaled
+    /// artwork was measured at 2652×1940 device pixels — 20 MB — so sixty-four of them is a third
+    /// of a gigabyte. The integrated re-measure caught it, reporting the footprint after a full
+    /// read-through at 640 MB against 521 at the start of the run. Ten milliseconds a frame is not
+    /// worth that, and no scroll test can see it.
+    ///
+    /// Four pages drawn at 2000×2000 points are 16 MB of scaled pixels each — 64 MB against a
+    /// 48 MB ceiling, so the least recently used must be gone. Redrawing it has to rasterise
+    /// again, which is what says it was evicted rather than merely reported as absent.
+    func testTheArtworkCacheIsBoundedInBytesRatherThanInEntries() {
+        let big = { (tag: Int) -> MasterPageContent in
+            let object = OfficeMasterObject(frame: CGRect(x: 0, y: 0, width: 2000, height: 2000),
+                                            content: .image(self.artwork(width: 64 + tag, height: 64)))
+            let page = OfficeMasterPage(section: 1, appliesTo: .defaultPages, objects: [object])
+            return MasterPageContent(pages: [page], sectionsHidingMasterPage: [],
+                                     theme: RenderTheme(baseFontSize: 13),
+                                     documentDefaultFontSize: 11, pageContentWidth: 180)
+        }
+        let sheets = [CGRect(x: 0, y: 0, width: 2000, height: 2000)]
+        let visible = NSRect(x: 0, y: 0, width: 2000, height: 2000)
+        let contents = (0..<4).map(big)
+
+        for content in contents {
+            withOffscreenBitmap(width: 64, height: 64) {
+                MasterPagePainter.draw(content, sheets: sheets, totalPages: 1, visibleRect: visible)
+            }
+        }
+        XCTAssertGreaterThan(MasterPagePainter.artworkByteCeiling, 0, "there must be a ceiling at all")
+
+        // The FIRST one again: if the ceiling held, it is no longer in the cache and has to be
+        // scaled a second time.
+        let before = MasterPagePainter.artworkRasterisations
+        withOffscreenBitmap(width: 64, height: 64) {
+            MasterPagePainter.draw(contents[0], sheets: sheets, totalPages: 1, visibleRect: visible)
+        }
+        XCTAssertGreaterThan(MasterPagePainter.artworkRasterisations, before, """
+            four 16 MB artworks all survived a \(MasterPagePainter.artworkByteCeiling / 1024 / 1024) MB             ceiling, so the cache is counting entries rather than bytes — which is how it once grew             to hundreds of megabytes while looking capped.
+            """)
+    }
+
     // MARK: - Fixtures
 
     /// One template, applying to every page, carrying one full-page picture — the shape a Korean
