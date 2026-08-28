@@ -1001,86 +1001,64 @@ enum TableBlockBuilder {
         // `NSTextStorage` object model the engine crate has no access to
         // (`table_block_builder.rs`'s deleted stub needed exactly this and never got it).
         //
-        // TWO PASSES, deliberately, not one call per cell inline in the enumerate closure below.
-        // Pass 1 collects every table's blocks in document order (the SAME `enumerateAttribute`
-        // walk `build` and the pre-cutover code used). Pass 2 asks the engine ONCE FOR THE WHOLE
-        // DOCUMENT and writes every cell's answer back.
+        // ONE PASS. The walk that finds the cells also builds the engine's payload, because the
+        // two layers it replaces were MEASURED to be the whole regression: of the +4.3 ms this
+        // path cost at entry (`evidence/s5b2b-latency.md`), the boundary itself was 0.35 ms —
+        // 2.4 ms was grouping the cells and 1.6 ms was building the payload from those groups.
+        // Two shapes were built and measured before this one: asking per table (9.5 ms, batching
+        // it recovered almost nothing) and two walks keeping nothing in between (7.4-8.1 ms —
+        // re-reading the storage costs more than retaining the cells, so the cells are kept).
         //
-        // What this path costs was measured, not assumed (`evidence/s5b2b-latency.md`): asking per
-        // table cost 9.5ms on a 323-table, 6,077-cell document against the host's own 4.5ms, and
-        // of that gap the boundary itself was 0.35ms — the rest was allocation. Batching, the
-        // reference-typed grouping below and appending straight into the engine's flat buffers
-        // took it to 6.1ms; what remains is materialising 6,077 cells, which asking another
-        // process for an answer cannot avoid. A THIRD shape — two walks, keeping nothing in
-        // between — was built and measured SLOWER (7.6ms), so the cells are kept.
+        // What makes one pass possible is that a table's cells are CONTIGUOUS in document order:
+        // `textBlocks.first` is the OUTERMOST block, so every range inside a nested table maps to
+        // the table that encloses it, not to the inner one. That is an assumption about AppKit's
+        // ordering, so it is CHECKED rather than trusted — meeting a table that was already closed
+        // means the payload's table boundaries would not describe this document, and the whole
+        // resize refuses (below) instead of writing widths solved against the wrong grouping.
         //
         // The arithmetic the engine runs per table is unchanged, so the S5B2a/S5B2b parity tests
         // still hold.
-        // A REFERENCE type on purpose: a struct here means `groups[key]!.blocks.append(...)` is a
-        // get-modify-set through the dictionary, which copies the table's cell array on every
-        // single cell. That copying was 2.4 ms of the 4.3 ms this path regressed by
-        // (`evidence/s5b2b-latency.md`); appending into a class's array mutates it in place.
-        final class TableGroup {
-            let table: GridTextTable
-            var blocks: [(block: NSTextTableBlock, range: NSRange)] = []
-            init(table: GridTextTable) { self.table = table }
-        }
-        var groupsByTable: [ObjectIdentifier: TableGroup] = [:]
-        var orderedGroups: [TableGroup] = []
+        var request = RustEngineTableResize.BatchRequest()
+        var cells: [(block: NSTextTableBlock, range: NSRange)] = []
+        var openTable: ObjectIdentifier?
+        var closedTables: Set<ObjectIdentifier> = []
+        var orderingBroken = false
         storage.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
             guard let ps = value as? NSParagraphStyle,
                   let block = ps.textBlocks.first as? NSTextTableBlock,
                   let table = block.table as? GridTextTable, !table.columnProportions.isEmpty else { return }
             let key = ObjectIdentifier(table)
-            let group: TableGroup
-            if let existing = groupsByTable[key] {
-                group = existing
-            } else {
-                group = TableGroup(table: table)
-                groupsByTable[key] = group
-                orderedGroups.append(group)
+            if openTable != key {
+                if let previous = openTable { closedTables.insert(previous) }
+                if closedTables.contains(key) { orderingBroken = true }
+                openTable = key
+                request.beginTable(
+                    columnProportions: table.columnProportions, availableWidth: width,
+                    outerMarginLeft: table.outerMarginLeft, outerMarginRight: table.outerMarginRight,
+                    maxWidth: table.maxWidth)
             }
-            group.blocks.append((block, range))
-        }
-        // Build the engine's payload by appending STRAIGHT into the flat buffers it wants, in the
-        // same order `orderedGroups` walked the document, so the flat answer splits back apart by
-        // each table's own `blocks.count` with no identifying information echoed back.
-        var request = RustEngineTableResize.BatchRequest()
-        let totalCells = orderedGroups.reduce(0) { $0 + $1.blocks.count }
-        request.reserve(tableCount: orderedGroups.count, cellCount: totalCells)
-        for group in orderedGroups {
-            let table = group.table
-            request.beginTable(
-                columnProportions: table.columnProportions, availableWidth: width,
-                outerMarginLeft: table.outerMarginLeft, outerMarginRight: table.outerMarginRight,
-                maxWidth: table.maxWidth)
             // The SAME four `block.width(for:edge:)` reads the local formula makes, so the payload
             // never disagrees with what the host already knows about its own blocks.
-            for entry in group.blocks {
-                request.addCell(
-                    startingColumn: entry.block.startingColumn, columnSpan: entry.block.columnSpan,
-                    padLeft: entry.block.width(for: .padding, edge: .minX),
-                    padRight: entry.block.width(for: .padding, edge: .maxX),
-                    borderLeft: entry.block.width(for: .border, edge: .minX),
-                    borderRight: entry.block.width(for: .border, edge: .maxX))
-            }
+            request.addCell(
+                startingColumn: block.startingColumn, columnSpan: block.columnSpan,
+                padLeft: block.width(for: .padding, edge: .minX),
+                padRight: block.width(for: .padding, edge: .maxX),
+                borderLeft: block.width(for: .border, edge: .minX),
+                borderRight: block.width(for: .border, edge: .maxX))
+            cells.append((block, range))
         }
-        // `nil`, or an answer whose count does not match every table's cells, means the engine
+        // `nil`, or an answer whose count does not match the cells asked about, means the engine
         // refused (or could not honestly answer) the payload — leave EVERY table's cells exactly
         // as they were rather than writing a partial or guessed answer, the same all-or-nothing
-        // refusal the single-table export makes.
-        if let flatWidths = request.solve(), flatWidths.count == totalCells {
-            var cursor = 0
-            for group in orderedGroups {
-                for entry in group.blocks {
-                    let target = max(1, CGFloat(flatWidths[cursor]))
-                    cursor += 1
-                    // Only cells whose width actually MOVES are touched — same discipline as the
-                    // local formula below, so a reflow at an unchanged width re-snaps nothing.
-                    guard abs(entry.block.contentWidth - target) > 0.5 else { continue }
-                    entry.block.setContentWidth(target, type: .absoluteValueType)
-                    touched.append(entry.range)
-                }
+        // refusal the single-table export makes. A broken ordering refuses on the same terms.
+        if !orderingBroken, let flatWidths = request.solve(), flatWidths.count == cells.count {
+            for (index, entry) in cells.enumerated() {
+                let target = max(1, CGFloat(flatWidths[index]))
+                // Only cells whose width actually MOVES are touched — same discipline as the
+                // local formula below, so a reflow at an unchanged width re-snaps nothing.
+                guard abs(entry.block.contentWidth - target) > 0.5 else { continue }
+                entry.block.setContentWidth(target, type: .absoluteValueType)
+                touched.append(entry.range)
             }
         }
         #else

@@ -159,6 +159,62 @@ final class RustEngineTableResizeCutoverTests: XCTestCase {
         }
         XCTAssertEqual(moved, 0, "the second resize at the same width must not re-snap a single cell")
     }
+
+    /// The engine branch builds its payload INSIDE the walk that finds the cells, which is only
+    /// sound because a table's cells are contiguous in document order — `textBlocks.first` is the
+    /// OUTERMOST block, so a nested table's paragraphs map to the table enclosing them and a
+    /// table's run is never interrupted by another's. That is a claim about AppKit's ordering, and
+    /// this is the test that the claim is CHECKED rather than assumed: a storage that violates it
+    /// must leave every cell exactly where it was, not write widths solved against a grouping that
+    /// does not describe the document.
+    ///
+    /// The violation is built by hand because the structure cannot occur in a document this app
+    /// produces — which is the point. A guard that only real input can reach is a guard nothing
+    /// ever proves.
+    func testAStorageWhoseTableRunsInterleaveIsRefusedRatherThanResizedAgainstTheWrongGrouping() throws {
+        func table(_ proportions: [CGFloat]) -> GridTextTable {
+            let t = GridTextTable()
+            t.numberOfColumns = proportions.count
+            t.columnProportions = proportions
+            return t
+        }
+        func paragraph(_ text: String, _ t: GridTextTable, column: Int) -> NSAttributedString {
+            let block = NSTextTableBlock(table: t, startingRow: 0, rowSpan: 1,
+                                         startingColumn: column, columnSpan: 1)
+            block.setContentWidth(100, type: .absoluteValueType)
+            let style = NSMutableParagraphStyle()
+            style.textBlocks = [block]
+            return NSAttributedString(string: text + "\n", attributes: [.paragraphStyle: style])
+        }
+        let first = table([0.5, 0.5])
+        let second = table([0.5, 0.5])
+        // first, second, FIRST AGAIN — the ordering the walk is allowed to assume cannot happen.
+        let storage = NSTextStorage()
+        storage.append(paragraph("a", first, column: 0))
+        storage.append(paragraph("b", second, column: 0))
+        storage.append(paragraph("c", first, column: 1))
+        let before = widths(in: storage)
+        XCTAssertEqual(before.count, 3, "the fixture must present three cells to the walk")
+
+        let written = TableBlockBuilder.resizeTables(in: storage, toWidth: 800)
+
+        XCTAssertEqual(written, 0, "an interleaved storage must be refused, not partially written")
+        XCTAssertEqual(widths(in: storage), before, "no cell may move when the grouping is refused")
+    }
+
+    /// Every table cell's `contentWidth`, in document order.
+    private func widths(in storage: NSTextStorage) -> [CGFloat] {
+        var out: [CGFloat] = []
+        storage.enumerateAttribute(
+            NSAttributedString.Key.paragraphStyle, in: NSRange(location: 0, length: storage.length)
+        ) { value, _, _ in
+            guard let ps = value as? NSParagraphStyle,
+                  let block = ps.textBlocks.first as? NSTextTableBlock,
+                  let t = block.table as? GridTextTable, !t.columnProportions.isEmpty else { return }
+            out.append(block.contentWidth)
+        }
+        return out
+    }
 }
 #endif
 
