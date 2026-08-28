@@ -201,6 +201,45 @@ final class SpliceRenderTests: XCTestCase {
     /// full re-render measured well over a second, while a splice is a few milliseconds — so the
     /// bound below is loose enough never to fail on a busy machine, yet a regression to the old
     /// path can't sneak past it.
+    /// The same guard as `testLongDocumentEditStaysFast` below, measured directly instead of through
+    /// a clock. What that test wants to know is whether an edit re-rendered the whole document; what
+    /// it actually asks is whether the machine was busy, so it reports a regression on a loaded
+    /// machine and stays quiet on a fast one that really did re-render everything. This asks the
+    /// storage itself how much of it changed.
+    ///
+    /// A splice replaces the edited block and nothing else, so the characters processed are a
+    /// function of the EDIT, not of the document. A fallback to re-rendering everything replaces all
+    /// 1.2MB and cannot fit under the bound no matter how fast the hardware is — and cannot pass by
+    /// being run on an idle machine, which is the whole point of not using a clock. The bound is
+    /// deliberately far above a real splice (two lines plus attributes) and far below the document,
+    /// so it names the defect rather than a threshold anyone has to tune.
+    func testLongDocumentEditRewritesTheEditedRegionAndNotTheDocument() throws {
+        let line = "widget,3,a fairly typical row of text from a log or a spreadsheet export\n"
+        let (doc, wc) = try open(String(repeating: line, count: 16_000), ext: "csv")
+        let storage = try XCTUnwrap(wc.textStorageRef)
+        let documentLength = storage.length
+        XCTAssertGreaterThan(documentLength, 1_000_000, "this guard needs a genuinely large document")
+        let spans = BlockEdit.spans(in: storage)
+        let edit = try XCTUnwrap(BlockEdit.swapWithNext(200, spans: spans, text: doc.text as NSString))
+
+        var processed = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: NSTextStorage.didProcessEditingNotification, object: storage, queue: nil
+        ) { note in
+            guard let edited = note.object as? NSTextStorage else { return }
+            processed += edited.editedRange.length
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        doc.applySourceEdit(edit.0, with: edit.1, actionName: "Move")
+
+        XCTAssertGreaterThan(processed, 0, "no editing was processed at all — this guard measured nothing")
+        XCTAssertLessThan(
+            processed, documentLength / 100,
+            "an edit processed \(processed) of \(documentLength) characters — a splice touches the "
+            + "edited block, so this size means the whole document was re-rendered")
+    }
+
     func testLongDocumentEditStaysFast() throws {
         let line = "widget,3,a fairly typical row of text from a log or a spreadsheet export\n"
         let (doc, wc) = try open(String(repeating: line, count: 16_000), ext: "csv")
