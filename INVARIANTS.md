@@ -731,3 +731,14 @@ this file tells you why, and why the obvious alternative does not work.
     - **Rasterising only the part that lands on the paper buys nothing.** An artwork can be bigger than its sheet (2652×1940 device pixels was measured) and the clip hides the result without stopping the blit, so cutting the cached bitmap down to the sheet looked obvious. Measured: 40.8 vs 41.2 — inside the noise. It was reverted. The remaining ~30 ms is the blit of an already-correctly-sized bitmap (`.image` skipped entirely is 10.8 ms), and neither caching nor clipping touches it; the next lever is not redrawing unchanged page furniture at all.
 
     **The rule: before optimising a draw, find out how much of the frame is yours.** One early return answered it here, and it pointed at a feature nobody suspected instead of at the text engine everybody would have.
+
+119. **A TEST THAT WRITES A PREFERENCE HAS CHANGED THE APP, NOT ITS OWN FIXTURE — and the measurement that runs afterwards reports the change as an optimisation.** Found in P8's integrated re-measure, by a number that was too good. `PageGridMemoTests` set the page-outline preference in `setUp` and left it OFF in `tearDown`, which looked like tidy cleanup. `PageViewOptionsStore.current` is backed by `UserDefaults.standard`, so that write outlives the test, the class, and the process: every later test in the run saw a reader with the page outline off, and so did `ReaderPerfProbeTests`.
+
+    It reported a **2.2 ms** median viewport against 41 ms, and **713** read-through steps against 957. Read alone, that is a twenty-fold win. What it actually was is a document with no pages drawn on it — no sheets, no 바탕쪽, no page band — which is also why the document got shorter. The tell was the step count, not the milliseconds: a faster reader does not have less document.
+
+    Two things follow, and only the first is about tests.
+
+    - **Restore what you found, never write "the default".** The value belongs to whoever set it. `PageViewOptionsStore.intent` is the unresolved choice and is what a `tearDown` must put back. Writing `PageViewOptions(outline: false)` is not cleanup, it is a decision about someone else's preference, and on a developer's machine it reaches the app.
+    - **A preference read by a probe is an input to the measurement.** Nothing in the probe's output says which page options were in force, so two runs of the same commit can differ by twenty times with no visible cause. Anything that changes what a probe measures has to be either fixed by the probe or printed by it; on a shared `UserDefaults` domain (`com.apple.dt.xctest.tool` here) it is neither by default.
+
+    The same session had already learned the general form of this the expensive way (invariant 117): a number is only comparable to another number taken under the same conditions, and "the same commit" is not the same conditions.
