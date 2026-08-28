@@ -8,12 +8,13 @@ use crate::render::office::office_block::{
 };
 use std::collections::BTreeMap;
 
-const EXPECTED_DECISIONS: usize = 27;
+const EXPECTED_DECISIONS: usize = 28;
 const EXPECTED_KEYS: &[&str] = &[
     "OfficeReadResult.blocks",
     "OfficeReadResult.comments",
     "OfficeReadResult.images",
     "OfficeReadResult.pictures_declared_without_bytes",
+    "OfficeReadResult.picture_pool",
     "OfficeReadResult.vector_graphics",
     "OfficeReadResult.default_body_font_size",
     "OfficeReadResult.declared_faces",
@@ -168,6 +169,7 @@ pub(crate) fn account_office_read_result(
         comments,
         images,
         pictures_declared_without_bytes,
+        picture_pool,
         vector_graphics,
         default_body_font_size,
         declared_faces,
@@ -221,6 +223,15 @@ pub(crate) fn account_office_read_result(
     }
     let _ = section_start_blocks;
     ledger.record(derived("OfficeReadResult.section_start_blocks"))?;
+
+    // `picture_pool` exists only on the WIRE: `office_export::to_json` fills it and `from_json`
+    // drains it, so a result reaching this ledger always has it empty. The canonical tree carries
+    // the same bytes in its own hash-keyed resource table, which is where the pooling idea came
+    // from — so it is derived, not dropped, and asserting it is empty here says out loud that a
+    // reader is never the thing that fills it.
+    debug_assert!(picture_pool.is_empty(), "picture_pool is a wire field, not a reader's output");
+    let _ = picture_pool;
+    ledger.record(derived("OfficeReadResult.picture_pool"))?;
 
     // The four pagination facts are block-index lists re-keyed onto the node that owns the block
     // (`ParagraphPagination`). Deterministic and reversible by walking nodes in source order, so
@@ -601,13 +612,13 @@ mod tests {
     fn account_office_read_result_records_exactly_twenty_six_decisions() {
         let result = OfficeReadResult::default();
         let ledger = account_office_read_result(&result).unwrap();
-        assert_eq!(ledger.decision_count(), 27);
+        assert_eq!(ledger.decision_count(), 28);
         assert!(ledger.mapped_count() > 0);
         assert!(ledger.derived_count() > 0);
         assert_eq!(ledger.refused_count(), 0);
         assert_eq!(
             ledger.mapped_count() + ledger.derived_count() + ledger.refused_count(),
-            27
+            28
         );
     }
 
@@ -661,6 +672,7 @@ mod tests {
             ("OfficeReadResult.comments", Mapped),
             ("OfficeReadResult.images", Mapped),
             ("OfficeReadResult.pictures_declared_without_bytes", Mapped),
+            ("OfficeReadResult.picture_pool", Derived),
             ("OfficeReadResult.vector_graphics", Mapped),
             ("OfficeReadResult.headers", Mapped),
             ("OfficeReadResult.footers", Mapped),
@@ -695,7 +707,9 @@ mod tests {
     #[test]
     fn expected_keys_are_exactly_twenty_six() {
         // Name kept ("twenty_six") — the test still proves the invariant its name describes
-        // (`EXPECTED_KEYS.len() == EXPECTED_DECISIONS`), it just now checks 27 since S6-5a.
+        // (`EXPECTED_KEYS.len() == EXPECTED_DECISIONS`), it just now checks 28: 27 since S6-5a,
+        // and `picture_pool` since P4a (`derived` — a wire-only field, empty in every result that
+        // reaches this ledger, whose bytes the canonical tree already holds in its resource table).
         assert_eq!(EXPECTED_KEYS.len(), EXPECTED_DECISIONS);
     }
 
@@ -726,7 +740,7 @@ mod tests {
             ledger.record(mapped(key)).unwrap();
         }
         ledger.record(mapped("bogus.same_count.key")).unwrap();
-        assert_eq!(ledger.decision_count(), 27);
+        assert_eq!(ledger.decision_count(), EXPECTED_DECISIONS);
         let AccountingError::DecisionSetMismatch {
             missing,
             unexpected,

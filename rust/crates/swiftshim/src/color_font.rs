@@ -559,6 +559,15 @@ impl NSFontFeatureKey {
 pub struct NSImage {
     pub size: crate::geometry::CGSize,
     pub data: Option<Data>,
+    /// Where the bytes are, when they are not here.
+    ///
+    /// A real document uses the same picture in many places — 610 of one government manual's table
+    /// cells share 44 background images — and `data` writes a fresh base64 copy at every one of
+    /// them. `office_export` therefore moves the bytes into the result's own `images` map before
+    /// serializing and leaves this key pointing at them, which is the map the host already resolves
+    /// pictures through. In memory `data` stays exactly as it was; this is a property of the WIRE.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_key: Option<crate::nsstring::SwiftString>,
 }
 
 impl NSImage {
@@ -570,10 +579,11 @@ impl NSImage {
                 height: decoded.height() as crate::geometry::CGFloat,
             },
             data: Some(data.clone()),
+            data_key: None,
         })
     }
     pub fn withSize(size: crate::geometry::CGSize) -> Self {
-        Self { size, data: None }
+        Self { size, data: None, data_key: None }
     }
 
     /// swift: `NSImage(size:flipped:drawingHandler:)` — the drawing handler is called by AppKit

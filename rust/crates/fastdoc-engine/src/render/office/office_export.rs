@@ -24,7 +24,16 @@ pub struct OfficeDocumentEnvelope {
 }
 
 /// The version this build writes. Bump when the shape changes in a way a host must notice.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
+
+/// The inverse of `to_json` — the ONE door back, so nothing decodes this wire by hand and drifts
+/// from the pooling `to_json` applies.
+pub fn from_json(json: &str) -> Result<OfficeReadResult, serde_json::Error> {
+    let envelope: OfficeDocumentEnvelope = serde_json::from_str(json)?;
+    let mut result = envelope.result;
+    super::picture_pool::expand(&mut result);
+    Ok(result)
+}
 
 /// What a read result carried that this boundary cannot.
 #[derive(Debug, PartialEq)]
@@ -94,9 +103,13 @@ fn check_cell(cell: &Cell) -> Result<(), NotExportable> {
 /// The document as JSON, or what stopped it.
 pub fn to_json(result: &OfficeReadResult) -> Result<String, NotExportable> {
     assert_exportable(result)?;
+    let mut pooled = result.clone();
+    // One copy of each picture, not one per use — see `picture_pool`. The in-memory result is
+    // untouched; this is a property of the wire, and `from_json` undoes it.
+    super::picture_pool::intern(&mut pooled);
     let envelope = OfficeDocumentEnvelope {
         v: SCHEMA_VERSION,
-        result: result.clone(),
+        result: pooled,
     };
     // Serialisation itself cannot fail for this shape — every field is a plain value, there is no
     // map with non-string keys and no custom impl that can error.

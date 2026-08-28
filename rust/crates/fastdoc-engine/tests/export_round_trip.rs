@@ -49,15 +49,19 @@ fn a_document_survives_the_envelope_unchanged() {
                 continue;
             }
         };
-        let envelope: office_export::OfficeDocumentEnvelope = match serde_json::from_str(&json) {
-            Ok(e) => e,
+        // Read back through the export's OWN door. `to_json` pools each picture's bytes into the
+        // result's image map (`picture_pool`) and `from_json` puts them back; decoding by hand here
+        // would compare a pooled result against an unpooled one and call the pooling a regression.
+        let version: serde_json::Value = serde_json::from_str(&json).expect("the export is JSON");
+        assert_eq!(version["v"], office_export::SCHEMA_VERSION);
+        let decoded = match office_export::from_json(&json) {
+            Ok(r) => r,
             Err(e) => {
                 differing.push(format!("{} — could not be read back: {e}", path.display()));
                 continue;
             }
         };
-        assert_eq!(envelope.v, office_export::SCHEMA_VERSION);
-        if envelope.result == original {
+        if decoded == original {
             identical += 1;
         } else {
             differing.push(format!("{} — decoded result differs from what was read", path.display()));

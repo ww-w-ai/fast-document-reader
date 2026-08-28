@@ -273,8 +273,45 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
         })
         .collect();
 
+    // One copy of each picture instead of one per use (`picture_pool`). Measured on a 2,562-page
+    // manual: 692 pictures written for 61 distinct ones, 17,193,764 bytes of a 27,169,703-byte
+    // payload. Done HERE and not only in `office_export::to_json` because this is the assembler a
+    // real document reaches — all 669 of the corpus take the projection path.
+    let mut blocks = blocks;
+    let mut headers = headers;
+    let mut footers = footers;
+    let mut footnotes = footnotes;
+    let mut master_pages = master_pages;
+    let mut anchored_objects = anchored_objects;
+    let mut interner = crate::render::office::picture_pool::Interner::new();
+    interner.blocks(&mut blocks);
+    for header in &mut headers { interner.blocks(&mut header.blocks); }
+    for footer in &mut footers { interner.blocks(&mut footer.blocks); }
+    for footnote in &mut footnotes { interner.blocks(&mut footnote.blocks); }
+    for page in &mut master_pages {
+        for object in &mut page.objects { interner.master_content(&mut object.content); }
+    }
+    for anchored in &mut anchored_objects {
+        interner.master_content(&mut anchored.object.content);
+    }
+    let (_pooled, _distinct, picture_pool) = interner.finish();
+
     let mut result = serde_json::Map::new();
-    result.insert("v".to_string(), serde_json::Value::from(4u32));
+    // The version the ENGINE writes, not a copy of it. This was a literal `4` beside
+    // `office_export::SCHEMA_VERSION`, and the two are the same contract: the moment the exporter
+    // moved to 5 this assembler kept saying 4, and since every real document comes through here the
+    // host would have refused all of them. Nothing failed — the payload simply did not change.
+    result.insert(
+        "v".to_string(),
+        serde_json::Value::from(super::office_export::SCHEMA_VERSION),
+    );
+    // Omitted when empty, exactly as `OfficeReadResult.picture_pool`'s own `skip_serializing_if`
+    // omits it — the projection oracle compares this assembler's output against
+    // `office_export::to_json`'s, and a field one of them writes as `{}` while the other leaves out
+    // is a disagreement even when both mean "no pooled pictures".
+    if !picture_pool.is_empty() {
+        result.insert("picture_pool".to_string(), to_value(&picture_pool)?);
+    }
     result.insert("blocks".to_string(), to_value(&blocks)?);
     result.insert("comments".to_string(), to_value(&comments)?);
     result.insert("images".to_string(), to_value(&proj.images)?);

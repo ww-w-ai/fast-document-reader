@@ -19,6 +19,7 @@ pub mod odt_reader;
 pub mod hwp_reader;
 pub mod office_text_builder;
 pub mod office_markdown_serializer;
+pub mod picture_pool;
 pub mod office_export;
 pub mod office_project;
 pub mod projection_ledger;

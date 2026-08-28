@@ -2083,6 +2083,15 @@ pub struct OfficeReadResult {
     /// signal yet, and for every HWP picture that DOES have bytes — so a document with no such
     /// picture is byte-identical to before this field existed.
     pub pictures_declared_without_bytes: std::collections::HashSet<SwiftString>,
+    /// Picture bytes the WIRE carries once, keyed by content — see `picture_pool`.
+    ///
+    /// Deliberately NOT `images`: that map's key is the exact `.image(id:)` string a block carries,
+    /// and a pooled picture has no such id (a table cell's background is not an image block). Two
+    /// meanings in one map would make "is this key drawable by id" unanswerable. This one is empty
+    /// in memory and empty again after `office_export::from_json`, so a result that round-trips is
+    /// equal to the one that was read — which is what makes the round-trip check worth running.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub picture_pool: std::collections::HashMap<SwiftString, Data>,
     /// Inline vector drawings keyed by the `.image(id:)` layout node that reserves their box.
     /// The host paints these paths and installs the resulting bytes into `images` before layout.
     pub vector_graphics: std::collections::HashMap<
@@ -2295,7 +2304,7 @@ pub struct OfficeReadResult {
 impl PartialEq for OfficeReadResult {
     fn eq(&self, other: &Self) -> bool {
         let Self {
-            blocks, comments, images, pictures_declared_without_bytes, vector_graphics,
+            blocks, comments, images, pictures_declared_without_bytes, picture_pool, vector_graphics,
             default_body_font_size, declared_faces,
             page_content_width, page_margin_left, page_margin_right, page_content_height,
             page_margin_top, page_margin_bottom, page_header_distance, page_footer_distance,
@@ -2307,6 +2316,7 @@ impl PartialEq for OfficeReadResult {
             && comments == &other.comments
             && map_eq(images, &other.images)
             && pictures_declared_without_bytes == &other.pictures_declared_without_bytes
+            && map_eq(picture_pool, &other.picture_pool)
             && map_eq(vector_graphics, &other.vector_graphics)
             && default_body_font_size == &other.default_body_font_size
             && map_eq(declared_faces, &other.declared_faces)
@@ -2340,6 +2350,7 @@ impl Default for OfficeReadResult {
             comments: vec![],
             images: std::collections::HashMap::new(),
             pictures_declared_without_bytes: std::collections::HashSet::new(),
+            picture_pool: std::collections::HashMap::new(),
             vector_graphics: std::collections::HashMap::new(),
             default_body_font_size: 11.0,
             declared_faces: std::collections::HashMap::new(),

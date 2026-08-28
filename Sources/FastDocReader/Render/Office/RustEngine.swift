@@ -21,7 +21,7 @@ enum RustEngine {
     /// Checked before anything else. The engine ships as a prebuilt library, so a stale one is a
     /// real state to be in — and a version mismatch has to read as "use the other reader", not as
     /// a document that decoded most of the way.
-    static let schemaVersion = 4
+    static let schemaVersion = 5
 
     /// How many times the engine has PARSED a document's bytes in this process.
     ///
@@ -132,10 +132,16 @@ enum RustEngine {
         init(from decoder: Decoder) throws {
             // The version and the document share one object — the engine flattens the result into
             // the envelope so a host reads one thing, not a wrapper around a thing.
-            v = try decoder.container(keyedBy: VersionKey.self).decode(Int.self, forKey: .v)
-            result = try OfficeReadResult(from: decoder)
+            let container = try decoder.container(keyedBy: VersionKey.self)
+            v = try container.decode(Int.self, forKey: .v)
+            // The picture pool is read BEFORE the body, so every `WireImage` the body contains can
+            // resolve its key as it decodes (`PictureBytes`). Order costs nothing here: JSONDecoder
+            // parses the whole document first and materializes on demand, so asking for one key
+            // early is a lookup, not a second pass.
+            let pool = try container.decodeIfPresent([String: Data].self, forKey: .picturePool) ?? [:]
+            result = try PictureBytes.withPool(pool) { try OfficeReadResult(from: decoder) }
         }
-        private enum VersionKey: String, CodingKey { case v }
+        private enum VersionKey: String, CodingKey { case v, picturePool }
     }
 
     /// The document's own default body run size in points — the other half of the typography's

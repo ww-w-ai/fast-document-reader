@@ -32,9 +32,48 @@ private struct WireRect: Decodable {
 struct WireImage: Decodable {
     let size: WireSize
     let data: Data?
+    /// Where the bytes are, when the wire did not repeat them here.
+    ///
+    /// A real document reuses one picture in many places — 610 cells of one government manual share
+    /// 44 background images — so the engine writes each picture's bytes ONCE into the envelope's
+    /// `picturePool` and leaves this key at every use (`office/picture_pool.rs`). Resolving it needs
+    /// the pool, which arrives in the same envelope; `PictureBytes.pool` is how it gets here without
+    /// this type having to be handed a context at every one of its call sites.
+    let dataKey: String?
+
     var image: NSImage? {
         if let data, let decoded = NSImage(data: data) { return decoded }
+        if let dataKey, let pooled = PictureBytes.pool[dataKey] {
+            // One `NSImage` per DISTINCT picture, not per use: 610 cells that share a background
+            // used to decode the same bitmap 610 times, which is work the pooling can retire along
+            // with the bytes.
+            if let cached = PictureBytes.cache.object(forKey: dataKey as NSString) { return cached }
+            guard let decoded = NSImage(data: pooled) else { return nil }
+            PictureBytes.cache.setObject(decoded, forKey: dataKey as NSString)
+            return decoded
+        }
         return nil
+    }
+}
+
+/// The envelope's picture pool, in scope for exactly as long as one decode.
+///
+/// A task-local rather than a parameter because `WireImage` is decoded from a dozen places through
+/// `Decodable`, which has nowhere to carry a context — and rather than a post-pass over the decoded
+/// document because one of those places (`OfficeMasterObject.Content.image`) holds a real `NSImage`
+/// and throws when there are no bytes, so by the time a post-pass ran the decode would already have
+/// failed. Bound in `RustEngine.decodeOffice`, empty everywhere else.
+enum PictureBytes {
+    @TaskLocal static var pool: [String: Data] = [:]
+    /// Scoped to one decode alongside the pool — a key is content-addressed, so an entry is only
+    /// ever the same picture, but keeping it past the decode would hold every document's bitmaps
+    /// alive for the life of the process.
+    @TaskLocal static var cache: NSCache<NSString, NSImage> = NSCache()
+
+    /// Bind both for one decode. The only way in — so a decode either has a pool and a fresh cache
+    /// or has neither, and never one document's bitmaps under another's keys.
+    static func withPool<T>(_ pool: [String: Data], _ body: () throws -> T) rethrows -> T {
+        try $pool.withValue(pool) { try $cache.withValue(NSCache<NSString, NSImage>(), operation: body) }
     }
 }
 

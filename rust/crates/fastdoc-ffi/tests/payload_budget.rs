@@ -23,10 +23,13 @@ use std::ffi::{CStr, CString};
 /// out of the payload. What remains of the picture bytes is 3,163,016 in table fills and anchored
 /// objects, which carry pixels in the vocabulary itself and have no key to be fetched by
 /// (`office_picture_key_split.rs` measures that split and gates the keyed half at zero).
+/// At P4a: **13,181,914** — the export used to write a picture's bytes once per USE, 692 times for
+/// 61 distinct pictures (610 table cells share 44 background images). They now travel once, in
+/// `picture_pool`, keyed by content (`office/picture_pool.rs`).
 ///
 /// The ceiling is the measurement, not a budget with slack: a change that puts bytes back fails
 /// here, and a change that removes more is the next ceiling asking to be written down.
-const RECORDED_CEILING: usize = 27_169_703;
+const RECORDED_CEILING: usize = 13_181_914;
 
 /// Document paths come from the environment, and `cargo test` runs this binary with its CWD set to
 /// the PACKAGE directory — so a path written relative to the repo (`testdocs/...`, the way every
