@@ -606,6 +606,81 @@ final class PagedTableOverrunTests: XCTestCase {
         XCTAssertFalse(wc.pageBandDelegate.pushedTables.isEmpty)
     }
 
+    /// THE HOST'S OWN PAGINATION MUST REACH THE ENGINE'S ANSWER, on the same document.
+    ///
+    /// `settlePagedTables` prefers `officeEngineHandle.tablePlacement` and falls back to
+    /// `PagePagination.tablesToPush` when there is no handle. Every test that opens a REAL document
+    /// gets a handle and therefore measures the ENGINE; every test that reaches the fallback builds
+    /// its blocks by hand and asserts something weak. So the host arithmetic — which is what a
+    /// document whose handle fails to open would get — was unchecked. Measured by mutation: adding
+    /// 7pt to the page height the fallback reads changed no test's verdict, while the same edit to
+    /// the sheet-geometry fallback beside it was caught by five.
+    ///
+    /// This runs the reference report twice: once as opened (engine), then re-seated through
+    /// `setOfficeContent` WITHOUT `documentData`, which is the one input that decides whether a
+    /// handle exists. The two pushed maps must be equal.
+    ///
+    /// **Equality, not "no row in a margin".** That property is what the sibling tests assert and it
+    /// is ONE-SIDED: pushing a table too eagerly wastes space but puts nothing in a margin, so it
+    /// reads clean. Measured — doubling the page height the fallback reads pushed TEN tables instead
+    /// of eight and the margin check still passed. Comparing the answers catches both directions.
+    func testTheHostsOwnPaginationReachesTheSameAnswerAsTheEngineOnARealReport() throws {
+        let wc = try openPaged("docs/fixtures/office/bus-headings.docx")
+        let doc = try XCTUnwrap(wc.mdDocument)
+        XCTAssertNotNil(doc.officeEngineHandle, "the control must actually have had a handle")
+        XCTAssertFalse(try linesInMargins(wc).isEmpty,
+                       "the fixture must start out with rows in the margin, or this proves nothing")
+        wc.settlePagedTablesFully()
+        let engineAnswer = wc.pageBandDelegate.pushedTables
+        XCTAssertFalse(engineAnswer.isEmpty, "the engine must actually have pushed something")
+
+        doc.setOfficeContent(
+            blocks: doc.officeBlocks, comments: doc.officeComments, archive: doc.officeArchive,
+            images: doc.officeImageBytes, defaultBodyFontSize: doc.officeDefaultBodyFontSize,
+            pageContentWidth: doc.officePageContentWidth,
+            pageMarginLeft: doc.officePageMarginLeft, pageMarginRight: doc.officePageMarginRight,
+            pageContentHeight: doc.officePageContentHeight,
+            pageMarginTop: doc.officePageMarginTop, pageMarginBottom: doc.officePageMarginBottom,
+            pageHeaderDistance: doc.officePageHeaderDistance,
+            pageFooterDistance: doc.officePageFooterDistance,
+            headers: doc.officeHeaders, footers: doc.officeFooters, footnotes: doc.officeFootnotes,
+            masterPages: doc.officeMasterPages, sectionStartBlocks: doc.officeSectionStartBlocks,
+            pageBreakBlocks: doc.officePageBreakBlocks,
+            keepWithNextBlocks: doc.officeKeepWithNextBlocks,
+            hidePageNumberBlocks: doc.officeHidePageNumberBlocks,
+            pageNumberRestartBlocks: doc.officePageNumberRestartBlocks,
+            sections: doc.officeSections, anchoredObjects: doc.officeAnchoredObjects,
+            lineGridPitch: doc.officeLineGridPitch)
+        XCTAssertNil(doc.officeEngineHandle, "re-seating without documentData must drop the handle")
+
+        // CLEARING THE RECORD IS NOT ENOUGH: `pushedTables` is what the layout delegate reserves
+        // space FROM, so dropping the map while the layout still holds the engine's pushes leaves
+        // every table already in place, the settle finds nothing to change, and it returns without
+        // invalidating anything. The layout is put back to its unsettled shape too, and the guard
+        // below is what proves that actually happened.
+        let storage = try XCTUnwrap(wc.textView.textStorage)
+        wc.pageBandDelegate.resetMeasuredPieces()
+        wc.textView.layoutManager?.invalidateLayout(
+            forCharacterRange: NSRange(location: 0, length: storage.length),
+            actualCharacterRange: nil)
+        XCTAssertFalse(try linesInMargins(wc).isEmpty,
+                       "un-settling must put rows back in the margin, or the settle below is a no-op")
+
+        wc.settlePagedTablesFully()
+        let hostAnswer = wc.pageBandDelegate.pushedTables
+        XCTAssertEqual(hostAnswer.count, engineAnswer.count,
+                       "the host pushed a different number of tables than the engine did")
+        XCTAssertEqual(Set(hostAnswer.keys), Set(engineAnswer.keys),
+                       "the host pushed different tables than the engine did")
+        for (start, engineMetrics) in engineAnswer {
+            let hostMetrics = try XCTUnwrap(hostAnswer[start])
+            XCTAssertEqual(hostMetrics.height, engineMetrics.height, accuracy: 0.5,
+                           "table at \(start): host and engine disagree on its height")
+        }
+        XCTAssertEqual(try linesInMargins(wc), [],
+                       "and the host's answer must land every table row on its page")
+    }
+
     /// Same claim on the ODT twin of that report, because the two formats reach the same builder by
     /// different roads and only running both can say the pagination is the reader's rather than the
     /// docx parser's.
