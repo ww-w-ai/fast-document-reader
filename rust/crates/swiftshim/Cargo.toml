@@ -25,4 +25,7 @@ quick-xml = { workspace = true }
 # boundary as data would be a face or a bitmap nobody resolved on the other side.
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
+# The regex engine behind `NSRegularExpression`/`NSDataDetector` (see `regex.rs`). Pure Rust, no
+# ICU, no C toolchain — the same constraint the workspace manifest states for quick-xml/flate2.
+regex = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff"] }

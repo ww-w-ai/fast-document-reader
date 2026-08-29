@@ -108,7 +108,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 121 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 124 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -122,17 +122,18 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | the mermaid + KaTeX web-block cache | 4, 5, 13 |
 | `Info.plist`, document types, default handler, sandbox, entitlements | 6, 8, 9, 22, 28, 43, 69, 70 |
 | menus, Open Recent, titlebar accessory, sidebar, outline panel | 7, 21, 23, 26, 27 |
-| markdown parsing or a new markdown feature | 12, 41, 101 |
+| markdown parsing or a new markdown feature | 12, 41, 101, 122, 123 |
 | keyboard navigation, reading cursor, margin numbers, jump | 14, 15, 71 |
 | editing, save, text encoding, splice render | 16, 17, 18, 19, 20 |
 | reflow, resize, `precomputeLayout`, first-paint cost | 24, 25, 32, 48, 49, 55, 56, 113, 117 |
 | scroll cost, what a draw pass does per frame, page furniture | 113, 117, 118 |
 | `PageViewOptions`, any UserDefaults-backed preference, from a test | 119 |
 | office readers (docx / odt / hwp), dispatch, rhwp, headings | 29, 33, 44, 45, 73, 75, 78, 79, 81, 94, 110, 112, 115 |
-| tests, corpus probes, "is this check actually reached" | 5, 29, 30, 34, 35, 41, 103, 104, 106, 109, 110, 111, 112, 113, 114, 116, 119 |
+| tests, corpus probes, "is this check actually reached" | 5, 29, 30, 34, 35, 41, 103, 104, 106, 109, 110, 111, 112, 113, 114, 116, 119, 122, 124 |
 | `RenderTheme` tokens, `OfficeTextBuilder`, style resolution | 36, 37, 97, 107 |
 | tables — build, widths, borders, merges, attribute cost | 39, 42, 47, 50, 51, 72, 74, 76 |
 | fonts, per-script slots, substitution | 52, 53, 93, 95 |
+| `swiftshim` strings, UTF-16 offsets, `SwiftString`, attributed-string length | 122, 123 |
 | the engine's measurement port (`RustEngineMeasure`), terminator attributes | 51, 105 |
 | the comments panel | 38 |
 | paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62, 77, 78, 118, 121 |

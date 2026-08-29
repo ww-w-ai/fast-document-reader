@@ -16,31 +16,106 @@
 
 use crate::foundation::NSRange;
 
+/// How many times a `SwiftString` has built its UTF-16 index, process-wide.
+///
+/// This is the observable the cost gate reads, and it is a COUNT rather than a clock on purpose:
+/// the defect it guards against (rebuilding the index per character read) shows up as a number
+/// proportional to the document's length, which no machine load can fake in either direction.
+/// A wall-clock budget for the same thing is a known false-failure generator on this repo's own
+/// suite. See `SwiftString::units`.
+static UTF16_INDEX_BUILDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Reads the counter above. Test-facing, but not `#[cfg(test)]`: the gate that uses it lives in an
+/// integration test in another crate, which compiles against this crate's ordinary build.
+pub fn utf16_index_builds() -> u64 {
+    UTF16_INDEX_BUILDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// swift: `NSString` — and, per convention §3, also Swift's own `String` wherever the call site
 /// indexes it by UTF-16 offset (`.utf16`, `NSRange`-based substring). UTF-16 code-unit offsets
 /// are computed from the stored UTF-8 text on demand so `length`/`substring(with:)` match
 /// Cocoa's counting exactly instead of Rust's UTF-8 byte counting, which is the whole reason the
 /// app pays for this cast (MarkdownRenderer.swift 172-179).
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 /// `transparent` so text crosses a boundary AS text. Without it every string in a document is
 /// wrapped in an object naming this struct's private field — an implementation detail no host
 /// should have to know, let alone match.
 #[serde(transparent)]
 pub struct SwiftString {
     s: String,
+    /// The UTF-16 units of `s`, built the first time something actually indexes this string.
+    ///
+    /// **Random access is the whole reason this type exists** — the module note above quotes
+    /// `MarkdownRenderer.swift:172-179` saying the reader casts to `NSString` "to get UTF-16
+    /// random access cheaply". Rebuilding the units on every read gives the opposite: reading a
+    /// document character by character is O(n) per character. Measured on the transliterated
+    /// renderer, `AttributedBuilder::new`'s newline scan was 15,363 of 15,376 profile samples,
+    /// and `demo/moby-dick.md` rendered in 20.2 MINUTES against the host's 479 ms.
+    ///
+    /// Lazy rather than eager because `SwiftString` is a field of 62 wire and schema types that
+    /// never index anything; materialising UTF-16 for all of them would roughly double the
+    /// engine's string memory, which is what P2 and P4 just spent themselves reducing.
+    ///
+    /// It cannot go stale: `s` is immutable except through `push_str`, which drops it.
+    #[serde(skip)]
+    units: std::sync::OnceLock<Vec<u16>>,
+}
+
+/// Only `s` is identity — `units` is derived from it, so two strings with the same text are the
+/// same string whether or not either has been indexed yet. Hand-written because `OnceLock` has no
+/// `PartialEq`/`Ord`/`Hash` of its own, and deriving through it would make "has been indexed"
+/// observable.
+impl PartialEq for SwiftString {
+    fn eq(&self, other: &Self) -> bool {
+        self.s == other.s
+    }
+}
+impl Eq for SwiftString {}
+impl PartialOrd for SwiftString {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for SwiftString {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.s.cmp(&other.s)
+    }
+}
+impl std::hash::Hash for SwiftString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.s.hash(state);
+    }
+}
+
+/// A clone starts un-indexed rather than copying the index: the copy usually goes somewhere that
+/// never indexes it, and rebuilding costs one pass only for the copies that do.
+impl Clone for SwiftString {
+    fn clone(&self) -> Self {
+        Self::new(&self.s)
+    }
 }
 
 impl SwiftString {
     pub fn new(s: &str) -> Self {
-        Self { s: s.to_string() }
+        Self {
+            s: s.to_string(),
+            units: std::sync::OnceLock::new(),
+        }
     }
 
     /// swift: `.utf16` — this string's UTF-16 code units, computed from the stored UTF-8 text.
     /// Every method below that takes or returns a UTF-16 offset goes through this.
-    fn units(&self) -> Vec<u16> {
-        self.s.encode_utf16().collect()
+    ///
+    /// Built once per string; see `units` for why that matters and why it is lazy.
+    fn units(&self) -> &[u16] {
+        self.units.get_or_init(|| {
+            UTF16_INDEX_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.s.encode_utf16().collect()
+        })
     }
 
+    /// Counted rather than read off the index on purpose: `length` is asked of strings that are
+    /// never indexed, and answering it must not make all 62 of those hold a UTF-16 copy for good.
     pub fn length(&self) -> usize {
         self.s.encode_utf16().count()
     }
@@ -64,6 +139,9 @@ impl SwiftString {
     /// Rust-only, since Swift spells this operator syntax, not a named member.
     pub fn push_str(&mut self, other: &str) {
         self.s.push_str(other);
+        // The only place `s` changes, so the only place the index can go stale. Dropping it here
+        // is what lets every reader above treat `units()` as always current.
+        self.units.take();
     }
 
     /// swift: .deletingLastPathComponent
@@ -220,7 +298,10 @@ impl From<&str> for SwiftString {
 
 impl From<String> for SwiftString {
     fn from(s: String) -> Self {
-        Self { s }
+        Self {
+            s,
+            units: std::sync::OnceLock::new(),
+        }
     }
 }
 

@@ -79,13 +79,29 @@ impl PartialEq for AttrValue {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NSAttributedString {
     pub(crate) string: String,
+    /// UTF-16 code-unit count of `string`, kept in step with every mutation.
+    ///
+    /// Not an optimisation of a cheap call — `length()` is O(1) in Foundation and callers use it
+    /// like a field. Deriving it from the string on each call makes `append` walk everything it
+    /// has already appended, which is quadratic in the finished document: the ported
+    /// `MarkdownRenderer` took 20.2 MINUTES on `demo/moby-dick.md` against the host's 479 ms,
+    /// and `time / chars²` held at ~8e-7 across a 128x size range.
+    ///
+    /// The invariant is `utf16_len == string.encode_utf16().count()`, and it is enforced by
+    /// construction: the field is private to this file, every mutation path here updates it, and
+    /// the one door that hands out a `&mut String` (`mutableString`) returns a guard that
+    /// recomputes on drop. A plain cached count next to a freely mutable string would drift.
+    pub(crate) utf16_len: usize,
     pub(crate) runs: Vec<(NSRange, HashMap<NSAttributedStringKey, AttrValue>)>,
 }
 
 impl NSAttributedString {
     pub fn new(string: impl Into<String>) -> Self {
+        let string = string.into();
+        let utf16_len = string.encode_utf16().count();
         Self {
-            string: string.into(),
+            string,
+            utf16_len,
             runs: Vec::new(),
         }
     }
@@ -98,9 +114,11 @@ impl NSAttributedString {
         attributes: HashMap<NSAttributedStringKey, AttrValue>,
     ) -> Self {
         let string = string.into();
-        let whole = NSRange::new(0, string.encode_utf16().count());
+        let utf16_len = string.encode_utf16().count();
+        let whole = NSRange::new(0, utf16_len);
         Self {
             string,
+            utf16_len,
             runs: if attributes.is_empty() {
                 Vec::new()
             } else {
@@ -117,8 +135,10 @@ impl NSAttributedString {
     /// measured in. Real UTF-16 accounting is deferred (`swiftshim::SwiftString` per convention
     /// §3); this counts UTF-16 code units of the stored `String` so ranges built against it are
     /// at least self-consistent until phase B.
+    ///
+    /// O(1), and it has to be — see `utf16_len`.
     pub fn length(&self) -> usize {
-        self.string.encode_utf16().count()
+        self.utf16_len
     }
 
     pub fn attribute(
@@ -167,7 +187,10 @@ impl NSAttributedString {
         let units: Vec<u16> = self.string.encode_utf16().collect();
         let lo = range.location.min(units.len());
         let hi = range.maxRange().min(units.len());
+        // `from_utf16_lossy` maps each unpaired surrogate to one replacement character, itself one
+        // UTF-16 unit, so the slice's unit count survives the conversion and is the new length.
         let string = String::from_utf16_lossy(&units[lo..hi]);
+        let utf16_len = hi - lo;
 
         let mut runs = Vec::new();
         for (r, attrs) in &self.runs {
@@ -177,7 +200,11 @@ impl NSAttributedString {
                 runs.push((NSRange::new(start - lo, end - start), attrs.clone()));
             }
         }
-        NSAttributedString { string, runs }
+        NSAttributedString {
+            string,
+            utf16_len,
+            runs,
+        }
     }
 
     /// swift: `NSString(string).character(at:)` via `as NSString` — a UTF-16 code-unit read,
@@ -185,6 +212,34 @@ impl NSAttributedString {
     /// this is the same accounting Cocoa's `NSAttributedString.string` cast to `NSString` gives.
     pub fn characterAt(&self, index: usize) -> u16 {
         self.string.encode_utf16().nth(index).unwrap_or(0)
+    }
+}
+
+/// The `&mut String` `mutableString()` hands out, with the length invariant restored on drop.
+///
+/// Deliberately not `Clone` or storable: it exists for the duration of one statement, which is how
+/// every call site in the port uses `.mutableString` — as a value to push onto or read through,
+/// never as something held across other work.
+pub struct MutableStringGuard<'a> {
+    owner: &'a mut NSAttributedString,
+}
+
+impl std::ops::Deref for MutableStringGuard<'_> {
+    type Target = String;
+    fn deref(&self) -> &String {
+        &self.owner.string
+    }
+}
+
+impl std::ops::DerefMut for MutableStringGuard<'_> {
+    fn deref_mut(&mut self) -> &mut String {
+        &mut self.owner.string
+    }
+}
+
+impl Drop for MutableStringGuard<'_> {
+    fn drop(&mut self) {
+        self.owner.utf16_len = self.owner.string.encode_utf16().count();
     }
 }
 
@@ -228,8 +283,14 @@ impl NSMutableAttributedString {
         }
     }
 
-    pub fn mutableString(&mut self) -> &mut String {
-        &mut self.inner.string
+    /// swift: `.mutableString` — the backing store, handed out for direct mutation.
+    ///
+    /// Returns a guard rather than a bare `&mut String` so `utf16_len` cannot drift: whatever the
+    /// caller does to the string, the count is recomputed when the guard drops. Callers written
+    /// against the Swift original (`cell_str.mutableString().push('\n')`) are unchanged, because
+    /// the guard derefs to `String` in both directions.
+    pub fn mutableString(&mut self) -> MutableStringGuard<'_> {
+        MutableStringGuard { owner: &mut self.inner }
     }
 
     pub fn string(&self) -> &str {
@@ -243,6 +304,7 @@ impl NSMutableAttributedString {
     pub fn append(&mut self, other: &NSAttributedString) {
         let offset = self.length();
         self.inner.string.push_str(&other.string);
+        self.inner.utf16_len += other.utf16_len;
         for (range, attrs) in &other.runs {
             self.inner.runs.push((
                 NSRange::new(range.location + offset, range.length),
@@ -321,6 +383,7 @@ impl NSMutableAttributedString {
         spliced.extend_from_slice(&new_units);
         spliced.extend_from_slice(&units[range.maxRange()..]);
         self.inner.string = String::from_utf16_lossy(&spliced);
+        self.inner.utf16_len = spliced.len();
 
         let mut runs = Vec::with_capacity(self.inner.runs.len() + 1);
         for (r, attrs) in self.inner.runs.drain(..) {
