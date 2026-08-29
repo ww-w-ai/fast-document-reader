@@ -185,10 +185,20 @@ enum MasterPagePainter {
     /// `NSCache` rather than a dictionary because eviction has to be least-recently-used — the
     /// artwork a reader is looking at now is the one to keep, and a dictionary can only drop
     /// everything. Its own cost accounting is what enforces the ceiling, so every insert charges.
-    /// 24 MB, chosen by measuring the cliff rather than by taste. On the reference document the
-    /// median viewport is 40.9 ms at 24 MB, 41.0 at 48 and 40.8 at 32 — flat — and **48.5 at 16 MB
-    /// and again at 4**, because one of its artworks alone is 20 MB and a ceiling under that
-    /// thrashes on it every frame. So this is the smallest bound that keeps the whole win.
+    /// 24 MB, chosen by measuring the cliff rather than by taste: one of the reference document's
+    /// artworks is 20 MB on its own, so a ceiling under that thrashes on it every frame. Paired,
+    /// two rounds each, re-measured after the one-to-one blit changed what a frame costs
+    /// (invariant 121, and invariant 117 — the earlier figures were taken under the old cost and
+    /// are not comparable):
+    ///
+    /// | ceiling | median viewport | footprint after a full read-through |
+    /// |---|---|---|
+    /// | **24 MB** | **40.1 / 39.4 ms** | 466.6 / 430.8 MB |
+    /// | 16 MB | 51.5 / 51.2 | 417.5 / 420.3 |
+    ///
+    /// So the bound buys **11.6 ms a frame for about 30 MB** — a better trade than the +90 MB the
+    /// sprint had carried as an estimate, which came from comparing against the 64-ENTRY version
+    /// rather than from measuring the two ceilings against each other.
     static let artworkByteCeiling = 24 * 1024 * 1024
 
     private static let scaledArtwork: NSCache<NSString, Artwork> = {
