@@ -108,7 +108,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 127 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 128 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -122,7 +122,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | the mermaid + KaTeX web-block cache | 4, 5, 13 |
 | `Info.plist`, document types, default handler, sandbox, entitlements | 6, 8, 9, 22, 28, 43, 69, 70 |
 | menus, Open Recent, titlebar accessory, sidebar, outline panel | 7, 21, 23, 26, 27 |
-| markdown parsing or a new markdown feature | 12, 41, 101, 122, 123 |
+| markdown parsing or a new markdown feature | 12, 41, 101, 122, 123, 128 |
 | keyboard navigation, reading cursor, margin numbers, jump | 14, 15, 71 |
 | editing, save, text encoding, splice render | 16, 17, 18, 19, 20 |
 | reflow, resize, `precomputeLayout`, first-paint cost | 24, 25, 32, 48, 49, 55, 56, 113, 117 |
