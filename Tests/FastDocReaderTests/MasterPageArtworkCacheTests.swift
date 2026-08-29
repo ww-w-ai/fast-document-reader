@@ -175,6 +175,66 @@ final class MasterPageArtworkCacheTests: XCTestCase {
                        "the same, vertically — y was \(blit.device.minY)")
     }
 
+    /// The artwork must land the RIGHT WAY UP.
+    ///
+    /// `drawArtwork` draws in device space, where a `CGImage` is upright by CoreGraphics' own
+    /// convention — which is why the flipped-view correction (`respectFlipped:`) is gone rather
+    /// than restated. That is a claim about orientation and nothing else in this suite makes it:
+    /// every other gate here counts rasterisations or reads a rectangle, and all of them pass
+    /// perfectly on a page whose 바탕쪽 is upside down.
+    ///
+    /// So this draws an asymmetric picture — red along the top, blue along the bottom — and reads
+    /// the pixels back. The offscreen context is flipped the way the reader's text view is, so row
+    /// 0 of the bitmap is what a reader sees at the top of the sheet.
+    func testTheArtworkLandsTheRightWayUpRatherThanMirroredByTheFlippedView() throws {
+        let size = NSSize(width: 120, height: 160)
+        let asymmetric = NSImage(size: size)
+        asymmetric.lockFocus()
+        NSColor.systemRed.setFill()
+        NSRect(x: 0, y: size.height / 2, width: size.width, height: size.height / 2).fill()
+        NSColor.systemBlue.setFill()
+        NSRect(x: 0, y: 0, width: size.width, height: size.height / 2).fill()
+        asymmetric.unlockFocus()
+        // In an UNFLIPPED image, y grows upward, so the red half above is the picture's own TOP.
+
+        let object = OfficeMasterObject(frame: CGRect(x: 0, y: 0, width: 120, height: 160),
+                                        content: .image(asymmetric))
+        let page = OfficeMasterPage(section: 1, appliesTo: .defaultPages, objects: [object])
+        let content = MasterPageContent(pages: [page], sectionsHidingMasterPage: [],
+                                        theme: RenderTheme(baseFontSize: 13),
+                                        documentDefaultFontSize: 11, pageContentWidth: 100)
+        let sheets = [CGRect(x: 0, y: 0, width: 120, height: 160)]
+
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: 120, pixelsHigh: 160, bitsPerSample: 8,
+            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+            let g = NSGraphicsContext(bitmapImageRep: rep) else {
+            return XCTFail("could not make a bitmap to read the drawn artwork back out of")
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = g
+        let flip = NSAffineTransform()
+        flip.translateX(by: 0, yBy: 160)
+        flip.scaleX(by: 1, yBy: -1)
+        flip.concat()
+        MasterPagePainter.draw(content, sheets: sheets, totalPages: 1,
+                               visibleRect: NSRect(x: 0, y: 0, width: 120, height: 160))
+        NSGraphicsContext.restoreGraphicsState()
+
+        // `NSBitmapImageRep` addresses row 0 as the TOP row, and the context above was flipped the
+        // way the reader's view is, so this reads what a reader would see.
+        let top = try XCTUnwrap(rep.colorAt(x: 60, y: 20), "no pixel at the top of the sheet")
+        let bottom = try XCTUnwrap(rep.colorAt(x: 60, y: 140), "no pixel at the bottom of the sheet")
+        XCTAssertGreaterThan(top.redComponent, top.blueComponent, """
+            the top of the sheet is not the top of the picture — the artwork is drawn upside down. \
+            Read back r=\(top.redComponent) b=\(top.blueComponent) at the top.
+            """)
+        XCTAssertGreaterThan(bottom.blueComponent, bottom.redComponent,
+                             "the same, from the other end: r=\(bottom.redComponent) "
+                             + "b=\(bottom.blueComponent) at the bottom of the sheet")
+    }
+
     // MARK: - Fixtures
 
     /// One template, applying to every page, carrying one full-page picture — the shape a Korean
