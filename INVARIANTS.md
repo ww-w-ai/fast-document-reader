@@ -750,3 +750,25 @@ this file tells you why, and why the obvious alternative does not work.
     **The relink is not the culprit, and that is worth knowing on its own.** The obvious suspect was the app failing to pick up a rebuilt engine, which would make any in-session before/after compare a binary against itself. Tested rather than assumed, by mutation: `Span.text` in `office_project.rs` was changed to append one character per run, and the ordinary `build-engine.sh` → `make-app.sh release` sequence carried it through to a different binary and **612,778 → 622,539** in the app's own `--extract`. The pipeline propagates. Restored, `diff`-checked, and the worktree deleted.
 
     What remains unexplained is only which producer emitted 612,472 in that session — and that is exactly the gap the rule closes. **A row asserting byte identity records the SHA of the binary that produced each side, next to the number.** Without it the row cannot be audited later: "identical" may well have been true of whatever it compared, but nothing in the record says what that was, and a figure no build of that source has ever produced reads for months afterwards as a defect in the app rather than a defect in the notebook.
+
+121. **A BLIT WHOSE DESTINATION IS NOT THE BITMAP'S OWN PIXEL COUNT IS NOT A BLIT — CoreGraphics resamples the whole picture, and on a 바탕쪽 that was half the remaining scroll cost.** Invariant 118 cached the artwork at the size it is DRAWN at and took the median viewport from 51.3 ms to 41.0. The 30 ms that remained was assumed to be the composite itself and written down as needing a structural change — layer backing, dirty rectangles. It was not. It was one rounding.
+
+    The cached copy is a whole number of pixels; the rectangle it lands in is not. Measured on the reference document: a **1111-pixel** bitmap drawn into **1111.18** device pixels. Timed offscreen on that artwork, 1.69 megapixels, medians of 40 draws:
+
+    | how it is drawn | median |
+    |---|---|
+    | `NSImage.draw`, `.sourceOver`, point space | 17.5 ms |
+    | `NSImage.draw`, `.copy` | 19.2 |
+    | opaque copy (alpha byte skipped) | 17.8 |
+    | `CGContext.draw`, point space | 16.0 |
+    | destination snapped to whole POINTS | 16.6 |
+    | **device space, one-to-one** | **7.2** |
+    | device space, one-to-one, HIGH interpolation | **7.25** |
+
+    Two things fall out of the last two rows. **Blending, the alpha channel and `NSImage`'s own overhead are not where the time is** — the first four rows are one number. And **the interpolation FLAG is not the lever either**: at one-to-one, high quality costs 0.05 ms, because CoreGraphics has nothing to interpolate. Turning interpolation down in point space (7.2 ms) buys the same as aligning does, which is the tell — both are the same saving, arrived at from opposite ends, and only alignment keeps the picture correct at every other zoom.
+
+    So `MasterPagePainter.drawArtwork` undoes the view's transform, rounds the destination's origin to a whole device pixel, and draws the `CGImage` in a rectangle that is exactly its own pixel count. The artwork can move by half a device pixel; nothing else changes. In device space the bitmap is upright by CG's own convention, so the flipped-view correction (`respectFlipped:`) is gone rather than restated.
+
+    **Paired measurement, two rounds, alternating builds in one session on a loaded machine (invariant 117 — the recorded 41.0 was taken on a quiet one and is not comparable): median scrolled viewport 72.2 / 72.3 ms before, 40.1 / 40.0 after; the whole read-through 71.6 s to 46.1 s.** Printing is untouched: `NSPrintOperation.current` still hands paper the original.
+
+    **The gate reads the destination rectangle, not a clock.** A copy and a resample put identical pixels on the screen, so nothing else in the suite can see this (invariant 113). `lastArtworkBlit` records what the last blit actually asked for, and the test asserts its size equals the bitmap's pixel count and its origin is integral. Proven to bite — three value substitutions, each restored and `diff`-checked: an unrounded origin (2 failures), a size taken from the fractional rectangle (2), and falling back to the point-space draw (6).

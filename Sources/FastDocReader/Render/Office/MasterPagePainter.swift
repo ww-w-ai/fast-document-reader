@@ -156,14 +156,24 @@ enum MasterPagePainter {
     /// freed and its address reused.)
     private final class Artwork {
         let source: NSImage
-        let ready: NSImage
+        let ready: CGImage
         let bytes: Int
-        init(source: NSImage, ready: NSImage, bytes: Int) {
+        init(source: NSImage, ready: CGImage, bytes: Int) {
             self.source = source
             self.ready = ready
             self.bytes = bytes
         }
     }
+
+    /// What the last artwork blit actually asked the graphics system to do, in DEVICE pixels — the
+    /// deterministic axis `MasterPageArtworkCacheTests` judges invariant 121 by. A copy and a
+    /// resample put identical pixels on the screen, so nothing else in this suite can tell them
+    /// apart; the destination rectangle can.
+    private(set) static var lastArtworkBlit: (device: CGRect, pixelWidth: Int, pixelHeight: Int)?
+
+    /// So a gate can tell "this draw pass blitted nothing" from "a previous one did" — the entry
+    /// assertion invariant 118's own gate had to be given after passing as a shell.
+    static func resetLastArtworkBlit() { lastArtworkBlit = nil }
 
     /// **Bounded in BYTES, not in entries.** The first version of this cache capped it at 64 entries
     /// and that is not a bound at all: a single scaled artwork was measured at 2652×1940 device
@@ -202,7 +212,20 @@ enum MasterPagePainter {
     /// The pixel size is in the key rather than assumed, so magnifying the page does not serve a
     /// blurry copy: a bigger `ctm` scale is a different key and re-renders at the resolution that
     /// zoom now needs.
-    private static func scaled(_ image: NSImage, to rect: NSRect) -> NSImage {
+    /// Draw a 바탕쪽's artwork — the single most expensive thing a scrolled frame of a paged Korean
+    /// document does, and the reason this is not simply `image.draw(in:)`.
+    ///
+    /// **A blit whose destination is not the bitmap's own pixel count is not a blit.** The cached
+    /// copy is a whole number of pixels; the rectangle it is drawn into is fractional (measured on
+    /// the reference document: a 1111-pixel bitmap into 1111.18 device pixels), and CoreGraphics
+    /// answers that by resampling the entire picture at the context's interpolation quality. So the
+    /// draw happens in DEVICE space, in a rectangle that is exactly the bitmap, and the copy is
+    /// one-to-one. Measured, 1.69 megapixels, medians of 40: **16.0 ms fractional at high quality,
+    /// 7.2 ms one-to-one** — and one-to-one at HIGH quality is 7.25, so alignment is the whole of
+    /// it and turning interpolation down is not what buys this (invariant 121).
+    ///
+    /// Rounding the origin moves the artwork by at most half a device pixel.
+    static func drawArtwork(_ image: NSImage, in rect: NSRect) {
         // PAPER GETS THE ORIGINAL. A printed page is rendered at the printer's resolution, not the
         // screen's, and serving it a bitmap sized for a 395pt-wide sheet would put a screen-sized
         // picture into the PDF — a silent fidelity loss that `--pdf` reports no error for and that
@@ -212,10 +235,51 @@ enum MasterPagePainter {
         // into a bitmap the caller owns and is how both the reader's own probe and this file's gate
         // make a draw provably happen, and excluding it would turn the cache off in exactly the
         // measurements that judge it. `NSPrintOperation.current` names the one case that matters.
-        guard NSPrintOperation.current == nil else { return image }
-        let scale = abs(NSGraphicsContext.current?.cgContext.ctm.a ?? 2)
-        let pixelWidth = max(1, Int((rect.width * scale).rounded()))
-        let pixelHeight = max(1, Int((rect.height * scale).rounded()))
+        guard NSPrintOperation.current == nil, let cg = NSGraphicsContext.current?.cgContext else {
+            // `respectFlipped` because this view IS flipped and an image drawn without it arrives
+            // upside down — the one place that matters in this file, since the artwork here is a
+            // whole page of it.
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                       respectFlipped: true, hints: nil)
+            return
+        }
+        let ctm = cg.ctm
+        // `CGRect.applying` returns the normalised bounding box, so a flipped view's negative
+        // vertical scale comes back as a positive height in device coordinates.
+        let device = rect.applying(ctm)
+        let pixelWidth = max(1, Int(device.width.rounded()))
+        let pixelHeight = max(1, Int(device.height.rounded()))
+        guard let ready = artwork(image, pixelWidth: pixelWidth, pixelHeight: pixelHeight,
+                                  points: rect.size) else {
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
+                       respectFlipped: true, hints: nil)
+            return
+        }
+        let target = CGRect(x: device.minX.rounded(), y: device.minY.rounded(),
+                            width: CGFloat(pixelWidth), height: CGFloat(pixelHeight))
+        lastArtworkBlit = (target, pixelWidth, pixelHeight)
+        cg.saveGState()
+        cg.concatenate(ctm.inverted())      // out of the view's transform, into device pixels
+        // Drawn through CoreGraphics rather than `NSImage`: in device space the bitmap is already
+        // upright by CG's own convention, so the flipped-view correction this used to need is not a
+        // second rule to keep in step with anything.
+        cg.draw(ready, in: target)
+        cg.restoreGState()
+    }
+
+    /// The artwork at the size it is actually DRAWN, in device pixels, built once per size.
+    ///
+    /// Decoding once is not enough — measured. Wrapping the decoded `CGImage` in a fresh `NSImage`
+    /// and drawing that took the median viewport from 51.3 ms to 48.6, which says the cost is not
+    /// the decode but the RESAMPLE: a full page of artwork is several thousand pixels on a side and
+    /// every frame scaled all of it down to a 395pt-wide sheet. Scaling once and blitting the result
+    /// is what removes it.
+    ///
+    /// The pixel size is in the key rather than assumed, so magnifying the page does not serve a
+    /// blurry copy: a bigger `ctm` scale is a different key and re-renders at the resolution that
+    /// zoom now needs.
+    private static func artwork(_ image: NSImage, pixelWidth: Int, pixelHeight: Int,
+                                points: NSSize) -> CGImage? {
         // The address itself, not its hash: two live objects can share a hash and would then be
         // served each other's artwork. The entry holds the source, so while a key can be found the
         // address behind it cannot have been recycled.
@@ -223,20 +287,21 @@ enum MasterPagePainter {
         let key = "\(address)|\(pixelWidth)x\(pixelHeight)" as NSString
         if let hit = scaledArtwork.object(forKey: key) { return hit.ready }
         artworkRasterisations += 1
-        guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: pixelWidth, pixelsHigh: pixelHeight,
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return image }
-        rep.size = rect.size
-        guard let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return image }
+        guard let ctx = CGContext(data: nil, width: pixelWidth, height: pixelHeight,
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        let ns = NSGraphicsContext(cgContext: ctx, flipped: false)
+        ctx.interpolationQuality = .high
+        ctx.scaleBy(x: CGFloat(pixelWidth) / max(points.width, 0.01),
+                    y: CGFloat(pixelHeight) / max(points.height, 0.01))
         NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = ctx
-        ctx.imageInterpolation = .high
-        image.draw(in: NSRect(origin: .zero, size: rect.size), from: .zero,
+        NSGraphicsContext.current = ns
+        image.draw(in: NSRect(origin: .zero, size: points), from: .zero,
                    operation: .copy, fraction: 1)
         NSGraphicsContext.restoreGraphicsState()
-        let ready = NSImage(size: rect.size)
-        ready.addRepresentation(rep)
+        guard let ready = ctx.makeImage() else { return nil }
         let bytes = pixelWidth * pixelHeight * 4
         scaledArtwork.setObject(Artwork(source: image, ready: ready, bytes: bytes),
                                 forKey: key, cost: bytes)
@@ -273,11 +338,7 @@ enum MasterPagePainter {
         ctx?.cgContext.clip(to: sheet)
         switch object.content {
         case .image(let image):
-            // `respectFlipped` because this view IS flipped and an image drawn without it arrives
-            // upside down — the one place that matters in this file, since the artwork here is a
-            // whole page of it.
-            scaled(image, to: rect).draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,
-                                         respectFlipped: true, hints: nil)
+            drawArtwork(image, in: rect)
         case .drawing(let pdf):
             guard let image = decoded(pdf) else { return }
             image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1,

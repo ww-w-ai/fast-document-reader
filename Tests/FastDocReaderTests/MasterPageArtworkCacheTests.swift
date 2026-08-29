@@ -127,6 +127,54 @@ final class MasterPageArtworkCacheTests: XCTestCase {
             """)
     }
 
+    /// Invariant 121: the blit must be ONE-TO-ONE.
+    ///
+    /// Caching the artwork at its drawn size is only half the win. The cached copy is a whole
+    /// number of pixels and the rectangle it lands in is fractional — on the reference document a
+    /// 1111-pixel bitmap into 1111.18 device pixels — and CoreGraphics answers a destination that
+    /// is not the source's own size by RESAMPLING the whole picture. Measured on 1.69 megapixels,
+    /// medians of 40 draws: **16.0 ms fractional at high interpolation against 7.2 ms one-to-one**,
+    /// and one-to-one at high interpolation is 7.25, so it is the alignment and not the filter.
+    ///
+    /// The pixels are identical either way, which is why nothing else here can see it and why this
+    /// reads the destination rectangle rather than a clock (invariant 113).
+    func testTheArtworkIsCopiedOneToOneRatherThanResampledIntoAFractionalRectangle() throws {
+        // A deliberately awkward frame: 200.09 × 260.07 points at scale 2 is 400.18 × 520.14 device
+        // pixels, so a draw that simply uses the rectangle it was given cannot be one-to-one.
+        let object = OfficeMasterObject(frame: CGRect(x: 3.4, y: 7.6, width: 200.09, height: 260.07),
+                                        content: .image(artwork(width: 1200, height: 1560)))
+        let page = OfficeMasterPage(section: 1, appliesTo: .defaultPages, objects: [object])
+        let content = MasterPageContent(pages: [page], sectionsHidingMasterPage: [],
+                                        theme: RenderTheme(baseFontSize: 13),
+                                        documentDefaultFontSize: 11, pageContentWidth: 180)
+        let sheets = [CGRect(x: 0, y: 0, width: 220, height: 280)]
+
+        MasterPagePainter.resetLastArtworkBlit()
+        withOffscreenBitmap(width: 440, height: 560, scale: 2) {
+            MasterPagePainter.draw(content, sheets: sheets, totalPages: 1,
+                                   visibleRect: NSRect(x: 0, y: 0, width: 220, height: 280))
+        }
+        let blit = try XCTUnwrap(MasterPagePainter.lastArtworkBlit, """
+            the draw pass never blitted any artwork, so nothing below is being tested — check the \
+            object still intersects the visible rect and that the image case still goes through \
+            `drawArtwork`.
+            """)
+
+        XCTAssertEqual(blit.device.width, CGFloat(blit.pixelWidth), accuracy: 0.0001, """
+            the artwork was drawn into a \(blit.device.width)-pixel-wide rectangle from a \
+            \(blit.pixelWidth)-pixel bitmap. A destination that is not the bitmap's own size makes \
+            CoreGraphics resample the entire picture on every frame — measured at 16.0 ms against \
+            7.2 for the same pixels copied.
+            """)
+        XCTAssertEqual(blit.device.height, CGFloat(blit.pixelHeight), accuracy: 0.0001,
+                       "the same, vertically: \(blit.device.height) into \(blit.pixelHeight)")
+        XCTAssertEqual(blit.device.minX, blit.device.minX.rounded(), accuracy: 0.0001,
+                       "a destination that starts between two device pixels is resampled too — "
+                       + "x was \(blit.device.minX)")
+        XCTAssertEqual(blit.device.minY, blit.device.minY.rounded(), accuracy: 0.0001,
+                       "the same, vertically — y was \(blit.device.minY)")
+    }
+
     // MARK: - Fixtures
 
     /// One template, applying to every page, carrying one full-page picture — the shape a Korean
