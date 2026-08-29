@@ -439,7 +439,9 @@ final class MarkdownDocument: NSDocument {
             let handle = RustOfficeDocumentHandle(data: data, extension: ext)
             guard let unresolved = handle?.officeContent(bytes: data) else {
                 throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
-                    NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
+                    NSLocalizedDescriptionKey: RustEngine.lastOfficeReadFailure.map {
+                        "cannot read this \(ext.uppercased()) file: \($0.sentence)"
+                    } ?? "The document engine could not read this \(ext.uppercased()) file.",
                 ])
             }
             let result = unresolved.resolvingFontSubstitution()

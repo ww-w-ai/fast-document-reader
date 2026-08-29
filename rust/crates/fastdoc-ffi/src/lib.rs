@@ -62,7 +62,10 @@ thread_local! {
 
 #[derive(Debug)]
 enum ReadOfficeError {
-    InvalidArchive,
+    /// Carries the archive reader's OWN sentence. Discarding it with `map_err(|_| …)` is what
+    /// made `--extract` answer a corrupt file with "the office archive is invalid" while `--pdf`,
+    /// whose host-side zip open fails first, still said which structure was missing.
+    InvalidArchive(String),
     UnsupportedExtension(String),
     Hwp(fastdoc_engine::render::office::hwp_reader::mapping::MapError),
     Reader(String),
@@ -72,7 +75,7 @@ enum ReadOfficeError {
 impl fmt::Display for ReadOfficeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidArchive => f.write_str("the office archive is invalid"),
+            Self::InvalidArchive(detail) => f.write_str(detail),
             Self::UnsupportedExtension(extension) => {
                 write!(f, "unsupported office extension: {extension}")
             }
@@ -86,7 +89,7 @@ impl fmt::Display for ReadOfficeError {
 impl ReadOfficeError {
     fn kind(&self) -> FfiErrorKind {
         match self {
-            Self::InvalidArchive => FfiErrorKind::InvalidArchive,
+            Self::InvalidArchive(_) => FfiErrorKind::InvalidArchive,
             Self::UnsupportedExtension(_) => FfiErrorKind::UnsupportedExtension,
             Self::Hwp(_) => FfiErrorKind::HwpReadFailed,
             Self::Reader(_) => FfiErrorKind::ReaderFailed,
@@ -344,6 +347,75 @@ pub unsafe extern "C" fn fastdoc_read_office_tree(
             resources: BTreeMap::new(),
         })
         .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))?;
+        tree.encode_json()
+            .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))
+    })
+}
+
+/// Reads a TEXT document — markdown or plain text — into the same canonical `ValidatedRenderTree`
+/// envelope `fastdoc_read_office_tree` returns, and by the same rules: the envelope is the
+/// diagnostic channel, NULL only when the envelope itself could not be built, and the result is
+/// owned by this library either way.
+///
+/// This exists so the format the app is NAMED for stops being the one format the host reads by
+/// itself. `render::markdown::produce` and `render::plaintext::produce` have had parity tests since
+/// S3 and no way to be called from outside the crate; a reader on another platform, and any
+/// engine-versus-host comparison of the kind the office formats already get, both need this door.
+///
+/// Which producer runs is decided by EXTENSION, the same fork `DocumentTypes.kind(forExtension:)`
+/// makes on the host: `md`/`markdown` parse as markdown, everything else this accepts is read
+/// verbatim as plain text. An extension neither producer claims is `unsupportedExtension`, not a
+/// silent fall-through to the other one — reading a `.docx` as plain text would "succeed" and
+/// hand back a page of zip bytes.
+///
+/// # Safety
+/// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_read_text_tree(
+    bytes: *const u8,
+    len: usize,
+    extension_: *const c_char,
+) -> *mut c_char {
+    if bytes.is_null() || extension_.is_null() {
+        return guard_envelope(|| {
+            Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "invalid NULL argument",
+            ))
+        });
+    }
+    let data = std::slice::from_raw_parts(bytes, len);
+    let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
+        return guard_envelope(|| {
+            Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "extension is not valid UTF-8",
+            ))
+        });
+    };
+
+    guard_envelope(move || {
+        let lowered = extension.to_lowercase();
+        let source_name = format!("document.{lowered}");
+        let tree = match lowered.as_str() {
+            "md" | "markdown" => fastdoc_engine::render::markdown::produce(data, &source_name)
+                .map_err(|error| {
+                    FfiFailure::new(FfiErrorKind::ReaderFailed, format!("{error:?}"))
+                })?,
+            "txt" | "text" | "csv" | "tsv" | "log" | "json" | "yaml" | "yml" | "toml" | "ini"
+            | "conf" | "cfg" | "sh" | "bash" | "zsh" | "py" | "rb" | "js" | "ts" | "swift" | "rs"
+            | "go" | "c" | "h" | "cpp" | "hpp" | "java" | "kt" | "sql" | "xml" | "html" | "css" => {
+                fastdoc_engine::render::plaintext::produce(data, &source_name).map_err(|error| {
+                    FfiFailure::new(FfiErrorKind::ReaderFailed, format!("{error:?}"))
+                })?
+            }
+            other => {
+                return Err(FfiFailure::new(
+                    FfiErrorKind::UnsupportedExtension,
+                    format!("unsupported text extension: {other}"),
+                ))
+            }
+        };
         tree.encode_json()
             .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))
     })
@@ -1810,7 +1882,7 @@ fn read_office_retaining_parse(
             .map_err(ReadOfficeError::Hwp);
     }
     let archive = ZipArchive::new(swiftshim::Data::fromBytes(data.to_vec()))
-        .map_err(|_| ReadOfficeError::InvalidArchive)?;
+        .map_err(|error| ReadOfficeError::InvalidArchive(error.to_string()))?;
     match extension.to_lowercase().as_str() {
         "docx" | "docm" | "dotx" | "dotm" => DocxReader::read(&archive)
             .map(|result| (result, None))

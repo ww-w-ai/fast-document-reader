@@ -36,6 +36,13 @@ char *fastdoc_take_last_error(void);
 // built (never on a normal document, read or unreadable).
 char *fastdoc_read_office_tree(const unsigned char *bytes, size_t len, const char *extension);
 
+// Reads a TEXT document — markdown or plain text — into the SAME canonical RenderTree envelope
+// fastdoc_read_office_tree returns, with the same ownership and the same "the envelope is the
+// diagnostic" rule. The producer is chosen by extension: md/markdown parse as markdown, the text
+// kinds are read verbatim, and anything else is unsupportedExtension rather than a silent
+// fall-through (reading a .docx as text would "succeed" and hand back zip bytes).
+char *fastdoc_read_text_tree(const unsigned char *bytes, size_t len, const char *extension);
+
 // The document's own default body run size in points, or 11 when it declares none or cannot be
 // read. Asked for separately because the read result does not carry it for a zip-backed document.
 

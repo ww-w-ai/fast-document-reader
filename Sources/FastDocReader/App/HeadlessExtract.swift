@@ -73,7 +73,11 @@ enum HeadlessExtract {
                 #endif
                 guard let unresolved = RustEngine.readOffice(data, extension: ext) else {
                     throw NSError(domain: "ai.ww-w.fast-md-reader", code: 4, userInfo: [
-                        NSLocalizedDescriptionKey: "The document engine could not read this \(ext.uppercased()) file.",
+                        // `catch` below already prefixes "cannot extract <file>: ", so this is the reason
+                        // ALONE — the two used to read "cannot extract x.docx: cannot read this DOCX
+                        // file: Not a ZIP archive…", saying it twice.
+                        NSLocalizedDescriptionKey: RustEngine.lastOfficeReadFailure?.sentence
+                            ?? "the document engine could not read this \(ext.uppercased()) file",
                     ])
                 }
                 // Font discovery belongs to this AppKit host. The engine deliberately sends HWP

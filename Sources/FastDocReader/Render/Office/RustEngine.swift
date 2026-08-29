@@ -55,6 +55,49 @@ enum RustEngine {
     /// Font substitution is deliberately NOT applied here. It is AppKit's, it belongs to the host,
     /// and `DocumentTypes.readOffice` already applies it once for every reader — so this returns
     /// exactly what a reader returns, at exactly the point a reader returns it.
+    /// The engine's own account of the last office read that returned nothing — kept as a VALUE,
+    /// for the caller to put in the ONE line it prints.
+    ///
+    /// It used to be written straight to stderr from down here, the instant a read failed, as
+    /// `fastdoc: {"kind":"invalidArchive","location":null,"message":…}`. That is how `--extract`
+    /// came to answer a corrupt file with a line of engine JSON above its own sentence, while
+    /// `--pdf` — whose host-side zip open fails first and never reaches the engine — answered with
+    /// one sentence. Whoever reads stderr is a person or an agent; internals reach them only
+    /// because a caller decided to say them, never because a reader printed on the way past.
+    struct OfficeReadFailure {
+        /// The wire tag (`invalidArchive`, `hwpReadFailed`, …), when the diagnostic was JSON.
+        let kind: String?
+        /// The engine's human sentence, when it had one.
+        let message: String?
+        /// Exactly what the engine recorded, for a caller that wants everything.
+        let raw: String
+
+        /// One line, for a caller that has to print something. Prefers the engine's own sentence —
+        /// which for a bad archive is the archive reader's own words — and falls back to the raw
+        /// diagnostic rather than to a sentence nobody measured.
+        var sentence: String { message ?? raw }
+    }
+
+    /// The last failure, replaced on every failed read and never cleared on success — a caller
+    /// reads it only on the `nil` it just received, so a stale value cannot be reported as fresh.
+    private(set) static var lastOfficeReadFailure: OfficeReadFailure?
+
+    /// Take the engine's recorded diagnostic (`fastdoc_take_last_error` CONSUMES it, so exactly one
+    /// caller may ask) and record it. Decoding is best-effort: an engine that recorded something
+    /// this build cannot parse still gets its text through, in `raw`.
+    static func recordOfficeReadFailure() {
+        guard let diagnostic = fastdoc_take_last_error() else {
+            lastOfficeReadFailure = nil
+            return
+        }
+        defer { fastdoc_string_free(diagnostic) }
+        let raw = String(cString: diagnostic)
+        let decoded = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any]
+        lastOfficeReadFailure = OfficeReadFailure(kind: decoded?["kind"] as? String,
+                                                  message: decoded?["message"] as? String,
+                                                  raw: raw)
+    }
+
     static func readOffice(_ data: Data, extension ext: String) -> OfficeReadResult? {
         #if DEBUG
         if DocumentEngineTrace.currentEntryPoint == "bridge-tree" {
@@ -74,12 +117,7 @@ enum RustEngine {
             }
         }
         guard let json else {
-            if let diagnostic = fastdoc_take_last_error() {
-                defer { fastdoc_string_free(diagnostic) }
-                FileHandle.standardError.write(
-                    Data("fastdoc: \(String(cString: diagnostic))\n".utf8)
-                )
-            }
+            recordOfficeReadFailure()
             return nil
         }
         defer { fastdoc_string_free(json) }
@@ -119,9 +157,12 @@ enum RustEngine {
             // "the engine could not parse the document", and the two have completely different
             // causes: one is a document the engine cannot read, the other is a field the two sides
             // spell differently. Saying which is the difference between a five-minute fix and an
-            // afternoon. This is stderr rather than a thrown error because the callers all take an
-            // Optional, and widening them to `throws` is a change this diagnostic does not need.
-            FileHandle.standardError.write(Data("fastdoc: engine JSON did not decode: \(error)\n".utf8))
+            // afternoon. It goes into the same slot every other failure here uses, so the caller
+            // that received the `nil` says it once in its own sentence — it used to write itself to
+            // stderr on the way past, which is the habit `OfficeReadFailure` exists to end.
+            let text = "the engine's JSON did not decode: \(error)"
+            lastOfficeReadFailure = OfficeReadFailure(kind: "envelopeDecodeFailed",
+                                                      message: text, raw: text)
             return nil
         }
     }

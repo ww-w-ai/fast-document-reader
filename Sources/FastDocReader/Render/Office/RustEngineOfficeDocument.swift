@@ -71,12 +71,9 @@ final class RustOfficeDocumentHandle {
             return fastdoc_office_content_json(handle, base, raw.count)
         }
         guard let json else {
-            if let diagnostic = fastdoc_take_last_error() {
-                defer { fastdoc_string_free(diagnostic) }
-                FileHandle.standardError.write(
-                    Data("fastdoc: \(String(cString: diagnostic))\n".utf8)
-                )
-            }
+            // The same rule the other reader follows: record it, do not print it. Whoever asked for
+            // this content decides what a person sees (`RustEngine.lastOfficeReadFailure`).
+            RustEngine.recordOfficeReadFailure()
             return nil
         }
         defer { fastdoc_string_free(json) }
