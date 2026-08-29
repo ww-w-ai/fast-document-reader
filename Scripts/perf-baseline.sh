@@ -12,6 +12,14 @@
 # Without FMD_BASELINE_APP this prints why it cannot run and exits 0 — the baseline is a 30MB
 # bundle that this repo does not carry, and a missing bundle is not a failing gate.
 #
+# ONLY `--extract` belongs in this script, and the reason is not taste. The two bundles have
+# different identifiers (`ai.ww-w.fast-md-reader` and `…dev`), so they do not share a preferences
+# domain — measured 2026-08-30, the baseline had a reading size of 17 and the dev build 10. Nothing
+# in either build's output says so. `--extract` never lays anything out and is immune; a `--pdf`
+# comparison across the two is NOT, and an unpaged document (markdown, txt, csv) paginates by the
+# reading size alone — the same file came out 16 pages against 9, which reads as a rendering
+# regression and is a preference. Equalise both domains first, or do not compare.
+#
 # The bundle is required WHOLE. Its executable alone prints nothing and exits 0 (invariant 116),
 # which would read as a baseline agreeing with everything.
 
