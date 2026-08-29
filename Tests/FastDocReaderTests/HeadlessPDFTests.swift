@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import PDFKit
 @testable import FastDocReader
 
 /// `FastDocReader --pdf <file>`: exercises the real CLI entry point (`HeadlessPDF.run`), not the
@@ -183,5 +184,59 @@ final class HeadlessPDFTests: XCTestCase {
         let body = (1...80).map { "Paragraph number \($0) of the body text." }.joined(separator: "\n\n")
         try Data(body.utf8).write(to: url)
         return url
+    }
+}
+
+/// The seed window width must not decide the printed type size (invariant 127). Judged by
+/// arithmetic and by a printed page count, never by a wall clock.
+final class HeadlessPrintColumnTests: XCTestCase {
+    /// The correction is a pure function, so the two things that can go wrong are checked without
+    /// a print job: it must land the view exactly on the paper, and it must refuse to move a paged
+    /// document (whose paper IS its page body, invariant 59).
+    func testTheCorrectionPutsTheViewOnThePaperAndLeavesAPagedDocumentAlone() {
+        // chrome = 820 - 748 = 72, so the window that yields a 451pt view is 523.
+        XCTAssertEqual(HeadlessPDF.printColumnCorrection(windowWidth: 820, viewWidth: 748,
+                                                         target: 451, isPaged: false) ?? 0,
+                       523, accuracy: 0.001)
+        // Seeded somewhere else entirely, the SAME chrome yields the SAME answer — that is the
+        // property the fix exists for.
+        XCTAssertEqual(HeadlessPDF.printColumnCorrection(windowWidth: 1640, viewWidth: 1568,
+                                                         target: 451, isPaged: false) ?? 0,
+                       523, accuracy: 0.001)
+        XCTAssertNil(HeadlessPDF.printColumnCorrection(windowWidth: 820, viewWidth: 748,
+                                                       target: 451, isPaged: true))
+        // Already on the paper: nothing to do, so no second reflow is paid for.
+        XCTAssertNil(HeadlessPDF.printColumnCorrection(windowWidth: 523, viewWidth: 451,
+                                                       target: 451, isPaged: false))
+    }
+
+    /// End to end: the same markdown file printed twice must produce the same number of pages, and
+    /// that number must not be the one an 820pt window used to produce. Counting pages is what the
+    /// defect was visible as (147 against 46 for one file), so that is what is asserted.
+    func testAMarkdownFilePrintsTheSameNumberOfPagesWhateverTheSeedWindowWas() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fmd-print-col-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // Long enough to span several sheets, so a size change shows up as a page count change.
+        let body = (1...400).map { "Paragraph \($0) — 본문 한 줄, long enough to wrap on any column." }
+            .joined(separator: "\n\n")
+        let input = dir.appendingPathComponent("many.md")
+        try body.write(to: input, atomically: true, encoding: .utf8)
+
+        func pageCount(of url: URL) throws -> Int {
+            let doc = try XCTUnwrap(PDFDocument(url: url))
+            return doc.pageCount
+        }
+
+        let first = dir.appendingPathComponent("a.pdf")
+        XCTAssertEqual(HeadlessPDF.run([input.path, "-o", first.path], seedWindowWidth: 820), 0)
+        let second = dir.appendingPathComponent("b.pdf")
+        XCTAssertEqual(HeadlessPDF.run([input.path, "-o", second.path], seedWindowWidth: 1640), 0)
+
+        let a = try pageCount(of: first)
+        XCTAssertGreaterThan(a, 1, "the fixture must span sheets or the count proves nothing")
+        XCTAssertEqual(a, try pageCount(of: second))
     }
 }

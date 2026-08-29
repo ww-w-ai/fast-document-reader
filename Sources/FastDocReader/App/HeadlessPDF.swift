@@ -19,7 +19,9 @@ import AppKit
 /// file size) so a script can trust it.
 enum HeadlessPDF {
 
-    static func run(_ args: [String]) -> Int32 {
+    /// `seedWindowWidth` exists so a test can prove the seed does NOT survive into the printout
+    /// (invariant 127). Production always uses the default; nothing else may pass it.
+    static func run(_ args: [String], seedWindowWidth: CGFloat = 820) -> Int32 {
         guard let parsed = parseArgs(args) else {
             err(usage)
             return 2
@@ -66,12 +68,28 @@ enum HeadlessPDF {
             return 1
         }
         // A sensible off-screen frame — the app's own default window size — never ordered on
-        // screen. For a PAGED document this doesn't matter (width is pinned to the document's own
-        // page body, invariant 57); for markdown/plain text it is the column the reader would wrap
-        // at.
-        wc.window?.setFrame(NSRect(x: 0, y: 0, width: 820, height: 640), display: false)
+        // screen. For a PAGED document this is the whole story (width is pinned to the document's
+        // own page body, invariant 57). For markdown/plain text it is only a SEED: an unpaged
+        // document prints through `horizontalPagination = .fit`, which scales the text view's width
+        // onto the paper, so this number would otherwise decide the printed type size — a document
+        // seeded at 1640 instead of 820 prints the same file as 46 pages instead of 147, measured.
+        // The correction below takes the seed back out (invariant 127).
+        wc.window?.setFrame(NSRect(x: 0, y: 0, width: seedWindowWidth, height: 640), display: false)
 
         waitForRenderToSettle(doc: doc, wc: wc)
+
+        // Put the reading column ON the paper, so `.fit` has nothing left to scale and the file
+        // prints at the size it is read at. The relationship between the window and the text view
+        // is linear (chrome and scroller are constant), so ONE correction lands it exactly; the
+        // width is re-settled because a markdown reflow is what makes the new column real.
+        if let window = wc.window,
+           let corrected = printColumnCorrection(windowWidth: window.frame.width,
+                                                 viewWidth: wc.textView.frame.width,
+                                                 target: paperImageableWidth(),
+                                                 isPaged: wc.pagedDocumentWidth != nil) {
+            window.setFrame(NSRect(x: 0, y: 0, width: corrected, height: 640), display: false)
+            waitForRenderToSettle(doc: doc, wc: wc)
+        }
 
         guard let container = wc.textView.textContainer else {
             err("internal error: no text container for \(inputURL.lastPathComponent)")
@@ -283,4 +301,28 @@ enum HeadlessPDF {
     private static func err(_ s: String) {
         FileHandle.standardError.write(Data((s + "\n").utf8))
     }
+
+    /// The paper column `makePrintOperation` will print an UNPAGED document onto — the shared print
+    /// info's own sheet minus its own margins. Read from the same object the print path copies, so
+    /// a machine set to Letter and one set to A4 each correct to their own paper rather than to a
+    /// constant baked in here.
+    static func paperImageableWidth() -> CGFloat {
+        let info = (NSPrintInfo.shared.copy() as? NSPrintInfo) ?? NSPrintInfo()
+        return info.paperSize.width - info.leftMargin - info.rightMargin
+    }
+
+    /// The window width that puts the text view exactly on `target`, or `nil` when nothing should
+    /// move. Pure, so the arithmetic is testable without a print job.
+    ///
+    /// A PAGED document is left alone on purpose: its width is the document's own page body and the
+    /// print path pins the paper to it (invariant 59), so moving the window here would only make the
+    /// reader disagree with the sheet it is about to print.
+    static func printColumnCorrection(windowWidth: CGFloat, viewWidth: CGFloat,
+                                      target: CGFloat, isPaged: Bool) -> CGFloat? {
+        guard !isPaged, viewWidth > 0, target > 0 else { return nil }
+        guard abs(viewWidth - target) > 0.5 else { return nil }
+        let chrome = windowWidth - viewWidth
+        return max(1, target + chrome)
+    }
+
 }
