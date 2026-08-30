@@ -1038,3 +1038,27 @@ this file tells you why, and why the obvious alternative does not work.
     escapes AFTER the full triad had run green — the tests could not see it, because the whole
     change is comments. Copy the file aside and copy it back, or re-apply the work; `git checkout`
     is only safe on a file with nothing uncommitted in it.
+
+139. **The line between Rust and Swift is REUSE OFF macOS, not completeness — and the drawing code
+    in Rust is on the Rust side of it.** The owner's rule: what another platform has to reuse goes
+    to Rust; everything else stays Swift.
+
+    `grid_text_table_block::paint`, `draw_diagonal` and `office_text_builder::draw_placeholder_card`
+    look dead from inside this repository — the engine's own code is their only caller and the FFI
+    never reaches them, because on macOS AppKit draws. **They are not dead.** They are the drawing
+    LOGIC a non-macOS host runs: where a table's rules go, how a cut cell's edges are suppressed at
+    a page break, what a placeholder card contains. Only the backend under them is macOS —
+    `NSBezierPath.stroke`, `NSColor.setFill`, `NSImage.draw` — and that is what the 23 `todo!()`
+    shims in `swiftshim` are. A `todo!()` here reads as "this platform's host paints", not as
+    unfinished work.
+
+    **So there is no phase B to do.** All 23 are macOS presentation: eleven need a live graphics
+    context, twelve are TextKit (`NSLayoutManager`, `NSTextContainer`, `NSTextTable` geometry). Not
+    one is document logic, and `fastdoc-engine` itself has zero `todo!()`. The word "phase B" in
+    those messages promises a task that this rule says will never come; it means the BOUNDARY.
+
+    Recorded because it was decided in conversation and written down nowhere, and a later session
+    read the same code, found unreachable drawing, and proposed deleting it — the exact wrong move.
+    From inside the repository the two are indistinguishable: cross-platform logic whose macOS
+    backend is a shim looks precisely like transliterated dead weight. Only the owner's rule tells
+    them apart, so the rule has to live here rather than in a conversation.
