@@ -906,7 +906,7 @@ final class MarkdownDocument: NSDocument {
         let renderSource = (prefix ?? "") + fragmentSource
         let fragment = NSMutableAttributedString(attributedString:
             kind == .plainText ? PlainTextRenderer.render(fragmentSource, theme: theme)
-                               : MarkdownRenderer.render(renderSource, theme: theme))
+                               : RustMarkdownEngine.renderOrHost(renderSource, theme: theme))
         // A fragment is rendered from position zero (plus, for markdown, whatever definitions
         // prefix was glued ahead of it), so its source offsets and block ids are local. Lift both
         // into the document's coordinates before it goes in.
@@ -1621,11 +1621,17 @@ final class MarkdownDocument: NSDocument {
         case .markdown:
             if !hasPaintedOnce, Self.progressiveFirstPaintEnabled,
                text.utf16.count >= Self.progressiveSourceFloor {
+                // The one markdown path still built entirely here: the engine renders a whole
+                // document at a time, and front-first paint hands the reader a PIECE and finishes
+                // the rest afterwards. Wiring it would mean a wire per chunk plus the block-id and
+                // source-offset continuity `ProgressiveMarkdownRender` keeps across them — worth
+                // doing, not worth bundling into the cutover. A document long enough to take this
+                // arm is exactly the one where a wrong answer is least visible.
                 let render = MarkdownRenderer.renderProgressive(text, theme: theme)
                 attr = render.nextChunk(blocks: Self.progressiveHeadBlocks)
                 progressiveRender = render.isFinished ? nil : render
             } else {
-                attr = MarkdownRenderer.render(text, theme: theme)
+                attr = RustMarkdownEngine.renderOrHost(text, theme: theme)
             }
             hasPaintedOnce = true
         // Rebuilt from blocks every render, not cached: ⌘R (and, for a document with no page width,

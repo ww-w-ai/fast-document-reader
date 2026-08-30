@@ -30,7 +30,7 @@ impl FontProvider for SingleFaceWorld {
 fn wire_for(markdown: &str) -> MarkdownWire {
     let _ = font_provider::install(Box::new(SingleFaceWorld));
     let theme = RenderTheme::current(16.0);
-    markdown_wire::project(&MarkdownRenderer::render(markdown, &theme))
+    markdown_wire::project(&MarkdownRenderer::render(markdown, &theme), &theme)
 }
 
 #[test]

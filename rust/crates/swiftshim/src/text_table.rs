@@ -290,17 +290,63 @@ impl std::ops::DerefMut for NSTextTableBlock {
 /// type's `Deref` doc comment for why this has its own `base` field rather than sharing
 /// `NSTextTableBlock`'s (siblings, not parent/child) and what `Deref` does and does not give it
 /// (no virtual dispatch).
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct NSTextTable {
     base: NSTextBlock,
     pub numberOfColumns: i32,
     pub collapsesBorders: bool,
     pub hidesEmptyCells: bool,
+    /// Which table this IS, kept across clones.
+    ///
+    /// In AppKit `NSTextTable` is a class and every cell of one grid points at the same object;
+    /// that shared pointer is how the layout manager knows the cells belong together. Here it is a
+    /// value, cloned into each cell, so without this the only thing distinguishing two tables is
+    /// their contents — and two structurally identical tables (same column count, same collapse
+    /// flags, which is EVERY markdown table) are indistinguishable. Measured: 60 separate tables in
+    /// one document collapsed into one grid when a wire pooled them by value.
+    ///
+    /// Deliberately NOT part of `PartialEq`: two tables compare by what they declare, the way every
+    /// other value in this shim does. Ask `identity()` when the question is "the same table?".
+    id: u64,
+}
+
+impl Default for NSTextTable {
+    fn default() -> Self {
+        Self {
+            base: NSTextBlock::new(),
+            numberOfColumns: 0,
+            collapsesBorders: false,
+            hidesEmptyCells: false,
+            id: next_table_id(),
+        }
+    }
+}
+
+impl PartialEq for NSTextTable {
+    /// By what the table DECLARES, not by which table it is — see the `id` field's own doc.
+    fn eq(&self, other: &Self) -> bool {
+        self.base == other.base
+            && self.numberOfColumns == other.numberOfColumns
+            && self.collapsesBorders == other.collapsesBorders
+            && self.hidesEmptyCells == other.hidesEmptyCells
+    }
+}
+
+/// Handed out once per `NSTextTable::new()`; clones keep the number they were made with.
+fn next_table_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 impl NSTextTable {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Which table this is — see the `id` field.
+    pub fn identity(&self) -> u64 {
+        self.id
     }
 
     pub fn rectForBlock(

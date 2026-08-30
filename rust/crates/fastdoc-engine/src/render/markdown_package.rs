@@ -145,6 +145,11 @@ pub fn parse_document_text(markdown: &str) -> Document {
     options.extension.table = true;
     options.extension.tasklist = true;
     options.extension.strikethrough = true;
+    // swift-markdown parses through cmark-gfm with smart punctuation ON, so this reader has always
+    // shown curly quotes, en/em dashes and ellipses for the ASCII an author typed. Off here, the
+    // engine produced `'` where the app produces `’` on all five documents it ships — a difference
+    // no structural test can see, because the tree is identical and only the leaf text changes.
+    options.parse.smart = true;
     let root = parse_document(&arena, markdown, &options);
     Document {
         children: root.children().filter_map(map_node).collect(),

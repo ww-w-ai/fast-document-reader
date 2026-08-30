@@ -43,6 +43,11 @@ char *fastdoc_read_office_tree(const unsigned char *bytes, size_t len, const cha
 // fall-through (reading a .docx as text would "succeed" and hand back zip bytes).
 char *fastdoc_read_text_tree(const unsigned char *bytes, size_t len, const char *extension);
 
+// Renders a MARKDOWN document to the finished attributed string and returns it on the layer wire,
+// in the same envelope shape as the calls above; free with fastdoc_string_free. base_font_size is
+// the reader's own size (1...512). A font provider must be installed first.
+char *fastdoc_render_markdown(const unsigned char *bytes, size_t len, double base_font_size);
+
 // The document's own default body run size in points, or 11 when it declares none or cannot be
 // read. Asked for separately because the read result does not carry it for a zip-backed document.
 

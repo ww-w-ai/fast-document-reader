@@ -41,7 +41,10 @@
 
 use std::collections::HashMap;
 use swiftshim::color_font::{NSColor, NSFont};
-use swiftshim::paragraph_style::{NSParagraphStyle, NSUnderlineStyle};
+use swiftshim::paragraph_style::{
+    NSParagraphStyle, NSTextAlignment, NSUnderlineStyle, NSWritingDirection,
+};
+use crate::render::render_theme::RenderTheme;
 use swiftshim::text_table::{NSTextTable, NSTextTableBlock};
 use swiftshim::{AttrValue, NSAttributedString, NSAttributedStringKey, NSRange};
 
@@ -49,16 +52,50 @@ use swiftshim::{AttrValue, NSAttributedString, NSAttributedStringKey, NSRange};
 /// The host refuses a wire it does not know rather than reading fields that have moved.
 pub const MARKDOWN_WIRE_VERSION: u32 = 1;
 
+/// A font as the renderer MEANT it: which of the theme's three roles it came from, plus whatever
+/// traits were laid on top.
+///
+/// The resolved face travels too, but only as a fallback. Sending the face as the primary value is
+/// what the first version of this wire did, and it was wrong in a way no shape test can see: a
+/// system font's descriptor does not round-trip. `NSFont.systemFont(ofSize:weight:)` is the
+/// private `.AppleSystemUIFontDemi` UI cascade, and feeding its own descriptor back to
+/// `NSFont(descriptor:size:)` yields the concrete `.SFNS-Semibold` instead — a different face,
+/// with different metrics (6.33 against 6.41 advance at 30pt) and without the cascade that finds a
+/// glyph for a script the base face does not cover. Sending the ROLE instead means the host
+/// rebuilds it with the very same AppKit call the renderer would have made, so the two agree by
+/// construction rather than by a round trip that happens to work.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WireFont {
-    pub name: String,
-    pub size: f64,
+    /// `body` · `heading` · `code` · `raw` (the theme does not explain this one).
+    pub role: String,
+    /// Heading level, `0` for the other roles.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub level: i32,
     /// `NSFontDescriptorSymbolicTraits`' raw bits — bold is `1 << 1`, italic `1 << 0`.
     pub traits: u32,
+    /// The resolved face and size. Authoritative only for `raw`; elsewhere it is what the engine
+    /// happened to resolve, kept so a divergence can be SEEN rather than guessed at.
+    pub name: String,
+    pub size: f64,
 }
 
+fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
+}
+
+/// A colour as the renderer MEANT it, for the same reason `WireFont` carries a role.
+///
+/// Every colour markdown uses is one of the theme's palette entries, and every one of THOSE is a
+/// light/dark dynamic that resolves against the appearance drawing it. The engine's `NSColor` has
+/// no appearance to resolve against, so it keeps the light half (`swiftshim`'s documented phase-A
+/// shortcut) — which means a wire carrying components alone renders the whole document in light
+/// mode forever, in a build that has supported dark mode since the beginning. The role is what the
+/// host needs to rebuild the dynamic colour itself.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WireColor {
+    /// `text` · `secondary` · `link` · `inlineCode` · `raw`.
+    pub role: String,
+    /// The resolved components. Authoritative only for `raw` — see the type's own doc.
     pub r: f64,
     pub g: f64,
     pub b: f64,
@@ -209,18 +246,137 @@ impl<T: serde::Serialize + Clone> Pool<T> {
         self.seen.insert(key, index);
         index
     }
+
+    /// Intern under a caller-chosen key rather than under the value's own JSON.
+    ///
+    /// For everything that is a VALUE — a font, a colour, a paragraph style — two equal things are
+    /// one thing, and `intern` is right. A table is not a value: AppKit lays a grid out by which
+    /// `NSTextTable` its cells point at, and every markdown table declares the identical thing, so
+    /// `intern` would merge them all. `builder` is only called on a miss, so the value need not be
+    /// built for a table already in the pool.
+    fn intern_by(&mut self, key: impl std::fmt::Display, builder: impl FnOnce() -> T) -> u32 {
+        let key = key.to_string();
+        if let Some(&index) = self.seen.get(&key) {
+            return index;
+        }
+        let index = self.items.len() as u32;
+        self.items.push(builder());
+        self.seen.insert(key, index);
+        index
+    }
 }
 
 fn wire_font(font: &NSFont) -> WireFont {
     WireFont {
+        role: "raw".to_string(),
+        level: 0,
+        traits: font.fontDescriptor().symbolicTraits().0,
         name: font.fontName(),
         size: font.pointSize(),
-        traits: font.fontDescriptor().symbolicTraits().0,
+    }
+}
+
+/// Every font and colour the theme can produce, keyed by what the renderer would have resolved it
+/// to — so a value found in the finished string can be named by the ROLE that made it.
+///
+/// Built once per document. The four trait combinations are enumerated rather than derived because
+/// adding traits goes through the host's font provider (that is the whole point of the provider,
+/// invariant 52), so the only honest way to know what `body + bold` resolves to is to ask.
+struct ThemeRoles {
+    fonts: HashMap<String, (String, i32, u32)>,
+    colors: HashMap<String, String>,
+}
+
+/// The identity of a resolved font, as a map key: two fonts are the same iff a reader cannot tell
+/// them apart.
+fn font_key(font: &NSFont) -> String {
+    format!(
+        "{}|{}|{}",
+        font.fontName(),
+        font.pointSize(),
+        font.fontDescriptor().symbolicTraits().0
+    )
+}
+
+fn color_key(color: &NSColor) -> String {
+    format!(
+        "{}|{}|{}|{}|{:?}",
+        color.red, color.green, color.blue, color.alpha, color.space
+    )
+}
+
+impl ThemeRoles {
+    fn of(theme: &RenderTheme) -> Self {
+        use swiftshim::NSFontDescriptorSymbolicTraits as Traits;
+        let mut fonts = HashMap::new();
+        let mut bases: Vec<(String, i32, NSFont)> = vec![
+            ("body".to_string(), 0, theme.body_font()),
+            ("code".to_string(), 0, theme.code_font()),
+            // A markdown table's header row, which asks for a system SEMIBOLD directly rather than
+            // through any of the theme's three accessors (`MarkdownRenderer.swift:773`). It is a
+            // role like the others as far as this wire is concerned: without it the header font
+            // falls through to `raw` and comes back as a concrete face.
+            (
+                "tableHeader".to_string(),
+                0,
+                NSFont::systemFontWeight(theme.base_font_size, swiftshim::NSFontWeight::semibold),
+            ),
+        ];
+        // Six is markdown's own ceiling — `# ` through `###### `. A level outside that is not a
+        // heading, so there is nothing to enumerate past it.
+        for level in 1..=6 {
+            bases.push(("heading".to_string(), level, theme.heading_font(level)));
+        }
+        for (role, level, base) in bases {
+            // The untouched base goes in AS ITSELF, never through a descriptor: a system font's
+            // descriptor does not round-trip (`NSFont.systemFont(ofSize:weight:)` is the private
+            // `.AppleSystemUIFontDemi` cascade and rebuilding it yields the concrete
+            // `.SFNS-Semibold`), so recomputing it here would key the table on a face the renderer
+            // never produced — and every plain heading would then miss its role and be sent as a
+            // trait-laden `raw`.
+            fonts
+                .entry(font_key(&base))
+                .or_insert((role.clone(), level, 0));
+            for extra in [Traits::bold, Traits::italic, Traits::bold.union(Traits::italic)] {
+                let d = base.fontDescriptor();
+                let d = d.withSymbolicTraits(d.symbolicTraits().union(extra));
+                let resolved =
+                    NSFont::with_descriptor(&d, base.pointSize()).unwrap_or_else(|| base.clone());
+                // `entry` and not `insert`: the base goes in first for each role, so a face two
+                // roles happen to share keeps the FIRST role that named it rather than whichever
+                // came last, which would depend on iteration order.
+                fonts
+                    .entry(font_key(&resolved))
+                    .or_insert((role.clone(), level, extra.0));
+            }
+        }
+
+        let mut colors = HashMap::new();
+        use swiftshim::color_font::system_colors;
+        for (role, color) in [
+            ("text", theme.text_color()),
+            ("secondary", theme.secondary_color()),
+            ("link", theme.link_color()),
+            ("inlineCode", theme.inline_code_color()),
+            // Code highlighting paints with AppKit's own named system colours rather than with
+            // the palette, and those are dynamic too — a fenced block would otherwise keep its
+            // light-appearance keyword colours in dark mode.
+            ("systemRed", system_colors::systemRed()),
+            ("systemOrange", system_colors::systemOrange()),
+            ("systemGreen", system_colors::systemGreen()),
+            ("systemPink", system_colors::systemPink()),
+            ("systemTeal", system_colors::systemTeal()),
+            ("secondaryLabel", system_colors::secondaryLabelColor()),
+        ] {
+            colors.entry(color_key(&color)).or_insert(role.to_string());
+        }
+        ThemeRoles { fonts, colors }
     }
 }
 
 fn wire_color(color: &NSColor) -> WireColor {
     WireColor {
+        role: "raw".to_string(),
         r: color.red,
         g: color.green,
         b: color.blue,
@@ -237,9 +393,34 @@ fn wire_table(table: &NSTextTable) -> WireTable {
     }
 }
 
+/// AppKit's OWN raw value for an alignment, which is what the host reconstructs from.
+///
+/// `as i32` on the shim's enum would send its DECLARATION ORDER instead. That happens to agree
+/// for alignment today and does NOT for writing direction, and nothing in the shim promises it
+/// ever will — these enums have no explicit discriminants because nothing inside the engine reads
+/// them as numbers. The wire is the one place the number matters, so the wire is where it is named.
+fn appkit_alignment(alignment: NSTextAlignment) -> i32 {
+    match alignment {
+        NSTextAlignment::Left => 0,
+        NSTextAlignment::Right => 1,
+        NSTextAlignment::Center => 2,
+        NSTextAlignment::Justified => 3,
+        NSTextAlignment::Natural => 4,
+    }
+}
+
+/// AppKit numbers `natural` as -1, not as 0 — see `appkit_alignment`.
+fn appkit_writing_direction(direction: NSWritingDirection) -> i32 {
+    match direction {
+        NSWritingDirection::Natural => -1,
+        NSWritingDirection::LeftToRight => 0,
+        NSWritingDirection::RightToLeft => 1,
+    }
+}
+
 fn wire_paragraph_style(style: &NSParagraphStyle, tables: &mut Pool<WireTable>) -> WireParagraphStyle {
     WireParagraphStyle {
-        alignment: style.alignment as i32,
+        alignment: appkit_alignment(style.alignment),
         line_spacing: style.lineSpacing,
         paragraph_spacing: style.paragraphSpacing,
         paragraph_spacing_before: style.paragraphSpacingBefore,
@@ -251,18 +432,22 @@ fn wire_paragraph_style(style: &NSParagraphStyle, tables: &mut Pool<WireTable>) 
         minimum_line_height: style.minimumLineHeight,
         maximum_line_height: style.maximumLineHeight,
         line_break_mode: style.lineBreakMode as i32,
-        base_writing_direction: style.baseWritingDirection as i32,
+        base_writing_direction: appkit_writing_direction(style.baseWritingDirection),
         line_break_strategy: style.lineBreakStrategy.0,
         tab_stops: style
             .tabStops
             .iter()
-            .map(|tab| (tab.alignment as i32, tab.location))
+            .map(|tab| (appkit_alignment(tab.alignment), tab.location))
             .collect(),
         text_blocks: style
             .textBlocks
             .iter()
             .map(|block: &NSTextTableBlock| WireTableBlock {
-                table: tables.intern(wire_table(&block.table)),
+                // Keyed by IDENTITY, never by the table's declaration. Every markdown table
+                // declares the same thing (n columns, borders collapsed), so pooling them by value
+                // merges every table in the document into one grid — measured, 60 tables in one
+                // document became 1, and AppKit then laid all sixty out as a single table.
+                table: tables.intern_by(block.table.identity(), || wire_table(&block.table)),
                 row: block.startingRow,
                 row_span: block.rowSpan,
                 column: block.startingColumn,
@@ -288,7 +473,13 @@ fn extra_value(value: &AttrValue) -> Option<WireExtraValue> {
 }
 
 /// Project a finished markdown string onto the wire.
-pub fn project(rendered: &NSAttributedString) -> MarkdownWire {
+///
+/// The THEME is a parameter because the wire names fonts and colours by the role that produced
+/// them (see `WireFont` and `WireColor`), and only the theme knows which role a resolved value
+/// came from. Pass the same theme the string was rendered with; any other one turns every value
+/// into a `raw`, which is correct but loses the dark-mode and font-cascade fidelity the roles buy.
+pub fn project(rendered: &NSAttributedString, theme: &RenderTheme) -> MarkdownWire {
+    let roles = ThemeRoles::of(theme);
     let mut fonts = Pool::<WireFont>::new();
     let mut colors = Pool::<WireColor>::new();
     let mut styles = Pool::<WireParagraphStyle>::new();
@@ -323,10 +514,20 @@ pub fn project(rendered: &NSAttributedString) -> MarkdownWire {
         for (key, value) in attrs {
             match (key, value) {
                 (NSAttributedStringKey::Font, AttrValue::Font(f)) => {
-                    wire.layer_font[index] = fonts.intern(wire_font(f)) as i32;
+                    let mut projected = wire_font(f);
+                    if let Some((role, level, traits)) = roles.fonts.get(&font_key(f)) {
+                        projected.role = role.clone();
+                        projected.level = *level;
+                        projected.traits = *traits;
+                    }
+                    wire.layer_font[index] = fonts.intern(projected) as i32;
                 }
                 (NSAttributedStringKey::ForegroundColor, AttrValue::Color(c)) => {
-                    wire.layer_color[index] = colors.intern(wire_color(c)) as i32;
+                    let mut projected = wire_color(c);
+                    if let Some(role) = roles.colors.get(&color_key(c)) {
+                        projected.role = role.clone();
+                    }
+                    wire.layer_color[index] = colors.intern(projected) as i32;
                 }
                 (NSAttributedStringKey::ParagraphStyle, AttrValue::ParagraphStyle(p)) => {
                     let projected = wire_paragraph_style(p, &mut tables);

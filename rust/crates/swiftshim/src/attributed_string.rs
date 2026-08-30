@@ -346,6 +346,39 @@ impl NSMutableAttributedString {
         self.inner.runs.push((range, attributes));
     }
 
+    /// Replace ONE attribute's value wherever `range` already carries it, leaving every other
+    /// layer alone. Not an AppKit method — it exists because this shim stores layers rather than
+    /// a coalesced run list, and neither of the two AppKit calls does the right thing here:
+    ///
+    ///  * `addAttribute` appends a SECOND layer for the same key and range, and `attribute()`
+    ///    resolves the FIRST match, so the new value is shadowed by the one it was replacing.
+    ///  * `setAttributes` retires every layer at exactly that range and pushes one dictionary in
+    ///    their place — which silently drops any OTHER layer that shares the range. Measured: a
+    ///    markdown table cell holding `[`code`](url)` has the inline-code attributes and the
+    ///    link attributes on the identical range, and grafting the table block through
+    ///    `setAttributes` deleted the link and its underline from the finished document.
+    ///
+    /// If no layer at `range` carries the key, one is appended, which is what `addAttribute`
+    /// would have done for a key that was not there.
+    pub fn replace_attribute_value(
+        &mut self,
+        key: NSAttributedStringKey,
+        value: AttrValue,
+        range: NSRange,
+    ) {
+        let mut replaced = false;
+        for (r, attrs) in self.inner.runs.iter_mut() {
+            if *r == range && attrs.contains_key(&key) {
+                attrs.insert(key.clone(), value.clone());
+                replaced = true;
+            }
+        }
+        if !replaced {
+            self.inner.runs.push((range, HashMap::from([(key, value)])));
+        }
+    }
+
+
     pub fn attribute(
         &self,
         key: &NSAttributedStringKey,

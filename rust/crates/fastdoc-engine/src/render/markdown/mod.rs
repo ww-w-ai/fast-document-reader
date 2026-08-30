@@ -197,6 +197,12 @@ pub fn produce(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, M
     options.extension.tasklist = true;
     options.extension.strikethrough = true;
     options.extension.autolink = true;
+    // swift-markdown parses through cmark-gfm with smart punctuation ON, so the reader has always
+    // shown curly quotes, en/em dashes and ellipses for the ASCII the author typed. Off here, the
+    // engine produced `'` where this app produces `’` on every one of the five documents it ships
+    // — a difference no structural test could see, because the tree is identical and only the leaf
+    // text changes.
+    options.parse.smart = true;
     let root = parse_document(&arena, text, &options);
 
     let mut ctx = Ctx::new(text, &line_index, &math_spans);

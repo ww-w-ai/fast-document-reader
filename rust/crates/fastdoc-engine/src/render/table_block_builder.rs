@@ -1082,7 +1082,7 @@ impl TableBlockBuilder {
             // `setAttributes` retires the stale entry and keeps every other attribute the run
             // already carried (font, colour, …) rather than dropping them.
             let block_ref: NSTextTableBlock = block.base.clone();
-            let mut grafts: Vec<(NSRange, HashMap<NSAttributedStringKey, AttrValue>)> = Vec::new();
+            let mut grafts: Vec<(NSRange, NSMutableParagraphStyle)> = Vec::new();
             cell_str.asAttributedString().enumerateAttribute(
                 &NSAttributedStringKey::ParagraphStyle,
                 whole,
@@ -1092,17 +1092,48 @@ impl TableBlockBuilder {
                         _ => NSMutableParagraphStyle::default(),
                     };
                     style.textBlocks.push(block_ref.clone());
-                    let mut attrs = cell_str
-                        .asAttributedString()
-                        .attributesAt(range.location)
-                        .cloned()
-                        .unwrap_or_default();
-                    attrs.insert(NSAttributedStringKey::ParagraphStyle, AttrValue::ParagraphStyle(style));
-                    grafts.push((range, attrs));
+                    grafts.push((range, style));
                 },
             );
-            for (range, attrs) in grafts {
-                cell_str.setAttributes(attrs, range);
+            // Every position the grafts covered. AppKit's `enumerateAttribute` visits the WHOLE
+            // range, handing `nil` for the stretches that carry no value, and the Swift original
+            // relies on that: a cell terminator that inherited no paragraph style still gets a
+            // fresh one with the block on it. This shim's `enumerateAttribute` walks the layers it
+            // has and never reports a gap, so the gaps are filled here instead — without them, the
+            // newline closing a cell whose content carried no paragraph style ends up outside the
+            // table, which is one row of a markdown table laid out a line lower than its siblings.
+            let mut covered = vec![false; cell_str.length()];
+            for (range, style) in grafts {
+                for slot in covered
+                    .iter_mut()
+                    .take(range.maxRange().min(cell_str.length()))
+                    .skip(range.location)
+                {
+                    *slot = true;
+                }
+                cell_str.replace_attribute_value(
+                    NSAttributedStringKey::ParagraphStyle,
+                    AttrValue::ParagraphStyle(style),
+                    range,
+                );
+            }
+            let mut at = 0;
+            while at < covered.len() {
+                if covered[at] {
+                    at += 1;
+                    continue;
+                }
+                let start = at;
+                while at < covered.len() && !covered[at] {
+                    at += 1;
+                }
+                let mut style = NSMutableParagraphStyle::default();
+                style.textBlocks.push(block_ref.clone());
+                cell_str.replace_attribute_value(
+                    NSAttributedStringKey::ParagraphStyle,
+                    AttrValue::ParagraphStyle(style),
+                    NSRange::new(start, at - start),
+                );
             }
             result.append(&cell_str.asAttributedString().clone());
         }

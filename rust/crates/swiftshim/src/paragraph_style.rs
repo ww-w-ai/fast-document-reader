@@ -13,11 +13,14 @@ use crate::text_table::NSTextTableBlock;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NSTextAlignment {
-    #[default]
     Left,
     Right,
     Center,
     Justified,
+    /// AppKit's default: `NSParagraphStyle.default.alignment` is `.natural`, not `.left`. A
+    /// paragraph the renderer never aligns explicitly must come out natural, or a right-to-left
+    /// document is silently left-aligned and every wire carries the wrong number for it.
+    #[default]
     Natural,
 }
 

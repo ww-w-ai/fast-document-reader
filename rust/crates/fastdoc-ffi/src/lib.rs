@@ -421,6 +421,58 @@ pub unsafe extern "C" fn fastdoc_read_text_tree(
     })
 }
 
+/// Renders a MARKDOWN document all the way to the finished attributed string and hands it back on
+/// the layer wire (`markdown_wire`), inside the same envelope every other call here uses.
+///
+/// This is the one format whose cost is not parsing — measured, 610 ms of a 708 ms render is the
+/// attributed-string build — so unlike `fastdoc_read_text_tree` above, which hands over structure
+/// for the host to typeset, this hands over typography the host only has to materialise.
+///
+/// `base_font_size` is the reader's own size, the single number `RenderTheme` is built from. It
+/// crosses because the same document renders at different sizes and the engine must not guess one.
+///
+/// A font provider MUST be installed first (`fastdoc_install_font_provider`): the renderer builds
+/// real `NSFont` values, and a world with no faces in it is a panic, not a plausible document.
+///
+/// # Safety
+/// `bytes` must point to `len` readable bytes of UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_render_markdown(
+    bytes: *const u8,
+    len: usize,
+    base_font_size: f64,
+) -> *mut c_char {
+    if bytes.is_null() {
+        return guard_envelope(|| {
+            Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "invalid NULL argument",
+            ))
+        });
+    }
+    let data = std::slice::from_raw_parts(bytes, len);
+
+    guard_envelope(move || {
+        let Ok(source) = std::str::from_utf8(data) else {
+            return Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "markdown source is not valid UTF-8",
+            ));
+        };
+        if !(1.0..=512.0).contains(&base_font_size) {
+            return Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                format!("base font size {base_font_size} is outside 1...512"),
+            ));
+        }
+        let theme = fastdoc_engine::render::render_theme::RenderTheme::current(base_font_size);
+        let rendered = fastdoc_engine::render::markdown_renderer::MarkdownRenderer::render_before_host_font_substitution(source, &theme);
+        let wire = fastdoc_engine::render::markdown_wire::project(&rendered, &theme);
+        serde_json::to_vec(&wire)
+            .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))
+    })
+}
+
 /// Takes the diagnostic produced by the most recent failed call on this thread, or NULL.
 ///
 /// The returned UTF-8 string is owned by this library and must be passed to

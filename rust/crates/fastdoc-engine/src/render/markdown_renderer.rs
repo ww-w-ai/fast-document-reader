@@ -269,6 +269,26 @@ impl MarkdownRenderer {
         builder.result.asAttributedString().clone()
     }
 
+    /// The same render, stopping BEFORE font substitution — the form a host reads over the wire.
+    ///
+    /// Substitution belongs to whoever owns AppKit, exactly as it does on the office path (see
+    /// `HwpReader::read_before_host_font_substitution`). Run here as well, it happens twice: this
+    /// crate resolves Hangul through the host's provider bridge and lands on one face, the host
+    /// then re-substitutes what arrives and lands on another (`.AppleKoreanFont-Bold` against the
+    /// `.AppleSDGothicNeoI-SemiBold` this reader actually draws). Leaving it undone also keeps
+    /// every font in the string a THEME font, which is what lets the wire name it by role instead
+    /// of by a face name that does not round-trip.
+    pub fn render_before_host_font_substitution(
+        markdown: &str,
+        theme: &crate::render::render_theme::RenderTheme,
+    ) -> swiftshim::NSAttributedString {
+        let document = Document::parsing(markdown);
+        let mut builder = AttributedBuilder::new(theme.clone(), markdown);
+        builder.visit(&Markup::Document(document));
+        Self::autolink(&mut builder.result);
+        builder.result.asAttributedString().clone()
+    }
+
     // swift: Render/MarkdownRenderer.swift:23-34
     /// The two range-based passes every rendered run must go through before it is shown. Factored
     /// out because a progressive render runs them on each PIECE rather than once on the whole
