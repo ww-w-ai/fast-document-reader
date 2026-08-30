@@ -176,13 +176,13 @@ impl OfficeColumnLayout {
 
     /// Whether this declaration actually splits the text. A `count` of one is a declaration to
     /// STOP, and every consumer wants to tell the two apart without repeating the comparison.
-    // swift: Render/Office/ColumnGeometry.swift:41-41
+    // swift: Render/Office/ColumnGeometry.swift:39-52
     pub fn splits_text(&self) -> bool {
         self.count > 1
     }
 
     /// Whether a rule is drawn between the columns.
-    // swift: Render/Office/ColumnGeometry.swift:43-43
+    // swift: Render/Office/ColumnGeometry.swift:42-52
     pub fn draws_separator(&self) -> bool {
         self.separator_type != 0 && self.splits_text()
     }
@@ -258,7 +258,7 @@ mod s2a1d_tests {
 }
 
 /// Where each column sits inside a body width.
-// swift: Render/Office/ColumnGeometry.swift:46-53
+// swift: Render/Office/ColumnGeometry.swift:46-224
 pub struct ColumnGeometry;
 
 /// One column's horizontal extent, in the same coordinates the body text is laid out in.

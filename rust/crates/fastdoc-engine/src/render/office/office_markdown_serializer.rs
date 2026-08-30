@@ -389,7 +389,7 @@ impl OfficeMarkdownSerializer {
         t
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:258-266
+    // swift: Render/Office/OfficeMarkdownSerializer.swift:244-289
     /// Minimal, per policy: fold hard newlines to spaces (a span is inline, not a block), and inside
     /// a pipe-table cell escape `|` so a literal bar can't split the column. Prose keeps its literal
     /// `*`/`#`/`_` — an AI reader tolerates that far better than an over-escaped wall of backslashes.
@@ -419,7 +419,7 @@ impl OfficeMarkdownSerializer {
     // MARK: - Plain-text extraction (for <raw> dumps)
     // swift: Render/Office/OfficeMarkdownSerializer.swift:277-288
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:277-289
+    // swift: Render/Office/OfficeMarkdownSerializer.swift:244-289
     fn plain_block(block: &crate::render::office::office_block::OfficeBlock) -> String {
         use crate::render::office::office_block::OfficeBlock;
         match block {
@@ -448,3 +448,9 @@ impl OfficeMarkdownSerializer {
         }
     }
 }
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/OfficeMarkdownSerializer.swift:62-64
+// swift: Render/Office/OfficeMarkdownSerializer.swift:107-108

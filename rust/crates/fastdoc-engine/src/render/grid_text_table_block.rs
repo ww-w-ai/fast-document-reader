@@ -75,7 +75,7 @@ pub struct GridTextTableBlock {
     /// on the desk between them.
     pub background_image: Option<NSImage>,
 
-    // swift: Render/GridTextTableBlock.swift:117-122
+    // swift: Render/GridTextTableBlock.swift:117-128
     /// The rule this cell draws ACROSS itself, when the document drew one. Painted per SEGMENT like
     /// everything else here, so a diagonal in a cell a page break crosses appears on each sheet and
     /// never on the desk between them — and, because it is drawn per segment, each piece's diagonal

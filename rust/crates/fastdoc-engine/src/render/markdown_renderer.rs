@@ -244,12 +244,12 @@ use markdown::{
     Strong, Table, TableCell, Text, ThematicBreak, UnorderedList,
 };
 
-// swift: Render/MarkdownRenderer.swift:4-8
+// swift: Render/MarkdownRenderer.swift:4-137
 
 pub struct MarkdownRenderer;
 
 impl MarkdownRenderer {
-    // swift: Render/MarkdownRenderer.swift:6-6
+    // swift: Render/MarkdownRenderer.swift:9-21
     // Reuse the parsed tree across renders of the SAME text (e.g. every ⌘+/− zoom step re-renders
     // to rescale fonts but the markdown hasn't changed) so we don't re-parse on each zoom.
     // (Swift's `private static var parseMemo` — a thread-local/static cache; phase B decides the
@@ -289,7 +289,7 @@ impl MarkdownRenderer {
         builder.result.asAttributedString().clone()
     }
 
-    // swift: Render/MarkdownRenderer.swift:23-34
+    // swift: Render/MarkdownRenderer.swift:31-41
     /// The two range-based passes every rendered run must go through before it is shown. Factored
     /// out because a progressive render runs them on each PIECE rather than once on the whole
     /// string, and both are safe that way: a top-level block boundary cannot fall inside a URL, a
@@ -305,7 +305,7 @@ impl MarkdownRenderer {
         );
     }
 
-    // swift: Render/MarkdownRenderer.swift:35-51
+    // swift: Render/MarkdownRenderer.swift:35-58
     /// Begin a render that is handed over in pieces instead of all at once.
     ///
     /// The document is PARSED whole (it has to be — a link definition at the end of the file binds
@@ -322,7 +322,7 @@ impl MarkdownRenderer {
         )
     }
 
-    // swift: Render/MarkdownRenderer.swift:63-63
+    // swift: Render/MarkdownRenderer.swift:63-74
     /// After rendering, detect bare URLs and file paths in the prose and make them clickable
     /// links. Markdown links (already carrying `.link`) are left untouched.
     // Compiled once, reused across renders (these were rebuilt on every render — incl. every zoom).
@@ -336,7 +336,7 @@ impl MarkdownRenderer {
         )
     }
 
-    // swift: Render/MarkdownRenderer.swift:58-67
+    // swift: Render/MarkdownRenderer.swift:66-74
     /// Code is shown, not offered as navigation — nothing inside a fence or a `code span` is
     /// autolinked. Three reasons, and the first is the one you can see: link styling is painted
     /// AFTER highlighting, so a URL in a string turns blue-underlined and the syntax colour dies
@@ -347,7 +347,7 @@ impl MarkdownRenderer {
             || s.attribute(&crate::render::md_attr::MDAttr::inline_code(), at).is_some()
     }
 
-    // swift: Render/MarkdownRenderer.swift:68-130
+    // swift: Render/MarkdownRenderer.swift:68-136
     fn autolink(s: &mut swiftshim::NSMutableAttributedString) {
         let full = swiftshim::NSRange::new(0, s.length());
         // NO TRANSCODE AT ALL — take the store, don't round-trip through Swift.
@@ -451,7 +451,7 @@ impl MarkdownRenderer {
     }
 }
 
-// swift: Render/MarkdownRenderer.swift:131-142
+// swift: Render/MarkdownRenderer.swift:139-162
 /// Build a paragraph style with an ABSOLUTE line height (min == max, in points) rather than a
 /// multiple. AppKit's lineHeightMultiple multiplies each font's natural leading — which is
 /// larger for Korean than Latin — so it reads loose and uneven; a fixed line height gives
@@ -472,7 +472,7 @@ fn md_para(
     first_line_indent: swiftshim::CGFloat,
     uncapped: bool,
 ) -> swiftshim::NSParagraphStyle {
-    // swift: Render/MarkdownRenderer.swift:142-155
+    // swift: Render/MarkdownRenderer.swift:139-162
     let mut p = swiftshim::NSMutableParagraphStyle::default();
     let lh = line_height.round();
     p.minimumLineHeight = lh;
@@ -484,7 +484,7 @@ fn md_para(
     p
 }
 
-// swift: Render/MarkdownRenderer.swift:164-782
+// swift: Render/MarkdownRenderer.swift:164-190
 struct AttributedBuilder {
     theme: crate::render::render_theme::RenderTheme,
     result: swiftshim::NSMutableAttributedString,
@@ -519,7 +519,7 @@ struct AttributedBuilder {
 }
 
 impl AttributedBuilder {
-    // swift: Render/MarkdownRenderer.swift:184-206
+    // swift: Render/MarkdownRenderer.swift:171-213
     fn new(theme: crate::render::render_theme::RenderTheme, source: &str) -> Self {
         let sns = swiftshim::SwiftString::new(source);
         let mut ls = vec![0usize];
@@ -588,7 +588,7 @@ impl AttributedBuilder {
         self.result.append(&swiftshim::NSAttributedString::new("\n".repeat(count)));
     }
 
-    // swift: Render/MarkdownRenderer.swift:219-225
+    // swift: Render/MarkdownRenderer.swift:209-240
     /// Tag everything appended since `start` as one top-level block with a unique id, so a
     /// gutter click can recover this exact block's range. Headings get their own id, cleanly
     /// separated from the paragraph beneath them.
@@ -597,7 +597,7 @@ impl AttributedBuilder {
         self.tag_block_offsets(start, src_offsets);
     }
 
-    // swift: Render/MarkdownRenderer.swift:226-235
+    // swift: Render/MarkdownRenderer.swift:209-240
     fn tag_block_offsets(&mut self, start: usize, src_offsets: Option<swiftshim::NSRange>) {
         let r = swiftshim::NSRange::new(start, self.result.length() - start);
         if r.length == 0 {
@@ -618,7 +618,7 @@ impl AttributedBuilder {
         self.block_seq += 1;
     }
 
-    // swift: Render/MarkdownRenderer.swift:236-255
+    // swift: Render/MarkdownRenderer.swift:236-262
     /// Map a swift-markdown SourceRange to a UTF-16 NSRange in the source, by WHOLE LINES (blocks
     /// occupy full lines, so this sidesteps column encoding — safe for CJK). The trailing newline
     /// of the last line is excluded so a replacement keeps the block separators intact.
@@ -649,7 +649,7 @@ impl AttributedBuilder {
         Some(swiftshim::NSRange::new(start_off, end_off - start_off))
     }
 
-    // swift: Render/MarkdownRenderer.swift:256-284
+    // swift: Render/MarkdownRenderer.swift:256-291
     // Inline collection: render children into an attributed run with a base font. Images are
     // handled here (not in inlineFragment) so a trailing Pandoc `{width=…}` text sibling can be
     // consumed as the image's width.
@@ -707,7 +707,7 @@ impl AttributedBuilder {
         out.asAttributedString().clone()
     }
 
-    // swift: Render/MarkdownRenderer.swift:285-301
+    // swift: Render/MarkdownRenderer.swift:285-308
     fn image_string(
         &self,
         source: String,
@@ -747,7 +747,7 @@ impl AttributedBuilder {
         out
     }
 
-    // swift: Render/MarkdownRenderer.swift:302-313
+    // swift: Render/MarkdownRenderer.swift:302-320
     /// Obsidian `![alt|300]` / `![alt|300x200]` → strip the size off the alt.
     fn parse_sized_alt(&self, alt: &str) -> (String, Option<swiftshim::CGFloat>, Option<swiftshim::CGFloat>) {
         let Some(pipe) = alt.rfind('|') else {
@@ -762,7 +762,7 @@ impl AttributedBuilder {
         (alt.to_string(), None, None)
     }
 
-    // swift: Render/MarkdownRenderer.swift:314-321
+    // swift: Render/MarkdownRenderer.swift:322-328
     /// "300", "300px", "50%" → points or a 0–1 fraction.
     fn parse_width_spec(&self, s: &str) -> (Option<swiftshim::CGFloat>, Option<swiftshim::CGFloat>) {
         let t = s.trim();
@@ -777,7 +777,7 @@ impl AttributedBuilder {
         (None, None)
     }
 
-    // swift: Render/MarkdownRenderer.swift:322-336
+    // swift: Render/MarkdownRenderer.swift:322-344
     /// A leading `{ … }` attribute block (Pandoc). Consumes the braces even without a width=
     /// so the raw attribute never renders as literal text; returns text after `}` as remainder.
     fn parse_pandoc_attr(
@@ -807,7 +807,7 @@ impl AttributedBuilder {
         Some((None, None, remainder))
     }
 
-    // swift: Render/MarkdownRenderer.swift:331-352
+    // swift: Render/MarkdownRenderer.swift:331-360
     /// Parse an `<img …>` HTML tag → (src, alt, width). nil if it isn't an img tag.
     fn parse_img_tag(
         &self,
@@ -856,7 +856,7 @@ impl AttributedBuilder {
         swiftshim::NSFont::with_descriptor(&d, font.pointSize()).unwrap_or_else(|| font.clone())
     }
 
-    // swift: Render/MarkdownRenderer.swift:362-414
+    // swift: Render/MarkdownRenderer.swift:357-422
     fn inline_fragment(&self, markup: &Markup, font: swiftshim::NSFont, color: swiftshim::NSColor) -> swiftshim::NSAttributedString {
         match markup {
             Markup::Text(t) => {
@@ -951,13 +951,13 @@ impl AttributedBuilder {
         }
     }
 
-    // swift: Render/MarkdownRenderer.swift:413-420
+    // swift: Render/MarkdownRenderer.swift:370-448
     // Readability (research-backed: Butterick / Baymard / WCAG 1.4.12): line height 1.45×,
     // paragraph spacing ~12pt. Column width + margins are handled by the window controller
     // (centered ~660pt measure). Styles are immutable and value-independent of the theme, so
     // they are built ONCE and reused across every block/render (per-block allocation made a
     // 4000-paragraph doc render 6× slower — this keeps it fast).
-    // swift: Render/MarkdownRenderer.swift:421-441
+    // swift: Render/MarkdownRenderer.swift:421-448
     fn visit_heading(&mut self, heading: &Heading) {
         let font = self.theme.heading_font(heading.level);
         let start = self.result.length();
@@ -991,7 +991,7 @@ impl AttributedBuilder {
         self.tag_block(start, heading.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:442-449
+    // swift: Render/MarkdownRenderer.swift:450-491
     /// Find every `$$ … $$` span in the RAW source, before markdown ever sees it.
     ///
     /// `$$` is not markdown, so the parser reads a formula's insides as markdown and mangles them:
@@ -1000,7 +1000,7 @@ impl AttributedBuilder {
     /// and no node-level test can put it back together — claiming the span from the source first is
     /// the only order that works. (Measured: `\begin{pmatrix} … \\ = \\ … \end{pmatrix}` arrived as
     /// a heading plus a paragraph, and rendered as a giant title.)
-    // swift: Render/MarkdownRenderer.swift:450-483
+    // swift: Render/MarkdownRenderer.swift:450-491
     fn scan_math_spans(ns: &swiftshim::SwiftString, line_starts: &[usize]) -> Vec<(swiftshim::NSRange, String)> {
         let mut out: Vec<(swiftshim::NSRange, String)> = Vec::new();
         let mut open_line: Option<usize> = None;
@@ -1042,7 +1042,7 @@ impl AttributedBuilder {
         out.into_iter().filter(|(_, tex)| !tex.is_empty()).collect()
     }
 
-    // swift: Render/MarkdownRenderer.swift:484-504
+    // swift: Render/MarkdownRenderer.swift:484-511
     /// The span this block was made from, if the block lies ENTIRELY inside one. Containment, not
     /// overlap: the Document (and any list/quote wrapping a formula) merely overlaps, so it keeps
     /// descending until it reaches the nodes the formula itself produced.
@@ -1076,7 +1076,7 @@ impl AttributedBuilder {
         }
     }
 
-    // swift: Render/MarkdownRenderer.swift:505-517
+    // swift: Render/MarkdownRenderer.swift:505-525
     /// Every block goes through here, so a formula is caught wherever the parser put its pieces —
     /// top level, or nested in a list or quote.
     fn visit(&mut self, markup: &Markup) {
@@ -1098,7 +1098,7 @@ impl AttributedBuilder {
         markup.accept(self);
     }
 
-    // swift: Render/MarkdownRenderer.swift:518-532
+    // swift: Render/MarkdownRenderer.swift:518-540
     /// The placeholder for a block WebKit will draw later (mermaid diagram, TeX formula). A real
     /// attachment from the start, so the lazy media manager treats it exactly like an image (load
     /// when on-screen, drop when far) and the size/pixel split holds. The reserved size here is only
@@ -1133,7 +1133,7 @@ impl AttributedBuilder {
         self.tag_block_offsets(block_start, src_offsets);
     }
 
-    // swift: Render/MarkdownRenderer.swift:533-541
+    // swift: Render/MarkdownRenderer.swift:533-549
     fn visit_paragraph(&mut self, paragraph: &Paragraph) {
         let start = self.result.length();
         let s = self.inline_string(&Markup::Paragraph(paragraph.clone()), self.theme.body_font(), self.theme.text_color());
@@ -1148,7 +1148,7 @@ impl AttributedBuilder {
         self.tag_block(start, paragraph.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:542-551
+    // swift: Render/MarkdownRenderer.swift:536-571
     fn visit_html_block(&mut self, html: &HTMLBlock) {
         // Only a block-level <img> is rendered (as an image); other raw HTML blocks are skipped.
         let Some(tag) = self.parse_img_tag(&html.raw_html) else { return; };
@@ -1164,7 +1164,7 @@ impl AttributedBuilder {
         self.tag_block(start, html.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:552-588
+    // swift: Render/MarkdownRenderer.swift:552-596
     fn visit_block_quote(&mut self, blockQuote: &BlockQuote) {
         let start = self.result.length();
         self.descend_into(&Markup::BlockQuote(blockQuote.clone()));
@@ -1237,7 +1237,7 @@ impl AttributedBuilder {
         }
     }
 
-    // swift: Render/MarkdownRenderer.swift:589-595
+    // swift: Render/MarkdownRenderer.swift:589-603
     fn visit_unordered_list(&mut self, list: &UnorderedList) {
         let start = self.result.length();
         self.render_list(list.list_items.clone(), false, 0);
@@ -1245,7 +1245,7 @@ impl AttributedBuilder {
         self.tag_block(start, list.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:596-602
+    // swift: Render/MarkdownRenderer.swift:596-610
     fn visit_ordered_list(&mut self, list: &OrderedList) {
         let start = self.result.length();
         self.render_list(list.list_items.clone(), true, 0);
@@ -1253,13 +1253,13 @@ impl AttributedBuilder {
         self.tag_block(start, list.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:603-608
+    // swift: Render/MarkdownRenderer.swift:599-649
     /// Render list items at a given nesting `depth`. Each level indents one step further, so
     /// 2nd/3rd/4th-level bullets sit progressively inside. A list item's own text is rendered and
     /// styled first; nested child lists then recurse at depth+1 (they carry their own indent, so
     /// the parent's paragraph style is applied ONLY to the item's own line — not over the nested
     /// range, which would flatten it).
-    // swift: Render/MarkdownRenderer.swift:609-642
+    // swift: Render/MarkdownRenderer.swift:599-649
     fn render_list(&mut self, items: Vec<ListItem>, ordered: bool, depth: i32) {
         let hang = self.theme.base_font_size * self.theme.list_hang_ratio(); // one indent step
         let marker_x = depth as swiftshim::CGFloat * hang; // where the bullet / number sits
@@ -1317,7 +1317,7 @@ impl AttributedBuilder {
         }
     }
 
-    // swift: Render/MarkdownRenderer.swift:652-665
+    // swift: Render/MarkdownRenderer.swift:652-672
     /// Hanging-indent paragraph style: marker at `markerX`, a tab pushes text to `textX`, and
     /// wrapped lines align at `textX` — so the item's first line and every wrap share one edge.
     fn list_para(&self, markerX: swiftshim::CGFloat, textX: swiftshim::CGFloat) -> swiftshim::NSParagraphStyle {
@@ -1333,7 +1333,7 @@ impl AttributedBuilder {
         p
     }
 
-    // swift: Render/MarkdownRenderer.swift:666-674
+    // swift: Render/MarkdownRenderer.swift:666-681
     // List items contain paragraphs; render their inline content without extra blank lines.
     fn render_block_inline(&mut self, markup: &Markup) {
         if let Markup::Paragraph(p) = markup {
@@ -1345,7 +1345,7 @@ impl AttributedBuilder {
         }
     }
 
-    // swift: Render/MarkdownRenderer.swift:675-740
+    // swift: Render/MarkdownRenderer.swift:675-747
     fn visit_code_block(&mut self, codeBlock: &CodeBlock) {
         let block_start = self.result.length();
         // Fences WebKit draws instead of highlighting; everything else is a highlighted code card.
@@ -1429,7 +1429,7 @@ impl AttributedBuilder {
         self.tag_block(block_start, codeBlock.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:741-750
+    // swift: Render/MarkdownRenderer.swift:741-757
     fn visit_thematic_break(&mut self, thematicBreak: &ThematicBreak) {
         // A zero-width line the layout manager paints as a full-width hairline.
         let start = self.result.length();
@@ -1446,7 +1446,7 @@ impl AttributedBuilder {
         self.tag_block(start, thematicBreak.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:751-774
+    // swift: Render/MarkdownRenderer.swift:751-781
     fn visit_table(&mut self, table: &Table) {
         let start = self.result.length();
         let header_cells = table.head.cells.clone();
@@ -1507,7 +1507,7 @@ impl AttributedBuilder {
     }
 }
 
-// swift: Render/MarkdownRenderer.swift:775-785
+// swift: Render/MarkdownRenderer.swift:775-837
 /// One markdown render, handed out front to back.
 ///
 /// ONE builder for the whole document, deliberately: its `init` scans the source (line starts, math
@@ -1519,7 +1519,7 @@ impl AttributedBuilder {
 /// `MarkdownRenderer.finishPasses`, ready to be appended to the storage as-is.
 // swift: `final class` — reference semantics, so `swiftshim::Ref<T>` per convention §3; the type
 // itself carries the fields, and callers hold it through `new_ref`.
-// swift: Render/MarkdownRenderer.swift:786-790
+// swift: Render/MarkdownRenderer.swift:785-837
 pub struct ProgressiveMarkdownRender {
     builder: AttributedBuilder,
     children: Vec<Markup>,
@@ -1532,31 +1532,31 @@ pub struct ProgressiveMarkdownRender {
 }
 
 impl ProgressiveMarkdownRender {
-    // swift: Render/MarkdownRenderer.swift:791-796
+    // swift: Render/MarkdownRenderer.swift:785-837
     fn new(builder: AttributedBuilder, children: Vec<Markup>) -> Self {
         Self { builder, children, next: 0, mark: 0, chunks_handed_out: 0 }
     }
 
-    // swift: Render/MarkdownRenderer.swift:805-805
+    // swift: Render/MarkdownRenderer.swift:805-820
     pub fn is_finished(&self) -> bool {
         self.next >= self.children.len()
     }
-    // swift: Render/MarkdownRenderer.swift:806-806
+    // swift: Render/MarkdownRenderer.swift:806-820
     pub fn block_count(&self) -> usize {
         self.children.len()
     }
-    // swift: Render/MarkdownRenderer.swift:807-808
+    // swift: Render/MarkdownRenderer.swift:807-820
     /// Top-level blocks not yet visited — what a caller divides into the turns it is willing to take.
     pub fn remaining_blocks(&self) -> usize {
         self.children.len() - self.next
     }
-    // swift: Render/MarkdownRenderer.swift:801-803
+    // swift: Render/MarkdownRenderer.swift:800-803
     /// How many pieces have been handed over, so a probe can report turns instead of guessing at them.
     pub fn chunks_handed_out(&self) -> i32 {
         self.chunks_handed_out
     }
 
-    // swift: Render/MarkdownRenderer.swift:804-813
+    // swift: Render/MarkdownRenderer.swift:785-837
     /// Visit up to `blocks` more top-level children and return the text they produced.
     pub fn next_chunk(&mut self, blocks: usize) -> swiftshim::NSAttributedString {
         // Clamped by SUBTRACTING from what is left, never by adding to `next`: `blocks` is allowed
@@ -1584,7 +1584,7 @@ impl ProgressiveMarkdownRender {
         self.chunk(|next| next >= end, false)
     }
 
-    // swift: Render/MarkdownRenderer.swift:814-836
+    // swift: Render/MarkdownRenderer.swift:785-837
     /// Visit children until `stop` says so, then take everything those visits added.
     fn chunk(
         &mut self,
@@ -1662,3 +1662,7 @@ impl crate::render::markdown_package::MarkupWalker for AttributedBuilder {
 // covered in substance by the ranges above) that the coverage script's per-item
 // markers did not individually re-state:
 // swift: Render/MarkdownRenderer.swift:837-837
+// swift: Render/MarkdownRenderer.swift:138-138
+// swift: Render/MarkdownRenderer.swift:321-321
+// swift: Render/MarkdownRenderer.swift:449-449
+// swift: Render/MarkdownRenderer.swift:650-650

@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-// swift: Render/CodeHighlighter.swift:3-11
+// swift: Render/CodeHighlighter.swift:3-220
 /// Native, dependency-free tokenizer for a curated language set. This keeps the "no JavaScriptCore
 /// for code-only documents" guarantee (spec §2, §10.1). Unknown languages fall back to plain
 /// monospace. tree-sitter is a v2 upgrade.
@@ -50,7 +50,7 @@ struct Palette {
 
 impl Default for Palette {
     fn default() -> Self {
-        // swift: Render/CodeHighlighter.swift:13-19
+        // swift: Render/CodeHighlighter.swift:12-20
         Self {
             keyword: swiftshim::system_colors::systemPink(),
             r#type: swiftshim::system_colors::systemTeal(),
@@ -104,7 +104,7 @@ fn kw(words: &[&str]) -> HashSet<String> {
 
 impl CodeHighlighter {
     // MARK: - Languages
-    // swift: Render/CodeHighlighter.swift:37-39
+    // swift: Render/CodeHighlighter.swift:37-41
 
     // swift: Render/CodeHighlighter.swift:39-41
     fn c_like(keywords: &[&str], caps: bool, line: Vec<String>) -> Lang {
@@ -138,7 +138,7 @@ impl CodeHighlighter {
         Self::hash_like(keywords, "\"'", Vec::new())
     }
 
-    // swift: Render/CodeHighlighter.swift:46-90
+    // swift: Render/CodeHighlighter.swift:33-131
     fn langs() -> &'static HashMap<String, Lang> {
         static LANGS: OnceLock<HashMap<String, Lang>> = OnceLock::new();
         LANGS.get_or_init(|| {
@@ -615,7 +615,7 @@ impl CodeHighlighter {
             }
             true
         };
-        // swift: Render/CodeHighlighter.swift:138
+        // swift: Render/CodeHighlighter.swift:138-141
         fn is_digit(c: u16) -> bool {
             (48..=57).contains(&c)
         }
@@ -626,15 +626,15 @@ impl CodeHighlighter {
                 || Self::identifier_extras().contains(&c)
                 || c > 127
         };
-        // swift: Render/CodeHighlighter.swift:142
+        // swift: Render/CodeHighlighter.swift:120-200
         let is_word = |c: u16| -> bool { is_word_start(c) || is_digit(c) };
 
-        // swift: Render/CodeHighlighter.swift:144
+        // swift: Render/CodeHighlighter.swift:120-200
         if lang.line_shaped {
             return Self::diff_highlight(result, &ns, &p).asAttributedString().clone();
         }
 
-        // swift: Render/CodeHighlighter.swift:146-198
+        // swift: Render/CodeHighlighter.swift:120-200
         let mut i = 0usize;
         while i < n {
             let c = ns.characterAt(i);
@@ -724,7 +724,7 @@ impl CodeHighlighter {
         result.asAttributedString().clone()
     }
 
-    // swift: Render/CodeHighlighter.swift:201-220
+    // swift: Render/CodeHighlighter.swift:173-220
     /// Diffs are line-shaped, not token-shaped: what matters is which side a line is on.
     fn diff_highlight(
         mut result: swiftshim::NSMutableAttributedString,

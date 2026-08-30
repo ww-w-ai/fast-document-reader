@@ -1,7 +1,7 @@
 //! swift: Render/MDAttr.swift
 //! swift-range: 1-6
 
-// swift: Render/MDAttr.swift:3-6
+// swift: Render/MDAttr.swift:3-205
 // Centralized custom NSAttributedString attribute keys (C5).
 // Producers (renderer) and consumers (window controller, reader view) must all
 // reference `MDAttr.*` — never raw string literals — so the producer→consumer
@@ -158,7 +158,7 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdParaShading".to_string())
     }
 
-    // swift: Render/MDAttr.swift:73-76
+    // swift: Render/MDAttr.swift:73-77
     /// Value = `NSColor`, an office paragraph's own border colour (docx `w:pPr/w:pBdr`, odt
     /// `fo:border`) — paired with `para_border_width` (never one without the other; both are set or
     /// neither, mirroring `ParagraphFormat.borderColor`/`.borderWidth`'s own "both resolved

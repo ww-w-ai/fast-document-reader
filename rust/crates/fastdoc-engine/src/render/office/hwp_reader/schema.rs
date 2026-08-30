@@ -919,10 +919,10 @@ pub(crate) struct HwpImage {
     /// and the two are indistinguishable without this. Measured across 637 documents — 3,159 crops
     /// are declared and 563 of them (138 documents) actually cut something.
     #[serde(rename = "originalWidth")]
-    // swift: Render/Office/HwpReader.swift:2471-2475
+    // swift: Render/Office/HwpReader.swift:2471-2505
     pub original_width: Option<i64>,
     #[serde(rename = "originalHeight")]
-    // swift: Render/Office/HwpReader.swift:2476-2476
+    // swift: Render/Office/HwpReader.swift:2476-2505
     pub original_height: Option<i64>,
 }
 

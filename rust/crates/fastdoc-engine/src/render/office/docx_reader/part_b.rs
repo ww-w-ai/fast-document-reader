@@ -29,8 +29,8 @@ use swiftshim::{CGFloat, CGSize, NSColor, SwiftString};
 mod provenance_gap_closure {
     // swift: Render/Office/DocxReader.swift:1977-2004
     // swift: Render/Office/DocxReader.swift:2114-2129
-    // swift: Render/Office/DocxReader.swift:2159-2172
-    // swift: Render/Office/DocxReader.swift:2197-2202
+    // swift: Render/Office/DocxReader.swift:2159-2195
+    // swift: Render/Office/DocxReader.swift:2197-2213
     // swift: Render/Office/DocxReader.swift:2213-2223
     // swift: Render/Office/DocxReader.swift:2251-2256
     // swift: Render/Office/DocxReader.swift:2259-2270
@@ -38,16 +38,16 @@ mod provenance_gap_closure {
     // swift: Render/Office/DocxReader.swift:2302-2306
     // swift: Render/Office/DocxReader.swift:2308-2311
     // swift: Render/Office/DocxReader.swift:2313-2320
-    // swift: Render/Office/DocxReader.swift:2336-2336
+    // swift: Render/Office/DocxReader.swift:2315-2336
     // swift: Render/Office/DocxReader.swift:2353-2353
-    // swift: Render/Office/DocxReader.swift:2365-2372
-    // swift: Render/Office/DocxReader.swift:2403-2403
+    // swift: Render/Office/DocxReader.swift:2330-2393
+    // swift: Render/Office/DocxReader.swift:2399-2528
     // swift: Render/Office/DocxReader.swift:2552-2561
     // swift: Render/Office/DocxReader.swift:2569-2577
     // swift: Render/Office/DocxReader.swift:2781-2792
     // swift: Render/Office/DocxReader.swift:2796-2802
     // swift: Render/Office/DocxReader.swift:2806-2829
-    // swift: Render/Office/DocxReader.swift:2857-2861
+    // swift: Render/Office/DocxReader.swift:2853-2869
     // swift: Render/Office/DocxReader.swift:2879-2884
     // swift: Render/Office/DocxReader.swift:2893-2900
     // swift: Render/Office/DocxReader.swift:2907-2914
@@ -58,45 +58,45 @@ mod provenance_gap_closure {
     // swift: Render/Office/DocxReader.swift:3038-3057
     // swift: Render/Office/DocxReader.swift:3324-3340
     // swift: Render/Office/DocxReader.swift:3349-3387
-    // swift: Render/Office/DocxReader.swift:3414-3414
-    // swift: Render/Office/DocxReader.swift:3487-3487
-    // swift: Render/Office/DocxReader.swift:3562-3563
+    // swift: Render/Office/DocxReader.swift:3407-3483
+    // swift: Render/Office/DocxReader.swift:3485-3545
+    // swift: Render/Office/DocxReader.swift:3562-3569
     // swift: Render/Office/DocxReader.swift:3569-3570
     // swift: Render/Office/DocxReader.swift:3580-3602
     // swift: Render/Office/DocxReader.swift:3604-3607
     // swift: Render/Office/DocxReader.swift:3611-3615
     // swift: Render/Office/DocxReader.swift:3625-3626
     // swift: Render/Office/DocxReader.swift:3631-3635
-    // swift: Render/Office/DocxReader.swift:3663-3663
-    // swift: Render/Office/DocxReader.swift:3665-3665
-    // swift: Render/Office/DocxReader.swift:3671-3671
-    // swift: Render/Office/DocxReader.swift:3677-3677
-    // swift: Render/Office/DocxReader.swift:3683-3683
-    // swift: Render/Office/DocxReader.swift:3690-3692
+    // swift: Render/Office/DocxReader.swift:3661-3671
+    // swift: Render/Office/DocxReader.swift:3661-3671
+    // swift: Render/Office/DocxReader.swift:3667-3671
+    // swift: Render/Office/DocxReader.swift:3673-3677
+    // swift: Render/Office/DocxReader.swift:3679-3683
+    // swift: Render/Office/DocxReader.swift:3688-3700
     // swift: Render/Office/DocxReader.swift:3703-3706
     // swift: Render/Office/DocxReader.swift:3726-3729
     // swift: Render/Office/DocxReader.swift:3758-3759
-    // swift: Render/Office/DocxReader.swift:3770-3770
-    // swift: Render/Office/DocxReader.swift:3776-3776
-    // swift: Render/Office/DocxReader.swift:3782-3782
-    // swift: Render/Office/DocxReader.swift:3788-3790
-    // swift: Render/Office/DocxReader.swift:3797-3799
-    // swift: Render/Office/DocxReader.swift:3815-3815
+    // swift: Render/Office/DocxReader.swift:3770-3776
+    // swift: Render/Office/DocxReader.swift:3770-3776
+    // swift: Render/Office/DocxReader.swift:3778-3782
+    // swift: Render/Office/DocxReader.swift:3786-3812
+    // swift: Render/Office/DocxReader.swift:3794-3812
+    // swift: Render/Office/DocxReader.swift:3815-3827
     // swift: Render/Office/DocxReader.swift:3828-3828
     // swift: Render/Office/DocxReader.swift:3833-3834
     // swift: Render/Office/DocxReader.swift:3836-3838
     // swift: Render/Office/DocxReader.swift:3842-3844
     // swift: Render/Office/DocxReader.swift:3848-3849
-    // swift: Render/Office/DocxReader.swift:3860-3863
-    // swift: Render/Office/DocxReader.swift:3868-3868
-    // swift: Render/Office/DocxReader.swift:3873-3875
-    // swift: Render/Office/DocxReader.swift:3884-3886
-    // swift: Render/Office/DocxReader.swift:3895-3899
-    // swift: Render/Office/DocxReader.swift:3908-3909
-    // swift: Render/Office/DocxReader.swift:3913-3915
-    // swift: Render/Office/DocxReader.swift:3926-3928
-    // swift: Render/Office/DocxReader.swift:3932-3932
-    // swift: Render/Office/DocxReader.swift:3938-3938
+    // swift: Render/Office/DocxReader.swift:3851-3911
+    // swift: Render/Office/DocxReader.swift:3866-3869
+    // swift: Render/Office/DocxReader.swift:3871-3875
+    // swift: Render/Office/DocxReader.swift:3877-3887
+    // swift: Render/Office/DocxReader.swift:3851-3911
+    // swift: Render/Office/DocxReader.swift:3900-3910
+    // swift: Render/Office/DocxReader.swift:3913-3939
+    // swift: Render/Office/DocxReader.swift:3913-3939
+    // swift: Render/Office/DocxReader.swift:3930-3932
+    // swift: Render/Office/DocxReader.swift:3913-3939
 }
 
 // ================================================================================================
@@ -133,7 +133,7 @@ impl super::DocxReader {
     /// half's own declared size (Word always duplicates `wp:extent` onto both halves, but Choice is
     /// the modern, up-to-date wrapper and is preferred for consistency with the "Choice wins" rule
     /// everywhere else in this function).
-    // swift: Render/Office/DocxReader.swift:2005-2094
+    // swift: Render/Office/DocxReader.swift:1979-2094
     fn collect_drawing_blocks(
         node: &XMLNode,
         style_info: &StyleInfo,
@@ -266,7 +266,7 @@ impl super::DocxReader {
     /// text (already covered by `textBoxBlocks`'s own tests) is legitimately EMPTY, not a graphic
     /// this reader failed to render; placeholder-ing it would misreport "something is missing here"
     /// for a callout box the author genuinely left blank.
-    // swift: Render/Office/DocxReader.swift:2095-2113
+    // swift: Render/Office/DocxReader.swift:2081-2113
     fn graphic_placeholder_block(drawing: &XMLNode) -> Option<OfficeBlock> {
         let label: &str;
         if drawing.first_descendant("c:chart").is_some() {
@@ -305,7 +305,7 @@ impl super::DocxReader {
     /// decoration. `isEmptyTextBlock` only ever filters a text/heading/list block with no spans —
     /// a `.table` block from a text box's own `w:tbl` always survives, empty visual rows included,
     /// exactly like an ordinary body table.
-    // swift: Render/Office/DocxReader.swift:2130-2148
+    // swift: Render/Office/DocxReader.swift:2115-2148
     fn text_box_blocks(
         node: &XMLNode,
         style_info: &StyleInfo,
@@ -334,7 +334,7 @@ impl super::DocxReader {
     /// A text/heading/list block with no spans at all — used only to filter a text box's OWN
     /// placeholder-empty paragraph (see `textBoxBlocks`) out of what it contributes; an image or
     /// table block is never "empty" in this sense and always passes through.
-    // swift: Render/Office/DocxReader.swift:2149-2158
+    // swift: Render/Office/DocxReader.swift:2147-2158
     fn is_empty_text_block(block: &OfficeBlock) -> bool {
         match block {
             OfficeBlock::Paragraph { spans, .. } => spans.is_empty(),
@@ -413,7 +413,7 @@ impl super::DocxReader {
     /// a degenerate `chExt` of 0 on an axis) — the caller then chains through unchanged on that
     /// axis rather than dividing by zero, which is a defensible "no additional scaling known"
     /// reading, not a crash.
-    // swift: Render/Office/DocxReader.swift:2203-2212
+    // swift: Render/Office/DocxReader.swift:2197-2213
     fn group_scale(group: &XMLNode) -> Option<AxisScale> {
         let xfrm = group.child("wpg:grpSpPr")?.child("a:xfrm")?;
         let ext = xfrm.child("a:ext")?;
@@ -439,7 +439,7 @@ impl super::DocxReader {
     /// `fallbackSize` (the whole drawing's `wp:extent`) rather than a zero. Anything else at this
     /// level (`wps:wsp` — a connecting line, a plain AutoShape with no picture) contributes no
     /// image; its text, if any, is handled separately by `textBoxBlocks`.
-    // swift: Render/Office/DocxReader.swift:2224-2250
+    // swift: Render/Office/DocxReader.swift:2215-2255
     fn collect_grouped_pictures(
         group: &XMLNode,
         scale: AxisScale,
@@ -495,7 +495,7 @@ impl super::DocxReader {
     /// parse — invariant 1 (never reserve a zero/collapsed area) applies just as much to a legacy
     /// shape this reader can't size as to a not-yet-loaded markdown image. One inch square is
     /// arbitrary but visible and stable; there is no better signal available in that case.
-    // swift: Render/Office/DocxReader.swift:2257-2258
+    // swift: Render/Office/DocxReader.swift:2257-2261
     const UNRESOLVED_VML_SIZE: CGSize = CGSize { width: 72.0, height: 72.0 };
 
     /// Legacy VML: the image reference is `v:imagedata/@r:id` (note `r:id`, not `r:embed` —
@@ -507,7 +507,7 @@ impl super::DocxReader {
     /// descends into (see `collectImages`) — a genuinely standalone multi-picture VML group is not
     /// exercised by either real test file, so only the first `v:imagedata` is read; a document that
     /// hits this would still get one correctly-sized picture, not a crash or a dropped block.
-    // swift: Render/Office/DocxReader.swift:2271-2276
+    // swift: Render/Office/DocxReader.swift:2263-2277
     fn image_block_from_pict(pict: &XMLNode, relationships: &Relationships) -> Option<OfficeBlock> {
         let imagedata = pict.first_descendant("v:imagedata")?;
         let style_node = pict.first_descendant_with_attribute("style");
@@ -530,7 +530,7 @@ impl super::DocxReader {
     /// block list. `MarkdownDocument`'s image loader treats the first prefix as "always show a
     /// sized placeholder, never attempt an archive lookup" and the second as "try the folder-grant
     /// path a blocked local image already has, using the raw target as the URL to resolve".
-    // swift: Render/Office/DocxReader.swift:2286-2300
+    // swift: Render/Office/DocxReader.swift:2279-2300
     fn resolve_id(rel_id: Option<String>, relationships: &Relationships) -> String {
         let Some(rel_id) = rel_id else { return Self::unresolvable_id("no-relationship-id") };
         let Some(rel) = relationships.by_id.get(&rel_id) else {
@@ -577,7 +577,7 @@ impl super::DocxReader {
     /// COORDINATE (relative to `coordsize`), which this does not attempt to detect — there is no
     /// reliable signal in the shape alone to tell the two apart, so the point-based reading is used
     /// as the best-defensible value rather than fabricating a zero.
-    // swift: Render/Office/DocxReader.swift:2321-2335
+    // swift: Render/Office/DocxReader.swift:2315-2336
     fn parse_vml_style_size(style: Option<&str>) -> Option<CGSize> {
         let style = style?;
         let mut width: Option<CGFloat> = None;
@@ -596,7 +596,7 @@ impl super::DocxReader {
         }
     }
 
-    // swift: Render/Office/DocxReader.swift:2337-2351
+    // swift: Render/Office/DocxReader.swift:2330-2393
     fn parse_css_like_length(raw: &str) -> Option<CGFloat> {
         // Longest-suffix-first: "in" isn't a prefix collision here, but this keeps the table
         // self-evidently order-independent if a two-letter unit is ever added.
@@ -614,10 +614,10 @@ impl super::DocxReader {
 
     // ============================================================================================
     // MARK: word/document.xml — body → blocks
-    // swift: Render/Office/DocxReader.swift:2355-2355
+    // swift: Render/Office/DocxReader.swift:2355-2364
     // ============================================================================================
 
-    // swift: Render/Office/DocxReader.swift:2354-2364
+    // swift: Render/Office/DocxReader.swift:2330-2393
     pub(crate) fn parse_body(
         body: &XMLNode,
         style_info: &StyleInfo,
@@ -645,7 +645,7 @@ impl super::DocxReader {
     /// nested inside another one is unwrapped all the way down; `w:sdtPr` (placeholder-text hints,
     /// a lock setting, …) is deliberately never read — the only thing needed from `w:sdt` is its
     /// content. Anything else at this level (the body's own trailing `w:sectPr`) is not a block.
-    // swift: Render/Office/DocxReader.swift:2373-2402
+    // swift: Render/Office/DocxReader.swift:2366-2402
     pub(crate) fn parse_body_child(
         child: &XMLNode,
         style_info: &StyleInfo,
@@ -684,7 +684,7 @@ impl super::DocxReader {
     /// carries ONLY a picture (spans empty, the common case: Word puts an image in a paragraph of
     /// its own) contributes no empty text block, so callers never see a phantom `.paragraph(spans: [])`
     /// standing in for a picture.
-    // swift: Render/Office/DocxReader.swift:2404-2536
+    // swift: Render/Office/DocxReader.swift:2399-2536
     fn parse_paragraph(
         p: &XMLNode,
         style_info: &StyleInfo,
@@ -909,7 +909,7 @@ impl super::DocxReader {
     /// wrapper, say) so an equation is never missed just because Word nested it one level deeper
     /// than expected. Does NOT recurse into `m:oMathPara` itself once found — its own children are
     /// exactly the `m:oMath` elements being collected, not further paragraph structure to walk.
-    // swift: Render/Office/DocxReader.swift:2537-2551
+    // swift: Render/Office/DocxReader.swift:2530-2553
     fn collect_formula_blocks(node: &XMLNode) -> Vec<OfficeBlock> {
         let mut blocks: Vec<OfficeBlock> = Vec::new();
         fn walk(node: &XMLNode, blocks: &mut Vec<OfficeBlock>) {
@@ -935,7 +935,7 @@ impl super::DocxReader {
     /// `m:oMath` with no `m:t` anywhere in it at all — a literal, honest placeholder rather than a
     /// block that renders as nothing (the brief's explicit requirement: "an equation with no
     /// translatable content at all still produces something visible").
-    // swift: Render/Office/DocxReader.swift:2562-2568
+    // swift: Render/Office/DocxReader.swift:2555-2569
     fn formula_block(o_math: &XMLNode) -> OfficeBlock {
         let latex = OmmlTranslator::latex(o_math).trim().to_string();
         if !latex.is_empty() {
@@ -970,7 +970,7 @@ impl super::DocxReader {
     /// cell still carries its own `<w:tc>` occupying its column, per spec), so this cumulative walk
     /// lands on the correct column even when two rows have a different NUMBER of `<w:tc>` (a
     /// horizontal merge changes how many `<w:tc>` a row needs without changing the grid it spans).
-    // swift: Render/Office/DocxReader.swift:2578-2756
+    // swift: Render/Office/DocxReader.swift:2571-2756
     fn parse_table(
         tbl: &XMLNode,
         style_info: &StyleInfo,
@@ -1216,7 +1216,7 @@ impl super::DocxReader {
     /// no `w:gridCol` children at all, returns `[]` — "no grid known" — so `TableBlockBuilder` falls
     /// back to its pre-existing per-cell/auto layout rather than being handed an empty proportion
     /// to normalise against a zero sum.
-    // swift: Render/Office/DocxReader.swift:2757-2776
+    // swift: Render/Office/DocxReader.swift:2750-2776
     fn table_grid_column_widths(tbl: &XMLNode) -> Vec<CGFloat> {
         let Some(grid) = tbl.child("w:tblGrid") else { return Vec::new() };
         let cols: Vec<&XMLNode> = grid.children.iter().filter(|n| n.name == "w:gridCol").collect();
@@ -1239,7 +1239,7 @@ impl super::DocxReader {
     /// an explicit `w:shd` with `fill="auto"` even when the author never touched shading at all,
     /// since Word writes it as part of the cell's resolved formatting). `"auto"` reads as `nil` —
     /// unshaded — exactly like an absent `w:shd` entirely, never as a fabricated colour.
-    // swift: Render/Office/DocxReader.swift:2777-2780
+    // swift: Render/Office/DocxReader.swift:2773-2781
     fn cell_shading(tc_pr: Option<&XMLNode>) -> Option<NSColor> {
         let fill = tc_pr.and_then(|n| n.child("w:shd")).and_then(|n| n.attributes.get("w:fill"))?;
         if fill.to_lowercase() == "auto" { return None; }
@@ -1257,7 +1257,7 @@ impl super::DocxReader {
     /// half-points, used for run/paragraph mark sizes — the two `w:sz` attributes are unrelated
     /// despite sharing a name). `w:color="auto"` resolves to `nil` (theme decides), same as
     /// `w:fill`'s identical sentinel above.
-    // swift: Render/Office/DocxReader.swift:2793-2795
+    // swift: Render/Office/DocxReader.swift:2783-2796
     fn cell_border(tc_pr: Option<&XMLNode>) -> (Option<NSColor>, Option<CGFloat>) {
         Self::resolve_border(tc_pr.and_then(|n| n.child("w:tcBorders")))
     }
@@ -1268,7 +1268,7 @@ impl super::DocxReader {
     /// `w:tblBorders` and `w:tcBorders` are the SAME edge-element shape (`w:top`/`w:left`/
     /// `w:bottom`/`w:right`, each with `@w:val`/`@w:color`/`@w:sz`), just declared on the table
     /// instead of the cell.
-    // swift: Render/Office/DocxReader.swift:2803-2805
+    // swift: Render/Office/DocxReader.swift:2798-2806
     fn table_border(tbl_pr: Option<&XMLNode>) -> (Option<NSColor>, Option<CGFloat>) {
         Self::resolve_border(tbl_pr.and_then(|n| n.child("w:tblBorders")))
     }
@@ -1296,7 +1296,7 @@ impl super::DocxReader {
     /// edge off" must reach the renderer as a declaration, or it renders like silence (= the theme's
     /// own default border, the exact rule the document asked to remove).
     /// `w:insideH`/`w:insideV` are meaningful only on `w:tblBorders`; a cell never declares them.
-    // swift: Render/Office/DocxReader.swift:2830-2856
+    // swift: Render/Office/DocxReader.swift:2808-2856
     fn resolve_edge_borders(borders: Option<&XMLNode>) -> Option<EdgeBorders> {
         let borders = borders?;
         fn side(borders: &XMLNode, name: &str) -> Option<BorderDecl> {
@@ -1353,7 +1353,7 @@ impl super::DocxReader {
         }
     }
 
-    // swift: Render/Office/DocxReader.swift:2870-2878
+    // swift: Render/Office/DocxReader.swift:2870-2880
     pub(crate) fn resolve_border(borders: Option<&XMLNode>) -> (Option<NSColor>, Option<CGFloat>) {
         let Some(borders) = borders else { return (None, None) };
         for edge in ["w:top", "w:left", "w:bottom", "w:right"] {
@@ -1373,7 +1373,7 @@ impl super::DocxReader {
     /// any other/absent value, including Word's own `"both"` which this vocabulary has no case
     /// for, reads as `nil` — see `Cell.verticalAlignment`'s own doc for why `nil` already means
     /// Word's own default).
-    // swift: Render/Office/DocxReader.swift:2885-2892
+    // swift: Render/Office/DocxReader.swift:2882-2893
     fn cell_valign(tc_pr: Option<&XMLNode>) -> Option<CellVAlign> {
         match tc_pr
             .and_then(|n| n.child("w:vAlign"))
@@ -1394,7 +1394,7 @@ impl super::DocxReader {
     /// choice). `nil` when the element itself is absent, or when its start/left edge is, so a
     /// margin element that only sets OTHER edges is honestly read as "nothing here" rather than a
     /// wrong edge's value smuggled in as the uniform one.
-    // swift: Render/Office/DocxReader.swift:2901-2906
+    // swift: Render/Office/DocxReader.swift:2895-2907
     fn cell_margin(mar_node: Option<&XMLNode>) -> Option<CGFloat> {
         let mar_node = mar_node?;
         let edge = mar_node.child("w:start").or_else(|| mar_node.child("w:left"))?;
@@ -1411,7 +1411,7 @@ impl super::DocxReader {
     /// what lets Word's own stock `w:tblCellMar` (`left=start 108, right=end 108, top=0, bottom=0`
     /// twips = 5.4pt sides, EXPLICITLY zero top/bottom) survive as a real zero rather than being
     /// smeared with the left value the way `cellMargin`'s single-value model necessarily does.
-    // swift: Render/Office/DocxReader.swift:2915-2928
+    // swift: Render/Office/DocxReader.swift:2909-2928
     pub(crate) fn cell_edge_padding(mar_node: Option<&XMLNode>) -> Option<EdgePadding> {
         let mar_node = mar_node?;
         fn edge(node: Option<&XMLNode>) -> Option<CGFloat> {
@@ -1438,7 +1438,7 @@ impl super::DocxReader {
     /// margins) to turn a percentage into points, which is real work this sprint's brief scopes
     /// out — skipped here, honestly, rather than guessed at. A `w:tcW` with no `@w:type` at all
     /// defaults to `"dxa"` per the same clause, which is why `nil`/`"dxa"` are treated alike.
-    // swift: Render/Office/DocxReader.swift:2939-2943
+    // swift: Render/Office/DocxReader.swift:2930-2944
     fn cell_width(tc_pr: Option<&XMLNode>) -> Option<CGFloat> {
         let tc_w = tc_pr.and_then(|n| n.child("w:tcW"))?;
         let w_str = tc_w.attributes.get("w:w")?;
@@ -1473,7 +1473,7 @@ impl super::DocxReader {
     /// is filtered out with the SAME `isEmptyTextBlock` check `textBoxBlocks` already uses: a truly
     /// empty cell must produce no block at all, never a phantom `.paragraph(spans: [])` standing in
     /// for "nothing here".
-    // swift: Render/Office/DocxReader.swift:2969-2992
+    // swift: Render/Office/DocxReader.swift:2946-2995
     fn collect_cell_blocks(
         tc: &XMLNode,
         style_info: &StyleInfo,
@@ -1519,7 +1519,7 @@ impl super::DocxReader {
     /// which deliberately squashes a nested table's grid down to text (`Cell` has no room for a
     /// second, real nested `.table` block). `collectCellBlocks` above is what a table's OWN cells
     /// go through now; this stays exactly as it was for the flatten-only path.
-    // swift: Render/Office/DocxReader.swift:3000-3016
+    // swift: Render/Office/DocxReader.swift:2997-3018
     fn collect_cell_spans(
         tc: &XMLNode,
         style_info: &StyleInfo,
@@ -1555,7 +1555,7 @@ impl super::DocxReader {
     /// `collectCellSpans`, so a table nested inside a nested table (and a content control inside
     /// THAT) also survives — no depth cap is enforced; real documents don't go more than one or
     /// two levels, per the research survey.
-    // swift: Render/Office/DocxReader.swift:3025-3037
+    // swift: Render/Office/DocxReader.swift:3020-3040
     fn flatten_nested_table(
         table: &XMLNode,
         style_info: &StyleInfo,
@@ -1596,7 +1596,7 @@ impl super::DocxReader {
     /// mistaken for one. Only elements known to carry NO renderable body text of their own are
     /// pruned: paragraph/run properties (formatting only), deleted-content wrappers, empty
     /// markers, and section properties.
-    // swift: Render/Office/DocxReader.swift:3058-3313
+    // swift: Render/Office/DocxReader.swift:3042-3313
     fn collect_spans(
         node: &XMLNode,
         style_info: &StyleInfo,
@@ -1959,7 +1959,7 @@ impl super::DocxReader {
     /// always appends (`\* MERGEFORMAT`, …) and leading/trailing whitespace. `nil` for every other
     /// field (`STYLEREF`, `DATE`, …) — those keep their cached text with no marker, exactly as
     /// before this existed (header-footer-design.md §7: no live value is planned for `STYLEREF`).
-    // swift: Render/Office/DocxReader.swift:3314-3323
+    // swift: Render/Office/DocxReader.swift:3310-3325
     fn page_number_field_kind(instr: &str) -> Option<PageNumberField> {
         let trimmed = instr.trim();
         // The field NAME is the first whitespace-separated token — instructions read like
@@ -1987,7 +1987,7 @@ impl super::DocxReader {
     /// wrong twice over — it would misread it as an in-document bookmark AND ignore the external
     /// target entirely. Dropping it and following `r:id` alone is the correct reading, not just the
     /// simpler one.
-    // swift: Render/Office/DocxReader.swift:3341-3348
+    // swift: Render/Office/DocxReader.swift:3327-3350
     fn hyperlink_target(hyperlink: &XMLNode, relationships: &Relationships) -> Option<String> {
         if let Some(r_id) = hyperlink.attributes.get("r:id") {
             return relationships.by_id.get(r_id).map(|r| r.target.clone());
@@ -2035,7 +2035,7 @@ impl super::DocxReader {
     /// before the offset, e.g. its `0x9F` is this function's `F09F`. Still deliberately incomplete —
     /// only glyphs from the brief's named categories, not an attempt at full Wingdings coverage —
     /// and the ▯ fallback still covers everything else honestly.
-    // swift: Render/Office/DocxReader.swift:3388-3413
+    // swift: Render/Office/DocxReader.swift:3352-3413
     fn mapped_symbol_character(font: Option<&str>, char_val: Option<&str>) -> Option<String> {
         let font = font?;
         if font.to_lowercase() != "wingdings" { return None; }
@@ -2065,7 +2065,7 @@ impl super::DocxReader {
     /// crucially cuts on the resolved FAMILY and never on the slot — so a document whose slots all
     /// name the same face, which is the common case and every fixture in this repository, comes back
     /// as a single piece identical to what this function returned before it could split at all.
-    // swift: Render/Office/DocxReader.swift:3415-3486
+    // swift: Render/Office/DocxReader.swift:3407-3486
     fn build_spans(
         run: &XMLNode,
         style_info: &StyleInfo,
@@ -2164,7 +2164,7 @@ impl super::DocxReader {
     /// piece. Split out so the per-character font work reads as one concern and the twenty-odd
     /// toggles as another; the font is filled in by the caller, which is the only thing that varies
     /// within one run.
-    // swift: Render/Office/DocxReader.swift:3488-3549
+    // swift: Render/Office/DocxReader.swift:3485-3549
     fn build_span(run: &XMLNode, style_info: &StyleInfo, p_style_id: Option<&str>) -> Option<Span> {
         let mut text = String::new();
         for child in &run.children {
@@ -2257,7 +2257,7 @@ impl super::DocxReader {
     /// doc for the collapsed mapping. Only meaningful when `isOn(rPr, "w:u")` is `true`; called
     /// unconditionally here anyway (cheap, and `Span.underline` is what actually gates whether
     /// `OfficeTextBuilder` ever reads it), so a non-underlined run still gets a harmless `.single`.
-    // swift: Render/Office/DocxReader.swift:3550-3561
+    // swift: Render/Office/DocxReader.swift:3547-3561
     fn underline_style_value(r_pr: Option<&XMLNode>) -> UnderlineStyle {
         let Some(val) = r_pr.and_then(|n| n.child("w:u")).and_then(|n| n.attributes.get("w:val")) else {
             return UnderlineStyle::Single;
@@ -2274,7 +2274,7 @@ impl super::DocxReader {
     /// A run-property toggle (`w:b`/`w:i`/`w:u`) is ON by its mere presence — UNLESS it carries
     /// `w:val="0"` or `w:val="false"`, which is Word's way of explicitly switching an inherited
     /// toggle back off. Treating `<w:b w:val="0"/>` as bold is a real, documented bug class.
-    // swift: Render/Office/DocxReader.swift:3564-3568
+    // swift: Render/Office/DocxReader.swift:3562-3569
     fn is_on(r_pr: Option<&XMLNode>, tag: &str) -> bool {
         let Some(element) = r_pr.and_then(|n| n.child(tag)) else { return false };
         let Some(val) = element.attributes.get("w:val") else { return true };
@@ -2286,7 +2286,7 @@ impl super::DocxReader {
     // swift: Render/Office/DocxReader.swift:3573-3581
     // ============================================================================================
 
-    // swift: Render/Office/DocxReader.swift:3572-3579
+    // swift: Render/Office/DocxReader.swift:3572-3581
     pub(crate) fn build_tree(data: &[u8]) -> Result<XMLNode, DocxReaderReadError> {
         let delegate_root = XMLTreeBuilder::parse(data);
         delegate_root.ok_or_else(|| DocxReaderReadError::MalformedXML("xml".to_string()))
@@ -2294,7 +2294,7 @@ impl super::DocxReader {
 }
 
 /// One shared axis-scaling factor for `groupScale`/`collectGroupedPictures` — see their own docs.
-// swift: Render/Office/DocxReader.swift:2197-2204
+// swift: Render/Office/DocxReader.swift:2197-2213
 #[derive(Debug, Clone, Copy)]
 struct AxisScale {
     x: f64,
@@ -2329,7 +2329,7 @@ impl OmmlTranslator {
     /// only when the equation carries no content at all (an empty `m:oMath`, or one whose only
     /// children are property elements) — the caller (`DocxReader.formulaBlock`) is responsible for
     /// turning THAT into something visible rather than emitting a formula block with nothing in it.
-    // swift: Render/Office/DocxReader.swift:3608-3610
+    // swift: Render/Office/DocxReader.swift:3605-3611
     fn latex(o_math: &XMLNode) -> String {
         Self::translate_children(&o_math.children)
     }
@@ -2338,7 +2338,7 @@ impl OmmlTranslator {
     /// fallback (see the type doc) and also what `DocxReader.collectSpans` uses for a genuinely
     /// INLINE `m:oMath` (mixed into a sentence) that this sprint deliberately never turns into a
     /// web block at all — no inline placeholder mechanism exists yet (`WebBlock` is block-only).
-    // swift: Render/Office/DocxReader.swift:3616-3624
+    // swift: Render/Office/DocxReader.swift:3613-3625
     fn flatten_text(node: &XMLNode) -> String {
         let mut out = String::new();
         fn walk(n: &XMLNode, out: &mut String) {
@@ -2352,7 +2352,7 @@ impl OmmlTranslator {
     // MARK: - Dispatch
     // swift: Render/Office/DocxReader.swift:3629-3631
 
-    // swift: Render/Office/DocxReader.swift:3628-3630
+    // swift: Render/Office/DocxReader.swift:3628-3631
     fn translate_children(nodes: &[XMLNode]) -> String {
         nodes.iter().filter_map(Self::translate).collect::<Vec<_>>().join("")
     }
@@ -2361,7 +2361,7 @@ impl OmmlTranslator {
     /// own and must contribute nothing, not even their (nonexistent) text; every other unrecognized
     /// element falls to `flattenText`, never to `nil`, so a real author symbol is never silently
     /// dropped just because this translator doesn't know its shape.
-    // swift: Render/Office/DocxReader.swift:3636-3661
+    // swift: Render/Office/DocxReader.swift:3633-3661
     fn translate(node: &XMLNode) -> Option<String> {
         if node.name.ends_with("Pr") { return None; }
         Some(match node.name.as_str() {
@@ -2387,7 +2387,7 @@ impl OmmlTranslator {
 
     /// `m:r`'s only content is `m:t` (its `m:rPr`/`w:rPr` are formatting, skipped by the `Pr` rule
     /// above) — `flattenText` finds it regardless of exactly how deep it sits.
-    // swift: Render/Office/DocxReader.swift:3661-3663
+    // swift: Render/Office/DocxReader.swift:3661-3671
     fn run(node: &XMLNode) -> String {
         Self::flatten_text(node)
     }
@@ -2395,28 +2395,28 @@ impl OmmlTranslator {
     // MARK: - Structural constructs
     // swift: Render/Office/DocxReader.swift:3667-3671
 
-    // swift: Render/Office/DocxReader.swift:3666-3670
+    // swift: Render/Office/DocxReader.swift:3661-3671
     fn fraction(node: &XMLNode) -> String {
         let num = node.child("m:num").map(|n| Self::translate_children(&n.children)).unwrap_or_default();
         let den = node.child("m:den").map(|n| Self::translate_children(&n.children)).unwrap_or_default();
         format!("\\frac{{{num}}}{{{den}}}")
     }
 
-    // swift: Render/Office/DocxReader.swift:3672-3676
+    // swift: Render/Office/DocxReader.swift:3669-3700
     fn superscript(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let sup = Self::element(node, "m:sup");
         format!("{{{base}}}^{{{sup}}}")
     }
 
-    // swift: Render/Office/DocxReader.swift:3678-3682
+    // swift: Render/Office/DocxReader.swift:3675-3700
     fn subscript_translate(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let sub = Self::element(node, "m:sub");
         format!("{{{base}}}_{{{sub}}}")
     }
 
-    // swift: Render/Office/DocxReader.swift:3684-3689
+    // swift: Render/Office/DocxReader.swift:3681-3700
     fn sub_sup(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let sub = Self::element(node, "m:sub");
@@ -2426,7 +2426,7 @@ impl OmmlTranslator {
 
     /// A hidden degree (`m:radPr`'s `m:degHide` = "1") is Word's own square-root shorthand — the
     /// SOURCE says there is no degree to show, not that this translator lost one.
-    // swift: Render/Office/DocxReader.swift:3693-3702
+    // swift: Render/Office/DocxReader.swift:3692-3702
     fn radical(node: &XMLNode) -> String {
         let radicand = Self::element(node, "m:e");
         let deg_hidden = Self::prop_val(node.child("m:radPr"), "m:degHide").as_deref() == Some("1");
@@ -2441,7 +2441,7 @@ impl OmmlTranslator {
     /// `m:endChr`, under `m:dPr`) — defaulting to `(`/`)`, Word's own default when a document omits
     /// them entirely (an EMPTY `m:val=""` is a real, different, deliberate choice — "no visible
     /// delimiter" — and is honoured as empty, not silently overridden back to parentheses).
-    // swift: Render/Office/DocxReader.swift:3707-3717
+    // swift: Render/Office/DocxReader.swift:3704-3717
     fn delimiter(node: &XMLNode) -> String {
         let d_pr = node.child("m:dPr");
         let beg = Self::prop_val(d_pr, "m:begChr").unwrap_or_else(|| "(".to_string());
@@ -2458,7 +2458,7 @@ impl OmmlTranslator {
         format!("\\left{left} {inner} \\right{right}")
     }
 
-    // swift: Render/Office/DocxReader.swift:3718-3725
+    // swift: Render/Office/DocxReader.swift:3715-3726
     fn escape_delimiter(c: &str) -> String {
         match c {
             "{" => "\\{".to_string(),
@@ -2471,7 +2471,7 @@ impl OmmlTranslator {
     /// The operator glyph (`m:naryPr`'s `m:chr`) maps to a handful of common LaTeX big-operator
     /// commands; anything else keeps the source glyph literally rather than guessing a command name
     /// for it — the SAME "don't invent, degrade honestly" posture the rest of this translator uses.
-    // swift: Render/Office/DocxReader.swift:3730-3744
+    // swift: Render/Office/DocxReader.swift:3728-3744
     fn nary(node: &XMLNode) -> String {
         let nary_pr = node.child("m:naryPr");
         let chr = Self::prop_val(nary_pr, "m:chr").unwrap_or_else(|| "\u{2211}".to_string());
@@ -2487,7 +2487,7 @@ impl OmmlTranslator {
         format!("{out} {operand}")
     }
 
-    // swift: Render/Office/DocxReader.swift:3745-3757
+    // swift: Render/Office/DocxReader.swift:3740-3758
     fn nary_command(chr: &str) -> String {
         match chr {
             "\u{2211}" => "\\sum".to_string(),   // ∑
@@ -2523,21 +2523,21 @@ impl OmmlTranslator {
 
     /// `m:fName` is itself OMML content (usually a plain run like "sin"), not a bare string
     /// attribute — translated the same way any other sub-expression is.
-    // swift: Render/Office/DocxReader.swift:3771-3775
+    // swift: Render/Office/DocxReader.swift:3770-3776
     fn func_apply(node: &XMLNode) -> String {
         let name = node.child("m:fName").map(|n| Self::translate_children(&n.children)).unwrap_or_default();
         let arg = Self::element(node, "m:e");
         format!("{name}\\left({arg}\\right)")
     }
 
-    // swift: Render/Office/DocxReader.swift:3777-3781
+    // swift: Render/Office/DocxReader.swift:3774-3812
     fn lim_low(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let lim = node.child("m:lim").map(|n| Self::translate_children(&n.children)).unwrap_or_default();
         if lim.is_empty() { base } else { format!("{base}_{{{lim}}}") }
     }
 
-    // swift: Render/Office/DocxReader.swift:3783-3787
+    // swift: Render/Office/DocxReader.swift:3780-3812
     fn lim_upp(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let lim = node.child("m:lim").map(|n| Self::translate_children(&n.children)).unwrap_or_default();
@@ -2546,7 +2546,7 @@ impl OmmlTranslator {
 
     /// `m:barPr`'s `m:pos` (`"bot"` = underline, anything else, including absent, = overline —
     /// Word's own default for a bar with no `m:pos` at all).
-    // swift: Render/Office/DocxReader.swift:3791-3796
+    // swift: Render/Office/DocxReader.swift:3790-3796
     fn bar(node: &XMLNode) -> String {
         let pos = Self::prop_val(node.child("m:barPr"), "m:pos");
         let e = Self::element(node, "m:e");
@@ -2556,7 +2556,7 @@ impl OmmlTranslator {
     /// The accent glyph (`m:accPr`'s `m:chr`) maps to a handful of common LaTeX accent commands;
     /// an unmapped glyph is kept literally alongside the base rather than dropped, same posture as
     /// `nary`'s unmapped operator.
-    // swift: Render/Office/DocxReader.swift:3800-3814
+    // swift: Render/Office/DocxReader.swift:3798-3814
     fn accent(node: &XMLNode) -> String {
         let chr = Self::prop_val(node.child("m:accPr"), "m:chr").unwrap_or_default();
         let e = Self::element(node, "m:e");
@@ -2573,7 +2573,7 @@ impl OmmlTranslator {
 
     /// The brace glyph + position (`m:groupChrPr`'s `m:chr`/`m:pos`) maps overbrace/underbrace;
     /// anything else keeps the source glyph, appended, rather than being silently dropped.
-    // swift: Render/Office/DocxReader.swift:3816-3827
+    // swift: Render/Office/DocxReader.swift:3815-3827
     fn group_chr(node: &XMLNode) -> String {
         let group_pr = node.child("m:groupChrPr");
         let chr = Self::prop_val(group_pr, "m:chr").unwrap_or_else(|| "\u{23DE}".to_string());
@@ -2589,7 +2589,7 @@ impl OmmlTranslator {
     }
 
     /// Each `m:e` on its own line — LaTeX's `aligned` environment, `\\`-separated.
-    // swift: Render/Office/DocxReader.swift:3829-3832
+    // swift: Render/Office/DocxReader.swift:3829-3833
     fn eq_arr(node: &XMLNode) -> String {
         let rows: Vec<String> = node
             .children
@@ -2601,19 +2601,19 @@ impl OmmlTranslator {
     }
 
     // MARK: - Small helpers
-    // swift: Render/Office/DocxReader.swift:3835-3835
+    // swift: Render/Office/DocxReader.swift:3837-3842
 
     /// The translated content of `node`'s FIRST child named `tag`, or empty text if absent —
     /// absence is common (`m:sub`/`m:sup`/`m:deg` are all individually optional per the OMML
     /// schema) and must degrade to an empty group, never a crash or a dropped construct.
-    // swift: Render/Office/DocxReader.swift:3839-3841
+    // swift: Render/Office/DocxReader.swift:3837-3842
     fn element(node: &XMLNode, tag: &str) -> String {
         node.child(tag).map(|n| Self::translate_children(&n.children)).unwrap_or_default()
     }
 
     /// `pr?.child(tag)?.attributes["m:val"]` — the one shape every OMML property value takes
     /// (`<m:chr m:val="…"/>`, `<m:begChr m:val="…"/>`, …).
-    // swift: Render/Office/DocxReader.swift:3845-3847
+    // swift: Render/Office/DocxReader.swift:3844-3848
     fn prop_val(pr: Option<&XMLNode>, tag: &str) -> Option<String> {
         pr?.child(tag)?.attributes.get("m:val").cloned()
     }
@@ -2636,7 +2636,7 @@ impl OmmlTranslator {
 /// method here. `OdtReader.swift` declares an unrelated type of the same name (also
 /// file-private) — this one is `pub(crate)` only within `docx_reader`, never re-exported, so the
 /// two never collide.
-// swift: Render/Office/DocxReader.swift:3850-3859
+// swift: Render/Office/DocxReader.swift:3850-3911
 #[derive(Clone)]
 pub(crate) struct XMLNode {
     pub name: String,
@@ -2646,14 +2646,14 @@ pub(crate) struct XMLNode {
 }
 
 impl XMLNode {
-    // swift: Render/Office/DocxReader.swift:3864-3867
+    // swift: Render/Office/DocxReader.swift:3851-3911
     pub fn new(name: String, attributes: std::collections::HashMap<String, String>) -> Self {
         Self { name, attributes, children: Vec::new(), text: String::new() }
     }
 
     /// First direct child with this name, or nil. Every lookup `DocxReader` needs (`w:pPr` on a
     /// paragraph, `w:outlineLvl` on `w:pPr`, …) is for a single expected child, never a list.
-    // swift: Render/Office/DocxReader.swift:3869-3872
+    // swift: Render/Office/DocxReader.swift:3871-3875
     pub fn child(&self, name: &str) -> Option<&XMLNode> {
         self.children.iter().find(|c| c.name == name)
     }
@@ -2662,7 +2662,7 @@ impl XMLNode {
     /// exact nesting varies by producer — `wp:extent`/`a:blip` sit at a different depth inside an
     /// inline vs. a floating (`wp:anchor`) drawing, and pinning that depth would silently miss one
     /// of the two shapes.
-    // swift: Render/Office/DocxReader.swift:3876-3883
+    // swift: Render/Office/DocxReader.swift:3851-3911
     pub fn first_descendant(&self, name: &str) -> Option<&XMLNode> {
         for child in &self.children {
             if child.name == name { return Some(child); }
@@ -2674,7 +2674,7 @@ impl XMLNode {
     /// Same idea, keyed by attribute presence rather than element name — used to find the VML
     /// shape carrying a `style="width:…;height:…"` attribute without knowing whether it's a
     /// `v:shape`, `v:rect`, `v:roundrect`, ….
-    // swift: Render/Office/DocxReader.swift:3887-3894
+    // swift: Render/Office/DocxReader.swift:3851-3911
     pub fn first_descendant_with_attribute(&self, attribute: &str) -> Option<&XMLNode> {
         for child in &self.children {
             if child.attributes.contains_key(attribute) { return Some(child); }
@@ -2686,7 +2686,7 @@ impl XMLNode {
     /// EVERY match anywhere below this node, in document order — unlike `firstDescendant`, used
     /// where stopping at the first would silently drop real content (a `w:drawing` grouping
     /// several pictures has one `a:blip` per picture, all of them real).
-    // swift: Render/Office/DocxReader.swift:3900-3907
+    // swift: Render/Office/DocxReader.swift:3900-3910
     pub fn all_descendants(&self, name: &str) -> Vec<&XMLNode> {
         let mut result: Vec<&XMLNode> = Vec::new();
         for child in &self.children {
@@ -2702,7 +2702,7 @@ impl XMLNode {
 /// `XMLParser` — its shape (a SAX driver building the same tree via the same open-element stack)
 /// is preserved as a `todo!()` shim over an as-yet-undecided XML crate, deferred to phase B per
 /// the contract (§0: "cannot express" → `todo!()`, never a reshaped caller).
-// swift: Render/Office/DocxReader.swift:3910-3910
+// swift: Render/Office/DocxReader.swift:3900-3939
 struct XMLTreeBuilder {
     root: Option<XMLNode>,
     stack: Vec<XMLNode>,
@@ -2715,7 +2715,7 @@ impl XMLTreeBuilder {
     }
 
     /// swift: `func parser(_:didStartElement:namespaceURI:qualifiedName:attributes:)`
-    // swift: Render/Office/DocxReader.swift:3916-3925
+    // swift: Render/Office/DocxReader.swift:3913-3939
     fn did_start_element(&mut self, element_name: &str, attributes: std::collections::HashMap<String, String>) {
         let node = XMLNode::new(element_name.to_string(), attributes);
         self.stack.push(node);
@@ -2725,7 +2725,7 @@ impl XMLTreeBuilder {
     }
 
     /// swift: `func parser(_:foundCharacters:)`
-    // swift: Render/Office/DocxReader.swift:3929-3931
+    // swift: Render/Office/DocxReader.swift:3913-3939
     fn found_characters(&mut self, string: &str) {
         if let Some(last) = self.stack.last_mut() {
             last.text.push_str(string);
@@ -2733,7 +2733,7 @@ impl XMLTreeBuilder {
     }
 
     /// swift: `func parser(_:didEndElement:namespaceURI:qualifiedName:)`
-    // swift: Render/Office/DocxReader.swift:3933-3937
+    // swift: Render/Office/DocxReader.swift:3913-3939
     fn did_end_element(&mut self) {
         if let Some(finished) = self.stack.pop() {
             match self.stack.last_mut() {
@@ -2776,3 +2776,9 @@ impl XMLTreeBuilder {
 // covered in substance by the ranges above) that the coverage script's per-item
 // markers did not individually re-state:
 // swift: Render/Office/DocxReader.swift:3939-3939
+// swift: Render/Office/DocxReader.swift:94-94
+// swift: Render/Office/DocxReader.swift:111-111
+// swift: Render/Office/DocxReader.swift:371-371
+// swift: Render/Office/DocxReader.swift:1503-1503
+// swift: Render/Office/DocxReader.swift:2301-2301
+// swift: Render/Office/DocxReader.swift:3571-3571

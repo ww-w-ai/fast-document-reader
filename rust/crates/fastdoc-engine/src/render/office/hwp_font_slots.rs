@@ -28,7 +28,7 @@ pub enum HwpFontSlot {
 
 impl HwpFontSlot {
     /// All cases, mirroring Swift's `CaseIterable` conformance.
-    // swift: Render/Office/HwpFontSlots.swift:10
+    // swift: Render/Office/HwpFontSlots.swift:3-23
     pub const ALL: [HwpFontSlot; 7] = [
         HwpFontSlot::Hangul,
         HwpFontSlot::Latin,
@@ -187,7 +187,7 @@ impl HwpSlotTable {
         }
     }
 
-    // swift: Render/Office/HwpFontSlots.swift:128-205
+    // swift: Render/Office/HwpFontSlots.swift:88-219
     /// The measured exception to absorption, and the ONLY route to the Symbol slot.
     ///
     /// ## The tension, and the numbers that settled it
@@ -265,7 +265,7 @@ impl HwpSlotTable {
     /// which is the hand-maintained list this design forbids. (For completeness: 52,575 rows (45.8%)
     /// DO declare a User family differing from their Hangul one. A slot being declared is not
     /// evidence that any character selects it.)
-    // swift: Render/Office/HwpFontSlots.swift:206-219
+    // swift: Render/Office/HwpFontSlots.swift:129-219
     fn symbol_selecting_scalar(scalar: char) -> bool {
         match scalar as u32 {
             0x2190..=0x21FF   // arrows

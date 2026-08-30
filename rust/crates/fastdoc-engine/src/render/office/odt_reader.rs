@@ -60,7 +60,7 @@ impl OdtReader {
     /// This reader emits `.image` blocks — PARSING only. Resolving an emitted id to actual pixels
     /// (reading the archive entry, drawing a placeholder for an unresolvable one) is a later
     /// sprint's job, exactly as in `DocxReader`.
-    // swift: Render/Office/OdtReader.swift:31-107
+    // swift: Render/Office/OdtReader.swift:31-108
     pub fn read(archive: &ZipArchive) -> Result<OfficeReadResult, OdtReadError> {
         if !archive.contains("content.xml") {
             return Err(OdtReadError::MissingContentXML);
@@ -207,7 +207,7 @@ impl OdtReader {
     ///
     /// A single-master-page document — the overwhelming majority — has exactly one candidate, so
     /// this returns precisely what `children.first` returned before it existed.
-    // swift: Render/Office/OdtReader.swift:127-186
+    // swift: Render/Office/OdtReader.swift:110-187
     fn typeset_master_page(body: &Ref<XMLNode>, style_roots: &[Ref<XMLNode>]) -> Option<Ref<XMLNode>> {
         let master_styles = style_roots.iter().find_map(|r| XMLNode::child(r, "office:master-styles"))?;
         let master_pages: Vec<Ref<XMLNode>> = XMLNode::children(&master_styles)
@@ -312,7 +312,7 @@ impl OdtReader {
     /// master page, no such layout, or a layout declaring no usable paper — this falls back to the
     /// old scan of every layout in declaration order, so a document whose master page is unhelpful is
     /// no worse off than before this lookup existed.
-    // swift: Render/Office/OdtReader.swift:205-214
+    // swift: Render/Office/OdtReader.swift:189-215
     fn page_geometry(style_roots: &[Ref<XMLNode>], master_page: Option<&Ref<XMLNode>>) -> Option<PageGeometry> {
         if let Some(master_page) = master_page {
             if let Some(layout_name) = XMLNode::attributes(master_page).get("style:page-layout-name") {
@@ -330,7 +330,7 @@ impl OdtReader {
     }
 
     /// The first usable paper declared anywhere under `roots`, in declaration order.
-    // swift: Render/Office/OdtReader.swift:217-249
+    // swift: Render/Office/OdtReader.swift:217-250
     fn page_geometry_scanning(roots: &[Ref<XMLNode>]) -> Option<PageGeometry> {
         for root in roots {
             // EVERY page-layout-properties under this root, not just the first: a real writer emits
@@ -390,7 +390,7 @@ impl OdtReader {
     /// because this reader lays the body out as one continuous column (invariant 57) and has nowhere
     /// to put a second paper. That is the same scope the HWP reader had before invariant 78 gave it
     /// per-page section selection.
-    // swift: Render/Office/OdtReader.swift:276-296
+    // swift: Render/Office/OdtReader.swift:254-297
     fn master_page_header_footers(
         master_page: Option<&Ref<XMLNode>>, styles: &ParsedStyles, archive: &ZipArchive,
     ) -> (Vec<OfficeHeaderFooter>, Vec<OfficeHeaderFooter>) {
@@ -425,7 +425,7 @@ impl OdtReader {
     /// `MarkdownDocument` — see `DocumentTypes.officeReaderType`'s doc for why. `11` — the same
     /// default `OfficeTextBuilder.build` itself falls back to — is returned when the document
     /// declares no `style:default-style` at all, or one with no font size.
-    // swift: Render/Office/OdtReader.swift:307-325
+    // swift: Render/Office/OdtReader.swift:299-326
     pub fn document_default_body_font_size(archive: &ZipArchive) -> CGFloat {
         if !archive.contains("content.xml") {
             return 11.0;
@@ -460,7 +460,7 @@ impl OdtReader {
     /// paragraph, so there is nothing to preserve formatting FOR here, unlike `collectSpans`'s own
     /// walk). Not `collectSpans` itself: that produces styled `Span`s and threads bookmarks/
     /// comment-range state neither of which a comment's own text needs.
-    // swift: Render/Office/OdtReader.swift:358-372
+    // swift: Render/Office/OdtReader.swift:353-373
     fn plain_text(node: &Ref<XMLNode>) -> String {
         let mut text = String::new();
         fn walk(node: &Ref<XMLNode>, text: &mut String) {
@@ -483,7 +483,7 @@ impl OdtReader {
     /// docx's `w:footnoteReference`, which carries no number of its own — see `DocxReader`). Missing
     /// entirely (malformed) yields an empty string, which the caller (`collectSpans`'s `text:note`
     /// case) falls back to `NoteCollector.fallbackCounter` for, rather than showing a blank marker.
-    // swift: Render/Office/OdtReader.swift:380-383
+    // swift: Render/Office/OdtReader.swift:375-384
     fn note_citation_text(note: &Ref<XMLNode>) -> String {
         let Some(citation) = XMLNode::child(note, "text:note-citation") else { return String::new() };
         XMLNode::children(&citation).into_iter()
@@ -500,7 +500,7 @@ impl OdtReader {
     /// one back to the other. See `DocxReader.collectNoteBlocks`/`prependingMarker` for the mirrored
     /// docx-side logic (kept format-specific rather than shared, per the roadmap's own call: the
     /// EXTRACTION differs per format, only the output shape is one-to-one).
-    // swift: Render/Office/OdtReader.swift:392-412
+    // swift: Render/Office/OdtReader.swift:386-413
     fn build_note_blocks(
         note_entries: &[(String, Ref<XMLNode>)], styles: &ParsedStyles, archive: &ZipArchive,
     ) -> Vec<OfficeBlock> {
@@ -537,13 +537,13 @@ impl OdtReader {
     /// output would see them disagree over one document for no reason a user could point to. A
     /// synthetic tab span, plain (not superscript, not part of the marker itself), closes that gap
     /// and matches what docx already shows.
-    // swift: Render/Office/OdtReader.swift:415-425
+    // swift: Render/Office/OdtReader.swift:415-441
     fn note_marker_separator() -> Span {
         Span { text: "\t".to_string().into(), ..Default::default() }
     }
 
     /// `nil` for `.table`/`.image` — there is no `[Span]` inside either to prepend into.
-    // swift: Render/Office/OdtReader.swift:427-440
+    // swift: Render/Office/OdtReader.swift:427-441
     fn prepending_marker(marker: Span, block: &OfficeBlock) -> Option<OfficeBlock> {
         match block {
             OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format, .. } => {
@@ -597,7 +597,7 @@ impl OdtReader {
 /// growing every recursive helper's parameter list by two more names apiece. `listStyles`/
 /// `textStyles`/`paragraphStyles` existed before this sprint as separate parameters; nothing about
 /// their OWN shape changed, only that they now travel together.
-// swift: Render/Office/OdtReader.swift:450-456
+// swift: Render/Office/OdtReader.swift:445-457
 struct ParsedStyles {
     list_styles: std::collections::HashMap<String, std::collections::HashMap<i32, bool>>,
     text_styles: std::collections::HashMap<String, TextStyle>,
@@ -620,7 +620,7 @@ struct ParsedStyles {
 /// script type swapped — and states no precedence between them, so an undeclared slot is
 /// undeclared, and `nil` means what it has always meant everywhere else in this reader: the
 /// theme's own body font (invariant 37).
-// swift: Render/Office/OdtReader.swift:472-491
+// swift: Render/Office/OdtReader.swift:461-492
 #[derive(Debug, Clone, Default, PartialEq)]
 struct SlotFonts {
     latin: Option<String>,
@@ -634,12 +634,12 @@ impl SlotFonts {
     /// it. `collectSpans` uses this to skip the per-scalar walk entirely, which is what makes
     /// "the document declared one family, or none" cost exactly what it cost before per-slot
     /// resolution existed rather than merely producing the same answer more slowly.
-    // swift: Render/Office/OdtReader.swift:478-483
+    // swift: Render/Office/OdtReader.swift:478-491
     fn is_uniform(&self) -> bool {
         self.latin == self.asian && self.asian == self.complex
     }
 
-    // swift: Render/Office/OdtReader.swift:484-490
+    // swift: Render/Office/OdtReader.swift:461-492
     fn family(&self, script_type: OdfScriptType) -> Option<String> {
         match script_type {
             OdfScriptType::Latin => self.latin.clone(),
@@ -649,7 +649,7 @@ impl SlotFonts {
     }
 }
 
-// swift: Render/Office/OdtReader.swift:493-519
+// swift: Render/Office/OdtReader.swift:493-520
 #[derive(Debug, Clone, Default, PartialEq)]
 struct TextStyle {
     bold: bool,
@@ -683,7 +683,7 @@ struct TextStyle {
 /// `"text"`) makes — every field is an `Optional` (unlike `TextStyle`'s own `Bool`s, which default
 /// `false`) precisely so `resolveTextStyle` can tell "this style says OFF" apart from "this style
 /// says nothing, ask the parent" while walking `parent` — see `resolveTextStyle`'s doc comment.
-// swift: Render/Office/OdtReader.swift:525-548
+// swift: Render/Office/OdtReader.swift:522-549
 #[derive(Debug, Clone, Default)]
 struct TextStyleDecl {
     bold: Option<bool>,
@@ -720,7 +720,7 @@ impl OdtReader {
     /// time this runs — see `read()`) resolves `style:font-name`'s indirection through
     /// `office:font-face-decls`; `fo:font-family` (rarer, but legal directly on `style:text-
     /// properties`) is read as a literal name with no such indirection.
-    // swift: Render/Office/OdtReader.swift:559-653
+    // swift: Render/Office/OdtReader.swift:551-654
     fn parse_text_style_decls(
         root: &Ref<XMLNode>, font_faces: &std::collections::HashMap<String, String>,
     ) -> std::collections::HashMap<String, TextStyleDecl> {
@@ -837,7 +837,7 @@ impl OdtReader {
     /// is wrong: it makes a face that was DECLARED with no family indistinguishable from one that
     /// was never declared, and those resolve differently — the first states no typeface (inherit),
     /// the second falls back to the reference name.
-    // swift: Render/Office/OdtReader.swift:667-674
+    // swift: Render/Office/OdtReader.swift:656-675
     fn parse_font_face_decls(root: &Ref<XMLNode>) -> std::collections::HashMap<String, String> {
         let mut map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
         for face in XMLNode::all_descendants(root, "style:font-face") {
@@ -874,7 +874,7 @@ impl OdtReader {
     /// coverage rather than the author's guess. A leading member that names nothing (`", Arial"`)
     /// is skipped rather than being read as "no family", because an empty member carries no
     /// intent while `Arial` plainly does.
-    // swift: Render/Office/OdtReader.swift:702-724
+    // swift: Render/Office/OdtReader.swift:677-725
     fn normalized_font_family(raw: &str) -> Option<String> {
         let mut members: Vec<String> = Vec::new();
         let mut current = String::new();
@@ -905,7 +905,7 @@ impl OdtReader {
     /// already visited during THIS walk means a cycle in a malformed document (`A` based on `B` based
     /// on `A`) — the walk stops there rather than looping forever, same guard, same reasoning. A field
     /// never declared anywhere in the chain keeps `TextStyle`'s own default (`false`/`nil`).
-    // swift: Render/Office/OdtReader.swift:732-769
+    // swift: Render/Office/OdtReader.swift:727-770
     fn resolve_text_style(
         style_name: &str, decls: &std::collections::HashMap<String, TextStyleDecl>,
     ) -> TextStyle {
@@ -946,7 +946,7 @@ impl OdtReader {
 /// Swift: the tuple-typed local `var have = (bold: false, italic: false, ...)` inside
 /// `resolveTextStyle` — given a name here since Rust has no anonymous-tuple-with-named-fields
 /// literal syntax as convenient to mutate through `&mut` field access.
-// swift: Render/Office/OdtReader.swift:739-742
+// swift: Render/Office/OdtReader.swift:727-770
 #[derive(Default)]
 struct HaveTextFlags {
     bold: bool, italic: bool, underline: bool, strike: bool, sup: bool, sub: bool,
@@ -962,7 +962,7 @@ impl OdtReader {
     /// 0-based nesting depth `OfficeBlock.listItem.level` already uses, so `isOrdered` never has to
     /// re-derive the offset. A level with neither a number nor a bullet child (an image-marker
     /// level, rare but legal) is simply absent, which `isOrdered` reads as unresolvable → bullet.
-    // swift: Render/Office/OdtReader.swift:777-793
+    // swift: Render/Office/OdtReader.swift:774-794
     fn parse_list_styles(root: &Ref<XMLNode>) -> std::collections::HashMap<String, std::collections::HashMap<i32, bool>> {
         let mut map: std::collections::HashMap<String, std::collections::HashMap<i32, bool>> = std::collections::HashMap::new();
         for list_style in XMLNode::all_descendants(root, "text:list-style") {
@@ -987,7 +987,7 @@ impl OdtReader {
     /// or a level the style doesn't declare — defaults to unordered (a bullet), never ordered: an
     /// unstyled list is a faithful reading, a fabricated "1. 2. 3." is not (same reasoning as
     /// `DocxReader.isOrdered`).
-    // swift: Render/Office/OdtReader.swift:799-802
+    // swift: Render/Office/OdtReader.swift:796-803
     fn is_ordered(
         style_name: Option<&str>, level: i32,
         list_styles: &std::collections::HashMap<String, std::collections::HashMap<i32, bool>>,
@@ -1008,7 +1008,7 @@ impl OdtReader {
 
 // MARK: Paragraph styles — outline level, writing direction, alignment, tab stops
 
-// swift: Render/Office/OdtReader.swift:814-834
+// swift: Render/Office/OdtReader.swift:814-835
 #[derive(Debug, Clone, Default)]
 struct ResolvedParagraphStyle {
     outline_level: Option<i32>,
@@ -1037,7 +1037,7 @@ struct ResolvedParagraphStyle {
 /// through resolution — `start`/`end` can only become a real `NSTextAlignment` once the CHAIN's
 /// resolved `rtl` is known (see `resolveParagraphStyle`), so converting eagerly per-declaration
 /// would risk resolving against the wrong (this style's OWN, not yet inherited) writing mode.
-// swift: Render/Office/OdtReader.swift:841-873
+// swift: Render/Office/OdtReader.swift:837-874
 #[derive(Debug, Clone, Default)]
 struct ParagraphStyleDecl {
     /// `fo:font-weight`/`fo:font-style` off this paragraph style's own
@@ -1089,7 +1089,7 @@ impl OdtReader {
     ///
     /// `fo:text-align`/`style:tab-stops` are this sprint's own additions — read straight off
     /// `style:paragraph-properties`, the same element `style:writing-mode` already lives on.
-    // swift: Render/Office/OdtReader.swift:890-983
+    // swift: Render/Office/OdtReader.swift:876-984
     fn parse_paragraph_style_decls(root: &Ref<XMLNode>) -> std::collections::HashMap<String, ParagraphStyleDecl> {
         let mut map: std::collections::HashMap<String, ParagraphStyleDecl> = std::collections::HashMap::new();
         for style_node in XMLNode::all_descendants(root, "style:style") {
@@ -1193,7 +1193,7 @@ impl OdtReader {
     /// own font size (`"150%"` → `LineHeight.multiple(1.5)`), or an absolute LENGTH (`"18pt"` →
     /// `LineHeight.exact(18)`). `"normal"` (the explicit "no override" keyword) and anything this
     /// helper cannot parse both return `nil` — unspecified, never a fabricated `1.0`.
-    // swift: Render/Office/OdtReader.swift:989-996
+    // swift: Render/Office/OdtReader.swift:986-997
     fn parse_odf_line_height(raw: &str) -> Option<LineHeight> {
         if let Some(stripped) = raw.strip_suffix('%') {
             let percent: f64 = stripped.parse().ok()?;
@@ -1209,7 +1209,7 @@ impl OdtReader {
     /// `"end"` value can only be read against a writing direction once one is known — `resolveAlignment`
     /// (see below) is what does that conversion, called once here after the walk finishes rather than
     /// per-level during it, so it always sees the CHAIN's final resolved `rtl`, not one ancestor's own.
-    // swift: Render/Office/OdtReader.swift:1004-1038
+    // swift: Render/Office/OdtReader.swift:999-1039
     fn resolve_paragraph_style(
         style_name: &str, decls: &std::collections::HashMap<String, ParagraphStyleDecl>,
     ) -> ResolvedParagraphStyle {
@@ -1254,7 +1254,7 @@ impl OdtReader {
     /// direction-relative keyword it would have to reinterpret itself. `left`/`right`/`center`/
     /// `justify` are direction-independent and pass through literally; an unrecognised or absent value
     /// returns `nil` (unspecified — same "absent stays unspecified" rule as everywhere else).
-    // swift: Render/Office/OdtReader.swift:1049-1059
+    // swift: Render/Office/OdtReader.swift:1041-1060
     fn resolve_alignment(raw: Option<&str>, rtl: bool) -> Option<NSTextAlignment> {
         match raw {
             Some("left") => Some(NSTextAlignment::Left),
@@ -1269,7 +1269,7 @@ impl OdtReader {
 }
 
 /// Swift: the tuple-typed local `var have = (...)` inside `resolveParagraphStyle`.
-// swift: Render/Office/OdtReader.swift:1007-1010
+// swift: Render/Office/OdtReader.swift:999-1039
 #[derive(Default)]
 struct HaveParagraphFlags {
     outline: bool, bold: bool, italic: bool, rtl: bool, align: bool, tabs: bool,
@@ -1280,7 +1280,7 @@ struct HaveParagraphFlags {
 
 // MARK: Table-cell styles — background, border (S15: previously unparsed family)
 
-// swift: Render/Office/OdtReader.swift:1063-1082
+// swift: Render/Office/OdtReader.swift:1063-1083
 #[derive(Debug, Clone, Default, PartialEq)]
 struct TableCellStyle {
     background_color: Option<NSColor>,
@@ -1303,7 +1303,7 @@ struct TableCellStyle {
     padding_right: Option<CGFloat>,
 }
 
-// swift: Render/Office/OdtReader.swift:1084-1096
+// swift: Render/Office/OdtReader.swift:1082-1143
 #[derive(Debug, Clone, Default)]
 struct TableCellStyleDecl {
     background_color: Option<NSColor>,
@@ -1326,7 +1326,7 @@ impl OdtReader {
     /// fields, unused by this reader until now) — see `parseODFBorder` for why only ONE side's
     /// color/width survives even though ODF can state all four independently (`Cell`'s own documented
     /// scope: one uniform border, not a four-sided model).
-    // swift: Render/Office/OdtReader.swift:1104-1144
+    // swift: Render/Office/OdtReader.swift:1099-1145
     fn parse_table_cell_style_decls(root: &Ref<XMLNode>) -> std::collections::HashMap<String, TableCellStyleDecl> {
         let mut map: std::collections::HashMap<String, TableCellStyleDecl> = std::collections::HashMap::new();
         for style_node in XMLNode::all_descendants(root, "style:style") {
@@ -1376,7 +1376,7 @@ impl OdtReader {
     /// — a table-cell style basing itself on another via `style:parent-style-name` is legal ODF even
     /// though real documents rarely bother, so the mechanism is implemented for real rather than
     /// assumed unreachable.
-    // swift: Render/Office/OdtReader.swift:1150-1176
+    // swift: Render/Office/OdtReader.swift:1147-1177
     fn resolve_table_cell_style(
         style_name: &str, decls: &std::collections::HashMap<String, TableCellStyleDecl>,
     ) -> TableCellStyle {
@@ -1408,7 +1408,7 @@ impl OdtReader {
 }
 
 /// Swift: the tuple-typed local `var have = (...)` inside `resolveTableCellStyle`.
-// swift: Render/Office/OdtReader.swift:1152-1153
+// swift: Render/Office/OdtReader.swift:1147-1177
 #[derive(Default)]
 struct HaveTableCellFlags {
     bg: bool, border_color: bool, border_width: bool, valign: bool, padding: bool,
@@ -1417,7 +1417,7 @@ struct HaveTableCellFlags {
 
 // MARK: Table-column styles — declared width (S15: previously unparsed family AND element)
 
-// swift: Render/Office/OdtReader.swift:1180-1190
+// swift: Render/Office/OdtReader.swift:1180-1191
 #[derive(Debug, Clone, Default, PartialEq)]
 struct TableColumnStyle {
     width: Option<CGFloat>,
@@ -1431,7 +1431,7 @@ struct TableColumnStyle {
     rel_width: Option<CGFloat>,
 }
 
-// swift: Render/Office/OdtReader.swift:1192-1196
+// swift: Render/Office/OdtReader.swift:1183-1220
 #[derive(Debug, Clone, Default)]
 struct TableColumnStyleDecl {
     width: Option<CGFloat>,
@@ -1444,7 +1444,7 @@ impl OdtReader {
     /// (the ELEMENT, not just this style family) referenced nowhere in this file at all before this
     /// sprint; `parseColumnWidths` (below, called from `parseTable`) is the new caller that walks the
     /// element, this function resolves the style it points at.
-    // swift: Render/Office/OdtReader.swift:1202-1221
+    // swift: Render/Office/OdtReader.swift:1199-1222
     fn parse_table_column_style_decls(root: &Ref<XMLNode>) -> std::collections::HashMap<String, TableColumnStyleDecl> {
         let mut map: std::collections::HashMap<String, TableColumnStyleDecl> = std::collections::HashMap::new();
         for style_node in XMLNode::all_descendants(root, "style:style") {
@@ -1472,7 +1472,7 @@ impl OdtReader {
         map
     }
 
-    // swift: Render/Office/OdtReader.swift:1223-1236
+    // swift: Render/Office/OdtReader.swift:1223-1237
     fn resolve_table_column_style(
         style_name: &str, decls: &std::collections::HashMap<String, TableColumnStyleDecl>,
     ) -> TableColumnStyle {
@@ -1497,7 +1497,7 @@ impl OdtReader {
     /// small function rather than folded into `parseParagraphStyleDecls`: `style:default-style` is a
     /// SIBLING element of `style:style`, not a `style:style` node itself (no `style:family` attribute,
     /// no name, exactly one per document), so it needs its own, narrower search.
-    // swift: Render/Office/OdtReader.swift:1245-1251
+    // swift: Render/Office/OdtReader.swift:1241-1252
     fn parse_default_paragraph_font_size(root: &Ref<XMLNode>) -> Option<CGFloat> {
         let default_style = XMLNode::all_descendants(root, "style:default-style").into_iter()
             .find(|n| XMLNode::attributes(n).get("style:family").map(String::as_str) == Some("paragraph"))?;
@@ -1513,10 +1513,10 @@ impl OdtReader {
     /// Guards `parseBody`'s generic recursion (see the `default` case below) against a hostile
     /// file nesting wrappers arbitrarily deep — a real ODF document never approaches this, so the
     /// cap only ever bites on pathological input, where dropping the excess is the safe outcome.
-    // swift: Render/Office/OdtReader.swift:1261-1261
+    // swift: Render/Office/OdtReader.swift:1261-1378
     const MAX_BODY_RECURSION_DEPTH: i32 = 64;
 
-    // swift: Render/Office/OdtReader.swift:1260-1377
+    // swift: Render/Office/OdtReader.swift:1256-1378
     fn parse_body(
         text: &Ref<XMLNode>, styles: &ParsedStyles, archive: &ZipArchive, notes: &NoteCollector, depth: i32,
     ) -> Vec<OfficeBlock> {
@@ -1676,7 +1676,7 @@ impl OdtReader {
     /// those call sites had before this sprint, ONE field at a time). An absent/unresolvable style
     /// name returns the all-`nil`/`false`/empty default, exactly what the four separate lookups
     /// already returned for the same input.
-    // swift: Render/Office/OdtReader.swift:1386-1389
+    // swift: Render/Office/OdtReader.swift:1380-1390
     fn resolved_style(style_name: Option<&str>, styles: &ParsedStyles) -> ResolvedParagraphStyle {
         let Some(style_name) = style_name else { return ResolvedParagraphStyle::default() };
         styles.paragraph_styles.get(style_name).cloned().unwrap_or_default()
@@ -1688,7 +1688,7 @@ impl OdtReader {
     /// (no spans at all — LibreOffice puts an image-only paragraph with no other text) contributes
     /// no empty text block, so callers never see a phantom `.paragraph(spans: [])` standing in for
     /// a picture.
-    // swift: Render/Office/OdtReader.swift:1397-1422
+    // swift: Render/Office/OdtReader.swift:1392-1423
     fn paragraph_like_blocks(
         node: &Ref<XMLNode>, make: Box<dyn Fn(Vec<Span>) -> OfficeBlock>,
         styles: &ParsedStyles, archive: &ZipArchive, notes: &NoteCollector,
@@ -1730,7 +1730,7 @@ impl OdtReader {
     /// commonly leaves it unstated for a plain continuation), rather than falling straight to
     /// unordered, which would wrongly flip a nested bullet under a numbered list to a bullet purely
     /// because the inner element omitted a redundant attribute.
-    // swift: Render/Office/OdtReader.swift:1432-1461
+    // swift: Render/Office/OdtReader.swift:1427-1462
     fn parse_list(
         list: &Ref<XMLNode>, level: i32, inherited_style_name: Option<&str>,
         styles: &ParsedStyles, archive: &ZipArchive, notes: &NoteCollector,
@@ -1776,7 +1776,7 @@ impl OdtReader {
     /// per-row flag the way docx's `w:tblHeader` is — its absence (this fixture has none) means
     /// `headerRows == 0`, never a guess of 1 (`OfficeBlock.table`'s own contract: an un-styled
     /// table is a faithful rendering, a wrongly-bolded row is not).
-    // swift: Render/Office/OdtReader.swift:1469-1489
+    // swift: Render/Office/OdtReader.swift:1466-1490
     fn parse_table(table: &Ref<XMLNode>, styles: &ParsedStyles, archive: &ZipArchive, notes: &NoteCollector) -> OfficeBlock {
         let column_widths = Self::parse_column_widths(table, &styles.table_column_styles);
         let column_default_cell_styles = Self::parse_column_default_cell_styles(table, &styles.table_cell_styles);
@@ -1815,7 +1815,7 @@ impl OdtReader {
     /// "never partially apply an untrustworthy grid" posture `tableGridColumnWidths` documents — makes
     /// the WHOLE grid unusable, returned as `[]` (`TableBlockBuilder`'s existing auto layout, unchanged
     /// — this is exactly what a table with no `table:table-column` elements at all already returns).
-    // swift: Render/Office/OdtReader.swift:1501-1511
+    // swift: Render/Office/OdtReader.swift:1492-1512
     fn resolved_grid_column_widths(table: &Ref<XMLNode>, table_column_styles: &std::collections::HashMap<String, TableColumnStyle>) -> Vec<CGFloat> {
         let mut widths: Vec<CGFloat> = Vec::new();
         for child in XMLNode::children(table).into_iter().filter(|c| XMLNode::name(c) == "table:table-column") {
@@ -1842,7 +1842,7 @@ impl OdtReader {
     /// (its borders, shading, vertical-alignment, padding) rather than falling straight to the theme
     /// default. Returned one entry PER COLUMN (repeats expanded, same as `parseColumnWidths`), `nil`
     /// where a column names no default, so the INDEX is a column position `expandRow` reads directly.
-    // swift: Render/Office/OdtReader.swift:1526-1534
+    // swift: Render/Office/OdtReader.swift:1514-1535
     fn parse_column_default_cell_styles(
         table: &Ref<XMLNode>, table_cell_styles: &std::collections::HashMap<String, TableCellStyle>,
     ) -> Vec<Option<TableCellStyle>> {
@@ -1856,7 +1856,7 @@ impl OdtReader {
         out
     }
 
-    // swift: Render/Office/OdtReader.swift:1536-1544
+    // swift: Render/Office/OdtReader.swift:1536-1545
     fn parse_column_widths(
         table: &Ref<XMLNode>, table_column_styles: &std::collections::HashMap<String, TableColumnStyle>,
     ) -> Vec<Option<CGFloat>> {
@@ -1889,7 +1889,7 @@ impl OdtReader {
     /// reached, before the index advances past it. A `table:covered-table-cell` still advances the
     /// index by its own (possibly repeated) column count even though it contributes no `Cell` —
     /// skipping that would misalign every width to its right.
-    // swift: Render/Office/OdtReader.swift:1565-1625
+    // swift: Render/Office/OdtReader.swift:1547-1626
     fn expand_row(
         row: &Ref<XMLNode>, column_widths: &[Option<CGFloat>], column_default_cell_styles: &[Option<TableCellStyle>],
         styles: &ParsedStyles, archive: &ZipArchive, notes: &NoteCollector,
@@ -1968,7 +1968,7 @@ impl OdtReader {
     /// placeholder-empty paragraph (`<text:p/>`, the shape a genuinely blank cell always carries)
     /// out of what it contributes; an image or table block is never "empty" in this sense and
     /// always passes through. Mirrors `DocxReader.isEmptyTextBlock` exactly.
-    // swift: Render/Office/OdtReader.swift:1631-1638
+    // swift: Render/Office/OdtReader.swift:1628-1639
     fn is_empty_text_block(block: &OfficeBlock) -> bool {
         match block {
             OfficeBlock::Paragraph { spans, .. } | OfficeBlock::Heading { spans, .. } | OfficeBlock::ListItem { spans, .. } => {
@@ -1999,7 +1999,7 @@ impl OdtReader {
     /// explicit that it must not change. An empty paragraph is filtered with the SAME
     /// `isEmptyTextBlock` check above: a truly empty cell must produce no block at all, never a
     /// phantom `.paragraph(spans: [])` standing in for "nothing here".
-    // swift: Render/Office/OdtReader.swift:1660-1698
+    // swift: Render/Office/OdtReader.swift:1641-1699
     fn collect_cell_blocks(cell: &Ref<XMLNode>, styles: &ParsedStyles, archive: &ZipArchive, notes: &NoteCollector) -> Vec<OfficeBlock> {
         let mut blocks: Vec<OfficeBlock> = Vec::new();
         for child in XMLNode::children(cell) {
@@ -2063,7 +2063,7 @@ impl OdtReader {
     /// which deliberately squashes a nested table's grid down to text (`Cell` has no room for a
     /// second, real nested `.table` block). `collectCellBlocks` above is what a table's OWN cells
     /// go through now; this stays exactly as it was for the flatten-only path.
-    // swift: Render/Office/OdtReader.swift:1704-1717
+    // swift: Render/Office/OdtReader.swift:1701-1718
     fn collect_cell_spans(cell: &Ref<XMLNode>, text_styles: &std::collections::HashMap<String, TextStyle>, notes: &NoteCollector) -> Vec<Span> {
         let mut spans: Vec<Span> = Vec::new();
         for child in XMLNode::children(cell) {
@@ -2085,7 +2085,7 @@ impl OdtReader {
     /// ended and the next began, even though the grid itself is gone. Recurses through
     /// `collectCellSpans`, so a table nested inside a nested table also survives (no depth cap is
     /// enforced; real documents don't go more than one or two levels, per the research survey).
-    // swift: Render/Office/OdtReader.swift:1724-1743
+    // swift: Render/Office/OdtReader.swift:1720-1744
     fn flatten_nested_table(table: &Ref<XMLNode>, text_styles: &std::collections::HashMap<String, TextStyle>, notes: &NoteCollector) -> Vec<Span> {
         let rows: Vec<Ref<XMLNode>> = XMLNode::children(table).into_iter().flat_map(|node| -> Vec<Ref<XMLNode>> {
             if XMLNode::name(&node) == "table:table-header-rows" {
@@ -2122,7 +2122,7 @@ impl OdtReader {
     /// frame can itself be wrapped (e.g. inside `draw:text-box`) — mirrors `DocxReader`'s
     /// `allDescendants("a:blip")` walk for the same reason: an image must never be dropped just
     /// because of an intermediate wrapper this reader doesn't specifically name.
-    // swift: Render/Office/OdtReader.swift:1754-1775
+    // swift: Render/Office/OdtReader.swift:1748-1776
     fn collect_images(node: &Ref<XMLNode>, archive: &ZipArchive) -> Vec<OfficeBlock> {
         let mut frames: Vec<Ref<XMLNode>> = Vec::new();
         // A hand-rolled walk, not `allDescendants("draw:frame")` — a `text:note` sitting inside this
@@ -2158,7 +2158,7 @@ impl OdtReader {
     /// text box's own `text:p`/`text:h` paragraphs (no nested lists/tables — docx's fallback never
     /// chased those either), with an empty one (LibreOffice leaves a placeholder paragraph in an
     /// otherwise-untyped shape) dropped rather than shown as a phantom blank line.
-    // swift: Render/Office/OdtReader.swift:1784-1820
+    // swift: Render/Office/OdtReader.swift:1778-1821
     fn collect_text_box_blocks(
         node: &Ref<XMLNode>, text_styles: &std::collections::HashMap<String, TextStyle>, notes: &NoteCollector,
     ) -> Vec<OfficeBlock> {
@@ -2215,14 +2215,14 @@ impl OdtReader {
     /// `DocxReader.resolveId`, prefixed `"odt-"` rather than `"docx-"` since the two formats'
     /// unresolvable ids are never compared against each other — only ever matched by prefix within
     /// their own reader's caller.
-    // swift: Render/Office/OdtReader.swift:1834-1838
+    // swift: Render/Office/OdtReader.swift:1828-1839
     fn resolve_image_id(href: Option<&str>, archive: &ZipArchive) -> String {
         let Some(href) = href else { return Self::unresolvable_id("no-href") };
         if !archive.contains(href) { return Self::unresolvable_id(href); }
         href.to_string()
     }
 
-    // swift: Render/Office/OdtReader.swift:1841-1841
+    // swift: Render/Office/OdtReader.swift:1841-1858
     fn unresolvable_id(reason: &str) -> String {
         format!("odt-unresolvable:{}", reason)
     }
@@ -2232,7 +2232,7 @@ impl OdtReader {
     /// self-evident-order-independence reason as `DocxReader.parseCSSLikeLength`. A bare number
     /// (no unit) is treated as points, ODF's own convention for `style:*-margin`/similar unmarked
     /// lengths elsewhere in the format.
-    // swift: Render/Office/OdtReader.swift:1847-1857
+    // swift: Render/Office/OdtReader.swift:1843-1858
     fn parse_length(raw: &str) -> Option<CGFloat> {
         let points_per_unit: [(&str, f64); 6] = [
             ("cm", 72.0 / 2.54), ("mm", 72.0 / 25.4), ("in", 72.0), ("pc", 12.0), ("pt", 1.0), ("px", 0.75),
@@ -2252,7 +2252,7 @@ impl OdtReader {
     /// 1.3 §18.3.2). `"transparent"` — `fo:background-color`'s other legal value, meaning "no
     /// highlight" — returns `nil`, exactly like an absent attribute, never black: see `Span
     /// .highlightColor`'s own doc for why "no mark" must never become a literal colour.
-    // swift: Render/Office/OdtReader.swift:1864-1870
+    // swift: Render/Office/OdtReader.swift:1860-1871
     fn parse_odf_color(raw: &str) -> Option<NSColor> {
         if raw == "transparent" || !raw.starts_with('#') || raw.len() != 7 { return None; }
         let value = u32::from_str_radix(&raw[1..], 16).ok()?;
@@ -2282,7 +2282,7 @@ impl OdtReader {
     /// `fo:border` seeds all four; a per-side attribute then overrides its own side, which is ODF's
     /// own precedence. Returns nil when the style named no side at all, so an unstyled cell is
     /// unchanged.
-    // swift: Render/Office/OdtReader.swift:1888-1912
+    // swift: Render/Office/OdtReader.swift:1873-1913
     fn parse_odf_edge_borders(props: &Ref<XMLNode>) -> Option<EdgeBorders> {
         fn decl(raw: &str) -> Option<BorderDecl> {
             let tokens: Vec<String> = raw.split(' ').map(String::from).collect();
@@ -2339,7 +2339,7 @@ impl OdtReader {
     /// alongside but separately from `style`, because a hyperlink target comes from `text:a`'s own
     /// `xlink:href` attribute, not from any named style — it narrows the same way (a `text:a` with
     /// no `xlink:href` at all just carries the enclosing link, if any, rather than losing it).
-    // swift: Render/Office/OdtReader.swift:1939-2195
+    // swift: Render/Office/OdtReader.swift:1929-2196
     fn collect_spans(
         node: &Ref<XMLNode>, style: &TextStyle, text_styles: &std::collections::HashMap<String, TextStyle>,
         notes: &NoteCollector,
@@ -2360,7 +2360,7 @@ impl OdtReader {
         /// is one of the style's three slots rather than "the style's font", and is the only thing
         /// separating a piece from its neighbours. Everything else — the bookmark handover, the
         /// comment ids, the run-merge equality — is exactly what it was before slots existed.
-        // swift: Render/Office/OdtReader.swift:1957-2016
+        // swift: Render/Office/OdtReader.swift:1954-2017
         fn append_piece(
             text: &str, style: &TextStyle, family: Option<&str>, link: Option<&str>,
             spans: &Ref<Vec<Span>>, pending_bookmarks: &Ref<Vec<String>>,
@@ -2446,7 +2446,7 @@ impl OdtReader {
         /// where the resolved FAMILY changes, never where the slot changes, which is what keeps
         /// `제1항` one piece in the overwhelmingly common document that points its latin and asian
         /// slots at the same face.
-        // swift: Render/Office/OdtReader.swift:2024-2055
+        // swift: Render/Office/OdtReader.swift:2018-2056
         fn append_merging(
             text: &str, style: &TextStyle, link: Option<&str>, spans: &Ref<Vec<Span>>,
             pending_bookmarks: &Ref<Vec<String>>, pending_page_number_field: &Ref<Option<PageNumberField>>,
@@ -2493,7 +2493,7 @@ impl OdtReader {
             }
         }
 
-        // swift: Render/Office/OdtReader.swift:2056-2192
+        // swift: Render/Office/OdtReader.swift:1929-2196
         fn walk(
             node: &Ref<XMLNode>, style: &TextStyle, link: Option<&str>, spans: &Ref<Vec<Span>>,
             pending_bookmarks: &Ref<Vec<String>>, pending_page_number_field: &Ref<Option<PageNumberField>>,
@@ -2668,7 +2668,7 @@ impl OdtReader {
 
     // MARK: Generic XML tree — text threaded in as ordered `"#text"` pseudo-children
 
-    // swift: Render/Office/OdtReader.swift:2199-2207
+    // swift: Render/Office/OdtReader.swift:2199-2208
     fn build_tree(data: &swiftshim::Data) -> Result<Ref<XMLNode>, OdtReadError> {
         let delegate = XMLTreeBuilder::new();
         // swift: Render/Office/OdtReader.swift:2200-2202 — `XMLParser`/`XMLParserDelegate` are
@@ -2701,7 +2701,7 @@ struct PageGeometry {
 /// on a broken document). A class, not a struct, because `collectSpans` and its callers thread
 /// it through several layers (paragraphs, list items, table cells) purely to mutate one shared
 /// list — value semantics would silently fork it at every call boundary.
-// swift: Render/Office/OdtReader.swift:335-350
+// swift: Render/Office/OdtReader.swift:330-351
 struct NoteCollector {
     fallback_counter: std::cell::RefCell<i32>,
     entries: std::cell::RefCell<Vec<(String, Ref<XMLNode>)>>,
@@ -2741,7 +2741,7 @@ impl NoteCollector {
 /// concatenates everything the parser hands it — regardless of when a child element started or
 /// ended — cannot preserve that interleaving. Ordering it as children does, at the cost of a few
 /// `"#text"` checks in `OdtReader.collectSpans`.
-// swift: Render/Office/OdtReader.swift:2210-2253
+// swift: Render/Office/OdtReader.swift:2210-2254
 pub struct XMLNode {
     name: String,
     attributes: std::collections::HashMap<String, String>,
@@ -2751,7 +2751,7 @@ pub struct XMLNode {
 }
 
 impl XMLNode {
-    // swift: Render/Office/OdtReader.swift:2224-2227
+    // swift: Render/Office/OdtReader.swift:2211-2254
     fn new(name: String, attributes: std::collections::HashMap<String, String>) -> Ref<XMLNode> {
         swiftshim::new_ref(XMLNode { name, attributes, children: Vec::new(), text: String::new() })
     }
@@ -2773,13 +2773,13 @@ impl XMLNode {
     }
 
     /// First direct child with this name, or nil.
-    // swift: Render/Office/OdtReader.swift:2230-2232
+    // swift: Render/Office/OdtReader.swift:2230-2233
     fn child(node: &Ref<XMLNode>, name: &str) -> Option<Ref<XMLNode>> {
         node.borrow().children.iter().find(|c| c.borrow().name == name).cloned()
     }
 
     /// First match anywhere below this node, depth-first in document order.
-    // swift: Render/Office/OdtReader.swift:2235-2241
+    // swift: Render/Office/OdtReader.swift:2235-2242
     fn first_descendant(node: &Ref<XMLNode>, name: &str) -> Option<Ref<XMLNode>> {
         for child in node.borrow().children.clone() {
             if child.borrow().name == name { return Some(child); }
@@ -2790,7 +2790,7 @@ impl XMLNode {
 
     /// EVERY match anywhere below this node, in document order — used where a style table must
     /// find every `text:list-style`/`style:style` regardless of which wrapper element holds it.
-    // swift: Render/Office/OdtReader.swift:2245-2252
+    // swift: Render/Office/OdtReader.swift:2244-2253
     fn all_descendants(node: &Ref<XMLNode>, name: &str) -> Vec<Ref<XMLNode>> {
         let mut result: Vec<Ref<XMLNode>> = Vec::new();
         for child in node.borrow().children.clone() {
@@ -2801,7 +2801,7 @@ impl XMLNode {
     }
 }
 
-// swift: Render/Office/OdtReader.swift:2255-2292
+// swift: Render/Office/OdtReader.swift:2255-2293
 struct XMLTreeBuilder {
     root: std::cell::RefCell<Option<Ref<XMLNode>>>,
     stack: std::cell::RefCell<Vec<Ref<XMLNode>>>,
@@ -2816,7 +2816,7 @@ impl XMLTreeBuilder {
 // swift: Render/Office/OdtReader.swift:2255 — `NSObject, XMLParserDelegate` conformance;
 // `XMLParserDelegate` is Foundation, not yet in swiftshim (shim addition).
 impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
-    // swift: Render/Office/OdtReader.swift:2259-2270
+    // swift: Render/Office/OdtReader.swift:2256-2293
     fn parser_did_start_element(
         &self, _parser: &swiftshim::XMLParser, element_name: &str, _namespace_uri: Option<&str>,
         _qualified_name: Option<&str>, attribute_dict: std::collections::HashMap<String, String>,
@@ -2834,7 +2834,7 @@ impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
     /// — merged into the last child if it is already one (the parser can call this more than once
     /// for a single run of text), so mixed content keeps its real order without producing a run of
     /// adjacent one-character `"#text"` nodes.
-    // swift: Render/Office/OdtReader.swift:2276-2285
+    // swift: Render/Office/OdtReader.swift:2273-2286
     fn parser_found_characters(&self, _parser: &swiftshim::XMLParser, string: &str) {
         let stack = self.stack.borrow();
         let Some(parent) = stack.last() else { return };
@@ -2850,7 +2850,7 @@ impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
         }
     }
 
-    // swift: Render/Office/OdtReader.swift:2287-2291
+    // swift: Render/Office/OdtReader.swift:2256-2293
     fn parser_did_end_element(
         &self, _parser: &swiftshim::XMLParser, _element_name: &str, _namespace_uri: Option<&str>,
         _qualified_name: Option<&str>,
@@ -2877,7 +2877,7 @@ impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
 // swift: Render/Office/OdtReader.swift:413-426
 // swift: Render/Office/OdtReader.swift:441-449
 // swift: Render/Office/OdtReader.swift:457-471
-// swift: Render/Office/OdtReader.swift:492-492
+// swift: Render/Office/OdtReader.swift:461-492
 // swift: Render/Office/OdtReader.swift:520-524
 // swift: Render/Office/OdtReader.swift:549-558
 // swift: Render/Office/OdtReader.swift:654-666
@@ -2885,7 +2885,7 @@ impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
 // swift: Render/Office/OdtReader.swift:725-731
 // swift: Render/Office/OdtReader.swift:770-776
 // swift: Render/Office/OdtReader.swift:794-798
-// swift: Render/Office/OdtReader.swift:803-803
+// swift: Render/Office/OdtReader.swift:796-803
 // swift: Render/Office/OdtReader.swift:812-813
 // swift: Render/Office/OdtReader.swift:835-840
 // swift: Render/Office/OdtReader.swift:874-889
@@ -2893,13 +2893,13 @@ impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
 // swift: Render/Office/OdtReader.swift:997-1003
 // swift: Render/Office/OdtReader.swift:1039-1048
 // swift: Render/Office/OdtReader.swift:1060-1062
-// swift: Render/Office/OdtReader.swift:1083-1083
-// swift: Render/Office/OdtReader.swift:1097-1103
+// swift: Render/Office/OdtReader.swift:1064-1083
+// swift: Render/Office/OdtReader.swift:1082-1143
 // swift: Render/Office/OdtReader.swift:1145-1149
 // swift: Render/Office/OdtReader.swift:1177-1179
-// swift: Render/Office/OdtReader.swift:1191-1191
-// swift: Render/Office/OdtReader.swift:1197-1201
-// swift: Render/Office/OdtReader.swift:1222-1222
+// swift: Render/Office/OdtReader.swift:1181-1191
+// swift: Render/Office/OdtReader.swift:1196-1220
+// swift: Render/Office/OdtReader.swift:1199-1222
 // swift: Render/Office/OdtReader.swift:1237-1244
 // swift: Render/Office/OdtReader.swift:1252-1259
 // swift: Render/Office/OdtReader.swift:1378-1385
@@ -2908,7 +2908,7 @@ impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
 // swift: Render/Office/OdtReader.swift:1462-1468
 // swift: Render/Office/OdtReader.swift:1490-1500
 // swift: Render/Office/OdtReader.swift:1512-1525
-// swift: Render/Office/OdtReader.swift:1535-1535
+// swift: Render/Office/OdtReader.swift:1514-1535
 // swift: Render/Office/OdtReader.swift:1545-1564
 // swift: Render/Office/OdtReader.swift:1626-1630
 // swift: Render/Office/OdtReader.swift:1639-1659
@@ -2920,11 +2920,11 @@ impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
 // swift: Render/Office/OdtReader.swift:1839-1846
 // swift: Render/Office/OdtReader.swift:1858-1863
 // swift: Render/Office/OdtReader.swift:1871-1887
-// swift: Render/Office/OdtReader.swift:1913-1913
+// swift: Render/Office/OdtReader.swift:1873-1913
 // swift: Render/Office/OdtReader.swift:1925-1938
 // swift: Render/Office/OdtReader.swift:2196-2198
 // swift: Render/Office/OdtReader.swift:2208-2209
-// swift: Render/Office/OdtReader.swift:2254-2254
+// swift: Render/Office/OdtReader.swift:2211-2254
 
 // Boundary lines (closing braces, blank separators, field/case lines already
 // covered in substance by the ranges above) that the coverage script's per-item

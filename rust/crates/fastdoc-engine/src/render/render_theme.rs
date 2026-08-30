@@ -96,7 +96,7 @@ impl Palette {
     pub fn table_border() -> NSColor {
         dynamic(rgb(0x37352F, 0.16), rgb(0xFFFFFF, 0.16))
     }
-    // swift: Render/RenderTheme.swift:42-65
+    // swift: Render/RenderTheme.swift:19-95
     /// The colour a rule the DOCUMENT DREW takes when the document left the colour to us — Word's
     /// `w:color="auto"`, which means "the application decides" and which Word itself decides as
     /// BLACK. Only a PAGED document reaches this (`TableBlockBuilder.build`'s `paged`), where the
@@ -160,7 +160,7 @@ impl Palette {
     pub fn comment_highlight() -> NSColor {
         dynamic(rgb(0xE9A23B, 0.16), rgb(0xE9A23B, 0.22))
     }
-    // swift: Render/RenderTheme.swift:94
+    // swift: Render/RenderTheme.swift:94-110
     // solid amber, both modes
     pub fn comment_badge_bg() -> NSColor {
         rgb(0xE9A23B, 1.0)
@@ -174,12 +174,12 @@ pub struct RenderTheme {
 }
 
 impl RenderTheme {
-    // swift: Render/RenderTheme.swift:100
+    // swift: Render/RenderTheme.swift:100-110
     pub fn current(size: CGFloat) -> RenderTheme {
         RenderTheme { base_font_size: size }
     }
 
-    // swift: Render/RenderTheme.swift:102-110
+    // swift: Render/RenderTheme.swift:97-120
     // Notion heading scale relative to a 16pt base: H1 30 / H2 24 / H3 20 / H4+ ~18.
     pub fn heading_size(&self, level: i32) -> CGFloat {
         match level {
@@ -270,7 +270,7 @@ impl RenderTheme {
     pub fn heading_spacing_after_ratio(&self) -> CGFloat {
         0.4
     }
-    // swift: Render/RenderTheme.swift:148-151
+    // swift: Render/RenderTheme.swift:133-152
     /// Code line leading, as a multiple of the code font's own point size (open enough to read
     /// as a bit more airy than a raw terminal). Also reused, applied to `base_font_size`, for a
     /// table cell's line height — the same "slightly open" rhythm, just off a different base.
@@ -279,14 +279,14 @@ impl RenderTheme {
     }
 }
 
-// swift: Render/RenderTheme.swift:154-177
+// swift: Render/RenderTheme.swift:148-189
 // MARK: - Rule widths (shared BASE, ABSOLUTE points)
 //
 // Unlike the rhythm ratios above these are not multiples of a font size — a hairline is a hairline
 // at any reading size — but they follow the same rule: one definition, read by every renderer,
 // never re-inlined as a literal at a call site (invariant 36).
 impl RenderTheme {
-    // swift: Render/RenderTheme.swift:160-174
+    // swift: Render/RenderTheme.swift:159-177
     /// The reader's own table rule width, in ABSOLUTE points: what a cell edge draws at when neither
     /// the document, its table style, nor the table's own default states a width. Deliberately an INTEGER — a cell's
     /// content width subtracts its left and right rules from an integer column edge, so a fractional
@@ -303,7 +303,7 @@ impl RenderTheme {
     /// outline off and it is not reserved at all.
     pub const PAGE_DESK_GAP: CGFloat = 12.0;
 
-    // swift: Render/RenderTheme.swift:176
+    // swift: Render/RenderTheme.swift:176-189
     pub const TABLE_BORDER_WIDTH: CGFloat = 1.0;
 }
 
@@ -315,7 +315,7 @@ pub struct MarkdownStyle {
 }
 
 impl MarkdownStyle {
-    // swift: Render/RenderTheme.swift:183-184
+    // swift: Render/RenderTheme.swift:183-189
     /// Block-quote left indent (head + first-line), as a multiple of the base font size.
     pub fn quote_indent_ratio(&self) -> CGFloat {
         1.25
@@ -349,7 +349,7 @@ impl OfficeStyle {
     pub fn body_min_line_height_ratio(&self) -> CGFloat {
         1.4
     }
-    // swift: Render/RenderTheme.swift:206-213
+    // swift: Render/RenderTheme.swift:206-220
     /// Readability FLOOR for the gap AFTER an office body paragraph, as a multiple of the base font
     /// size. A dense document commonly sets a tiny `w:after` (this doc: `w:after="30"` = 1.5pt on 206
     /// of its paragraphs), which renders consecutive bullets/lines packed almost edge to edge — the

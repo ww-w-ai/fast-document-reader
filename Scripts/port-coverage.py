@@ -31,6 +31,15 @@ claimed deliberately so the denominator is accounted for rather than quietly mis
 would be telling the port to stop doing the one thing that makes its own number honest. A claim on
 COMMENT lines is likewise fine: porting a doc block is a real thing to claim.
 
+A range under the cap can still read 100% over a hole: a hundred-line TYPE claimed by every Rust
+item that lives inside it covers itself many times over, so no single claim can be wrong enough to
+show. A range of REPEATED_WIDE_LINES or more claimed from REPEATED_WIDE_SITES or more places is
+rejected the way a blanket is -- a type is transliterated by ONE Rust item.
+
+The boundary blocks are bookkeeping, not code: their entries name single blank lines and closing
+braces. Nothing may widen them. An entry there spanning a declaration is claiming code under a
+heading that says it is not.
+
 Run with --gate to make an incomplete port a non-zero exit.
 """
 
@@ -48,7 +57,11 @@ MANIFEST = REPO / "rust" / "PORT-MANIFEST.txt"
 
 # `// swift: <path>:<start>-<end>` — the path may be given from the repo root or from
 # Sources/FastDocReader, because a worker reading one file should not have to think about it.
-LINE_FORM = re.compile(r"//!?\s*swift:\s*(\S+?):(\d+)(?:-(\d+))?\b")
+# The `\b` at the end is load-bearing in one direction and blind in another: `231a` fails to
+# match at all (MALFORMED, loud), but `22,30-34` matches the `22` and DROPS the rest without a
+# word. So a claim that continues with a comma is rejected here rather than silently narrowed —
+# write one range per line, which is the only form this file has ever really supported.
+LINE_FORM = re.compile(r"//!?\s*swift:\s*(\S+?):(\d+)(?:-(\d+))?(?![,\d-])")
 MODULE_FILE = re.compile(r"//!\s*swift:\s*(\S+?)\s*$")
 MODULE_RANGE = re.compile(r"//!\s*swift-range:\s*(\d+)(?:-(\d+))?\b")
 # A line that MEANT to claim lines: it names a path-with-digits or a swift-range. Prose annotations
@@ -60,11 +73,12 @@ TODO_CALL = re.compile(r"\btodo!\s*\(")
 PORT_EXCLUDE = re.compile(r"//\s*port-exclude:\s*(.+)$")
 PORT_EXCLUDE_END = re.compile(r"//\s*port-exclude-end\b")
 # The declaration a claim SITS ON, used to ask whether its Swift range mentions the same name.
+SWIFT_DECL = re.compile(r"^\s*(?:private |public )?(?:static )?(?:func|struct|enum)\s+\w+", re.M)
 RUST_DECL = re.compile(r"^\s*(?:pub\(crate\)\s+|pub\s+)?(?:const\s+|static\s+)?(?:struct|enum|fn)\s+(\w+)")
 # How many claims currently fail that check. A RATCHET, not a target: this may only go down.
 # Every one of these points at Swift code that is not what the Rust beside it transliterates, so
 # it is credited to the wrong lines and hides a real hole somewhere else in the same file.
-MISAIMED_BUDGET = 80
+MISAIMED_BUDGET = 0
 
 # A declaration plus its doc comment can be long; a file cannot be one declaration.
 RANGE_SPAN_CAP = 300
@@ -187,12 +201,18 @@ def claimed_ranges():
                     claimed.setdefault(key, set()).update(range(lo, hi + 1))
                     site = f"{rs.relative_to(REPO)}:{lineno}"
                     sites.append((key, lo, hi, site))
-                    # The next declaration within four lines is the thing this claim is ABOUT.
-                    for ahead in lines_after[lineno:lineno + 4]:
+                    # The declaration this claim SITS ON is the thing it is about. Doc comments,
+                    # attributes and blank lines stand between the two often enough that a fixed
+                    # four-line window silently missed them -- and a missed name is a claim the
+                    # misaim check never judges, which is how a whole shifted region hid.
+                    for ahead in lines_after[lineno:lineno + 15]:
+                        stripped = ahead.strip()
+                        if not stripped or stripped.startswith(("//", "#[")):
+                            continue
                         found = RUST_DECL.match(ahead)
                         if found:
                             decl_of[site] = found.group(1)
-                            break
+                        break
                 continue
 
             hit = MODULE_RANGE.search(text)
@@ -235,6 +255,7 @@ def misaimed_claims(sites, decl_of):
 
     cache: dict[str, list[str] | None] = {}
     out: list[str] = []
+    unjudgeable = 0
     for key, lo, hi, site in sites:
         name = decl_of.get(site)
         if name is None:
@@ -246,11 +267,186 @@ def misaimed_claims(sites, decl_of):
         if lines is None or hi > len(lines):
             continue
         wanted = camel(name)
-        if re.search(r"\b" + re.escape(wanted) + r"\b", "\n".join(lines[lo - 1:hi])):
+        decl_re = re.compile(
+            r"^\s*(?:private |public |internal |fileprivate )?(?:static )?"
+            r"(?:func|struct|enum|class|var|let)\s+" + re.escape(wanted) + r"\b", re.M)
+        # A DECLARATION in range, not a mention. Prose says a name too: `EdgeBorders` appears in
+        # `BorderDecl`'s doc comment, which is how a claim twenty lines out from the struct it
+        # names read as correctly aimed for as long as a bare word search was the test. When the
+        # file declares the name exactly once, that line is where the claim has to land.
+        whole = "\n".join(lines)
+        declared_at = [n for n, text in enumerate(lines, 1) if decl_re.match(text)]
+        if len(declared_at) == 1:
+            if lo <= declared_at[0] <= hi:
+                continue
+        elif re.search(r"\b" + re.escape(wanted) + r"\b", "\n".join(lines[lo - 1:hi])):
+            continue
+        # The name has to exist SOMEWHERE in that file for its absence here to mean anything.
+        # A Rust `new` against a Swift `init`, or a helper split out of a longer Swift function,
+        # has no twin to be aimed at — the check has no evidence either way and must not pretend
+        # otherwise. Measured when this was tightened: 71 of 80 were this, and counting them made
+        # the number look like a backlog eight times its real size.
+        if not SWIFT_DECL.search(whole) or not declared_at:
+            unjudgeable += 1
             continue
         span = f"{lo}-{hi}" if lo != hi else f"{lo}"
         out.append(f"{site}  claims {key}:{span} — no `{wanted}` in those lines")
+    return out, unjudgeable
+
+
+SWIFT_ANY_DECL = re.compile(
+    r"^(\s*)(?:@\w+\s+)?"
+    r"(?:(?:private|public|internal|fileprivate|open|static|final|mutating|nonmutating|override"
+    r"|lazy|weak|unowned|indirect)\s+)*"
+    r"(func|struct|enum|class|var|let)\s+(\w+)")
+
+# A ratchet, like MISAIMED_BUDGET was: this many claims reach past the declaration they name, and
+# the gate fails if that grows. Not zero, because it is not a defect this repair introduced —
+# HEAD carries 110 of them and 2,242 lines of reach, against 99 and 2,396 here. The count is here
+# so the backlog cannot get quietly bigger between the session that measured it and the session
+# that clears it.
+OVERREACH_BUDGET = 99
+# Counting entries alone is not a ratchet: widening a claim already counted leaves the number
+# flat. The reach itself is held too, so growing one claim costs as much as adding one.
+OVERREACH_SLACK_BUDGET = 2396
+OVERREACH_SLACK = 5
+
+
+def _swift_declaration_spans(key: str) -> dict[str, tuple[int, int, str]] | None:
+    """Every uniquely-named Swift declaration in one file, as (doc start, closing brace, kind).
+
+    A name declared twice maps to None: there is no single span to judge a claim against, and
+    guessing which one was meant is how a repair pass once replaced a correct twenty-line claim
+    with a one-line span somewhere else.
+    """
+    full = SWIFT_ROOT / key
+    if not full.exists():
+        return None
+    lines = full.read_text(errors="replace").splitlines()
+    out: dict[str, tuple[int, int, str] | None] = {}
+    for n, text in enumerate(lines, 1):
+        hit = SWIFT_ANY_DECL.match(text)
+        if not hit:
+            continue
+        indent, kind, name = hit.group(1), hit.group(2), hit.group(3)
+        if name in out:
+            out[name] = None
+            continue
+        start = n
+        while start - 1 >= 1 and lines[start - 2].lstrip().startswith("///"):
+            start -= 1
+        head = n            # a multi-line signature does not end on its own first line
+        while head < len(lines) and not lines[head - 1].rstrip().endswith("{") and head - n < 8:
+            head += 1
+        if lines[head - 1].rstrip().endswith("{"):
+            close, end = indent + "}", head
+            while end < len(lines) and lines[end - 1] != close:
+                end += 1
+        else:
+            end = n
+        out[name] = (start, end, kind)
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def overreaching_claims(sites, decl_of) -> list[str]:
+    """Claims that cover much more than the declaration they are written on.
+
+    The misaim check asks whether a claim CONTAINS its declaration, which a seventy-line range
+    around a four-line enum satisfies as easily as a right one. That is deliberate — a Rust item
+    may legitimately transliterate a Swift function plus its private helpers — so this is a count
+    with a budget rather than a rule, and it exists to keep the count from drifting upward.
+    """
+    cache: dict[str, dict[str, tuple[int, int, str]] | None] = {}
+
+    def camel(name):
+        head, *rest = name.split("_")
+        return head + "".join(p.capitalize() for p in rest)
+
+    out = []
+    for key, lo, hi, site in sites:
+        name = decl_of.get(site)
+        if name is None:
+            continue
+        if key not in cache:
+            cache[key] = _swift_declaration_spans(key)
+        spans = cache[key]
+        if not spans:
+            continue
+        span = spans.get(camel(name))
+        if span is None:
+            continue
+        start, end, kind = span
+        # `decl_of` only ever holds a Rust struct/enum/fn, so a Swift stored property is not the
+        # twin of anything here — a Rust `fn width` beside a Swift `var width` is a name
+        # collision, and measuring its reach would be measuring noise.
+        if kind in ("var", "let"):
+            continue
+        slack = max(0, start - lo) + max(0, hi - end)
+        if slack > OVERREACH_SLACK:
+            out.append((slack, f"{site}  claims {key}:{lo}-{hi} for `{name}` "
+                               f"(span {start}-{end}, +{slack})"))
     return out
+
+
+BOUNDARY_HEADING = "// Boundary lines"
+BOUNDARY_SPAN_CAP = 16
+
+
+def overwide_boundary_claims() -> list[str]:
+    """A boundary entry that grew wide enough to be claiming code.
+
+    Each module ends with a block accounting for the lines the per-item markers did not restate:
+    blank separators, closing braces, and the short field/case lines already covered in substance
+    above. Every one of those is a line or a handful. A repair pass that walks claims out to their
+    enclosing declaration will happily widen these too, and then the block is claiming whole
+    functions under a heading that says it is bookkeeping — measured when this was added, one such
+    pass turned 105 of 263 entries into declaration-sized ranges, the widest 53 lines.
+
+    The cap is set from what the convention has always actually held: the widest legitimate entry
+    in this tree is 13 lines, a run of closing braces and blank lines between two types.
+    """
+    out: list[str] = []
+    for rs in sorted(RUST_ROOT.rglob("*.rs")):
+        lines = rs.read_text(errors="replace").splitlines()
+        for start, text in enumerate(lines):
+            if not text.startswith(BOUNDARY_HEADING):
+                continue
+            n = start
+            while n + 1 < len(lines) and (lines[n + 1].startswith("//") or not lines[n + 1].strip()):
+                n += 1
+                hit = LINE_FORM.search(lines[n])
+                if not hit:
+                    continue
+                lo = int(hit.group(2))
+                hi = int(hit.group(3) or lo)
+                if hi - lo + 1 > BOUNDARY_SPAN_CAP:
+                    out.append(f"{rs.relative_to(REPO)}:{n + 1}  {hit.group(1)}:{lo}-{hi} "
+                               f"({hi - lo + 1} lines) — a boundary entry, not a claim on code")
+    return out
+
+
+REPEATED_WIDE_LINES = 100
+REPEATED_WIDE_SITES = 3
+
+
+def repeated_wide_claims(sites: list[tuple[str, int, int, str]]) -> list[str]:
+    """One wide Swift range claimed over and over from inside itself.
+
+    A `BLANKET` claim is caught by its width alone. This is the same defect under the cap: a
+    hundred-line Swift TYPE claimed by every Rust item that lives inside it. Each claim looks
+    modest, none trips the blanket rule, and together they cover the type many times over — so
+    every line reads as ported and moving any one claim changes nothing. Measured when this was
+    added: a growth pass that walked each claim out to its enclosing declaration produced 56
+    claims all naming `MDAttr.swift:3-205` and drove the number to a 100% that no mutation could
+    disturb. A range this wide is a TYPE, and a type is transliterated by ONE Rust item.
+    """
+    seen: dict[tuple[str, int, int], list[str]] = {}
+    for key, lo, hi, site in sites:
+        if hi - lo + 1 >= REPEATED_WIDE_LINES:
+            seen.setdefault((key, lo, hi), []).append(site)
+    return [f"{key}:{lo}-{hi}  ({hi - lo + 1} lines) claimed by {len(where)} sites, e.g. {where[0]}"
+            for (key, lo, hi), where in sorted(seen.items())
+            if len(where) >= REPEATED_WIDE_SITES]
 
 
 def aimless_claims(sites: list[tuple[str, int, int, str]]) -> list[str]:
@@ -358,18 +554,45 @@ def main() -> int:
         print(f"\nEXCLUDED from the denominator ({dropped} lines the port is not answerable for):")
         for e in exclusions:
             print(f"  {e}")
-    misaimed = misaimed_claims(sites, decl_of)
-    if misaimed:
+    misaimed, unjudgeable = misaimed_claims(sites, decl_of)
+    if misaimed or unjudgeable:
         over = " — OVER BUDGET" if len(misaimed) > MISAIMED_BUDGET else ""
         print(f"MISAIMED claims (credited to the wrong lines, budget {MISAIMED_BUDGET}): "
               f"{len(misaimed)}{over}")
         for m in misaimed[:8]:
             print(f"  {m}")
+    if unjudgeable:
+        print(f"  ({unjudgeable} further claims could not be judged — the Swift file declares no "
+              f"such name, so their range proves nothing either way)")
     aimless = aimless_claims(sites)
     if aimless:
         print(f"AIMLESS claims (they parse, they look like claims, and they can credit nothing): {len(aimless)}")
         for a in aimless[:12]:
             print(f"  {a}")
+    overreaching = overreaching_claims(sites, decl_of)
+    reach = sum(slack for slack, _ in overreaching)
+    over_ratchet = len(overreaching) > OVERREACH_BUDGET or reach > OVERREACH_SLACK_BUDGET
+    if over_ratchet:
+        print(f"OVERREACHING claims (they contain their declaration but cover far more): "
+              f"{len(overreaching)} claims / {reach} lines of reach — OVER BUDGET "
+              f"({OVERREACH_BUDGET} / {OVERREACH_SLACK_BUDGET})")
+        for _, o in sorted(overreaching, reverse=True)[:8]:
+            print(f"  {o}")
+    elif overreaching:
+        print(f"overreaching claims: {len(overreaching)} / {reach} lines of reach "
+              f"(ratchet {OVERREACH_BUDGET} / {OVERREACH_SLACK_BUDGET} — lower both when you "
+              f"clear some)")
+    overwide = overwide_boundary_claims()
+    if overwide:
+        print(f"OVERWIDE boundary entries (bookkeeping blocks claiming code): {len(overwide)}")
+        for o in overwide[:12]:
+            print(f"  {o}")
+    repeated = repeated_wide_claims(sites)
+    if repeated:
+        print(f"REPEATED-WIDE claims (a type claimed from inside itself — 100% over a hole): "
+              f"{len(repeated)}")
+        for r in repeated[:12]:
+            print(f"  {r}")
     if blankets:
         print(f"BLANKET claims (rejected — a range this wide reads 100% over a hole): {len(blankets)}")
         for b in blankets[:12]:
@@ -382,7 +605,8 @@ def main() -> int:
     if args.gate:
         unclosed = [e for e in exclusions if "UNCLOSED" in e]
         if (pct < 100.0 or wildcards or blankets or malformed or aimless or unclosed
-                or len(misaimed) > MISAIMED_BUDGET):
+                or repeated or overwide or len(misaimed) > MISAIMED_BUDGET
+                or over_ratchet):
             return 1
     return 0
 

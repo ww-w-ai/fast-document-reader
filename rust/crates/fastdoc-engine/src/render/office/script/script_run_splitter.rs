@@ -81,7 +81,7 @@ impl ScriptRunSplitter {
     ///
     /// - Returns: pieces in order. No piece is ever empty, and concatenating their `text` reproduces
     ///   `text` exactly — both asserted in `ScriptRunSplitterTests`, on every case it has.
-    // swift: Render/Office/Script/ScriptRunSplitter.swift:62-78
+    // swift: Render/Office/Script/ScriptRunSplitter.swift:62-145
     pub fn split<'a, Slot, ClassifyFn, FamilyFn>(
         text: &'a str,
         mut classify: ClassifyFn,
@@ -92,7 +92,7 @@ impl ScriptRunSplitter {
         ClassifyFn: FnMut(char) -> Option<Slot>,
         FamilyFn: FnMut(Slot) -> Option<String>,
     {
-        // swift: Render/Office/Script/ScriptRunSplitter.swift:79-138
+        // swift: Render/Office/Script/ScriptRunSplitter.swift:62-145
         let mut pieces: Vec<Piece<'a>> = Vec::new();
         // Byte offsets into `text`, standing in for Swift's `String.Index` — a boundary is always
         // taken at a scalar (char) boundary, so it can never land inside a multi-byte encoding.

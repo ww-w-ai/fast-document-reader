@@ -224,7 +224,7 @@ pub struct LaidOutTable {
 }
 
 impl LaidOutTable {
-    // swift: Render/Office/PagePagination.swift:178-187
+    // swift: Render/Office/PagePagination.swift:160-188
     pub fn new(
         first_char: i64,
         visual_top: CGFloat,
@@ -261,7 +261,7 @@ impl TableMetrics {
     /// Rounded to a hundredth of a point on the way in, which is what lets the settle loop stop:
     /// it re-measures every round and compares the whole record, so a piece whose height came back
     /// as `161.70000000000002` one round and `161.7` the next would read as a change for ever.
-    // swift: Render/Office/PagePagination.swift:201-204
+    // swift: Render/Office/PagePagination.swift:198-204
     pub fn new(height: CGFloat, top_inset: CGFloat) -> Self {
         TableMetrics {
             height: (height * 100.0).round() / 100.0,
@@ -314,14 +314,14 @@ impl PagePagination {
         /// Which page a `y` starts on, with the hair of tolerance the layout rule uses — see
         /// `PageBandLayoutDelegate.page(of:leadingBand:pitch:)`. The two must agree exactly or the
         /// decision keeps asking for a move the rule has already made.
-        // swift: Render/Office/PagePagination.swift:233-235
+        // swift: Render/Office/PagePagination.swift:230-235
         fn page_of(top: CGFloat, leading_band: CGFloat, pitch: CGFloat) -> CGFloat {
             (((top - leading_band) / pitch) + 1e-6).floor()
         }
 
         /// Does this span, sitting here, run past the bottom of the page it starts on — where
         /// "bottom" is the body that page actually offers, notes taken out (`textBottom`)?
-        // swift: Render/Office/PagePagination.swift:239-243
+        // swift: Render/Office/PagePagination.swift:237-243
         fn overruns(
             top: CGFloat,
             bottom: CGFloat,

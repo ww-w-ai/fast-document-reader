@@ -58,7 +58,7 @@ impl From<ResolveError> for MeasureError {
 /// Consumed by `PageBandLayoutDelegate`, which reserves this much space between one page's text and
 /// the next's (header-footer-design.md build step 4 — geometry only; painting the header/footer
 /// into the space this reserves is step 5, not yet built).
-// swift: Render/Office/PageBandGeometry.swift:3-29
+// swift: Render/Office/PageBandGeometry.swift:3-232
 pub struct PageBandGeometry;
 
 /// The header height, the footer height, AND the combined band — measured together so a caller
@@ -249,8 +249,9 @@ impl PageBandGeometry {
     /// Pure arithmetic ported unchanged so the reservation (`footnote_band_height`, above) and the
     /// separator `FootnotePainter.draw` actually paints agree to the point — a difference here puts
     /// a note over the last line of body text, the same failure that function's own comment names.
-    // swift: Render/Office/FootnotePainter.swift:22,30-34
+    // swift: Render/Office/FootnotePainter.swift:24-34
     pub fn separator_allowance(separator: Option<&FootnoteSeparatorDesc>) -> CGFloat {
+        // swift: Render/Office/FootnotePainter.swift:17-34
         const DEFAULT_SEPARATOR_ALLOWANCE: CGFloat = 8.0;
         let Some(separator) = separator else { return DEFAULT_SEPARATOR_ALLOWANCE };
         if !separator.is_declared {

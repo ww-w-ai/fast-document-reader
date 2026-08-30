@@ -40,7 +40,7 @@ use crate::render::office::office_block::{
 };
 use crate::render::render_theme::{Palette, RenderTheme};
 
-// swift: Render/TableBlockBuilder.swift:3-8
+// swift: Render/TableBlockBuilder.swift:3-132
 // An `NSTextTable` that remembers its columns' PROPORTIONS (summing to 1) so the table can be
 // re-solved to ABSOLUTE integer point widths at whatever reading-column width the window currently
 // has. Percentage column widths are the wrong tool: `NSTextTable` recomputes them per row, so a
@@ -53,10 +53,10 @@ use crate::render::render_theme::{Palette, RenderTheme};
 pub struct GridTextTable {
     pub base: NSTextTable,
 
-    // swift: Render/TableBlockBuilder.swift:10
+    // swift: Render/TableBlockBuilder.swift:10-23
     pub column_proportions: Vec<CGFloat>, // one per column, sums to 1
 
-    // swift: Render/TableBlockBuilder.swift:11-15
+    // swift: Render/TableBlockBuilder.swift:11-23
     /// The table's own picture fill (`TableFormat.backgroundImage`), painted ONCE across the whole
     /// grid. A table block is drawn before its cells, so this lands behind them; stretching it to
     /// the table's frame is what reproduces HWP's rounded annotation frames, which are one image
@@ -77,7 +77,7 @@ pub struct GridTextTable {
     /// formula": both now call the same `edges(forWidth:)`, which applies this clamp internally).
     pub max_width: Option<CGFloat>,
 
-    // swift: Render/TableBlockBuilder.swift:36-57
+    // swift: Render/TableBlockBuilder.swift:36-67
     /// The table OBJECT's own LEFT/RIGHT outer margin (`TableFormat.outerMargin`, threaded through
     /// `build`'s `tableOuterMargin` parameter) — the horizontal gap between the table and what
     /// surrounds it, distinct from a cell's padding/border (inside the grid). Consulted ONLY by
@@ -118,7 +118,7 @@ impl Default for GridTextTable {
 }
 
 impl GridTextTable {
-    // swift: Render/TableBlockBuilder.swift:17-23
+    // swift: Render/TableBlockBuilder.swift:11-23
     /// swift: override func drawBackground(withFrame:in:characterRange:layoutManager:)
     pub fn draw_background(
         &self,
@@ -229,7 +229,7 @@ impl GridTextTable {
     }
 }
 
-// swift: Render/TableBlockBuilder.swift:134-138
+// swift: Render/TableBlockBuilder.swift:134-139
 /// The one place that builds a real bordered `NSTextTable` grid, shared by `MarkdownRenderer`
 /// (GFM tables) and `OfficeTextBuilder` (Word/office tables) — a table looks and behaves the same
 /// however the document reached it. Each caller renders its own cell content (markdown inline
@@ -290,7 +290,7 @@ impl TableBlockBuilder {
         )
     }
 
-    // swift: Render/TableBlockBuilder.swift:178-196
+    // swift: Render/TableBlockBuilder.swift:174-196
     /// The width a border edge actually OCCUPIES once AppKit has laid it out: the declared width
     /// rounded UP to a whole point. Both the `setWidth` call and the content-width subtraction go
     /// through here so they can never disagree.
@@ -1145,7 +1145,7 @@ impl TableBlockBuilder {
         result.into()
     }
 
-    // swift: Render/TableBlockBuilder.swift:826-848
+    // swift: Render/TableBlockBuilder.swift:826-852
     /// The attributes a cell's terminating `"\n"` is allowed to INHERIT from the cell's own last
     /// character — an ALLOW-list, not a deny-list, so anything new falls back to the old bare
     /// terminator instead of silently riding along on a character it was never measured against.

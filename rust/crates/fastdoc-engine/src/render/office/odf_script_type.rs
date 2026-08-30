@@ -10,7 +10,7 @@
 //! character whose script type is latin / asian / complex" (ODF 1.3 Part 3 §20.277-§20.279). This
 //! type is that script type, and `OdfScriptTable` is the mapping.
 
-// swift: Render/Office/OdfScriptType.swift:9-14
+// swift: Render/Office/OdfScriptType.swift:1-14
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum OdfScriptType {
@@ -21,7 +21,7 @@ pub enum OdfScriptType {
 
 impl OdfScriptType {
     /// All cases, mirroring Swift's `CaseIterable` conformance.
-    // swift: Render/Office/OdfScriptType.swift:9
+    // swift: Render/Office/OdfScriptType.swift:1-13
     pub const ALL: [OdfScriptType; 3] = [OdfScriptType::Latin, OdfScriptType::Asian, OdfScriptType::Complex];
 }
 
@@ -80,8 +80,6 @@ impl OdfScriptType {
 pub struct OdfScriptTable;
 
 impl OdfScriptTable {
-    /// One row of table 22, as the spec writes it: an inclusive range and the script type it maps to.
-    // swift: Render/Office/OdfScriptType.swift:67-73
     /// Table 22 itself — every range the spec lists, sorted by `first` so the lookup can binary
     /// search. Kept as the spec's 28 separate ranges rather than merged into the 26 they collapse to
     /// (`U+2C60..U+2C7F` and `U+2C80..U+2CE3` are adjacent and both latin; `U+2E80..U+31BF` and
@@ -195,13 +193,13 @@ impl OdfScriptTable {
     /// The table itself, for the tests that re-derive its published totals from it. Exposed rather
     /// than duplicated in the test file: a second transcription would agree with the first only until
     /// someone edited one of them.
-    // swift: Render/Office/OdfScriptType.swift:164-170
+    // swift: Render/Office/OdfScriptType.swift:160-170
     pub fn published_ranges() -> Vec<(u32, u32, OdfScriptType)> {
         Self::rows().iter().map(|r| (r.first, r.last, r.r#type)).collect()
     }
 }
 
-
+/// One row of table 22, as the spec writes it: an inclusive range and the script type it maps to.
 // swift: Render/Office/OdfScriptType.swift:67-73
 #[derive(Clone, Copy)]
 struct Row {

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-// swift: Render/Office/DeclaredFontKind.swift:3-34
+// swift: Render/Office/DeclaredFontKind.swift:3-60
 /// What KIND of face a declared family name asks for, when this machine cannot supply the family
 /// itself. Format-neutral on purpose: a `.docx` naming `HY중고딕` and a `.hwp` naming it are the same
 /// problem, and all three office readers share one substitution pass.
@@ -191,7 +191,7 @@ impl DeclaredFontKind {
     }
 }
 
-// swift: Render/Office/DeclaredFontKind.swift:130-136
+// swift: Render/Office/DeclaredFontKind.swift:130-180
 /// What a DOCUMENT said about one entry in its own font table, in format-neutral terms.
 ///
 /// Every office format keeps such a table and every one of them says more about a face than its name:
@@ -215,7 +215,7 @@ pub struct DeclaredFace {
     /// KIND of a face is something it STATED rather than something this reader inferred from the name,
     /// and the stated answer wins. `nil` means the document said nothing, which is not the same as a
     /// block of zeroes (PANOSE zero means "any", a real declaration).
-    // swift: Render/Office/DeclaredFontKind.swift:144-150
+    // swift: Render/Office/DeclaredFontKind.swift:130-180
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub type_info: Option<Vec<u8>>,
 }
@@ -249,7 +249,7 @@ impl DeclaredFace {
     /// 2,267-document corpus. The block stays CARRIED on this type so a later sprint can consume it
     /// once the exporter normalises the two vocabularies into one field and says which it used;
     /// reading it before then would be guessing while claiming to quote.
-    // swift: Render/Office/DeclaredFontKind.swift:151-180
+    // swift: Render/Office/DeclaredFontKind.swift:130-180
     pub fn declared_kind(&self) -> Option<DeclaredFontKind> {
         None
     }

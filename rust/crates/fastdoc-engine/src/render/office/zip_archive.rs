@@ -11,7 +11,7 @@ use swiftshim::{Data, NSRange};
 ///
 /// A `struct`, not an `enum` namespace: parsing the central directory is real work (a corrupt or
 /// Zip64 archive throws), so this holds the parsed table as state instead of re-deriving it per call.
-// swift: Render/Office/ZipArchive.swift:3-12
+// swift: Render/Office/ZipArchive.swift:3-222
 pub struct ZipArchive {
     data: Data,
     entries_by_name: std::collections::HashMap<String, Entry>,
@@ -75,7 +75,7 @@ const ZIP64_SENTINEL_32: u32 = 0xFFFF_FFFF;
 pub const MAX_ENTRY_UNCOMPRESSED_SIZE: usize = 512 * 1024 * 1024;
 
 impl ZipArchive {
-    // swift: Render/Office/ZipArchive.swift:56-63
+    // swift: Render/Office/ZipArchive.swift:56-85
     /// The archive's entry names, in central-directory order (the order files were added — not
     /// necessarily alphabetical, and not required to match local-header order).
     pub fn entry_names(&self) -> &[String] {
@@ -105,7 +105,7 @@ impl ZipArchive {
         Ok(ZipArchive { data, entries_by_name: by_name, order: names })
     }
 
-    // swift: Render/Office/ZipArchive.swift:87-90
+    // swift: Render/Office/ZipArchive.swift:79-130
     pub fn from_url(url: &swiftshim::URL) -> Result<Self, ZipArchiveError> {
         // swift: Render/Office/ZipArchive.swift:88 — Data(contentsOf: url)
         let data = swiftshim::Data::contentsOf(url)
@@ -113,12 +113,12 @@ impl ZipArchive {
         Self::new(data)
     }
 
-    // swift: Render/Office/ZipArchive.swift:91-92
+    // swift: Render/Office/ZipArchive.swift:91-112
     pub fn contains(&self, name: &str) -> bool {
         self.entries_by_name.contains_key(name)
     }
 
-    // swift: Render/Office/ZipArchive.swift:93-113
+    // swift: Render/Office/ZipArchive.swift:79-130
     pub fn data_for(&self, name: &str) -> Result<Data, ZipArchiveError> {
         let entry = self
             .entries_by_name
@@ -245,7 +245,7 @@ impl ZipArchive {
         Ok(data.subdata(Self::byte_range(content_start, content_length, data)))
     }
 
-    // swift: Render/Office/ZipArchive.swift:186-189
+    // swift: Render/Office/ZipArchive.swift:181-219
     fn byte_range(offset: usize, length: usize, data: &Data) -> NSRange {
         NSRange::new(data.startIndex() + offset, length)
     }
@@ -259,7 +259,7 @@ impl ZipArchive {
     /// decode again into a buffer one byte larger. If that produces more bytes, the central
     /// directory's declared size undersold the real content, and the first decode was a truncated
     /// read wearing the costume of a complete one.
-    // swift: Render/Office/ZipArchive.swift:190-206
+    // swift: Render/Office/ZipArchive.swift:181-219
     fn inflate(compressed: &Data, uncompressed_size: usize, name: &str) -> Result<Data, ZipArchiveError> {
         let decoded = Self::decode(compressed, uncompressed_size)?;
         if decoded.len() != uncompressed_size {
@@ -308,7 +308,7 @@ impl ZipArchive {
     }
 }
 
-// swift: Render/Office/ZipArchive.swift:224-238
+// swift: Render/Office/ZipArchive.swift:216-266
 impl ZipArchiveError {
     pub fn error_description(&self) -> String {
         match self {
@@ -350,7 +350,7 @@ impl std::error::Error for ZipArchiveError {}
 
 // MARK: Little-endian field reads
 
-// swift: Render/Office/ZipArchive.swift:239-254
+// swift: Render/Office/ZipArchive.swift:216-266
 trait DataLittleEndianReads {
     fn read_u16_le(&self, offset: usize) -> Result<u16, ZipArchiveError>;
     fn read_u32_le(&self, offset: usize) -> Result<u32, ZipArchiveError>;
