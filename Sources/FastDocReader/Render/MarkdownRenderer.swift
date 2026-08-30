@@ -20,6 +20,14 @@ enum MarkdownRenderer {
         return builder.result
     }
 
+    /// Parse only, for the probe that decides how much of a render a canonical tree could replace
+    /// (invariant 128). Deliberately bypasses `parseMemo` — a memo hit would measure a dictionary
+    /// lookup and report parsing as free. Returns the node count so the work cannot be optimised
+    /// away as unused.
+    static func parseForProbe(_ markdown: String) -> Int {
+        Document(parsing: markdown).children.reduce(0) { n, _ in n + 1 }
+    }
+
     /// The two range-based passes every rendered run must go through before it is shown. Factored
     /// out because a progressive render runs them on each PIECE rather than once on the whole
     /// string, and both are safe that way: a top-level block boundary cannot fall inside a URL, a

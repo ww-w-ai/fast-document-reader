@@ -156,6 +156,16 @@ impl NSAttributedString {
         None
     }
 
+    /// The attribute runs themselves, in order.
+    ///
+    /// `attributesAt` answers one index by scanning, which is fine for the handful of lookups the
+    /// renderer does and quadratic for anything that wants every run — a census, or the wire that
+    /// carries a finished string to the host. Those want the runs, so this hands them over rather
+    /// than making them ask a million times.
+    pub fn runs(&self) -> &[(NSRange, HashMap<NSAttributedStringKey, AttrValue>)] {
+        &self.runs
+    }
+
     pub fn attributesAt(&self, at: usize) -> Option<&HashMap<NSAttributedStringKey, AttrValue>> {
         self.runs
             .iter()

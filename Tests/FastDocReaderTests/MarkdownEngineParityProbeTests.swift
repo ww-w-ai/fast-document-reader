@@ -39,7 +39,13 @@ final class MarkdownEngineParityProbeTests: XCTestCase {
             return (label, best, size)
         }
 
-        let host = measure("host  (Swift MarkdownRenderer)") {
+        // The host's own cost, split where the ARCHITECTURE splits: parsing is what a canonical
+        // tree would replace, the rest is the attributed-string build a tree consumer would still
+        // have to do in Swift. Quoting only the total hides which half moving to Rust would buy.
+        let hostParse = measure("host  parse only (swift-markdown)") {
+            MarkdownRenderer.parseForProbe(source)
+        }
+        let host = measure("host  (Swift MarkdownRenderer, parse + build)") {
             let theme = RenderTheme.current(size: FontSizeStore.defaultSize)
             return MarkdownRenderer.render(source, theme: theme).length
         }
@@ -77,7 +83,7 @@ final class MarkdownEngineParityProbeTests: XCTestCase {
         }
 
         print("MD-PARITY \(url.lastPathComponent) — \(source.count) characters, real font world")
-        for arm in [host, engine, decode] {
+        for arm in [hostParse, host, engine, decode] {
             print(String(format: "  %@  %8.1f ms   result %d", arm.label, arm.ms, arm.size))
         }
 

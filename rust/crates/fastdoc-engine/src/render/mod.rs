@@ -12,6 +12,7 @@ pub mod markdown;
 // absent. `markdown` above is a DIFFERENT thing: a fresh producer written against the canonical
 // tree. Both stay; the manifest is about transliterating the shipped Swift, not about replacing it.
 pub mod markdown_renderer;
+pub mod markdown_wire;
 // The `swift-markdown` package the transliteration is a CLIENT of — not part of the port, which
 // is why it is a separate file with no `swift:` claims of its own.
 pub mod markdown_package;
