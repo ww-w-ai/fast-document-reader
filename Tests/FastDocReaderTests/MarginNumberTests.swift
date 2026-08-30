@@ -147,7 +147,7 @@ final class MarginNumberTests: XCTestCase {
     /// of the viewport. Judged against `pageSheets` — the same rectangles the outline draws and the
     /// printer prints — rather than against a character, because a page boundary belongs to the grid.
     func testGoingToAPageScrollsToThatSheetsTop() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: true, splitTables: false)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: true, splitTables: false)
         let url = repoRoot().appendingPathComponent("docs/fixtures/office/bus-headings.docx")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: url.path),
                           "docs/ is local-only in this checkout")
@@ -180,7 +180,7 @@ final class MarginNumberTests: XCTestCase {
     /// margin should not have to open a dialog to say 12. Driven through `keyDown`, which is the only
     /// place that can prove the digits are actually reaching the reader.
     func testTypingANumberAndPressingReturnJumps() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: true, splitTables: false)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: true, splitTables: false)
         let wc = try openPagedFixture()
         defer { wc.document.map { ($0 as? MarkdownDocument)?.close() } }
         let sheets = wc.pageSheets
@@ -197,7 +197,7 @@ final class MarginNumberTests: XCTestCase {
     /// document. Typing is how a decoration would do the most damage, so the storage is asserted
     /// byte-for-byte around it.
     func testTypedDigitsNeverReachTheDocument() throws {
-        PageViewOptionsStore.current = PageViewOptions(outline: true, splitTables: false)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: true, splitTables: false)
         let wc = try openPagedFixture()
         defer { wc.document.map { ($0 as? MarkdownDocument)?.close() } }
         let before = wc.textView.textStorage?.string

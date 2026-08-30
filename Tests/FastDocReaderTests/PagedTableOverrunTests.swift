@@ -24,7 +24,7 @@ final class PagedTableOverrunTests: XCTestCase {
         // header and footer only exist alongside it — the old "band, no sheets" shape is gone, and
         // the desk it adds moves the pitch, which every number below is solved against rather than
         // being about.
-        PageViewOptionsStore.current = PageViewOptions(outline: true)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: true)
     }
 
     override func tearDown() {
@@ -696,7 +696,7 @@ final class PagedTableOverrunTests: XCTestCase {
     /// fixture is a 25-row table of 660pt on a 220pt page, and the setting is deliberately left at its
     /// default (keep tables whole) to prove the rule overrides it.
     func testATableTallerThanItsPageIsBrokenEvenWhenTablesAreKeptWhole() throws {
-        XCTAssertFalse(PageViewOptionsStore.current.splitTables, "precondition: the setting says whole")
+        XCTAssertFalse(PageViewOptionsStore.startingOptions.splitTables, "precondition: the setting says whole")
         let wc = try openPaged("docs/fixtures/office/paged-visual/tablepage.docx")
         XCTAssertTrue(wc.pageBandDelegate.isActive)
         XCTAssertFalse(try linesInMargins(wc).isEmpty, "precondition: it starts out overrunning")
@@ -711,7 +711,7 @@ final class PagedTableOverrunTests: XCTestCase {
     /// overrunning table ends up — one page earlier when it is allowed to break.
     func testTheSettingDecidesBetweenBreakingATableAndCarryingItDown() throws {
         func firstTableTop(_ split: Bool) throws -> CGFloat {
-            PageViewOptionsStore.current = PageViewOptions(outline: true, splitTables: split)
+            PageViewOptionsStore.startingOptions = PageViewOptions(outline: true, splitTables: split)
             let wc = try openPaged("docs/fixtures/office/bus-headings.docx")
             wc.settlePagedTablesFully()
             XCTAssertEqual(try linesInMargins(wc), [], "either way, nothing may end in a margin")
@@ -802,7 +802,7 @@ final class PagedTableOverrunTests: XCTestCase {
         XCTAssertEqual(try linesInMargins(wc), [])
 
         wc.toggleSplitTables(nil)
-        XCTAssertTrue(PageViewOptionsStore.current.splitTables, "the menu item must store the choice")
+        XCTAssertTrue(PageViewOptionsStore.startingOptions.splitTables, "the menu item must store the choice")
         wc.settlePagedTablesFully()
         XCTAssertLessThan(wc.printPageCount, whole,
                           "breaking tables fits the same document into fewer pages than carrying them")

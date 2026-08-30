@@ -16,7 +16,7 @@ import AppKit
 final class ColumnRunStartProbeTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        PageViewOptionsStore.current = PageViewOptions(outline: true)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: true)
     }
 
     override func tearDown() {

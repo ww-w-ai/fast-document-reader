@@ -483,7 +483,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// owner's master-switch rule (`PageViewOptions.underOutlineRule`) is exactly "the page outline
     /// is off, so there is no page for anything to be about".
     var masterPageContent: MasterPageContent? {
-        guard PageViewOptionsStore.current.masterPage, let doc = mdDocument,
+        guard (mdDocument?.pageOptions.masterPage ?? false), let doc = mdDocument,
               !(doc.officeMasterPages.isEmpty && doc.officeAnchoredObjects.isEmpty),
               let band = pageBandContent else { return nil }
         let pages = doc.officeMasterPages
@@ -1687,7 +1687,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // Numbers" on a file with no pages would be a lie the moment it drew page numbers, and
             // two separate toggles could be set to disagree with each other.
             let showsPages = MarginNumberStore.unit(isOn: true, paged: isPaged,
-                                                    drawingPages: PageViewOptionsStore.current.outline)
+                                                    drawingPages: (mdDocument?.pageOptions.outline ?? false))
             item.title = showsPages == .pages ? "Page Numbers" : "Line Numbers"
             return true
         }
@@ -1697,7 +1697,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             item.title = jumpUnit == .pages ? "Go to Page…" : "Go to Line…"
             return true
         }
-        let intent = PageViewOptionsStore.intent
+        // The tick reflects THIS document, not a global — two windows can now legitimately disagree,
+        // and a menu showing the app's last choice instead of the front document's would be lying
+        // about the window the reader is looking at. `intent` rather than the masked value, so the
+        // other two keep the tick the reader set and come back as they were when the outline
+        // returns (`underOutlineRule`).
+        let intent = mdDocument?.pageOptionsIntent ?? PageViewOptionsStore.intent
         for (selector, on, needsOutline) in
                 [(#selector(togglePageOutline(_:)), intent.outline, false),
                  (#selector(toggleMasterPage(_:)), intent.masterPage, true),
@@ -2111,7 +2116,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                                                pageContentHeight: pageBandDelegate.pageContentHeight,
                                                band: pageBandDelegate.band,
                                                leadingBand: pageBandDelegate.leadingBand,
-                                               splitTables: PageViewOptionsStore.current.splitTables,
+                                               splitTables: (mdDocument?.pageOptions.splitTables ?? false),
                                                alreadyPushed: pageBandDelegate.pushedTables,
                                                noteBands: pageBandDelegate.noteBands)
             oversized = PagePagination.oversizedPieces(tables,
@@ -3384,7 +3389,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// independently of whether the numbers are switched on (`MarginNumberStore.jumpUnit`): a reader
     /// who hid the numbers can still ask for page 40.
     var jumpUnit: MarginNumberUnit {
-        MarginNumberStore.jumpUnit(paged: isPaged, drawingPages: PageViewOptionsStore.current.outline)
+        MarginNumberStore.jumpUnit(paged: isPaged, drawingPages: (mdDocument?.pageOptions.outline ?? false))
     }
 
     /// Type a number, press Return, land there. One item rather than two, for the same reason the
@@ -3522,7 +3527,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// test read the same answer. Called from the toggle and from every render.
     func applyMarginNumbers() {
         textView.marginNumbers = MarginNumberStore.unit(paged: isPaged,
-                                                        drawingPages: PageViewOptionsStore.current.outline)
+                                                        drawingPages: (mdDocument?.pageOptions.outline ?? false))
     }
 
     /// Counts how many times a page option was actually applied — the same shape as
@@ -3535,21 +3540,22 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // The INTENT, never the effective value: with the outline off, `current` reports the other
         // three as false, so reading it here would write those falses back and turning the outline on
         // again would come up bare instead of restoring what the reader had chosen.
-        var options = PageViewOptionsStore.intent
+        var options = mdDocument?.pageOptionsIntent ?? PageViewOptionsStore.intent
         change(&options)
-        PageViewOptionsStore.current = options
+        mdDocument?.setPageOptions(options)
+        // The seed, for the NEXT document opened — never for one already open. This is the half of
+        // the old global behaviour worth keeping: the reader's choice still survives a relaunch.
+        PageViewOptionsStore.startingOptions = options
         // THIS window first, and unconditionally — never through the shared document controller's
         // list. A document that is not registered with `NSDocumentController` (a test builds one
         // directly; so does any future programmatic open) would otherwise find NOTHING to update,
         // including itself, and the toggle would silently do nothing.
         reapplyPageBand()
-        // Then every OTHER open paged window: the preference is global (see `PageViewOptions`), so
-        // leaving the rest showing the old furniture until they happen to re-render would make the
-        // setting look per-window without being it.
-        for case let wc as DocumentWindowController in NSDocumentController.shared.documents
-            .flatMap({ $0.windowControllers }) where wc !== self && wc.isPaged {
-            wc.reapplyPageBand()
-        }
+        // And nothing else. Every OTHER open paged window used to be re-applied here, because the
+        // preference was one shared value and leaving the rest showing the old furniture would have
+        // made a global setting look per-window. Now it IS per-window, so reaching into a document
+        // the reader did not act on would be the bug rather than the fix — and re-applying a band
+        // invalidates that document's entire layout, which with a dozen open is not a small thing.
     }
 
     /// Re-solve the page band for the CURRENT view options and lay the document out again.
@@ -3647,7 +3653,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// lives under). Present only while there is something to number.
     private func syncPageNumberDesk() {
         let wants = MarginNumberStore.unit(paged: isPaged,
-                                           drawingPages: PageViewOptionsStore.current.outline) == .pages
+                                           drawingPages: (mdDocument?.pageOptions.outline ?? false)) == .pages
         if wants {
             let desk = pageNumberDesk ?? {
                 let v = PageNumberDeskView(frame: scrollView.bounds)
@@ -3708,7 +3714,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Only while the outline is on, and only for a paged document; everything else keeps AppKit's
     /// default so markdown and plain text are untouched.
     private func syncDeskBackground() {
-        let showsDesk = isPaged && PageViewOptionsStore.current.outline
+        let showsDesk = isPaged && (mdDocument?.pageOptions.outline ?? false)
         scrollView.backgroundColor = showsDesk ? Palette.pageDesk : .textBackgroundColor
     }
 
@@ -3721,7 +3727,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// function, so the page a reader sees and the page that comes out of the printer can never be
     /// two different things. Empty unless the outline is on and the reader actually paginated.
     var pageSheets: [CGRect] {
-        guard PageViewOptionsStore.current.outline else { return [] }
+        guard (mdDocument?.pageOptions.outline ?? false) else { return [] }
         // The PRINTED sheets, joined across any boundary layout could not open, so a page break is
         // never drawn through a table. Derived from `printSheets` rather than computed again: two
         // copies of this arithmetic is exactly how the screen and the paper would come to disagree

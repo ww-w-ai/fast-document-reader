@@ -6,12 +6,18 @@ import CoreGraphics
 ///
 /// **The outline is the MASTER** — see `underOutlineRule`. The other three are about a page, so with
 /// no page drawn there is nothing for them to be about; the View menu greys them out and
-/// `PageViewOptionsStore.current` reports them off.
+/// a document's own `pageOptions` reports them off.
 ///
-/// **A GLOBAL preference, not per window.** The design left this open; it is settled here because a
-/// reader who wants continuous flow wants it for every document they open, not one at a time, and
-/// because the choice has to survive a relaunch to be worth making. (The comments panel is per window
-/// for the opposite reason — it shows one document's own content, not a way of reading.)
+/// **PER DOCUMENT, seeded from the last choice.** This was global — one `UserDefaults` value every
+/// window read — on the reasoning that a reader who wants continuous flow wants it for every
+/// document, not one at a time. Half of that holds and is kept: the choice still survives a
+/// relaunch and a newly opened document still starts at it (`PageViewOptionsStore.startingOptions`).
+/// The other half did not. With several documents open, turning the outline off re-applied the band
+/// to EVERY paged window, so a setting changed for the report being read disturbed twelve documents
+/// nobody had touched — and re-applying a band is not free, it invalidates that document's whole
+/// layout. `FontSizeStore` records the identical mistake and the identical repair for the font size;
+/// this is that repair, applied to the second reading preference that had it. (The comments panel
+/// was per window from the start — it shows one document's own content.)
 ///
 /// **The defaults are all three ON.** The owner's request framed the outline as the thing that
 /// REPLACES the page-break line — *"페이지 외곽 모양(그럼 선이 필요 없어짐)"* — so shipping it off would
@@ -78,7 +84,7 @@ struct PageViewOptions: Equatable {
     /// 함께 보기/해제되는거야… 아웃라인이 없으면 나눌것도 없지."*
     ///
     /// Applied as a DERIVED value rather than by clearing the stored keys, so turning the outline back
-    /// on restores exactly what the reader had chosen. `PageViewOptionsStore.current` is the only
+    /// on restores exactly what the reader had chosen. A document's own `pageOptions` is the only
     /// caller — every consumer therefore gets the rule without knowing it exists.
     var underOutlineRule: PageViewOptions {
         guard !outline else { return self }
@@ -97,7 +103,23 @@ enum PageViewOptionsStore {
     /// every default OFF — the opposite of what is wanted. Each flag is therefore read through
     /// What the reader actually shows — the stored choices with the OUTLINE's rule applied. Every
     /// consumer reads this one, so the dependency exists in a single place rather than in each of them.
-    static var current: PageViewOptions {
+    /// What a NEWLY opened document starts with — the last choice the reader made, or the defaults
+    /// on a machine where nobody has changed them.
+    ///
+    /// Read ONCE, when a document is created, to seed `MarkdownDocument.pageOptions`; never read
+    /// again while that document is open. The distinction is the whole design, and it is the same
+    /// one `FontSizeStore.startingSize` records — for the same reason, arrived at twice. A single
+    /// shared value that every window reads means a toggle in one window changes what another
+    /// window shows, and this file used to do exactly that ON PURPOSE, walking every open paged
+    /// window to re-apply the band. That is defensible for a setting nobody would want to differ
+    /// between documents, and wrong as soon as a reader wants the outline off for the one report
+    /// they are measuring and on everywhere else. Seeding keeps "remembered next time" true without
+    /// letting one window reach into another.
+    ///
+    /// Deliberately NOT called `current`: the old name invited exactly the read-it-everywhere use
+    /// that made a toggle global, and `MarkdownDocument.pageOptions` is the only thing a render,
+    /// a band or a menu may consult now.
+    static var startingOptions: PageViewOptions {
         get { intent.underOutlineRule }
         set {
             let d = UserDefaults.standard

@@ -55,7 +55,7 @@ final class LineHeightProbeTests: XCTestCase {
         HeadlessPDF.waitForRenderToSettle(doc: doc, wc: wc)
         if let tc = wc.textView.textContainer { wc.textView.layoutManager?.ensureLayout(for: tc) }
         wc.applyTrailingFooterBand()
-        print("[print] 인쇄 전 : bandActive=\(wc.pageBandDelegate.isActive) printPageCount=\(wc.printPageCount) printSheets=\(wc.printSheets.count) pageSheets=\(wc.pageSheets.count) opts=outline:\(PageViewOptionsStore.current.outline),split:\(PageViewOptionsStore.current.splitTables) pushed=\(wc.pageBandDelegate.pushedTables.count) opened=\(wc.pageBandDelegate.openedBoundaries.count)")
+        print("[print] 인쇄 전 : bandActive=\(wc.pageBandDelegate.isActive) printPageCount=\(wc.printPageCount) printSheets=\(wc.printSheets.count) pageSheets=\(wc.pageSheets.count) opts=outline:\(PageViewOptionsStore.startingOptions.outline),split:\(PageViewOptionsStore.startingOptions.splitTables) pushed=\(wc.pageBandDelegate.pushedTables.count) opened=\(wc.pageBandDelegate.openedBoundaries.count)")
 
         print("[margin] \(marginReport(wc))")
         do {   // 종이가 빈틈없이 이어지는가 — 사이에 빈 띠가 있으면 그 안의 글자는 어느 장에도 안 실린다
