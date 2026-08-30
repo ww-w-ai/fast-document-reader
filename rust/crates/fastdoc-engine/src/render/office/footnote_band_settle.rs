@@ -105,7 +105,7 @@ impl FootnoteBandSettle {
     ///     as such, so a round that drops a key rather than zeroing it is not read as a change.
     ///   - history: every earlier proposal, oldest first. The caller appends; this never mutates.
     ///   - cap: the round budget, matching the settle loop's own (`maxPagedTableSettles`).
-    // swift: Render/Office/FootnoteBandSettle.swift:108-128
+    // swift: Render/Office/FootnoteBandSettle.swift:108-141
     pub fn step(proposed: &HashMap<i64, CGFloat>, history: &[HashMap<i64, CGFloat>], cap: i64) -> Outcome {
         let now = Self::normalised(proposed);
         let seen: Vec<HashMap<i64, CGFloat>> = history.iter().map(Self::normalised).collect();
@@ -131,7 +131,7 @@ impl FootnoteBandSettle {
 
     /// The largest band each page was asked for across these states — the safe half of an
     /// oscillation (see the type comment).
-    // swift: Render/Office/FootnoteBandSettle.swift:129-140
+    // swift: Render/Office/FootnoteBandSettle.swift:143-153
     pub fn pointwise_max(states: &[HashMap<i64, CGFloat>]) -> HashMap<i64, CGFloat> {
         let mut out: HashMap<i64, CGFloat> = HashMap::new();
         for state in states {
@@ -148,7 +148,7 @@ impl FootnoteBandSettle {
     /// Drops the entries that reserve nothing, so "absent" and "zero" are the same state. Without
     /// this a round that stopped citing a note on a page would look like a change forever, and the
     /// repeat check would never fire.
-    // swift: Render/Office/FootnoteBandSettle.swift:141-147
+    // swift: Render/Office/FootnoteBandSettle.swift:155-160
     fn normalised(state: &HashMap<i64, CGFloat>) -> HashMap<i64, CGFloat> {
         state.iter().filter(|(_, v)| **v > 0.0).map(|(k, v)| (*k, *v)).collect()
     }
@@ -175,3 +175,10 @@ pub enum Outcome {
     /// These bands are final; stop.
     Stop(HashMap<i64, CGFloat>, StopReason),
 }
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/FootnoteBandSettle.swift:142-142
+// swift: Render/Office/FootnoteBandSettle.swift:154-154
+// swift: Render/Office/FootnoteBandSettle.swift:161-161

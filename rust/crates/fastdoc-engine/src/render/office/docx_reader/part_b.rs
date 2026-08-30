@@ -548,7 +548,7 @@ impl super::DocxReader {
         if rel.external { Self::external_link_id(&rel.target) } else { rel.target.clone() }
     }
 
-    // swift: Render/Office/DocxReader.swift:2301-2301
+    // swift: Render/Office/DocxReader.swift:2302-2302
     fn unresolvable_id(reason: &str) -> String {
         format!("docx-unresolvable:{reason}")
     }
@@ -557,7 +557,7 @@ impl super::DocxReader {
     /// `word/_rels/document.xml.rels` wrote it (a `file:///…` or `http(s)://…` URL), prefixed so
     /// `MarkdownDocument`'s image loader can route it to the folder-grant placeholder instead of
     /// the generic broken-image icon `docx-unresolvable:` ids fall back to.
-    // swift: Render/Office/DocxReader.swift:2307-2307
+    // swift: Render/Office/DocxReader.swift:2304-2308
     fn external_link_id(target: &str) -> String {
         format!("docx-external-link:{target}")
     }
@@ -565,7 +565,7 @@ impl super::DocxReader {
     /// EMU (English Metric Units) is DrawingML's native length unit: 914400 per inch, 12700 per
     /// point (72 pt/inch × 12700 = 914400). Verified against the real test file: `cx="6400800"`
     /// (a 7-inch-wide picture) must yield exactly 504 pt.
-    // swift: Render/Office/DocxReader.swift:2312-2312
+    // swift: Render/Office/DocxReader.swift:2310-2313
     fn emu_to_points(emu: f64) -> CGFloat {
         emu / 12700.0
     }
@@ -614,7 +614,7 @@ impl super::DocxReader {
 
     // ============================================================================================
     // MARK: word/document.xml — body → blocks
-    // swift: Render/Office/DocxReader.swift:2352-2352
+    // swift: Render/Office/DocxReader.swift:2355-2355
     // ============================================================================================
 
     // swift: Render/Office/DocxReader.swift:2354-2364
@@ -1335,7 +1335,7 @@ impl super::DocxReader {
     /// rule (`dashSmallGap` vs `dashed`), so the families collapse; the decorative art borders
     /// (`w:val="apples"` and friends) and the bevels resolve to `solid`, which is what they are
     /// nearest to and never to nothing.
-    // swift: Render/Office/DocxReader.swift:2862-2869
+    // swift: Render/Office/DocxReader.swift:2853-2869
     // swift note: kept `pub(crate)` — the Swift original is `static func` (internal, not
     // `private`), reachable outside DocxReader's own scope.
     pub(crate) fn line_style(val: &str) -> BorderLineStyle {
@@ -2283,7 +2283,7 @@ impl super::DocxReader {
 
     // ============================================================================================
     // MARK: Generic XML tree
-    // swift: Render/Office/DocxReader.swift:3571-3571
+    // swift: Render/Office/DocxReader.swift:3573-3581
     // ============================================================================================
 
     // swift: Render/Office/DocxReader.swift:3572-3579
@@ -2294,7 +2294,7 @@ impl super::DocxReader {
 }
 
 /// One shared axis-scaling factor for `groupScale`/`collectGroupedPictures` — see their own docs.
-// swift: Render/Office/DocxReader.swift:2203-2203
+// swift: Render/Office/DocxReader.swift:2197-2204
 #[derive(Debug, Clone, Copy)]
 struct AxisScale {
     x: f64,
@@ -2321,7 +2321,7 @@ struct AxisScale {
 /// (`m:box`, `m:borderBox`, `m:phant`, …) automatically. Losing the author's SHAPE (no fraction
 /// bar, no radical sign) is accepted; losing their SYMBOLS is not — see CLAUDE.md's standing rule
 /// that content loss is this project's one unforgivable failure, layout loss is not.
-// swift: Render/Office/DocxReader.swift:3603-3603
+// swift: Render/Office/DocxReader.swift:3584-3849
 enum OmmlTranslator {}
 
 impl OmmlTranslator {
@@ -2350,7 +2350,7 @@ impl OmmlTranslator {
     }
 
     // MARK: - Dispatch
-    // swift: Render/Office/DocxReader.swift:3627-3627
+    // swift: Render/Office/DocxReader.swift:3629-3631
 
     // swift: Render/Office/DocxReader.swift:3628-3630
     fn translate_children(nodes: &[XMLNode]) -> String {
@@ -2387,13 +2387,13 @@ impl OmmlTranslator {
 
     /// `m:r`'s only content is `m:t` (its `m:rPr`/`w:rPr` are formatting, skipped by the `Pr` rule
     /// above) — `flattenText` finds it regardless of exactly how deep it sits.
-    // swift: Render/Office/DocxReader.swift:3662-3662
+    // swift: Render/Office/DocxReader.swift:3661-3663
     fn run(node: &XMLNode) -> String {
         Self::flatten_text(node)
     }
 
     // MARK: - Structural constructs
-    // swift: Render/Office/DocxReader.swift:3664-3664
+    // swift: Render/Office/DocxReader.swift:3667-3671
 
     // swift: Render/Office/DocxReader.swift:3666-3670
     fn fraction(node: &XMLNode) -> String {
@@ -2771,3 +2771,8 @@ impl XMLTreeBuilder {
         builder.root
     }
 }
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/DocxReader.swift:3939-3939

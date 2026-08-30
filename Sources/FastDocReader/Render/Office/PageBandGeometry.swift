@@ -162,6 +162,9 @@ enum PageBandGeometry {
         layout.ensureLayout(for: container)
         return layout.usedRect(for: container).height
     }
+    // port-exclude: reconciles the ENGINE's footnote-height reply against this render's own
+    // note list. `page_band_geometry.rs` says the same from its side — `footnote_heights`
+    // produces the answer this consumes, and there is no Swift-side twin of that loop to port.
 
     /// S5D-2's seam: reconciles the engine's own footnote-height answer with the notes this
     /// document is ACTUALLY going to draw. Present in BOTH builds, no `#if` guard — the branch
@@ -187,6 +190,7 @@ enum PageBandGeometry {
         }
         return out
     }
+    // port-exclude-end
 
     /// Does this ONE entry have anything for the reader to put in a band — the question every gate
     /// that used to ask `blocks.isEmpty` should be asking instead. Built through the same

@@ -84,7 +84,7 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Blocks
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:62-64
+    // swift: Render/Office/OfficeMarkdownSerializer.swift:65-105
 
     // swift: Render/Office/OfficeMarkdownSerializer.swift:65-106
     fn render(block: &crate::render::office::office_block::OfficeBlock) -> (String, bool) {
@@ -146,7 +146,7 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Tables
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:106-108
+    // swift: Render/Office/OfficeMarkdownSerializer.swift:109-116
 
     // swift: Render/Office/OfficeMarkdownSerializer.swift:109-117
     fn render_table(rows: &[Vec<crate::render::office::office_block::Cell>], header_rows: i32) -> String {
@@ -265,7 +265,7 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Inline spans
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:173-175
+    // swift: Render/Office/OfficeMarkdownSerializer.swift:176-178
 
     // swift: Render/Office/OfficeMarkdownSerializer.swift:176-178
     fn inline(spans: &[crate::render::office::office_block::Span], inCell: bool) -> String {
@@ -417,7 +417,7 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Plain-text extraction (for <raw> dumps)
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:274-276
+    // swift: Render/Office/OfficeMarkdownSerializer.swift:277-288
 
     // swift: Render/Office/OfficeMarkdownSerializer.swift:277-289
     fn plain_block(block: &crate::render::office::office_block::OfficeBlock) -> String {

@@ -45,7 +45,7 @@ impl FontSubstitutionResolver {
     /// at 14pt" (design §1) — so this fixed size exists only to construct a real `NSFont` instance
     /// to query CoreText with; it is never seen on screen (`OfficeTextBuilder` always reconstructs
     /// the resolved name at the span's own authored/theme size).
-    // swift: Render/Office/FontSubstitutionResolver.swift:38-42
+    // swift: Render/Office/FontSubstitutionResolver.swift:43-43
     pub const PROBE_SIZE: f64 = 12.0;
 
     // swift: Render/Office/FontSubstitutionResolver.swift:43-45

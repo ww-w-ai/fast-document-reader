@@ -167,7 +167,7 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdParaBorderColor".to_string())
     }
 
-    // swift: Render/MDAttr.swift:78-79
+    // swift: Render/MDAttr.swift:78-80
     /// Value = `NSNumber` (CGFloat), the paragraph border's stroke width in points — see
     /// `para_border_color`.
     pub fn para_border_width() -> swiftshim::NSAttributedStringKey {

@@ -636,7 +636,7 @@ impl Cell {
     }
 }
 
-// swift: Render/Office/OfficeBlock.swift:337-341
+// swift: Render/Office/OfficeBlock.swift:357-361
 /// One "start the page numbering again here" instruction, resolved to the block that carries it.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficePageNumberRestart {
@@ -707,7 +707,7 @@ pub enum CellDiagonalDirection {
     Both,
 }
 
-// swift: Render/Office/OfficeBlock.swift:387-397
+// swift: Render/Office/OfficeBlock.swift:407-417
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct BorderSide {
     pub width: CGFloat,
@@ -994,7 +994,7 @@ impl PartialEq for TableFormat {
     }
 }
 
-// swift: Render/Office/OfficeBlock.swift:574-582
+// swift: Render/Office/OfficeBlock.swift:598-606
 /// What a document permits when its table meets a page boundary — see `TableFormat.page_break_policy`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1823,7 +1823,7 @@ impl ListNumbering {
         }
     }
 
-    // swift: Render/Office/OfficeBlock.swift:1077-1079
+    // swift: Render/Office/OfficeBlock.swift:1102-1104
     fn pick(n: i64, list: &[&str]) -> String {
         if n <= list.len() as i64 { list[(n - 1) as usize].to_string() } else { format!("{}", n) }
     }
@@ -1891,7 +1891,7 @@ pub struct OfficePageBorder {
 }
 
 impl OfficePageBorder {
-    // swift: Render/Office/OfficeBlock.swift:1120-1132
+    // swift: Render/Office/OfficeBlock.swift:1145-1157
     /// The document declared a frame that actually draws something. An id pointing at an all-off
     /// fill is a declaration of NO frame, and HWP files are full of them: measured over 644 real
     /// documents, 494 name a page fill and only 48 name one with a drawn edge or a background.
@@ -1969,7 +1969,7 @@ impl Default for OfficeFootnoteSeparator {
 }
 
 impl OfficeFootnoteSeparator {
-    // swift: Render/Office/OfficeBlock.swift:1165-1170
+    // swift: Render/Office/OfficeBlock.swift:1190-1195
     /// Did the document say anything at all? A section that declared nothing must not make the
     /// reader reserve or draw differently from one that has no notes.
     pub fn is_declared(&self) -> bool {
@@ -2058,11 +2058,11 @@ pub struct PaperGeometry {
 }
 
 impl PaperGeometry {
-    // swift: Render/Office/OfficeBlock.swift:1213
+    // swift: Render/Office/OfficeBlock.swift:1238-1238
     pub fn paper_width(&self) -> CGFloat {
         self.margin_left + self.content_width + self.margin_right
     }
-    // swift: Render/Office/OfficeBlock.swift:1214
+    // swift: Render/Office/OfficeBlock.swift:1239-1239
     pub fn paper_height(&self) -> CGFloat {
         self.margin_top + self.content_height + self.margin_bottom
     }
@@ -2330,12 +2330,14 @@ pub struct OfficeReadResult {
     /// suppression, and there is no border/fill painter for this reader to veto in the first
     /// place. Only the page-number bit is unique to this per-paragraph marker. Empty for a format
     /// or a parser that does not say.
+    // swift: Render/Office/OfficeBlock.swift:1430-1440
     pub hide_page_number_blocks: Vec<i64>,
     // swift: Render/Office/OfficeBlock.swift:1412-1416
     /// Where the document restarts its PAGE counter, as (block index, first number). HWP's
     /// NewNumber; empty for every other format. A page's displayed number is its distance from the
     /// most recent restart at or before it, which is arithmetic the reader has to do because it
     /// computes the number rather than reading it out of the document's text.
+    // swift: Render/Office/OfficeBlock.swift:1441-1445
     pub page_number_restart_blocks: Vec<OfficePageNumberRestart>,
     // swift: Render/Office/OfficeBlock.swift:1418-1432
     /// The section's LINE GRID pitch in points — Word's `w:sectPr/w:docGrid` with
@@ -2353,6 +2355,7 @@ pub struct OfficeReadResult {
     /// today. It is a FLOOR, never a ceiling — a paragraph that states its own larger spacing keeps
     /// it, exactly as Word does.
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    // swift: Render/Office/OfficeBlock.swift:1447-1461
     pub line_grid_pitch: Option<CGFloat>,
 }
 
@@ -2438,7 +2441,7 @@ impl Default for OfficeReadResult {
     }
 }
 
-// swift: Render/Office/OfficeBlock.swift:1435-1442
+// swift: Render/Office/OfficeBlock.swift:1464-1472
 /// A form control embedded in a document — HWP's `FormObject`.
 ///
 /// This reader is a VIEWER, so a control is something to read, never something to operate: a
@@ -2451,17 +2454,18 @@ impl Default for OfficeReadResult {
 /// NOTE: same `CGFloat`-is-`f64` caveat as `TabStop` above — `Hashable` needs a manual impl.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeFormControl {
+    // swift: Render/Office/OfficeBlock.swift:1481
     pub kind: OfficeFormControlKind,
-    // swift: Render/Office/OfficeBlock.swift:1453
+    // swift: Render/Office/OfficeBlock.swift:1482-1483
     /// The control's own label (a button's face, a checkbox's text).
     pub caption: SwiftString,
-    // swift: Render/Office/OfficeBlock.swift:1455
+    // swift: Render/Office/OfficeBlock.swift:1484-1485
     /// What an editable control currently holds.
     pub text: SwiftString,
-    // swift: Render/Office/OfficeBlock.swift:1457
+    // swift: Render/Office/OfficeBlock.swift:1486-1487
     /// Non-zero when a checkbox or radio button is ticked.
     pub value: i64,
-    // swift: Render/Office/OfficeBlock.swift:1459
+    // swift: Render/Office/OfficeBlock.swift:1488-1489
     /// A control the document greyed out. Drawn dimmed rather than hidden — it is part of the form.
     pub enabled: bool,
 }
@@ -2478,7 +2482,7 @@ impl Default for OfficeFormControl {
     }
 }
 
-// swift: Render/Office/OfficeBlock.swift:1444-1450
+// swift: Render/Office/OfficeBlock.swift:1473-1475
 /// `OfficeFormControl.Kind` in Swift — a String-backed enum (docx form-field kind names).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2494,7 +2498,7 @@ pub enum OfficeFormControlKind {
 }
 
 impl OfficeFormControlKind {
-    // swift: Render/Office/OfficeBlock.swift:1447-1449
+    // swift: Render/Office/OfficeBlock.swift:1476-1478
     pub fn new(exported: Option<&str>) -> OfficeFormControlKind {
         match exported.unwrap_or("") {
             "checkBox" => OfficeFormControlKind::CheckBox,
@@ -2510,12 +2514,12 @@ impl OfficeFormControlKind {
 }
 
 impl OfficeFormControl {
-    // swift: Render/Office/OfficeBlock.swift:1462
+    // swift: Render/Office/OfficeBlock.swift:1491
     pub fn is_ticked(&self) -> bool {
         self.value != 0
     }
 
-    // swift: Render/Office/OfficeBlock.swift:1464-1489
+    // swift: Render/Office/OfficeBlock.swift:1493-1518
     /// What the reader puts on the page for this control.
     ///
     /// TEXT, not a drawn widget, and deliberately: a glyph run is found by ⌘F, copied with the
@@ -2552,7 +2556,7 @@ impl OfficeFormControl {
         SwiftString::from(s)
     }
 
-    // swift: Render/Office/OfficeBlock.swift:1491-1493
+    // swift: Render/Office/OfficeBlock.swift:1520-1522
     fn join(&self, mark: &str, label: &str) -> String {
         if label.is_empty() { mark.to_string() } else { format!("{} {}", mark, label) }
     }
@@ -2664,3 +2668,8 @@ impl OfficeFormControl {
 // swift: Render/Office/OfficeBlock.swift:1451-1463
 // swift: Render/Office/OfficeBlock.swift:1490-1490
 // swift: Render/Office/OfficeBlock.swift:1494-1494
+// swift: Render/Office/OfficeBlock.swift:1446-1446
+// swift: Render/Office/OfficeBlock.swift:1479-1480
+// swift: Render/Office/OfficeBlock.swift:1492-1492
+// swift: Render/Office/OfficeBlock.swift:1519-1519
+// swift: Render/Office/OfficeBlock.swift:1523-1524

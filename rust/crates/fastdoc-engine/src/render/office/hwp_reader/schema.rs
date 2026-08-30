@@ -34,7 +34,7 @@
 use serde::Deserialize;
 use swiftshim::CGFloat;
 
-// swift: Render/Office/HwpReader.swift:1769-1842
+// swift: Render/Office/HwpReader.swift:1809-1882
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpEnvelope {
     pub v: i64,
@@ -127,7 +127,7 @@ pub(crate) struct HwpEnvelope {
 
 /// One 바탕쪽 as rhwp exports it. `section` is filtered against the envelope's `bodySection` for the
 /// same reason a running head is (invariant 77).
-// swift: Render/Office/HwpReader.swift:1843-1850
+// swift: Render/Office/HwpReader.swift:1884-1890
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpMasterPage {
     pub section: i64,
@@ -140,7 +140,7 @@ pub(crate) struct HwpMasterPage {
 /// `image` carries `binDataId`, `shape` carries `paths`, `text` carries `blocks` — AND, in real
 /// files, its own `paths` too (a Korean number box is a rounded rectangle with a number in it), so
 /// the two are not alternatives to each other.
-// swift: Render/Office/HwpReader.swift:1851-1871
+// swift: Render/Office/HwpReader.swift:1892-1911
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpMasterObject {
     pub x: i64,
@@ -172,7 +172,7 @@ pub(crate) struct HwpMasterObject {
 /// Only the SEPARATOR half is read: numbering and placement are decided elsewhere (the corpus
 /// declares one value for both across all 1,622 shapes, and `placement` is meaningless for an
 /// endnote by the format's own definition).
-// swift: Render/Office/HwpReader.swift:1872-1893
+// swift: Render/Office/HwpReader.swift:1913-1933
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpFootnoteShape {
     #[serde(rename = "separatorLineType")]
@@ -191,7 +191,7 @@ pub(crate) struct HwpFootnoteShape {
     pub note_spacing_hwp_unit: Option<i64>,
 }
 
-// swift: Render/Office/HwpReader.swift:1894-1899
+// swift: Render/Office/HwpReader.swift:1935-1939
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpFootnoteEntry {
     pub number: i64,
@@ -199,7 +199,7 @@ pub(crate) struct HwpFootnoteEntry {
     pub blocks: Vec<HwpBlock>,
 }
 
-// swift: Render/Office/HwpReader.swift:1900-1907
+// swift: Render/Office/HwpReader.swift:1941-1947
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpHeaderFooterEntry {
     #[serde(rename = "applyTo")]
@@ -217,7 +217,7 @@ pub(crate) struct HwpHeaderFooterEntry {
 /// key it does not declare a field for), so no field is duplicated into a flat model here either.
 /// An unrecognised tag is serde's own "unknown variant" decode error, the same failure this file's
 /// hand-written `default:` branch raised.
-// swift: Render/Office/HwpReader.swift:1908-1935
+// swift: Render/Office/HwpReader.swift:1949-1975
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 pub(crate) enum HwpBlock {
@@ -229,7 +229,7 @@ pub(crate) enum HwpBlock {
     Equation(HwpEquation),
 }
 
-// swift: Render/Office/HwpReader.swift:1936-1992
+// swift: Render/Office/HwpReader.swift:1977-2032
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpPara {
     pub heading: Option<i64>,
@@ -318,7 +318,7 @@ pub(crate) struct HwpPara {
 /// Colours are present ONLY when the decoration that uses them is on: a colour of `000000` is
 /// indistinguishable from "no colour stated", so carrying it unconditionally would shade every
 /// document in black.
-// swift: Render/Office/HwpReader.swift:1993-2021
+// swift: Render/Office/HwpReader.swift:2034-2061
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub(crate) struct HwpCharDecor {
     #[serde(rename = "underlineShape")]
@@ -360,7 +360,7 @@ pub(crate) struct HwpCharDecor {
 /// substitution), the substitute the DOCUMENT nominates for it, what kind of font file it is
 /// (`0` unknown, `1` TTF, `2` HFT — Hancom's own format, installed on no machine but a Hancom one),
 /// and whether the file carries the bytes.
-// swift: Render/Office/HwpReader.swift:2022-2055
+// swift: Render/Office/HwpReader.swift:2063-2095
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub(crate) struct HwpFontFace {
     pub name: String,
@@ -396,7 +396,7 @@ pub(crate) struct HwpFontFace {
     pub subst_type: Option<i64>,
 }
 
-// swift: Render/Office/HwpReader.swift:2056-2060
+// swift: Render/Office/HwpReader.swift:2097-2100
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpLineHeight {
     pub r#type: String,
@@ -407,7 +407,7 @@ pub(crate) struct HwpLineHeight {
 /// numbering, whether it is written on a grid or vertically. Absent for a parser predating the
 /// export, and then every section reads as declaring nothing, which is how this reader always
 /// behaved.
-// swift: Render/Office/HwpReader.swift:2061-2077
+// swift: Render/Office/HwpReader.swift:2102-2117
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpSection {
     #[serde(rename = "footnoteShape")]
@@ -434,7 +434,7 @@ pub(crate) struct HwpSection {
 /// A section's 쪽 테두리/배경 — the frame a Korean document rules around the whole page. The line and
 /// colour live in the SAME `borderFills` table a cell's `borderFillId` points at; `basis` says where
 /// the spacings are measured FROM, and the two answers differ by a margin (70–110pt on real files).
-// swift: Render/Office/HwpReader.swift:2078-2089
+// swift: Render/Office/HwpReader.swift:2119-2129
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpPageBorder {
     #[serde(rename = "borderFillId")]
@@ -452,7 +452,7 @@ pub(crate) struct HwpPageBorder {
 
 /// The paper a SECTION declared, in points. HWP defines a page per section; the envelope's own
 /// `pageContentWidth`/`Height` carry only the section with the most paragraphs (invariant 73).
-// swift: Render/Office/HwpReader.swift:2090-2107
+// swift: Render/Office/HwpReader.swift:2131-2147
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpSectionPage {
     #[serde(rename = "contentWidth")]
@@ -478,7 +478,7 @@ pub(crate) struct HwpSectionPage {
     pub margin_footer: Option<CGFloat>,
 }
 
-// swift: Render/Office/HwpReader.swift:2108-2115
+// swift: Render/Office/HwpReader.swift:2149-2155
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpTabStop {
     #[serde(rename = "posHwpUnit")]
@@ -490,7 +490,7 @@ pub(crate) struct HwpTabStop {
     pub kind: Option<String>,
 }
 
-// swift: Render/Office/HwpReader.swift:2116-2131
+// swift: Render/Office/HwpReader.swift:2157-2171
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpList {
     pub level: i64,
@@ -513,7 +513,7 @@ pub(crate) struct HwpList {
 }
 
 /// A form control embedded in the text — `FormObject` in the format.
-// swift: Render/Office/HwpReader.swift:2132-2141
+// swift: Render/Office/HwpReader.swift:2173-2181
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpForm {
     #[serde(rename = "formType")]
@@ -526,7 +526,7 @@ pub(crate) struct HwpForm {
 }
 
 /// What a section's text says about the columns it flows through — `ColumnDef` in the format.
-// swift: Render/Office/HwpReader.swift:2142-2155
+// swift: Render/Office/HwpReader.swift:2183-2195
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpColumnDef {
     #[serde(rename = "columnCount")]
@@ -550,7 +550,7 @@ pub(crate) struct HwpColumnDef {
     pub column_gaps: Option<Vec<f64>>,
 }
 
-// swift: Render/Office/HwpReader.swift:2156-2228
+// swift: Render/Office/HwpReader.swift:2197-2268
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpSpan {
     pub text: String,
@@ -635,7 +635,7 @@ pub(crate) struct HwpSpan {
 
 /// `NewNumberDto` — which counter to restart, and at what. `numberType` is the parser's own name
 /// (`page`/`picture`/`table`/`footnote`/`endnote`/`equation`).
-// swift: Render/Office/HwpReader.swift:2229-2235
+// swift: Render/Office/HwpReader.swift:2270-2275
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpNewNumber {
     #[serde(rename = "numberType")]
@@ -645,7 +645,7 @@ pub(crate) struct HwpNewNumber {
 
 /// `PageHideDto` — only `hidePageNum` is read; see `OfficeReadResult.hidePageNumberBlocks` for why
 /// the other five (header/footer/master-page/border/fill) are decoded here and then never used.
-// swift: Render/Office/HwpReader.swift:2236-2241
+// swift: Render/Office/HwpReader.swift:2277-2281
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpPageHide {
     #[serde(rename = "hidePageNum")]
@@ -657,7 +657,7 @@ pub(crate) struct HwpPageHide {
 /// `BorderDecl`'s "never mentioned" state once its id resolves: an edge is either drawn or
 /// explicitly `none`. That is why this maps to a fully-populated `EdgeBorders` rather than leaving
 /// unmentioned edges to the table cascade the way docx's partial `w:tcBorders` does.
-// swift: Render/Office/HwpReader.swift:2242-2281
+// swift: Render/Office/HwpReader.swift:2283-2321
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpBorderFill {
     pub left: HwpBorderEdge,
@@ -700,7 +700,7 @@ pub(crate) struct HwpBorderFill {
     pub diagonal_color: Option<String>,
 }
 
-// swift: Render/Office/HwpReader.swift:2282-2286
+// swift: Render/Office/HwpReader.swift:2323-2326
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpGradient {
     pub colors: Vec<String>,
@@ -711,7 +711,7 @@ pub(crate) struct HwpGradient {
 /// carries no width/colour); any other type is a real rule. The reader keeps only "is it drawn, and
 /// at what width/colour" — `BorderSide` has no dash vocabulary — but the type is decoded as sent so
 /// a later dash model has the fact rather than having to rebuild the parser for it.
-// swift: Render/Office/HwpReader.swift:2287-2296
+// swift: Render/Office/HwpReader.swift:2328-2336
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpBorderEdge {
     pub r#type: String,
@@ -720,7 +720,7 @@ pub(crate) struct HwpBorderEdge {
     pub color: Option<String>,
 }
 
-// swift: Render/Office/HwpReader.swift:2297-2319
+// swift: Render/Office/HwpReader.swift:2338-2359
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpTable {
     pub cols: Option<i64>,
@@ -754,7 +754,7 @@ pub(crate) struct HwpTable {
     pub outer_margin_bottom: Option<i64>,
 }
 
-// swift: Render/Office/HwpReader.swift:2320-2335
+// swift: Render/Office/HwpReader.swift:2361-2375
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpCell {
     #[serde(rename = "colSpan")]
@@ -782,7 +782,7 @@ pub(crate) struct HwpCell {
 
 /// A drawing object, flattened to paths by rhwp (`{"t":"shape",…}`). See `HwpShapeRenderer` for why
 /// this is drawn at read time instead of becoming a new kind of block.
-// swift: Render/Office/HwpReader.swift:2336-2364
+// swift: Render/Office/HwpReader.swift:2377-2404
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpShape {
     pub w: i64,
@@ -819,7 +819,7 @@ pub(crate) struct HwpShape {
     pub paths: Vec<HwpShapePath>,
 }
 
-// swift: Render/Office/HwpReader.swift:2365-2375
+// swift: Render/Office/HwpReader.swift:2406-2415
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpShapePath {
     /// Path commands as rhwp writes them: `["M",x,y]`, `["L",x,y]`, `["C",…6 numbers]`, `["Z"]`,
@@ -835,7 +835,7 @@ pub(crate) struct HwpShapePath {
 }
 
 /// One element of a path command — the leading operator string or one of its numbers.
-// swift: Render/Office/HwpReader.swift:2376-2390
+// swift: Render/Office/HwpReader.swift:2417-2430
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum HwpPathToken {
@@ -858,7 +858,7 @@ impl HwpPathToken {
     }
 }
 
-// swift: Render/Office/HwpReader.swift:2391-2396
+// swift: Render/Office/HwpReader.swift:2432-2436
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpShapeStroke {
     pub color: Option<String>,
@@ -867,7 +867,7 @@ pub(crate) struct HwpShapeStroke {
     pub r#type: Option<String>,
 }
 
-// swift: Render/Office/HwpReader.swift:2397-2437
+// swift: Render/Office/HwpReader.swift:2438-2477
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpImage {
     #[serde(rename = "binDataId")]
@@ -907,25 +907,29 @@ pub(crate) struct HwpImage {
     /// this is what "follow the option the document stored" means for HWP — the format has five
     /// ways to state a width and forcing them all through the absolute one is a guess.
     #[serde(rename = "widthCriterion")]
+    // swift: Render/Office/HwpReader.swift:2462-2466
     pub width_criterion: Option<String>,
     /// The rectangle of the ORIGINAL picture this object actually shows, in the original's own
     /// HWPUNIT coordinates. Absent for a parser predating the export → no crop, which is how every
     /// HWP picture was drawn before this.
+    // swift: Render/Office/HwpReader.swift:2467-2470
     pub crop: Option<HwpCrop>,
     /// The original picture's size, the SAME coordinates `crop` is in. Without it a crop cannot be
     /// read: most documents that do not crop still write a rectangle covering the whole original,
     /// and the two are indistinguishable without this. Measured across 637 documents — 3,159 crops
     /// are declared and 563 of them (138 documents) actually cut something.
     #[serde(rename = "originalWidth")]
+    // swift: Render/Office/HwpReader.swift:2471-2475
     pub original_width: Option<i64>,
     #[serde(rename = "originalHeight")]
+    // swift: Render/Office/HwpReader.swift:2476-2476
     pub original_height: Option<i64>,
 }
 
 /// A crop rectangle in the original picture's coordinates. `left`/`top` are inset from the
 /// original's own origin; `right`/`bottom` are the far edges, NOT insets — so an uncropped picture
 /// writes `(0, 0, originalWidth, originalHeight)`.
-// swift: Render/Office/HwpReader.swift:2438-2447
+// swift: Render/Office/HwpReader.swift:2479-2487
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpCrop {
     pub left: i64,
@@ -934,7 +938,7 @@ pub(crate) struct HwpCrop {
     pub bottom: i64,
 }
 
-// swift: Render/Office/HwpReader.swift:2448-2453
+// swift: Render/Office/HwpReader.swift:2489-2493
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpUnsupported {
     pub label: String,
@@ -947,7 +951,7 @@ pub(crate) struct HwpUnsupported {
 /// (kept for provenance/fallback, not currently rendered); `w`/`h` are advisory HWPUNIT dimensions used
 /// only to reserve a placeholder area when `latex` is empty. All but `latex` are optional — a minimal
 /// producer may emit `{"t":"equation","latex":…}` alone.
-// swift: Render/Office/HwpReader.swift:2454-2465
+// swift: Render/Office/HwpReader.swift:2495-2505
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct HwpEquation {
     pub latex: String,
@@ -955,3 +959,46 @@ pub(crate) struct HwpEquation {
     pub w: Option<i64>,
     pub h: Option<i64>,
 }
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/HwpReader.swift:2477-2478
+// swift: Render/Office/HwpReader.swift:2488-2488
+// swift: Render/Office/HwpReader.swift:2494-2494
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/HwpReader.swift:1769-1770
+// swift: Render/Office/HwpReader.swift:1805-1808
+// swift: Render/Office/HwpReader.swift:1883-1883
+// swift: Render/Office/HwpReader.swift:1891-1891
+// swift: Render/Office/HwpReader.swift:1912-1912
+// swift: Render/Office/HwpReader.swift:1934-1934
+// swift: Render/Office/HwpReader.swift:1940-1940
+// swift: Render/Office/HwpReader.swift:1948-1948
+// swift: Render/Office/HwpReader.swift:1976-1976
+// swift: Render/Office/HwpReader.swift:2033-2033
+// swift: Render/Office/HwpReader.swift:2062-2062
+// swift: Render/Office/HwpReader.swift:2096-2096
+// swift: Render/Office/HwpReader.swift:2101-2101
+// swift: Render/Office/HwpReader.swift:2118-2118
+// swift: Render/Office/HwpReader.swift:2130-2130
+// swift: Render/Office/HwpReader.swift:2148-2148
+// swift: Render/Office/HwpReader.swift:2156-2156
+// swift: Render/Office/HwpReader.swift:2172-2172
+// swift: Render/Office/HwpReader.swift:2182-2182
+// swift: Render/Office/HwpReader.swift:2196-2196
+// swift: Render/Office/HwpReader.swift:2269-2269
+// swift: Render/Office/HwpReader.swift:2276-2276
+// swift: Render/Office/HwpReader.swift:2282-2282
+// swift: Render/Office/HwpReader.swift:2322-2322
+// swift: Render/Office/HwpReader.swift:2327-2327
+// swift: Render/Office/HwpReader.swift:2337-2337
+// swift: Render/Office/HwpReader.swift:2360-2360
+// swift: Render/Office/HwpReader.swift:2376-2376
+// swift: Render/Office/HwpReader.swift:2405-2405
+// swift: Render/Office/HwpReader.swift:2416-2416
+// swift: Render/Office/HwpReader.swift:2431-2431
+// swift: Render/Office/HwpReader.swift:2437-2437

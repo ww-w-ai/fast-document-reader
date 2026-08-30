@@ -982,7 +982,7 @@ impl OfficeTextBuilder {
         NSFont::with_descriptor(&d, font.pointSize()).unwrap_or_else(|| font.clone())
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:753-756
+    // swift: Render/Office/OfficeTextBuilder.swift:758-762
     /// Same family, scaled point size — used for super/subscript, which shrink the glyph as well
     /// as shifting its baseline.
     fn font_scaled(font: &NSFont, factor: CGFloat) -> NSFont {
@@ -1469,7 +1469,7 @@ impl OfficeTextBuilder {
     ///
     /// `.hyphen` deliberately behaves as `.word`: a hyphen already IS a break opportunity in
     /// standard line breaking, so TextKit gives HWP's middle setting without being asked.
-    // swift: Render/Office/OfficeTextBuilder.swift:1147-1166
+    // swift: Render/Office/OfficeTextBuilder.swift:1144-1182
     fn apply_line_breaking(format: &ParagraphFormat, p: &mut NSMutableParagraphStyle) {
         match format.east_asian_line_break {
             Some(LineBreakGranularity::Word) => {
@@ -1492,7 +1492,7 @@ impl OfficeTextBuilder {
 
     // MARK: Lists
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1167-1181
+    // swift: Render/Office/OfficeTextBuilder.swift:1186-1194
     /// Bullet glyph per depth so nested levels read distinctly: • → ◦ → ▪ (then repeat) — same
     /// progression `MarkdownRenderer.bullet(_:)` uses.
     fn bullet_glyph(level: i64) -> &'static str {
@@ -1922,7 +1922,7 @@ impl OfficeTextBuilder {
     /// and 984–1002 ms with the bridge, i.e. the same. A cell's accumulated text is short at the
     /// moment the question is asked, so the O(n) it removes is an n of a few characters. Recorded so
     /// nobody spends the afternoon that found `MarkdownRenderer.autolink` looking for a twin here.
-    // swift: Render/Office/OfficeTextBuilder.swift:1529-1532
+    // swift: Render/Office/OfficeTextBuilder.swift:1502-1538
     fn ends_in_newline(s: &NSMutableAttributedString) -> bool {
         s.length() > 0 && s.string().ends_with('\n')
     }
@@ -2491,7 +2491,7 @@ impl OfficeTextBuilder {
     /// in `MarkdownDocument`) had to be taught that office documents exist. The guessed size is only
     /// a placeholder; the up-front pass replaces it with the exact cached-PDF size before layout
     /// (invariant 1: reserved size must never depend on whether pixels are loaded).
-    // swift: Render/Office/OfficeTextBuilder.swift:1964-1973
+    // swift: Render/Office/OfficeTextBuilder.swift:1964-1980
     fn append_formula(latex: String, result: &mut NSMutableAttributedString) {
         let size = CGSize::new(260.0, 60.0);
         let mut att = NSTextAttachment::new();
@@ -2507,3 +2507,8 @@ impl OfficeTextBuilder {
     }
 }
 // swift: Render/Office/OfficeTextBuilder.swift:1973-1974
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/OfficeTextBuilder.swift:1981-1981

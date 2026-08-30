@@ -59,6 +59,12 @@ TODO_CALL = re.compile(r"\btodo!\s*\(")
 # A region the port is not answerable for, named where it lives. See `excluded_lines`.
 PORT_EXCLUDE = re.compile(r"//\s*port-exclude:\s*(.+)$")
 PORT_EXCLUDE_END = re.compile(r"//\s*port-exclude-end\b")
+# The declaration a claim SITS ON, used to ask whether its Swift range mentions the same name.
+RUST_DECL = re.compile(r"^\s*(?:pub\(crate\)\s+|pub\s+)?(?:const\s+|static\s+)?(?:struct|enum|fn)\s+(\w+)")
+# How many claims currently fail that check. A RATCHET, not a target: this may only go down.
+# Every one of these points at Swift code that is not what the Rust beside it transliterates, so
+# it is credited to the wrong lines and hides a real hole somewhere else in the same file.
+MISAIMED_BUDGET = 80
 
 # A declaration plus its doc comment can be long; a file cannot be one declaration.
 RANGE_SPAN_CAP = 300
@@ -153,12 +159,15 @@ def claimed_ranges():
     todos: list[str | None] = []
     blankets: list[str] = []
     sites: list[tuple[str, int, int, str]] = []
+    # The declaration each claim site sits on, for `misaimed_claims`.
+    decl_of: dict[str, str] = {}
     if not RUST_ROOT.exists():
-        return claimed, todos, wildcards, blankets, malformed, sites
+        return claimed, todos, wildcards, blankets, malformed, sites, decl_of
 
     for rs in sorted(RUST_ROOT.rglob("*.rs")):
         module_target: str | None = None
-        for lineno, text in enumerate(rs.read_text(errors="replace").splitlines(), 1):
+        lines_after = rs.read_text(errors="replace").splitlines()
+        for lineno, text in enumerate(lines_after, 1):
             stripped = text.lstrip()
             in_comment = stripped.startswith("//")
             if not in_comment:
@@ -176,7 +185,14 @@ def claimed_ranges():
                     blankets.append((key, f"{rs.relative_to(REPO)}:{lineno}  claims {lo}-{hi} of {key}"))
                 else:
                     claimed.setdefault(key, set()).update(range(lo, hi + 1))
-                    sites.append((key, lo, hi, f"{rs.relative_to(REPO)}:{lineno}"))
+                    site = f"{rs.relative_to(REPO)}:{lineno}"
+                    sites.append((key, lo, hi, site))
+                    # The next declaration within four lines is the thing this claim is ABOUT.
+                    for ahead in lines_after[lineno:lineno + 4]:
+                        found = RUST_DECL.match(ahead)
+                        if found:
+                            decl_of[site] = found.group(1)
+                            break
                 continue
 
             hit = MODULE_RANGE.search(text)
@@ -196,7 +212,45 @@ def claimed_ranges():
 
             if CLAIM_LIKE.search(text):
                 malformed.append(f"{rs.relative_to(REPO)}:{lineno}  {text.strip()[:90]}")
-    return claimed, todos, wildcards, blankets, malformed, sites
+    return claimed, todos, wildcards, blankets, malformed, sites, decl_of
+
+
+def misaimed_claims(sites, decl_of):
+    """Claims whose Swift range never mentions the declaration the Rust beside them defines.
+
+    A weaker question than "is this claim right", and deliberately so: it needs no judgement and no
+    per-item review, which is what lets it run on every commit. A range that legitimately covers a
+    body without restating the name is a false positive, and that is the price of a check that
+    cannot be argued with.
+
+    It exists because `aimless_claims` cannot see this class at all. A stale claim lands on REAL
+    lines of a REAL file — it parses, it is credited, and the percentage never moves. Measured when
+    this was added: 174 of 641 checkable claims, 27%, including whole files whose every claim was
+    40-53 lines out. Fixing them made coverage go DOWN, because the lines they had been covering by
+    accident were never ported.
+    """
+    def camel(name):
+        head, *rest = name.split("_")
+        return head + "".join(p.capitalize() for p in rest)
+
+    cache: dict[str, list[str] | None] = {}
+    out: list[str] = []
+    for key, lo, hi, site in sites:
+        name = decl_of.get(site)
+        if name is None:
+            continue
+        if key not in cache:
+            full = SWIFT_ROOT / key
+            cache[key] = full.read_text(errors="replace").splitlines() if full.exists() else None
+        lines = cache[key]
+        if lines is None or hi > len(lines):
+            continue
+        wanted = camel(name)
+        if re.search(r"\b" + re.escape(wanted) + r"\b", "\n".join(lines[lo - 1:hi])):
+            continue
+        span = f"{lo}-{hi}" if lo != hi else f"{lo}"
+        out.append(f"{site}  claims {key}:{span} — no `{wanted}` in those lines")
+    return out
 
 
 def aimless_claims(sites: list[tuple[str, int, int, str]]) -> list[str]:
@@ -259,7 +313,7 @@ def main() -> int:
         if not scope:
             sys.exit("none of the named files are in the port manifest")
 
-    claimed, todos, wildcards, blankets, malformed, sites = claimed_ranges()
+    claimed, todos, wildcards, blankets, malformed, sites, decl_of = claimed_ranges()
     # A worker gates on ITS OWN files; another sprint's unfinished file must not redden that check.
     if args.only:
         keys = set(scope)
@@ -304,6 +358,13 @@ def main() -> int:
         print(f"\nEXCLUDED from the denominator ({dropped} lines the port is not answerable for):")
         for e in exclusions:
             print(f"  {e}")
+    misaimed = misaimed_claims(sites, decl_of)
+    if misaimed:
+        over = " — OVER BUDGET" if len(misaimed) > MISAIMED_BUDGET else ""
+        print(f"MISAIMED claims (credited to the wrong lines, budget {MISAIMED_BUDGET}): "
+              f"{len(misaimed)}{over}")
+        for m in misaimed[:8]:
+            print(f"  {m}")
     aimless = aimless_claims(sites)
     if aimless:
         print(f"AIMLESS claims (they parse, they look like claims, and they can credit nothing): {len(aimless)}")
@@ -320,7 +381,8 @@ def main() -> int:
 
     if args.gate:
         unclosed = [e for e in exclusions if "UNCLOSED" in e]
-        if pct < 100.0 or wildcards or blankets or malformed or aimless or unclosed:
+        if (pct < 100.0 or wildcards or blankets or malformed or aimless or unclosed
+                or len(misaimed) > MISAIMED_BUDGET):
             return 1
     return 0
 

@@ -565,7 +565,7 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:371-371
+// swift: Render/Office/DocxReader.swift:372-372
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoteKind {
     Footnote,
@@ -2149,7 +2149,7 @@ impl DocxReader {
 /// REFERENCE shared across the whole `read()` call (body, then footnotes, then endnotes, all
 /// walked from one `read()`) rather than a value threaded through every function's parameters
 /// with `inout`.
-// swift: Render/Office/DocxReader.swift:1632-1632
+// swift: Render/Office/DocxReader.swift:1627-1633
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ListCounterKey {
     num_id: String,
@@ -2413,7 +2413,7 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:1853-1853
+// swift: Render/Office/DocxReader.swift:1856-1862
 // MARK: word/_rels/document.xml.rels — relationship id → target
 
 // swift: Render/Office/DocxReader.swift:1855-1861

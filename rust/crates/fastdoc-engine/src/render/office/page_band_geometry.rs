@@ -346,7 +346,7 @@ impl PageBandGeometry {
     /// that used to ask `blocks.isEmpty` should be asking instead. Built through the same
     /// `OfficeTextBuilder` as everything else, so a format whose header parses into blocks that build
     /// to nothing is judged on what it BUILDS rather than on what it parsed.
-    // swift: Render/Office/PageBandGeometry.swift:166-178
+    // swift: Render/Office/PageBandGeometry.swift:195-206
     pub fn entry_draws(
         entry: Option<&OfficeHeaderFooter>,
         theme: &RenderTheme,
@@ -392,7 +392,7 @@ impl PageBandGeometry {
     /// — an attachment is `U+FFFC`, which is not whitespace — and a paragraph that draws only a RULE
     /// or a shaded band carries no glyph at all, so the blocks are asked directly for those. Anything
     /// that is not a paragraph (a table, an image, a formula) is content by construction.
-    // swift: Render/Office/PageBandGeometry.swift:179-203
+    // swift: Render/Office/PageBandGeometry.swift:208-231
     pub fn draws_something(blocks: &[OfficeBlock], built: &NSAttributedString) -> bool {
         if built.string().chars().any(|c| !c.is_whitespace()) {
             return true;
@@ -476,3 +476,10 @@ mod tests {
     }
 }
 
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/PageBandGeometry.swift:194-194
+// swift: Render/Office/PageBandGeometry.swift:207-207
+// swift: Render/Office/PageBandGeometry.swift:232-232

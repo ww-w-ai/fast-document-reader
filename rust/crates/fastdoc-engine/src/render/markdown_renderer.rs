@@ -322,7 +322,7 @@ impl MarkdownRenderer {
         )
     }
 
-    // swift: Render/MarkdownRenderer.swift:52-57
+    // swift: Render/MarkdownRenderer.swift:63-63
     /// After rendering, detect bare URLs and file paths in the prose and make them clickable
     /// links. Markdown links (already carrying `.link`) are left untouched.
     // Compiled once, reused across renders (these were rebuilt on every render — incl. every zoom).
@@ -484,7 +484,7 @@ fn md_para(
     p
 }
 
-// swift: Render/MarkdownRenderer.swift:156-162
+// swift: Render/MarkdownRenderer.swift:164-782
 struct AttributedBuilder {
     theme: crate::render::render_theme::RenderTheme,
     result: swiftshim::NSMutableAttributedString,
@@ -568,7 +568,7 @@ impl AttributedBuilder {
         }
     }
 
-    // swift: Render/MarkdownRenderer.swift:207-214
+    // swift: Render/MarkdownRenderer.swift:215-221
     /// True if this markup contains an image anywhere in its subtree — such a paragraph must
     /// not cap its line height (see imagePS) or the image overflows and overlaps neighbors.
     fn contains_image(&self, markup: &Markup) -> bool {
@@ -583,7 +583,7 @@ impl AttributedBuilder {
         false
     }
 
-    // swift: Render/MarkdownRenderer.swift:215-218
+    // swift: Render/MarkdownRenderer.swift:223-225
     fn newline(&mut self, count: usize) {
         self.result.append(&swiftshim::NSAttributedString::new("\n".repeat(count)));
     }
@@ -846,7 +846,7 @@ impl AttributedBuilder {
         Some((src, attr("alt").unwrap_or_default(), pts, pct))
     }
 
-    // swift: Render/MarkdownRenderer.swift:353-361
+    // swift: Render/MarkdownRenderer.swift:362-368
     /// Add bold/italic by keeping the SAME family (via the font descriptor) so vertical metrics
     /// (ascent/descent) don't change — otherwise a bold run shifts the baseline and line spacing
     /// looks jagged under a fixed line height.
@@ -1307,7 +1307,7 @@ impl AttributedBuilder {
         }
     }
 
-    // swift: Render/MarkdownRenderer.swift:643-651
+    // swift: Render/MarkdownRenderer.swift:651-658
     /// Bullet glyph per depth so nested levels read distinctly: • → ◦ → ▪ (then repeat).
     fn bullet(&self, depth: i32) -> &'static str {
         match depth.rem_euclid(3) {
@@ -1537,15 +1537,15 @@ impl ProgressiveMarkdownRender {
         Self { builder, children, next: 0, mark: 0, chunks_handed_out: 0 }
     }
 
-    // swift: Render/MarkdownRenderer.swift:797-797
+    // swift: Render/MarkdownRenderer.swift:805-805
     pub fn is_finished(&self) -> bool {
         self.next >= self.children.len()
     }
-    // swift: Render/MarkdownRenderer.swift:798-798
+    // swift: Render/MarkdownRenderer.swift:806-806
     pub fn block_count(&self) -> usize {
         self.children.len()
     }
-    // swift: Render/MarkdownRenderer.swift:799-800
+    // swift: Render/MarkdownRenderer.swift:807-808
     /// Top-level blocks not yet visited — what a caller divides into the turns it is willing to take.
     pub fn remaining_blocks(&self) -> usize {
         self.children.len() - self.next
@@ -1584,7 +1584,7 @@ impl ProgressiveMarkdownRender {
         self.chunk(|next| next >= end, false)
     }
 
-    // swift: Render/MarkdownRenderer.swift:814-829
+    // swift: Render/MarkdownRenderer.swift:814-836
     /// Visit children until `stop` says so, then take everything those visits added.
     fn chunk(
         &mut self,
@@ -1657,3 +1657,8 @@ impl crate::render::markdown_package::MarkupWalker for AttributedBuilder {
         AttributedBuilder::visit_table(self, node)
     }
 }
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/MarkdownRenderer.swift:837-837

@@ -537,7 +537,7 @@ impl OdtReader {
     /// output would see them disagree over one document for no reason a user could point to. A
     /// synthetic tab span, plain (not superscript, not part of the marker itself), closes that gap
     /// and matches what docx already shows.
-    // swift: Render/Office/OdtReader.swift:424
+    // swift: Render/Office/OdtReader.swift:415-425
     fn note_marker_separator() -> Span {
         Span { text: "\t".to_string().into(), ..Default::default() }
     }
@@ -634,7 +634,7 @@ impl SlotFonts {
     /// it. `collectSpans` uses this to skip the per-scalar walk entirely, which is what makes
     /// "the document declared one family, or none" cost exactly what it cost before per-slot
     /// resolution existed rather than merely producing the same answer more slowly.
-    // swift: Render/Office/OdtReader.swift:477-482
+    // swift: Render/Office/OdtReader.swift:478-483
     fn is_uniform(&self) -> bool {
         self.latin == self.asian && self.asian == self.complex
     }
@@ -1513,7 +1513,7 @@ impl OdtReader {
     /// Guards `parseBody`'s generic recursion (see the `default` case below) against a hostile
     /// file nesting wrappers arbitrarily deep — a real ODF document never approaches this, so the
     /// cap only ever bites on pathological input, where dropping the excess is the safe outcome.
-    // swift: Render/Office/OdtReader.swift:1258
+    // swift: Render/Office/OdtReader.swift:1261-1261
     const MAX_BODY_RECURSION_DEPTH: i32 = 64;
 
     // swift: Render/Office/OdtReader.swift:1260-1377
@@ -2203,7 +2203,7 @@ impl OdtReader {
     /// A best-defensible non-zero fallback for a frame whose `svg:width`/`svg:height` is missing or
     /// doesn't parse — invariant 1 applies here exactly as it does to `DocxReader`'s VML fallback:
     /// never reserve a zero/collapsed area.
-    // swift: Render/Office/OdtReader.swift:1825
+    // swift: Render/Office/OdtReader.swift:1823-1826
     fn unresolved_frame_size() -> CGSize {
         CGSize::new(72.0, 72.0)
     }
@@ -2222,7 +2222,7 @@ impl OdtReader {
         href.to_string()
     }
 
-    // swift: Render/Office/OdtReader.swift:1840
+    // swift: Render/Office/OdtReader.swift:1841-1841
     fn unresolvable_id(reason: &str) -> String {
         format!("odt-unresolvable:{}", reason)
     }
@@ -2925,3 +2925,8 @@ impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
 // swift: Render/Office/OdtReader.swift:2196-2198
 // swift: Render/Office/OdtReader.swift:2208-2209
 // swift: Render/Office/OdtReader.swift:2254-2254
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/OdtReader.swift:2293-2293

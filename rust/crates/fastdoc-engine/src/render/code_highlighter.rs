@@ -558,7 +558,7 @@ impl CodeHighlighter {
     }
 
     // MARK: - Tokenizer
-    // swift: Render/CodeHighlighter.swift:115-117
+    // swift: Render/CodeHighlighter.swift:118-118
 
     // swift: Render/CodeHighlighter.swift:118-119
     fn identifier_extras() -> &'static HashSet<u16> {

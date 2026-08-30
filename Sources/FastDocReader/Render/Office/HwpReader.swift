@@ -90,6 +90,9 @@ enum HwpReader {
             guard let id = UInt16(exactly: binDataId), let b64 = imageBase64(handle, binDataId: id) else { return nil }
             return Data(base64Encoded: b64)
         }
+        // port-exclude: the engine deliberately does not have this shape. P2c replaced the
+        // read-time bulk fetch with a retained parse and an on-demand one (`picture_for_id`),
+        // which stops fetching 50.8 MB of the 편람's 53.9 MB of picture bytes nothing draws.
         // Embedded pictures are fetched here (they need the live handle); drawings were already
         // rendered inside `mapJSON` and must survive that — hence a merge rather than an assignment.
         //
@@ -104,6 +107,7 @@ enum HwpReader {
             + result.footnotes.map(\.blocks) {
             result.images.merge(collectImages(handle: handle, blocks: blocks)) { _, new in new }
         }
+        // port-exclude-end
         // `.resolvingFontSubstitution()` is applied HERE, at HWP's own single dispatch point
         // (invariant 44 — HWP bypasses `DocumentTypes.readOffice` entirely, so it needs its own
         // call rather than `readOffice`'s), NOT inside `mapJSON`: `mapJSON` stays a pure JSON->
@@ -112,6 +116,8 @@ enum HwpReader {
         return result.resolvingFontSubstitution()
     }
 
+    // port-exclude: the walk the line above replaced. The engine keeps the parse open instead
+    // of decoding every picture while it is still alive, so there is no counterpart to port.
     /// Walk the mapped blocks (recursively, INCLUDING table cells) for every `.image(id:)` whose id
     /// is an embedded HWP image (`"hwpimg:<binDataId>"`), fetch its bytes via the live `handle`, and
     /// return them keyed by the SAME id string the block carries — the key `reconcileMedia` looks up.
@@ -145,6 +151,7 @@ enum HwpReader {
         blocks.forEach(walk)
         return out
     }
+    // port-exclude-end
 
     /// The id prefix `mapBlock` stamps on an embedded HWP image — kept in ONE place so the writer
     /// (`mapBlock`) and the reader (`collectImages`, and `reconcileMedia`'s map lookup) can never
