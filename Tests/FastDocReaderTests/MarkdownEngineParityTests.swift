@@ -353,3 +353,68 @@ extension MarkdownEngineParityTests {
     }
 }
 
+
+extension MarkdownEngineParityTests {
+
+    /// A document built PIECE BY PIECE must equal the same document built at once.
+    ///
+    /// This is the property front-first paint is entirely built on: the reader sees the head
+    /// first and the rest arrives afterwards, and nobody may be able to tell afterwards which
+    /// document they are looking at. It is also the property a stateless chunk export would break
+    /// invisibly — every piece would look right on its own and the joins would be wrong.
+    func testAProgressiveRenderJoinsUpToTheWholeDocument() throws {
+        let theme = RenderTheme.current(size: 16)
+        for name in ["code-blocks.md", "math.md", "README.md"] {
+            let url = repoRoot().appendingPathComponent("demo").appendingPathComponent(name)
+            guard let source = try? String(contentsOf: url, encoding: .utf8) else {
+                XCTFail("\(name) is missing from demo/")
+                continue
+            }
+            let whole = try XCTUnwrap(RustMarkdownEngine.render(source, theme: theme),
+                                      "\(name): \(RustMarkdownEngine.lastFailure ?? "no reason")")
+            let render = try XCTUnwrap(RustMarkdownEngine.renderProgressive(source, theme: theme),
+                                       "\(name): the engine would not start a progressive render")
+            let joined = NSMutableAttributedString()
+            var pieces = 0
+            while !render.isFinished {
+                joined.append(render.nextChunk(blocks: 3))
+                pieces += 1
+                // Bounded: a handle that never advances is a hang, and a hanging test takes its
+                // own cleanup down with it.
+                guard pieces < 500 else { return XCTFail("\(name): the render never finished") }
+            }
+            XCTAssertGreaterThan(pieces, 1, "\(name) is long enough to arrive in more than one piece")
+            XCTAssertEqual(joined.string, whole.string, "\(name): the pieces do not join up")
+            guard joined.string == whole.string else { continue }
+            let differences = Self.differences(engine: joined, host: whole)
+            XCTAssertEqual(differences.count, 0,
+                           "\(name): \(differences.count) attribute differences between the "
+                           + "progressive and whole renders, first: \(differences.first ?? "")")
+        }
+    }
+
+    /// No two blocks may share an id across pieces — two neighbours that do read as ONE stop for
+    /// the reading cursor (invariant 19), which is what a handle that forgot its builder between
+    /// pieces would produce.
+    func testBlockIdsStayDistinctAcrossPieces() throws {
+        let theme = RenderTheme.current(size: 16)
+        let source = (1...12).map { "## Section \($0)\n\nParagraph \($0).\n" }.joined(separator: "\n")
+        let render = try XCTUnwrap(RustMarkdownEngine.renderProgressive(source, theme: theme))
+        let joined = NSMutableAttributedString()
+        var pieces = 0
+        while !render.isFinished {
+            joined.append(render.nextChunk(blocks: 2))
+            pieces += 1
+            guard pieces < 500 else { return XCTFail("the render never finished") }
+        }
+        var ids: [Int] = []
+        var ranges = 0
+        joined.enumerateAttribute(MDAttr.blockId, in: NSRange(location: 0, length: joined.length)) { value, _, _ in
+            guard let id = value as? Int else { return }
+            ranges += 1
+            if ids.last != id { ids.append(id) }
+        }
+        XCTAssertGreaterThan(ranges, 2, "the document carries block ids at all")
+        XCTAssertEqual(Set(ids).count, ids.count, "no id may be handed out twice: \(ids)")
+    }
+}

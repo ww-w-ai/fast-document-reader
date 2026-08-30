@@ -48,6 +48,20 @@ char *fastdoc_read_text_tree(const unsigned char *bytes, size_t len, const char 
 // the reader's own size (1...512). A font provider must be installed first.
 char *fastdoc_render_markdown(const unsigned char *bytes, size_t len, double base_font_size);
 
+// A markdown render handed over in PIECES, for front-first paint. The handle keeps the builder
+// alive between calls, which is what lets block ids keep counting up and each chunk's source
+// offsets continue where the last one stopped. Open once, call _next until _is_finished returns 1,
+// close exactly once. Same ownership rule as fastdoc_office_open.
+typedef struct FastdocMarkdownProgressive FastdocMarkdownProgressive;
+FastdocMarkdownProgressive *fastdoc_markdown_progressive_open(const unsigned char *bytes, size_t len,
+                                                              double base_font_size);
+// The next piece, on the same wire and in the same envelope fastdoc_render_markdown returns;
+// free with fastdoc_string_free.
+char *fastdoc_markdown_progressive_next(FastdocMarkdownProgressive *handle, size_t blocks);
+// 1 finished, 0 not, -1 for a NULL handle.
+int fastdoc_markdown_progressive_is_finished(const FastdocMarkdownProgressive *handle);
+void fastdoc_markdown_progressive_close(FastdocMarkdownProgressive *handle);
+
 // The document's own default body run size in points, or 11 when it declares none or cannot be
 // read. Asked for separately because the read result does not carry it for a zip-backed document.
 

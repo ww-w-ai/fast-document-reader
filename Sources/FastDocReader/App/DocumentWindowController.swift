@@ -3965,8 +3965,22 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             info.horizontalPagination = .clip
             info.verticalPagination = .automatic
         } else {
-            info.horizontalPagination = .fit
+            // An unpaged document is TYPESET for the paper, not photographed off the screen.
+            //
+            // `.fit` scales the text view's width down onto the sheet, so the printed type size was
+            // whatever the reader's window happened to be: a 1,640pt window printed the same file
+            // at 46 pages and an 820pt one at 147 (invariant 127). The lines also broke where the
+            // WINDOW broke them, then shrank, which is why a wide window produced a page of tiny
+            // text with the reading column's own ragged edge preserved in miniature.
+            //
+            // Laying the text out at the paper's own column instead makes the printout a function
+            // of the document and the paper alone. The on-screen column is put back in
+            // `printDidRun`; the print panel is modal and covers the window in between, and the
+            // headless path (`--pdf`) exits without needing the restore at all.
+            info.horizontalPagination = .clip
             info.verticalPagination = .automatic
+            beginUnpagedPrintColumn(paperWidth: info.paperSize.width,
+                                    left: info.leftMargin, right: info.rightMargin)
         }
         // A document starts at the top of the page, always. `NSPrintInfo` centres BOTH ways by
         // default, which nothing here ever turned off — so a file whose text did not fill a sheet
@@ -3979,6 +3993,47 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let op = NSPrintOperation(view: textView, printInfo: info)
         op.jobTitle = (document as? NSDocument)?.fileURL?.lastPathComponent ?? "Document"
         return op
+    }
+
+    /// What the reading column was before printing borrowed it. `nil` when nothing is borrowed,
+    /// which is what makes `endUnpagedPrintColumn` safe to call unconditionally.
+    private var printColumnRestore: (container: NSSize, frame: NSRect, inset: NSSize)?
+
+    /// Lay the text out at the PAPER's column for the duration of a print — see the unpaged branch
+    /// of `makePrintOperation`.
+    ///
+    /// The container, the inset and the view frame move together, the same three values
+    /// `settleReadingColumn` sets for the screen, so the printed layout is one this app can
+    /// actually produce rather than a fourth combination nothing else ever makes.
+    private func beginUnpagedPrintColumn(paperWidth: CGFloat, left: CGFloat, right: CGFloat) {
+        guard let container = textView.textContainer else { return }
+        let target = paperWidth - left - right
+        guard target > 0 else { return }
+        printColumnRestore = (container.containerSize, textView.frame, textView.textContainerInset)
+        // No side margin of our own: the SHEET already has `left`/`right`, and adding the reading
+        // view's 32pt on top would indent the printout by margins nobody asked for.
+        textView.textContainerInset = NSSize(width: 0, height: textView.textContainerInset.height)
+        container.containerSize = NSSize(width: target, height: .greatestFiniteMagnitude)
+        var frame = textView.frame
+        frame.size.width = target
+        textView.frame = frame
+        // The print operation asks for page rectangles immediately, and a mid-walk answer is
+        // invariant 49's freeze rather than a wrong number — so the relayout is finished here.
+        if let manager = textView.layoutManager {
+            manager.ensureLayout(for: container)
+        }
+    }
+
+    /// Give the reading column back. A no-op when nothing was borrowed.
+    private func endUnpagedPrintColumn() {
+        guard let saved = printColumnRestore, let container = textView.textContainer else { return }
+        printColumnRestore = nil
+        container.containerSize = saved.container
+        textView.textContainerInset = saved.inset
+        textView.frame = saved.frame
+        if let manager = textView.layoutManager {
+            manager.ensureLayout(for: container)
+        }
     }
 
     @objc func printDocument(_ sender: Any?) {
@@ -3997,9 +4052,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                     didRun: #selector(printDidRun(_:success:contextInfo:)), contextInfo: nil)
     }
 
-    @objc private func printDidRun(_ op: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?) {
+    /// Not `private`: `InteractivePrintColumnTests` calls this to prove the borrowed reading
+    /// column comes back, which is the half of the print path a modal panel makes unobservable.
+    @objc func printDidRun(_ op: NSPrintOperation, success: Bool, contextInfo: UnsafeMutableRawPointer?) {
         printRestore.forEach { $0.0.isHidden = $0.1 }
         printRestore = []
+        endUnpagedPrintColumn()
         endPrintLayout()   // the window goes back to whatever the View menu asked for
     }
 

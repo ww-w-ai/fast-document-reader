@@ -473,6 +473,142 @@ pub unsafe extern "C" fn fastdoc_render_markdown(
     })
 }
 
+/// A markdown render handed over in PIECES, kept alive across calls.
+///
+/// Front-first paint puts the top of a long document on screen and finishes the rest afterwards,
+/// which needs the builder to survive between chunks: block ids keep counting up across them and
+/// each chunk's source offsets continue where the last one stopped (invariant 19). A stateless
+/// "render blocks N..M" export cannot do that — it would restart the ids every call and produce two
+/// neighbouring blocks that read as one stop for the reading cursor.
+///
+/// Same ownership rule as `fastdoc_office_open`: boxed out with `Box::into_raw`, taken back by
+/// `fastdoc_markdown_progressive_close`, one owner and one close, held by the object that owns the
+/// document's lifetime rather than in a `defer` at a call site.
+pub struct FastdocMarkdownProgressive {
+    render: fastdoc_engine::render::markdown_renderer::ProgressiveMarkdownRender,
+    theme: fastdoc_engine::render::render_theme::RenderTheme,
+}
+
+/// Begins a progressive markdown render. Returns NULL and records the reason through
+/// `fastdoc_take_last_error` when the source is not UTF-8 or the size is out of range.
+///
+/// # Safety
+/// `bytes`/`len` describe a readable buffer for the duration of this call only.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_markdown_progressive_open(
+    bytes: *const u8,
+    len: usize,
+    base_font_size: f64,
+) -> *mut FastdocMarkdownProgressive {
+    clear_last_error();
+    if bytes.is_null() {
+        set_last_error(&FfiFailure::new(
+            FfiErrorKind::InvalidArgument,
+            "invalid NULL argument",
+        ));
+        return std::ptr::null_mut();
+    }
+    let data = std::slice::from_raw_parts(bytes, len);
+    guard_scalar(std::ptr::null_mut(), move || {
+        let Ok(source) = std::str::from_utf8(data) else {
+            set_last_error(&FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "markdown source is not valid UTF-8",
+            ));
+            return std::ptr::null_mut();
+        };
+        if !(1.0..=512.0).contains(&base_font_size) {
+            set_last_error(&FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                format!("base font size {base_font_size} is outside 1...512"),
+            ));
+            return std::ptr::null_mut();
+        }
+        let theme = fastdoc_engine::render::render_theme::RenderTheme::current(base_font_size);
+        let render = fastdoc_engine::render::markdown_renderer::MarkdownRenderer::render_progressive(
+            source, &theme,
+        );
+        Box::into_raw(Box::new(FastdocMarkdownProgressive { render, theme }))
+    })
+}
+
+/// Renders up to `blocks` more top-level blocks and returns them on the wire, in the same envelope
+/// `fastdoc_render_markdown` uses; free with `fastdoc_string_free`.
+///
+/// The piece is finished the way `MarkdownRenderer.finishPasses` finishes one — autolink over the
+/// chunk alone, which is safe because a top-level block boundary cannot fall inside a URL, a fence
+/// or a word — and stops BEFORE font substitution, which the host owns (invariant 130).
+///
+/// # Safety
+/// `handle` must be a live pointer `fastdoc_markdown_progressive_open` returned that has not been
+/// closed.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_markdown_progressive_next(
+    handle: *mut FastdocMarkdownProgressive,
+    blocks: usize,
+) -> *mut c_char {
+    if handle.is_null() {
+        return guard_envelope(|| {
+            Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "invalid NULL argument",
+            ))
+        });
+    }
+    // `AssertUnwindSafe` because the render is MUTATED here and holds `Arc<dyn Any>` payloads, so
+    // neither the reference nor its contents are unwind-safe by the compiler's rule. The claim
+    // being asserted is narrow and true: if a chunk panics, the handle is left having advanced by
+    // some blocks, and the only supported response to a failed chunk is to close the handle and
+    // fall back to the host renderer — which is exactly what the Swift side does with the error
+    // envelope this returns. Nothing reads a half-advanced handle.
+    let state = std::panic::AssertUnwindSafe(&mut *handle);
+    guard_envelope(move || {
+        let state = state;
+        let chunk = state.0.render.next_chunk_before_host_font_substitution(blocks);
+        let wire = fastdoc_engine::render::markdown_wire::project(&chunk, &state.0.theme);
+        serde_json::to_vec(&wire)
+            .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))
+    })
+}
+
+/// Whether every top-level block has been handed over. `1` finished, `0` not, `-1` for a NULL
+/// handle — a negative can never be mistaken for either answer.
+///
+/// # Safety
+/// `handle` must be either NULL or a live pointer `fastdoc_markdown_progressive_open` returned.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_markdown_progressive_is_finished(
+    handle: *const FastdocMarkdownProgressive,
+) -> i32 {
+    // Same narrow claim as `..._next` above; this one only READS.
+    let handle = std::panic::AssertUnwindSafe(handle);
+    guard_scalar(-1, move || {
+        let handle = handle;
+        if handle.0.is_null() {
+            return -1;
+        }
+        i32::from((*handle.0).render.is_finished())
+    })
+}
+
+/// Closes a handle `fastdoc_markdown_progressive_open` returned. NULL is a no-op.
+///
+/// # Safety
+/// `handle` must be either NULL or a pointer this crate returned and that has not already been
+/// passed to this function.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_markdown_progressive_close(
+    handle: *mut FastdocMarkdownProgressive,
+) {
+    let handle = std::panic::AssertUnwindSafe(handle);
+    guard_scalar((), move || {
+        let handle = handle;
+        if !handle.0.is_null() {
+            drop(Box::from_raw(handle.0));
+        }
+    })
+}
+
 /// Takes the diagnostic produced by the most recent failed call on this thread, or NULL.
 ///
 /// The returned UTF-8 string is owned by this library and must be passed to

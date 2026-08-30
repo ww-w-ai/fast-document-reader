@@ -1565,12 +1565,32 @@ impl ProgressiveMarkdownRender {
         let take = blocks.max(1);
         let remaining = self.children.len() - self.next;
         let end = if take >= remaining { self.children.len() } else { self.next + take };
-        self.chunk(|next| next >= end)
+        self.chunk(|next| next >= end, true)
+    }
+
+    /// The same piece, stopping BEFORE font substitution — the form a host reads over the wire.
+    ///
+    /// Same reason as `MarkdownRenderer::render_before_host_font_substitution`: substitution
+    /// belongs to whoever owns AppKit, and running it on both sides lands on two different faces
+    /// (invariant 130). Autolink still runs over the piece, which is safe chunk by chunk because a
+    /// top-level block boundary cannot fall inside a URL, a fence or a word.
+    pub fn next_chunk_before_host_font_substitution(
+        &mut self,
+        blocks: usize,
+    ) -> swiftshim::NSAttributedString {
+        let take = blocks.max(1);
+        let remaining = self.children.len() - self.next;
+        let end = if take >= remaining { self.children.len() } else { self.next + take };
+        self.chunk(|next| next >= end, false)
     }
 
     // swift: Render/MarkdownRenderer.swift:814-829
     /// Visit children until `stop` says so, then take everything those visits added.
-    fn chunk(&mut self, stop: impl Fn(usize) -> bool) -> swiftshim::NSAttributedString {
+    fn chunk(
+        &mut self,
+        stop: impl Fn(usize) -> bool,
+        substitute_fonts: bool,
+    ) -> swiftshim::NSAttributedString {
         while self.next < self.children.len() {
             let child = self.children[self.next].clone();
             self.builder.visit(&child);
@@ -1585,7 +1605,11 @@ impl ProgressiveMarkdownRender {
             &full.attributed_substring(swiftshim::NSRange::new(self.mark, full.length() - self.mark)),
         );
         self.mark = full.length();
-        MarkdownRenderer::finish_passes(&mut delta);
+        if substitute_fonts {
+            MarkdownRenderer::finish_passes(&mut delta);
+        } else {
+            MarkdownRenderer::autolink(&mut delta);
+        }
         delta.asAttributedString().clone()
     }
 }

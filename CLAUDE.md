@@ -108,7 +108,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 130 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 132 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
@@ -122,7 +122,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | the mermaid + KaTeX web-block cache | 4, 5, 13 |
 | `Info.plist`, document types, default handler, sandbox, entitlements | 6, 8, 9, 22, 28, 43, 69, 70 |
 | menus, Open Recent, titlebar accessory, sidebar, outline panel | 7, 21, 23, 26, 27 |
-| markdown parsing or a new markdown feature | 12, 41, 101, 122, 123, 128, 130 |
+| markdown parsing or a new markdown feature | 12, 41, 101, 122, 123, 128, 130, 131 |
 | keyboard navigation, reading cursor, margin numbers, jump | 14, 15, 71 |
 | editing, save, text encoding, splice render | 16, 17, 18, 19, 20 |
 | reflow, resize, `precomputeLayout`, first-paint cost | 24, 25, 32, 48, 49, 55, 56, 113, 117 |
@@ -138,7 +138,7 @@ means re-proposing a rejected design or re-earning a defect that already shipped
 | the comments panel | 38 |
 | paged documents — zoom, page band, header/footer, page outline | 46, 57, 58, 60, 62, 77, 78, 118, 121 |
 | footnotes — the band fixpoint, where a note lands, the settle's round budget | 98, 99 |
-| printing, `--pdf`, `--extract`, anything headless | 40, 59, 66, 70, 102, 116, 120, 125, 126, 127 |
+| printing, `--pdf`, `--extract`, anything headless | 40, 59, 66, 70, 102, 116, 120, 125, 126, 127, 132 |
 | a table that crosses a page boundary | 61, 64, 72, 96 |
 | multi-column layout, `ColumnGeometry`, column flow | 100, 108 |
 | memory, image caches, document lifetime, crashes | 63, 65 |

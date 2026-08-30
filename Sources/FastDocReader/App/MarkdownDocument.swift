@@ -283,7 +283,7 @@ final class MarkdownDocument: NSDocument {
     /// A markdown render still handing over its tail, or `nil` when the storage holds the whole
     /// document. Read by `HeadlessPDF.waitForRenderToSettle` for the same reason `deferredTables`
     /// is: a headless run must not print a document that is still arriving (invariant 66).
-    private(set) var progressiveRender: ProgressiveMarkdownRender?
+    private(set) var progressiveRender: ProgressiveMarkdownRendering?
     var isProgressiveRenderPending: Bool { progressiveRender != nil }
 
     /// How much of a large markdown file is built before the window is shown. Top-level blocks, not
@@ -1621,13 +1621,7 @@ final class MarkdownDocument: NSDocument {
         case .markdown:
             if !hasPaintedOnce, Self.progressiveFirstPaintEnabled,
                text.utf16.count >= Self.progressiveSourceFloor {
-                // The one markdown path still built entirely here: the engine renders a whole
-                // document at a time, and front-first paint hands the reader a PIECE and finishes
-                // the rest afterwards. Wiring it would mean a wire per chunk plus the block-id and
-                // source-offset continuity `ProgressiveMarkdownRender` keeps across them — worth
-                // doing, not worth bundling into the cutover. A document long enough to take this
-                // arm is exactly the one where a wrong answer is least visible.
-                let render = MarkdownRenderer.renderProgressive(text, theme: theme)
+                let render = RustMarkdownEngine.renderProgressiveOrHost(text, theme: theme)
                 attr = render.nextChunk(blocks: Self.progressiveHeadBlocks)
                 progressiveRender = render.isFinished ? nil : render
             } else {

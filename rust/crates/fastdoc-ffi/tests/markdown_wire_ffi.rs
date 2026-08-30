@@ -165,3 +165,124 @@ fn an_empty_document_renders_to_an_empty_wire_rather_than_an_error() {
     assert!(wire.layer_location.is_empty(), "and no layers to replay");
     let _unused = CString::new("keeps the CString import honest").unwrap();
 }
+
+/// The progressive door: open, take pieces, finish, close.
+///
+/// Front-first paint is the one markdown path that needs STATE across FFI calls — block ids count
+/// up across chunks and each chunk's source offsets continue where the last stopped — so what this
+/// checks is not that a chunk renders (the whole-document tests above cover that) but that the
+/// handle carries the render forward and reports when it is done.
+mod progressive {
+    use super::*;
+    use fastdoc_engine_ffi::{
+        fastdoc_markdown_progressive_close, fastdoc_markdown_progressive_is_finished,
+        fastdoc_markdown_progressive_next, fastdoc_markdown_progressive_open,
+    };
+
+    fn source() -> Vec<u8> {
+        (1..=6)
+            .map(|n| format!("## Section {n}\n\nParagraph {n} with **bold** text.\n"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into_bytes()
+    }
+
+    fn chunk(handle: *mut fastdoc_engine_ffi::FastdocMarkdownProgressive, blocks: usize) -> String {
+        unsafe {
+            let raw = fastdoc_markdown_progressive_next(handle, blocks);
+            assert!(!raw.is_null(), "a chunk always comes back as an envelope");
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            fastdoc_string_free(raw);
+            text
+        }
+    }
+
+    #[test]
+    fn the_pieces_join_up_to_the_whole_document() {
+        with_fonts();
+        let bytes = source();
+        let whole = wire_of(&render(&bytes, 16.0));
+
+        let handle = unsafe { fastdoc_markdown_progressive_open(bytes.as_ptr(), bytes.len(), 16.0) };
+        assert!(!handle.is_null(), "the source is valid, so the handle opens");
+        let mut joined = String::new();
+        let mut pieces = 0;
+        while unsafe { fastdoc_markdown_progressive_is_finished(handle) } == 0 {
+            joined.push_str(&wire_of(&chunk(handle, 2)).text);
+            pieces += 1;
+            assert!(pieces < 100, "the handle must reach finished");
+        }
+        unsafe { fastdoc_markdown_progressive_close(handle) };
+
+        assert!(pieces > 1, "twelve blocks two at a time is more than one piece, got {pieces}");
+        assert_eq!(
+            joined, whole.text,
+            "the pieces must join up to exactly what one whole render produces"
+        );
+    }
+
+    /// Block ids must keep counting across pieces. Two neighbouring blocks that share an id read as
+    /// ONE stop for the reading cursor (invariant 19), which is precisely what a handle that reset
+    /// its builder every call would produce.
+    #[test]
+    fn block_ids_keep_counting_across_pieces() {
+        with_fonts();
+        let bytes = source();
+        let handle = unsafe { fastdoc_markdown_progressive_open(bytes.as_ptr(), bytes.len(), 16.0) };
+        assert!(!handle.is_null());
+        let mut ids: Vec<i64> = Vec::new();
+        // Bounded, like its sibling above. A handle that never advances turns this loop into a
+        // hang rather than a failure, and a test that hangs takes its own cleanup down with it —
+        // which is exactly what happened while proving these checks bite.
+        let mut pieces = 0;
+        while unsafe { fastdoc_markdown_progressive_is_finished(handle) } == 0 {
+            pieces += 1;
+            assert!(pieces < 100, "the handle must reach finished");
+            let wire = wire_of(&chunk(handle, 2));
+            for extra in &wire.extras {
+                if extra.key == "mdBlockId" {
+                    if let fastdoc_engine::render::markdown_wire::WireExtraValue::Int(id) = extra.value {
+                        ids.push(id);
+                    }
+                }
+            }
+        }
+        unsafe { fastdoc_markdown_progressive_close(handle) };
+
+        assert!(ids.len() > 2, "the document has blocks in more than one piece, got {}", ids.len());
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), ids.len(), "no two blocks may share an id: {ids:?}");
+    }
+
+    /// A NULL handle is a value, not a crash — on both the answer and the render.
+    #[test]
+    fn a_null_handle_is_refused_rather_than_dereferenced() {
+        assert_eq!(
+            unsafe { fastdoc_markdown_progressive_is_finished(std::ptr::null()) },
+            -1,
+            "a negative can never be mistaken for finished or unfinished"
+        );
+        let envelope = unsafe {
+            let raw = fastdoc_markdown_progressive_next(std::ptr::null_mut(), 1);
+            assert!(!raw.is_null());
+            let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            fastdoc_string_free(raw);
+            text
+        };
+        assert!(envelope.contains("invalidArgument"), "{envelope}");
+        // Closing NULL is a no-op, the same rule `fastdoc_string_free(NULL)` follows.
+        unsafe { fastdoc_markdown_progressive_close(std::ptr::null_mut()) };
+    }
+
+    /// Source that is not UTF-8 refuses at OPEN rather than on the first chunk — there is no
+    /// half-usable handle to hand back.
+    #[test]
+    fn a_source_that_is_not_utf8_refuses_at_open() {
+        with_fonts();
+        let bytes = [0xffu8, 0xfe, 0xfd];
+        let handle = unsafe { fastdoc_markdown_progressive_open(bytes.as_ptr(), bytes.len(), 16.0) };
+        assert!(handle.is_null(), "a handle must not be returned for a source that cannot be read");
+    }
+}
