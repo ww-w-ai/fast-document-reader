@@ -565,7 +565,7 @@ impl OdtReader {
             OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, .. } => {
                 let mut new_spans = vec![marker, Self::note_marker_separator()];
                 new_spans.extend(spans.clone());
-                // swift: OdtReader.swift:435-437 binds the original `numbering` with `_` and omits
+                // The Swift original (Render/Office/OdtReader.swift:435-437) binds `numbering` with `_` and omits
                 // it on reconstruction, so it falls to `OfficeBlock.listItem`'s own default
                 // (`numbering: ListNumbering? = nil`, OfficeBlock.swift:817) — silently dropping the
                 // item's numbering here. Reproduced deliberately, not fixed: `numbering`'s own doc

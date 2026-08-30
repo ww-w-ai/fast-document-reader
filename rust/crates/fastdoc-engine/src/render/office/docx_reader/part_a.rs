@@ -708,7 +708,7 @@ impl DocxReader {
             OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, .. } => {
                 let mut new_spans = vec![marker];
                 new_spans.extend(spans);
-                // swift: DocxReader.swift:463-465 binds the original `numbering` with `_` and omits
+                // The Swift original (Render/Office/DocxReader.swift:463-465) binds `numbering` with `_` and omits
                 // it on reconstruction, so it falls to `OfficeBlock.listItem`'s own default
                 // (`numbering: ListNumbering? = nil`, OfficeBlock.swift:817) — silently dropping the
                 // item's numbering here. Reproduced deliberately, not fixed: `numbering`'s own doc
@@ -1064,7 +1064,7 @@ impl DocxReader {
         let mut result = TableConditionalStyle::default();
         let tc_pr = node.child("w:tcPr");
         let tbl_pr = node.child("w:tblPr");
-        // swift: DocxReader.swift:762-765 binds `fill` and tests `!= "auto"` as ONE condition, so a
+        // The Swift original (Render/Office/DocxReader.swift:762-765) binds `fill` and tests `!= "auto"` as ONE condition, so a
         // cell that writes `w:fill="auto"` (this codebase's own spelling of "explicitly no colour")
         // fails the whole branch and falls through to the table-level shading. Nesting the `!=
         // "auto"` check inside the `if let` (as this used to) commits to the cell branch the moment

@@ -20,6 +20,17 @@ claim past MODULE_SPAN_CAP (module form) or RANGE_SPAN_CAP (line form) is reject
 counted, and named in the report. The module form exists for the file header only; the line form
 is meant to sit on one declaration, comments included.
 
+Parsing is not aiming. A claim whose numbers are stale still parses, is still counted, and is
+invisible. So a claim is also checked against the Swift file it names: one that runs past the end
+of that file, or names a file that is not there at all, is AIMLESS and reported the way MALFORMED
+is — both are credited to nothing while looking exactly like a claim that works.
+
+What is NOT aimless: a claim on a BLANK line. Every module here ends with a block of them, under a
+comment saying so — closing braces and blank separators that the per-item markers did not restate,
+claimed deliberately so the denominator is accounted for rather than quietly missed. Flagging those
+would be telling the port to stop doing the one thing that makes its own number honest. A claim on
+COMMENT lines is likewise fine: porting a doc block is a real thing to claim.
+
 Run with --gate to make an incomplete port a non-zero exit.
 """
 
@@ -105,15 +116,21 @@ def host_only_stripped(lines: list[str]) -> list[str]:
     return kept
 
 
-def claimed_ranges() -> tuple[dict[str, set[int]], int, list[str], list[str]]:
-    """Walk the Rust tree once, returning claimed line numbers per Swift file."""
+def claimed_ranges():
+    """Walk the Rust tree once, returning claimed line numbers per Swift file.
+
+    `sites` carries every accepted line-form claim with the place that made it, so a later pass can
+    ask whether the claim actually LANDS on anything — a question the ranges alone cannot answer
+    once they have been merged into a set.
+    """
     claimed: dict[str, set[int]] = {}
     wildcards: list[str] = []
     malformed: list[str] = []
     todos: list[str | None] = []
     blankets: list[str] = []
+    sites: list[tuple[str, int, int, str]] = []
     if not RUST_ROOT.exists():
-        return claimed, todos, wildcards, blankets, malformed
+        return claimed, todos, wildcards, blankets, malformed, sites
 
     for rs in sorted(RUST_ROOT.rglob("*.rs")):
         module_target: str | None = None
@@ -135,6 +152,7 @@ def claimed_ranges() -> tuple[dict[str, set[int]], int, list[str], list[str]]:
                     blankets.append((key, f"{rs.relative_to(REPO)}:{lineno}  claims {lo}-{hi} of {key}"))
                 else:
                     claimed.setdefault(key, set()).update(range(lo, hi + 1))
+                    sites.append((key, lo, hi, f"{rs.relative_to(REPO)}:{lineno}"))
                 continue
 
             hit = MODULE_RANGE.search(text)
@@ -154,7 +172,37 @@ def claimed_ranges() -> tuple[dict[str, set[int]], int, list[str], list[str]]:
 
             if CLAIM_LIKE.search(text):
                 malformed.append(f"{rs.relative_to(REPO)}:{lineno}  {text.strip()[:90]}")
-    return claimed, todos, wildcards, blankets, malformed
+    return claimed, todos, wildcards, blankets, malformed, sites
+
+
+def aimless_claims(sites: list[tuple[str, int, int, str]]) -> list[str]:
+    """Claims that parse but can never be credited.
+
+    Two ways a claim can be exactly as wrong as an unparseable one while costing nothing to notice:
+    it names a Swift file that is not there, or it runs past the end of the file it names. Neither
+    can put a single line in the covered set, and neither says so.
+
+    Read against the RAW file, because a claim's numbers are what the author read in an editor —
+    not the `#if FMD_RUST_ENGINE`-stripped view the percentage is scored against.
+
+    BLANK and COMMENT lines are deliberately NOT flagged. Blank separators are claimed on purpose
+    (see each module's "Boundary lines" block), and a doc block is a real thing for a port to claim.
+    An earlier version of this check rejected blank-only claims and named 35 of them — every one
+    correct by design.
+    """
+    cache: dict[str, list[str] | None] = {}
+    out: list[str] = []
+    for key, lo, hi, site in sites:
+        if key not in cache:
+            full = SWIFT_ROOT / key
+            cache[key] = full.read_text(errors="replace").splitlines() if full.exists() else None
+        lines = cache[key]
+        span = f"{lo}-{hi}" if lo != hi else f"{lo}"
+        if lines is None:
+            out.append(f"{site}  claims {key}:{span} — no such Swift file")
+        elif hi > len(lines):
+            out.append(f"{site}  claims {key}:{span} — past the end ({len(lines)} lines)")
+    return out
 
 
 def as_ranges(numbers: list[int]) -> list[str]:
@@ -187,7 +235,7 @@ def main() -> int:
         if not scope:
             sys.exit("none of the named files are in the port manifest")
 
-    claimed, todos, wildcards, blankets, malformed = claimed_ranges()
+    claimed, todos, wildcards, blankets, malformed, sites = claimed_ranges()
     # A worker gates on ITS OWN files; another sprint's unfinished file must not redden that check.
     if args.only:
         keys = set(scope)
@@ -226,6 +274,11 @@ def main() -> int:
         print(f"MALFORMED claims (announced but unparseable — silently counted for nothing): {len(malformed)}")
         for m in malformed[:12]:
             print(f"  {m}")
+    aimless = aimless_claims(sites)
+    if aimless:
+        print(f"AIMLESS claims (they parse, they look like claims, and they can credit nothing): {len(aimless)}")
+        for a in aimless[:12]:
+            print(f"  {a}")
     if blankets:
         print(f"BLANKET claims (rejected — a range this wide reads 100% over a hole): {len(blankets)}")
         for b in blankets[:12]:
@@ -236,7 +289,7 @@ def main() -> int:
             print(f"  {w}")
 
     if args.gate:
-        if pct < 100.0 or wildcards or blankets or malformed:
+        if pct < 100.0 or wildcards or blankets or malformed or aimless:
             return 1
     return 0
 

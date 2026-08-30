@@ -397,13 +397,13 @@ pub struct Cell {
     /// `background_gradient` just below for the other half of this field's old ambiguity.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub background_image: Option<NSImage>,
-    // swift: Render/Office/OfficeBlock.swift:231a
+    // swift: Render/Office/OfficeBlock.swift:232-236
     /// See `OfficeGradient`'s own doc (above `Cell`) for why this exists beside `background_image`
     /// rather than folded into it. `nil` whenever a real picture won the fill, or the source
     /// declared no gradient at all.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub background_gradient: Option<OfficeGradient>,
-    // swift: Render/Office/OfficeBlock.swift:232-238
+    // swift: Render/Office/OfficeBlock.swift:237-245
     /// The cell's own border colour/width (docx `w:tcPr/w:tcBorders`, odt cell-style borders) —
     /// either or both may be `nil`, in which case `TableBlockBuilder`'s existing theme default
     /// (`Palette.tableBorder` at 1pt) is used for that one, exactly as before this field existed.
@@ -415,7 +415,7 @@ pub struct Cell {
     pub border_color: Option<NSColor>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub border_width: Option<CGFloat>,
-    // swift: Render/Office/OfficeBlock.swift:241-244
+    // swift: Render/Office/OfficeBlock.swift:246-249
     /// The cell's own FOUR edges when the document declared them individually (docx `w:tcBorders`).
     /// Takes precedence over `border_color`/`border_width`, which stay as the uniform model every other
     /// format and markdown still use. `nil` = this cell said nothing per-edge → unchanged behaviour.
@@ -426,7 +426,7 @@ pub struct Cell {
     /// one is always `None` in memory, so a result that round-trips equals the one that was read.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edge_borders_ref: Option<u32>,
-    // swift: Render/Office/OfficeBlock.swift:245-251
+    // swift: Render/Office/OfficeBlock.swift:250-256
     /// The cell's own declared column width in POINTS (docx `w:tcPr/w:tcW`, converted from twips;
     /// odt column widths) — `nil` leaves `TableBlockBuilder`'s existing auto layout (equal-ish,
     /// content-driven column sizing via the table's own `percentageValueType`) untouched, exactly
