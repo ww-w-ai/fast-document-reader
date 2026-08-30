@@ -186,7 +186,21 @@ final class MasterPageArtworkCacheTests: XCTestCase {
     /// So this draws an asymmetric picture — red along the top, blue along the bottom — and reads
     /// the pixels back. The offscreen context is flipped the way the reader's text view is, so row
     /// 0 of the bitmap is what a reader sees at the top of the sheet.
-    func testTheArtworkLandsTheRightWayUpRatherThanMirroredByTheFlippedView() throws {
+    /// The blit lands the same way up as `NSImage.draw(respectFlipped:)`, which is the rule.
+    ///
+    /// The FIRST version of this gate asserted an absolute: draw a picture that is red along its
+    /// top, read the sheet's top row back, and demand red. It passed while every real document's
+    /// cover was upside down, because reading a bitmap back inverts the very convention the
+    /// assertion was about — `NSBitmapImageRep` addresses row 0 as its first row in memory, which
+    /// a y-up CoreGraphics context fills from the BOTTOM. Both the picture and the reader were
+    /// flipped, the two cancelled, and mutation-checking it could not tell: mirroring the draw
+    /// moves the expected answer with it.
+    ///
+    /// So this asks a RELATIVE question, which has no convention to get wrong: draw the same image
+    /// both ways into the same context and require the same pixels. `respectFlipped: true` is what
+    /// six other draw sites in this app pass, including this file's own `.drawing` and `.vector`
+    /// branches, so agreeing with it is what right way up MEANS here.
+    func testTheArtworkLandsTheSameWayUpAsTheRuleEveryOtherDrawSiteUses() throws {
         let size = NSSize(width: 120, height: 160)
         let asymmetric = NSImage(size: size)
         asymmetric.lockFocus()
@@ -195,44 +209,47 @@ final class MasterPageArtworkCacheTests: XCTestCase {
         NSColor.systemBlue.setFill()
         NSRect(x: 0, y: 0, width: size.width, height: size.height / 2).fill()
         asymmetric.unlockFocus()
-        // In an UNFLIPPED image, y grows upward, so the red half above is the picture's own TOP.
 
-        let object = OfficeMasterObject(frame: CGRect(x: 0, y: 0, width: 120, height: 160),
-                                        content: .image(asymmetric))
+        let sheet = CGRect(x: 0, y: 0, width: 120, height: 160)
+        let object = OfficeMasterObject(frame: sheet, content: .image(asymmetric))
         let page = OfficeMasterPage(section: 1, appliesTo: .defaultPages, objects: [object])
         let content = MasterPageContent(pages: [page], sectionsHidingMasterPage: [],
                                         theme: RenderTheme(baseFontSize: 13),
                                         documentDefaultFontSize: 11, pageContentWidth: 100)
-        let sheets = [CGRect(x: 0, y: 0, width: 120, height: 160)]
 
-        guard let rep = NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: 120, pixelsHigh: 160, bitsPerSample: 8,
-            samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
-            let g = NSGraphicsContext(bitmapImageRep: rep) else {
-            return XCTFail("could not make a bitmap to read the drawn artwork back out of")
+        func render(_ body: () -> Void) throws -> NSBitmapImageRep {
+            let rep = try XCTUnwrap(NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: 120, pixelsHigh: 160, bitsPerSample: 8,
+                samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+            let g = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = g
+            let flip = NSAffineTransform()
+            flip.translateX(by: 0, yBy: 160)
+            flip.scaleX(by: 1, yBy: -1)
+            flip.concat()
+            body()
+            NSGraphicsContext.restoreGraphicsState()
+            return rep
         }
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = g
-        let flip = NSAffineTransform()
-        flip.translateX(by: 0, yBy: 160)
-        flip.scaleX(by: 1, yBy: -1)
-        flip.concat()
-        MasterPagePainter.draw(content, sheets: sheets, totalPages: 1,
-                               visibleRect: NSRect(x: 0, y: 0, width: 120, height: 160))
-        NSGraphicsContext.restoreGraphicsState()
-
-        // `NSBitmapImageRep` addresses row 0 as the TOP row, and the context above was flipped the
-        // way the reader's view is, so this reads what a reader would see.
-        let top = try XCTUnwrap(rep.colorAt(x: 60, y: 20), "no pixel at the top of the sheet")
-        let bottom = try XCTUnwrap(rep.colorAt(x: 60, y: 140), "no pixel at the bottom of the sheet")
-        XCTAssertGreaterThan(top.redComponent, top.blueComponent, """
-            the top of the sheet is not the top of the picture — the artwork is drawn upside down. \
-            Read back r=\(top.redComponent) b=\(top.blueComponent) at the top.
-            """)
-        XCTAssertGreaterThan(bottom.blueComponent, bottom.redComponent,
-                             "the same, from the other end: r=\(bottom.redComponent) "
-                             + "b=\(bottom.blueComponent) at the bottom of the sheet")
+        let painted = try render {
+            MasterPagePainter.draw(content, sheets: [sheet], totalPages: 1, visibleRect: sheet)
+        }
+        let byTheRule = try render {
+            asymmetric.draw(in: sheet, from: .zero, operation: .sourceOver, fraction: 1,
+                            respectFlipped: true, hints: nil)
+        }
+        for y in [20, 80, 140] {
+            let a = try XCTUnwrap(painted.colorAt(x: 60, y: y))
+            let b = try XCTUnwrap(byTheRule.colorAt(x: 60, y: y))
+            XCTAssertEqual(a.redComponent, b.redComponent, accuracy: 0.02, """
+                row \(y) is not what `respectFlipped: true` puts there — the artwork blit is \
+                mirrored relative to every other picture this app draws.
+                """)
+            XCTAssertEqual(a.blueComponent, b.blueComponent, accuracy: 0.02,
+                           "row \(y) is not what `respectFlipped: true` puts there")
+        }
     }
 
     // MARK: - Fixtures

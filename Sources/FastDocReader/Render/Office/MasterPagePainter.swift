@@ -270,9 +270,14 @@ enum MasterPagePainter {
         lastArtworkBlit = (target, pixelWidth, pixelHeight)
         cg.saveGState()
         cg.concatenate(ctm.inverted())      // out of the view's transform, into device pixels
-        // Drawn through CoreGraphics rather than `NSImage`: in device space the bitmap is already
-        // upright by CG's own convention, so the flipped-view correction this used to need is not a
-        // second rule to keep in step with anything.
+        // AND BACK THE OTHER WAY, ABOUT THIS RECTANGLE. Leaving the transform out was a claim that
+        // device space is already the right way up; it is not, and every real cover was drawn
+        // mirrored while the gate that was supposed to say so passed. `respectFlipped: true` is
+        // this app's ONE rule for which way up a picture goes — six other draw sites pass it,
+        // including this file's own `.drawing` and `.vector` branches — and stepping outside
+        // `NSImage` to buy the pixel-exact copy does not repeal it, it just means applying it here.
+        cg.translateBy(x: 0, y: target.minY + target.maxY)
+        cg.scaleBy(x: 1, y: -1)
         cg.draw(ready, in: target)
         cg.restoreGState()
     }

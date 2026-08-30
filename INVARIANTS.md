@@ -1062,3 +1062,36 @@ this file tells you why, and why the obvious alternative does not work.
     From inside the repository the two are indistinguishable: cross-platform logic whose macOS
     backend is a shim looks precisely like transliterated dead weight. Only the owner's rule tells
     them apart, so the rule has to live here rather than in a conversation.
+
+140. **A gate that asserts an ABSOLUTE orientation can encode the very bug it was written to catch,
+    and mutation-checking will not notice.** `feddd2f` replaced the master page's
+    `NSImage.draw(respectFlipped:)` with a device-space `CGContext.draw` blit to make the artwork a
+    pixel-exact copy (16.0 → 7.2 ms per blit, 72.2 → 40.1 ms on the median scrolled viewport), on
+    the claim that "in device space the bitmap is already upright by CG's own convention". It is
+    not. **Every real document's cover was drawn upside down from that commit until this one** —
+    reported by the owner on `2025_행정업무운영편람_최종.hwp`, and reproduced on `origin/main`, so
+    it was never a porting regression.
+
+    `f52288e` added a gate for exactly that claim: a picture red along its top, drawn into a flipped
+    bitmap, with the sheet's top row read back and required to be red. It passed on a page whose
+    artwork was upside down. **Reading a bitmap back inverts the convention the assertion is about**
+    — `NSBitmapImageRep` addresses row 0 as its first row in memory and a y-up `CGBitmapContext`
+    fills that row from the BOTTOM — so the picture and the reader were both flipped and cancelled.
+    Mutation-checking said nothing, and could not: mirroring the draw moves the expected answer with
+    it. Dumping the drawn sheet to a PNG and looking at it does not settle it either, for the same
+    reason — every read-back path shares the ambiguity.
+
+    **The fix is relative, in both the code and the check.** `respectFlipped: true` is this app's ONE
+    rule for which way up a picture goes: six draw sites pass it, including this same file's
+    `.drawing` and `.vector` branches, and the ONLY site that did not is the only one reported
+    mirrored. Stepping outside `NSImage` to buy the pixel-exact copy does not repeal that rule, so
+    the blit now flips about its own target rectangle, and the gate asks whether the blit puts the
+    same pixels there as `respectFlipped: true` does — a question with no convention to get wrong.
+    Judged on the real document by `MasterPageRealFileProbeTests` (`FMD_MASTER_PAGE_PROBE`), which
+    compares the painter against that rule row by row: **mirrored 0.0000 / same 0.0401 before,
+    exactly reversed after**. Mutation-checked: removing the flip fails 2 checks.
+
+    **What the real document is made of, since no fixture here has a master page**: the 편람's 11
+    master pages carry a full-sheet `.image` each (555.6 × 760.8pt) plus `.drawing(pdf)` and `.text`
+    furniture. The full-sheet `.image` is the cover, and `.image` is the one branch that took the
+    blit — which is why only covers were mirrored and the running furniture beside them was not.

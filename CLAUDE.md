@@ -108,7 +108,7 @@ there before changing its behaviour.
 
 ## Hard-won invariants — MUST Read before touching an area
 
-`INVARIANTS.md` (repo root) is this app's manual: 139 numbered entries, each the measurements
+`INVARIANTS.md` (repo root) is this app's manual: 140 numbered entries, each the measurements
 behind one rule plus the designs that were built, measured and REJECTED. It is not background
 reading — **find your area below and read those entries BEFORE you change anything there.**
 
