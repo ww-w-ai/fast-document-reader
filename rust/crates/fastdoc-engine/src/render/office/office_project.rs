@@ -306,6 +306,22 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     for footnote in &mut footnotes { edge_interner.blocks(&mut footnote.blocks); }
     let (_interned, _distinct_edges, edge_border_pool) = edge_interner.finish();
 
+    // And the paragraph formats, on the same rule. This assembler is the one every real document
+    // comes through, so pooling in the exporter alone would leave the two disagreeing — which is
+    // exactly what `office_projection_oracle` caught the first time this was wired in one place.
+    let mut format_interner = crate::render::office::paragraph_format_pool::Interner::new();
+    format_interner.blocks(&mut blocks);
+    for header in &mut headers { format_interner.blocks(&mut header.blocks); }
+    for footer in &mut footers { format_interner.blocks(&mut footer.blocks); }
+    for footnote in &mut footnotes { format_interner.blocks(&mut footnote.blocks); }
+    for page in &mut master_pages {
+        for object in &mut page.objects { format_interner.master_content(&mut object.content); }
+    }
+    for anchored in &mut anchored_objects {
+        format_interner.master_content(&mut anchored.object.content);
+    }
+    let (_interned_formats, _distinct_formats, paragraph_format_pool) = format_interner.finish();
+
     let mut result = serde_json::Map::new();
     // The version the ENGINE writes, not a copy of it. This was a literal `4` beside
     // `office_export::SCHEMA_VERSION`, and the two are the same contract: the moment the exporter
@@ -325,6 +341,10 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     // Same rule, same reason, for the edge-border table.
     if !edge_border_pool.is_empty() {
         result.insert("edge_border_pool".to_string(), to_value(&edge_border_pool)?);
+    }
+    // Same rule, same reason, for the paragraph-format table.
+    if !paragraph_format_pool.is_empty() {
+        result.insert("paragraph_format_pool".to_string(), to_value(&paragraph_format_pool)?);
     }
     result.insert("blocks".to_string(), to_value(&blocks)?);
     result.insert("comments".to_string(), to_value(&comments)?);
@@ -797,7 +817,7 @@ impl Projector {
             rtl,
             alignment,
             tab_stops: convert_tab_stops_back(&li.tab_stops),
-            format,
+            format, format_ref: None,
             numbering,
         })
     }
@@ -814,7 +834,7 @@ impl Projector {
                     rtl,
                     alignment,
                     tab_stops: convert_tab_stops_back(&h.tab_stops),
-                    format,
+                    format, format_ref: None,
                 })
             }
             wire::NodePayload::Paragraph(p) => {
@@ -826,7 +846,7 @@ impl Projector {
                     rtl,
                     alignment,
                     tab_stops: convert_tab_stops_back(&p.tab_stops),
-                    format,
+                    format, format_ref: None,
                 })
             }
             wire::NodePayload::Table(t) => self.map_table(node, t.clone()),
@@ -1498,7 +1518,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let doc = projected(&result);
         let OfficeBlock::Paragraph { spans, .. } = &doc.blocks[0] else {
@@ -1530,7 +1550,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let doc = projected(&result);
         let OfficeBlock::Paragraph { spans, .. } = &doc.blocks[0] else {
@@ -1571,7 +1591,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let doc = projected(&result);
         assert_eq!(doc.comments.len(), 1, "the orphan comment must still be listed");
@@ -1648,7 +1668,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![ob::OfficeSectionDeclaration {
                 hides_header: true,
@@ -1696,7 +1716,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![ob::OfficeSectionDeclaration {
                 paper: Some(ob::PaperGeometry {
@@ -1738,7 +1758,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             ..ob::OfficeReadResult::default()
         };
@@ -1755,7 +1775,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![ob::OfficeSectionDeclaration {
                 hides_header: true,
@@ -1786,7 +1806,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         };
         let result = ob::OfficeReadResult {
             blocks: vec![
@@ -1854,7 +1874,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![section.clone()],
             ..ob::OfficeReadResult::default()

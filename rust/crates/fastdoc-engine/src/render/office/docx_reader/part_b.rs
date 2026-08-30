@@ -829,6 +829,7 @@ impl super::DocxReader {
                     alignment,
                     tab_stops: tab_stops.clone(),
                     format: format.clone(),
+                    format_ref: None,
                 })
             };
         } else if let Some(num_pr) = p_pr.and_then(|n| n.child("w:numPr")) {
@@ -859,6 +860,7 @@ impl super::DocxReader {
                         alignment,
                         tab_stops: tab_stops.clone(),
                         format: format.clone(),
+                        format_ref: None,
                         numbering: None,
                     })
                 };
@@ -872,6 +874,7 @@ impl super::DocxReader {
                         alignment,
                         tab_stops: tab_stops.clone(),
                         format: format.clone(),
+                        format_ref: None,
                     })
                 };
             }
@@ -885,6 +888,7 @@ impl super::DocxReader {
                     alignment,
                     tab_stops: tab_stops.clone(),
                     format: format.clone(),
+                    format_ref: None,
                 })
             };
         }
@@ -945,6 +949,7 @@ impl super::DocxReader {
                 alignment: None,
                 tab_stops: Vec::new(),
                 format: Default::default(),
+                format_ref: None,
             };
         }
         OfficeBlock::Paragraph {
@@ -953,6 +958,7 @@ impl super::DocxReader {
             alignment: None,
             tab_stops: Vec::new(),
             format: Default::default(),
+            format_ref: None,
         }
     }
 
@@ -1491,6 +1497,7 @@ impl super::DocxReader {
                         blocks.push(OfficeBlock::Paragraph {
                             spans, rtl: false, alignment: None, tab_stops: Vec::new(),
                             format: Default::default(),
+                            format_ref: None,
                         });
                     }
                 }

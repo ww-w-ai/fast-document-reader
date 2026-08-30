@@ -862,8 +862,7 @@ impl<'a> Ctx<'a> {
                 alignment,
                 tab_stops,
                 format,
-                numbering,
-            } = item
+                numbering, .. } = item
             else {
                 unreachable!("map_list_group is only called with ListItem blocks")
             };
@@ -925,7 +924,7 @@ impl<'a> Ctx<'a> {
     ) -> Result<u64, OfficeAdapterError> {
         let node_id = self.new_node_id();
         let (children, payload) = match block {
-            OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format } => {
+            OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format, .. } => {
                 let runs = self.map_spans(spans, node_id)?;
                 let payload = wire::NodePayload::Heading(wire::Heading {
                     level: *level,
@@ -935,7 +934,7 @@ impl<'a> Ctx<'a> {
                 });
                 (runs, payload)
             }
-            OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format } => {
+            OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format, .. } => {
                 let runs = self.map_spans(spans, node_id)?;
                 let payload = wire::NodePayload::Paragraph(wire::Paragraph {
                     style: paragraph_style(format, *alignment, *rtl),
@@ -2119,7 +2118,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format,
+                format, format_ref: None,
             }],
             ..OfficeReadResult::default()
         };
@@ -2146,7 +2145,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             ..OfficeReadResult::default()
         };
@@ -2184,7 +2183,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             ..OfficeReadResult::default()
         };
@@ -2299,7 +2298,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let tree = ValidatedRenderTree::from_office(input(&result)).unwrap();
         let tags = tree.node_tags();
@@ -2315,7 +2314,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let tree = ValidatedRenderTree::from_office(input(&result)).unwrap();
         assert!(tree.node_tags().contains(&"heading"));
@@ -2333,7 +2332,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
                 numbering: Some(ListNumbering::default()),
             });
         }
@@ -2508,7 +2507,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         result.blocks.push(OfficeBlock::Heading {
             level: 2,
@@ -2516,7 +2515,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         result.keep_with_next_blocks.push(0);
         result.page_break_blocks.push(1);
@@ -2728,7 +2727,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             });
         }
         result.sections = vec![
@@ -2791,7 +2790,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         result.anchored_objects.push(office_block::OfficeAnchoredObject {
             block_index: 0,
@@ -2850,7 +2849,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             });
         }
         result.anchored_objects.push(office_block::OfficeAnchoredObject {
@@ -2889,7 +2888,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         result.anchored_objects.push(office_block::OfficeAnchoredObject {
             block_index: 0,
@@ -2947,7 +2946,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let a = ValidatedRenderTree::from_office(input(&result)).unwrap();
         let b = ValidatedRenderTree::from_office(input(&result)).unwrap();
@@ -2962,7 +2961,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         result.headers.push(office_block::OfficeHeaderFooter {
             applies_to: office_block::HeaderFooterApplicability::DefaultPages,
@@ -2971,7 +2970,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             section: None,
         });
@@ -2982,7 +2981,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             section: None,
         });
@@ -3009,7 +3008,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         result.footnotes.push(OfficeFootnote {
             number: 1,
@@ -3018,7 +3017,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             section: None,
         });
@@ -3056,7 +3055,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let tree = ValidatedRenderTree::from_office(input(&result)).unwrap();
         let json = String::from_utf8(tree.encode_json().unwrap()).unwrap();
@@ -3113,7 +3112,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let tree = ValidatedRenderTree::from_office(input(&result)).unwrap();
         let json = String::from_utf8(tree.encode_json().unwrap()).unwrap();
@@ -3157,7 +3156,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let err = ValidatedRenderTree::from_office(input(&result)).unwrap_err();
         assert_eq!(err, OfficeAdapterError::UnresolvedCommentId("nowhere".to_string()));
@@ -3201,7 +3200,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         });
         let a = ValidatedRenderTree::from_office(input(&result)).unwrap();
         let b = ValidatedRenderTree::from_office(input(&result)).unwrap();
@@ -3308,7 +3307,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![section],
             ..OfficeReadResult::default()
@@ -3355,7 +3354,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![OfficeSectionDeclaration::default()],
             ..OfficeReadResult::default()
@@ -3389,7 +3388,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![OfficeSectionDeclaration {
                 footnote_separator: Some(OfficeFootnoteSeparator {
@@ -3417,7 +3416,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![OfficeSectionDeclaration {
                 footnote_separator: Some(OfficeFootnoteSeparator {
@@ -3445,7 +3444,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![OfficeSectionDeclaration {
                 footnote_separator: Some(OfficeFootnoteSeparator {
@@ -3470,7 +3469,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![OfficeSectionDeclaration {
                 page_border: Some(OfficePageBorder {
@@ -3503,7 +3502,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             ..OfficeReadResult::default()
         };
@@ -3518,7 +3517,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             sections: vec![OfficeSectionDeclaration::default()],
             ..OfficeReadResult::default()

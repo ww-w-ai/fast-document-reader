@@ -2070,7 +2070,7 @@ impl HwpReader {
                 // section titles run long); it only rejects prose.
                 if let Some(explicit) = p.heading {
                     return OfficeBlock::Heading {
-                        level: explicit, spans, rtl: false, alignment: align, tab_stops: Vec::new(), format,
+                        level: explicit, spans, rtl: false, alignment: align, tab_stops: Vec::new(), format, format_ref: None,
                     };
                 }
                 if let Some(inferred) = Self::heading_level(p.style_name.as_deref(), p.style_local_name.as_deref()) {
@@ -2078,7 +2078,7 @@ impl HwpReader {
                         .trim().to_string();
                     if !text.is_empty() && text.chars().count() <= Self::HEADING_TEXT_LIMIT {
                         return OfficeBlock::Heading {
-                            level: inferred, spans, rtl: false, alignment: align, tab_stops: Vec::new(), format,
+                            level: inferred, spans, rtl: false, alignment: align, tab_stops: Vec::new(), format, format_ref: None,
                         };
                     }
                 }
@@ -2094,14 +2094,14 @@ impl HwpReader {
                     return OfficeBlock::ListItem {
                         level: list.level, ordered: list.ordered, spans,
                         marker: list.marker.clone().map(SwiftString::from),
-                        rtl: false, alignment: align, tab_stops, format,
+                        rtl: false, alignment: align, tab_stops, format, format_ref: None,
                         numbering: Some(ListNumbering {
                             glyphs: Self::list_numbering_glyphs(list.number_format.as_deref().unwrap_or("")),
                             start_number: list.start_number,
                         }),
                     };
                 }
-                OfficeBlock::Paragraph { spans, rtl: false, alignment: align, tab_stops, format }
+                OfficeBlock::Paragraph { spans, rtl: false, alignment: align, tab_stops, format, format_ref: None }
             }
             HwpBlock::Table(t) => {
                 let rows: Vec<Vec<_>> = t.rows.iter()
@@ -2238,6 +2238,7 @@ impl HwpReader {
                         return OfficeBlock::Paragraph {
                             spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
                             format: ParagraphFormat::default(),
+                            format_ref: None,
                         };
                     }
                 }
@@ -2272,6 +2273,7 @@ impl HwpReader {
                         return OfficeBlock::Paragraph {
                             spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
                             format: ParagraphFormat::default(),
+                            format_ref: None,
                         };
                     }
                 }
@@ -2328,6 +2330,7 @@ impl HwpReader {
                     return OfficeBlock::Paragraph {
                         spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
                         format: ParagraphFormat::default(),
+                        format_ref: None,
                     };
                 }
             }
@@ -2354,6 +2357,7 @@ impl HwpReader {
                     return OfficeBlock::Paragraph {
                         spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
                         format: ParagraphFormat::default(),
+                        format_ref: None,
                     };
                 }
             }
@@ -2362,12 +2366,14 @@ impl HwpReader {
             return OfficeBlock::Paragraph {
                 spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
                 format: ParagraphFormat::default(),
+                format_ref: None,
             };
         }
         if vector.paths.is_empty() || vector.size.width <= 0.5 || vector.size.height <= 0.5 {
             return OfficeBlock::Paragraph {
                 spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
                 format: ParagraphFormat::default(),
+                format_ref: None,
             };
         }
         let id = shapes.add_vector(vector);

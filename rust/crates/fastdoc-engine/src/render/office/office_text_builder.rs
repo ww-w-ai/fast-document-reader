@@ -1957,7 +1957,7 @@ impl OfficeTextBuilder {
                 // shared builder (out of this sprint's file scope). A cell's RUN-level styling
                 // (`Span.rtl`, `Span.textColor`, …) still applies, unaffected — it's carried entirely
                 // inside `spansAttributedString`.
-                OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format } => {
+                OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format, .. } => {
                     let heading_base = Self::heading_base_font(*level, theme, paged);
                     let mut str = NSMutableAttributedString::from_attributed_string(&Self::spans_attributed_string(
                         spans, &heading_base, &theme.text_color(), theme, font_size_scale, paged, &HashMap::new(),
@@ -1973,7 +1973,7 @@ impl OfficeTextBuilder {
                     );
                     result.append(&str);
                 }
-                OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format } => {
+                OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format, .. } => {
                     let mut str = NSMutableAttributedString::from_attributed_string(&Self::spans_attributed_string(
                         spans, base_font, &theme.text_color(), theme, font_size_scale, paged, &HashMap::new(),
                     ));

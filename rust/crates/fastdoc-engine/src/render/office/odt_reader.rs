@@ -518,10 +518,10 @@ impl OdtReader {
                     // Empty note body, or one that opens with a table/image — neither has a `[Span]` to
                     // splice into, so the marker becomes its own small leading paragraph instead of
                     // being silently dropped.
-                    blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
+                    blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(), format_ref: None });
                 }
             } else {
-                blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
+                blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(), format_ref: None });
             }
             blocks
         }).collect()
@@ -546,20 +546,20 @@ impl OdtReader {
     // swift: Render/Office/OdtReader.swift:427-440
     fn prepending_marker(marker: Span, block: &OfficeBlock) -> Option<OfficeBlock> {
         match block {
-            OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format } => {
+            OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format, .. } => {
                 let mut new_spans = vec![marker, Self::note_marker_separator()];
                 new_spans.extend(spans.clone());
                 Some(OfficeBlock::Paragraph {
                     spans: new_spans, rtl: rtl.clone(), alignment: alignment.clone(),
-                    tab_stops: tab_stops.clone(), format: format.clone(),
+                    tab_stops: tab_stops.clone(), format: format.clone(), format_ref: None,
                 })
             }
-            OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format } => {
+            OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format, .. } => {
                 let mut new_spans = vec![marker, Self::note_marker_separator()];
                 new_spans.extend(spans.clone());
                 Some(OfficeBlock::Heading {
                     level: *level, spans: new_spans, rtl: rtl.clone(), alignment: alignment.clone(),
-                    tab_stops: tab_stops.clone(), format: format.clone(),
+                    tab_stops: tab_stops.clone(), format: format.clone(), format_ref: None,
                 })
             }
             OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, .. } => {
@@ -580,6 +580,7 @@ impl OdtReader {
                     level: *level, ordered: *ordered, spans: new_spans, marker: item_marker.clone(),
                     rtl: rtl.clone(), alignment: alignment.clone(), tab_stops: tab_stops.clone(),
                     format: format.clone(), numbering: None,
+                    format_ref: None,
                 })
             }
             OfficeBlock::Table { .. } | OfficeBlock::Image { .. } | OfficeBlock::UnsupportedGraphic { .. }
@@ -1532,7 +1533,7 @@ impl OdtReader {
                         &child,
                         Box::new(move |spans| OfficeBlock::Heading {
                             level: level as i64, spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
-                            tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(),
+                            tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(), format_ref: None,
                         }),
                         styles, archive, notes,
                     ));
@@ -1550,7 +1551,7 @@ impl OdtReader {
                             &child,
                             Box::new(move |spans| OfficeBlock::Heading {
                                 level: level as i64, spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
-                                tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(),
+                                tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(), format_ref: None,
                             }),
                             styles, archive, notes,
                         ));
@@ -1560,7 +1561,7 @@ impl OdtReader {
                             &child,
                             Box::new(move |spans| OfficeBlock::Paragraph {
                                 spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
-                                tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(),
+                                tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(), format_ref: None,
                             }),
                             styles, archive, notes,
                         ));
@@ -1584,7 +1585,7 @@ impl OdtReader {
                             &child,
                             Box::new(move |spans| OfficeBlock::Paragraph {
                                 spans, rtl: resolved.rtl, alignment: resolved.alignment.clone(),
-                                tab_stops: resolved.tab_stops.clone(), format: resolved.format.clone(),
+                                tab_stops: resolved.tab_stops.clone(), format: resolved.format.clone(), format_ref: None,
                             }),
                             styles, archive, notes,
                         ));
@@ -1613,6 +1614,7 @@ impl OdtReader {
                                 level: level as i64, ordered, spans, marker: None, rtl: resolved.rtl,
                                 alignment: resolved.alignment.clone(), tab_stops: resolved.tab_stops.clone(),
                                 format: resolved.format.clone(), numbering: None,
+                                format_ref: None,
                             }),
                             styles, archive, notes,
                         ));
@@ -1751,6 +1753,7 @@ impl OdtReader {
                                 level: level as i64, ordered, spans, marker: None, rtl: resolved.rtl,
                                 alignment: resolved.alignment.clone(), tab_stops: resolved.tab_stops.clone(),
                                 format: resolved.format.clone(), numbering: None,
+                                format_ref: None,
                             }),
                             styles, archive, notes,
                         ));
@@ -2010,7 +2013,7 @@ impl OdtReader {
                         &child,
                         Box::new(move |spans| OfficeBlock::Heading {
                             level: level as i64, spans, rtl: resolved.rtl, alignment: resolved.alignment.clone(),
-                            tab_stops: resolved.tab_stops.clone(), format: resolved.format.clone(),
+                            tab_stops: resolved.tab_stops.clone(), format: resolved.format.clone(), format_ref: None,
                         }),
                         styles, archive, notes,
                     ));
@@ -2025,7 +2028,7 @@ impl OdtReader {
                             &child,
                             Box::new(move |spans| OfficeBlock::Heading {
                                 level: level as i64, spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
-                                tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(),
+                                tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(), format_ref: None,
                             }),
                             styles, archive, notes,
                         ));
@@ -2035,7 +2038,7 @@ impl OdtReader {
                             &child,
                             Box::new(move |spans| OfficeBlock::Paragraph {
                                 spans, rtl: resolved2.rtl, alignment: resolved2.alignment.clone(),
-                                tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(),
+                                tab_stops: resolved2.tab_stops.clone(), format: resolved2.format.clone(), format_ref: None,
                             }),
                             styles, archive, notes,
                         ));
@@ -2047,7 +2050,7 @@ impl OdtReader {
                 "table:table" => {
                     let spans = Self::flatten_nested_table(&child, &styles.text_styles, notes);
                     if !spans.is_empty() {
-                        blocks.push(OfficeBlock::Paragraph { spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
+                        blocks.push(OfficeBlock::Paragraph { spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(), format_ref: None });
                     }
                 }
                 _ => continue,
@@ -2183,12 +2186,12 @@ impl OdtReader {
                         let level = raw_level.max(1).min(6);
                         let spans = Self::collect_spans(&child, &TextStyle::default(), text_styles, notes);
                         if spans.is_empty() { continue; }
-                        blocks.push(OfficeBlock::Heading { level: level as i64, spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
+                        blocks.push(OfficeBlock::Heading { level: level as i64, spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(), format_ref: None });
                     }
                     "text:p" => {
                         let spans = Self::collect_spans(&child, &TextStyle::default(), text_styles, notes);
                         if spans.is_empty() { continue; }
-                        blocks.push(OfficeBlock::Paragraph { spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
+                        blocks.push(OfficeBlock::Paragraph { spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(), format_ref: None });
                     }
                     _ => continue,
                 }

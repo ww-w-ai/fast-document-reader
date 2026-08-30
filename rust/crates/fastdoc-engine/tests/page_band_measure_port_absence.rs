@@ -61,7 +61,7 @@ fn built_height_refuses_rather_than_guessing_when_nothing_is_installed() {
         rtl: false,
         alignment: None,
         tab_stops: vec![],
-        format: ParagraphFormat::default(),
+        format: ParagraphFormat::default(), format_ref: None,
     }];
 
     let result = PageBandGeometry::built_height(&blocks, &theme, 400.0, 12.0, None);
@@ -98,7 +98,7 @@ fn the_first_unmeasurable_note_refuses_the_whole_batch_not_just_its_own_entry() 
         number: 2,
         blocks: vec![OfficeBlock::Paragraph {
             spans: vec![Span { text: "a note with real text".into(), ..Span::default() }],
-            rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(),
+            rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(), format_ref: None,
         }],
         section: None,
     };

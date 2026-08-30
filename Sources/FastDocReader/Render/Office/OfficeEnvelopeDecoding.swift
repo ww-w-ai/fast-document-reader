@@ -323,16 +323,18 @@ extension OfficeBlock: Decodable {
         // them — a hand-written `init(from:)` per case would name every field a second time.
         struct Heading: Decodable {
             var level: Int; var spans: [Span]; var rtl: Bool
-            var alignment: NSTextAlignment?; var tabStops: [TabStop]; var format: ParagraphFormat
+            var alignment: NSTextAlignment?; var tabStops: [TabStop]
+            var format: ParagraphFormat?; var formatRef: Int?
         }
         struct Paragraph: Decodable {
             var spans: [Span]; var rtl: Bool
-            var alignment: NSTextAlignment?; var tabStops: [TabStop]; var format: ParagraphFormat
+            var alignment: NSTextAlignment?; var tabStops: [TabStop]
+            var format: ParagraphFormat?; var formatRef: Int?
         }
         struct ListItem: Decodable {
             var level: Int; var ordered: Bool; var spans: [Span]; var marker: String?
             var rtl: Bool; var alignment: NSTextAlignment?; var tabStops: [TabStop]
-            var format: ParagraphFormat; var numbering: ListNumbering?
+            var format: ParagraphFormat?; var formatRef: Int?; var numbering: ListNumbering?
         }
         struct Table: Decodable {
             var rows: [[Cell]]; var headerRows: Int; var columnWidths: [CGFloat]; var format: TableFormat
@@ -348,16 +350,19 @@ extension OfficeBlock: Decodable {
         case "heading":
             let p = try c.decode(Payload.Heading.self, forKey: key)
             self = .heading(level: p.level, spans: p.spans, rtl: p.rtl,
-                            alignment: p.alignment, tabStops: p.tabStops, format: p.format)
+                            alignment: p.alignment, tabStops: p.tabStops,
+                            format: try ParagraphFormatTable.resolve(p.format, ref: p.formatRef))
         case "paragraph":
             let p = try c.decode(Payload.Paragraph.self, forKey: key)
             self = .paragraph(spans: p.spans, rtl: p.rtl, alignment: p.alignment,
-                              tabStops: p.tabStops, format: p.format)
+                              tabStops: p.tabStops,
+                              format: try ParagraphFormatTable.resolve(p.format, ref: p.formatRef))
         case "listItem":
             let p = try c.decode(Payload.ListItem.self, forKey: key)
             self = .listItem(level: p.level, ordered: p.ordered, spans: p.spans, marker: p.marker,
                              rtl: p.rtl, alignment: p.alignment, tabStops: p.tabStops,
-                             format: p.format, numbering: p.numbering)
+                             format: try ParagraphFormatTable.resolve(p.format, ref: p.formatRef),
+                             numbering: p.numbering)
         case "table":
             let p = try c.decode(Payload.Table.self, forKey: key)
             self = .table(rows: p.rows, headerRows: p.headerRows,
@@ -389,6 +394,41 @@ extension OfficeBlock: Decodable {
 /// distinct declarations**. Removing the repeats took the host's decode of that document from
 /// 585.0 ms to 445.5 ms, measured through this very path (invariant 129) — the bytes were never
 /// the point, the 5,494 nested containers were.
+/// The paragraph formats an envelope carries once, for the run of a single decode.
+///
+/// The same repair `EdgeBorderTable` makes for per-edge borders, applied to the field that turned
+/// out to cost MORE. Measured on the same manual: `format` appears 10,864 times for 1,635 distinct
+/// values against `edge_borders`' 5,494 for 274 — and invariant 129 established the bill is the
+/// nested container Foundation opens per occurrence, not the bytes in it.
+///
+/// A default format renders byte-identically to no format at all, so the wire now omits it
+/// entirely rather than writing `{"contextualSpacing":false}` per paragraph. That is why the
+/// resolve below answers a missing key with `ParagraphFormat()` and not with a throw.
+enum ParagraphFormatTable {
+    @TaskLocal static var pool: [ParagraphFormat] = []
+
+    static func withPool<T>(_ pool: [ParagraphFormat], _ body: () throws -> T) rethrows -> T {
+        try $pool.withValue(pool, operation: body)
+    }
+
+    /// The format itself when the wire carried it, the pooled one when it sent a slot, and the
+    /// default when it sent neither.
+    ///
+    /// A slot the table cannot answer is a THROW rather than a silent default: a default format
+    /// means "this paragraph declared nothing", so swallowing a bad slot would turn a broken
+    /// envelope into a document whose spacing and indents quietly vanished.
+    static func resolve(_ inline: ParagraphFormat?, ref: Int?) throws -> ParagraphFormat {
+        if let inline { return inline }
+        guard let ref else { return ParagraphFormat() }
+        guard ref >= 0, ref < pool.count else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: [],
+                debugDescription: "formatRef \(ref) is outside the envelope's table of \(pool.count)"))
+        }
+        return pool[ref]
+    }
+}
+
 enum EdgeBorderTable {
     @TaskLocal static var pool: [EdgeBorders] = []
 

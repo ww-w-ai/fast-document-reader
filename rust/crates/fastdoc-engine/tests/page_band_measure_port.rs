@@ -100,7 +100,7 @@ fn text_paragraph(text: &str) -> OfficeBlock {
         rtl: false,
         alignment: None,
         tab_stops: vec![],
-        format: ParagraphFormat::default(),
+        format: ParagraphFormat::default(), format_ref: None,
     }
 }
 

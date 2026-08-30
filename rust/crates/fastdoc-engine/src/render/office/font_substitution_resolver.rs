@@ -810,22 +810,24 @@ impl crate::render::office::office_block::OfficeBlock {
         match self {
             // `RenderTheme.headingFont` is `.systemFont(weight: .semibold)` regardless of level
             // (level only changes SIZE, never weight) — see `FontSubstitutionResolver.BlockWeight`.
-            OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format } => OfficeBlock::Heading {
+            OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format, .. } => OfficeBlock::Heading {
                 level: *level,
                 spans: FontSubstitutionResolver::resolve(spans, BlockWeight::Semibold, plan),
                 rtl: *rtl,
                 alignment: alignment.clone(),
                 tab_stops: tab_stops.clone(),
                 format: format.clone(),
+                format_ref: None,
             },
-            OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format } => OfficeBlock::Paragraph {
+            OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format, .. } => OfficeBlock::Paragraph {
                 spans: FontSubstitutionResolver::resolve(spans, BlockWeight::Regular, plan),
                 rtl: *rtl,
                 alignment: alignment.clone(),
                 tab_stops: tab_stops.clone(),
                 format: format.clone(),
+                format_ref: None,
             },
-            OfficeBlock::ListItem { level, ordered, spans, marker, rtl, alignment, tab_stops, format, numbering } => {
+            OfficeBlock::ListItem { level, ordered, spans, marker, rtl, alignment, tab_stops, format, numbering, .. } => {
                 OfficeBlock::ListItem {
                     level: *level,
                     ordered: *ordered,
@@ -835,6 +837,7 @@ impl crate::render::office::office_block::OfficeBlock {
                     alignment: alignment.clone(),
                     tab_stops: tab_stops.clone(),
                     format: format.clone(),
+                    format_ref: None,
                     numbering: numbering.clone(),
                 }
             }

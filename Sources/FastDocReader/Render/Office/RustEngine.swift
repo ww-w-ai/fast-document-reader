@@ -182,11 +182,19 @@ enum RustEngine {
             let pool = try container.decodeIfPresent([String: Data].self, forKey: .picturePool) ?? [:]
             // The edge-border table rides in on the same rule, for the same reason (P4b).
             let edges = try container.decodeIfPresent([EdgeBorders].self, forKey: .edgeBorderPool) ?? []
+            // The paragraph-format table rides in on the same rule, for the same reason, and turned
+            // out to carry twice the occurrences the borders did.
+            let formats = try container.decodeIfPresent([ParagraphFormat].self,
+                                                        forKey: .paragraphFormatPool) ?? []
             result = try PictureBytes.withPool(pool) {
-                try EdgeBorderTable.withPool(edges) { try OfficeReadResult(from: decoder) }
+                try EdgeBorderTable.withPool(edges) {
+                    try ParagraphFormatTable.withPool(formats) { try OfficeReadResult(from: decoder) }
+                }
             }
         }
-        private enum VersionKey: String, CodingKey { case v, picturePool, edgeBorderPool }
+        private enum VersionKey: String, CodingKey {
+            case v, picturePool, edgeBorderPool, paragraphFormatPool
+        }
     }
 
     static func extractMarkdown(_ data: Data, extension ext: String) -> String? {

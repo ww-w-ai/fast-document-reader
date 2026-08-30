@@ -574,6 +574,7 @@ impl Cell {
                 alignment: None,
                 tab_stops: vec![],
                 format: ParagraphFormat::default(),
+                format_ref: None,
             }],
             row_span,
             col_span,
@@ -1218,6 +1219,17 @@ pub struct ParagraphFormat {
     pub line_height_from_font_metrics: Option<bool>,
 }
 
+impl ParagraphFormat {
+    /// Whether this says nothing at all — the state a block with no `format` key means.
+    ///
+    /// Used to keep the field OFF the wire when it carries no information, which is the
+    /// half of the `format` repair that needs no pool: a paragraph that declares nothing
+    /// still cost a nested container per block before this.
+    pub fn is_default(&self) -> bool {
+        *self == ParagraphFormat::default()
+    }
+}
+
 impl Default for ParagraphFormat {
     fn default() -> Self {
         ParagraphFormat {
@@ -1375,7 +1387,13 @@ pub enum OfficeBlock {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         alignment: Option<NSTextAlignment>,
         tab_stops: Vec<TabStop>,
+        #[serde(skip_serializing_if = "ParagraphFormat::is_default", default)]
         format: ParagraphFormat,
+        /// The slot in `OfficeReadResult.paragraph_format_pool` this paragraph's format
+        /// occupies, when the wire pooled it instead of repeating it — see
+        /// `paragraph_format_pool`. Exactly one of the two is ever set on the wire.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        format_ref: Option<u32>,
     },
     // swift: Render/Office/OfficeBlock.swift:789
     Paragraph {
@@ -1384,7 +1402,13 @@ pub enum OfficeBlock {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         alignment: Option<NSTextAlignment>,
         tab_stops: Vec<TabStop>,
+        #[serde(skip_serializing_if = "ParagraphFormat::is_default", default)]
         format: ParagraphFormat,
+        /// The slot in `OfficeReadResult.paragraph_format_pool` this paragraph's format
+        /// occupies, when the wire pooled it instead of repeating it — see
+        /// `paragraph_format_pool`. Exactly one of the two is ever set on the wire.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        format_ref: Option<u32>,
     },
     // swift: Render/Office/OfficeBlock.swift:790-818
     /// `level` is a 0-based nesting depth. `ordered` selects "1. 2. 3." numbering — per level,
@@ -1423,7 +1447,13 @@ pub enum OfficeBlock {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         alignment: Option<NSTextAlignment>,
         tab_stops: Vec<TabStop>,
+        #[serde(skip_serializing_if = "ParagraphFormat::is_default", default)]
         format: ParagraphFormat,
+        /// The slot in `OfficeReadResult.paragraph_format_pool` this paragraph's format
+        /// occupies, when the wire pooled it instead of repeating it — see
+        /// `paragraph_format_pool`. Exactly one of the two is ever set on the wire.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        format_ref: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         numbering: Option<ListNumbering>,
     },
@@ -2109,6 +2139,14 @@ pub struct OfficeReadResult {
     /// memory and empty again after `office_export::from_json`, exactly like `picture_pool`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edge_border_pool: Vec<EdgeBorders>,
+    /// Paragraph formats the WIRE carries once — see `paragraph_format_pool`. Empty in memory
+    /// and empty again after `office_export::from_json`, exactly like `edge_border_pool`.
+    ///
+    /// Measured on the same manual that justified that one: `format` appears **10,864 times for
+    /// 1,635 distinct values**, 1,655,374 bytes — twice the occurrences of `edge_borders`, and
+    /// occurrences are what invariant 129 showed the host actually pays for.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub paragraph_format_pool: Vec<ParagraphFormat>,
     /// Inline vector drawings keyed by the `.image(id:)` layout node that reserves their box.
     /// The host paints these paths and installs the resulting bytes into `images` before layout.
     pub vector_graphics: std::collections::HashMap<
@@ -2322,7 +2360,7 @@ impl PartialEq for OfficeReadResult {
     fn eq(&self, other: &Self) -> bool {
         let Self {
             blocks, comments, images, pictures_declared_without_bytes, picture_pool,
-            edge_border_pool, vector_graphics,
+            edge_border_pool, paragraph_format_pool, vector_graphics,
             default_body_font_size, declared_faces,
             page_content_width, page_margin_left, page_margin_right, page_content_height,
             page_margin_top, page_margin_bottom, page_header_distance, page_footer_distance,
@@ -2336,6 +2374,7 @@ impl PartialEq for OfficeReadResult {
             && pictures_declared_without_bytes == &other.pictures_declared_without_bytes
             && map_eq(picture_pool, &other.picture_pool)
             && edge_border_pool == &other.edge_border_pool
+            && paragraph_format_pool == &other.paragraph_format_pool
             && map_eq(vector_graphics, &other.vector_graphics)
             && default_body_font_size == &other.default_body_font_size
             && map_eq(declared_faces, &other.declared_faces)
@@ -2371,6 +2410,7 @@ impl Default for OfficeReadResult {
             pictures_declared_without_bytes: std::collections::HashSet::new(),
             picture_pool: std::collections::HashMap::new(),
             edge_border_pool: Vec::new(),
+            paragraph_format_pool: Vec::new(),
             vector_graphics: std::collections::HashMap::new(),
             default_body_font_size: 11.0,
             declared_faces: std::collections::HashMap::new(),

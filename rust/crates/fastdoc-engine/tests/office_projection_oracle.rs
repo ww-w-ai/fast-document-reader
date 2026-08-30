@@ -177,7 +177,7 @@ fn a_single_plain_paragraph_projects_identically() {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         }],
         default_body_font_size: 11.0,
         ..OfficeReadResult::default()
@@ -196,14 +196,14 @@ fn a_heading_and_a_styled_paragraph_project_identically() {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             },
             OfficeBlock::Paragraph {
                 spans: vec![plain_span("Body text, unstyled.")],
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             },
         ],
         default_body_font_size: 12.0,
@@ -312,7 +312,7 @@ fn an_anchored_object_round_trips_its_frame_and_vector_content() {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         }],
         anchored_objects: vec![OfficeAnchoredObject {
             block_index: 0,
@@ -356,7 +356,7 @@ fn a_paragraph_anchored_object_round_trips_with_no_final_y() {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         }],
         anchored_objects: vec![OfficeAnchoredObject {
             block_index: 0,
@@ -405,7 +405,7 @@ fn the_document_s_own_font_table_round_trips_through_declared_faces() {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         }],
         declared_faces,
         default_body_font_size: 11.0,
@@ -583,7 +583,7 @@ fn a_span_with_a_drawn_column_separator_round_trips_its_layout() {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         }],
         default_body_font_size: 11.0,
         ..OfficeReadResult::default()
@@ -658,14 +658,14 @@ fn a_second_sections_ordinary_content_walks_cleanly_and_carries_its_own_declarat
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             },
             OfficeBlock::Paragraph {
                 spans: vec![plain_span("section two body")],
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             },
         ],
         sections: vec![OfficeSectionDeclaration::default(), section_two],
@@ -697,14 +697,14 @@ fn header_applicability_and_a_page_number_restart_project_identically() {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             },
             OfficeBlock::Paragraph {
                 spans: vec![plain_span("the page numbering starts over here")],
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             },
         ],
         headers: vec![OfficeHeaderFooter {
@@ -714,7 +714,7 @@ fn header_applicability_and_a_page_number_restart_project_identically() {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             section: None,
         }],
@@ -725,7 +725,7 @@ fn header_applicability_and_a_page_number_restart_project_identically() {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             section: None,
         }],
@@ -764,7 +764,7 @@ fn repeated_edge_border_result() -> OfficeReadResult {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         }],
         edge_borders: Some(borders.clone()),
         ..Cell::default()
@@ -838,4 +838,115 @@ fn the_projection_assembler_pools_repeated_edge_borders() {
 #[test]
 fn both_assemblers_agree_on_a_document_with_repeated_edge_borders() {
     assert_projection_matches(&repeated_edge_border_result(), "repeated-edge-borders");
+}
+
+/// Four paragraphs, two looks — the fixture the format pool exists for.
+fn repeated_paragraph_format_result() -> OfficeReadResult {
+    let spaced = |before: f64| ParagraphFormat {
+        spacing_before: Some(before),
+        ..ParagraphFormat::default()
+    };
+    let paragraph = |format: ParagraphFormat| OfficeBlock::Paragraph {
+        spans: vec![],
+        rtl: false,
+        alignment: None,
+        tab_stops: vec![],
+        format,
+        format_ref: None,
+    };
+    OfficeReadResult {
+        blocks: vec![
+            paragraph(spaced(6.0)),
+            paragraph(spaced(12.0)),
+            paragraph(spaced(6.0)),
+            paragraph(spaced(6.0)),
+        ],
+        ..Default::default()
+    }
+}
+
+/// The gate that was missing when the format pool was first wired: it went into the EXPORTER only,
+/// and every real document goes through the PROJECTION assembler, so the two disagreed on every
+/// paragraph in the corpus. The real-document oracle caught it — this one names the case directly.
+#[test]
+fn the_projection_assembler_pools_repeated_paragraph_formats() {
+    let result = repeated_paragraph_format_result();
+    let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
+        format: DocumentFormat::Docx,
+        source_name: "repeated-paragraph-formats",
+        source_bytes: b"repeated-paragraph-formats",
+        result: &result,
+        resources: BTreeMap::new(),
+    })
+    .expect("from_office");
+    let projected: serde_json::Value =
+        serde_json::from_str(&project(&tree).expect("project")).expect("valid JSON");
+
+    let pool = projected["paragraph_format_pool"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the projection wrote no paragraph_format_pool:\n{projected:#}"));
+    assert_eq!(pool.len(), 2, "two distinct formats, two entries");
+
+    let mut inline = 0usize;
+    let mut slots = 0usize;
+    fn count(v: &serde_json::Value, inline: &mut usize, slots: &mut usize) {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, child) in map {
+                    if k == "format" {
+                        *inline += 1;
+                    }
+                    if k == "format_ref" {
+                        *slots += 1;
+                    }
+                    count(child, inline, slots);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    count(item, inline, slots);
+                }
+            }
+            _ => {}
+        }
+    }
+    // The pool's own entries are `ParagraphFormat` objects, not `format` KEYS, so the walk does not
+    // count them — which is what makes "inline == 0" a real assertion.
+    count(&projected, &mut inline, &mut slots);
+    assert_eq!(inline, 0, "a pooled document must carry no inline format:\n{projected:#}");
+    assert_eq!(slots, 4, "every one of the four paragraphs must carry a slot");
+}
+
+/// And the two assemblers must agree on that fixture. This is the check that fails when only one of
+/// them learns to pool.
+#[test]
+fn both_assemblers_agree_on_a_document_with_repeated_paragraph_formats() {
+    assert_projection_matches(&repeated_paragraph_format_result(), "repeated-paragraph-formats");
+}
+
+/// A paragraph that declares nothing must leave the wire without a `format` key at ALL — the half
+/// of this repair that needs no pool, and the one that removes a container per block rather than
+/// shrinking one.
+#[test]
+fn a_paragraph_that_declares_nothing_writes_no_format_key() {
+    let result = OfficeReadResult {
+        blocks: vec![OfficeBlock::Paragraph {
+            spans: vec![], rtl: false, alignment: None, tab_stops: vec![],
+            format: ParagraphFormat::default(), format_ref: None,
+        }],
+        ..Default::default()
+    };
+    let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
+        format: DocumentFormat::Docx,
+        source_name: "silent-format",
+        source_bytes: b"silent-format",
+        result: &result,
+        resources: BTreeMap::new(),
+    })
+    .expect("from_office");
+    let projected = project(&tree).expect("project");
+    assert!(!projected.contains("\"format\""),
+            "a default format must not reach the wire:\n{projected}");
+    assert!(!projected.contains("paragraph_format_pool"),
+            "and it must not be pooled either:\n{projected}");
 }

@@ -436,8 +436,7 @@ pub(crate) fn account_current_office_slice(
         rtl,
         alignment,
         tab_stops,
-        format,
-    } = heading
+        format, .. } = heading
     else {
         return Err(AccountingError::WrongBlockVariant("Heading"));
     };
@@ -456,8 +455,7 @@ pub(crate) fn account_current_office_slice(
         rtl,
         alignment,
         tab_stops,
-        format,
-    } = paragraph
+        format, .. } = paragraph
     else {
         return Err(AccountingError::WrongBlockVariant("Paragraph"));
     };
@@ -479,8 +477,7 @@ pub(crate) fn account_current_office_slice(
         alignment,
         tab_stops,
         format,
-        numbering,
-    } = list_item
+        numbering, .. } = list_item
     else {
         return Err(AccountingError::WrongBlockVariant("ListItem"));
     };
@@ -974,14 +971,14 @@ mod tests {
             rtl: true,
             alignment: Some(NSTextAlignment::Right),
             tab_stops: vec![tab],
-            format,
+            format, format_ref: None,
         };
         let paragraph = OfficeBlock::Paragraph {
             spans: vec![span.clone()],
             rtl: true,
             alignment: Some(NSTextAlignment::Justified),
             tab_stops: vec![tab],
-            format,
+            format, format_ref: None,
         };
         let list = OfficeBlock::ListItem {
             level: 2,
@@ -991,7 +988,7 @@ mod tests {
             rtl: false,
             alignment: Some(NSTextAlignment::Left),
             tab_stops: vec![tab],
-            format,
+            format, format_ref: None,
             numbering: Some(numbering),
         };
         (span, format, tab, numbering, heading, paragraph, list)
@@ -1205,7 +1202,7 @@ mod tests {
                 rtl: false,
                 alignment: None,
                 tab_stops: vec![],
-                format: ParagraphFormat::default(),
+                format: ParagraphFormat::default(), format_ref: None,
             }],
             row_span: 2,
             col_span: 3,

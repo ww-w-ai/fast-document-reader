@@ -33,6 +33,7 @@ pub fn from_json(json: &str) -> Result<OfficeReadResult, serde_json::Error> {
     let mut result = envelope.result;
     super::picture_pool::expand(&mut result);
     super::edge_border_pool::expand(&mut result);
+    super::paragraph_format_pool::expand(&mut result);
     Ok(result)
 }
 
@@ -111,6 +112,9 @@ pub fn to_json(result: &OfficeReadResult) -> Result<String, NotExportable> {
     // The same repair for the field that is next-largest after the pictures — see
     // `edge_border_pool`. Measured: 5,494 occurrences of 274 declarations on one real manual.
     super::edge_border_pool::intern(&mut pooled);
+    // And one copy of each paragraph format — see `paragraph_format_pool`. Measured:
+    // 10,864 occurrences of 1,635 formats on the same manual, twice the borders' count.
+    super::paragraph_format_pool::intern(&mut pooled);
     let envelope = OfficeDocumentEnvelope {
         v: SCHEMA_VERSION,
         result: pooled,
@@ -135,7 +139,7 @@ mod tests {
             rtl: false,
             alignment: None,
             tab_stops: vec![],
-            format: ParagraphFormat::default(),
+            format: ParagraphFormat::default(), format_ref: None,
         }
     }
 

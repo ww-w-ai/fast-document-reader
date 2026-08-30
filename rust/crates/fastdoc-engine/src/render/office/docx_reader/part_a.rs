@@ -680,10 +680,10 @@ impl DocxReader {
                         // Empty note body, or one that opens with a table/image — neither has anywhere to
                         // splice a span into, so the marker becomes its own small leading paragraph instead
                         // of being silently dropped.
-                        blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
+                        blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(), format_ref: None });
                     }
                 } else {
-                    blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default() });
+                    blocks.insert(0, OfficeBlock::Paragraph { spans: vec![marker], rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(), format_ref: None });
                 }
                 blocks
             })
@@ -695,15 +695,15 @@ impl DocxReader {
     /// caller falls back to a standalone marker paragraph instead.
     fn prepending_marker(marker: Span, block: OfficeBlock) -> Option<OfficeBlock> {
         match block {
-            OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format } => {
+            OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format, .. } => {
                 let mut new_spans = vec![marker];
                 new_spans.extend(spans);
-                Some(OfficeBlock::Paragraph { spans: new_spans, rtl, alignment, tab_stops, format })
+                Some(OfficeBlock::Paragraph { spans: new_spans, rtl, alignment, tab_stops, format, format_ref: None })
             }
-            OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format } => {
+            OfficeBlock::Heading { level, spans, rtl, alignment, tab_stops, format, .. } => {
                 let mut new_spans = vec![marker];
                 new_spans.extend(spans);
-                Some(OfficeBlock::Heading { level, spans: new_spans, rtl, alignment, tab_stops, format })
+                Some(OfficeBlock::Heading { level, spans: new_spans, rtl, alignment, tab_stops, format, format_ref: None })
             }
             OfficeBlock::ListItem { level, ordered, spans, marker: item_marker, rtl, alignment, tab_stops, format, .. } => {
                 let mut new_spans = vec![marker];
@@ -721,7 +721,7 @@ impl DocxReader {
                 // preserving `numbering` without also fixing DocxReader.swift and OdtReader.swift.
                 Some(OfficeBlock::ListItem {
                     level, ordered, spans: new_spans, marker: item_marker, rtl, alignment, tab_stops,
-                    format, numbering: None,
+                    format, format_ref: None, numbering: None,
                 })
             }
             OfficeBlock::Table { .. }
