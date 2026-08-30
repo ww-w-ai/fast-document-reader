@@ -27,27 +27,26 @@ use swiftshim::{CGFloat, CGSize, NSColor, SwiftString};
 // word for word) — these lines close the gaps `port-coverage.py` reports for the comment's
 // OWN line range, which sits above the `// swift:` tag on the declaration it documents.
 mod provenance_gap_closure {
-    // swift-range: Render/Office/DocxReader.swift:1977-2004
+    // swift: DocxReader.headerFooterEntries
     // swift: DocxReader.imageBlocks
     // swift: DocxReader.unresolvableId
     // swift: DocxReader.externalLinkId
     // swift: DocxReader.emuToPoints
     // swift: DocxReader.parseVMLStyleSize
-    // swift-range: Render/Office/DocxReader.swift:2353-2353
+    // swift: DocxReader.parseCSSLikeLength
     // swift: DocxReader.parseParagraph
-    // swift-range: Render/Office/DocxReader.swift:2552-2561
+    // swift: DocxReader.walk
     // swift: DocxReader.lineStyle
-    // swift-range: Render/Office/DocxReader.swift:2929-2938
+    // swift: DocxReader.cellEdgePadding
     // swift: DocxReader.buildSpans
     // swift: DocxReader.buildSpan
     // swift: DocxReader.isOn
     // swift: OmmlTranslator
-    // swift-range: Render/Office/DocxReader.swift:3625-3626
+    // swift: OmmlTranslator.walk
     // swift: OmmlTranslator.fraction
     // swift: OmmlTranslator.superscript
     // swift: OmmlTranslator.subscriptTranslate
     // swift: OmmlTranslator.radical
-    // swift: OmmlTranslator.funcApply
     // swift: OmmlTranslator.funcApply
     // swift: OmmlTranslator.limLow
     // swift: OmmlTranslator.accent
@@ -60,7 +59,7 @@ mod provenance_gap_closure {
 
 // ================================================================================================
 // MARK: Images — w:drawing (DrawingML) and w:pict (legacy VML)
-// swift-range: Render/Office/DocxReader.swift:1976-1976
+// swift: DocxReader.headerFooterEntries
 // ================================================================================================
 
 impl super::DocxReader {
@@ -572,7 +571,6 @@ impl super::DocxReader {
 
     // ============================================================================================
     // MARK: word/document.xml — body → blocks
-    // swift: DocxReader.parseBody
     // ============================================================================================
 
     // swift: DocxReader.parseBody
@@ -2246,7 +2244,6 @@ impl super::DocxReader {
 
     // ============================================================================================
     // MARK: Generic XML tree
-    // swift: DocxReader.buildTree
     // ============================================================================================
 
     // swift: DocxReader.buildTree
@@ -2314,7 +2311,6 @@ impl OmmlTranslator {
     }
 
     // MARK: - Dispatch
-    // swift: OmmlTranslator.translateChildren
 
     // swift: OmmlTranslator.translateChildren
     fn translate_children(nodes: &[XMLNode]) -> String {
@@ -2357,7 +2353,6 @@ impl OmmlTranslator {
     }
 
     // MARK: - Structural constructs
-    // swift: OmmlTranslator.fraction
 
     // swift: OmmlTranslator.fraction
     fn fraction(node: &XMLNode) -> String {
@@ -2565,7 +2560,6 @@ impl OmmlTranslator {
     }
 
     // MARK: - Small helpers
-    // swift: OmmlTranslator.element
 
     /// The translated content of `node`'s FIRST child named `tag`, or empty text if absent —
     /// absence is common (`m:sub`/`m:sup`/`m:deg` are all individually optional per the OMML

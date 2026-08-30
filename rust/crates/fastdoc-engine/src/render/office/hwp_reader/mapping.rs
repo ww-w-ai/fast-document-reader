@@ -11,7 +11,6 @@
 //! yet populated at the time this file was written; referenced by their Swift names per
 //! docs/plans/rust-port-convention.md §4.
 
-// swift-range: Render/Office/HwpReader.swift:1-3
 use swiftshim::{Data, EngineError, NSRange, SwiftString};
 use swiftshim::geometry::{CGFloat, CGSize, CGRect, CGPoint, NSRect};
 use crate::render::office::office_block::{
@@ -39,7 +38,6 @@ use crate::render::office::hwp_reader::schema::{
 /// `column_layout` treats both the same way: keep the incomplete reading, honestly.
 pub(crate) type ColumnAuthority = std::collections::HashMap<ColumnSignature, OfficeColumnLayout>;
 
-// swift: HwpReader
 // Bridge to the rhwp (Rust, MIT — github.com/edwardkim/rhwp, forked: FFI drift fix +
 // structured-export FFI added) HWP/HWPX parser, statically linked via the RhwpNative
 // xcframework. See docs/BUILD-RHWP.md to rebuild the binary.
@@ -142,7 +140,8 @@ mod crop_tests {
 
 /// swift: `UnsafeMutableRawPointer` used as the rhwp parse handle — named here so the FFI stand-in
 /// functions above have a real parameter type instead of an opaque pointer type nobody else uses.
-// swift-range: Render/Office/HwpReader.swift:36 (parameter type)
+// swift: HwpReader.imageBase64
+// (parameter type)
 pub type RhwpHandle = *mut std::ffi::c_void;
 
 /// A live rhwp parse, kept past the read that produced it.
@@ -1102,7 +1101,6 @@ impl HwpReader {
         ))
     }
 
-    // swift: HwpReader.mapMasterPage
     // (PaperGeometry alias — `HwpReader.PaperGeometry` in Swift is a typealias to the
     // format-neutral `FastDocReader.PaperGeometry`; this port uses the format-neutral
     // `crate::render::office::office_block::PaperGeometry` directly, imported above.)
@@ -2194,7 +2192,8 @@ impl HwpReader {
         }
     }
 
-    // swift-range: Render/Office/HwpReader.swift:1408-1471 (the `.image` arm, split out for one level less nesting)
+    // swift: HwpReader.mapBlock
+    // (the `.image` arm, split out for one level less nesting)
     fn map_image_block(im: &HwpImage, page_width: Option<CGFloat>, shapes: &mut MediaContext) -> OfficeBlock {
         // `read` resolves binDataId → pixels via `imageBase64` at read time (pre-decoded into
         // OfficeReadResult.images); the block only RESERVES the layout area here (invariant
@@ -2289,7 +2288,8 @@ impl HwpReader {
         }
     }
 
-    // swift-range: Render/Office/HwpReader.swift:1472-1521 (the `.shape` arm, split out for one level less nesting)
+    // swift: HwpReader.mapBlock
+    // (the `.shape` arm, split out for one level less nesting)
     fn map_shape_block(sh: &HwpShape, shapes: &mut MediaContext) -> OfficeBlock {
         // An ANCHORED drawing is placed by the document's own rule — the offsets ALONE are not
         // enough, and that is exactly what the float layer invariant 75 rejected got wrong: it

@@ -249,7 +249,6 @@ use markdown::{
 pub struct MarkdownRenderer;
 
 impl MarkdownRenderer {
-    // swift: MarkdownRenderer.render
     // Reuse the parsed tree across renders of the SAME text (e.g. every ⌘+/− zoom step re-renders
     // to rescale fonts but the markdown hasn't changed) so we don't re-parse on each zoom.
     // (Swift's `private static var parseMemo` — a thread-local/static cache; phase B decides the
@@ -989,7 +988,6 @@ impl AttributedBuilder {
         self.tag_block(start, heading.range);
     }
 
-    // swift: AttributedBuilder.scanMathSpans
     /// Find every `$$ … $$` span in the RAW source, before markdown ever sees it.
     ///
     /// `$$` is not markdown, so the parser reads a formula's insides as markdown and mangles them:
@@ -1251,7 +1249,6 @@ impl AttributedBuilder {
         self.tag_block(start, list.range);
     }
 
-    // swift: AttributedBuilder.renderList
     /// Render list items at a given nesting `depth`. Each level indents one step further, so
     /// 2nd/3rd/4th-level bullets sit progressively inside. A list item's own text is rendered and
     /// styled first; nested child lists then recurse at depth+1 (they carry their own indent, so
@@ -1506,7 +1503,6 @@ impl AttributedBuilder {
     }
 }
 
-// swift: ProgressiveMarkdownRender
 /// One markdown render, handed out front to back.
 ///
 /// ONE builder for the whole document, deliberately: its `init` scans the source (line starts, math
@@ -1531,7 +1527,7 @@ pub struct ProgressiveMarkdownRender {
 }
 
 impl ProgressiveMarkdownRender {
-    // swift-range: Render/MarkdownRenderer.swift:785-837
+    // swift: AttributedBuilder.visitTable
     fn new(builder: AttributedBuilder, children: Vec<Markup>) -> Self {
         Self { builder, children, next: 0, mark: 0, chunks_handed_out: 0 }
     }

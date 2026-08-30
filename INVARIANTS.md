@@ -1015,3 +1015,26 @@ this file tells you why, and why the obvious alternative does not work.
     **The line-based 100% was covering 57 declarations no Rust item names.** They passed because some claim's range happened to include them. 39 resolved to an item in the owning module once the matcher learned two things it had been getting wrong — an ACRONYM (`visitHTMLBlock` snake-cases to `visit_html_block`, not `visit_h_t_m_l_block`) and a CLOSURE (`let is_word = |c| …` is the port of a Swift nested func and had not been counted as an item at all). Of the last 18, six are genuinely not portable and are now `port-exclude` with the reason written down: `FootnoteBandSettle.resolve` is `engine ?? host()` and IS the bridge; `HwpSpan.CodingKeys` and `HwpBlock.Keys` are Codable machinery serde derives; `HwpReader.PaperGeometry` is an alias for a type claimed elsewhere; `FontSubstitutionCache.Key` is a private key shape each side chooses for itself; `MarkdownRenderer.parseForProbe` times the HOST's parser. `TableBlockBuilder.resizeTables` was already inside a `port-exclude` region that started four lines INTO the function — the marker moved up to the declaration, which is what it always meant.
 
     Verified: `685/685 = 100.00%`, no unresolved names, no claims left in the old form, and the whole conversion was built and driven to green in a SCRATCH COPY before a byte of the repository changed — which is the direct answer to the five failures above.
+
+    **The two lines the gate still printed were an artefact of the conversion, not a backlog.**
+    188 declarations read as "claimed twice" and 45 as range escapes, and the honest question is
+    which of those are facts about the port and which are residue. Both were decided by machine
+    rather than by eye. A duplicate whose two sites are separated only by comments, attributes or
+    blank lines is ONE claim written twice — an old claim on a doc block plus one on the
+    declaration, collapsed to the same name by the conversion; **36 of those were deleted**. What
+    survives that separation test is a Swift declaration ported as several Rust items, which the
+    gate now names as a fact rather than flagging as a suspicion. A range escape is legitimate only
+    when there is **no enclosing declaration to name**: 35 sat inside one and became names, six
+    claimed a file's import block, which the declaration denominator does not count at all, and
+    were deleted. **Four remain** — `ScriptRanges.swift`'s file-level constants, which no
+    declaration owns — and `RANGE_BUDGET` is now 4, so a fifth fails the gate. Probed three ways at
+    the tightened budget: an extra range escape, a claim renamed to something Swift does not
+    declare, and one declaration left unclaimed each turn it red.
+
+    **Restoring a probe with `git checkout -- <file>` deletes the session's own uncommitted work in
+    that file.** It restores HEAD, not the state before the mutation, and the difference is
+    invisible when the mutation and the work are both comments. Here it silently reverted
+    `zip_archive.rs` to its line-range form, and the gate came back over budget at five range
+    escapes AFTER the full triad had run green — the tests could not see it, because the whole
+    change is comments. Copy the file aside and copy it back, or re-apply the work; `git checkout`
+    is only safe on a file with nothing uncommitted in it.

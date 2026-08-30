@@ -2,7 +2,6 @@
 //! swift-range: 1-20
 
 // swift: OfficeMarkdownSerializer
-// swift-range: Render/Office/OfficeMarkdownSerializer.swift:1-18
 // Turns the format-neutral office block vocabulary (`OfficeBlock`, the SAME thing the reader
 // renders — invariant 29's `OfficeReadResult.blocks`) into GitHub-flavoured Markdown, for the
 // headless `--extract` path. Pure and view-free: `[OfficeBlock] -> String`, so it is fully unit
@@ -21,7 +20,7 @@
 pub struct OfficeMarkdownSerializer;
 
 impl OfficeMarkdownSerializer {
-    // swift-range: Render/Office/OfficeMarkdownSerializer.swift:21-25
+    // swift: OfficeMarkdownSerializer
     /// The marker the CLI legend refers to. Callers check `output.contains(rawOpen)` to decide
     /// whether to include the `<raw>` explanation in the header note.
     pub const RAW_OPEN: &'static str = "<raw>";
@@ -85,7 +84,6 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Blocks
-    // swift: OfficeMarkdownSerializer.render
 
     // swift: OfficeMarkdownSerializer.render
     fn render(block: &crate::render::office::office_block::OfficeBlock) -> (String, bool) {
@@ -147,7 +145,6 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Tables
-    // swift: OfficeMarkdownSerializer.renderTable
 
     // swift: OfficeMarkdownSerializer.renderTable
     fn render_table(rows: &[Vec<crate::render::office::office_block::Cell>], header_rows: i32) -> String {
@@ -267,7 +264,6 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Inline spans
-    // swift: OfficeMarkdownSerializer.inline
 
     // swift: OfficeMarkdownSerializer.inline
     fn inline(spans: &[crate::render::office::office_block::Span], inCell: bool) -> String {
@@ -419,7 +415,6 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Plain-text extraction (for <raw> dumps)
-    // swift: OfficeMarkdownSerializer.plainBlock
 
     // swift: OfficeMarkdownSerializer.plainBlock
     fn plain_block(block: &crate::render::office::office_block::OfficeBlock) -> String {

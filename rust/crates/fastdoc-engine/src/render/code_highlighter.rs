@@ -104,7 +104,6 @@ fn kw(words: &[&str]) -> HashSet<String> {
 
 impl CodeHighlighter {
     // MARK: - Languages
-    // swift: CodeHighlighter.cLike
 
     // swift: CodeHighlighter.cLike
     fn c_like(keywords: &[&str], caps: bool, line: Vec<String>) -> Lang {

@@ -23,7 +23,6 @@ use swiftshim::{
 use crate::render::office::office_block::{BorderLineStyle, CellDiagonal};
 
 // swift: GridTextTableBlock
-// swift-range: Render/GridTextTableBlock.swift:3-18
 // A table cell that knows a page can pass THROUGH it, and paints itself accordingly.
 //
 // `NSTextTableBlock` paints one background and one border box around the block's whole frame. When

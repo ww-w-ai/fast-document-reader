@@ -2463,7 +2463,8 @@ impl OdtReader {
                 append_piece(text, style, style.fonts.latin.as_deref(), link, spans, pending_bookmarks, pending_page_number_field, notes);
                 return;
             }
-            // swift-range: Render/Office/OdtReader.swift:2035-2036 — cross-file dependency, out of the
+            // swift: OdtReader.appendMerging
+            // cross-file dependency, out of the
             // phase-A manifest (see this file's `notes` in the worker's return).
             let pieces: Vec<Piece> = ScriptRunSplitter::split(
                 text, |scalar| crate::render::office::odf_script_type::OdfScriptTable::slot(scalar), |t| style.fonts.family(t),
@@ -2672,7 +2673,8 @@ impl OdtReader {
     // swift: OdtReader.buildTree
     fn build_tree(data: &swiftshim::Data) -> Result<Ref<XMLNode>, OdtReadError> {
         let delegate = XMLTreeBuilder::new();
-        // swift-range: Render/Office/OdtReader.swift:2200-2202 — `XMLParser`/`XMLParserDelegate` are
+        // swift: OdtReader.buildTree
+        // `XMLParser`/`XMLParserDelegate` are
         // Foundation, standing in as `swiftshim::XMLParser` (shim addition), which drives bytes
         // through the SAME loop `DocxReader` uses so the two readers cannot disagree about what
         // an entity or a self-closing tag means.
@@ -2686,7 +2688,7 @@ impl OdtReader {
 /// Swift: `OdtReader.pageGeometry`'s tuple return type `(content: CGFloat, left: CGFloat, right:
 /// CGFloat, height: CGFloat?, top: CGFloat?, bottom: CGFloat?)`, named here for `Option<T>`
 /// ergonomics — Rust tuples don't carry field labels the way Swift's do.
-// swift-range: Render/Office/OdtReader.swift:205 / 217
+// swift: OdtReader.typesetMasterPage
 struct PageGeometry {
     content: CGFloat,
     left: CGFloat,
@@ -2813,7 +2815,8 @@ impl XMLTreeBuilder {
     }
 }
 
-// swift-range: Render/Office/OdtReader.swift:2255 — `NSObject, XMLParserDelegate` conformance;
+// swift: XMLNode.allDescendants
+// `NSObject, XMLParserDelegate` conformance;
 // `XMLParserDelegate` is Foundation, not yet in swiftshim (shim addition).
 impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
     fn parser_did_start_element(
@@ -2862,12 +2865,11 @@ impl swiftshim::XMLParserDelegate for XMLTreeBuilder {
 // declaration rather than at the doc comment's own first line. Listed here so every line
 // of the original is claimed by SOME range, per rust-port-convention.md §2 ("overlap is fine;
 // blank lines and comment blocks count and must be claimed too").
-// swift-range: Render/Office/OdtReader.swift:297-306
-// swift-range: Render/Office/OdtReader.swift:654-666
+// swift: OdtReader.append
+// swift: OdtReader.resolveSlot
 // swift: OdtReader.isOrdered
 // swift: OdtReader.TableCellStyle
 // swift: OdtReader.TableColumnStyle
-// swift: OdtReader.parseTableColumnStyleDecls
 // swift: OdtReader.parseTableColumnStyleDecls
 // swift: OdtReader.parseColumnDefaultCellStyles
 // swift: OdtReader.unresolvableId

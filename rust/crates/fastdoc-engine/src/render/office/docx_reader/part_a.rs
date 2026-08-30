@@ -15,7 +15,6 @@
 //! `Render/Office/WordFontSlots.swift` — both in the port manifest, both possibly still being
 //! ported by other workers when this file was written. Referenced by their Swift names.
 
-// swift-range: Render/Office/DocxReader.swift:1-3
 use swiftshim::{CGFloat, NSColor, NSTextAlignment};
 
 use crate::render::office::zip_archive::ZipArchive;
@@ -396,7 +395,6 @@ struct PageGeometry {
     footer_distance: Option<CGFloat>,
 }
 
-// swift: DocxReader.CommentRangeTracking
 // MARK: Comments (word/comments.xml + w:commentRangeStart/End/Reference)
 
 /// Shared state for one body walk that tracks currently-OPEN comment ranges
@@ -530,7 +528,7 @@ impl DocxReader {
     }
 }
 
-// swift-range: Render/Office/DocxReader.swift:346-346
+// swift: DocxReader.walk
 // MARK: Footnotes / endnotes
 
 impl DocxReader {
@@ -1991,7 +1989,6 @@ impl DocxReader {
     }
 }
 
-// swift: DocxReader.AbstractLevel
 // MARK: numbering.xml — numId → abstractNumId → level → format/text/start, with per-numId overrides
 
 /// One level's numbering definition, whether it came from `w:abstractNum` directly or replaced
@@ -2412,7 +2409,6 @@ impl DocxReader {
     }
 }
 
-// swift: DocxReader.Relationship
 // MARK: word/_rels/document.xml.rels — relationship id → target
 
 // swift: DocxReader.Relationship
@@ -2452,7 +2448,8 @@ impl DocxReader {
     /// rather than a second mechanism) is what lets a header/footer part resolve through its own
     /// table instead of the body's.
     fn rels_path(part: &str) -> String {
-        // swift-range: Render/Office/DocxReader.swift:1876-1877 — (part as NSString).deletingLastPathComponent / .lastPathComponent
+        // swift: DocxReader.relsPath
+        // (part as NSString).deletingLastPathComponent / .lastPathComponent
         let (dir, file) = match part.rfind('/') {
             Some(idx) => (&part[..idx], &part[idx + 1..]),
             None => ("", part),
@@ -2608,16 +2605,15 @@ impl DocxReader {
 // paragraph of doc comment already reproduced verbatim on the declaration it documents above) —
 // nothing here is unported logic. Listed separately, grouped, rather than widening 97 individual
 // `// swift:` comments above, because the boundary itself carries no additional content to name.
-// swift-range: Render/Office/DocxReader.swift:4-11
 // swift: DocxReader.read
 // swift: DocxReader.lineGridPitch
 // swift: DocxReader.typesetSectionProperties
 // swift: DocxReader.pageContentWidth
 // swift: DocxReader.pageGeometry
 // swift: DocxReader.documentDefaultBodyFontSize
-// swift-range: Render/Office/DocxReader.swift:271-290
+// swift: DocxReader.CommentRangeTracking.end
 // swift: DocxReader.parseComments
-// swift-range: Render/Office/DocxReader.swift:347-347
+// swift: DocxReader.walk
 // swift: DocxReader.parseNoteBodies
 // swift: DocxReader.NoteNumbering
 // swift: DocxReader.collectNoteBlocks
@@ -2674,7 +2670,6 @@ impl DocxReader {
 // swift: DocxReader.numberedListInfo
 // swift: DocxReader.substituteLevelText
 // swift: DocxReader.ganadaSequence
-// swift: DocxReader.digitGlyphs
 // swift: DocxReader.digitGlyphs
 // swift: DocxReader.romanNumeral
 // swift: DocxReader.letterSequence

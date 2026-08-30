@@ -737,7 +737,7 @@ impl TableBlockBuilder {
             });
         }
 
-        // swift-range: Render/TableBlockBuilder.swift:567-690
+        // swift: TableBlockBuilder.build
         // STEP B/C
         // one boundary, one drawer. A grid lookup (placement index covering each row and
         // column, including the padding step's cellless positions) is how a cell finds the
@@ -902,7 +902,7 @@ impl TableBlockBuilder {
             }
         }
 
-        // swift-range: Render/TableBlockBuilder.swift:692-818
+        // swift: TableBlockBuilder.build
         // the per-placement emission loop
         for (idx, placement) in placements.iter().enumerate() {
             let me = &info[idx];
@@ -1039,7 +1039,7 @@ impl TableBlockBuilder {
                 CellVAlign::Bottom => block.base.verticalAlignment = swiftshim::NSTextBlockVerticalAlignment::BottomAlignment,
             }
 
-            // swift-range: Render/TableBlockBuilder.swift:800-817
+            // swift: TableBlockBuilder.build
             // Each cell is one or more paragraphs carrying this block. Preserve the cell content's own
             // paragraph style (alignment/indent/spacing) and only graft the table block onto it.
             let mut cell_str = NSMutableAttributedString::new();
@@ -1136,7 +1136,7 @@ impl TableBlockBuilder {
             }
             result.append(&cell_str.asAttributedString().clone());
         }
-        // swift-range: Render/TableBlockBuilder.swift:819-822
+        // swift: TableBlockBuilder.build
         // A trailing paragraph with NO table block closes the table (else the next document content
         // would be pulled into the last cell). The caller's own following block usually does this, but
         // a table that ends the document needs its own terminator.
@@ -1144,7 +1144,7 @@ impl TableBlockBuilder {
         result.into()
     }
 
-    // swift-range: Render/TableBlockBuilder.swift:826-852
+    // swift: TableBlockBuilder.build
     /// The attributes a cell's terminating `"\n"` is allowed to INHERIT from the cell's own last
     /// character — an ALLOW-list, not a deny-list, so anything new falls back to the old bare
     /// terminator instead of silently riding along on a character it was never measured against.

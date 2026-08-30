@@ -83,7 +83,7 @@ pub struct Sides {
 /// though both answer the reader's own default — the two are different FACTS on the host side
 /// (`footnoteSeparator(forPage:)`'s own `nil` vs. `OfficeFootnoteSeparator.isDeclared`) and this
 /// keeps them distinct at the boundary too, matching S5C-3's own "nothing invented" rule.
-// swift-range: Render/Office/OfficeBlock.swift:1148-1170
+// swift: OfficeBlock.swift#OfficePageBorder
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FootnoteSeparatorDesc {
     pub is_declared: bool,

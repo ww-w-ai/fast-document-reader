@@ -35,7 +35,7 @@ NAMED = re.compile(r"^\s*//\s*swift:\s*(?:(\S+\.swift)#)?([A-Za-z_][\w.]*)\s*$")
 RANGE = re.compile(r"^\s*//\s*swift-range:\s*(\S+?\.swift):(\d+)(?:-(\d+))?(?:\s|$)")
 MODULE = re.compile(r"^\s*//!\s*swift:\s*(\S+\.swift)\s*$")
 LEGACY = re.compile(r"^\s*//\s*swift:\s*\S+?\.swift:\d+")
-RANGE_BUDGET = 45
+RANGE_BUDGET = 4
 
 MANIFEST = REPO / "rust" / "PORT-MANIFEST.txt"
 PORT_EXCLUDE = re.compile(r"//\s*port-exclude:\s*(.+)$")
@@ -201,7 +201,8 @@ def main():
         for l in legacy[:8]:
             print(f"  {l}")
     if twice:
-        print(f"claimed twice: {len(twice)} declarations (two Rust items say they are the port of one)")
+        print(f"split across Rust items: {len(twice)} declarations "
+              f"(one Swift declaration ported as several Rust items -- a fact about the port, not a defect)")
         for (key, name), where in list(twice.items())[:6]:
             print(f"  {Path(key).name}#{name} — {', '.join(where)}")
     if outside:

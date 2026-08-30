@@ -269,7 +269,8 @@ impl TableMetrics {
 }
 
 /// A run of rows welded into one unbreakable unit, as returned by `unbreakableGroups`.
-// swift-range: Render/Office/PagePagination.swift:379-380 (Swift tuple type, given a name here)
+// swift: PagePagination.unbreakableGroups
+// (Swift tuple type, given a name here)
 #[derive(Debug, Clone, Copy)]
 pub struct UnbreakableGroup {
     pub first_char: i64,

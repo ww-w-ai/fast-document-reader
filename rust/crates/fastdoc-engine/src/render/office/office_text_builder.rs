@@ -1,7 +1,6 @@
 //! swift: Render/Office/OfficeTextBuilder.swift
 //! swift-range: 1-46
 
-// swift-range: Render/Office/OfficeTextBuilder.swift:1-1
 // (Swift `import AppKit` — every AppKit symbol below is a swiftshim stand-in per
 // docs/plans/rust-port-convention.md §4's symbol-surface table.)
 
@@ -531,7 +530,6 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: OfficeTextBuilder.columnLayoutPerBlock
     /// The `format` carried by a heading/paragraph/list-item block — `nil` for every other case
     /// (table/image/unsupportedGraphic/formula), which carries no `ParagraphFormat` at all.
     /// The width each block is typeset at, once the column declarations above it are taken into
@@ -991,7 +989,6 @@ impl OfficeTextBuilder {
 
     // MARK: Paragraph styles
 
-    // swift: OfficeTextBuilder.bodyParagraphStyle
     /// `rtl` sets `baseWritingDirection` ONLY when true — an LTR block (`rtl == false`, every
     /// existing call site before this sprint) leaves it at `NSMutableParagraphStyle()`'s own default
     /// (`.natural`), so a pre-sprint document's paragraph style is byte-identical to before.
@@ -1248,7 +1245,6 @@ impl OfficeTextBuilder {
     /// once cost. Larger is safe but visibly not flush; smaller risks the wrap.
     pub const FILL_MARGIN_TRAILING_INSET: CGFloat = 12.0;
 
-    // swift: OfficeTextBuilder.fillMarginTabInfo
     /// The rightmost tab in `tabStops`, when it is right- or decimal-aligned, marks the paragraph
     /// as "fill to margin": a right tab exists to push text — a TOC page number, a right-aligned
     /// header — out to the paragraph's own trailing edge, and that edge was authored against the
@@ -1357,7 +1353,6 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: OfficeTextBuilder.applyParagraphFormat
     /// Applies the P2 cascade's resolved `ParagraphFormat` on top of whatever theme-token defaults
     /// the caller already set on `p` — per-field, only when the source specified that field (`nil`
     /// leaves the token value exactly as it was, which is what makes a paragraph with an entirely
@@ -1503,7 +1498,6 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: OfficeTextBuilder.fillListFormat
     /// The document's own number format with its `^N` placeholders filled in.
     ///
     /// `^1`…`^7` are HWP's level counters — a level-3 item under format `^1.^2.^3` reads `2.4.1`, so
@@ -1545,7 +1539,6 @@ impl OfficeTextBuilder {
         out
     }
 
-    // swift: OfficeTextBuilder.listParagraphStyle
     /// Hanging-indent paragraph style: marker at `markerX`, a tab pushes text to `textX`, and
     /// wrapped lines align at `textX` — so the item's first line and every wrap share one edge.
     /// `extraTabStops` (points, from `OfficeBlock.listItem.tabStops`) are AUTHORED stops beyond the
@@ -1733,7 +1726,6 @@ impl OfficeTextBuilder {
 
     // MARK: Tables
 
-    // swift: OfficeTextBuilder.appendTable
     /// Real bordered grid via the shared `TableBlockBuilder` (also used by `MarkdownRenderer`'s
     /// GFM tables) — an office table now looks and behaves exactly like a markdown one, not a
     /// tab-stop approximation. `headerRows: 0` shades no row, because the source didn't say any
@@ -2068,7 +2060,6 @@ impl OfficeTextBuilder {
         result.into()
     }
 
-    // swift: OfficeTextBuilder.unifyTerminator
     /// Finishes the paragraph pass above: gives a paragraph's terminating `"\n"` the rest of the
     /// attributes its OWN first character carries, so the two collapse into ONE attribute run.
     ///
@@ -2173,7 +2164,6 @@ impl OfficeTextBuilder {
 
     // MARK: Images
 
-    // swift: OfficeTextBuilder.fittedOfficeSize
     /// Word DRAWS an image at its declared size regardless of the asset's own pixel dimensions (a
     /// 300px PNG placed at 225pt is ordinary), so — unlike a markdown image, whose true size is
     /// unknown until the bytes arrive — the declared size here is already authoritative. The only
@@ -2258,7 +2248,6 @@ impl OfficeTextBuilder {
         0.0
     }
 
-    // swift: OfficeTextBuilder.graphicSize
     /// THE size an office graphic occupies, in one place: authored size × page-proportional scale,
     /// then column-fitted. Called at build time here, and again by
     /// `DocumentWindowController.resizeOfficeGraphics` on every reflow — one function so a picture
@@ -2294,7 +2283,6 @@ impl OfficeTextBuilder {
         })
     }
 
-    // swift: OfficeTextBuilder.drawPlaceholderCard
     /// The card's actual pixels, drawn into whatever rect it is given. Split out of
     /// `placeholderImage` so the OTHER discovery of "this reader cannot draw this graphic" —
     /// `SizedAttachmentCell.undrawableLabel`, where the bytes turned out to be a format no
@@ -2350,13 +2338,12 @@ impl OfficeTextBuilder {
         );
     }
 
-    // swift-range: Render/Office/OfficeTextBuilder.swift:1877-1878
+    // swift: OfficeTextBuilder.drawPlaceholderCard
     /// Breathing room kept clear either side of a placeholder card's label.
     pub const PLACEHOLDER_CARD_TEXT_INSET: CGFloat = 8.0;
     /// Below this the label stops being readable, so a narrower card loses words instead of size.
     pub const PLACEHOLDER_CARD_MIN_FONT_SIZE: CGFloat = 7.0;
 
-    // swift: OfficeTextBuilder.appendImage
     /// Reserves the (column-fitted) declared size via `SizedAttachmentCell`, image left `nil` —
     /// pixels arrive lazily via `MarkdownDocument.reconcileMedia`. This is invariant 1 of this
     /// codebase: the reserved layout size must NEVER depend on whether an image is loaded, or the
@@ -2407,7 +2394,6 @@ impl OfficeTextBuilder {
         result.append(&NSAttributedString::new("\n"));
     }
 
-    // swift: OfficeTextBuilder.applyGraphicAlignment
     /// The containing paragraph's alignment, applied to the one-character attachment paragraph. A
     /// centred picture is the norm in a report and used to render hard left, because this case
     /// carried no paragraph style at all. `nil` (the document said nothing) adds NO paragraph style,
@@ -2475,7 +2461,6 @@ impl OfficeTextBuilder {
 
     // MARK: Formulas
 
-    // swift: OfficeTextBuilder.appendFormula
     /// Reserves a placeholder exactly the way `MarkdownRenderer.appendWebBlock` does for a markdown
     /// `$$…$$` — same `MDAttr.math` attribute, same `SizedAttachmentCell`-owned guessed size (260×60).
     /// `MarkdownDocument`'s pre-render/pre-size passes key off `enumerateWebBlocks`

@@ -621,7 +621,7 @@ pub struct Substitute {
 impl FontSubstitutionPlan {
     /// Empty means "every declared font in this document draws its own text" — the byte-identical
     /// case, and the one the apply pass short-circuits.
-    // swift-range: Render/Office/FontSubstitutionResolver.swift:445-480
+    // swift: FontSubstitutionResolver.applySubstitutions
     pub fn is_empty(&self) -> bool {
         self.substitutes.is_empty()
     }
@@ -691,22 +691,22 @@ impl FontSubstitutionPlan {
 /// class of error rather than guarding against it: a variation selector is `Grapheme_Extend`, an
 /// emoji base is Script=Common, and neither can ever be a sample.)
 pub struct FontSubstitutionCache {
-    // swift-range: Render/Office/FontSubstitutionResolver.swift:504-508
+    // swift: FontSubstitutionCache
     // (Key struct folded into the coverage/substitute memo maps below.)
     declared_font_memo: std::cell::RefCell<HashMap<DeclaredFontKey, swiftshim::NSFont>>,
     /// Which memoised entries came from the fallback CHAIN rather than from the declared name itself.
     /// Kept beside the memo rather than folded into it so a cache hit answers both questions without
     /// re-walking anything.
-    // swift-range: Render/Office/FontSubstitutionResolver.swift:509-515
+    // swift: FontSubstitutionCache
     stand_in_keys: std::cell::RefCell<HashSet<DeclaredFontKey>>,
     coverage_memo: std::cell::RefCell<HashMap<(String, u32), bool>>,
     substitute_memo: std::cell::RefCell<HashMap<(String, u32), swiftshim::NSFont>>,
 
     /// Every real `CTFontGetGlyphsForCharacters` call this cache issues.
-    // swift-range: Render/Office/FontSubstitutionResolver.swift:516-517
+    // swift: FontSubstitutionCache
     coverage_core_text_calls: std::cell::Cell<i64>,
     /// Every real `CTFontCreateForString` call.
-    // swift-range: Render/Office/FontSubstitutionResolver.swift:518-523
+    // swift: FontSubstitutionCache
     substitute_core_text_calls: std::cell::Cell<i64>,
 }
 

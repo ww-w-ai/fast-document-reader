@@ -103,7 +103,8 @@ impl ZipArchive {
     }
 
     pub fn from_url(url: &swiftshim::URL) -> Result<Self, ZipArchiveError> {
-        // swift-range: Render/Office/ZipArchive.swift:88 — Data(contentsOf: url)
+        // swift: ZipArchive
+        // Data(contentsOf: url)
         let data = swiftshim::Data::contentsOf(url)
             .map_err(|e| ZipArchiveError::UnreadableFile(e.message()))?;
         Self::new(data)
