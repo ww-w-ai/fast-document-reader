@@ -253,6 +253,8 @@ private extension Data {
     }
 }
 
+// port-exclude: hands the raw container to the engine. A port of this would be the engine
+// asking itself for the file it was given.
 extension ZipArchive {
     /// The bytes this archive was built from, for handing to the ported engine — which parses the
     /// container itself and so needs the file, not this reader's view of it.
@@ -261,3 +263,4 @@ extension ZipArchive {
     /// stays private there, and a build without the engine has no way to ask for it.
     var sourceBytes: Data { data }
 }
+// port-exclude-end

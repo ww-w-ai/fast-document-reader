@@ -931,3 +931,29 @@ this file tells you why, and why the obvious alternative does not work.
     The three real findings the corrected check kept are not claims at all — they are SENTENCES whose first words collide with the claim syntax (`// swift: DocxReader.swift:463-465 binds the original 'numbering' with '_' and omits...`). They name a bare filename, so they never resolved and never counted; rewritten as `// The Swift original (Render/Office/DocxReader.swift:463-465) binds ...`, which keeps the reference and stops it posing as provenance.
 
     **Correcting all four numbers moved the coverage percentage by ZERO** — 96.62% before and after — because the old overlapping ranges already covered the same lines by accident. That is the whole point: the number could never have found this, and a number that cannot fail at something is not evidence about it. The check is probed both ways (a claim on a missing file, a claim past the end) to prove it bites, and the clean tree reports 0 of each.
+
+135. **The coverage denominator quietly grew by 489 lines when the engine flag was deleted, and a number that gets harder to reach reads exactly like work left to do.** `port-coverage.py` carried `host_only_stripped()`, whose whole job was to keep the host's half of the bridge out of the denominator by dropping `#if FMD_RUST_ENGINE` regions. `546f379` — "Take the flag out of the source now that the build always defines it" — removed that flag from every Swift file, correctly, because the engine became unconditional. From that commit on the stripper matched nothing and excluded nothing, and 489 lines of code that exists BECAUSE the port exists sat permanently in the denominator. Nothing failed. The percentage simply stopped being able to reach 100, and read as porting still to do.
+
+    **Inference was the mistake, not the flag.** The exclusion was keyed on a construct that meant "bridge" only by coincidence, so deleting the construct silently deleted the policy. It is now a MARKER that has to be written down and says why:
+
+        // port-exclude: <reason>
+        ...
+        // port-exclude-end
+
+    Every region is printed under `EXCLUDED from the denominator`, so what was removed and why is read at every run rather than assumed; an unclosed region is reported as UNCLOSED and fails the gate, because a missing end-marker would otherwise swallow the rest of a file's denominator and LOOK like progress.
+
+    Four regions, 509 lines, each for its own stated reason: `OfficeBlock`'s envelope decoder (380) decodes what the engine wrote; `TableBlockBuilder`'s batch call (79) cannot cross at all, because `NSTextStorage` is an AppKit object model the engine crate has no access to — which is why `table_block_builder.rs`'s stub for it was deleted, and the part that COULD cross already did; `ColumnGeometry` and `DeclaredFontKind`'s conformances (28) are that same decoder, sitting apart only because Swift synthesises `Decodable` in the file that declares the type; `ZipArchive.sourceBytes` (11) hands the engine the container it was given.
+
+    **Scoring moved from a COUNT to a SET of line numbers in the same change, and that was a latent defect, not a refactor.** The old code compared raw claim numbers against `1..len(stripped)`. A claim carries the number an author read in an editor, so the moment anything was stripped, every claim below the first exclusion was scored against the wrong index space. It never showed because the stripper had stopped stripping.
+
+    Coverage went 96.62% → 99.15% on this change with not one line of Rust written.
+
+    **What is left is bookkeeping, not porting — checked, not assumed.** The 159 lines still
+    unclaimed are the TAILS of eight functions, and in every case the claim chain stops one line
+    short of the function's end while the engine's counterpart already exists: `chunk`,
+    `display_text`, `entry_draws`, `append_formula`, the HWP `crop` fields, and the HWP image
+    collection whose Swift comment points at `hwp_reader/mapping.rs` for the identical logic. A
+    claim that stops short is not evidence that the code beyond it is unported; it is evidence
+    that nobody extended the claim when the function grew. Extending them is a correctness
+    statement about each function, so it is done by reading the Rust counterpart — never by
+    stretching a range to make a number move.

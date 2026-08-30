@@ -179,6 +179,9 @@ struct DeclaredFace: Equatable {
     var declaredKind: DeclaredFontKind? { nil }
 }
 
+// port-exclude: part of the envelope decoder, only sitting here because Swift synthesises
+// `Decodable` in the file that declares the type. Same reason as `OfficeBlock`'s block.
 /// Declared here, not beside the decoder: Swift synthesises `Decodable` only in the file that
 /// declares the type. See `OfficeBlock.swift`'s decoding section for the whole picture.
 extension DeclaredFace: Decodable {}
+// port-exclude-end

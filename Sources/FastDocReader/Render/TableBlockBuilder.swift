@@ -994,6 +994,10 @@ enum TableBlockBuilder {
         let whole = NSRange(location: 0, length: storage.length)
         var touched: [NSRange] = []
 
+        // port-exclude: the host keeps this because it CANNOT cross — `NSTextStorage` is an
+        // AppKit object model the engine crate has no access to, which is why
+        // `table_block_builder.rs`'s stub for it was deleted. The part that could cross already
+        // did: the per-cell arithmetic runs in the engine and this walks and writes back.
         // S5B2b cutover: the per-cell arithmetic crosses to the engine
         // (`fastdoc_table_resize_cell_widths_batch`, via `RustEngineTableResize`), but the LIVE
         // traversal and write-back stay exactly Swift's — `RustEngine` reads a whole document;
@@ -1079,4 +1083,5 @@ enum TableBlockBuilder {
                             actualCharacterRange: nil)
         return touched.count
     }
+        // port-exclude-end
 }

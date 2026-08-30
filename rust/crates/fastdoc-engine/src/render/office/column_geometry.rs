@@ -479,3 +479,8 @@ impl ColumnGeometry {
         Some((index, offset - (index as CGFloat) * column_height))
     }
 }
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/ColumnGeometry.swift:225-225

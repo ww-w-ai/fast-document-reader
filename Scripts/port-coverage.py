@@ -56,6 +56,9 @@ MODULE_RANGE = re.compile(r"//!\s*swift-range:\s*(\d+)(?:-(\d+))?\b")
 # What must never happen silently is a claim that looks right, parses as nothing, and counts as zero.
 CLAIM_LIKE = re.compile(r"//!?\s*(swift-range:\s*\S|swift:\s*\S+\.swift:)")
 TODO_CALL = re.compile(r"\btodo!\s*\(")
+# A region the port is not answerable for, named where it lives. See `excluded_lines`.
+PORT_EXCLUDE = re.compile(r"//\s*port-exclude:\s*(.+)$")
+PORT_EXCLUDE_END = re.compile(r"//\s*port-exclude-end\b")
 
 # A declaration plus its doc comment can be long; a file cannot be one declaration.
 RANGE_SPAN_CAP = 300
@@ -72,10 +75,17 @@ def normalize(path: str) -> str:
     return p
 
 
-def swift_files_in_scope() -> dict[str, int]:
+def swift_files_in_scope() -> tuple[dict[str, set[int]], list[str]]:
+    """Which LINE NUMBERS of each manifest file the port is answerable for, and what was excluded.
+
+    A set of raw line numbers, not a count. A claim carries the number an author read in an editor,
+    so scoring it against anything but raw numbers silently misaligns every claim below the first
+    exclusion — which is what the count this replaced did.
+    """
     if not MANIFEST.exists():
         sys.exit(f"port manifest missing: {MANIFEST}")
-    scope: dict[str, int] = {}
+    scope: dict[str, set[int]] = {}
+    notes: list[str] = []
     for raw in MANIFEST.read_text().splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
@@ -84,36 +94,50 @@ def swift_files_in_scope() -> dict[str, int]:
         full = SWIFT_ROOT / key
         if not full.exists():
             sys.exit(f"port manifest names a file that does not exist: {key}")
-        scope[key] = len(host_only_stripped(full.read_text(errors="replace").splitlines()))
-    return scope
+        lines = full.read_text(errors="replace").splitlines()
+        dropped, why = excluded_lines(key, lines)
+        scope[key] = set(range(1, len(lines) + 1)) - dropped
+        notes.extend(why)
+    return scope, notes
 
 
-def host_only_stripped(lines: list[str]) -> list[str]:
-    """Drops `#if FMD_RUST_ENGINE` regions.
+def excluded_lines(key: str, lines: list[str]) -> tuple[set[int], list[str]]:
+    """Lines the port is NOT answerable for, named one region at a time.
 
-    Those lines exist ONLY in a build that links the Rust engine — they are the host's half of the
-    bridge to it. Counting them as Swift the engine still has to absorb asks the port to transliterate
-    the code that calls the port, which has no meaning and would drive coverage down every time the
-    bridge grows.
+        // port-exclude: <reason>
+        ...
+        // port-exclude-end
+
+    Both markers count as excluded. An unclosed region runs to the end of the file and says so, so
+    a missing end-marker cannot quietly swallow the rest of a file's denominator.
+
+    This is deliberately a MARKER and not an inference. The mechanism it replaces looked for
+    `#if FMD_RUST_ENGINE` regions, which is how the bridge used to be spelled — and when the engine
+    became unconditional and `546f379` deleted the flag from the source, the exclusion stopped
+    excluding anything and nobody noticed, because a coverage number that quietly gets HARDER to
+    reach reads exactly like work left to do. A marker has to be written down, so it can be argued
+    with; a `#if` that no longer exists cannot be.
     """
-    kept, depth = [], 0
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("#if FMD_RUST_ENGINE"):
-            # The blank line that separates the region from the code above belongs to the region,
-            # not to the file — otherwise adding the bridge costs coverage one line per block.
-            while kept and not kept[-1].strip():
-                kept.pop()
-            depth += 1
+    dropped: set[int] = set()
+    notes: list[str] = []
+    start: int | None = None
+    reason = ""
+    for n, text in enumerate(lines, 1):
+        stripped = text.strip()
+        if start is None:
+            hit = PORT_EXCLUDE.match(stripped)
+            if hit:
+                start, reason = n, hit.group(1).strip()
             continue
-        if depth:
-            if stripped.startswith("#if"):
-                depth += 1
-            elif stripped.startswith("#endif"):
-                depth -= 1
-            continue
-        kept.append(line)
-    return kept
+        if PORT_EXCLUDE_END.match(stripped):
+            dropped.update(range(start, n + 1))
+            notes.append(f"{key}:{start}-{n}  ({n - start + 1} lines)  {reason}")
+            start = None
+    if start is not None:
+        dropped.update(range(start, len(lines) + 1))
+        notes.append(f"{key}:{start}-{len(lines)}  ({len(lines) - start + 1} lines)  "
+                     f"{reason}  [UNCLOSED — no port-exclude-end]")
+    return dropped, notes
 
 
 def claimed_ranges():
@@ -228,7 +252,7 @@ def main() -> int:
     ap.add_argument("--gaps", type=int, default=6, help="uncovered ranges to show per file")
     args = ap.parse_args()
 
-    scope = swift_files_in_scope()
+    scope, exclusions = swift_files_in_scope()
     if args.only:
         wanted = {normalize(p) for p in args.only}
         scope = {k: v for k, v in scope.items() if k in wanted}
@@ -249,11 +273,12 @@ def main() -> int:
     total = covered_total = 0
     rows = []
     for key in sorted(scope):
-        n = scope[key]
-        hit = {ln for ln in claimed.get(key, set()) if 1 <= ln <= n}
+        allowed = scope[key]
+        n = len(allowed)
+        hit = claimed.get(key, set()) & allowed
         total += n
         covered_total += len(hit)
-        missing = as_ranges(sorted(set(range(1, n + 1)) - hit))
+        missing = as_ranges(sorted(allowed - hit))
         rows.append((key, n, len(hit), missing))
 
     width = max((len(k) for k, *_ in rows), default=0)
@@ -274,6 +299,11 @@ def main() -> int:
         print(f"MALFORMED claims (announced but unparseable — silently counted for nothing): {len(malformed)}")
         for m in malformed[:12]:
             print(f"  {m}")
+    if exclusions:
+        dropped = sum(int(e.split("(")[1].split(" lines")[0]) for e in exclusions)
+        print(f"\nEXCLUDED from the denominator ({dropped} lines the port is not answerable for):")
+        for e in exclusions:
+            print(f"  {e}")
     aimless = aimless_claims(sites)
     if aimless:
         print(f"AIMLESS claims (they parse, they look like claims, and they can credit nothing): {len(aimless)}")
@@ -289,7 +319,8 @@ def main() -> int:
             print(f"  {w}")
 
     if args.gate:
-        if pct < 100.0 or wildcards or blankets or malformed or aimless:
+        unclosed = [e for e in exclusions if "UNCLOSED" in e]
+        if pct < 100.0 or wildcards or blankets or malformed or aimless or unclosed:
             return 1
     return 0
 

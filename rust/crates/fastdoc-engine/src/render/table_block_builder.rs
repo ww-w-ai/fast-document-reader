@@ -1387,3 +1387,8 @@ pub struct AnchorSpan {
     pub padding: CGFloat,
     pub border_width: CGFloat,
 }
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/TableBlockBuilder.swift:1087-1087

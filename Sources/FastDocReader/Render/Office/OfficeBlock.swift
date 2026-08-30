@@ -1522,6 +1522,8 @@ struct OfficeFormControl: Hashable {
     }
 }
 
+// port-exclude: the host's half of the bridge — it decodes what the engine WROTE, so there is
+// nothing here for the engine to transliterate. It exists because the port exists.
 // MARK: - Decoding the ported engine's envelope
 //
 // Compiled ONLY into a build that asked for the Rust engine, so the shipped app carries none of it.
@@ -1899,3 +1901,4 @@ extension CellDiagonal.Direction: Decodable {
 }
 extension ListNumbering.Glyphs: Decodable {}
 extension OfficeFormControl.Kind: Decodable {}
+// port-exclude-end

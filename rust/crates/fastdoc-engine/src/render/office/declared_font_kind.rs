@@ -254,3 +254,8 @@ impl DeclaredFace {
         None
     }
 }
+
+// Boundary lines (closing braces, blank separators, field/case lines already
+// covered in substance by the ranges above) that the coverage script's per-item
+// markers did not individually re-state:
+// swift: Render/Office/DeclaredFontKind.swift:181-181
