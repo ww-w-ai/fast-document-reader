@@ -305,7 +305,7 @@ impl MarkdownRenderer {
         );
     }
 
-    // swift: Render/MarkdownRenderer.swift:35-58
+    // swift: Render/MarkdownRenderer.swift:43-58
     /// Begin a render that is handed over in pieces instead of all at once.
     ///
     /// The document is PARSED whole (it has to be — a link definition at the end of the file binds
@@ -347,7 +347,7 @@ impl MarkdownRenderer {
             || s.attribute(&crate::render::md_attr::MDAttr::inline_code(), at).is_some()
     }
 
-    // swift: Render/MarkdownRenderer.swift:68-136
+    // swift: Render/MarkdownRenderer.swift:76-136
     fn autolink(s: &mut swiftshim::NSMutableAttributedString) {
         let full = swiftshim::NSRange::new(0, s.length());
         // NO TRANSCODE AT ALL — take the store, don't round-trip through Swift.
@@ -951,13 +951,13 @@ impl AttributedBuilder {
         }
     }
 
-    // swift: Render/MarkdownRenderer.swift:370-448
+    // swift: Render/MarkdownRenderer.swift:424-428
     // Readability (research-backed: Butterick / Baymard / WCAG 1.4.12): line height 1.45×,
     // paragraph spacing ~12pt. Column width + margins are handled by the window controller
     // (centered ~660pt measure). Styles are immutable and value-independent of the theme, so
     // they are built ONCE and reused across every block/render (per-block allocation made a
     // 4000-paragraph doc render 6× slower — this keeps it fast).
-    // swift: Render/MarkdownRenderer.swift:421-448
+    // swift: Render/MarkdownRenderer.swift:429-448
     fn visit_heading(&mut self, heading: &Heading) {
         let font = self.theme.heading_font(heading.level);
         let start = self.result.length();
@@ -1133,7 +1133,7 @@ impl AttributedBuilder {
         self.tag_block_offsets(block_start, src_offsets);
     }
 
-    // swift: Render/MarkdownRenderer.swift:533-549
+    // swift: Render/MarkdownRenderer.swift:542-549
     fn visit_paragraph(&mut self, paragraph: &Paragraph) {
         let start = self.result.length();
         let s = self.inline_string(&Markup::Paragraph(paragraph.clone()), self.theme.body_font(), self.theme.text_color());
@@ -1164,7 +1164,7 @@ impl AttributedBuilder {
         self.tag_block(start, html.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:552-596
+    // swift: Render/MarkdownRenderer.swift:561-596
     fn visit_block_quote(&mut self, blockQuote: &BlockQuote) {
         let start = self.result.length();
         self.descend_into(&Markup::BlockQuote(blockQuote.clone()));
@@ -1237,7 +1237,7 @@ impl AttributedBuilder {
         }
     }
 
-    // swift: Render/MarkdownRenderer.swift:589-603
+    // swift: Render/MarkdownRenderer.swift:598-603
     fn visit_unordered_list(&mut self, list: &UnorderedList) {
         let start = self.result.length();
         self.render_list(list.list_items.clone(), false, 0);
@@ -1245,7 +1245,7 @@ impl AttributedBuilder {
         self.tag_block(start, list.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:596-610
+    // swift: Render/MarkdownRenderer.swift:605-610
     fn visit_ordered_list(&mut self, list: &OrderedList) {
         let start = self.result.length();
         self.render_list(list.list_items.clone(), true, 0);
@@ -1253,13 +1253,13 @@ impl AttributedBuilder {
         self.tag_block(start, list.range);
     }
 
-    // swift: Render/MarkdownRenderer.swift:599-649
+    // swift: Render/MarkdownRenderer.swift:612-649
     /// Render list items at a given nesting `depth`. Each level indents one step further, so
     /// 2nd/3rd/4th-level bullets sit progressively inside. A list item's own text is rendered and
     /// styled first; nested child lists then recurse at depth+1 (they carry their own indent, so
     /// the parent's paragraph style is applied ONLY to the item's own line — not over the nested
     /// range, which would flatten it).
-    // swift: Render/MarkdownRenderer.swift:599-649
+    // swift: Render/MarkdownRenderer.swift:612-649
     fn render_list(&mut self, items: Vec<ListItem>, ordered: bool, depth: i32) {
         let hang = self.theme.base_font_size * self.theme.list_hang_ratio(); // one indent step
         let marker_x = depth as swiftshim::CGFloat * hang; // where the bullet / number sits
@@ -1556,7 +1556,7 @@ impl ProgressiveMarkdownRender {
         self.chunks_handed_out
     }
 
-    // swift: Render/MarkdownRenderer.swift:785-837
+    // swift: Render/MarkdownRenderer.swift:812-820
     /// Visit up to `blocks` more top-level children and return the text they produced.
     pub fn next_chunk(&mut self, blocks: usize) -> swiftshim::NSAttributedString {
         // Clamped by SUBTRACTING from what is left, never by adding to `next`: `blocks` is allowed
@@ -1584,7 +1584,7 @@ impl ProgressiveMarkdownRender {
         self.chunk(|next| next >= end, false)
     }
 
-    // swift: Render/MarkdownRenderer.swift:785-837
+    // swift: Render/MarkdownRenderer.swift:822-836
     /// Visit children until `stop` says so, then take everything those visits added.
     fn chunk(
         &mut self,
@@ -1666,3 +1666,7 @@ impl crate::render::markdown_package::MarkupWalker for AttributedBuilder {
 // swift: Render/MarkdownRenderer.swift:321-321
 // swift: Render/MarkdownRenderer.swift:449-449
 // swift: Render/MarkdownRenderer.swift:650-650
+// swift: Render/MarkdownRenderer.swift:423-423
+// swift: Render/MarkdownRenderer.swift:597-597
+// swift: Render/MarkdownRenderer.swift:604-604
+// swift: Render/MarkdownRenderer.swift:611-611

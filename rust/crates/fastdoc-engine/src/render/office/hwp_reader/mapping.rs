@@ -206,7 +206,7 @@ impl HwpReader {
     // mapper handles.
 }
 
-// swift: Render/Office/HwpReader.swift:39-62
+// swift: Render/Office/HwpReader.swift:45-62
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MapError {
     /// rhwp's `exportDocumentJSON` returned nil — the bytes are not a parseable HWP/HWPX

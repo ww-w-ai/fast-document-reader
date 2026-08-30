@@ -159,7 +159,7 @@ impl UnicodeScript {
 
     /// This scalar's class. `#[inline(always)]` because the caller is a per-scalar loop over a whole
     /// document and the ASCII branch is most of the work.
-    // swift: Render/Office/Script/UnicodeScript.swift:58-115
+    // swift: Render/Office/Script/UnicodeScript.swift:97-100
     #[inline(always)]
     pub fn of(scalar: char) -> ScriptClass {
         let value = scalar as u32;
@@ -170,7 +170,7 @@ impl UnicodeScript {
     /// entries, in a ~9 KB working set that stays in cache. Gapless is what makes this total: there
     /// is no "not found" answer to handle, because entry 0 starts at U+0000 and every scalar up to
     /// U+10FFFF falls inside some entry.
-    // swift: Render/Office/Script/UnicodeScript.swift:58-115
+    // swift: Render/Office/Script/UnicodeScript.swift:102-114
     fn search(value: u32) -> ScriptClass {
         let starts = crate::render::office::script::script_ranges::SCRIPT_RANGE_STARTS;
         let mut low: usize = 0;

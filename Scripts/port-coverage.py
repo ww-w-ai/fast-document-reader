@@ -302,13 +302,13 @@ SWIFT_ANY_DECL = re.compile(
 
 # A ratchet, like MISAIMED_BUDGET was: this many claims reach past the declaration they name, and
 # the gate fails if that grows. Not zero, because it is not a defect this repair introduced —
-# HEAD carries 110 of them and 2,242 lines of reach, against 99 and 2,396 here. The count is here
+# HEAD carries 114 of them and 2,108 lines of reach, against 58 and 1,092 here. The count is here
 # so the backlog cannot get quietly bigger between the session that measured it and the session
-# that clears it.
-OVERREACH_BUDGET = 99
+# that clears it -- lower both numbers whenever you clear some.
+OVERREACH_BUDGET = 58
 # Counting entries alone is not a ratchet: widening a claim already counted leaves the number
 # flat. The reach itself is held too, so growing one claim costs as much as adding one.
-OVERREACH_SLACK_BUDGET = 2396
+OVERREACH_SLACK_BUDGET = 1092
 OVERREACH_SLACK = 5
 
 
@@ -335,9 +335,15 @@ def _swift_declaration_spans(key: str) -> dict[str, tuple[int, int, str]] | None
         start = n
         while start - 1 >= 1 and lines[start - 2].lstrip().startswith("///"):
             start -= 1
-        head = n            # a multi-line signature does not end on its own first line
-        while head < len(lines) and not lines[head - 1].rstrip().endswith("{") and head - n < 8:
+        # A multi-line signature does not end on its own first line: `OfficeTextBuilder.build`
+        # takes fifteen lines to state its parameters, and stopping at the first line reads as a
+        # 5-line declaration with a 256-line claim around it -- the reach was the measurement.
+        # The scan follows UNBALANCED PARENTHESES rather than a line budget, so a `let` with no
+        # body cannot run on into the next declaration's brace and swallow it.
+        head, depth = n, text.count("(") - text.count(")")
+        while head < len(lines) and depth > 0 and head - n < 40:
             head += 1
+            depth += lines[head - 1].count("(") - lines[head - 1].count(")")
         if lines[head - 1].rstrip().endswith("{"):
             close, end = indent + "}", head
             while end < len(lines) and lines[end - 1] != close:

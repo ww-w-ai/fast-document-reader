@@ -113,7 +113,7 @@ impl ZipArchive {
         Self::new(data)
     }
 
-    // swift: Render/Office/ZipArchive.swift:91-112
+    // swift: Render/Office/ZipArchive.swift:91-91
     pub fn contains(&self, name: &str) -> bool {
         self.entries_by_name.contains_key(name)
     }
@@ -245,7 +245,7 @@ impl ZipArchive {
         Ok(data.subdata(Self::byte_range(content_start, content_length, data)))
     }
 
-    // swift: Render/Office/ZipArchive.swift:181-219
+    // swift: Render/Office/ZipArchive.swift:186-188
     fn byte_range(offset: usize, length: usize, data: &Data) -> NSRange {
         NSRange::new(data.startIndex() + offset, length)
     }
@@ -259,7 +259,7 @@ impl ZipArchive {
     /// decode again into a buffer one byte larger. If that produces more bytes, the central
     /// directory's declared size undersold the real content, and the first decode was a truncated
     /// read wearing the costume of a complete one.
-    // swift: Render/Office/ZipArchive.swift:181-219
+    // swift: Render/Office/ZipArchive.swift:192-205
     fn inflate(compressed: &Data, uncompressed_size: usize, name: &str) -> Result<Data, ZipArchiveError> {
         let decoded = Self::decode(compressed, uncompressed_size)?;
         if decoded.len() != uncompressed_size {

@@ -204,13 +204,13 @@ impl OfficeTextBuilder {
         out
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:48-113
+    // swift: Render/Office/OfficeTextBuilder.swift:115-118
     /// The stand-in a deferred table leaves behind. Deliberately language-neutral — this app has no
     /// localisation table, and a word here would ship one language to all 23 stores. It is on screen
     /// for about a second, and only for a reader who scrolled ~121 screens down within that second.
     pub const DEFERRED_TABLE_STAND_IN: &'static str = "⋯";
 
-    // swift: Render/Office/OfficeTextBuilder.swift:114-374
+    // swift: Render/Office/OfficeTextBuilder.swift:120-364
     /// `deferringTables` — indices whose `.table` is replaced by a one-paragraph stand-in carrying
     /// `MDAttr.deferredTable`, so `MarkdownDocument` can paint now and splice the grid in after
     /// (invariant 49's freeze, see `docs/giant-table-deferral-design.md`). EMPTY is the default and
@@ -649,7 +649,7 @@ impl OfficeTextBuilder {
     /// and behaving exactly as before: a span with no matching number gets no `MDAttr.commentMark`.
     /// `paged` (see `build`'s own `pageContentWidth`) governs ONE thing here: whether an authored
     /// point size is rounded to a whole point — see the `span.fontSize` branch below.
-    // swift: Render/Office/OfficeTextBuilder.swift:468-710
+    // swift: Render/Office/OfficeTextBuilder.swift:479-710
     pub fn spans_attributed_string(
         spans: &[Span],
         base_font: &NSFont,
@@ -2520,3 +2520,5 @@ impl OfficeTextBuilder {
 // swift: Render/Office/OfficeTextBuilder.swift:1070-1070
 // swift: Render/Office/OfficeTextBuilder.swift:1183-1185
 // swift: Render/Office/OfficeTextBuilder.swift:1876-1876
+// swift: Render/Office/OfficeTextBuilder.swift:119-119
+// swift: Render/Office/OfficeTextBuilder.swift:365-365

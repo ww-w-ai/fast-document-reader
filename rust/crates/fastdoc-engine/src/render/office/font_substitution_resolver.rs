@@ -612,7 +612,7 @@ pub struct FontSubstitutionPlan {
 /// document moved — which declared font was replaced, and on the evidence of which character.
 /// A reviewer reading "5,177 characters left Times New Roman" needs to see the character that
 /// decided it, and a probe that can only report totals cannot show them.
-// swift: Render/Office/FontSubstitutionResolver.swift:445-480
+// swift: Render/Office/FontSubstitutionResolver.swift:450-457
 #[derive(Clone)]
 pub struct Substitute {
     pub sample: u32,
@@ -751,7 +751,7 @@ impl FontSubstitutionCache {
     /// Tested on `glyphs[0]` rather than the function's own return value because a non-BMP scalar is
     /// two UTF-16 units and CoreText reports the trailing half as unmapped even when the pair
     /// resolved — the same reading the pre-memo code used.
-    // swift: Render/Office/FontSubstitutionResolver.swift:482-556
+    // swift: Render/Office/FontSubstitutionResolver.swift:524-539
     pub fn covers(&self, font: &swiftshim::NSFont, scalar: u32) -> bool {
         let key = (font.fontName(), scalar);
         if let Some(hit) = self.coverage_memo.borrow().get(&key) {

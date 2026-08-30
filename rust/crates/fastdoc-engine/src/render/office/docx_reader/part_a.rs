@@ -565,7 +565,7 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:372-381
+// swift: Render/Office/DocxReader.swift:372-372
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoteKind {
     Footnote,
@@ -2149,14 +2149,14 @@ impl DocxReader {
 /// REFERENCE shared across the whole `read()` call (body, then footnotes, then endnotes, all
 /// walked from one `read()`) rather than a value threaded through every function's parameters
 /// with `inout`.
-// swift: Render/Office/DocxReader.swift:1627-1645
+// swift: Render/Office/DocxReader.swift:1627-1633
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ListCounterKey {
     num_id: String,
     level: i32,
 }
 
-// swift: Render/Office/DocxReader.swift:1627-1645
+// swift: Render/Office/DocxReader.swift:1634-1634
 #[derive(Debug, Clone, Default)]
 pub struct ListNumberingState {
     counters: std::collections::HashMap<ListCounterKey, i32>,
@@ -2416,7 +2416,7 @@ impl DocxReader {
 // swift: Render/Office/DocxReader.swift:1856-1862
 // MARK: word/_rels/document.xml.rels — relationship id → target
 
-// swift: Render/Office/DocxReader.swift:1850-1910
+// swift: Render/Office/DocxReader.swift:1856-1862
 pub(crate) struct Relationship {
     /// Embedded: the archive entry path (`"word/media/image1.png"`) `ZipArchive.data(for:)`
     /// can read directly. External: the raw `Target` (a `file:///…` URL) — never a path into
@@ -2425,7 +2425,7 @@ pub(crate) struct Relationship {
     pub(crate) external: bool,
 }
 
-// swift: Render/Office/DocxReader.swift:1861-1910
+// swift: Render/Office/DocxReader.swift:1864-1866
 #[derive(Debug, Clone, Default)]
 pub struct Relationships {
     pub(crate) by_id: std::collections::HashMap<String, Relationship>,
@@ -2443,7 +2443,7 @@ impl std::fmt::Debug for Relationship {
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1861-1910
+    // swift: Render/Office/DocxReader.swift:1868-1880
     /// The relationships PART for a given content part, per OPC convention: `<dir>/_rels/<file>.rels`
     /// sits alongside the `_rels` folder in the SAME directory as the part itself. Every content
     /// part carries its OWN relationship id-space — `word/header1.xml`'s `rId1` can point somewhere

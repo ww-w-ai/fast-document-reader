@@ -413,7 +413,7 @@ impl super::DocxReader {
     /// a degenerate `chExt` of 0 on an axis) — the caller then chains through unchanged on that
     /// axis rather than dividing by zero, which is a defensible "no additional scaling known"
     /// reading, not a crash.
-    // swift: Render/Office/DocxReader.swift:2197-2213
+    // swift: Render/Office/DocxReader.swift:2206-2213
     fn group_scale(group: &XMLNode) -> Option<AxisScale> {
         let xfrm = group.child("wpg:grpSpPr")?.child("a:xfrm")?;
         let ext = xfrm.child("a:ext")?;
@@ -617,7 +617,7 @@ impl super::DocxReader {
     // swift: Render/Office/DocxReader.swift:2355-2364
     // ============================================================================================
 
-    // swift: Render/Office/DocxReader.swift:2330-2393
+    // swift: Render/Office/DocxReader.swift:2355-2364
     pub(crate) fn parse_body(
         body: &XMLNode,
         style_info: &StyleInfo,
@@ -2294,7 +2294,7 @@ impl super::DocxReader {
 }
 
 /// One shared axis-scaling factor for `groupScale`/`collectGroupedPictures` — see their own docs.
-// swift: Render/Office/DocxReader.swift:2197-2213
+// swift: Render/Office/DocxReader.swift:2197-2204
 #[derive(Debug, Clone, Copy)]
 struct AxisScale {
     x: f64,
@@ -2387,7 +2387,7 @@ impl OmmlTranslator {
 
     /// `m:r`'s only content is `m:t` (its `m:rPr`/`w:rPr` are formatting, skipped by the `Pr` rule
     /// above) — `flattenText` finds it regardless of exactly how deep it sits.
-    // swift: Render/Office/DocxReader.swift:3661-3671
+    // swift: Render/Office/DocxReader.swift:3661-3663
     fn run(node: &XMLNode) -> String {
         Self::flatten_text(node)
     }
@@ -2395,28 +2395,28 @@ impl OmmlTranslator {
     // MARK: - Structural constructs
     // swift: Render/Office/DocxReader.swift:3667-3671
 
-    // swift: Render/Office/DocxReader.swift:3661-3671
+    // swift: Render/Office/DocxReader.swift:3667-3671
     fn fraction(node: &XMLNode) -> String {
         let num = node.child("m:num").map(|n| Self::translate_children(&n.children)).unwrap_or_default();
         let den = node.child("m:den").map(|n| Self::translate_children(&n.children)).unwrap_or_default();
         format!("\\frac{{{num}}}{{{den}}}")
     }
 
-    // swift: Render/Office/DocxReader.swift:3669-3700
+    // swift: Render/Office/DocxReader.swift:3673-3677
     fn superscript(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let sup = Self::element(node, "m:sup");
         format!("{{{base}}}^{{{sup}}}")
     }
 
-    // swift: Render/Office/DocxReader.swift:3675-3700
+    // swift: Render/Office/DocxReader.swift:3679-3683
     fn subscript_translate(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let sub = Self::element(node, "m:sub");
         format!("{{{base}}}_{{{sub}}}")
     }
 
-    // swift: Render/Office/DocxReader.swift:3681-3700
+    // swift: Render/Office/DocxReader.swift:3685-3690
     fn sub_sup(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let sub = Self::element(node, "m:sub");
@@ -2487,7 +2487,7 @@ impl OmmlTranslator {
         format!("{out} {operand}")
     }
 
-    // swift: Render/Office/DocxReader.swift:3740-3758
+    // swift: Render/Office/DocxReader.swift:3746-3758
     fn nary_command(chr: &str) -> String {
         match chr {
             "\u{2211}" => "\\sum".to_string(),   // ∑
@@ -2530,14 +2530,14 @@ impl OmmlTranslator {
         format!("{name}\\left({arg}\\right)")
     }
 
-    // swift: Render/Office/DocxReader.swift:3774-3812
+    // swift: Render/Office/DocxReader.swift:3778-3782
     fn lim_low(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let lim = node.child("m:lim").map(|n| Self::translate_children(&n.children)).unwrap_or_default();
         if lim.is_empty() { base } else { format!("{base}_{{{lim}}}") }
     }
 
-    // swift: Render/Office/DocxReader.swift:3780-3812
+    // swift: Render/Office/DocxReader.swift:3784-3788
     fn lim_upp(node: &XMLNode) -> String {
         let base = Self::element(node, "m:e");
         let lim = node.child("m:lim").map(|n| Self::translate_children(&n.children)).unwrap_or_default();
@@ -2702,7 +2702,7 @@ impl XMLNode {
 /// `XMLParser` — its shape (a SAX driver building the same tree via the same open-element stack)
 /// is preserved as a `todo!()` shim over an as-yet-undecided XML crate, deferred to phase B per
 /// the contract (§0: "cannot express" → `todo!()`, never a reshaped caller).
-// swift: Render/Office/DocxReader.swift:3900-3939
+// swift: Render/Office/DocxReader.swift:3913-3939
 struct XMLTreeBuilder {
     root: Option<XMLNode>,
     stack: Vec<XMLNode>,

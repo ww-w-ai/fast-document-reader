@@ -26,7 +26,7 @@
 pub struct PlainTextRenderer;
 
 impl PlainTextRenderer {
-    // swift: Render/PlainTextRenderer.swift:3-71
+    // swift: Render/PlainTextRenderer.swift:25-70
     pub fn render(
         source: &str,
         theme: &crate::render::render_theme::RenderTheme,

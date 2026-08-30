@@ -118,7 +118,7 @@ impl Default for GridTextTable {
 }
 
 impl GridTextTable {
-    // swift: Render/TableBlockBuilder.swift:11-23
+    // swift: Render/TableBlockBuilder.swift:17-23
     /// swift: override func drawBackground(withFrame:in:characterRange:layoutManager:)
     pub fn draw_background(
         &self,

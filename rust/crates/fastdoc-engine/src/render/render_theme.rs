@@ -174,12 +174,12 @@ pub struct RenderTheme {
 }
 
 impl RenderTheme {
-    // swift: Render/RenderTheme.swift:100-110
+    // swift: Render/RenderTheme.swift:100-100
     pub fn current(size: CGFloat) -> RenderTheme {
         RenderTheme { base_font_size: size }
     }
 
-    // swift: Render/RenderTheme.swift:97-120
+    // swift: Render/RenderTheme.swift:103-110
     // Notion heading scale relative to a 16pt base: H1 30 / H2 24 / H3 20 / H4+ ~18.
     pub fn heading_size(&self, level: i32) -> CGFloat {
         match level {

@@ -1983,7 +1983,7 @@ impl OfficeFootnoteSeparator {
     }
 }
 
-// swift: Render/Office/OfficeBlock.swift:1173-1223
+// swift: Render/Office/OfficeBlock.swift:1198-1223
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeSectionDeclaration {
     // swift: Render/Office/OfficeBlock.swift:1173-1176

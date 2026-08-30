@@ -639,7 +639,7 @@ impl SlotFonts {
         self.latin == self.asian && self.asian == self.complex
     }
 
-    // swift: Render/Office/OdtReader.swift:461-492
+    // swift: Render/Office/OdtReader.swift:485-491
     fn family(&self, script_type: OdfScriptType) -> Option<String> {
         match script_type {
             OdfScriptType::Latin => self.latin.clone(),
@@ -1303,7 +1303,7 @@ struct TableCellStyle {
     padding_right: Option<CGFloat>,
 }
 
-// swift: Render/Office/OdtReader.swift:1082-1143
+// swift: Render/Office/OdtReader.swift:1085-1097
 #[derive(Debug, Clone, Default)]
 struct TableCellStyleDecl {
     background_color: Option<NSColor>,
@@ -2222,7 +2222,7 @@ impl OdtReader {
         href.to_string()
     }
 
-    // swift: Render/Office/OdtReader.swift:1841-1858
+    // swift: Render/Office/OdtReader.swift:1841-1841
     fn unresolvable_id(reason: &str) -> String {
         format!("odt-unresolvable:{}", reason)
     }

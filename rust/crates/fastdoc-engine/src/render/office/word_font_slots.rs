@@ -121,7 +121,7 @@ impl WordRFonts {
     /// rule only fires when ascii and hAnsi are already equal, so every slot a character can select
     /// then names the same family — and this form leaves `cs` alone, which matters because `cs` is
     /// reached by the run-level toggle that takes precedence over this rule anyway.
-    // swift: Render/Office/WordFontSlots.swift:42-121
+    // swift: Render/Office/WordFontSlots.swift:83-102
     pub fn effective_slot(&self, slot: WordFontSlot) -> WordFontSlot {
         let is_sentinel = matches!(&self.east_asia, Some(WordFontDecl::Literal(s)) if s == "Times New Roman");
         if slot != WordFontSlot::EastAsia || !is_sentinel || self.ascii != self.h_ansi {
@@ -274,7 +274,7 @@ impl WordThemeFonts {
     }
 }
 
-// swift: Render/Office/WordFontSlots.swift:186-202
+// swift: Render/Office/WordFontSlots.swift:186-186
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Which {
     Major,

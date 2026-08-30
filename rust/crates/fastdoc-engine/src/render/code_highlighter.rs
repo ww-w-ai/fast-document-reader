@@ -724,7 +724,7 @@ impl CodeHighlighter {
         result.asAttributedString().clone()
     }
 
-    // swift: Render/CodeHighlighter.swift:173-220
+    // swift: Render/CodeHighlighter.swift:202-219
     /// Diffs are line-shaped, not token-shaped: what matters is which side a line is on.
     fn diff_highlight(
         mut result: swiftshim::NSMutableAttributedString,
