@@ -10,7 +10,7 @@
 //! character whose script type is latin / asian / complex" (ODF 1.3 Part 3 §20.277-§20.279). This
 //! type is that script type, and `OdfScriptTable` is the mapping.
 
-// swift: Render/Office/OdfScriptType.swift:1-14
+// swift: OdfScriptType
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum OdfScriptType {
@@ -21,11 +21,11 @@ pub enum OdfScriptType {
 
 impl OdfScriptType {
     /// All cases, mirroring Swift's `CaseIterable` conformance.
-    // swift: Render/Office/OdfScriptType.swift:1-13
+    // swift: OdfScriptType
     pub const ALL: [OdfScriptType; 3] = [OdfScriptType::Latin, OdfScriptType::Asian, OdfScriptType::Complex];
 }
 
-// swift: Render/Office/OdfScriptType.swift:15-66
+// swift: OdfScriptTable
 /// ODF 1.3 Part 3 §20.358 table 22, transcribed verbatim, plus the ruling this reader makes about
 /// the code points the table deliberately leaves out.
 ///
@@ -87,7 +87,6 @@ impl OdfScriptTable {
     /// published table, and two fewer probes in a five-probe search buys nothing worth losing that
     /// against. `OdtFontSlotTests` re-derives the mapped total (92,879) and the gap count (22)
     /// from this array, so a mistyped bound fails rather than silently re-labelling a script.
-    // swift: Render/Office/OdfScriptType.swift:74-111
     fn rows() -> &'static [Row] {
         use OdfScriptType::*;
         &[
@@ -127,7 +126,7 @@ impl OdfScriptTable {
     ///
     /// `#[inline(always)]` for the same reason `UnicodeScript::of` is: the caller is a per-scalar walk
     /// over a whole document, and on real text the ASCII branch is nearly all of it.
-    // swift: Render/Office/OdfScriptType.swift:112-147
+    // swift: OdfScriptTable.slot
     #[inline(always)]
     pub fn slot(scalar: char) -> Option<OdfScriptType> {
         let value = scalar as u32;
@@ -170,7 +169,7 @@ impl OdfScriptTable {
     /// non-overlapping (asserted in tests) but NOT gapless, so unlike `UnicodeScript::search` this one
     /// genuinely has a "no mapping" answer to return, which is the whole point of §20.358's second
     /// sentence.
-    // swift: Render/Office/OdfScriptType.swift:148-163
+    // swift: OdfScriptTable.mappedType
     fn mapped_type(value: u32) -> Option<OdfScriptType> {
         let rows = Self::rows();
         let mut low: usize = 0;
@@ -193,14 +192,13 @@ impl OdfScriptTable {
     /// The table itself, for the tests that re-derive its published totals from it. Exposed rather
     /// than duplicated in the test file: a second transcription would agree with the first only until
     /// someone edited one of them.
-    // swift: Render/Office/OdfScriptType.swift:160-170
     pub fn published_ranges() -> Vec<(u32, u32, OdfScriptType)> {
         Self::rows().iter().map(|r| (r.first, r.last, r.r#type)).collect()
     }
 }
 
 /// One row of table 22, as the spec writes it: an inclusive range and the script type it maps to.
-// swift: Render/Office/OdfScriptType.swift:67-73
+// swift: OdfScriptTable.Row
 #[derive(Clone, Copy)]
 struct Row {
     first: u32,

@@ -11,14 +11,14 @@ use swiftshim::{Data, NSRange};
 ///
 /// A `struct`, not an `enum` namespace: parsing the central directory is real work (a corrupt or
 /// Zip64 archive throws), so this holds the parsed table as state instead of re-deriving it per call.
-// swift: Render/Office/ZipArchive.swift:3-222
+// swift: ZipArchive
 pub struct ZipArchive {
     data: Data,
     entries_by_name: std::collections::HashMap<String, Entry>,
     order: Vec<String>,
 }
 
-// swift: Render/Office/ZipArchive.swift:13-35
+// swift: ZipArchive.Error
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZipArchiveError {
     /// No End Of Central Directory record found anywhere in the data — this isn't a ZIP file.
@@ -52,7 +52,7 @@ pub enum ZipArchiveError {
     UnreadableFile(String),
 }
 
-// swift: Render/Office/ZipArchive.swift:36-44
+// swift: ZipArchive.Entry
 struct Entry {
     name: String,
     compression_method: u16,
@@ -62,7 +62,6 @@ struct Entry {
     general_purpose_bit_flag: u16,
 }
 
-// swift: Render/Office/ZipArchive.swift:45-55
 const LOCAL_FILE_HEADER_SIGNATURE: u32 = 0x0403_4b50;
 const CENTRAL_DIRECTORY_SIGNATURE: u32 = 0x0201_4b50;
 const END_OF_CENTRAL_DIRECTORY_SIGNATURE: u32 = 0x0605_4b50;
@@ -75,14 +74,12 @@ const ZIP64_SENTINEL_32: u32 = 0xFFFF_FFFF;
 pub const MAX_ENTRY_UNCOMPRESSED_SIZE: usize = 512 * 1024 * 1024;
 
 impl ZipArchive {
-    // swift: Render/Office/ZipArchive.swift:56-85
     /// The archive's entry names, in central-directory order (the order files were added — not
     /// necessarily alphabetical, and not required to match local-header order).
     pub fn entry_names(&self) -> &[String] {
         &self.order
     }
 
-    // swift: Render/Office/ZipArchive.swift:64-86
     pub fn new(data: Data) -> Result<Self, ZipArchiveError> {
         let eocd_offset = Self::find_end_of_central_directory(&data)?;
         let total_entries = data.read_u16_le(eocd_offset + 10)?;
@@ -105,20 +102,19 @@ impl ZipArchive {
         Ok(ZipArchive { data, entries_by_name: by_name, order: names })
     }
 
-    // swift: Render/Office/ZipArchive.swift:79-130
     pub fn from_url(url: &swiftshim::URL) -> Result<Self, ZipArchiveError> {
-        // swift: Render/Office/ZipArchive.swift:88 — Data(contentsOf: url)
+        // swift-range: Render/Office/ZipArchive.swift:88 — Data(contentsOf: url)
         let data = swiftshim::Data::contentsOf(url)
             .map_err(|e| ZipArchiveError::UnreadableFile(e.message()))?;
         Self::new(data)
     }
 
-    // swift: Render/Office/ZipArchive.swift:91-91
+    // swift: ZipArchive.contains
     pub fn contains(&self, name: &str) -> bool {
         self.entries_by_name.contains_key(name)
     }
 
-    // swift: Render/Office/ZipArchive.swift:79-130
+    // swift: ZipArchive.data
     pub fn data_for(&self, name: &str) -> Result<Data, ZipArchiveError> {
         let entry = self
             .entries_by_name
@@ -155,7 +151,7 @@ impl ZipArchive {
     /// so it is not at a fixed offset from the end of the file. A signature match only counts if the
     /// comment-length field it carries lands exactly on the true end of the data — otherwise it is a
     /// coincidental byte sequence (inside a comment or entry data) and the scan keeps going.
-    // swift: Render/Office/ZipArchive.swift:114-135
+    // swift: ZipArchive.findEndOfCentralDirectory
     fn find_end_of_central_directory(data: &Data) -> Result<usize, ZipArchiveError> {
         let record_size: usize = 22;
         if data.len() < record_size {
@@ -179,7 +175,7 @@ impl ZipArchive {
 
     // MARK: Central directory
 
-    // swift: Render/Office/ZipArchive.swift:136-166
+    // swift: ZipArchive.readCentralDirectoryEntry
     fn read_central_directory_entry(data: &Data, cursor: &mut usize) -> Result<Entry, ZipArchiveError> {
         let start = *cursor;
         if data.read_u32_le(start)? != CENTRAL_DIRECTORY_SIGNATURE {
@@ -229,7 +225,7 @@ impl ZipArchive {
     /// not the central directory's — the two are allowed to differ (some writers pad the local extra
     /// field for alignment), and trusting the central directory's lengths here would skip the wrong
     /// number of bytes and hand back the tail of a name or extra field as if it were payload.
-    // swift: Render/Office/ZipArchive.swift:167-185
+    // swift: ZipArchive.compressedBytes
     fn compressed_bytes(data: &Data, entry: &Entry) -> Result<Data, ZipArchiveError> {
         let start = entry.local_header_offset as usize;
         if data.read_u32_le(start)? != LOCAL_FILE_HEADER_SIGNATURE {
@@ -245,7 +241,7 @@ impl ZipArchive {
         Ok(data.subdata(Self::byte_range(content_start, content_length, data)))
     }
 
-    // swift: Render/Office/ZipArchive.swift:186-188
+    // swift: ZipArchive.byteRange
     fn byte_range(offset: usize, length: usize, data: &Data) -> NSRange {
         NSRange::new(data.startIndex() + offset, length)
     }
@@ -259,7 +255,7 @@ impl ZipArchive {
     /// decode again into a buffer one byte larger. If that produces more bytes, the central
     /// directory's declared size undersold the real content, and the first decode was a truncated
     /// read wearing the costume of a complete one.
-    // swift: Render/Office/ZipArchive.swift:192-205
+    // swift: ZipArchive.inflate
     fn inflate(compressed: &Data, uncompressed_size: usize, name: &str) -> Result<Data, ZipArchiveError> {
         let decoded = Self::decode(compressed, uncompressed_size)?;
         if decoded.len() != uncompressed_size {
@@ -274,7 +270,7 @@ impl ZipArchive {
 
     /// `COMPRESSION_ZLIB` in Apple's Compression framework is raw DEFLATE — exactly what a ZIP entry
     /// stores — not zlib-wrapped data, so no header is prepended or expected here.
-    // swift: Render/Office/ZipArchive.swift:207-223
+    // swift: ZipArchive.decode
     fn decode(compressed: &Data, capacity: usize) -> Result<Data, ZipArchiveError> {
         if capacity == 0 {
             return Ok(Data::empty());
@@ -308,7 +304,6 @@ impl ZipArchive {
     }
 }
 
-// swift: Render/Office/ZipArchive.swift:216-266
 impl ZipArchiveError {
     pub fn error_description(&self) -> String {
         match self {
@@ -350,14 +345,13 @@ impl std::error::Error for ZipArchiveError {}
 
 // MARK: Little-endian field reads
 
-// swift: Render/Office/ZipArchive.swift:216-266
 trait DataLittleEndianReads {
     fn read_u16_le(&self, offset: usize) -> Result<u16, ZipArchiveError>;
     fn read_u32_le(&self, offset: usize) -> Result<u32, ZipArchiveError>;
 }
 
 impl DataLittleEndianReads for Data {
-    // swift: Render/Office/ZipArchive.swift:242-246
+    // swift: Data.readUInt16LE
     fn read_u16_le(&self, offset: usize) -> Result<u16, ZipArchiveError> {
         if offset + 2 > self.len() {
             return Err(ZipArchiveError::Truncated);
@@ -366,7 +360,7 @@ impl DataLittleEndianReads for Data {
         Ok((self.byte_at(base) as u16) | ((self.byte_at(base + 1) as u16) << 8))
     }
 
-    // swift: Render/Office/ZipArchive.swift:248-253
+    // swift: Data.readUInt32LE
     fn read_u32_le(&self, offset: usize) -> Result<u32, ZipArchiveError> {
         if offset + 4 > self.len() {
             return Err(ZipArchiveError::Truncated);
@@ -378,8 +372,3 @@ impl DataLittleEndianReads for Data {
             | ((self.byte_at(base + 3) as u32) << 24))
     }
 }
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/Office/ZipArchive.swift:255-255

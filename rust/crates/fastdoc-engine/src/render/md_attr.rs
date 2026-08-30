@@ -1,7 +1,7 @@
 //! swift: Render/MDAttr.swift
 //! swift-range: 1-6
 
-// swift: Render/MDAttr.swift:3-205
+// swift: MDAttr
 // Centralized custom NSAttributedString attribute keys (C5).
 // Producers (renderer) and consumers (window controller, reader view) must all
 // reference `MDAttr.*` — never raw string literals — so the producer→consumer
@@ -9,39 +9,33 @@
 pub struct MDAttr;
 
 impl MDAttr {
-    // swift: Render/MDAttr.swift:8-9
     /// Value = the raw code string of a fenced code block (used by the copy-button overlay).
     pub fn code_block() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdCodeBlock".to_string())
     }
 
-    // swift: Render/MDAttr.swift:10-12
     /// Value = the code block's language string ("" if none) — lets the no-wrap overlay
     /// re-highlight with the same rules.
     pub fn code_lang() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdCodeLang".to_string())
     }
 
-    // swift: Render/MDAttr.swift:13-14
     /// Value = the mermaid diagram source (the document layer swaps it for a PDF attachment).
     pub fn mermaid() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdMermaid".to_string())
     }
 
-    // swift: Render/MDAttr.swift:15-17
     /// Value = the TeX source of a display formula. Same deal as `mermaid`, drawn by a different
     /// engine — see `WebBlock`, which is what the document layer actually iterates.
     pub fn math() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdMath".to_string())
     }
 
-    // swift: Render/MDAttr.swift:18-19
     /// Value = the heading level (Int); scanned live to recompute heading jump offsets.
     pub fn heading() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdHeading".to_string())
     }
 
-    // swift: Render/MDAttr.swift:20-24
     /// Value = a per-block sequence Int. Every top-level block (paragraph, list, quote,
     /// code, table, rule) carries one unique id over its whole range, so a gutter click can
     /// recover the exact block range to copy — headings are clearly separated from the
@@ -50,85 +44,72 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdBlockId".to_string())
     }
 
-    // swift: Render/MDAttr.swift:25-26
     /// Marks a blockquote's range so the layout manager can draw its left accent bar.
     pub fn block_quote() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdBlockQuote".to_string())
     }
 
-    // swift: Render/MDAttr.swift:27-29
     /// Left inset (points, NSNumber) for a code block nested inside a blockquote, so its card
     /// (and buttons) shift right to align with the quote's prose instead of the page margin.
     pub fn code_inset() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdCodeInset".to_string())
     }
 
-    // swift: Render/MDAttr.swift:30-32
     /// Marks an inline-code span so the layout manager can draw a rounded chip hugging the
     /// glyphs (a plain .backgroundColor fills the whole inflated line height instead).
     pub fn inline_code() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdInlineCode".to_string())
     }
 
-    // swift: Render/MDAttr.swift:33-34
     /// Marks a thematic break (`---`) so the layout manager draws a full-width hairline.
     pub fn rule() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdRule".to_string())
     }
 
-    // swift: Render/MDAttr.swift:35-37
     /// Value = an image source (URL/path). The document layer loads it async and swaps the
     /// placeholder attachment's image in place (like mermaid). MDAttr.image_alt holds the alt.
     pub fn image() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdImage".to_string())
     }
 
-    // swift: Render/MDAttr.swift:38
     pub fn image_alt() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdImageAlt".to_string())
     }
 
-    // swift: Render/MDAttr.swift:39-41
     /// Marks an image the sandbox won't let us read — clicking it asks for the folder (App Store
     /// build only). Value = the folder to grant.
     pub fn needs_folder_grant() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdNeedsFolderGrant".to_string())
     }
 
-    // swift: Render/MDAttr.swift:42-44
     /// Explicit image width (non-standard extensions): points (NSNumber) or a 0–1 fraction of
     /// the column (image_width_pct). Parsed from HTML `<img width>`, Pandoc `{width=}`, Obsidian `|N`.
     pub fn image_width() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdImageWidth".to_string())
     }
 
-    // swift: Render/MDAttr.swift:45
     pub fn image_width_pct() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdImageWidthPct".to_string())
     }
 
-    // swift: Render/MDAttr.swift:46-48
     /// Value = a raw file path string (absolute/~/relative) detected in prose; the link
     /// handler resolves it against the document's directory and opens it.
     pub fn file_path() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdFilePath".to_string())
     }
 
-    // swift: Render/MDAttr.swift:49-51
     /// Reserved for the reading-line highlight contract (kept for symmetry; the reading
     /// line itself is drawn via layout-manager temporary attributes, not stored).
     pub fn reading_line() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdReadingLine".to_string())
     }
 
-    // swift: Render/MDAttr.swift:52-54
     /// Value = NSValue(range:) of this block's span in the ORIGINAL markdown source (line-based,
     /// UTF-16). Lets a rendered selection map back to source markdown for block-level editing.
     pub fn src_range() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdSrcRange".to_string())
     }
 
-    // swift: Render/MDAttr.swift:55-59
     /// Value = the raw fragment (without `#`) of an in-document anchor link (a TOC entry, or an
     /// office cross-reference/bookmark link). The click handler resolves it — first against
     /// `bookmark_target` (exact name), then by GFM heading-slug match — and scrolls there; a target
@@ -137,7 +118,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdAnchor".to_string())
     }
 
-    // swift: Render/MDAttr.swift:60-66
     /// Value = `[String]`, the bookmark name(s) (docx `w:bookmarkStart/@w:name`, odt
     /// `text:bookmark(-start)/@text:name`) whose target position is the START of this span — the
     /// destination side of an in-document anchor link, recorded by the office readers exactly the
@@ -148,7 +128,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdBookmarkTarget".to_string())
     }
 
-    // swift: Render/MDAttr.swift:67-72
     /// Value = `NSColor`, an office paragraph's own background fill (docx `w:pPr/w:shd/@w:fill`,
     /// odt `fo:background-color`) — drawn as a full-width rect behind the paragraph's line
     /// fragments by `drawMDDecorations`, the same build-time/draw-time split every other block
@@ -158,7 +137,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdParaShading".to_string())
     }
 
-    // swift: Render/MDAttr.swift:73-77
     /// Value = `NSColor`, an office paragraph's own border colour (docx `w:pPr/w:pBdr`, odt
     /// `fo:border`) — paired with `para_border_width` (never one without the other; both are set or
     /// neither, mirroring `ParagraphFormat.borderColor`/`.borderWidth`'s own "both resolved
@@ -167,14 +145,12 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdParaBorderColor".to_string())
     }
 
-    // swift: Render/MDAttr.swift:78-80
     /// Value = `NSNumber` (CGFloat), the paragraph border's stroke width in points — see
     /// `para_border_color`.
     pub fn para_border_width() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdParaBorderWidth".to_string())
     }
 
-    // swift: Render/MDAttr.swift:81-84
     /// Value = `NSNumber` (`RectEdge.rawValue`), WHICH of the paragraph border's four edges the
     /// document declared — set alongside the two above, never alone. Word's stock Title and Heading
     /// styles rule the bottom only, and drawing all four for them put every heading in a box.
@@ -182,7 +158,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdParaBorderEdges".to_string())
     }
 
-    // swift: Render/MDAttr.swift:85-90
     /// Value = `String` (a single character), the LEADER a tab should fill its advance with — docx
     /// `w:tabs/w:tab/@w:leader`, the `······` a table of contents runs between a title and its page
     /// number. Set on the TAB CHARACTER itself by `OfficeTextBuilder` and drawn at draw time:
@@ -192,7 +167,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdTabLeader".to_string())
     }
 
-    // swift: Render/MDAttr.swift:91-98
     /// Value = `[Int]`, the DISPLAY number(s) (`OfficeComment.number`) of the reviewer comment(s)
     /// whose range this span falls within — set by `OfficeTextBuilder` from `Span.commentIds`
     /// resolved against the document's `officeComments` (P6a captured the ids; this is P6b's
@@ -204,7 +178,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdCommentMark".to_string())
     }
 
-    // swift: Render/MDAttr.swift:99-109
     /// Value = `FillMarginTabInfo` (`OfficeTextBuilder`) — set on an office paragraph/heading
     /// whose authored tab stops end in a right- or decimal-aligned "fill to margin" tab (the
     /// dominant real case: a Word Table of Contents entry's page number, authored against the
@@ -219,7 +192,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdFillMarginTab".to_string())
     }
 
-    // swift: Render/MDAttr.swift:111-117
     /// An office graphic's AUTHORED size (an `OfficeGraphicInfo`), attached to the attachment
     /// character by `OfficeTextBuilder`. `DocumentWindowController.resizeOfficeGraphics` re-derives
     /// the picture's on-screen size from it on every reflow — the graphic keeps the share of the
@@ -230,7 +202,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdOfficeGraphic".to_string())
     }
 
-    // swift: Render/MDAttr.swift:119-126
     /// Value = `Int`, the index into `MarkdownDocument.officeBlocks` of a table whose GRID was left
     /// out of this build so the document could paint, set on the one-paragraph stand-in that holds
     /// its place. `MarkdownDocument.spliceDeferredTables` finds each stand-in by THIS attribute —
@@ -242,7 +213,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdDeferredTable".to_string())
     }
 
-    // swift: Render/MDAttr.swift:128-136
     /// Value = `true`, stamped over a table the DOCUMENT forbids splitting at a page boundary
     /// (HWP `Table.page_break == 나누지 않음`; docx's `w:cantSplit` on every row is the same claim).
     /// Absent means the document did not forbid it, which is every markdown table and most office
@@ -255,7 +225,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdTableKeepsWhole".to_string())
     }
 
-    // swift: Render/MDAttr.swift:138-147
     /// Value = `PageNumberField` (`.page`/`.numPages`) — the attribute-string mirror of
     /// `Span.page_number_field`, stamped by `OfficeTextBuilder.spansAttributedString` on a running
     /// header/footer's PAGE/NUMPAGES run so `PageBandPainter.substitutingPageFields` can find and
@@ -269,7 +238,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdPageNumberField".to_string())
     }
 
-    // swift: Render/MDAttr.swift:149-156
     /// WHICH SECTION of the source document this run belongs to (an `Int`), set on the first block
     /// of each section and nowhere else — the marker that lets a PAGE be placed in a section.
     ///
@@ -281,7 +249,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdSectionIndex".to_string())
     }
 
-    // swift: Render/MDAttr.swift:158-170
     /// WHICH FOOTNOTE this run is the reference marker for (an `Int`, the note's own number) — set
     /// on the superscript marker in the BODY, never on the note's text.
     ///
@@ -298,7 +265,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdFootnoteRef".to_string())
     }
 
-    // swift: Render/MDAttr.swift:171-175
     /// Where the document changes its column layout — an `OfficeColumnLayout`, on the run the
     /// declaration sat at. Read from the LAID-OUT text rather than the block model for the same
     /// reason `footnote_ref` is: the decision it feeds is taken from a finished layout, where the
@@ -307,7 +273,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdColumnLayout".to_string())
     }
 
-    // swift: Render/MDAttr.swift:177-182
     /// Set (value `true`) on a block the DOCUMENT vetoes a page number for (HWP's `Control::
     /// PageHide`'s `hidePageNum`) — see `OfficeReadResult.hidePageNumberBlocks`. A page resolved
     /// from where this marker sits in the laid-out text (`DocumentWindowController`'s section-page
@@ -317,7 +282,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdHidesPageNumber".to_string())
     }
 
-    // swift: Render/MDAttr.swift:183-186
     /// The page number this character's page starts counting from — HWP's NewNumber. Carried as an
     /// `Int` (`NSNumber` on the wire, which is `Hashable`, invariant 67). Present only on the block
     /// that declared the restart; every later page counts up from it.
@@ -325,7 +289,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdPageNumberRestart".to_string())
     }
 
-    // swift: Render/MDAttr.swift:188-191
     /// The anchored objects (an `[Int]` of indices into `OfficeReadResult.anchored_objects`) that
     /// belong to THIS block — the marker that says which page a paper-pinned object is drawn on.
     /// Set on the block the document anchored them at, and nowhere else.
@@ -333,7 +296,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdAnchoredObjects".to_string())
     }
 
-    // swift: Render/MDAttr.swift:193-199
     /// Set on a block the DOCUMENT breaks a page at (HWP's 쪽 나누기 / 구역 나누기), so layout starts
     /// it on a fresh page instead of letting it run on from the previous one. The value is `true`;
     /// the attribute's PRESENCE is the instruction. Carried as a marker rather than as a shift
@@ -344,7 +306,6 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdStartsPage".to_string())
     }
 
-    // swift: Render/MDAttr.swift:201-204
     /// Set on a block the document keeps with the one AFTER it (HWP 다음 문단과 함께). Layout moves
     /// such a block to the next page rather than let a page boundary fall between it and what
     /// follows — which is what stops a heading being stranded at the foot of a page.
@@ -352,23 +313,3 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdKeepWithNext".to_string())
     }
 }
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/MDAttr.swift:7-7
-// swift: Render/MDAttr.swift:38-38
-// swift: Render/MDAttr.swift:45-45
-// swift: Render/MDAttr.swift:77-77
-// swift: Render/MDAttr.swift:80-80
-// swift: Render/MDAttr.swift:110-110
-// swift: Render/MDAttr.swift:118-118
-// swift: Render/MDAttr.swift:127-127
-// swift: Render/MDAttr.swift:137-137
-// swift: Render/MDAttr.swift:148-148
-// swift: Render/MDAttr.swift:157-157
-// swift: Render/MDAttr.swift:176-176
-// swift: Render/MDAttr.swift:187-187
-// swift: Render/MDAttr.swift:192-192
-// swift: Render/MDAttr.swift:200-200
-// swift: Render/MDAttr.swift:205-205

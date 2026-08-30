@@ -17,7 +17,7 @@
 //! fall to the catch-all **hAnsi**. Driving Word from script identities would mis-render all of
 //! them, so the table is transcribed here instead, row by row, and can be checked against the spec.
 
-// swift: Render/Office/WordFontSlots.swift:1-26
+// swift: WordFontSlot
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WordFontSlot {
     Ascii,
@@ -36,7 +36,7 @@ impl WordFontSlot {
         [WordFontSlot::Ascii, WordFontSlot::HAnsi, WordFontSlot::EastAsia, WordFontSlot::Cs];
 }
 
-// swift: Render/Office/WordFontSlots.swift:27-41
+// swift: WordFontDecl
 /// One slot's declaration at ONE level of the cascade: a literal family, or a reference into the
 /// theme's font scheme.
 ///
@@ -53,7 +53,7 @@ pub enum WordFontDecl {
     Theme(String),
 }
 
-// swift: Render/Office/WordFontSlots.swift:42-121
+// swift: WordRFonts
 /// A `w:rFonts` element as declared at one level, or the result of cascading several.
 ///
 /// `hint` rides along as a fifth cell because it is an attribute of the same element and 23 of the
@@ -69,24 +69,20 @@ pub struct WordRFonts {
     /// which is the same as saying nothing); kept as the raw string rather than a Bool so a level
     /// that says `w:hint="default"` can still OVERRIDE an ancestor's `w:hint="eastAsia"` — a Bool
     /// would collapse "said default" and "said nothing" into the same false and let the ancestor win.
-    // swift: Render/Office/WordFontSlots.swift:52-81
     pub hint: Option<String>,
 }
 
 impl WordRFonts {
-    // swift: Render/Office/WordFontSlots.swift:52-81
     pub fn hints_east_asia(&self) -> bool {
         self.hint.as_deref() == Some("eastAsia")
     }
 
     /// True when this level declared nothing at all — the `parseStyles` gate for "is this style
     /// worth recording", matching how `RunStyleProps`/`ParaStyleProps` are gated beside it.
-    // swift: Render/Office/WordFontSlots.swift:60-81
     pub fn is_empty(&self) -> bool {
         *self == WordRFonts::default()
     }
 
-    // swift: Render/Office/WordFontSlots.swift:64-82
     pub fn get(&self, slot: WordFontSlot) -> Option<&WordFontDecl> {
         match slot {
             WordFontSlot::Ascii => self.ascii.as_ref(),
@@ -121,7 +117,7 @@ impl WordRFonts {
     /// rule only fires when ascii and hAnsi are already equal, so every slot a character can select
     /// then names the same family — and this form leaves `cs` alone, which matters because `cs` is
     /// reached by the run-level toggle that takes precedence over this rule anyway.
-    // swift: Render/Office/WordFontSlots.swift:83-102
+    // swift: WordRFonts.effectiveSlot
     pub fn effective_slot(&self, slot: WordFontSlot) -> WordFontSlot {
         let is_sentinel = matches!(&self.east_asia, Some(WordFontDecl::Literal(s)) if s == "Times New Roman");
         if slot != WordFontSlot::EastAsia || !is_sentinel || self.ascii != self.h_ansi {
@@ -140,7 +136,7 @@ impl WordRFonts {
     /// `script` is the ISO-15924 code of the CHARACTERS this slot was selected for, used only to
     /// pick an `a:font script=` entry out of the theme. See `WordThemeFonts.family` for why the
     /// character's own script rather than the document's language decides that.
-    // swift: Render/Office/WordFontSlots.swift:104-122
+    // swift: WordRFonts.family
     pub fn family(&self, slot: WordFontSlot, script: Option<&str>, theme: &WordThemeFonts) -> Option<String> {
         match self.get(self.effective_slot(slot)) {
             Some(WordFontDecl::Literal(name)) => Some(name.clone()),
@@ -150,7 +146,7 @@ impl WordRFonts {
     }
 }
 
-// swift: Render/Office/WordFontSlots.swift:123-225
+// swift: WordThemeFonts
 /// `word/theme/theme1.xml`'s `a:fontScheme` — a major (heading) and a minor (body) scheme, each
 /// naming a default per broad category plus a per-script override list.
 ///
@@ -166,7 +162,7 @@ pub struct WordThemeFonts {
     pub minor: WordThemeScheme,
 }
 
-// swift: Render/Office/WordFontSlots.swift:133-145
+// swift: WordThemeFonts.Scheme
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WordThemeScheme {
     /// `a:latin` — the fallback for the ascii/hAnsi theme references.
@@ -183,7 +179,6 @@ pub struct WordThemeScheme {
 }
 
 impl WordThemeFonts {
-    // swift: Render/Office/WordFontSlots.swift:146-151
     pub fn is_empty(&self) -> bool {
         *self == WordThemeFonts::default()
     }
@@ -211,7 +206,7 @@ impl WordThemeFonts {
     /// Word reaches 맑은 고딕 there through `w:themeFontLang`, i.e. through the document's LANGUAGE;
     /// `a:latin` reaches the same family on both corpus themes without naming a language anywhere,
     /// which is the constraint this reader ships under.
-    // swift: Render/Office/WordFontSlots.swift:152-185
+    // swift: WordThemeFonts.family
     pub fn family(&self, r#ref: &str, script: Option<&str>) -> Option<String> {
         let (scheme, role) = Self::target(r#ref)?;
         let table = if scheme == Which::Major { &self.major } else { &self.minor };
@@ -230,7 +225,7 @@ impl WordThemeFonts {
     /// `ST_Theme`'s eight values (ECMA-376) split into which scheme and which default within it.
     /// `majorAscii`/`majorHAnsi` name the same `a:latin` default — the two Latin ranges Word tracks
     /// separately in `w:rFonts` share one theme entry.
-    // swift: Render/Office/WordFontSlots.swift:188-203
+    // swift: WordThemeFonts.target
     fn target(r#ref: &str) -> Option<(Which, Role)> {
         match r#ref {
             "majorAscii" | "majorHAnsi" => Some((Which::Major, Role::Latin)),
@@ -256,7 +251,7 @@ impl WordThemeFonts {
     ///
     /// `.kana` → `Jpan` and not `Hira`/`Kana`: the theme's own list is keyed by writing SYSTEM, and
     /// `Jpan` is the code every measured theme actually carries for kana text.
-    // swift: Render/Office/WordFontSlots.swift:204-226
+    // swift: WordThemeFonts.scriptCode
     pub fn script_code(klass: crate::render::office::script::unicode_script::ScriptClass) -> Option<&'static str> {
         use crate::render::office::script::unicode_script::ScriptClass;
         match klass {
@@ -274,12 +269,13 @@ impl WordThemeFonts {
     }
 }
 
-// swift: Render/Office/WordFontSlots.swift:186-186
+// swift: WordThemeFonts.Which
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Which {
     Major,
     Minor,
 }
+// swift: WordThemeFonts.Role
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Role {
     Latin,
@@ -287,7 +283,7 @@ enum Role {
     Complex,
 }
 
-// swift: Render/Office/WordFontSlots.swift:227-239
+// swift: WordSlotKey
 /// What `ScriptRunSplitter` is asked to break on for a Word document: the slot a character selects
 /// AND the script key that slot's theme reference would be resolved through.
 ///
@@ -302,7 +298,7 @@ pub struct WordSlotKey {
     pub script: Option<String>,
 }
 
-// swift: Render/Office/WordFontSlots.swift:240-422
+// swift: WordFontBlockTable
 /// MS-OI29500 §17.3.2.26's per-character table — "which of the four fonts does Word use for this
 /// character", transcribed row by row so it can be diffed against the published table.
 pub struct WordFontBlockTable;
@@ -348,7 +344,7 @@ impl WordFontBlockTable {
     /// them is General Punctuation and therefore `hAnsi`, splitting one cluster into three. Neither
     /// needs a hand-written scalar list to fix — U+200D is Script=Inherited and every combining mark
     /// and variation selector is Grapheme_Extend, both already in the shared table.
-    // swift: Render/Office/WordFontSlots.swift:243-289
+    // swift: WordFontBlockTable.slot
     pub fn slot(scalar: char, hints_east_asia: bool) -> Option<WordSlotKey> {
         let klass = crate::render::office::script::unicode_script::UnicodeScript::of(scalar);
         if klass.is_absorbing() {
@@ -369,7 +365,7 @@ impl WordFontBlockTable {
     /// surrogate and would otherwise drop astral characters into the unlisted catch-all `hAnsi`.
     /// The spec is silent on what Word does with an astral scalar and this was not tested against
     /// Word, so the choice here is the spec's letter, taken on purpose rather than by accident.
-    // swift: Render/Office/WordFontSlots.swift:290-304
+    // swift: WordFontBlockTable.slot
     pub fn slot_for_value(value: u32, hints_east_asia: bool) -> WordFontSlot {
         if value > 0xFFFF {
             return WordFontSlot::EastAsia;
@@ -378,7 +374,7 @@ impl WordFontBlockTable {
         if hints_east_asia { row.hinted } else { row.plain }
     }
 
-    // swift: Render/Office/WordFontSlots.swift:311-321
+    // swift: WordFontBlockTable.row
     fn row_containing(value: u32) -> Option<Row> {
         let rows = Self::rows();
         let mut low: i64 = 0;
@@ -397,7 +393,6 @@ impl WordFontBlockTable {
         None
     }
 
-    // swift: Render/Office/WordFontSlots.swift:322-345
     /// The table, sorted and non-overlapping. Anything not covered is the spec's own catch-all:
     /// *"For all ranges not listed in the table, the hAnsi (or hAnsiTheme) font shall be used."*
     ///
@@ -421,7 +416,6 @@ impl WordFontBlockTable {
     /// with no unconditional classification given) resolves unhinted to the catch-all `hAnsi` —
     /// there is no other answer available, since rule 3 covers every range the table does not
     /// classify outright.
-    // swift: Render/Office/WordFontSlots.swift:346-422
     fn rows() -> &'static [Row] {
         use WordFontSlot::*;
         &[
@@ -503,7 +497,7 @@ impl WordFontBlockTable {
     }
 }
 
-// swift: Render/Office/WordFontSlots.swift:305-310
+// swift: WordFontBlockTable.Row
 #[derive(Clone, Copy)]
 struct Row {
     start: u32,

@@ -32,7 +32,7 @@ fn union_rect(a: CGRect, b: CGRect) -> CGRect {
 /// the paper. Its body is 671.75pt tall with margins of 99.25 and 70.90, and `band` is exactly those
 /// two margins (invariant 57e), so `pitch == 841.90 == A4`. Nothing here has to reconcile two
 /// different page grids, because there is only one.
-// swift: Render/Office/PagePagination.swift:3-17
+// swift: PagePagination
 pub struct PagePagination;
 
 impl PagePagination {
@@ -42,7 +42,7 @@ impl PagePagination {
     /// than the margins the document allowed (`PageBandGeometry.measure`'s `max`), the printed sheet
     /// grows with it. A sheet printed at the DECLARED height while the text repeats at a larger pitch
     /// would drift by the difference on every page and start slicing lines a few pages in.
-    // swift: Render/Office/PagePagination.swift:18-27
+    // swift: PagePagination.pitch
     pub fn pitch(page_content_height: CGFloat, band: CGFloat) -> CGFloat {
         page_content_height + band
     }
@@ -61,7 +61,7 @@ impl PagePagination {
     ///
     /// A document that cites no footnote passes an EMPTY `noteBands` and gets the identical number
     /// it got before this existed — which is what keeps the corpus provably unaffected.
-    // swift: Render/Office/PagePagination.swift:28-48
+    // swift: PagePagination.textBottom
     pub fn text_bottom(
         page: CGFloat,
         page_content_height: CGFloat,
@@ -79,7 +79,7 @@ impl PagePagination {
     /// as a HEIGHT because that is what "does this piece fit" asks. Never negative: a band clamped
     /// to three quarters of its page (`FootnoteBandSettle.maxBandFraction`) cannot reach here, but a
     /// caller passing an unclamped one must not get a negative page out of it.
-    // swift: Render/Office/PagePagination.swift:49-58
+    // swift: PagePagination.bodyHeight
     pub fn body_height(page: CGFloat, page_content_height: CGFloat, note_bands: &HashMap<i64, CGFloat>) -> CGFloat {
         if note_bands.is_empty() || page < 0.0 {
             return page_content_height;
@@ -95,7 +95,7 @@ impl PagePagination {
     /// the header in the lower half, i.e. they treat the gap's midpoint as the sheet edge. Printing
     /// has to agree with the painter about where the paper ends, or the footer of one page would print
     /// on the next.
-    // swift: Render/Office/PagePagination.swift:59-71
+    // swift: PagePagination.topMargin
     pub fn top_margin(declared: Option<CGFloat>, band: CGFloat) -> CGFloat {
         match declared {
             Some(d) if d >= 0.0 => d,
@@ -116,7 +116,7 @@ impl PagePagination {
     /// paper — there is nothing in the view to draw in it, and a print rect is allowed to reach past
     /// the view's bounds. Clamping it to 0 instead would print page 1 with a 28pt top margin and every
     /// other page with 99.25.
-    // swift: Render/Office/PagePagination.swift:72-89
+    // swift: PagePagination.sheetTop
     pub fn sheet_top(page: i64, text_origin_y: CGFloat, leading_band: CGFloat, pitch: CGFloat, top_margin: CGFloat) -> CGFloat {
         text_origin_y + leading_band + (page as CGFloat) * pitch - top_margin
     }
@@ -141,7 +141,7 @@ impl PagePagination {
     ///
     /// SCREEN ONLY. Paper cannot stretch, so `rectForPage` keeps the paper-sized grid — the divergence
     /// is the medium's, not a disagreement between two implementations.
-    // swift: Render/Office/PagePagination.swift:90-124
+    // swift: PagePagination.joiningUnopenedBoundaries
     pub fn joining_unopened_boundaries(sheets: &[CGRect], opened_boundaries: Option<&HashSet<i64>>) -> Vec<CGRect> {
         let Some(opened_boundaries) = opened_boundaries else { return sheets.to_vec() };
         if sheets.len() <= 1 {
@@ -185,7 +185,7 @@ impl PagePagination {
     }
 }
 
-// swift: Render/Office/PagePagination.swift:125-159
+// swift: PagePagination.LaidOutRow
 #[derive(Debug, Clone, Copy)]
 pub struct LaidOutRow {
     pub first_char: i64,
@@ -196,13 +196,12 @@ pub struct LaidOutRow {
 }
 
 impl LaidOutRow {
-    // swift: Render/Office/PagePagination.swift:151-157
     pub fn new(first_char: i64, top: CGFloat, bottom: CGFloat, first_line_top: CGFloat, can_break_above: bool) -> Self {
         LaidOutRow { first_char, top, bottom, first_line_top, can_break_above }
     }
 }
 
-// swift: Render/Office/PagePagination.swift:160-189
+// swift: PagePagination.LaidOutTable
 #[derive(Debug, Clone)]
 pub struct LaidOutTable {
     pub first_char: i64,
@@ -224,7 +223,7 @@ pub struct LaidOutTable {
 }
 
 impl LaidOutTable {
-    // swift: Render/Office/PagePagination.swift:160-188
+    // swift: PagePagination.LaidOutTable
     pub fn new(
         first_char: i64,
         visual_top: CGFloat,
@@ -250,7 +249,7 @@ impl LaidOutTable {
 /// position-INDEPENDENT facts the layout rule needs to move it. Position-independent because a
 /// paged document's reading column never changes (invariant 57), so measuring them once is enough
 /// for the whole render.
-// swift: Render/Office/PagePagination.swift:190-206
+// swift: PagePagination.TableMetrics
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TableMetrics {
     pub height: CGFloat,
@@ -261,7 +260,6 @@ impl TableMetrics {
     /// Rounded to a hundredth of a point on the way in, which is what lets the settle loop stop:
     /// it re-measures every round and compares the whole record, so a piece whose height came back
     /// as `161.70000000000002` one round and `161.7` the next would read as a change for ever.
-    // swift: Render/Office/PagePagination.swift:198-204
     pub fn new(height: CGFloat, top_inset: CGFloat) -> Self {
         TableMetrics {
             height: (height * 100.0).round() / 100.0,
@@ -271,7 +269,7 @@ impl TableMetrics {
 }
 
 /// A run of rows welded into one unbreakable unit, as returned by `unbreakableGroups`.
-// swift: Render/Office/PagePagination.swift:379-380 (Swift tuple type, given a name here)
+// swift-range: Render/Office/PagePagination.swift:379-380 (Swift tuple type, given a name here)
 #[derive(Debug, Clone, Copy)]
 pub struct UnbreakableGroup {
     pub first_char: i64,
@@ -295,7 +293,7 @@ impl PagePagination {
     /// consumes them is idempotent (a table sitting at a page top declines to move again), and
     /// dropping one because it now fits would make it fit, then not fit, then fit — the settle loop
     /// would never converge.
-    // swift: Render/Office/PagePagination.swift:207-302
+    // swift: PagePagination.tablesToPush
     pub fn tables_to_push(
         tables: &[LaidOutTable],
         page_content_height: CGFloat,
@@ -314,14 +312,14 @@ impl PagePagination {
         /// Which page a `y` starts on, with the hair of tolerance the layout rule uses — see
         /// `PageBandLayoutDelegate.page(of:leadingBand:pitch:)`. The two must agree exactly or the
         /// decision keeps asking for a move the rule has already made.
-        // swift: Render/Office/PagePagination.swift:230-235
+        // swift: PagePagination.pageOf
         fn page_of(top: CGFloat, leading_band: CGFloat, pitch: CGFloat) -> CGFloat {
             (((top - leading_band) / pitch) + 1e-6).floor()
         }
 
         /// Does this span, sitting here, run past the bottom of the page it starts on — where
         /// "bottom" is the body that page actually offers, notes taken out (`textBottom`)?
-        // swift: Render/Office/PagePagination.swift:237-243
+        // swift: PagePagination.overruns
         fn overruns(
             top: CGFloat,
             bottom: CGFloat,
@@ -412,7 +410,7 @@ impl PagePagination {
     /// once a piece is being broken, the gaps that opening puts inside it grow its measured extent, so
     /// re-deriving from the new layout could flip the answer back and forth and the settle would never
     /// stop. The record only grows, and there are finitely many pieces.
-    // swift: Render/Office/PagePagination.swift:303-353
+    // swift: PagePagination.oversizedPieces
     pub fn oversized_pieces(
         tables: &[LaidOutTable],
         page_content_height: CGFloat,
@@ -470,7 +468,7 @@ impl PagePagination {
     /// 507pt carrying 780–1015pt of lines. Over-tall pieces are the exception that works because they
     /// have nowhere to be carried to in the first place — for them the choice is between a broken row
     /// and a row in the margin, not between a broken row and a whole one.
-    // swift: Render/Office/PagePagination.swift:354-372
+    // swift: PagePagination.brokenInPlace
     fn broken_in_place(group: &UnbreakableGroup, page_content_height: CGFloat) -> bool {
         group.height > page_content_height
     }
@@ -481,7 +479,7 @@ impl PagePagination {
     ///
     /// One group means the table cannot be broken at all (its very first row is the only boundary),
     /// which is the answer for a form whose left column is merged from top to bottom.
-    // swift: Render/Office/PagePagination.swift:373-407
+    // swift: PagePagination.unbreakableGroups
     pub fn unbreakable_groups(rows: &[LaidOutRow]) -> Vec<UnbreakableGroup> {
         let mut out: Vec<UnbreakableGroup> = Vec::new();
         let mut start: Option<LaidOutRow> = None;
@@ -489,6 +487,7 @@ impl PagePagination {
         let mut bottom: CGFloat = CGFloat::MIN;
         let mut rows_in_group: i64 = 0;
 
+        // swift: PagePagination.close
         fn close(out: &mut Vec<UnbreakableGroup>, start: &Option<LaidOutRow>, top: CGFloat, bottom: CGFloat, rows_in_group: i64) {
             let Some(s) = start else { return };
             out.push(UnbreakableGroup {
@@ -526,7 +525,7 @@ impl PagePagination {
     /// edge to edge, the desk fill was completely covered by the very sheets it sat behind, and the
     /// feature drew as a hairline — indistinguishable from the page-break rule it was supposed to
     /// replace. It looked like nothing had happened.
-    // swift: Render/Office/PagePagination.swift:408-429
+    // swift: PagePagination.sheets
     pub fn sheets(count: i64, width: CGFloat, text_origin_y: CGFloat, leading_band: CGFloat, pitch: CGFloat, top_margin: CGFloat, desk_gap: CGFloat) -> Vec<CGRect> {
         if !(count > 0) || !(pitch > 0.0) || !(width > 0.0) {
             return Vec::new();

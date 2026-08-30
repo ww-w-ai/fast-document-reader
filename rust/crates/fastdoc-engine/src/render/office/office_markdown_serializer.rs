@@ -1,7 +1,8 @@
 //! swift: Render/Office/OfficeMarkdownSerializer.swift
 //! swift-range: 1-20
 
-// swift: Render/Office/OfficeMarkdownSerializer.swift:1-18
+// swift: OfficeMarkdownSerializer
+// swift-range: Render/Office/OfficeMarkdownSerializer.swift:1-18
 // Turns the format-neutral office block vocabulary (`OfficeBlock`, the SAME thing the reader
 // renders — invariant 29's `OfficeReadResult.blocks`) into GitHub-flavoured Markdown, for the
 // headless `--extract` path. Pure and view-free: `[OfficeBlock] -> String`, so it is fully unit
@@ -20,13 +21,13 @@
 pub struct OfficeMarkdownSerializer;
 
 impl OfficeMarkdownSerializer {
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:21-25
+    // swift-range: Render/Office/OfficeMarkdownSerializer.swift:21-25
     /// The marker the CLI legend refers to. Callers check `output.contains(rawOpen)` to decide
     /// whether to include the `<raw>` explanation in the header note.
     pub const RAW_OPEN: &'static str = "<raw>";
     pub const RAW_CLOSE: &'static str = "</raw>";
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:26-61
+    // swift: OfficeMarkdownSerializer.serialize
     /// `footnotes` are appended as a trailing section, because they are no longer IN `blocks`.
     ///
     /// This is a data-loss guard, not a formatting choice. S14 lifted footnote bodies out of the
@@ -84,9 +85,9 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Blocks
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:65-105
+    // swift: OfficeMarkdownSerializer.render
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:65-106
+    // swift: OfficeMarkdownSerializer.render
     fn render(block: &crate::render::office::office_block::OfficeBlock) -> (String, bool) {
         use crate::render::office::office_block::OfficeBlock;
         match block {
@@ -146,9 +147,9 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Tables
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:109-116
+    // swift: OfficeMarkdownSerializer.renderTable
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:109-117
+    // swift: OfficeMarkdownSerializer.renderTable
     fn render_table(rows: &[Vec<crate::render::office::office_block::Cell>], header_rows: i32) -> String {
         let _ = header_rows;
         if rows.is_empty() {
@@ -161,7 +162,7 @@ impl OfficeMarkdownSerializer {
         }
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:118-134
+    // swift: OfficeMarkdownSerializer.isSimpleGrid
     /// A grid a GFM pipe table can hold: rectangular, no merged cells, and every cell's content is
     /// plain paragraph text (no nested table, list, image, or formula inside a cell).
     fn is_simple_grid(rows: &[Vec<crate::render::office::office_block::Cell>]) -> bool {
@@ -194,9 +195,10 @@ impl OfficeMarkdownSerializer {
         true
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:135-148
+    // swift: OfficeMarkdownSerializer.pipeTable
     fn pipe_table(rows: &[Vec<crate::render::office::office_block::Cell>]) -> String {
         let width = rows[0].len();
+        // swift: OfficeMarkdownSerializer.rowLine
         let row_line = |row: &[crate::render::office::office_block::Cell]| -> String {
             format!(
                 "| {} |",
@@ -219,7 +221,7 @@ impl OfficeMarkdownSerializer {
         lines.join("\n")
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:149-157
+    // swift: OfficeMarkdownSerializer.rawTable
     fn raw_table(rows: &[Vec<crate::render::office::office_block::Cell>]) -> String {
         let mut lines = vec![
             Self::RAW_OPEN.to_string(),
@@ -238,7 +240,7 @@ impl OfficeMarkdownSerializer {
         lines.join("\n")
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:158-168
+    // swift: OfficeMarkdownSerializer.cellInline
     fn cell_inline(cell: &crate::render::office::office_block::Cell) -> String {
         use crate::render::office::office_block::OfficeBlock;
         let mut parts: Vec<String> = Vec::new();
@@ -253,7 +255,7 @@ impl OfficeMarkdownSerializer {
         parts.join(" ")
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:169-179
+    // swift: OfficeMarkdownSerializer.plainCell
     fn plain_cell(cell: &crate::render::office::office_block::Cell) -> String {
         let joined = cell
             .blocks
@@ -265,9 +267,9 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Inline spans
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:176-178
+    // swift: OfficeMarkdownSerializer.inline
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:176-178
+    // swift: OfficeMarkdownSerializer.inline
     fn inline(spans: &[crate::render::office::office_block::Span], inCell: bool) -> String {
         Self::coalesced(spans)
             .iter()
@@ -276,7 +278,7 @@ impl OfficeMarkdownSerializer {
             .join("")
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:180-206
+    // swift: OfficeMarkdownSerializer.coalesced
     /// Undoes `FontSubstitutionResolver`'s read-time span splitting before any Markdown delimiter is
     /// emitted. That resolver cuts one logical run into several `Span`s purely so `OfficeTextBuilder`
     /// can assign each piece its own on-screen substitute FONT (invariant 37/§`docs/font-substitution
@@ -314,7 +316,7 @@ impl OfficeMarkdownSerializer {
         out
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:207-230
+    // swift: OfficeMarkdownSerializer.sameMarkdownIdentity
     /// Two adjacent spans are the SAME as far as Markdown is concerned iff they agree on every
     /// property Markdown can actually write down.
     ///
@@ -345,7 +347,7 @@ impl OfficeMarkdownSerializer {
             && a.link == b.link
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:231-257
+    // swift: OfficeMarkdownSerializer.span
     fn span(s: &crate::render::office::office_block::Span, inCell: bool) -> String {
         // A footnote marker becomes the markdown reference that points at the note this serializer
         // already emits at the end (`[^3]: …`). Without it the extraction keeps every note's TEXT
@@ -389,7 +391,7 @@ impl OfficeMarkdownSerializer {
         t
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:258-265
+    // swift: OfficeMarkdownSerializer.escapeText
     /// Minimal, per policy: fold hard newlines to spaces (a span is inline, not a block), and inside
     /// a pipe-table cell escape `|` so a literal bar can't split the column. Prose keeps its literal
     /// `*`/`#`/`_` — an AI reader tolerates that far better than an over-escaped wall of backslashes.
@@ -401,7 +403,7 @@ impl OfficeMarkdownSerializer {
         t
     }
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:267-273
+    // swift: OfficeMarkdownSerializer.longestBacktickRun
     fn longest_backtick_run(s: &str) -> usize {
         let mut longest = 0usize;
         let mut cur = 0usize;
@@ -417,9 +419,9 @@ impl OfficeMarkdownSerializer {
     }
 
     // MARK: - Plain-text extraction (for <raw> dumps)
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:277-288
+    // swift: OfficeMarkdownSerializer.plainBlock
 
-    // swift: Render/Office/OfficeMarkdownSerializer.swift:277-288
+    // swift: OfficeMarkdownSerializer.plainBlock
     fn plain_block(block: &crate::render::office::office_block::OfficeBlock) -> String {
         use crate::render::office::office_block::OfficeBlock;
         match block {
@@ -448,12 +450,3 @@ impl OfficeMarkdownSerializer {
         }
     }
 }
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/Office/OfficeMarkdownSerializer.swift:62-64
-// swift: Render/Office/OfficeMarkdownSerializer.swift:107-108
-// swift: Render/Office/OfficeMarkdownSerializer.swift:266-266
-// swift: Render/Office/OfficeMarkdownSerializer.swift:274-276
-// swift: Render/Office/OfficeMarkdownSerializer.swift:289-289

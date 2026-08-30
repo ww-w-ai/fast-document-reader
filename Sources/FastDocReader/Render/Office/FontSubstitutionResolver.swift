@@ -500,10 +500,14 @@ struct FontSubstitutionPlan {
 /// class of error rather than guarding against it: a variation selector is `Grapheme_Extend`, an
 /// emoji base is Script=Common, and neither can ever be a sample.)
 final class FontSubstitutionCache {
+    // port-exclude: The host cache's private key. The engine memoises on a tuple rather than a named
+    // port-exclude: struct, so there is nothing for this to be the port of -- the CACHE is claimed,
+    // port-exclude: the shape of its key is an implementation choice each side makes for itself.
     fileprivate struct Key: Hashable {
         let fontKey: String
         let scalar: UInt32
     }
+    // port-exclude-end
 
     fileprivate var declaredFontMemo: [FontSubstitutionResolver.DeclaredFontKey: NSFont] = [:]
     /// Which memoised entries came from the fallback CHAIN rather than from the declared name itself.

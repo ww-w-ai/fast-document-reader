@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-// swift: Render/Office/DeclaredFontKind.swift:3-60
+// swift: DeclaredFontKind
 /// What KIND of face a declared family name asks for, when this machine cannot supply the family
 /// itself. Format-neutral on purpose: a `.docx` naming `HY중고딕` and a `.hwp` naming it are the same
 /// problem, and all three office readers share one substitution pass.
@@ -41,7 +41,6 @@ pub enum DeclaredFontKind {
 }
 
 impl DeclaredFontKind {
-    // swift: Render/Office/DeclaredFontKind.swift:35-61
     /// The family this reader may ask for when a declaration of this kind cannot be resolved, or
     /// `None` when there is nothing honest to offer and the existing cascade should answer.
     ///
@@ -69,27 +68,22 @@ impl DeclaredFontKind {
     }
 }
 
-// swift: Render/Office/DeclaredFontKind.swift:62-128
 impl DeclaredFontKind {
     // Order matters: the first table that matches wins, and mono/symbol are checked first because
     // "고정폭 고딕" is a monospace face that also carries a sans root.
-    // swift: Render/Office/DeclaredFontKind.swift:65
     fn mono_roots() -> &'static [&'static str] {
         &["고정폭", "타자기", "Mono", "Console", "Consolas", "Courier", "Typewriter"]
     }
-    // swift: Render/Office/DeclaredFontKind.swift:66
     fn symbol_roots() -> &'static [&'static str] {
         &["Wingding", "Webding", "Marlett", "Symbol", "Dingbat", "기호"]
     }
     /// The Korean sans roots AND their romanisations — `Haansoft Batang` and `HCR Dotum` name Korean
     /// faces in Latin letters only, so a Hangul-only table misses them.
-    // swift: Render/Office/DeclaredFontKind.swift:67-69
     fn sans_roots() -> &'static [&'static str] {
         &["고딕", "돋움", "굴림", "Gothic", "Dotum", "Gulim", "Sans"]
     }
     /// `Myungjo` and `Gungsuh` are second romanisations, found by running this against the real 265
     /// and seeing them stuck in `.latin` — which is a WRONG fact, not merely a missing one.
-    // swift: Render/Office/DeclaredFontKind.swift:70-73
     fn serif_roots() -> &'static [&'static str] {
         &[
             "명조", "바탕", "궁서", "옛체", "Myeongjo", "Myungjo", "Batang",
@@ -102,7 +96,6 @@ impl DeclaredFontKind {
     /// classified as Western, which would then be offered a Latin equivalent that cannot draw Hangul.
     /// Anchored at the START, because `HY` and `HCI` are short enough to occur inside an unrelated
     /// word by accident.
-    // swift: Render/Office/DeclaredFontKind.swift:74-80
     fn korean_vendor_prefixes() -> &'static [&'static str] {
         &["HY", "HCI"]
     }
@@ -114,7 +107,6 @@ impl DeclaredFontKind {
     /// It is deliberately tiny. `Times New Roman` and `Arial` are absent because they RESOLVE on
     /// macOS already (as `TimesNewRomanPSMT` and `ArialMT`), so they never reach this code — verified
     /// with `NSFont(name:)`, not assumed.
-    // swift: Render/Office/DeclaredFontKind.swift:82-92
     fn latin_equivalents() -> &'static HashMap<&'static str, &'static str> {
         static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
         TABLE.get_or_init(|| {
@@ -125,7 +117,7 @@ impl DeclaredFontKind {
         })
     }
 
-    // swift: Render/Office/DeclaredFontKind.swift:94-100
+    // swift: DeclaredFontKind.containsHangul
     pub fn contains_hangul(s: &str) -> bool {
         s.chars().any(|c| {
             let v = c as u32;
@@ -138,7 +130,7 @@ impl DeclaredFontKind {
     /// The kind a declared family name states, and the substring that decided it. The morpheme is
     /// returned so a probe can report WHY a name classified the way it did — a classification whose
     /// reason cannot be printed is one nobody can check.
-    // swift: Render/Office/DeclaredFontKind.swift:102-113
+    // swift: DeclaredFontKind.classify
     pub fn classify(name: &str) -> (DeclaredFontKind, String) {
         let lower = name.to_lowercase();
         for m in Self::mono_roots() {
@@ -175,14 +167,14 @@ impl DeclaredFontKind {
     /// A same-typeface substitute for a Western family, or `None`. Separate from `classify` because it
     /// answers a different question: not "what kind is this" but "is this face this machine's face
     /// under another name".
-    // swift: Render/Office/DeclaredFontKind.swift:115-120
+    // swift: DeclaredFontKind.equivalentFamily
     pub fn equivalent_family(name: &str) -> Option<&'static str> {
         Self::latin_equivalents().get(name.to_lowercase().as_str()).copied()
     }
 
     /// The family to try for a declaration this machine cannot resolve, or `None` to leave the
     /// existing cascade to answer. The caller must still verify coverage; this only proposes.
-    // swift: Render/Office/DeclaredFontKind.swift:122-129
+    // swift: DeclaredFontKind.fallbackFamily
     pub fn fallback_family(name: &str) -> Option<&'static str> {
         if let Some(equivalent) = Self::equivalent_family(name) {
             return Some(equivalent);
@@ -191,7 +183,7 @@ impl DeclaredFontKind {
     }
 }
 
-// swift: Render/Office/DeclaredFontKind.swift:130-180
+// swift: DeclaredFace
 /// What a DOCUMENT said about one entry in its own font table, in format-neutral terms.
 ///
 /// Every office format keeps such a table and every one of them says more about a face than its name:
@@ -204,18 +196,16 @@ pub struct DeclaredFace {
     /// real HWP documents: 9,084 faces nominate one and **none of them resolves** on a machine without
     /// Hancom Office (invariant 95). It is tried first anyway, because a substitute the document chose
     /// outranks one this reader inferred, and on a machine that HAS those fonts it fires.
-    // swift: Render/Office/DeclaredFontKind.swift:137-141
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub nominated_substitute: Option<String>,
     /// The document carries the face's own bytes. Two documents in 1,589 do.
-    // swift: Render/Office/DeclaredFontKind.swift:142-143
     pub is_embedded: bool,
     /// The ten-byte type-info block HWP's font table carries (PANOSE): byte 0 is family kind — text,
     /// hand-written, decorative, symbol — and byte 1 is serif style. When a document fills this in, the
     /// KIND of a face is something it STATED rather than something this reader inferred from the name,
     /// and the stated answer wins. `nil` means the document said nothing, which is not the same as a
     /// block of zeroes (PANOSE zero means "any", a real declaration).
-    // swift: Render/Office/DeclaredFontKind.swift:130-180
+    // swift: DeclaredFace
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub type_info: Option<Vec<u8>>,
 }
@@ -249,13 +239,8 @@ impl DeclaredFace {
     /// 2,267-document corpus. The block stays CARRIED on this type so a later sprint can consume it
     /// once the exporter normalises the two vocabularies into one field and says which it used;
     /// reading it before then would be guessing while claiming to quote.
-    // swift: Render/Office/DeclaredFontKind.swift:130-180
+    // swift: DeclaredFace
     pub fn declared_kind(&self) -> Option<DeclaredFontKind> {
         None
     }
 }
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/Office/DeclaredFontKind.swift:181-181

@@ -983,6 +983,34 @@ enum TableBlockBuilder {
         return max(1, edges[c1] - edges[c0] - padLeft - padRight - borderLeft - borderRight)
     }
 
+    // port-exclude: the host keeps this because it CANNOT cross — `NSTextStorage` is an
+    // AppKit object model the engine crate has no access to, which is why
+    // `table_block_builder.rs`'s stub for it was deleted. The part that could cross already
+    // did: the per-cell arithmetic runs in the engine and this walks and writes back.
+    // S5B2b cutover: the per-cell arithmetic crosses to the engine
+    // (`fastdoc_table_resize_cell_widths_batch`, via `RustEngineTableResize`), but the LIVE
+    // traversal and write-back stay exactly Swift's — `RustEngine` reads a whole document;
+    // this is the opposite direction, host-to-engine, and the host still owns the
+    // `NSTextStorage` object model the engine crate has no access to
+    // (`table_block_builder.rs`'s deleted stub needed exactly this and never got it).
+    //
+    // ONE PASS. The walk that finds the cells also builds the engine's payload, because the
+    // two layers it replaces were MEASURED to be the whole regression: of the +4.3 ms this
+    // path cost at entry (`evidence/s5b2b-latency.md`), the boundary itself was 0.35 ms —
+    // 2.4 ms was grouping the cells and 1.6 ms was building the payload from those groups.
+    // Two shapes were built and measured before this one: asking per table (9.5 ms, batching
+    // it recovered almost nothing) and two walks keeping nothing in between (7.4-8.1 ms —
+    // re-reading the storage costs more than retaining the cells, so the cells are kept).
+    //
+    // What makes one pass possible is that a table's cells are CONTIGUOUS in document order:
+    // `textBlocks.first` is the OUTERMOST block, so every range inside a nested table maps to
+    // the table that encloses it, not to the inner one. That is an assumption about AppKit's
+    // ordering, so it is CHECKED rather than trusted — meeting a table that was already closed
+    // means the payload's table boundaries would not describe this document, and the whole
+    // resize refuses (below) instead of writing widths solved against the wrong grouping.
+    //
+    // The arithmetic the engine runs per table is unchanged, so the S5B2a/S5B2b parity tests
+    // still hold.
     /// Returns HOW MANY cells it actually wrote — the number a caller (and invariant 48's own
     /// gate) can observe. Comparing widths afterwards cannot tell "wrote every cell the value it
     /// already had" apart from "wrote nothing", nor "the engine refused and nothing was applied"
@@ -994,34 +1022,6 @@ enum TableBlockBuilder {
         let whole = NSRange(location: 0, length: storage.length)
         var touched: [NSRange] = []
 
-        // port-exclude: the host keeps this because it CANNOT cross — `NSTextStorage` is an
-        // AppKit object model the engine crate has no access to, which is why
-        // `table_block_builder.rs`'s stub for it was deleted. The part that could cross already
-        // did: the per-cell arithmetic runs in the engine and this walks and writes back.
-        // S5B2b cutover: the per-cell arithmetic crosses to the engine
-        // (`fastdoc_table_resize_cell_widths_batch`, via `RustEngineTableResize`), but the LIVE
-        // traversal and write-back stay exactly Swift's — `RustEngine` reads a whole document;
-        // this is the opposite direction, host-to-engine, and the host still owns the
-        // `NSTextStorage` object model the engine crate has no access to
-        // (`table_block_builder.rs`'s deleted stub needed exactly this and never got it).
-        //
-        // ONE PASS. The walk that finds the cells also builds the engine's payload, because the
-        // two layers it replaces were MEASURED to be the whole regression: of the +4.3 ms this
-        // path cost at entry (`evidence/s5b2b-latency.md`), the boundary itself was 0.35 ms —
-        // 2.4 ms was grouping the cells and 1.6 ms was building the payload from those groups.
-        // Two shapes were built and measured before this one: asking per table (9.5 ms, batching
-        // it recovered almost nothing) and two walks keeping nothing in between (7.4-8.1 ms —
-        // re-reading the storage costs more than retaining the cells, so the cells are kept).
-        //
-        // What makes one pass possible is that a table's cells are CONTIGUOUS in document order:
-        // `textBlocks.first` is the OUTERMOST block, so every range inside a nested table maps to
-        // the table that encloses it, not to the inner one. That is an assumption about AppKit's
-        // ordering, so it is CHECKED rather than trusted — meeting a table that was already closed
-        // means the payload's table boundaries would not describe this document, and the whole
-        // resize refuses (below) instead of writing widths solved against the wrong grouping.
-        //
-        // The arithmetic the engine runs per table is unchanged, so the S5B2a/S5B2b parity tests
-        // still hold.
         var request = RustEngineTableResize.BatchRequest()
         var cells: [(block: NSTextTableBlock, range: NSRange)] = []
         var openTable: ObjectIdentifier?

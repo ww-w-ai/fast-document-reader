@@ -1,7 +1,7 @@
 //! swift: Render/PlainTextRenderer.swift
 //! swift-range: 1-2
 
-// swift: Render/PlainTextRenderer.swift:3-71
+// swift: PlainTextRenderer
 /// Renders a NON-markdown text file (.txt, .csv, .log, …) verbatim. Nothing is parsed, so `#`,
 /// `*`, `|` and `_` stay on screen exactly as they sit in the file — a plain text file that
 /// happens to contain markdown punctuation must not silently turn into headings and italics.
@@ -26,7 +26,7 @@
 pub struct PlainTextRenderer;
 
 impl PlainTextRenderer {
-    // swift: Render/PlainTextRenderer.swift:25-70
+    // swift: PlainTextRenderer.render
     pub fn render(
         source: &str,
         theme: &crate::render::render_theme::RenderTheme,

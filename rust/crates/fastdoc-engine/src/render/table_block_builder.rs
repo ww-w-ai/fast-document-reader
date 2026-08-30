@@ -40,7 +40,7 @@ use crate::render::office::office_block::{
 };
 use crate::render::render_theme::{Palette, RenderTheme};
 
-// swift: Render/TableBlockBuilder.swift:3-132
+// swift: GridTextTable
 // An `NSTextTable` that remembers its columns' PROPORTIONS (summing to 1) so the table can be
 // re-solved to ABSOLUTE integer point widths at whatever reading-column width the window currently
 // has. Percentage column widths are the wrong tool: `NSTextTable` recomputes them per row, so a
@@ -53,17 +53,16 @@ use crate::render::render_theme::{Palette, RenderTheme};
 pub struct GridTextTable {
     pub base: NSTextTable,
 
-    // swift: Render/TableBlockBuilder.swift:10-23
+    // swift: GridTextTable.drawBackground
     pub column_proportions: Vec<CGFloat>, // one per column, sums to 1
 
-    // swift: Render/TableBlockBuilder.swift:11-23
+    // swift: GridTextTable.drawBackground
     /// The table's own picture fill (`TableFormat.backgroundImage`), painted ONCE across the whole
     /// grid. A table block is drawn before its cells, so this lands behind them; stretching it to
     /// the table's frame is what reproduces HWP's rounded annotation frames, which are one image
     /// behind a table whose cells declare nothing at all.
     pub background_image: Option<NSImage>,
 
-    // swift: Render/TableBlockBuilder.swift:24-58
     /// The table's own AUTHORED width, in points — set only for a PAGED document's table that
     /// declared one (`TableFormat.sourceWidth`, threaded through `TableBlockBuilder.build`'s own
     /// `maxWidth` parameter). `nil` (every markdown table, every non-paged office table, and a
@@ -77,7 +76,7 @@ pub struct GridTextTable {
     /// formula": both now call the same `edges(forWidth:)`, which applies this clamp internally).
     pub max_width: Option<CGFloat>,
 
-    // swift: Render/TableBlockBuilder.swift:36-67
+    // swift: GridTextTable.clampedWidth
     /// The table OBJECT's own LEFT/RIGHT outer margin (`TableFormat.outerMargin`, threaded through
     /// `build`'s `tableOuterMargin` parameter) — the horizontal gap between the table and what
     /// surrounds it, distinct from a cell's padding/border (inside the grid). Consulted ONLY by
@@ -118,7 +117,7 @@ impl Default for GridTextTable {
 }
 
 impl GridTextTable {
-    // swift: Render/TableBlockBuilder.swift:17-23
+    // swift: GridTextTable.drawBackground
     /// swift: override func drawBackground(withFrame:in:characterRange:layoutManager:)
     pub fn draw_background(
         &self,
@@ -149,7 +148,7 @@ impl GridTextTable {
         }
     }
 
-    // swift: Render/TableBlockBuilder.swift:60-67
+    // swift: GridTextTable.clampedWidth
     /// `width`, capped to `maxWidth` when the table declared a narrower authored one — the ONE
     /// place this clamp is expressed, so every caller (`edges(forWidth:)` below, and
     /// `OfficeTextBuilder.appendTable`'s own pre-clamp for the picture-scale/image-clamp math that
@@ -161,7 +160,7 @@ impl GridTextTable {
         }
     }
 
-    // swift: Render/TableBlockBuilder.swift:68-131
+    // swift: GridTextTable.edges
     /// Integer cumulative x-edges (ncol+1) across the FULL `width` — the shared grid every cell reads.
     ///
     /// No slack is held back. `collapsesBorders` is OFF (see `TableBlockBuilder.build`'s own border
@@ -229,7 +228,7 @@ impl GridTextTable {
     }
 }
 
-// swift: Render/TableBlockBuilder.swift:134-139
+// swift: TableBlockBuilder
 /// The one place that builds a real bordered `NSTextTable` grid, shared by `MarkdownRenderer`
 /// (GFM tables) and `OfficeTextBuilder` (Word/office tables) — a table looks and behaves the same
 /// however the document reached it. Each caller renders its own cell content (markdown inline
@@ -238,13 +237,11 @@ impl GridTextTable {
 pub struct TableBlockBuilder;
 
 impl TableBlockBuilder {
-    // swift: Render/TableBlockBuilder.swift:140-143
     /// Upper bound on a single cell's row/column span. A span comes from a parsed file, so a corrupt
     /// or hostile document can claim any number; this keeps an absurd one from turning into that many
     /// loop iterations and set insertions. No real table comes near it.
     pub const MAX_SPAN: usize = 512;
 
-    // swift: Render/TableBlockBuilder.swift:145-152
     /// A guess for the reading column's width at BUILD time, when no real one exists yet — a
     /// table is built once at parse time, long before `DocumentWindowController` knows the actual
     /// window width. Matches the `NSTextContainer`'s own initial 600pt (`DocumentWindowController`'s
@@ -254,13 +251,12 @@ impl TableBlockBuilder {
     /// then lay out once" — this is that pass's harmless placeholder, not a second source of truth.
     pub const INITIAL_COLUMN_WIDTH: CGFloat = 600.0;
 
-    // swift: Render/TableBlockBuilder.swift:154-157
     /// The reader's comfortable in-cell inset, and the FLOOR every cell's padding is held to (see the
     /// per-cell `cellPadding` below): markdown declares none and gets exactly this; docx/odt declare
     /// their own but never render below it, so a `fo:padding="0cm"` cell reads with room, not cramped.
     pub const DEFAULT_CELL_PADDING: CGFloat = 7.0;
 
-    // swift: Render/TableBlockBuilder.swift:159-172
+    // swift: TableBlockBuilder.resolvedPagedPadding
     /// The PAGED padding cascade — cell-own edge > table-default edge > `defaultCellPadding` as a
     /// FALLBACK (never a floor: a document's own zero survives) — exposed so a caller resolving
     /// padding OUTSIDE `build` (`OfficeTextBuilder.appendTable`'s build-time cell-IMAGE clamp,
@@ -272,6 +268,7 @@ impl TableBlockBuilder {
         cell: Option<&EdgePadding>,
         table: Option<&EdgePadding>,
     ) -> (CGFloat, CGFloat, CGFloat, CGFloat) {
+        // swift: TableBlockBuilder.edge
         fn edge(
             cell: Option<&EdgePadding>,
             table: Option<&EdgePadding>,
@@ -290,7 +287,7 @@ impl TableBlockBuilder {
         )
     }
 
-    // swift: Render/TableBlockBuilder.swift:174-196
+    // swift: TableBlockBuilder.laidOutBorderWidth
     /// The width a border edge actually OCCUPIES once AppKit has laid it out: the declared width
     /// rounded UP to a whole point. Both the `setWidth` call and the content-width subtraction go
     /// through here so they can never disagree.
@@ -311,7 +308,7 @@ impl TableBlockBuilder {
         if declared > 0.0 { declared.ceil() } else { 0.0 }
     }
 
-    // swift: Render/TableBlockBuilder.swift:243-284
+    // swift: TableBlockBuilder.build
     /// - Parameters:
     ///   - rows: one entry per row, listing only that row's ANCHOR cells (the top-left corner of
     ///     each merge) left to right — a covered position (inside another cell's `rowSpan`/
@@ -369,7 +366,7 @@ impl TableBlockBuilder {
         }
         let row_count = rows.len();
 
-        // swift: Render/TableBlockBuilder.swift:289-318
+        // swift: TableBlockBuilder.Placement
         // Walk anchors in document order, placing each into the next column not already covered
         // by an EARLIER row's vertical span. `coveredByLaterRow[r]` collects the columns a span
         // starting above row `r` reaches into; only entries for rows AFTER the anchor's own row
@@ -415,7 +412,6 @@ impl TableBlockBuilder {
             return result.into();
         }
 
-        // swift: Render/TableBlockBuilder.swift:321-335
         // Normalise the source's grid widths to PERCENTAGES that sum to 100 — proportions of the
         // already-100%-wide table, not absolute sizes, so they must never be scaled by
         // `fontSizeScale` (unlike a font-derived size, invariant 24's zoom multiplies on top of
@@ -432,7 +428,6 @@ impl TableBlockBuilder {
             }
         }
 
-        // swift: Render/TableBlockBuilder.swift:337-352
         // Pad the gaps. A row can carry fewer anchors than the grid is wide — which is exactly what a
         // vertically merged Word row looks like — and a position left with no block at all renders as
         // a hole in the border, not as an empty cell. Only genuinely UNOCCUPIED positions are padded:
@@ -454,7 +449,6 @@ impl TableBlockBuilder {
         // Reading order, so the laid-out cells follow the grid rather than the order they were found.
         placements.sort_by_key(|p| (p.row, p.col));
 
-        // swift: Render/TableBlockBuilder.swift:356-402
         // Lay the cells into a REAL `NSTextTable` so their text is part of the document — selectable,
         // copyable and searchable (a custom-drawn attachment, however crisply aligned, is a picture the
         // reader can't select, copy or ⌘F). Columns are pinned by PERCENTAGE of the table (one shared
@@ -505,7 +499,7 @@ impl TableBlockBuilder {
         // real width yet (markdown's renderer, and any build before a window exists).
         let edges = table.edges(width);
 
-        // swift: Render/TableBlockBuilder.swift:404-565
+        // swift: TableBlockBuilder.ResolvedEdge
         // STEP A
         // unchanged from before this pipeline existed (two independent reviews already
         // confirmed it, including the `tableDrewABox` fix): resolve each placement's OWN four edges
@@ -519,6 +513,7 @@ impl TableBlockBuilder {
             side: Option<BorderSide>,
             explicit: bool,
         }
+        // swift: TableBlockBuilder.PlacementBorders
         struct PlacementBorders {
             /// `authoredBorderColor` — the block's BASE border colour (Step D), i.e. what an edge
             /// the DOCUMENT drew resolves to when it stated no colour of its own. The reader's
@@ -652,6 +647,7 @@ impl TableBlockBuilder {
             // geometry" made that one cell render thin and open on the edges nobody touched, which is
             // the ragged-table fault this whole per-edge path exists to remove.
             let table_drew_a_box = table_edges.map(|e| e.draws_any_edge()).unwrap_or(false);
+            // swift: TableBlockBuilder.declaration
             // Step 1 — INHERIT: a cell's own declaration wins; otherwise it takes the table's OUTER
             // edge where it sits on that side of the grid and the table's INTERIOR edge where it
             // doesn't. Still a declaration at this point, not yet a rule to draw.
@@ -663,6 +659,7 @@ impl TableBlockBuilder {
             ) -> Option<BorderDecl> {
                 own.cloned().or_else(|| if is_outer { outer.cloned() } else { inside.cloned() })
             }
+            // swift: TableBlockBuilder.resolvedEdge
             // Step 2 — RESOLVE a declaration to what THIS cell alone would draw if nothing else were
             // in play. `.suppressed` draws nothing here, but it is not yet final — Step B (below,
             // after every placement's own resolution is known) is what decides whether a neighbour's
@@ -740,7 +737,7 @@ impl TableBlockBuilder {
             });
         }
 
-        // swift: Render/TableBlockBuilder.swift:567-690
+        // swift-range: Render/TableBlockBuilder.swift:567-690
         // STEP B/C
         // one boundary, one drawer. A grid lookup (placement index covering each row and
         // column, including the padding step's cellless positions) is how a cell finds the
@@ -768,6 +765,7 @@ impl TableBlockBuilder {
                 }
             }
         }
+        // swift: TableBlockBuilder.winner
         // The winner between two claimants to ONE boundary. `nil` (nothing to draw) counts as width
         // 0, so `.suppressed` — which resolves to `nil` above — loses to any real rule instead of
         // vetoing it (this is what matches Word: removing one cell's border still leaves the
@@ -800,6 +798,7 @@ impl TableBlockBuilder {
             }
             owner.side.clone()
         }
+        // swift: TableBlockBuilder.wider
         // Folds a MERGED cell's several per-row/per-column boundary winners down to the single widest
         // one it draws uniformly (design doc §3's "Merged cells" — a block has one width per edge).
         // Ties are broken toward `a`, the fold's ACCUMULATOR — which only gives a stable, reproducible
@@ -903,7 +902,7 @@ impl TableBlockBuilder {
             }
         }
 
-        // swift: Render/TableBlockBuilder.swift:692-818
+        // swift-range: Render/TableBlockBuilder.swift:692-818
         // the per-placement emission loop
         for (idx, placement) in placements.iter().enumerate() {
             let me = &info[idx];
@@ -1040,7 +1039,7 @@ impl TableBlockBuilder {
                 CellVAlign::Bottom => block.base.verticalAlignment = swiftshim::NSTextBlockVerticalAlignment::BottomAlignment,
             }
 
-            // swift: Render/TableBlockBuilder.swift:800-817
+            // swift-range: Render/TableBlockBuilder.swift:800-817
             // Each cell is one or more paragraphs carrying this block. Preserve the cell content's own
             // paragraph style (alignment/indent/spacing) and only graft the table block onto it.
             let mut cell_str = NSMutableAttributedString::new();
@@ -1137,7 +1136,7 @@ impl TableBlockBuilder {
             }
             result.append(&cell_str.asAttributedString().clone());
         }
-        // swift: Render/TableBlockBuilder.swift:819-822
+        // swift-range: Render/TableBlockBuilder.swift:819-822
         // A trailing paragraph with NO table block closes the table (else the next document content
         // would be pulled into the last cell). The caller's own following block usually does this, but
         // a table that ends the document needs its own terminator.
@@ -1145,7 +1144,7 @@ impl TableBlockBuilder {
         result.into()
     }
 
-    // swift: Render/TableBlockBuilder.swift:826-852
+    // swift-range: Render/TableBlockBuilder.swift:826-852
     /// The attributes a cell's terminating `"\n"` is allowed to INHERIT from the cell's own last
     /// character — an ALLOW-list, not a deny-list, so anything new falls back to the old bare
     /// terminator instead of silently riding along on a character it was never measured against.
@@ -1181,7 +1180,7 @@ impl TableBlockBuilder {
         ])
     }
 
-    // swift: Render/TableBlockBuilder.swift:854-880
+    // swift: TableBlockBuilder.terminatorAttributes
     /// The attributes to give a cell's terminating `"\n"`, or `nil` to append it bare as before.
     ///
     /// A cell is emitted as its content plus this terminator. Appending that newline with NO
@@ -1218,7 +1217,7 @@ impl TableBlockBuilder {
     }
 
 
-    // swift: Render/TableBlockBuilder.swift:894-956
+    // swift: TableBlockBuilder.anchorContentWidths
     /// The absolute content width available to each ANCHOR cell's blocks at `width`, mirroring
     /// `build`'s own placement walk + integer-edge geometry (same column count, same proportion
     /// normalisation, same `edges(forWidth:)`, same `content = cellWidth − 2·padding − 2·border`).
@@ -1240,6 +1239,7 @@ impl TableBlockBuilder {
         column_widths: &[CGFloat],
         width: CGFloat,
     ) -> Vec<Vec<CGFloat>> {
+        // swift: TableBlockBuilder.Placed
         // Placement walk — identical to `build`'s: assign each anchor its (col, colSpan), skipping
         // columns a taller earlier row already spans into, and derive the grid's column count.
         struct Placed {
@@ -1302,7 +1302,7 @@ impl TableBlockBuilder {
     }
 }
 
-// swift: Render/TableBlockBuilder.swift:198-241
+// swift: TableBlockBuilder.CellContent
 /// One already-styled cell, plus how many rows/columns its `NSTextTableBlock` covers.
 /// `rowSpan`/`columnSpan` default to 1, so a caller with no merges (every markdown table, and
 /// an office table before its parser learns `w:gridSpan`/`w:vMerge`) builds these without ever
@@ -1375,7 +1375,7 @@ impl Default for CellContent {
     }
 }
 
-// swift: Render/TableBlockBuilder.swift:882-892
+// swift: TableBlockBuilder.AnchorSpan
 /// One anchor's span + already-resolved padding/border, the only inputs `anchorContentWidths`
 /// needs to reproduce `build`'s column geometry. The caller (`OfficeTextBuilder.appendTable`)
 /// resolves padding/border against the table defaults exactly as `build`'s per-placement loop
@@ -1387,8 +1387,3 @@ pub struct AnchorSpan {
     pub padding: CGFloat,
     pub border_width: CGFloat,
 }
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/TableBlockBuilder.swift:1087-1087

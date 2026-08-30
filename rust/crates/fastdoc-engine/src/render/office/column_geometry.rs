@@ -38,7 +38,7 @@ pub(crate) enum OfficeColumnLayoutError {
 /// anything — deciding which line belongs to which column, and moving it there, is the layout half
 /// and is deliberately separate, exactly as `FootnoteBandSettle` was separated from the settle loop
 /// it feeds (invariant 98).
-// swift: Render/Office/ColumnGeometry.swift:3-45
+// swift: OfficeColumnLayout
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct OfficeColumnLayout {
     pub flow_type: Option<OfficeColumnFlowType>,
@@ -176,13 +176,11 @@ impl OfficeColumnLayout {
 
     /// Whether this declaration actually splits the text. A `count` of one is a declaration to
     /// STOP, and every consumer wants to tell the two apart without repeating the comparison.
-    // swift: Render/Office/ColumnGeometry.swift:39-52
     pub fn splits_text(&self) -> bool {
         self.count > 1
     }
 
     /// Whether a rule is drawn between the columns.
-    // swift: Render/Office/ColumnGeometry.swift:42-52
     pub fn draws_separator(&self) -> bool {
         self.separator_type != 0 && self.splits_text()
     }
@@ -258,9 +256,10 @@ mod s2a1d_tests {
 }
 
 /// Where each column sits inside a body width.
-// swift: Render/Office/ColumnGeometry.swift:46-224
+// swift: ColumnGeometry
 pub struct ColumnGeometry;
 
+// swift: ColumnGeometry.Column
 /// One column's horizontal extent, in the same coordinates the body text is laid out in.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Column {
@@ -275,7 +274,7 @@ impl ColumnGeometry {
     /// — a single column, a nonsensical count, or a width nothing can fit in. Callers therefore
     /// never branch on "is this document multi-column"; they lay out into whatever comes back, and a
     /// document that declares nothing gets exactly the geometry it has always had.
-    // swift: Render/Office/ColumnGeometry.swift:54-79
+    // swift: ColumnGeometry.columns
     pub fn columns(body_width: CGFloat, layout: &OfficeColumnLayout) -> Vec<Column> {
         let whole = vec![Column { x: 0.0, width: body_width }];
         if !(body_width > 0.0) || !(layout.count > 1) {
@@ -304,7 +303,7 @@ impl ColumnGeometry {
 
     /// Columns from the per-column widths a document listed, or `nil` when they do not describe a
     /// usable layout and the equal split should stand.
-    // swift: Render/Office/ColumnGeometry.swift:80-113
+    // swift: ColumnGeometry.explicitColumns
     fn explicit_columns(body_width: CGFloat, layout: &OfficeColumnLayout) -> Option<Vec<Column>> {
         let widths: Vec<CGFloat> = layout.widths.iter().copied().take(layout.count as usize).collect();
         // A gap list may be shorter than the column list, and the last column's gap is meaningless
@@ -385,7 +384,7 @@ impl ColumnGeometry {
     ///
     /// `runOrigin` is where the run's own first column starts, which is NOT a page top for such a
     /// run: the lines above it belong to the single-column flow and must not be drawn over.
-    // swift: Render/Office/ColumnGeometry.swift:114-206
+    // swift: ColumnGeometry.placements
     #[allow(clippy::too_many_arguments)]
     pub fn placements(
         lines: &[(i64, CGFloat, CGFloat)],
@@ -467,7 +466,7 @@ impl ColumnGeometry {
     ///
     /// Returns `nil` past the last column — that is the text overflowing the columned run, which is
     /// the layout's problem to report rather than something to answer with a wrong column.
-    // swift: Render/Office/ColumnGeometry.swift:207-224
+    // swift: ColumnGeometry.column
     pub fn column_at_flow_offset(offset: CGFloat, column_height: CGFloat, count: i64) -> Option<(i64, CGFloat)> {
         if !(column_height > 0.0) || !(count > 0) || !(offset >= 0.0) {
             return None;
@@ -479,8 +478,3 @@ impl ColumnGeometry {
         Some((index, offset - (index as CGFloat) * column_height))
     }
 }
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/Office/ColumnGeometry.swift:225-225

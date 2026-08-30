@@ -44,6 +44,7 @@ pub struct TableResizeInput {
     pub cells: Vec<TableResizeCell>,
 }
 
+// swift: TableBlockBuilder.swift#TableBlockBuilder.localCellTargetWidth
 /// One target width per `cells` entry, same order in, same order out.
 ///
 /// This is `Swift: TableBlockBuilder.swift:977-988`'s formula, unchanged: build the shared grid

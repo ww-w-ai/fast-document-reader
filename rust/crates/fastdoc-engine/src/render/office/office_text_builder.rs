@@ -1,7 +1,7 @@
 //! swift: Render/Office/OfficeTextBuilder.swift
 //! swift-range: 1-46
 
-// swift: Render/Office/OfficeTextBuilder.swift:1
+// swift-range: Render/Office/OfficeTextBuilder.swift:1-1
 // (Swift `import AppKit` — every AppKit symbol below is a swiftshim stand-in per
 // docs/plans/rust-port-convention.md §4's symbol-surface table.)
 
@@ -24,7 +24,7 @@ use crate::render::office::office_block::{
 use crate::render::render_theme::{OfficeStyle, Palette, RenderTheme};
 use crate::render::table_block_builder::{AnchorSpan, CellContent, GridTextTable, TableBlockBuilder};
 
-// swift: Render/Office/OfficeTextBuilder.swift:3-14
+// swift: FillMarginTabInfo
 /// What a "fill to margin" paragraph (see `OfficeTextBuilder.fillMarginTabInfo`) needs to rebuild
 /// its trailing tab at any width: the OTHER (non-margin) tab stops, preserved verbatim in their
 /// own authored positions, plus the margin tab's own alignment/leader — never its `position`,
@@ -39,7 +39,7 @@ pub struct FillMarginTabInfo {
     pub other_tabs: Vec<TabStop>,
 }
 
-// swift: Render/Office/OfficeTextBuilder.swift:15-39
+// swift: OfficeGraphicInfo
 /// What an office graphic was AUTHORED as, carried as `MDAttr.officeGraphic`'s value so it rides in
 /// the text storage from build time through every later reflow — the same trick `FillMarginTabInfo`
 /// uses for a fill-to-margin tab, and for the same reason: the size a graphic should occupy is a
@@ -77,7 +77,7 @@ impl Default for OfficeGraphicInfo {
     }
 }
 
-// swift: Render/Office/OfficeTextBuilder.swift:33-47
+// swift: OfficeTextBuilder
 /// Turns a format-neutral `[OfficeBlock]` into styled `NSAttributedString`, the same way
 /// `MarkdownRenderer` turns a parsed markdown tree into one and `PlainTextRenderer` turns raw text
 /// into one. Every TOP-LEVEL block is exactly one navigation stop: it gets its own `MDAttr.blockId`
@@ -128,7 +128,7 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:48-118
+    // swift: OfficeTextBuilder.giantTableIndices
     /// `columnWidth` is the text column's width in points at build time (what `presizeKnownMedia`
     /// calls `maxWidth` for markdown) — defaulted huge so callers that don't care about wrapping
     /// (every test but the scaling one) get the declared size back untouched. A real caller
@@ -204,13 +204,12 @@ impl OfficeTextBuilder {
         out
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:115-118
     /// The stand-in a deferred table leaves behind. Deliberately language-neutral — this app has no
     /// localisation table, and a word here would ship one language to all 23 stores. It is on screen
     /// for about a second, and only for a reader who scrolled ~121 screens down within that second.
     pub const DEFERRED_TABLE_STAND_IN: &'static str = "⋯";
 
-    // swift: Render/Office/OfficeTextBuilder.swift:120-364
+    // swift: OfficeTextBuilder.build
     /// `deferringTables` — indices whose `.table` is replaced by a one-paragraph stand-in carrying
     /// `MDAttr.deferredTable`, so `MarkdownDocument` can paint now and splice the grid in after
     /// (invariant 49's freeze, see `docs/giant-table-deferral-design.md`). EMPTY is the default and
@@ -253,6 +252,7 @@ impl OfficeTextBuilder {
         let paged = page_basis.is_some();
         // How far a picture may run past the body before it is shrunk after all (`bleedAllowance`).
         let bleed = Self::bleed_allowance(paged, page_margin_right);
+        // swift: OfficeTextBuilder.scale
         let scale = |basis: Option<CGFloat>| -> CGFloat {
             match basis {
                 Some(b) if b > 0.0 && column_width.is_finite() && column_width > 0.0 => {
@@ -286,7 +286,7 @@ impl OfficeTextBuilder {
             restarts_numbering.entry(r.block as usize).or_insert(r.number);
         }
 
-        // swift: Render/Office/OfficeTextBuilder.swift:173-216
+        // swift: OfficeTextBuilder.tagBlock
         // `block_seq` is captured by mutable reference (not passed by value) — the Swift nested
         // function mutates the OUTER `blockSeq` directly, and the guard above the increment is the
         // whole point: a block whose range is empty returns before `blockSeq += 1` runs, so it never
@@ -500,7 +500,7 @@ impl OfficeTextBuilder {
         result.into()
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:366-396
+    // swift: OfficeTextBuilder.unifyParagraphTerminators
     /// Give every paragraph's terminating `"\n"` the attributes of the paragraph it ENDS.
     ///
     /// **A separator with no font is not a neutral character — AppKit gives it Helvetica 12pt**, the
@@ -531,7 +531,7 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:398-421
+    // swift: OfficeTextBuilder.columnLayoutPerBlock
     /// The `format` carried by a heading/paragraph/list-item block — `nil` for every other case
     /// (table/image/unsupportedGraphic/formula), which carries no `ParagraphFormat` at all.
     /// The width each block is typeset at, once the column declarations above it are taken into
@@ -543,7 +543,7 @@ impl OfficeTextBuilder {
     /// width returned is the first column's — every column of a run this reader lays out is typeset
     /// at the same width, and an unequal declaration's own widths are honoured when the columns are
     /// PLACED (`ColumnGeometry`), which is where the difference between them can actually be seen.
-    // swift: Render/Office/OfficeTextBuilder.swift:398-421
+    // swift: OfficeTextBuilder.columnLayoutPerBlock
     pub fn column_layout_per_block(blocks: &[OfficeBlock]) -> Vec<Option<OfficeColumnLayout>> {
         let mut out: Vec<Option<OfficeColumnLayout>> = vec![None; blocks.len()];
         let mut active: Option<OfficeColumnLayout> = None;
@@ -558,7 +558,7 @@ impl OfficeTextBuilder {
         out
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:417-432
+    // swift: OfficeTextBuilder.columnWidthPerBlock
     /// The width each block is typeset at, given the layout in force above it.
     pub fn column_width_per_block(blocks: &[OfficeBlock], body_width: CGFloat) -> Vec<CGFloat> {
         let layouts = Self::column_layout_per_block(blocks);
@@ -577,7 +577,7 @@ impl OfficeTextBuilder {
             .collect()
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:428-444
+    // swift: OfficeTextBuilder.declaredColumnLayout
     /// The column declaration this block carries, if any.
     fn declared_column_layout(block: &OfficeBlock) -> Option<OfficeColumnLayout> {
         match block {
@@ -589,7 +589,7 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:439-453
+    // swift: OfficeTextBuilder.paragraphFormat
     fn paragraph_format(block: &OfficeBlock) -> Option<ParagraphFormat> {
         match block {
             OfficeBlock::Heading { format, .. } => Some(format.clone()),
@@ -602,7 +602,7 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:451-475
+    // swift: OfficeTextBuilder.contextualSpacingAdjustedFormat
     /// `block`'s own resolved `ParagraphFormat`, with `spacingBefore`/`spacingAfter` zeroed when
     /// P2's `w:contextualSpacing` adjacency rule applies — see `build`'s call site doc. `nil` in,
     /// `nil` out (a block with no `ParagraphFormat` never gets one invented).
@@ -630,7 +630,6 @@ impl OfficeTextBuilder {
 
     // MARK: Spans → attributed runs
 
-    // swift: Render/Office/OfficeTextBuilder.swift:471-489
     /// Renders one block's spans against that block's base font/color. A `code` span overrides
     /// BOTH with the theme's inline-code styling and tags `MDAttr.inlineCode` — bold/italic/
     /// underline still layer on top of it (an office run can be monospaced AND bold at once,
@@ -649,7 +648,7 @@ impl OfficeTextBuilder {
     /// and behaving exactly as before: a span with no matching number gets no `MDAttr.commentMark`.
     /// `paged` (see `build`'s own `pageContentWidth`) governs ONE thing here: whether an authored
     /// point size is rounded to a whole point — see the `span.fontSize` branch below.
-    // swift: Render/Office/OfficeTextBuilder.swift:479-710
+    // swift: OfficeTextBuilder.spansAttributedString
     pub fn spans_attributed_string(
         spans: &[Span],
         base_font: &NSFont,
@@ -928,7 +927,7 @@ impl OfficeTextBuilder {
         out.into()
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:710-734
+    // swift: OfficeTextBuilder.nsUnderlineStyle
     /// Maps `UnderlineStyle` (already-collapsed from docx `w:u/@w:val` — see that enum's doc) to
     /// the nearest `NSUnderlineStyle` AppKit actually draws. `.dashed`/`.dotted` have exact pattern
     /// equivalents; `.wavy` does not — `NSUnderlineStyle` has no wave pattern at all, so `.thick` is
@@ -944,7 +943,7 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:727-747
+    // swift: OfficeTextBuilder.resolvedTextColor
     /// Decides whether an authored run colour survives into the current reading theme, or steps
     /// aside for the theme's own text colour. The judgement call the app makes: a NEAR-NEUTRAL
     /// authored colour (low saturation — almost always literal black, occasionally literal white)
@@ -972,7 +971,7 @@ impl OfficeTextBuilder {
         if saturation < 0.12 { theme.text_color().clone() } else { authored.clone() }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:746-758
+    // swift: OfficeTextBuilder.fontAdding
     /// Adds symbolic traits while keeping the SAME family, so vertical metrics (ascent/descent)
     /// don't shift — an unrelated bold face would jitter the baseline under a fixed line height
     /// (same reasoning as `MarkdownRenderer.fontAdding`, duplicated here: that one is private to
@@ -982,7 +981,7 @@ impl OfficeTextBuilder {
         NSFont::with_descriptor(&d, font.pointSize()).unwrap_or_else(|| font.clone())
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:758-762
+    // swift: OfficeTextBuilder.fontScaled
     /// Same family, scaled point size — used for super/subscript, which shrink the glyph as well
     /// as shifting its baseline.
     fn font_scaled(font: &NSFont, factor: CGFloat) -> NSFont {
@@ -992,7 +991,7 @@ impl OfficeTextBuilder {
 
     // MARK: Paragraph styles
 
-    // swift: Render/Office/OfficeTextBuilder.swift:766-833
+    // swift: OfficeTextBuilder.bodyParagraphStyle
     /// `rtl` sets `baseWritingDirection` ONLY when true — an LTR block (`rtl == false`, every
     /// existing call site before this sprint) leaves it at `NSMutableParagraphStyle()`'s own default
     /// (`.natural`), so a pre-sprint document's paragraph style is byte-identical to before.
@@ -1005,7 +1004,7 @@ impl OfficeTextBuilder {
     /// `columnWidth` (same meaning as `build`'s own parameter) supplies the placeholder width for
     /// a fill-margin tab (see `fillMarginTabInfo`/`fillMarginTabStops`) — it is otherwise unused
     /// here, since every other tab stop renders exactly as it always has.
-    // swift: Render/Office/OfficeTextBuilder.swift:766-849
+    // swift: OfficeTextBuilder.bodyParagraphStyle
     #[allow(clippy::too_many_arguments)]
     fn body_paragraph_style(
         theme: &RenderTheme,
@@ -1076,7 +1075,7 @@ impl OfficeTextBuilder {
         p
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:835-872
+    // swift: OfficeTextBuilder.headingBaseFont
     /// The font a heading's spans START from. `RenderTheme.headingFont(level:)` is
     /// `.systemFont(weight: .semibold)`, so every office heading used to be drawn SEMIBOLD whatever
     /// its runs said — a weight the document never asked for, and one that on a Korean face is also
@@ -1118,7 +1117,7 @@ impl OfficeTextBuilder {
         NSFont::systemFont(theme.base_font_size)
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:871-881
+    // swift: OfficeTextBuilder.headingOwnSize
     /// The size a heading's own RUNS state, in points, already through `fontSizeScale` — `nil` when
     /// none of them state one, which is the case `RenderTheme.headingSize(level:)` exists for. The
     /// LARGEST is taken: this feeds a line-height FLOOR, and a floor derived from the smallest run
@@ -1130,7 +1129,7 @@ impl OfficeTextBuilder {
         Some(largest * font_size_scale)
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:882-939
+    // swift: OfficeTextBuilder.headingParagraphStyle
     /// The line-height FLOOR is derived from the heading's OWN spans, and this function takes them
     /// rather than a precomputed basis ON PURPOSE. It was a `lineHeightBasis: CGFloat?` parameter
     /// first, and that shape lost the rule twice in one afternoon: a caller that reshapes this call
@@ -1198,7 +1197,7 @@ impl OfficeTextBuilder {
         p
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:937-973
+    // swift: OfficeTextBuilder.resolvedTabStops
     /// Turns a paragraph's authored `tabStops` into `NSTextTab`s for build time ONLY — an ordinary
     /// paragraph (no fill-margin tab, `fillMarginTabInfo` returns nil) maps every stop straight
     /// through via `officeTextTab`, byte-identical to before this attribute existed. A fill-margin
@@ -1237,8 +1236,6 @@ impl OfficeTextBuilder {
         Self::fill_margin_tab_stops(&info, width)
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:961-973
-    // swift: Render/Office/OfficeTextBuilder.swift:971-981
     /// Trailing gap (points) between a fill-margin tab (a TOC page number, say) and the reading
     /// column's own right edge — small enough the number still reads flush-right, not crowded
     /// against the very edge. Shared with `DocumentWindowController.updateTextInset`, which
@@ -1251,7 +1248,7 @@ impl OfficeTextBuilder {
     /// once cost. Larger is safe but visibly not flush; smaller risks the wrap.
     pub const FILL_MARGIN_TRAILING_INSET: CGFloat = 12.0;
 
-    // swift: Render/Office/OfficeTextBuilder.swift:983-1000
+    // swift: OfficeTextBuilder.fillMarginTabInfo
     /// The rightmost tab in `tabStops`, when it is right- or decimal-aligned, marks the paragraph
     /// as "fill to margin": a right tab exists to push text — a TOC page number, a right-aligned
     /// header — out to the paragraph's own trailing edge, and that edge was authored against the
@@ -1261,7 +1258,7 @@ impl OfficeTextBuilder {
     /// this only ever narrows behaviour onto paragraphs that authored a real trailing right/
     /// decimal tab; every other paragraph (the overwhelming common case, and every markdown/
     /// plain-text block, which carries no tab-stop vocabulary at all) is unaffected.
-    // swift: Render/Office/OfficeTextBuilder.swift:983-1001
+    // swift: OfficeTextBuilder.fillMarginTabInfo
     pub fn fill_margin_tab_info(tab_stops: &[TabStop]) -> Option<FillMarginTabInfo> {
         let (i, rightmost) = tab_stops
             .iter()
@@ -1279,7 +1276,7 @@ impl OfficeTextBuilder {
         })
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1002-1012
+    // swift: OfficeTextBuilder.fillMarginTabStops
     /// Rebuilds tab stops so the fill-margin tab sits at `width` — an absolute point, already the
     /// caller's chosen right edge (minus whatever inset it wants) — while every OTHER authored tab
     /// stop keeps its own original position. This is the ONE place that turns `FillMarginTabInfo`
@@ -1294,7 +1291,6 @@ impl OfficeTextBuilder {
         all.iter().map(Self::office_text_tab).collect()
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1010-1028
     /// Builds ONE `NSTextTab` from an authored `TabStop` — `.left`/`.center`/`.right` map straight
     /// onto `NSTextAlignment`'s own cases (Apple's modern, non-deprecated `NSTextTab` initializer
     /// is ALREADY alignment-based, so this is a direct translation, not an emulation). `.decimal`
@@ -1317,7 +1313,7 @@ impl OfficeTextBuilder {
     /// one leader tab — the trailing right-aligned stop that carries the page number. A paragraph
     /// whose stops declare no leader is untouched, which is every markdown, plain-text and ODT
     /// paragraph and most docx ones (invariant 37).
-    // swift: Render/Office/OfficeTextBuilder.swift:1014-1048
+    // swift: OfficeTextBuilder.markTabLeaders
     fn mark_tab_leaders(tab_stops: &[TabStop], range: NSRange, result: &mut NSMutableAttributedString) {
         let Some(leader) = tab_stops.iter().rev().find(|t| t.leader != TabLeader::None).map(|t| t.leader) else {
             return;
@@ -1335,7 +1331,7 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1044-1058
+    // swift: OfficeTextBuilder.leaderCharacter
     /// The character a `TabLeader` fills with. `.none` has none, which is why this is optional.
     pub fn leader_character(leader: TabLeader) -> Option<&'static str> {
         match leader {
@@ -1346,7 +1342,7 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1053-1069
+    // swift: OfficeTextBuilder.officeTextTab
     fn office_text_tab(stop: &TabStop) -> NSTextTab {
         match stop.alignment {
             TabAlignment::Left => NSTextTab::new(NSTextAlignment::Left, stop.position, HashMap::new()),
@@ -1361,7 +1357,7 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1071-1142
+    // swift: OfficeTextBuilder.applyParagraphFormat
     /// Applies the P2 cascade's resolved `ParagraphFormat` on top of whatever theme-token defaults
     /// the caller already set on `p` — per-field, only when the source specified that field (`nil`
     /// leaves the token value exactly as it was, which is what makes a paragraph with an entirely
@@ -1375,7 +1371,7 @@ impl OfficeTextBuilder {
     /// document's own spacing/indent stays proportional at any reading-size setting.
     /// `lineHeightMultiple` is NOT scaled — `LineHeight.multiple` is already a unitless ratio
     /// (`w:lineRule="auto"`'s `line/240`), not a point value.
-    // swift: Render/Office/OfficeTextBuilder.swift:1071-1142
+    // swift: OfficeTextBuilder.applyParagraphFormat
     fn apply_paragraph_format(
         format: Option<&ParagraphFormat>,
         font_size_scale: CGFloat,
@@ -1446,7 +1442,6 @@ impl OfficeTextBuilder {
         Self::apply_line_breaking(format, p);
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1115-1146
     /// Where the document says a line may be broken — the one half of HWP's five line-fitting bits
     /// that real documents actually use, and the only one this builder honours.
     ///
@@ -1470,7 +1465,7 @@ impl OfficeTextBuilder {
     ///
     /// `.hyphen` deliberately behaves as `.word`: a hyphen already IS a break opportunity in
     /// standard line breaking, so TextKit gives HWP's middle setting without being asked.
-    // swift: Render/Office/OfficeTextBuilder.swift:1144-1182
+    // swift: OfficeTextBuilder.applyLineBreaking
     fn apply_line_breaking(format: &ParagraphFormat, p: &mut NSMutableParagraphStyle) {
         match format.east_asian_line_break {
             Some(LineBreakGranularity::Word) => {
@@ -1493,7 +1488,7 @@ impl OfficeTextBuilder {
 
     // MARK: Lists
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1186-1194
+    // swift: OfficeTextBuilder.bulletGlyph
     /// Bullet glyph per depth so nested levels read distinctly: • → ◦ → ▪ (then repeat) — same
     /// progression `MarkdownRenderer.bullet(_:)` uses.
     fn bullet_glyph(level: i64) -> &'static str {
@@ -1508,14 +1503,14 @@ impl OfficeTextBuilder {
         }
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1196-1221
+    // swift: OfficeTextBuilder.fillListFormat
     /// The document's own number format with its `^N` placeholders filled in.
     ///
     /// `^1`…`^7` are HWP's level counters — a level-3 item under format `^1.^2.^3` reads `2.4.1`, so
     /// an OUTER level's placeholder is answered from the counter that level is currently on rather
     /// than from this item's own number. A level with no counter yet reads as 1, which is what it
     /// would have been had the document numbered it.
-    // swift: Render/Office/OfficeTextBuilder.swift:1195-1221
+    // swift: OfficeTextBuilder.fillListFormat
     pub fn fill_list_format(
         format: &str,
         level: i64,
@@ -1550,14 +1545,14 @@ impl OfficeTextBuilder {
         out
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1223-1270
+    // swift: OfficeTextBuilder.listParagraphStyle
     /// Hanging-indent paragraph style: marker at `markerX`, a tab pushes text to `textX`, and
     /// wrapped lines align at `textX` — so the item's first line and every wrap share one edge.
     /// `extraTabStops` (points, from `OfficeBlock.listItem.tabStops`) are AUTHORED stops beyond the
     /// marker's own — appended after the marker tab, never in place of it, so `1.\t<text>` still
     /// reaches the item's hanging indent first (this is the sprint brief's own required case: a
     /// custom tab stop must coexist with, not break, list indentation).
-    // swift: Render/Office/OfficeTextBuilder.swift:1222-1279
+    // swift: OfficeTextBuilder.listParagraphStyle
     #[allow(clippy::too_many_arguments)]
     fn list_paragraph_style(
         marker_x: CGFloat,
@@ -1613,7 +1608,7 @@ impl OfficeTextBuilder {
         p
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1223-1270
+    // swift: OfficeTextBuilder.listParagraphStyle
     /// Renders one list item and updates the per-level numbering state.
     ///
     /// Restart rule (the only stateful part of this file, and only when `marker` is `nil` — see
@@ -1629,7 +1624,7 @@ impl OfficeTextBuilder {
     /// text (continuation across paragraphs, `w:startOverride`, multi-level `%1.%2` formats). This
     /// builder's own counters are a fallback for when the source couldn't supply that text, not a
     /// second, competing numbering scheme — the two never mix for a single item.
-    // swift: Render/Office/OfficeTextBuilder.swift:1272-1373
+    // swift: OfficeTextBuilder.appendListItem
     #[allow(clippy::too_many_arguments)]
     fn append_list_item(
         level: i64,
@@ -1738,14 +1733,14 @@ impl OfficeTextBuilder {
 
     // MARK: Tables
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1375-1500
+    // swift: OfficeTextBuilder.appendTable
     /// Real bordered grid via the shared `TableBlockBuilder` (also used by `MarkdownRenderer`'s
     /// GFM tables) — an office table now looks and behaves exactly like a markdown one, not a
     /// tab-stop approximation. `headerRows: 0` shades no row, because the source didn't say any
     /// row was a header (see `OfficeBlock.table`; guessing "row one" would misrepresent a
     /// headerless table). A cell shorter than the widest row leaves its trailing columns empty
     /// rather than collapsing the row.
-    // swift: Render/Office/OfficeTextBuilder.swift:1374-1500
+    // swift: OfficeTextBuilder.appendTable
     #[allow(clippy::too_many_arguments)]
     fn append_table(
         rows: &[Vec<Cell>],
@@ -1888,7 +1883,6 @@ impl OfficeTextBuilder {
         result.append(&NSAttributedString::new("\n"));
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1492-1524
     /// Renders one cell's blocks. Deliberately NOT `build(_:theme:columnWidth:)` reused wholesale:
     /// that function ends every block with its own trailing `"\n"` PLUS a block-level paragraph
     /// style (heading/body line-height, paragraph spacing) sized for the full text column — inside
@@ -1923,12 +1917,12 @@ impl OfficeTextBuilder {
     /// and 984–1002 ms with the bridge, i.e. the same. A cell's accumulated text is short at the
     /// moment the question is asked, so the O(n) it removes is an n of a few characters. Recorded so
     /// nobody spends the afternoon that found `MarkdownRenderer.autolink` looking for a twin here.
-    // swift: Render/Office/OfficeTextBuilder.swift:1502-1538
+    // swift: OfficeTextBuilder.endsInNewline
     fn ends_in_newline(s: &NSMutableAttributedString) -> bool {
         s.length() > 0 && s.string().ends_with('\n')
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1525-1689
+    // swift: OfficeTextBuilder.cellContent
     #[allow(clippy::too_many_arguments)]
     fn cell_content(
         blocks: &[OfficeBlock],
@@ -2074,7 +2068,7 @@ impl OfficeTextBuilder {
         result.into()
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1654-1708
+    // swift: OfficeTextBuilder.unifyTerminator
     /// Finishes the paragraph pass above: gives a paragraph's terminating `"\n"` the rest of the
     /// attributes its OWN first character carries, so the two collapse into ONE attribute run.
     ///
@@ -2118,7 +2112,7 @@ impl OfficeTextBuilder {
     /// picture, a highlight or a hyperlink falls back to exactly the separator it always had. A
     /// paragraph with no content of its own (an empty block between two others) has no attributes to
     /// inherit and keeps the bare separator, for invariant 51's empty-cell reason.
-    // swift: Render/Office/OfficeTextBuilder.swift:1654-1708
+    // swift: OfficeTextBuilder.unifyTerminator
     fn unify_terminator(paragraph: NSRange, result: &mut NSMutableAttributedString, ns: &swiftshim::NSString) {
         // A terminator only exists where the paragraph's enclosing range ends in one; the LAST block
         // of a cell has none (`cellContent` never appends a trailing separator), and a paragraph that
@@ -2144,7 +2138,7 @@ impl OfficeTextBuilder {
     /// `flattenNestedTable` (applied when a `<w:tbl>`/`<table:table>` is found while COLLECTING a
     /// cell's spans, before a `Cell` even exists); this is the renderer-side twin for the case
     /// where a `.table` block reaches `cellContent` directly instead.
-    // swift: Render/Office/OfficeTextBuilder.swift:1709-1734
+    // swift: OfficeTextBuilder.flattenTableToText
     fn flatten_table_to_text(rows: &[Vec<Cell>], base_font: &NSFont, theme: &RenderTheme) -> NSAttributedString {
         let mut result = NSMutableAttributedString::new();
         for row in rows {
@@ -2179,7 +2173,7 @@ impl OfficeTextBuilder {
 
     // MARK: Images
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1734-1746
+    // swift: OfficeTextBuilder.fittedOfficeSize
     /// Word DRAWS an image at its declared size regardless of the asset's own pixel dimensions (a
     /// 300px PNG placed at 225pt is ordinary), so — unlike a markdown image, whose true size is
     /// unknown until the bytes arrive — the declared size here is already authoritative. The only
@@ -2188,7 +2182,7 @@ impl OfficeTextBuilder {
     /// to recompute a fit from real pixels for an office image — which matters, because
     /// recomputing on load is exactly the scroll-bar-jitter invariant 1 exists to prevent (an
     /// office image's pixel dimensions can legitimately disagree with its declared size).
-    // swift: Render/Office/OfficeTextBuilder.swift:1734-1746
+    // swift: OfficeTextBuilder.fittedOfficeSize
     fn fitted_office_size(declared: CGSize, column_width: CGFloat) -> CGSize {
         if !(declared.width > column_width) || !(declared.width > 0.0) {
             return declared;
@@ -2197,7 +2191,6 @@ impl OfficeTextBuilder {
         CGSize::new(column_width.round(), (declared.height * scale).round())
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1746-1795
     /// How far past the reading column a PAGED document's picture may run before it is shrunk after
     /// all — the owner's "이 앱은 뷰어니 보이게 하는 게 더 중요하다" decision, bounded by what is
     /// actually DRAWABLE rather than by what would be nice.
@@ -2255,7 +2248,7 @@ impl OfficeTextBuilder {
     /// Measured before any of it, on 41 real documents (4 docx + 37 HWP): not ONE picture is authored
     /// wider than its own page body — the widest observed is exactly the body width. The feature has
     /// no subject in this corpus, which is also why gating it costs nothing today.
-    // swift: Render/Office/OfficeTextBuilder.swift:1748-1810
+    // swift: OfficeTextBuilder.bleedAllowance
     fn bleed_allowance(paged: bool, page_margin_right: Option<CGFloat>) -> CGFloat {
         let Some(right) = page_margin_right.filter(|_| paged) else { return 0.0 };
         if right <= 0.0 {
@@ -2265,7 +2258,7 @@ impl OfficeTextBuilder {
         0.0
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1809-1825
+    // swift: OfficeTextBuilder.graphicSize
     /// THE size an office graphic occupies, in one place: authored size × page-proportional scale,
     /// then column-fitted. Called at build time here, and again by
     /// `DocumentWindowController.resizeOfficeGraphics` on every reflow — one function so a picture
@@ -2275,7 +2268,7 @@ impl OfficeTextBuilder {
     /// non-paged build, every cell picture, every paged document whose reader found no right margin,
     /// and `DocumentWindowController.resizeOfficeGraphics`, which is skipped outright for a paged
     /// document and so can never reach the widened arm.
-    // swift: Render/Office/OfficeTextBuilder.swift:1809-1825
+    // swift: OfficeTextBuilder.graphicSize
     pub fn graphic_size(authored: CGSize, graphic_scale: CGFloat, column_width: CGFloat, bleed: CGFloat) -> CGSize {
         let scaled = CGSize::new(authored.width * graphic_scale, authored.height * graphic_scale);
         let limit = if bleed > 0.0 && column_width.is_finite() { column_width + bleed } else { column_width };
@@ -2284,7 +2277,7 @@ impl OfficeTextBuilder {
         Self::fitted_office_size(scaled, limit)
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1823-1840
+    // swift: OfficeTextBuilder.placeholderImage
     /// The chart/SmartArt frame's pixels. Extracted so a reflow can REDRAW it at the new size —
     /// invariant 31 means this case is sized by `.bounds` with an image that is never nil, so
     /// stretching the old bitmap would blur its label instead of re-laying it out.
@@ -2301,7 +2294,7 @@ impl OfficeTextBuilder {
         })
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1837-1875
+    // swift: OfficeTextBuilder.drawPlaceholderCard
     /// The card's actual pixels, drawn into whatever rect it is given. Split out of
     /// `placeholderImage` so the OTHER discovery of "this reader cannot draw this graphic" —
     /// `SizedAttachmentCell.undrawableLabel`, where the bytes turned out to be a format no
@@ -2313,7 +2306,7 @@ impl OfficeTextBuilder {
     /// WORD is drawn — which is the format's name ("WMF"), the part worth keeping in a frame too
     /// small for a sentence. A one-word label (`[Chart]`, every caller before this) is measured,
     /// found to fit, and drawn exactly where it always was.
-    // swift: Render/Office/OfficeTextBuilder.swift:1837-1875
+    // swift: OfficeTextBuilder.drawPlaceholderCard
     pub fn draw_placeholder_card(label: &str, rect: NSRect) {
         Palette::code_card_bg().setFill();
         rect.fill();
@@ -2326,6 +2319,7 @@ impl OfficeTextBuilder {
         }
         let mut font_size = (rect.size.height * 0.18).clamp(9.0, 14.0);
         let mut text = format!("[{label}]");
+        // swift: OfficeTextBuilder.attributes
         let attributes = |size: CGFloat| -> HashMap<NSAttributedStringKey, swiftshim::AttrValue> {
             let mut m = HashMap::new();
             m.insert(swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(NSFont::systemFont(size)));
@@ -2356,20 +2350,18 @@ impl OfficeTextBuilder {
         );
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1837-1875
-    // swift: Render/Office/OfficeTextBuilder.swift:1877-1878
+    // swift-range: Render/Office/OfficeTextBuilder.swift:1877-1878
     /// Breathing room kept clear either side of a placeholder card's label.
     pub const PLACEHOLDER_CARD_TEXT_INSET: CGFloat = 8.0;
-    // swift: Render/Office/OfficeTextBuilder.swift:1837-1875
     /// Below this the label stops being readable, so a narrower card loses words instead of size.
     pub const PLACEHOLDER_CARD_MIN_FONT_SIZE: CGFloat = 7.0;
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1882-1912
+    // swift: OfficeTextBuilder.appendImage
     /// Reserves the (column-fitted) declared size via `SizedAttachmentCell`, image left `nil` —
     /// pixels arrive lazily via `MarkdownDocument.reconcileMedia`. This is invariant 1 of this
     /// codebase: the reserved layout size must NEVER depend on whether an image is loaded, or the
     /// scroll bar swings when it loads/purges.
-    // swift: Render/Office/OfficeTextBuilder.swift:1879-1912
+    // swift: OfficeTextBuilder.appendImage
     #[allow(clippy::too_many_arguments)]
     fn append_image(
         id: String,
@@ -2415,12 +2407,12 @@ impl OfficeTextBuilder {
         result.append(&NSAttributedString::new("\n"));
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1914-1924
+    // swift: OfficeTextBuilder.applyGraphicAlignment
     /// The containing paragraph's alignment, applied to the one-character attachment paragraph. A
     /// centred picture is the norm in a report and used to render hard left, because this case
     /// carried no paragraph style at all. `nil` (the document said nothing) adds NO paragraph style,
     /// so a document that never aligns anything is byte-identical to before this existed.
-    // swift: Render/Office/OfficeTextBuilder.swift:1911-1924
+    // swift: OfficeTextBuilder.applyGraphicAlignment
     fn apply_graphic_alignment(alignment: Option<NSTextAlignment>, ph: &mut NSMutableAttributedString) {
         let Some(alignment) = alignment else { return };
         let mut p = NSMutableParagraphStyle::default();
@@ -2428,7 +2420,6 @@ impl OfficeTextBuilder {
         ph.addAttribute(NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(p), NSRange::new(0, ph.length()));
     }
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1920-1931
     /// A chart/SmartArt this reader could not resolve to any picture at all — reserves the SAME
     /// declared+column-fitted area `appendImage` would, drawn as a bordered, labelled frame
     /// SYNTHESIZED RIGHT HERE rather than left for `MarkdownDocument.reconcileMedia` to fill in
@@ -2442,7 +2433,7 @@ impl OfficeTextBuilder {
     /// state for this case at all, so nothing here can ever revise `.bounds` after the fact.
     /// `label` renders verbatim — the caller (`DocxReader`) already turned it into a word a reader
     /// understands ("Chart", "Diagram"), never an XML element name.
-    // swift: Render/Office/OfficeTextBuilder.swift:1926-1963
+    // swift: OfficeTextBuilder.appendUnsupportedGraphic
     #[allow(clippy::too_many_arguments)]
     fn append_unsupported_graphic(
         label: String,
@@ -2484,7 +2475,7 @@ impl OfficeTextBuilder {
 
     // MARK: Formulas
 
-    // swift: Render/Office/OfficeTextBuilder.swift:1963-1980
+    // swift: OfficeTextBuilder.appendFormula
     /// Reserves a placeholder exactly the way `MarkdownRenderer.appendWebBlock` does for a markdown
     /// `$$…$$` — same `MDAttr.math` attribute, same `SizedAttachmentCell`-owned guessed size (260×60).
     /// `MarkdownDocument`'s pre-render/pre-size passes key off `enumerateWebBlocks`
@@ -2493,7 +2484,7 @@ impl OfficeTextBuilder {
     /// in `MarkdownDocument`) had to be taught that office documents exist. The guessed size is only
     /// a placeholder; the up-front pass replaces it with the exact cached-PDF size before layout
     /// (invariant 1: reserved size must never depend on whether pixels are loaded).
-    // swift: Render/Office/OfficeTextBuilder.swift:1963-1980
+    // swift: OfficeTextBuilder.appendFormula
     fn append_formula(latex: String, result: &mut NSMutableAttributedString) {
         let size = CGSize::new(260.0, 60.0);
         let mut att = NSTextAttachment::new();
@@ -2508,17 +2499,4 @@ impl OfficeTextBuilder {
         result.append(&NSAttributedString::new("\n"));
     }
 }
-// swift: Render/Office/OfficeTextBuilder.swift:1963-1980
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/Office/OfficeTextBuilder.swift:1981-1981
-// swift: Render/Office/OfficeTextBuilder.swift:397-397
-// swift: Render/Office/OfficeTextBuilder.swift:763-765
-// swift: Render/Office/OfficeTextBuilder.swift:982-982
-// swift: Render/Office/OfficeTextBuilder.swift:1070-1070
-// swift: Render/Office/OfficeTextBuilder.swift:1183-1185
-// swift: Render/Office/OfficeTextBuilder.swift:1876-1876
-// swift: Render/Office/OfficeTextBuilder.swift:119-119
-// swift: Render/Office/OfficeTextBuilder.swift:365-365
+// swift: OfficeTextBuilder.appendFormula

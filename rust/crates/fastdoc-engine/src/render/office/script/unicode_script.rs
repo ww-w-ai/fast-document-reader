@@ -18,7 +18,7 @@
 //! script missing from either curated set cannot mis-render anything. Should a classifier ever need
 //! the distinction, derive the membership from a real property rather than extending a hand list.
 
-// swift: Render/Office/Script/UnicodeScript.swift:1-56
+// swift: ScriptClass
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ScriptClass {
@@ -36,17 +36,17 @@ pub enum ScriptClass {
 
     /// Script=Common (`Zyyy`): space, ASCII punctuation, digits, most symbols, emoji, the regional
     /// indicators, ZWJ and the skin-tone modifiers.
-    // swift: Render/Office/Script/UnicodeScript.swift:1-56
+    // swift: ScriptClass
     Common,
     /// Script=Inherited (`Zinh`): a mark that takes its script from whatever it is attached to.
-    // swift: Render/Office/Script/UnicodeScript.swift:1-56
+    // swift: ScriptClass
     Inherited,
     /// `Grapheme_Extend`, overlaid ON TOP of the script value. This is the class that stops a run
     /// breaking in the middle of a grapheme cluster, and it is not reducible to Common+Inherited:
     /// 1,443 combining scalars carry a REAL script (U+0483 Cyrillic titlo, U+0591–05BD Hebrew
     /// points, U+0610–061A Arabic, U+094D Devanagari virama, U+0E31/U+0E34 Thai vowels), so a
     /// classifier absorbing only the two neutral scripts would cut those clusters in half.
-    // swift: Render/Office/Script/UnicodeScript.swift:1-56
+    // swift: ScriptClass
     Extend,
 }
 
@@ -73,7 +73,6 @@ impl ScriptClass {
     /// declares 22 unmapped gap ranges its consumers are free to treat as weak). This is the shared
     /// floor beneath those three answers: whatever else a format decides, a mark that extends a
     /// cluster cannot be allowed to start a new one.
-    // swift: Render/Office/Script/UnicodeScript.swift:41-57
     pub fn is_absorbing(&self) -> bool {
         match self {
             ScriptClass::Common | ScriptClass::Inherited | ScriptClass::Extend => true,
@@ -88,7 +87,7 @@ impl ScriptClass {
     }
 }
 
-// swift: Render/Office/Script/UnicodeScript.swift:58-115
+// swift: UnicodeScript
 /// The Unicode Script property, read out of a table generated from the UCD and shipped with the app.
 ///
 /// Swift's standard library exposes no `script`, no `scriptExtensions` and no `block` — verified
@@ -111,7 +110,6 @@ impl UnicodeScript {
     /// The UCD release the shipped table was generated from. Worth stating out loud because the
     /// platform's own font cascade is built against some UCD too: if the two ever diverge far enough
     /// to matter, this is the number to compare.
-    // swift: Render/Office/Script/UnicodeScript.swift:58-115
     pub fn unicode_version() -> &'static str {
         crate::render::office::script::script_ranges::SCRIPT_TABLE_UNICODE_VERSION
     }
@@ -119,7 +117,6 @@ impl UnicodeScript {
     /// The generated `[UInt8]` widened to the enum once, at first use, rather than per lookup — and
     /// checked while widening, so a table carrying a raw value no case claims fails loudly here
     /// instead of being silently coerced into something plausible at every call site.
-    // swift: Render/Office/Script/UnicodeScript.swift:58-115
     fn range_classes() -> &'static [ScriptClass] {
         use std::sync::OnceLock;
         static TABLE: OnceLock<Vec<ScriptClass>> = OnceLock::new();
@@ -144,7 +141,6 @@ impl UnicodeScript {
     }
 
     /// The measured optimisation, and the only one taken: a direct-indexed table for U+0000–U+007F.
-    // swift: Render/Office/Script/UnicodeScript.swift:58-115
     fn ascii_classes() -> &'static [ScriptClass; 128] {
         use std::sync::OnceLock;
         static TABLE: OnceLock<[ScriptClass; 128]> = OnceLock::new();
@@ -159,7 +155,7 @@ impl UnicodeScript {
 
     /// This scalar's class. `#[inline(always)]` because the caller is a per-scalar loop over a whole
     /// document and the ASCII branch is most of the work.
-    // swift: Render/Office/Script/UnicodeScript.swift:97-100
+    // swift: UnicodeScript.of
     #[inline(always)]
     pub fn of(scalar: char) -> ScriptClass {
         let value = scalar as u32;
@@ -170,7 +166,7 @@ impl UnicodeScript {
     /// entries, in a ~9 KB working set that stays in cache. Gapless is what makes this total: there
     /// is no "not found" answer to handle, because entry 0 starts at U+0000 and every scalar up to
     /// U+10FFFF falls inside some entry.
-    // swift: Render/Office/Script/UnicodeScript.swift:102-114
+    // swift: UnicodeScript.search
     fn search(value: u32) -> ScriptClass {
         let starts = crate::render::office::script::script_ranges::SCRIPT_RANGE_STARTS;
         let mut low: usize = 0;

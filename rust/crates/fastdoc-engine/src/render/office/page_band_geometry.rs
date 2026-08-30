@@ -58,7 +58,7 @@ impl From<ResolveError> for MeasureError {
 /// Consumed by `PageBandLayoutDelegate`, which reserves this much space between one page's text and
 /// the next's (header-footer-design.md build step 4 — geometry only; painting the header/footer
 /// into the space this reserves is step 5, not yet built).
-// swift: Render/Office/PageBandGeometry.swift:3-232
+// swift: PageBandGeometry
 pub struct PageBandGeometry;
 
 /// The header height, the footer height, AND the combined band — measured together so a caller
@@ -68,7 +68,7 @@ pub struct PageBandGeometry;
 /// inputs — `PageBandReservationTests` proves that identity — but this is an ADDITIVE surface:
 /// `bandHeight` itself is untouched (same private `measuredHeight` calls, same tests judge it
 /// directly), so nothing already shipped is at risk of a change here.
-// swift: Render/Office/PageBandGeometry.swift:56-68
+// swift: PageBandGeometry.Sides
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sides {
     pub header: CGFloat,
@@ -83,7 +83,7 @@ pub struct Sides {
 /// though both answer the reader's own default — the two are different FACTS on the host side
 /// (`footnoteSeparator(forPage:)`'s own `nil` vs. `OfficeFootnoteSeparator.isDeclared`) and this
 /// keeps them distinct at the boundary too, matching S5C-3's own "nothing invented" rule.
-// swift: Render/Office/OfficeBlock.swift:1148-1170
+// swift-range: Render/Office/OfficeBlock.swift:1148-1170
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FootnoteSeparatorDesc {
     pub is_declared: bool,
@@ -94,6 +94,7 @@ pub struct FootnoteSeparatorDesc {
 }
 
 impl PageBandGeometry {
+    // swift: PageBandGeometry.declaredBand
     /// The space a document itself puts between one page's last body line and the next page's
     /// first: its bottom margin plus the next page's top margin. Both are the PAPER margins — a
     /// running header lives inside the top one and a footer inside the bottom one, in all three
@@ -128,7 +129,7 @@ impl PageBandGeometry {
     /// divergent rendering path (invariant 29's discipline) — laid out once in an ISOLATED stack
     /// (its own storage/layout manager/container), so measuring never touches or invalidates the
     /// real text view.
-    // swift: Render/Office/PageBandGeometry.swift:30-55
+    // swift: PageBandGeometry.bandHeight
     #[allow(clippy::too_many_arguments)]
     pub fn band_height(
         headers: &[OfficeHeaderFooter],
@@ -161,7 +162,7 @@ impl PageBandGeometry {
     /// the outline on would draw its sheets edge to edge with no desk between them, which is not a
     /// stack of pages. Defaults to `false`, which is exactly the rule this function had before the
     /// toggles existed: no header and no footer means no band at all.
-    // swift: Render/Office/PageBandGeometry.swift:69-100
+    // swift: PageBandGeometry.measure
     #[allow(clippy::too_many_arguments)]
     pub fn measure(
         headers: &[OfficeHeaderFooter],
@@ -197,7 +198,7 @@ impl PageBandGeometry {
     /// One side (headers OR footers) of `bandHeight`, isolated so the additive structure
     /// (`headerOnly + footerOnly - gap == both`) is independently testable without re-deriving font
     /// metrics in the test itself.
-    // swift: Render/Office/PageBandGeometry.swift:101-121
+    // swift: PageBandGeometry.measuredHeight
     fn measured_height(
         entries: &[OfficeHeaderFooter],
         theme: &RenderTheme,
@@ -230,7 +231,7 @@ impl PageBandGeometry {
     /// and tested without laying anything out. A page citing no note reserves nothing — not a
     /// minimum, not a separator: the rule must reduce to today's layout for the 615 of 637 corpus
     /// documents that never cite a footnote at all.
-    // swift: Render/Office/PageBandGeometry.swift:122-136
+    // swift: PageBandGeometry.footnoteBandHeight
     pub fn footnote_band_height(note_heights: &[CGFloat], separator_allowance: CGFloat, note_spacing: CGFloat) -> CGFloat {
         let drawn: Vec<CGFloat> = note_heights.iter().copied().filter(|h| *h > 0.0).collect();
         if drawn.is_empty() {
@@ -249,9 +250,9 @@ impl PageBandGeometry {
     /// Pure arithmetic ported unchanged so the reservation (`footnote_band_height`, above) and the
     /// separator `FootnotePainter.draw` actually paints agree to the point — a difference here puts
     /// a note over the last line of body text, the same failure that function's own comment names.
-    // swift: Render/Office/FootnotePainter.swift:24-34
+    // swift: FootnotePainter.swift#FootnotePainter.separatorAllowance
     pub fn separator_allowance(separator: Option<&FootnoteSeparatorDesc>) -> CGFloat {
-        // swift: Render/Office/FootnotePainter.swift:17-34
+        // swift: FootnotePainter.swift#FootnotePainter.separatorAllowance
         const DEFAULT_SEPARATOR_ALLOWANCE: CGFloat = 8.0;
         let Some(separator) = separator else { return DEFAULT_SEPARATOR_ALLOWANCE };
         if !separator.is_declared {
@@ -276,7 +277,7 @@ impl PageBandGeometry {
     /// a quarter of the corpus. With no measurer installed, or a run this module cannot resolve
     /// into the port's payload (an attachment whose reserved size the builder never set), this
     /// refuses rather than returning a plausible number — `MeasureError`, not a stand-in height.
-    // swift: Render/Office/PageBandGeometry.swift:137-165
+    // swift: PageBandGeometry.builtHeight
     pub fn built_height(
         blocks: &[OfficeBlock],
         theme: &RenderTheme,
@@ -347,7 +348,7 @@ impl PageBandGeometry {
     /// that used to ask `blocks.isEmpty` should be asking instead. Built through the same
     /// `OfficeTextBuilder` as everything else, so a format whose header parses into blocks that build
     /// to nothing is judged on what it BUILDS rather than on what it parsed.
-    // swift: Render/Office/PageBandGeometry.swift:195-206
+    // swift: PageBandGeometry.entryDraws
     pub fn entry_draws(
         entry: Option<&OfficeHeaderFooter>,
         theme: &RenderTheme,
@@ -393,7 +394,7 @@ impl PageBandGeometry {
     /// — an attachment is `U+FFFC`, which is not whitespace — and a paragraph that draws only a RULE
     /// or a shaded band carries no glyph at all, so the blocks are asked directly for those. Anything
     /// that is not a paragraph (a table, an image, a formula) is content by construction.
-    // swift: Render/Office/PageBandGeometry.swift:208-231
+    // swift: PageBandGeometry.drawsSomething
     pub fn draws_something(blocks: &[OfficeBlock], built: &NSAttributedString) -> bool {
         if built.string().chars().any(|c| !c.is_whitespace()) {
             return true;
@@ -476,11 +477,3 @@ mod tests {
                    "a rule wider than the floor reserves its own authored width");
     }
 }
-
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/Office/PageBandGeometry.swift:194-194
-// swift: Render/Office/PageBandGeometry.swift:207-207
-// swift: Render/Office/PageBandGeometry.swift:232-232

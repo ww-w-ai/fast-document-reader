@@ -992,3 +992,26 @@ this file tells you why, and why the obvious alternative does not work.
     Two thirds of the first measurement was the MEASUREMENT. `office_text_builder.rs`'s `build` read as a 256-line claim around a 5-line declaration, because the span walker gave up looking for the opening brace after eight lines and Swift's `build` takes fifteen to state its parameters. Following unbalanced PARENTHESES instead of a line budget fixed it — and a line budget of 24 was tried first and rejected, because a `let` with no body then runs on into the next declaration's brace and swallows 250 lines of it. The rest came off by SHRINKING a claim to its declaration only when every line it gives up is claimed elsewhere: 53 claims and 1,267 redundant lines, coverage untouched at 100%. Doing that with a coverage census taken once, rather than decremented as each claim shrinks, orphaned 14 lines — two claims that had been covering each other both let go in the same pass.
 
     The ratchet holds both numbers because holding the count alone is not a ratchet: widening a claim that is already counted leaves the count flat, and the probe proved it — a claim stretched 40 lines further passed a count-only gate and failed the moment total reach was held too. Every check added here was found the same way, by breaking something and watching the gate stay green, which is the only evidence that a number means anything.
+
+
+138. **The last 1.6% kept costing a repair pass that was wrong until it ran, because the REPRESENTATION was the defect.** Five passes in one session went the same way — an auto re-aim lost 3,231 lines, an enclosing-declaration growth produced a 100% no mutation could disturb, the same pass widened 105 of 263 boundary entries, a shrink against a stale census orphaned 14 lines, and raising a span lookahead from 8 to 24 made a body-less `let` swallow 250 lines of the next declaration. Five of one kind is not a run of bad luck; it is a signal to stop fixing and look at what is being fixed.
+
+    A claim was a hand-written LINE RANGE into a file that keeps moving. It rots the moment Swift is edited and nothing says so — which is why 27% were stale (invariant 136) and why **seven checks existed to police one representation**: MALFORMED, AIMLESS, MISAIMED, BLANKET, REPEATED-WIDE, OVERWIDE, OVERREACHING.
+
+    Measured before changing anything: of 1,578 claims, **768 (49%) sat beside no Rust item at all** — boundary blocks and file headers, bookkeeping that exists only to fill a line-based denominator — and **709 of the remaining 810 (87%) resolved by NAME alone**, meaning their line numbers were redundant data that could only be wrong. The tool had been resolving names all session to repair the numbers; that is the proof the numbers were the derived half.
+
+    So a claim now names the declaration:
+
+    ```
+    // swift: OfficeTextBuilder.build                 a declaration in the module's own file
+    // swift: OfficeBlock.swift#ParagraphAnchor.top   one in another file (rare -- ONE module needs it)
+    // swift-range: Render/Office/DocxReader.swift:1-3   no declaration to name (file headers, constants)
+    ```
+
+    The denominator is every TYPE and FUNCTION in the manifest's Swift files — **685** after exclusions. Fields, cases and constants are covered by the declaration that owns them, which is the rule the boundary blocks were maintaining by hand one line at a time. Conversion: **867 claims became names, 272 boundary claims were deleted, 422 ranges were dropped as redundant** (a name in the same Rust file already covered them), 45 range escapes remain. **1,578 claims became 902.**
+
+    **Five of the seven checks are now impossible rather than passing.** A name cannot drift, so there is no stale aim, no width to overreach, no type claimable from inside itself, no bookkeeping block to widen. What is left: does the name resolve, and is every declaration spoken for.
+
+    **The line-based 100% was covering 57 declarations no Rust item names.** They passed because some claim's range happened to include them. 39 resolved to an item in the owning module once the matcher learned two things it had been getting wrong — an ACRONYM (`visitHTMLBlock` snake-cases to `visit_html_block`, not `visit_h_t_m_l_block`) and a CLOSURE (`let is_word = |c| …` is the port of a Swift nested func and had not been counted as an item at all). Of the last 18, six are genuinely not portable and are now `port-exclude` with the reason written down: `FootnoteBandSettle.resolve` is `engine ?? host()` and IS the bridge; `HwpSpan.CodingKeys` and `HwpBlock.Keys` are Codable machinery serde derives; `HwpReader.PaperGeometry` is an alias for a type claimed elsewhere; `FontSubstitutionCache.Key` is a private key shape each side chooses for itself; `MarkdownRenderer.parseForProbe` times the HOST's parser. `TableBlockBuilder.resizeTables` was already inside a `port-exclude` region that started four lines INTO the function — the marker moved up to the declaration, which is what it always meant.
+
+    Verified: `685/685 = 100.00%`, no unresolved names, no claims left in the old form, and the whole conversion was built and driven to green in a SCRATCH COPY before a byte of the repository changed — which is the direct answer to the five failures above.

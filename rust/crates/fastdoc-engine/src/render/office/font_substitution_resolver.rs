@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use swiftshim::SwiftString;
 
-// swift: Render/Office/FontSubstitutionResolver.swift:4-37
+// swift: FontSubstitutionResolver
 /// Resolves AppKit's own font-substitution decision ONCE, at READ time, instead of letting it
 /// happen — silently, per character, 114,412 times on the reference HWP — inside `setAttributedString`
 /// on EVERY ⌘+/⌘− press. Full measurement and rationale: `docs/font-substitution-cost-design.md`.
@@ -45,11 +45,10 @@ impl FontSubstitutionResolver {
     /// at 14pt" (design §1) — so this fixed size exists only to construct a real `NSFont` instance
     /// to query CoreText with; it is never seen on screen (`OfficeTextBuilder` always reconstructs
     /// the resolved name at the span's own authored/theme size).
-    // swift: Render/Office/FontSubstitutionResolver.swift:43-61
-    // swift: Render/Office/FontSubstitutionResolver.swift:38-42
+    // swift: FontSubstitutionResolver.BlockWeight
     pub const PROBE_SIZE: f64 = 12.0;
 
-    // swift: Render/Office/FontSubstitutionResolver.swift:43-61
+    // swift: FontSubstitutionResolver.BlockWeight
     fn default_family_font() -> swiftshim::NSFont {
         swiftshim::NSFont::systemFont(Self::PROBE_SIZE)
     }
@@ -60,7 +59,7 @@ impl FontSubstitutionResolver {
     /// Adds symbolic traits while keeping the SAME family — used here only on PUBLIC, ordinary font
     /// families (the block's base weight and/or a `fontName` override) where trait-matching is
     /// reliable, never on an already-resolved private substitute descriptor (see `declaredFont`).
-    // swift: Render/Office/FontSubstitutionResolver.swift:165-172
+    // swift: FontSubstitutionResolver.fontAdding
     fn font_adding(traits: swiftshim::NSFontDescriptorSymbolicTraits, font: swiftshim::NSFont) -> swiftshim::NSFont {
         let d = font
             .fontDescriptor()
@@ -105,7 +104,7 @@ impl FontSubstitutionResolver {
     /// whose entire job is to draw a box meaning "nothing here draws this". 450 characters of
     /// perfectly drawable Korean went out as boxes. Skipping PUA lets that font be sampled on its
     /// Hangul instead, which is what it is actually being used for.
-    // swift: Render/Office/FontSubstitutionResolver.swift:173-216
+    // swift: FontSubstitutionResolver.isSampleEligible
     fn is_sample_eligible(scalar: char) -> bool {
         let value = scalar as u32;
         if (0xE000..=0xF8FF).contains(&value)
@@ -122,7 +121,6 @@ impl FontSubstitutionResolver {
     /// worth of otherwise-drawable text as boxes. Belt to the PUA exclusion's braces — that removes
     /// the one case measured to reach here, this refuses the answer itself, so an unsupported script
     /// nobody has anticipated cannot do the same thing from a direction nobody listed.
-    // swift: Render/Office/FontSubstitutionResolver.swift:217-223
     const NO_SUBSTITUTE_FONT_NAME: &'static str = "LastResort";
 
     /// The most common eligible character, ties broken by the LOWER codepoint. The tie-break is not
@@ -130,7 +128,7 @@ impl FontSubstitutionResolver {
     /// maximum I met first" would let the same document resolve to a different face on a different
     /// launch — the exact fault invariant 50 records having shipped once already, from a different
     /// direction.
-    // swift: Render/Office/FontSubstitutionResolver.swift:218-237
+    // swift: FontSubstitutionResolver.sampleCharacter
     fn sample_character(histogram: &HashMap<u32, i64>) -> Option<u32> {
         let mut best: Option<(u32, i64)> = None;
         for (&scalar, &count) in histogram {
@@ -146,7 +144,7 @@ impl FontSubstitutionResolver {
 
     /// The whole decision for one document: census every span, then ask CoreText once per declared
     /// font. Nothing is written to any span here — the plan is a value the apply pass reads.
-    // swift: Render/Office/FontSubstitutionResolver.swift:238-247
+    // swift: FontSubstitutionResolver.plan
     pub fn plan(
         blocks: &[crate::render::office::office_block::OfficeBlock],
         cache: &FontSubstitutionCache,
@@ -158,7 +156,7 @@ impl FontSubstitutionResolver {
     }
 
     /// One question per declared font, and the only place CoreText is consulted.
-    // swift: Render/Office/FontSubstitutionResolver.swift:248-277
+    // swift: FontSubstitutionResolver.decide
     fn decide(
         histograms: &HashMap<DeclaredFontKey, HashMap<u32, i64>>,
         cache: &FontSubstitutionCache,
@@ -197,7 +195,7 @@ impl FontSubstitutionResolver {
     /// Recursive read-only walk — a table's cells hold the same block vocabulary as the top of a
     /// document, and a heading's spans start from a different weight, which is the one piece of
     /// block context the key needs.
-    // swift: Render/Office/FontSubstitutionResolver.swift:278-298
+    // swift: FontSubstitutionResolver.census
     fn census(
         blocks: &[crate::render::office::office_block::OfficeBlock],
         block_weight: BlockWeight,
@@ -224,7 +222,7 @@ impl FontSubstitutionResolver {
         }
     }
 
-    // swift: Render/Office/FontSubstitutionResolver.swift:299-308
+    // swift: FontSubstitutionResolver.tally
     fn tally(
         spans: &[crate::render::office::office_block::Span],
         block_weight: BlockWeight,
@@ -249,7 +247,7 @@ impl FontSubstitutionResolver {
     /// not a copy that merely leaves `resolvedFontDescriptor` `nil` — which is the byte-identical
     /// guard invariant 37 depends on: nothing downstream can tell it apart from a span this pass
     /// never touched, because there is no difference to tell.
-    // swift: Render/Office/FontSubstitutionResolver.swift:309-327
+    // swift: FontSubstitutionResolver.resolve
     pub fn resolve(
         spans: &[crate::render::office::office_block::Span],
         block_weight: BlockWeight,
@@ -277,7 +275,7 @@ impl FontSubstitutionResolver {
     /// in isolation (every direct unit test) wants. The production path plans over the WHOLE
     /// document first, which is the point: a font's representative is chosen from everything the
     /// document draws in it, not from one paragraph's worth.
-    // swift: Render/Office/FontSubstitutionResolver.swift:328-338
+    // swift: FontSubstitutionResolver.resolve
     pub fn resolve_with_cache(
         spans: &[crate::render::office::office_block::Span],
         block_weight: BlockWeight,
@@ -314,7 +312,7 @@ impl FontSubstitutionResolver {
     /// document (measured), which is the very fragmentation this exists to remove.
     ///
     /// Returns how many ranges were restamped — the deterministic number a test asserts on.
-    // swift: Render/Office/FontSubstitutionResolver.swift:339-442
+    // swift: FontSubstitutionResolver.applySubstitutions
     pub fn apply_substitutions(string: &mut swiftshim::NSMutableAttributedString, cache: &FontSubstitutionCache) -> i64 {
         if string.length() <= 0 {
             return 0;
@@ -322,11 +320,13 @@ impl FontSubstitutionResolver {
         let whole = swiftshim::NSRange { location: 0, length: string.length() };
         let text = SwiftString::new(string.string());
 
+        // swift: FontSubstitutionResolver.SlotKey
         #[derive(Hash, PartialEq, Eq, Clone)]
         struct SlotKey {
             font: String,
             script: crate::render::office::script::unicode_script::ScriptClass,
         }
+        // swift: FontSubstitutionResolver.fontKey
         // Keyed on the font as a VALUE (face + size), not as an object: a theme hands out
         // equal-but-distinct instances, and keying on identity would ask the same question once per
         // run instead of once per face.
@@ -443,7 +443,7 @@ impl FontSubstitutionResolver {
     }
 }
 
-// swift: Render/Office/FontSubstitutionResolver.swift:46-62
+// swift: FontSubstitutionResolver.BlockWeight
 /// The WEIGHT `OfficeTextBuilder` starts a block's spans from, BEFORE any span-level bold/italic
 /// — `RenderTheme.headingFont` is `.systemFont(weight: .semibold)`, `.bodyFont`/list items are
 /// plain `.systemFont`. It is threaded in by `OfficeBlock.applyingFontSubstitution` from the
@@ -456,7 +456,6 @@ pub enum BlockWeight {
 }
 
 impl BlockWeight {
-    // swift: Render/Office/FontSubstitutionResolver.swift:55-60
     fn probe_font(&self) -> swiftshim::NSFont {
         match self {
             BlockWeight::Regular => FontSubstitutionResolver::default_family_font(),
@@ -468,7 +467,7 @@ impl BlockWeight {
     }
 }
 
-// swift: Render/Office/FontSubstitutionResolver.swift:63-84
+// swift: FontSubstitutionResolver.DeclaredFontKey
 /// Everything `declaredFont` varies on — a PURE function of these five values. This is also the
 /// unit "one representative per DECLARED FONT" counts in: two spans sharing a key are asking
 /// CoreText the identical question, so they get the identical answer by construction rather
@@ -510,7 +509,7 @@ impl FontSubstitutionResolver {
     /// and adding `[.bold, .italic]` on top of an `-Regular` substitute silently no-opped. Building
     /// the FULLY-TRAITED probe font first and asking CoreText ONCE is what "the SAME cascade AppKit's
     /// own attribute fixing already consults" (design §2) actually requires.
-    // swift: Render/Office/FontSubstitutionResolver.swift:85-122
+    // swift: FontSubstitutionResolver.declaredFont
     fn declared_font(
         key: &DeclaredFontKey,
         cache: &FontSubstitutionCache,
@@ -573,7 +572,7 @@ impl FontSubstitutionResolver {
     ///
     /// Costs nothing per span: `declaredFont` is memoised per `DeclaredFontKey`, so this runs once per
     /// DISTINCT declared font in the document and never again — not per span, not per ⌘+/⌘− press.
-    // swift: Render/Office/FontSubstitutionResolver.swift:123-164
+    // swift: FontSubstitutionResolver.standIn
     fn stand_in(
         name: &str,
         declared_faces: &HashMap<String, crate::render::office::declared_font_kind::DeclaredFace>,
@@ -599,7 +598,7 @@ impl FontSubstitutionResolver {
     }
 }
 
-// swift: Render/Office/FontSubstitutionResolver.swift:443-480
+// swift: FontSubstitutionPlan
 /// One document's whole substitution decision: for each distinct declared font, the ONE descriptor
 /// every span carrying that font is drawn with. A separate value rather than state inside the cache
 /// so that applying without surveying is not expressible — an apply pass silently running against
@@ -612,7 +611,7 @@ pub struct FontSubstitutionPlan {
 /// document moved — which declared font was replaced, and on the evidence of which character.
 /// A reviewer reading "5,177 characters left Times New Roman" needs to see the character that
 /// decided it, and a probe that can only report totals cannot show them.
-// swift: Render/Office/FontSubstitutionResolver.swift:450-457
+// swift: FontSubstitutionPlan.Substitute
 #[derive(Clone)]
 pub struct Substitute {
     pub sample: u32,
@@ -622,20 +621,18 @@ pub struct Substitute {
 impl FontSubstitutionPlan {
     /// Empty means "every declared font in this document draws its own text" — the byte-identical
     /// case, and the one the apply pass short-circuits.
-    // swift: Render/Office/FontSubstitutionResolver.swift:445-480
+    // swift-range: Render/Office/FontSubstitutionResolver.swift:445-480
     pub fn is_empty(&self) -> bool {
         self.substitutes.is_empty()
     }
     /// How many distinct declared fonts got a substitute. The deterministic number a test asserts
     /// on, in preference to a wall clock this machine has been measured swinging up to 11×.
-    // swift: Render/Office/FontSubstitutionResolver.swift:463-479
     pub fn substituted_font_count(&self) -> usize {
         self.substitutes.len()
     }
 
     /// One human-readable line per substituted declared font, sorted so two runs of the same
     /// document print identically.
-    // swift: Render/Office/FontSubstitutionResolver.swift:467-481
     pub fn described_entries(&self) -> Vec<String> {
         let mut out: Vec<String> = self
             .substitutes
@@ -672,7 +669,7 @@ impl FontSubstitutionPlan {
     }
 }
 
-// swift: Render/Office/FontSubstitutionResolver.swift:482-556
+// swift: FontSubstitutionCache
 /// A memo scoped to EXACTLY ONE document read — created fresh by `OfficeReadResult.
 /// resolvingFontSubstitution()` and never referenced again once it returns. Under the
 /// one-representative-per-declared-font design its job is small and exact: the survey asks CoreText
@@ -694,22 +691,22 @@ impl FontSubstitutionPlan {
 /// class of error rather than guarding against it: a variation selector is `Grapheme_Extend`, an
 /// emoji base is Script=Common, and neither can ever be a sample.)
 pub struct FontSubstitutionCache {
-    // swift: Render/Office/FontSubstitutionResolver.swift:504-508
+    // swift-range: Render/Office/FontSubstitutionResolver.swift:504-508
     // (Key struct folded into the coverage/substitute memo maps below.)
     declared_font_memo: std::cell::RefCell<HashMap<DeclaredFontKey, swiftshim::NSFont>>,
     /// Which memoised entries came from the fallback CHAIN rather than from the declared name itself.
     /// Kept beside the memo rather than folded into it so a cache hit answers both questions without
     /// re-walking anything.
-    // swift: Render/Office/FontSubstitutionResolver.swift:509-515
+    // swift-range: Render/Office/FontSubstitutionResolver.swift:509-515
     stand_in_keys: std::cell::RefCell<HashSet<DeclaredFontKey>>,
     coverage_memo: std::cell::RefCell<HashMap<(String, u32), bool>>,
     substitute_memo: std::cell::RefCell<HashMap<(String, u32), swiftshim::NSFont>>,
 
     /// Every real `CTFontGetGlyphsForCharacters` call this cache issues.
-    // swift: Render/Office/FontSubstitutionResolver.swift:516-517
+    // swift-range: Render/Office/FontSubstitutionResolver.swift:516-517
     coverage_core_text_calls: std::cell::Cell<i64>,
     /// Every real `CTFontCreateForString` call.
-    // swift: Render/Office/FontSubstitutionResolver.swift:518-523
+    // swift-range: Render/Office/FontSubstitutionResolver.swift:518-523
     substitute_core_text_calls: std::cell::Cell<i64>,
 }
 
@@ -742,7 +739,7 @@ impl FontSubstitutionCache {
 
     /// The deterministic knob this pass is judged by, mirroring invariant 49's `layoutStepCount`
     /// idiom: count CoreText round-trips, not wall clock.
-    // swift: Render/Office/FontSubstitutionResolver.swift:520-539
+    // swift: FontSubstitutionCache.covers
     pub fn core_text_call_count(&self) -> i64 {
         self.coverage_core_text_calls.get() + self.substitute_core_text_calls.get()
     }
@@ -751,7 +748,7 @@ impl FontSubstitutionCache {
     /// Tested on `glyphs[0]` rather than the function's own return value because a non-BMP scalar is
     /// two UTF-16 units and CoreText reports the trailing half as unmapped even when the pair
     /// resolved — the same reading the pre-memo code used.
-    // swift: Render/Office/FontSubstitutionResolver.swift:524-539
+    // swift: FontSubstitutionCache.covers
     pub fn covers(&self, font: &swiftshim::NSFont, scalar: u32) -> bool {
         let key = (font.fontName(), scalar);
         if let Some(hit) = self.coverage_memo.borrow().get(&key) {
@@ -776,7 +773,7 @@ impl FontSubstitutionCache {
     /// `CTFontCreateForString` over a string holding exactly that character, memoised per
     /// (declared font, scalar). On a hit this issues zero CoreText calls and returns the SAME live
     /// object CoreText produced, not a reconstruction from a saved descriptor.
-    // swift: Render/Office/FontSubstitutionResolver.swift:541-557
+    // swift: FontSubstitutionCache.substituteFont
     pub fn substitute_font(&self, declared: &swiftshim::NSFont, scalar: u32) -> swiftshim::NSFont {
         let key = (declared.fontName(), scalar);
         if let Some(hit) = self.substitute_memo.borrow().get(&key) {
@@ -800,12 +797,11 @@ impl FontSubstitutionCache {
     }
 }
 
-// swift: Render/Office/FontSubstitutionResolver.swift:558-598
 impl crate::render::office::office_block::OfficeBlock {
     /// This block with its spans drawn through `plan` — recurses into a table's cells, since a
     /// cell's content is the SAME format-neutral block vocabulary as the top of a document.
     /// `.image`/`.unsupportedGraphic`/`.formula` carry no spans and pass through unchanged.
-    // swift: Render/Office/FontSubstitutionResolver.swift:559-590
+    // swift: OfficeBlock.applyingFontSubstitution
     pub fn applying_font_substitution(&self, plan: &FontSubstitutionPlan) -> Self {
         use crate::render::office::office_block::OfficeBlock;
         match self {
@@ -868,7 +864,7 @@ impl crate::render::office::office_block::OfficeBlock {
 
     /// Survey and apply over just this block — the shape a direct unit test wants; the production
     /// path surveys the whole document (see `OfficeReadResult.resolvingFontSubstitution`).
-    // swift: Render/Office/FontSubstitutionResolver.swift:592-596
+    // swift: OfficeBlock.resolvingFontSubstitution
     pub fn resolving_font_substitution(&self, cache: &FontSubstitutionCache) -> Self {
         let plan = FontSubstitutionResolver::plan(std::slice::from_ref(self), cache, &HashMap::new());
         self.applying_font_substitution(&plan)
@@ -886,7 +882,7 @@ fn restring_declared_faces(
     faces.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
 }
 
-// swift: Render/Office/FontSubstitutionResolver.swift:599-615
+// swift: OfficeReadResult.resolvingFontSubstitution
 impl crate::render::office::office_block::OfficeReadResult {
     /// The single point every reader's result flows through — called from `DocumentTypes.readOffice`
     /// (docx/odt/docm/dotx/dotm, ONE call site for all of them) and from `HwpReader.read` (HWP's own
@@ -897,7 +893,7 @@ impl crate::render::office::office_block::OfficeReadResult {
     /// WHOLE document before the first span is written, because "the most common character under
     /// this declared font" is a fact about the document, not about whichever paragraph happened to
     /// be reached first.
-    // swift: Render/Office/FontSubstitutionResolver.swift:600-614
+    // swift: OfficeReadResult.resolvingFontSubstitution
     pub fn resolving_font_substitution(&self, cache: &FontSubstitutionCache) -> Self {
         let declared_faces = restring_declared_faces(&self.declared_faces);
         let plan = FontSubstitutionResolver::plan(&self.blocks, cache, &declared_faces);

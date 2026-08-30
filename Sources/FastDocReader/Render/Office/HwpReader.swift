@@ -605,7 +605,11 @@ enum HwpReader {
     /// The paper an anchored object is placed on lives in the format-neutral vocabulary
     /// (`PaperGeometry` in `OfficeBlock.swift`) — a section's own sheet is a fact docx and odt state
     /// too, so the type that carries it must not belong to one reader.
+    // port-exclude: An alias, not a declaration: `PaperGeometry` itself lives in `OfficeBlock.swift`
+    // port-exclude: and the engine's counterpart is claimed there. A port of an alias would be a
+    // port-exclude: second name for the same type.
     typealias PaperGeometry = FastDocReader.PaperGeometry
+    // port-exclude-end
 
     /// One 바탕쪽 → the format-neutral `OfficeMasterPage`, or nil when nothing in it can be drawn.
     ///
@@ -1956,7 +1960,10 @@ private enum HwpBlock: Decodable {
     case unsupported(HwpUnsupported)
     case equation(HwpEquation)
 
+    // port-exclude: Codable machinery -- see `HwpSpan.CodingKeys` below for why serde leaves this
+    // port-exclude: with no counterpart to name.
     private enum Keys: String, CodingKey { case t }
+    // port-exclude-end
 
     init(from decoder: Decoder) throws {
         let tag = try decoder.container(keyedBy: Keys.self).decode(String.self, forKey: .t)
@@ -2252,6 +2259,9 @@ private struct HwpSpan: Decodable {
     /// are the only numbers this reader computes rather than replays from the document's own text.
     var newNumber: HwpNewNumber?
 
+    // port-exclude: Codable machinery. The engine does not decode HWP JSON into a mirror of these
+    // port-exclude: types -- serde derives the same mapping from the struct itself, so there is no
+    // port-exclude: second declaration for this one to be the port of.
     private enum CodingKeys: String, CodingKey {
         case text, bold, italic, underline, strike, color, size, font, link, bookmark, csId
         case pageNumberField, pageHide, newNumber
@@ -2260,6 +2270,7 @@ private struct HwpSpan: Decodable {
         // no warning — so a marker tag that the exporter really does send arrived `nil` on every
         // run and the footnote path found nothing to place. Same failure shape as a stale binary
         // (invariant 45): the field is in the model, the value is on the wire, and the reader
+    // port-exclude-end
         // never sees it. Anything added above must be added here too.
         case noteRef, noteRefKind, noteBeforeChar, noteAfterChar, columnDef, form
         case superscript = "super"

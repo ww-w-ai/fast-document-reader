@@ -115,9 +115,13 @@ enum FootnoteBandSettle {
     /// discards the reply leaves every footnote test green. Out here the choice is a value a test
     /// can watch. `host` is an autoclosure so the fallback arithmetic is not paid when the engine
     /// answered, which is the common case.
+    // port-exclude: `engine ?? host()` -- this IS the bridge. It picks between the engine's answer and
+    // port-exclude: the host's fallback, so by construction the engine has no twin for it. Same family
+    // port-exclude: as `PageBandGeometry.resolveNoteHeights`.
     static func resolve(engine: Outcome?, host: @autoclosure () -> Outcome) -> Outcome {
         engine ?? host()
     }
+    // port-exclude-end
 
     /// The stopping rule.
     ///

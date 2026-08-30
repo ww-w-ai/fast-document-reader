@@ -29,7 +29,7 @@ fn dynamic(light: NSColor, dark: NSColor) -> NSColor {
     NSColor::dynamic(light, dark).resolve()
 }
 
-// swift: Render/RenderTheme.swift:3-17
+// swift: NSColor.dynamic
 // extension NSColor {
 //     /// sRGB from a 0xRRGGBB literal.
 //     convenience init(rgb: UInt32, alpha: CGFloat = 1) { ... }
@@ -45,58 +45,47 @@ fn dynamic(light: NSColor, dark: NSColor) -> NSColor {
 /// (inline code) — the single deliberate spot of color, per the Notion reading view. Links
 /// keep a restrained blue since they're now clickable (affordance). All values are
 /// light/dark dynamic.
-// swift: Render/RenderTheme.swift:19-95
+// swift: Palette
 pub struct Palette;
 
 impl Palette {
-    // swift: Render/RenderTheme.swift:24
     pub fn text() -> NSColor {
         dynamic(rgb(0x373530, 1.0), rgb(0xD4D4D4, 1.0))
     }
-    // swift: Render/RenderTheme.swift:25
     pub fn secondary() -> NSColor {
         dynamic(rgb(0x787774, 1.0), rgb(0x9B9B9B, 1.0))
     }
-    // swift: Render/RenderTheme.swift:26
     pub fn inline_code_text() -> NSColor {
         dynamic(rgb(0xC4554D, 1.0), rgb(0xBE524B, 1.0))
     }
-    // swift: Render/RenderTheme.swift:27
     // warm neutral chip, both modes
     pub fn inline_code_bg() -> NSColor {
         rgb(0x878378, 0.15)
     }
-    // swift: Render/RenderTheme.swift:28
     pub fn code_card_bg() -> NSColor {
         dynamic(rgb(0xF7F6F3, 1.0), rgb(0x2F3437, 1.0))
     }
-    // swift: Render/RenderTheme.swift:29-30
     pub fn code_card_border() -> NSColor {
         dynamic(rgb(0x000000, 0.09), rgb(0xFFFFFF, 0.12))
     }
-    // swift: Render/RenderTheme.swift:31-32
     pub fn hairline() -> NSColor {
         dynamic(rgb(0x37352F, 0.12), rgb(0xFFFFFF, 0.14))
     }
-    // swift: Render/RenderTheme.swift:33-34
     pub fn quote_bar() -> NSColor {
         dynamic(rgb(0x37352F, 0.30), rgb(0xFFFFFF, 0.30))
     }
-    // swift: Render/RenderTheme.swift:35
     pub fn link() -> NSColor {
         dynamic(rgb(0x2E7AB8, 1.0), rgb(0x6CB0F5, 1.0))
     }
-    // swift: Render/RenderTheme.swift:36-39
     // The band under the line the reading cursor sits on. Faint enough to be ambient, not read as a
     // selection — a touch of the link hue so it reads as "you are here", warm-neutral in both modes.
     pub fn reading_line() -> NSColor {
         dynamic(rgb(0x2E7AB8, 0.07), rgb(0x6CB0F5, 0.10))
     }
-    // swift: Render/RenderTheme.swift:40-41
     pub fn table_border() -> NSColor {
         dynamic(rgb(0x37352F, 0.16), rgb(0xFFFFFF, 0.16))
     }
-    // swift: Render/RenderTheme.swift:19-95
+    // swift: Palette
     /// The colour a rule the DOCUMENT DREW takes when the document left the colour to us — Word's
     /// `w:color="auto"`, which means "the application decides" and which Word itself decides as
     /// BLACK. Only a PAGED document reaches this (`TableBlockBuilder.build`'s `paged`), where the
@@ -122,12 +111,10 @@ impl Palette {
     pub fn table_border_authored() -> NSColor {
         dynamic(rgb(0x37352F, 0.85), rgb(0xFFFFFF, 0.70))
     }
-    // swift: Render/RenderTheme.swift:66
     // warm neutral, both modes
     pub fn table_header_bg() -> NSColor {
         rgb(0x878378, 0.10)
     }
-    // swift: Render/RenderTheme.swift:67-81
     /// The DESK a paged document's sheets lie on — drawn only where the page outline is on
     /// (`PageViewOptions`), in the `RenderTheme.PAGE_DESK_GAP` between one sheet and the next AND, as
     /// `NSScrollView.backgroundColor`, in the space beside a page narrower than the window.
@@ -144,7 +131,6 @@ impl Palette {
     pub fn page_desk() -> NSColor {
         dynamic(rgb(0xE9E9E8, 1.0), rgb(0x141414, 1.0))
     }
-    // swift: Render/RenderTheme.swift:82-87
     /// The sheet's own edge — and, when the outline is OFF but a band still exists, the page-break
     /// hairline that closes it. Without one of the two the band reads as a hole in the document
     /// rather than as a page ending: the reader sees a long blank stretch and a header floating in
@@ -152,7 +138,6 @@ impl Palette {
     pub fn page_gap_edge() -> NSColor {
         dynamic(rgb(0x37352F, 0.14), rgb(0xFFFFFF, 0.10))
     }
-    // swift: Render/RenderTheme.swift:88-93
     // P6b: comment highlight — a faint amber wash behind a commented span (only drawn while the
     // comments panel is open, see `drawCommentMarks`), and the number badge it's paired with. Amber
     // rather than the reading-line's blue tint so the two "you should look here" signals never read
@@ -160,26 +145,25 @@ impl Palette {
     pub fn comment_highlight() -> NSColor {
         dynamic(rgb(0xE9A23B, 0.16), rgb(0xE9A23B, 0.22))
     }
-    // swift: Render/RenderTheme.swift:94-110
     // solid amber, both modes
     pub fn comment_badge_bg() -> NSColor {
         rgb(0xE9A23B, 1.0)
     }
 }
 
-// swift: Render/RenderTheme.swift:97-120
+// swift: RenderTheme
 #[derive(Clone, Copy)]
 pub struct RenderTheme {
     pub base_font_size: CGFloat,
 }
 
 impl RenderTheme {
-    // swift: Render/RenderTheme.swift:100-100
+    // swift: RenderTheme.current
     pub fn current(size: CGFloat) -> RenderTheme {
         RenderTheme { base_font_size: size }
     }
 
-    // swift: Render/RenderTheme.swift:103-110
+    // swift: RenderTheme.headingSize
     // Notion heading scale relative to a 16pt base: H1 30 / H2 24 / H3 20 / H4+ ~18.
     pub fn heading_size(&self, level: i32) -> CGFloat {
         match level {
@@ -190,42 +174,34 @@ impl RenderTheme {
         }
     }
 
-    // swift: Render/RenderTheme.swift:111
     pub fn body_font(&self) -> NSFont {
         NSFont::systemFont(self.base_font_size)
     }
-    // swift: Render/RenderTheme.swift:112
+    // swift: RenderTheme.headingFont
     pub fn heading_font(&self, level: i32) -> NSFont {
         NSFont::systemFontWeight(self.heading_size(level), swiftshim::NSFontWeight::semibold)
     }
-    // swift: Render/RenderTheme.swift:113
     pub fn code_font(&self) -> NSFont {
         NSFont::monospacedSystemFont(self.base_font_size * 0.9, swiftshim::NSFontWeight::regular)
     }
 
-    // swift: Render/RenderTheme.swift:115
     pub fn text_color(&self) -> NSColor {
         Palette::text()
     }
-    // swift: Render/RenderTheme.swift:116
     pub fn secondary_color(&self) -> NSColor {
         Palette::secondary()
     }
-    // swift: Render/RenderTheme.swift:117
     pub fn link_color(&self) -> NSColor {
         Palette::link()
     }
-    // swift: Render/RenderTheme.swift:118
     pub fn inline_code_color(&self) -> NSColor {
         Palette::inline_code_text()
     }
-    // swift: Render/RenderTheme.swift:119
     pub fn inline_code_background(&self) -> NSColor {
         Palette::inline_code_bg()
     }
 }
 
-// swift: Render/RenderTheme.swift:122-152
 // MARK: - Rhythm tokens (shared BASE, every format)
 //
 // The same handful of ratios (line height, paragraph spacing, indent step, …) used to be
@@ -238,39 +214,32 @@ impl RenderTheme {
 // A ratio that only one format needs stays out of here and lives on that format's own thin
 // style type instead (`MarkdownStyle` / `OfficeStyle` / `PlainTextStyle`, below).
 impl RenderTheme {
-    // swift: Render/RenderTheme.swift:134-136
     /// Within-paragraph line leading, as a multiple of the base font size. (Body text, image
     /// paragraphs, list items, plain text minimum line — every format's "normal" line.)
     pub fn line_height_ratio(&self) -> CGFloat {
         1.45
     }
-    // swift: Render/RenderTheme.swift:137-138
     /// Gap AFTER a paragraph/body block, as a multiple of the base font size.
     pub fn paragraph_spacing_ratio(&self) -> CGFloat {
         0.9
     }
-    // swift: Render/RenderTheme.swift:139-140
     /// The smaller gap used where blocks sit closer together (list items, headings' space-after).
     pub fn tight_spacing_ratio(&self) -> CGFloat {
         0.3
     }
-    // swift: Render/RenderTheme.swift:141-142
     /// One list-indent step, as a multiple of the base font size (marker/text hang distance).
     pub fn list_hang_ratio(&self) -> CGFloat {
         1.7
     }
-    // swift: Render/RenderTheme.swift:143-144
     /// Heading line leading, as a multiple of THAT heading's own font size (tighter than body).
     pub fn heading_line_height_ratio(&self) -> CGFloat {
         1.25
     }
-    // swift: Render/RenderTheme.swift:145-147
     /// Gap AFTER a heading, as a multiple of the base font size (small — the heading should
     /// bond to the text below it).
     pub fn heading_spacing_after_ratio(&self) -> CGFloat {
         0.4
     }
-    // swift: Render/RenderTheme.swift:133-152
     /// Code line leading, as a multiple of the code font's own point size (open enough to read
     /// as a bit more airy than a raw terminal). Also reused, applied to `base_font_size`, for a
     /// table cell's line height — the same "slightly open" rhythm, just off a different base.
@@ -279,14 +248,12 @@ impl RenderTheme {
     }
 }
 
-// swift: Render/RenderTheme.swift:148-189
 // MARK: - Rule widths (shared BASE, ABSOLUTE points)
 //
 // Unlike the rhythm ratios above these are not multiples of a font size — a hairline is a hairline
 // at any reading size — but they follow the same rule: one definition, read by every renderer,
 // never re-inlined as a literal at a call site (invariant 36).
 impl RenderTheme {
-    // swift: Render/RenderTheme.swift:159-177
     /// The reader's own table rule width, in ABSOLUTE points: what a cell edge draws at when neither
     /// the document, its table style, nor the table's own default states a width. Deliberately an INTEGER — a cell's
     /// content width subtracts its left and right rules from an integer column edge, so a fractional
@@ -303,24 +270,23 @@ impl RenderTheme {
     /// outline off and it is not reserved at all.
     pub const PAGE_DESK_GAP: CGFloat = 12.0;
 
-    // swift: Render/RenderTheme.swift:176-189
     pub const TABLE_BORDER_WIDTH: CGFloat = 1.0;
 }
 
 /// Markdown-only rhythm: values no other format needs, kept off the shared base per the
 /// sprint's base-vs-branch split (see `RenderTheme`'s rhythm tokens doc above).
-// swift: Render/RenderTheme.swift:179-190
+// swift: MarkdownStyle
 pub struct MarkdownStyle {
     pub theme: RenderTheme,
 }
 
 impl MarkdownStyle {
-    // swift: Render/RenderTheme.swift:183-189
+    // swift: MarkdownStyle.headingSpacingBefore
     /// Block-quote left indent (head + first-line), as a multiple of the base font size.
     pub fn quote_indent_ratio(&self) -> CGFloat {
         1.25
     }
-    // swift: Render/RenderTheme.swift:185-189
+    // swift: MarkdownStyle.headingSpacingBefore
     /// Space BEFORE a heading — roomier for H1/H2 than H3+, so the top two levels read as
     /// clearly starting a new section.
     pub fn heading_spacing_before(&self, level: i32) -> CGFloat {
@@ -329,13 +295,12 @@ impl MarkdownStyle {
 }
 
 /// Office (.docx/.odt)-only rhythm: values no other format needs.
-// swift: Render/RenderTheme.swift:192-221
+// swift: OfficeStyle
 pub struct OfficeStyle {
     pub theme: RenderTheme,
 }
 
 impl OfficeStyle {
-    // swift: Render/RenderTheme.swift:195-205
     /// Readability FLOOR for office body line height, as a multiple of the paragraph's own font
     /// size. A `.docx`/`.odt` commonly declares a near-single line rule (`w:line="260" w:lineRule=
     /// "auto"` = 1.083×) that, measured against the reader's substituted body font (system font,
@@ -349,7 +314,7 @@ impl OfficeStyle {
     pub fn body_min_line_height_ratio(&self) -> CGFloat {
         1.4
     }
-    // swift: Render/RenderTheme.swift:206-220
+    // swift: OfficeStyle.headingSpacingBefore
     /// Readability FLOOR for the gap AFTER an office body paragraph, as a multiple of the base font
     /// size. A dense document commonly sets a tiny `w:after` (this doc: `w:after="30"` = 1.5pt on 206
     /// of its paragraphs), which renders consecutive bullets/lines packed almost edge to edge — the
@@ -360,7 +325,7 @@ impl OfficeStyle {
     pub fn body_min_paragraph_spacing_ratio(&self) -> CGFloat {
         0.35
     }
-    // swift: Render/RenderTheme.swift:214-220
+    // swift: OfficeStyle.headingSpacingBefore
     /// Space BEFORE a heading — same shape as `MarkdownStyle`'s (roomier for H1/H2), kept as
     /// this format's own copy rather than merged into the base per the sprint's design (a value
     /// only one format uses lives on that format's branch, even when two branches happen to
@@ -371,26 +336,14 @@ impl OfficeStyle {
 }
 
 /// Plain-text (.txt/.csv/.log…)-only rhythm: values no other format needs.
-// swift: Render/RenderTheme.swift:223-228
+// swift: PlainTextStyle
 pub struct PlainTextStyle {
     pub theme: RenderTheme,
 }
 
 impl PlainTextStyle {
-    // swift: Render/RenderTheme.swift:226-227
     /// Monospace font size, as a fraction of the base font size (slightly smaller than prose).
     pub fn mono_size_ratio(&self) -> CGFloat {
         0.95
     }
 }
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/RenderTheme.swift:18-18
-// swift: Render/RenderTheme.swift:96-96
-// swift: Render/RenderTheme.swift:121-121
-// swift: Render/RenderTheme.swift:153-153
-// swift: Render/RenderTheme.swift:178-178
-// swift: Render/RenderTheme.swift:191-191
-// swift: Render/RenderTheme.swift:222-222

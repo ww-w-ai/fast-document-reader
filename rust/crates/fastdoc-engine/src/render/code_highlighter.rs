@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
-// swift: Render/CodeHighlighter.swift:3-220
+// swift: CodeHighlighter
 /// Native, dependency-free tokenizer for a curated language set. This keeps the "no JavaScriptCore
 /// for code-only documents" guarantee (spec §2, §10.1). Unknown languages fall back to plain
 /// monospace. tree-sitter is a v2 upgrade.
@@ -15,7 +15,7 @@ use std::sync::OnceLock;
 /// regex passes get both of those wrong, and every language added multiplies the collisions.
 pub struct CodeHighlighter;
 
-// swift: Render/CodeHighlighter.swift:12-21
+// swift: CodeHighlighter.Palette
 /// swift: `NSString.enumerateSubstrings(in:options:[.byLines],using:)` — `swiftshim::SwiftString`
 /// carries the primitive that method would be built from (`getLineStart(_:end:contentsEnd:for:)`)
 /// but not the by-lines walk itself, so it is done locally with that primitive rather than
@@ -50,7 +50,7 @@ struct Palette {
 
 impl Default for Palette {
     fn default() -> Self {
-        // swift: Render/CodeHighlighter.swift:12-20
+        // swift: CodeHighlighter.Palette
         Self {
             keyword: swiftshim::system_colors::systemPink(),
             r#type: swiftshim::system_colors::systemTeal(),
@@ -63,7 +63,7 @@ impl Default for Palette {
     }
 }
 
-// swift: Render/CodeHighlighter.swift:22-36
+// swift: CodeHighlighter.Lang
 /// A language is just its comment markers, its string delimiters and its keywords — enough for
 /// reading, which is all this app does.
 #[derive(Clone)]
@@ -104,9 +104,9 @@ fn kw(words: &[&str]) -> HashSet<String> {
 
 impl CodeHighlighter {
     // MARK: - Languages
-    // swift: Render/CodeHighlighter.swift:37-41
+    // swift: CodeHighlighter.cLike
 
-    // swift: Render/CodeHighlighter.swift:39-41
+    // swift: CodeHighlighter.cLike
     fn c_like(keywords: &[&str], caps: bool, line: Vec<String>) -> Lang {
         Lang {
             kw: kw(keywords),
@@ -118,7 +118,7 @@ impl CodeHighlighter {
         }
     }
 
-    // swift: Render/CodeHighlighter.swift:42-45
+    // swift: CodeHighlighter.hashLike
     fn hash_like(keywords: &[&str], quotes: &str, raw: Vec<(String, String)>) -> Lang {
         Lang {
             kw: kw(keywords),
@@ -138,7 +138,6 @@ impl CodeHighlighter {
         Self::hash_like(keywords, "\"'", Vec::new())
     }
 
-    // swift: Render/CodeHighlighter.swift:33-131
     fn langs() -> &'static HashMap<String, Lang> {
         static LANGS: OnceLock<HashMap<String, Lang>> = OnceLock::new();
         LANGS.get_or_init(|| {
@@ -485,7 +484,6 @@ impl CodeHighlighter {
         })
     }
 
-    // swift: Render/CodeHighlighter.swift:91-110
     /// Aliases as people actually write them in a fence, mapped onto the table above.
     fn aliases() -> &'static HashMap<String, String> {
         static ALIASES: OnceLock<HashMap<String, String>> = OnceLock::new();
@@ -550,7 +548,7 @@ impl CodeHighlighter {
         })
     }
 
-    // swift: Render/CodeHighlighter.swift:111-115
+    // swift: CodeHighlighter.lang
     fn lang(raw: Option<&str>) -> Option<Lang> {
         let l = raw?.to_lowercase();
         let key = Self::aliases().get(&l).cloned().unwrap_or(l);
@@ -558,15 +556,13 @@ impl CodeHighlighter {
     }
 
     // MARK: - Tokenizer
-    // swift: Render/CodeHighlighter.swift:118-118
 
-    // swift: Render/CodeHighlighter.swift:118-119
     fn identifier_extras() -> &'static HashSet<u16> {
         static EXTRAS: OnceLock<HashSet<u16>> = OnceLock::new();
         EXTRAS.get_or_init(|| HashSet::from([95u16, 36u16])) // _ $
     }
 
-    // swift: Render/CodeHighlighter.swift:120-200
+    // swift: CodeHighlighter.highlight
     pub fn highlight(
         code: &str,
         language: Option<&str>,
@@ -591,7 +587,7 @@ impl CodeHighlighter {
         let ns = swiftshim::SwiftString::new(code);
         let n = ns.length();
 
-        // swift: Render/CodeHighlighter.swift:128-131
+        // swift: CodeHighlighter.paint
         let paint = |result: &mut swiftshim::NSMutableAttributedString, from: usize, to: usize, c: swiftshim::NSColor| {
             if to <= from {
                 return;
@@ -602,7 +598,7 @@ impl CodeHighlighter {
                 swiftshim::NSRange::new(from, to - from),
             );
         };
-        // swift: Render/CodeHighlighter.swift:132-137
+        // swift: CodeHighlighter.matches
         let matches = |token: &str, k: usize| -> bool {
             let t = swiftshim::SwiftString::new(token);
             if t.length() == 0 || k + t.length() > n {
@@ -615,26 +611,24 @@ impl CodeHighlighter {
             }
             true
         };
-        // swift: Render/CodeHighlighter.swift:138-141
+        // swift: CodeHighlighter.isDigit
         fn is_digit(c: u16) -> bool {
             (48..=57).contains(&c)
         }
-        // swift: Render/CodeHighlighter.swift:139-141
+        // swift: CodeHighlighter.isWordStart
         let is_word_start = |c: u16| -> bool {
             (65..=90).contains(&c)
                 || (97..=122).contains(&c)
                 || Self::identifier_extras().contains(&c)
                 || c > 127
         };
-        // swift: Render/CodeHighlighter.swift:120-200
+        // swift: CodeHighlighter.isWord
         let is_word = |c: u16| -> bool { is_word_start(c) || is_digit(c) };
 
-        // swift: Render/CodeHighlighter.swift:120-200
         if lang.line_shaped {
             return Self::diff_highlight(result, &ns, &p).asAttributedString().clone();
         }
 
-        // swift: Render/CodeHighlighter.swift:120-200
         let mut i = 0usize;
         while i < n {
             let c = ns.characterAt(i);
@@ -724,7 +718,7 @@ impl CodeHighlighter {
         result.asAttributedString().clone()
     }
 
-    // swift: Render/CodeHighlighter.swift:202-219
+    // swift: CodeHighlighter.diffHighlight
     /// Diffs are line-shaped, not token-shaped: what matters is which side a line is on.
     fn diff_highlight(
         mut result: swiftshim::NSMutableAttributedString,

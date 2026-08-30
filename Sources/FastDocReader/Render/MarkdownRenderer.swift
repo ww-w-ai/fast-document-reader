@@ -24,9 +24,13 @@ enum MarkdownRenderer {
     /// (invariant 128). Deliberately bypasses `parseMemo` — a memo hit would measure a dictionary
     /// lookup and report parsing as free. Returns the node count so the work cannot be optimised
     /// away as unused.
+    // port-exclude: A measurement probe for the HOST's parser (invariant 128), deliberately bypassing
+    // port-exclude: `parseMemo` so a memo hit cannot report parsing as free. It exists to time this
+    // port-exclude: side; the engine has its own timing and no reason to mirror it.
     static func parseForProbe(_ markdown: String) -> Int {
         Document(parsing: markdown).children.reduce(0) { n, _ in n + 1 }
     }
+    // port-exclude-end
 
     /// The two range-based passes every rendered run must go through before it is shown. Factored
     /// out because a progressive render runs them on each PIECE rather than once on the whole

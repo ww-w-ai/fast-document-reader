@@ -18,11 +18,11 @@
 //! the classifier and the platform's font cascade were last known to agree on.
 
 /// The UCD release `SCRIPT_RANGE_STARTS`/`SCRIPT_RANGE_CLASSES` were generated from.
-// swift: Render/Office/Script/ScriptRanges.swift:17-19
+// swift-range: Render/Office/Script/ScriptRanges.swift:17-19
 pub const SCRIPT_TABLE_UNICODE_VERSION: &str = "17.0.0";
 
 /// First scalar of each range, ascending. Entry `i` runs to `SCRIPT_RANGE_STARTS[i + 1] - 1`.
-// swift: Render/Office/Script/ScriptRanges.swift:20-22
+// swift-range: Render/Office/Script/ScriptRanges.swift:20-22
 pub const SCRIPT_RANGE_STARTS: [u32; 1790] = [
     0, 65, 91, 97, 123, 170, 171, 186, 187, 192, 215, 216, 247, 248, 697, 736, 741, 746, 748, 768, 880, 884, 885, 894,
     895, 901, 902, 903, 904, 1155, 1162, 1425, 1470, 1471, 1472, 1473, 1475, 1476, 1478, 1479, 1480, 1488, 1515, 1519,
@@ -135,7 +135,7 @@ pub const SCRIPT_RANGE_STARTS: [u32; 1790] = [
 ];
 
 /// `ScriptClass` raw value for the range starting at the same index.
-// swift: Render/Office/Script/ScriptRanges.swift:23-25
+// swift-range: Render/Office/Script/ScriptRanges.swift:23-25
 pub const SCRIPT_RANGE_CLASSES: [u8; 1790] = [
     7, 0, 7, 0, 7, 0, 7, 0, 7, 0, 7, 0, 7, 0, 7, 0, 7, 4, 7, 9, 6, 7, 6, 7, 6, 7, 6, 7, 6, 9, 6, 9, 5, 9, 5, 9, 5,
     9, 5, 9, 6, 5, 6, 5, 6, 5, 7, 5, 7, 5, 9, 7, 5, 7, 5, 7, 5, 9, 5, 9, 5, 9, 7, 5, 9, 5, 9, 5, 9, 5, 6, 5, 9, 5,
@@ -191,6 +191,6 @@ pub const SCRIPT_RANGE_CLASSES: [u8; 1790] = [
 /// `ScriptClass`'s case names in raw-value order, as this generator wrote them.
 /// Compared against the enum itself by a test, so a reordered CLASS_ORDER cannot
 /// silently re-label every scalar in the table.
-// swift: Render/Office/Script/ScriptRanges.swift:26-29
+// swift-range: Render/Office/Script/ScriptRanges.swift:26-29
 pub const SCRIPT_CLASS_NAMES: [&str; 10] =
     ["latin", "hangul", "han", "kana", "eastAsianOther", "complex", "other", "common", "inherited", "extend"];

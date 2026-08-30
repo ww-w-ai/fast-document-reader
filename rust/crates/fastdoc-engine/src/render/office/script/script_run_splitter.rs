@@ -50,9 +50,10 @@
 //! NOT inherit `FontSubstitutionResolver.resolveOne`'s hand-written lead/trail-surrogate guard, which
 //! exists only because that function walks a raw `[UniChar]` buffer.
 
+// swift: ScriptRunSplitter
 pub struct ScriptRunSplitter;
 
-// swift: Render/Office/Script/ScriptRunSplitter.swift:50-61
+// swift: ScriptRunSplitter.Piece
 /// One stretch of the input that wants one typeface.
 ///
 /// `text` is a `Substring`, so slicing costs nothing and the pieces of an unsplit run share the
@@ -81,7 +82,7 @@ impl ScriptRunSplitter {
     ///
     /// - Returns: pieces in order. No piece is ever empty, and concatenating their `text` reproduces
     ///   `text` exactly — both asserted in `ScriptRunSplitterTests`, on every case it has.
-    // swift: Render/Office/Script/ScriptRunSplitter.swift:62-145
+    // swift: ScriptRunSplitter.split
     pub fn split<'a, Slot, ClassifyFn, FamilyFn>(
         text: &'a str,
         mut classify: ClassifyFn,
@@ -92,7 +93,7 @@ impl ScriptRunSplitter {
         ClassifyFn: FnMut(char) -> Option<Slot>,
         FamilyFn: FnMut(Slot) -> Option<String>,
     {
-        // swift: Render/Office/Script/ScriptRunSplitter.swift:62-145
+        // swift: ScriptRunSplitter.split
         let mut pieces: Vec<Piece<'a>> = Vec::new();
         // Byte offsets into `text`, standing in for Swift's `String.Index` — a boundary is always
         // taken at a scalar (char) boundary, so it can never land inside a multi-byte encoding.
@@ -162,7 +163,6 @@ impl ScriptRunSplitter {
 
         // The tail, including the case where nothing classified at all: a run of pure punctuation is
         // one piece with no family, not zero pieces and not a dropped tail.
-        // swift: Render/Office/Script/ScriptRunSplitter.swift:139-146
         if piece_start < text.len() {
             pieces.push(Piece { text: &text[piece_start..text.len()], family: resolved });
         }

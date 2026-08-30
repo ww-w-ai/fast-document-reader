@@ -22,7 +22,8 @@ use swiftshim::{
 
 use crate::render::office::office_block::{BorderLineStyle, CellDiagonal};
 
-// swift: Render/GridTextTableBlock.swift:3-18
+// swift: GridTextTableBlock
+// swift-range: Render/GridTextTableBlock.swift:3-18
 // A table cell that knows a page can pass THROUGH it, and paints itself accordingly.
 //
 // `NSTextTableBlock` paints one background and one border box around the block's whole frame. When
@@ -48,7 +49,6 @@ use crate::render::office::office_block::{BorderLineStyle, CellDiagonal};
 pub struct GridTextTableBlock {
     pub base: NSTextTableBlock,
 
-    // swift: Render/GridTextTableBlock.swift:93-99
     /// Background plus the edges this segment is allowed to show. A cut edge shows nothing — that is
     /// the whole point — and every other edge keeps the width and colour invariant 47 resolved for it.
     /// How each edge is DRAWN, by edge. `NSTextTableBlock` carries a width and a colour per edge and
@@ -57,7 +57,6 @@ pub struct GridTextTableBlock {
     /// is what every markdown table and every rule this reader invents itself is.
     pub edge_styles: HashMap<NSRectEdge, BorderLineStyle>,
 
-    // swift: Render/GridTextTableBlock.swift:101-110
     /// What the document said this edge's rule MEASURES, when that is not what layout reserved for
     /// it. `NSTextTableBlock` draws a rule at the width it was given, and the width it is given has
     /// to be a whole point or the geometry stops adding up (`TableBlockBuilder.laidOutBorderWidth`) —
@@ -69,13 +68,11 @@ pub struct GridTextTableBlock {
     /// in that band. Nothing moves: the geometry is the same number layout already charged for.
     pub declared_widths: HashMap<NSRectEdge, CGFloat>,
 
-    // swift: Render/GridTextTableBlock.swift:112-115
     /// The cell's own picture fill (`Cell.backgroundImage`). Painted per SEGMENT, like the shading
     /// and the side rules, so a cell a page break crosses shows its image on each sheet and nothing
     /// on the desk between them.
     pub background_image: Option<NSImage>,
 
-    // swift: Render/GridTextTableBlock.swift:117-128
     /// The rule this cell draws ACROSS itself, when the document drew one. Painted per SEGMENT like
     /// everything else here, so a diagonal in a cell a page break crosses appears on each sheet and
     /// never on the desk between them — and, because it is drawn per segment, each piece's diagonal
@@ -85,7 +82,6 @@ pub struct GridTextTableBlock {
 }
 
 impl GridTextTableBlock {
-    // swift: Render/GridTextTableBlock.swift:124-128
     /// True when any edge needs a stroke this class has to draw itself. `super` paints solid bars, so
     /// only a non-solid edge forces the override on a cell no page break crosses.
     pub fn has_styled_edge(&self) -> bool {
@@ -94,7 +90,7 @@ impl GridTextTableBlock {
             || self.diagonal.is_some()
     }
 
-    // swift: Render/GridTextTableBlock.swift:20-49
+    // swift: GridTextTableBlock.drawBackground
     /// swift: override func drawBackground(withFrame:in:characterRange:layoutManager:)
     pub fn draw_background(
         &self,
@@ -134,7 +130,7 @@ impl GridTextTableBlock {
         }
     }
 
-    // swift: Render/GridTextTableBlock.swift:51-79
+    // swift: GridTextTableBlock.gapsCrossing
     /// The empty bands this cell's box reaches across.
     ///
     /// NOTHING IS EVER PAINTED INSIDE A BAND. A band is empty paper — the desk between two sheets —
@@ -180,7 +176,7 @@ impl GridTextTableBlock {
         out
     }
 
-    // swift: Render/GridTextTableBlock.swift:81-91
+    // swift: GridTextTableBlock.segments
     fn segments(frame: NSRect, gaps: &[(CGFloat, CGFloat)]) -> Vec<NSRect> {
         let mut out: Vec<NSRect> = Vec::new();
         let mut y = frame.minY();
@@ -192,7 +188,7 @@ impl GridTextTableBlock {
         out.into_iter().filter(|r| r.height() > 0.5).collect()
     }
 
-    // swift: Render/GridTextTableBlock.swift:130-144
+    // swift: GridTextTableBlock.rule
     /// The thickness this edge's rule is DRAWN at, and where inside its reserved band it sits.
     /// Absent from `declaredWidths` = draw the whole band, which is what every markdown table and
     /// every rule this reader invents itself does.
@@ -220,7 +216,7 @@ impl GridTextTableBlock {
         }
     }
 
-    // swift: Render/GridTextTableBlock.swift:146-221
+    // swift: GridTextTableBlock.paint
     fn paint(&self, rect: NSRect, cut_above: bool, cut_below: bool) {
         if let Some(background) = &self.base.backgroundColor {
             background.setFill();
@@ -359,7 +355,7 @@ impl GridTextTableBlock {
         self.base.borderColor(edge)
     }
 
-    // swift: Render/GridTextTableBlock.swift:223-251
+    // swift: GridTextTableBlock.drawDiagonal
     /// The cell's diagonal, drawn corner to corner of the segment.
     ///
     /// AFTER the edges, deliberately: the two meet at the corners, and a diagonal drawn first has

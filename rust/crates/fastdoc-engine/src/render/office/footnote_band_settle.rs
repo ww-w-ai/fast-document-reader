@@ -56,7 +56,7 @@ use swiftshim::CGFloat;
 /// The clamp is what makes any of that bounded at all: without it a note taller than the page it is
 /// cited on reserves the whole page, leaves the body nowhere to go, and every round pushes the same
 /// marker one page further forever.
-// swift: Render/Office/FootnoteBandSettle.swift:3-57
+// swift: FootnoteBandSettle
 pub struct FootnoteBandSettle;
 
 impl FootnoteBandSettle {
@@ -68,7 +68,6 @@ impl FootnoteBandSettle {
     ///
     /// MEASURED (roadmap, S13 research): a settle round costs roughly 38 ms on the reference
     /// document, so eight is about 300 ms of worst case — the budget that already ships.
-    // swift: Render/Office/FootnoteBandSettle.swift:58-67
     pub const MAX_ROUNDS: i64 = 8;
 
     /// The most of a page's body a note band may take, as a fraction of that page's own content
@@ -79,7 +78,6 @@ impl FootnoteBandSettle {
     /// page it was going to land on. What actually happens to a note too tall for the room left —
     /// splitting it across pages, the way Word does — is S15's, and when that lands this clamp
     /// stops being reachable rather than becoming wrong.
-    // swift: Render/Office/FootnoteBandSettle.swift:68-77
     pub const MAX_BAND_FRACTION: CGFloat = 0.75;
 
     /// A proposed band, made safe to lay out with: never negative, never more than
@@ -89,7 +87,7 @@ impl FootnoteBandSettle {
     /// "taller than anything", and zero is the unsafe half of that (a note drawn over the body),
     /// which would put the one value most likely to arrive from a broken measurement on exactly the
     /// side this type exists to avoid.
-    // swift: Render/Office/FootnoteBandSettle.swift:78-89
+    // swift: FootnoteBandSettle.clamped
     pub fn clamped(raw: CGFloat, page_content_height: CGFloat) -> CGFloat {
         if !(page_content_height > 0.0) || raw.is_nan() || !(raw > 0.0) {
             return 0.0;
@@ -105,7 +103,7 @@ impl FootnoteBandSettle {
     ///     as such, so a round that drops a key rather than zeroing it is not read as a change.
     ///   - history: every earlier proposal, oldest first. The caller appends; this never mutates.
     ///   - cap: the round budget, matching the settle loop's own (`maxPagedTableSettles`).
-    // swift: Render/Office/FootnoteBandSettle.swift:108-141
+    // swift: FootnoteBandSettle.step
     pub fn step(proposed: &HashMap<i64, CGFloat>, history: &[HashMap<i64, CGFloat>], cap: i64) -> Outcome {
         let now = Self::normalised(proposed);
         let seen: Vec<HashMap<i64, CGFloat>> = history.iter().map(Self::normalised).collect();
@@ -131,7 +129,7 @@ impl FootnoteBandSettle {
 
     /// The largest band each page was asked for across these states — the safe half of an
     /// oscillation (see the type comment).
-    // swift: Render/Office/FootnoteBandSettle.swift:143-153
+    // swift: FootnoteBandSettle.pointwiseMax
     pub fn pointwise_max(states: &[HashMap<i64, CGFloat>]) -> HashMap<i64, CGFloat> {
         let mut out: HashMap<i64, CGFloat> = HashMap::new();
         for state in states {
@@ -148,14 +146,14 @@ impl FootnoteBandSettle {
     /// Drops the entries that reserve nothing, so "absent" and "zero" are the same state. Without
     /// this a round that stopped citing a note on a page would look like a change forever, and the
     /// repeat check would never fire.
-    // swift: Render/Office/FootnoteBandSettle.swift:155-160
+    // swift: FootnoteBandSettle.normalised
     fn normalised(state: &HashMap<i64, CGFloat>) -> HashMap<i64, CGFloat> {
         state.iter().filter(|(_, v)| **v > 0.0).map(|(k, v)| (*k, *v)).collect()
     }
 }
 
 /// Why the loop stopped, carried so a caller can log or test the reason rather than infer it.
-// swift: Render/Office/FootnoteBandSettle.swift:90-99
+// swift: FootnoteBandSettle.StopReason
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
     /// Two consecutive rounds proposed the same bands.
@@ -167,7 +165,7 @@ pub enum StopReason {
 }
 
 /// What the caller should do with the round it just finished.
-// swift: Render/Office/FootnoteBandSettle.swift:100-107
+// swift: FootnoteBandSettle.Outcome
 #[derive(Debug, Clone, PartialEq)]
 pub enum Outcome {
     /// Lay out once more with these bands.
@@ -175,10 +173,3 @@ pub enum Outcome {
     /// These bands are final; stop.
     Stop(HashMap<i64, CGFloat>, StopReason),
 }
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/Office/FootnoteBandSettle.swift:142-142
-// swift: Render/Office/FootnoteBandSettle.swift:154-154
-// swift: Render/Office/FootnoteBandSettle.swift:161-161

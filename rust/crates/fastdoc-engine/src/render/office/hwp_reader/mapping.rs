@@ -11,7 +11,7 @@
 //! yet populated at the time this file was written; referenced by their Swift names per
 //! docs/plans/rust-port-convention.md §4.
 
-// swift: Render/Office/HwpReader.swift:1-3
+// swift-range: Render/Office/HwpReader.swift:1-3
 use swiftshim::{Data, EngineError, NSRange, SwiftString};
 use swiftshim::geometry::{CGFloat, CGSize, CGRect, CGPoint, NSRect};
 use crate::render::office::office_block::{
@@ -39,7 +39,7 @@ use crate::render::office::hwp_reader::schema::{
 /// `column_layout` treats both the same way: keep the incomplete reading, honestly.
 pub(crate) type ColumnAuthority = std::collections::HashMap<ColumnSignature, OfficeColumnLayout>;
 
-// swift: Render/Office/HwpReader.swift:4-12
+// swift: HwpReader
 // Bridge to the rhwp (Rust, MIT — github.com/edwardkim/rhwp, forked: FFI drift fix +
 // structured-export FFI added) HWP/HWPX parser, statically linked via the RhwpNative
 // xcframework. See docs/BUILD-RHWP.md to rebuild the binary.
@@ -48,7 +48,7 @@ pub(crate) type ColumnAuthority = std::collections::HashMap<ColumnSignature, Off
 // The JSON -> OfficeBlock/OfficeReadResult mapping lands in S3+ so the existing
 // OfficeTextBuilder renders HWP the same way it renders Word/ODT.
 
-// swift: Render/Office/HwpReader.swift:12-19
+// swift: HwpReader
 /// swift: enum HwpReader — a namespace, not a value; ported as a bare `impl` block of free
 /// functions (Rust has no case-less-enum-as-namespace idiom worth inventing one for here).
 pub struct HwpReader;
@@ -60,7 +60,7 @@ impl HwpReader {
     /// Handle lifecycle: rhwp_open (one parse) -> rhwp_document_json -> rhwp_close,
     /// and every returned C string is freed via rhwp_string_free (see the FFI contract
     /// in bindings/Native/src/lib.rs of the fork).
-    // swift: Render/Office/HwpReader.swift:19-32
+    // swift: HwpReader.exportDocumentJSON
     pub fn export_document_json(data: &Data) -> Option<String> {
         // Self-closing: opens, exports, closes. `read` does NOT go through here — it needs the
         // handle to stay alive past the export so pictures can be fetched against the same parse,
@@ -75,7 +75,7 @@ impl HwpReader {
     /// Base64 of an embedded image's bytes, by 1-based bin_data_id. Empty string when
     /// the id resolves to nothing. Requires a live handle from the same parse — S4 will
     /// use this from within a single open/close around the whole read.
-    // swift: Render/Office/HwpReader.swift:33-41
+    // swift: HwpReader.imageBase64
     pub fn image_base64(handle: RhwpHandle, bin_data_id: u16) -> Option<String> {
         if handle.is_null() {
             return None;
@@ -90,7 +90,7 @@ impl HwpReader {
         Some(base64::engine::general_purpose::STANDARD.encode(bytes))
     }
 
-    // swift: Render/Office/HwpReader.swift:39-61
+    // swift: HwpReader.MapError
     // MARK: - S3: structured JSON -> OfficeBlock / OfficeReadResult
 }
 
@@ -142,7 +142,7 @@ mod crop_tests {
 
 /// swift: `UnsafeMutableRawPointer` used as the rhwp parse handle — named here so the FFI stand-in
 /// functions above have a real parameter type instead of an opaque pointer type nobody else uses.
-// swift: Render/Office/HwpReader.swift:36 (parameter type)
+// swift-range: Render/Office/HwpReader.swift:36 (parameter type)
 pub type RhwpHandle = *mut std::ffi::c_void;
 
 /// A live rhwp parse, kept past the read that produced it.
@@ -195,7 +195,7 @@ impl Drop for RetainedParse {
 }
 
 impl HwpReader {
-    // swift: Render/Office/HwpReader.swift:45-62
+    // swift: HwpReader.MapError
     // swift: `enum MapError: Swift.Error, Equatable, LocalizedError`
     //
     // rhwp's `exportDocumentJSON` returned nil — the bytes are not a parseable HWP/HWPX
@@ -206,7 +206,7 @@ impl HwpReader {
     // mapper handles.
 }
 
-// swift: Render/Office/HwpReader.swift:45-62
+// swift: HwpReader.MapError
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MapError {
     /// rhwp's `exportDocumentJSON` returned nil — the bytes are not a parseable HWP/HWPX
@@ -219,7 +219,7 @@ pub enum MapError {
 }
 
 impl MapError {
-    // swift: Render/Office/HwpReader.swift:45-62
+    // swift: HwpReader.MapError
     pub fn error_description(&self) -> &'static str {
         match self {
             MapError::ParseFailed => "This file could not be parsed as an HWP/HWPX document — it may be corrupt or an unsupported format.",
@@ -239,7 +239,7 @@ impl HwpReader {
     /// swift: the `data.withUnsafeBytes { … rhwp_open(base, data.count) }` handle-open expression —
     /// an FFI leaf split out of `read()` so the orchestration around it (guard/defer/mapJSON/merge/
     /// resolvingFontSubstitution) stays real logic rather than one function-wide `todo!()`.
-    // swift: Render/Office/HwpReader.swift:64-117
+    // swift: HwpReader.read
     fn rhwp_open(data: &Data) -> Option<RhwpHandle> {
         // The Swift original calls `rhwp_open` in `CRhwpNative`, rhwp's C shim. The engine links
         // rhwp as an RLIB, so there is no C to cross: `rhwp_open` is a thin wrapper over
@@ -251,7 +251,7 @@ impl HwpReader {
     }
 
     /// swift: `rhwp_close(handle)`, run via `defer` in the Swift original.
-    // swift: Render/Office/HwpReader.swift:64-117
+    // swift: HwpReader.read
     fn rhwp_close(handle: RhwpHandle) {
         if handle.is_null() {
             return;
@@ -263,7 +263,7 @@ impl HwpReader {
 
     /// swift: `guard let cstr = rhwp_document_json(handle) … let json = String(cString: cstr);
     /// rhwp_string_free(cstr)`.
-    // swift: Render/Office/HwpReader.swift:64-117
+    // swift: HwpReader.read
     fn rhwp_document_json_owned(handle: RhwpHandle) -> Option<String> {
         if handle.is_null() {
             return None;
@@ -278,7 +278,7 @@ impl HwpReader {
     /// return, so `OfficeTextBuilder` renders HWP identically. Two steps kept separate on purpose —
     /// `exportDocumentJSON` (the FFI, untestable without a file) then `mapJSON` (a pure
     /// `String -> OfficeReadResult`, unit-tested with synthetic JSON, no FFI needed).
-    // swift: Render/Office/HwpReader.swift:62-117
+    // swift: HwpReader.read
     pub fn read(data: &Data) -> Result<OfficeReadResult, MapError> {
         Self::read_mapped(data, true).map(|(result, _)| result)
     }
@@ -372,7 +372,7 @@ impl HwpReader {
             // call rather than `readOffice`'s), NOT inside `mapJSON`: `mapJSON` stays a pure JSON->
             // result mapper so every hand-built-envelope test that calls it directly is unaffected by
             // this pass. See `FontSubstitutionResolver`'s file doc for why read time is the right home.
-            // swift: Render/Office/HwpReader.swift:64-117
+            // swift: HwpReader.read
             if resolve_fonts {
                 let font_cache = crate::render::office::font_substitution_resolver::FontSubstitutionCache::default();
                 Ok(result.resolving_font_substitution(&font_cache))
@@ -420,12 +420,11 @@ impl HwpReader {
     /// The id prefix `mapBlock` stamps on an embedded HWP image — kept in ONE place so the writer
     /// (`mapBlock`) and the reader (`collectImages`, and `reconcileMedia`'s map lookup) can never
     /// drift on the string.
-    // swift: Render/Office/HwpReader.swift:156-159
     pub const HWP_IMAGE_PREFIX: &'static str = "hwpimg:";
     /// Separates a picture's binData id from the crop applied to it. A cropped picture gets its own
     /// key so the SAME original shown twice, cropped differently, cannot collide — which is the
     /// whole reason the crop lives in the id rather than beside it.
-    // swift: Render/Office/HwpReader.swift:160-173
+    // swift: HwpReader.cropSuffix
     pub const HWP_CROP_SEPARATOR: &'static str = "!crop=";
 
     /// The id suffix for a picture that actually crops, empty for one that does not.
@@ -433,7 +432,7 @@ impl HwpReader {
     /// A crop rectangle covering the whole original is NOT a crop — most documents write one
     /// (the 편람 declares 101 and cuts nothing with 28 of them). Reading those as crops would
     /// re-encode every picture in the corpus for no visible change.
-    // swift: Render/Office/HwpReader.swift:165-173
+    // swift: HwpReader.cropSuffix
     fn crop_suffix(im: &HwpImage) -> String {
         let Some(box_) = Self::real_crop_image(im) else { return String::new() };
         format!("{}{},{},{},{}", Self::HWP_CROP_SEPARATOR, box_.minX(), box_.minY(), box_.width(), box_.height())
@@ -442,7 +441,7 @@ impl HwpReader {
     /// The crop as FRACTIONS of the original (0…1), or nil when the picture is not cropped. Kept as
     /// fractions because the reader never learns the original's pixel dimensions until the bytes are
     /// decoded, and HWPUNIT-to-pixel needs both.
-    // swift: Render/Office/HwpReader.swift:175-187
+    // swift: HwpReader.realCrop
     pub fn real_crop(
         left: i64, top: i64, right: i64, bottom: i64,
         original_width: i64, original_height: i64,
@@ -468,7 +467,7 @@ impl HwpReader {
 
     /// `x,y,w,h` as fractions, back from an image id. Malformed = no crop, so a future id shape
     /// cannot make this reader cut a picture by accident.
-    // swift: Render/Office/HwpReader.swift:189-195
+    // swift: HwpReader.cropBox
     fn crop_box(text: &str) -> Option<CGRect> {
         let n: Vec<f64> = text.split(',').filter_map(|s| s.parse::<f64>().ok()).collect();
         if n.len() != 4 || !(n[2] > 0.0) || !(n[3] > 0.0) {
@@ -486,7 +485,7 @@ impl HwpReader {
     /// reserved size (invariant 1), the media cache, `--extract`, the Quick Look preview — takes a
     /// picture as BYTES. Cutting here means every one of them sees the same picture the reader
     /// draws, with no second crop model to keep in step.
-    // swift: Render/Office/HwpReader.swift:197-213
+    // swift: HwpReader.croppedImageData
     pub fn cropped_image_data(data: &Data, fraction: CGRect) -> Option<Data> {
         use image::ImageFormat;
 
@@ -516,7 +515,7 @@ impl HwpReader {
         Some(Data::fromBytes(png.into_inner()))
     }
 
-    // swift: Render/Office/HwpReader.swift:197-213
+    // swift: HwpReader.croppedImageData
     fn real_crop_image(im: &HwpImage) -> Option<CGRect> {
         let c = im.crop.as_ref()?;
         let ow = im.original_width?;
@@ -527,7 +526,7 @@ impl HwpReader {
     /// The id prefix for a DRAWING this reader rendered itself (`HwpShapeRenderer`) — distinct from
     /// `hwpImagePrefix` because these bytes are made here, not fetched from the file, so
     /// `collectImages` must not try to look them up by `binDataId`.
-    // swift: Render/Office/HwpReader.swift:197-213
+    // swift: HwpReader.croppedImageData
     pub const HWP_SHAPE_PREFIX: &'static str = "hwpshape:";
 }
 
@@ -535,7 +534,7 @@ impl HwpReader {
 /// so the `map` closures that build blocks can add to it without threading `inout` through five
 /// signatures; `mapJSON` hands its contents to the result, which is what makes the shape bytes
 /// reachable by `reconcileMedia` under the id the block carries.
-// swift: Render/Office/HwpReader.swift:184-267
+// swift: HwpReader.MediaContext
 pub struct MediaContext {
     pub images: std::collections::HashMap<String, Data>,
     pub vectors: std::collections::HashMap<String, crate::render::office::hwp_shape_path::VectorGraphic>,
@@ -579,7 +578,7 @@ impl MediaContext {
     }
 
     /// The decoded image for a fill's `binDataId`, or nil when there is no provider or no bytes.
-    // swift: Render/Office/HwpReader.swift:256-260
+    // swift: HwpReader.MediaContext.fillImage
     pub fn fill_image(&self, bin_data_id: Option<i64>) -> Option<swiftshim::NSImage> {
         let bin_data_id = bin_data_id?;
         if bin_data_id <= 0 { return None; }
@@ -587,7 +586,7 @@ impl MediaContext {
         swiftshim::NSImage::fromData(&data)
     }
 
-    // swift: Render/Office/HwpReader.swift:261-266
+    // swift: HwpReader.MediaContext.add
     pub fn add(&mut self, data: Data) -> String {
         self.next += 1;
         let id = format!("{}{}", HwpReader::HWP_SHAPE_PREFIX, self.next);
@@ -607,8 +606,6 @@ impl HwpReader {
     /// The longest a STYLE-INFERRED heading's text may be. A heading is a label; a paragraph of prose
     /// carrying a heading-ish style name is not one, however the document styled it. Only applies to
     /// inference — an explicitly outlined paragraph is honoured at any length.
-    // swift: Render/Office/HwpReader.swift:226-267
-    // swift: Render/Office/HwpReader.swift:269-272
     pub const HEADING_TEXT_LIMIT: usize = 80;
 
     /// HWP's own default line spacing, and the value a NON-PAGED HWP still treats as "nothing
@@ -616,14 +613,13 @@ impl HwpReader {
     /// nowhere else. The match is near-exact (±0.5) on purpose: 158% is a choice, not a rounding
     /// of 160. Measured across 637 real files, 225,654 of 525,054 percent paragraphs (43%) sit
     /// here, so this constant decides the most common Korean page there is.
-    // swift: Render/Office/HwpReader.swift:226-267
     pub const NEUTRAL_PERCENT_LINE_HEIGHT: CGFloat = 160.0;
 
     /// A percent line height as a plain percentage, whatever encoding the file used. HWP writes this
     /// field as a percentage in some versions and as percent×100 in others, so the value is accepted
     /// only from the two plausible bands and rejected outside them — a spacing this reader cannot
     /// identify must fall back to the house rhythm, never render a document at 160× line height.
-    // swift: Render/Office/HwpReader.swift:281-290
+    // swift: HwpReader.percentLineHeight
     pub fn percent_line_height(raw: i64) -> Option<CGFloat> {
         let v = raw as CGFloat;
         if (50.0..=500.0).contains(&v) { return Some(v); }             // 160  → 160%
@@ -639,10 +635,10 @@ use crate::render::office::declared_font_kind::DeclaredFace;
 use swiftshim::NSEdgeInsets;
 
 impl HwpReader {
+    // swift: HwpReader.mapJSON
     /// PURE mapping: rhwp's structured JSON string → `OfficeReadResult`. Separated from the FFI so
     /// the whole JSON→OfficeBlock vocabulary is testable with hand-built envelopes. HWP comments are
     /// a later/never sprint, so `comments` is always `[]`.
-    // swift: Render/Office/HwpReader.swift:272-524
     pub fn map_json(
         json: &str,
         picture_provider: Option<Box<dyn Fn(i64) -> Option<Data>>>,
@@ -936,6 +932,7 @@ impl HwpReader {
         let body_section = envelope.body_section;
         let section_starts = envelope.section_starts.clone().unwrap_or_default();
         result.section_start_blocks = section_starts.clone();
+        // swift: HwpReader.inBodySection
         let in_body_section = |entry: &HwpHeaderFooterEntry| -> bool {
             let (Some(body_section), Some(section)) = (body_section, entry.section) else { return true };
             section == body_section
@@ -1034,13 +1031,14 @@ impl HwpReader {
     /// `paper` measures against the whole sheet, `page` against the body area inside the margins.
     /// `para`/`column` need the anchoring paragraph's own position — the floating layer invariant 75
     /// measured and rejected — so they never reach here.
-    // swift: Render/Office/HwpReader.swift:525-566
+    // swift: HwpReader.anchoredFrame
     pub fn anchored_frame(
         size: CGSize, vert_rel_to: &str, horz_rel_to: &str,
         vert_align: &str, horz_align: &str, offset: CGPoint, page: &PaperGeometry,
     ) -> Option<CGRect> {
         if !(vert_rel_to == "paper" || vert_rel_to == "page") { return None; }
         if !(horz_rel_to == "paper" || horz_rel_to == "page") { return None; }
+        // swift: HwpReader.place
         fn place(ref_origin: CGFloat, ref_extent: CGFloat, own: CGFloat, align: &str, offset: CGFloat) -> CGFloat {
             match align {
                 "center" => ref_origin + (ref_extent - own) / 2.0 + offset,
@@ -1078,7 +1076,7 @@ impl HwpReader {
     ///
     /// Returns nil for a vertical reference that is NOT the paragraph — those are already placed in
     /// full by `anchoredFrame`, and one function must not answer for both.
-    // swift: Render/Office/HwpReader.swift:548-603
+    // swift: HwpReader.paragraphAnchoredPlacement
     pub fn paragraph_anchored_placement(
         size: CGSize, vert_rel_to: &str, horz_rel_to: &str, vert_align: &str, horz_align: &str,
         offset: CGPoint, page: &PaperGeometry,
@@ -1104,7 +1102,7 @@ impl HwpReader {
         ))
     }
 
-    // swift: Render/Office/HwpReader.swift:610-664
+    // swift: HwpReader.mapMasterPage
     // (PaperGeometry alias — `HwpReader.PaperGeometry` in Swift is a typealias to the
     // format-neutral `FastDocReader.PaperGeometry`; this port uses the format-neutral
     // `crate::render::office::office_block::PaperGeometry` directly, imported above.)
@@ -1114,7 +1112,7 @@ impl HwpReader {
     /// Every object is resolved HERE, at read time, into bytes or blocks — the same choice
     /// `HwpShapeRenderer` already forced for inline drawings (invariant 75): the picture provider and
     /// the live parse handle exist during the read and are gone by the time anything paints.
-    // swift: Render/Office/HwpReader.swift:597-664
+    // swift: HwpReader.mapMasterPage
     #[allow(clippy::too_many_arguments)]
     fn map_master_page(
         page: &HwpMasterPage, page_width: Option<CGFloat>, default_body_size: CGFloat,
@@ -1183,7 +1181,7 @@ use crate::render::office::office_block::OfficeFootnote;
 use crate::render::office::hwp_reader::schema::{HwpFootnoteEntry, HwpFontFace};
 
 impl HwpReader {
-    // swift: Render/Office/HwpReader.swift:666-681
+    // swift: HwpReader.mapHeaderFooterEntry
     #[allow(clippy::too_many_arguments)]
     fn map_header_footer_entry(
         entry: &HwpHeaderFooterEntry, page_width: Option<CGFloat>, default_body_size: CGFloat,
@@ -1203,7 +1201,7 @@ impl HwpReader {
     /// section (invariant 77). A footnote is drawn on the page that CITES it, and that page is found
     /// from its marker rather than from any section rule, so filtering by section here could only
     /// throw away a note whose marker is still in the text.
-    // swift: Render/Office/HwpReader.swift:683-698
+    // swift: HwpReader.mapFootnote
     #[allow(clippy::too_many_arguments)]
     fn map_footnote(
         entry: &HwpFootnoteEntry, page_width: Option<CGFloat>, default_body_size: CGFloat,
@@ -1227,7 +1225,7 @@ impl HwpReader {
     /// yet that would need the two told apart, and docx's own `.defaultPages` already means "every
     /// page not covered by a more specific entry" — the same shape. An unrecognized value (a rhwp
     /// version ahead of this mapper) degrades to `.defaultPages` too, rather than being dropped.
-    // swift: Render/Office/HwpReader.swift:700-710
+    // swift: HwpReader.mapHeaderFooterApplyTo
     fn map_header_footer_apply_to(raw: &str) -> HeaderFooterApplicability {
         if raw == "even" { HeaderFooterApplicability::EvenPages } else { HeaderFooterApplicability::DefaultPages }
     }
@@ -1247,7 +1245,7 @@ impl HwpReader {
 /// It decodes through the SAME `HwpEnvelope`/`HwpSpan` the mapper uses, deliberately — a test
 /// that re-declared its own structs would prove the JSON and say nothing about whether this
 /// reader receives it, which is invariant 29's lesson in miniature.
-// swift: Render/Office/HwpReader.swift:693-760
+// swift: HwpReader.FontSlotExport
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FontSlotExport {
     /// `charShapes`, or `[]` when the envelope carried none (a parser predating this field).
@@ -1274,7 +1272,7 @@ pub struct FontSlotExport {
     pub char_shape_decor: Vec<HwpCharDecor>,
 }
 
-// swift: Render/Office/HwpReader.swift:753-759
+// swift: HwpReader.FontSlotExport.SpanSample
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpanSample {
     pub text: String,
@@ -1285,7 +1283,7 @@ pub struct SpanSample {
 }
 
 impl HwpReader {
-    // swift: Render/Office/HwpReader.swift:744-789
+    // swift: HwpReader.fontSlotExport
     pub fn font_slot_export(json: &str) -> Result<FontSlotExport, MapError> {
         let envelope: HwpEnvelope = serde_json::from_str(json).map_err(|_| MapError::MalformedJSON)?;
         let mut ids: Vec<Option<i64>> = Vec::new();
@@ -1322,7 +1320,7 @@ impl HwpReader {
         })
     }
 
-    // swift: Render/Office/HwpReader.swift:772-784
+    // swift: HwpReader.walk
     // MARK: unit conversion (HWPUNIT = 1/7200 inch; points = HWPUNIT ÷ 100)
 }
 
@@ -1334,7 +1332,7 @@ impl HwpReader {
     /// scale is ÷200 (HWPUNIT→pt = ÷100, then ÷2). `nil`/`0` → `nil` so unspecified leaves the theme
     /// token in place, byte-identical to a block with no format (invariant 37).
     /// NOTE: font size and image/column extents are NOT 2×-stored — those use `points()` (÷100).
-    // swift: Render/Office/HwpReader.swift:793-801
+    // swift: HwpReader.nonZeroPoints
     fn non_zero_points(hwpunit: Option<i64>) -> Option<CGFloat> {
         let v = hwpunit?;
         if v == 0 { return None; }
@@ -1343,14 +1341,14 @@ impl HwpReader {
 
     /// A raw HWPUNIT EXTENT (font size, image/column width/height) → points. These are stored at true
     /// HWPUNIT (NOT 2×), so ÷100 (confirmed against rhwp `hwpunit_to_px` + `base_size`/`common.width`).
-    // swift: Render/Office/HwpReader.swift:803-814
+    // swift: HwpReader.points
     fn points(hwpunit: i64) -> CGFloat { hwpunit as CGFloat / 100.0 }
 
     /// A raw HWPUNIT EXTENT that is `nil`/absent when unspecified (unlike `points`, whose callers
     /// already hold a non-optional `Int`) — `nonZeroPoints` cannot be reused here: `outer_margin_*`
     /// is a plain EXTENT (÷100, confirmed against `hwpunit_to_px` — the rust source's own `outer_margin:
     /// i16 = 283 // ~1mm` is exactly `283 / 100 = 2.83pt = 1mm`), NOT a 2×-stored paragraph metric.
-    // swift: Render/Office/HwpReader.swift:807-814
+    // swift: HwpReader.extentPoints
     fn extent_points(hwpunit: Option<i64>) -> Option<CGFloat> {
         let v = hwpunit?;
         if v == 0 { return None; }
@@ -1359,7 +1357,7 @@ impl HwpReader {
 
     /// "RRGGBB" (6 hex digits, optional leading '#') → sRGB colour; anything else → nil (theme
     /// decides — invariant 37). Mirrors `DocxReader.colorFromHex`.
-    // swift: Render/Office/HwpReader.swift:816-826
+    // swift: HwpReader.color
     fn color(hex: Option<&str>) -> Option<NSColor> {
         let digits = hex?.strip_prefix('#').unwrap_or(hex?);
         if digits.len() != 6 { return None; }
@@ -1383,7 +1381,7 @@ impl HwpReader {
     ///
     /// HWP measures the angle in degrees CLOCKWISE from straight down (0 = top-to-bottom), which is
     /// the direction Hancom's own gradient dialog states.
-    // swift: Render/Office/HwpReader.swift:810-854
+    // swift: HwpReader.gradientImage
     fn gradient_image(gradient: Option<&HwpGradient>) -> Option<swiftshim::NSImage> {
         let gradient = gradient?;
         let stops: Vec<NSColor> = gradient.colors.iter().filter_map(|c| Self::color(Some(c))).collect();
@@ -1412,7 +1410,7 @@ impl HwpReader {
         swiftshim::NSImage::fromData(&Data::fromBytes(encoded.into_inner()))
     }
 
-    // swift: Render/Office/HwpReader.swift:856-866
+    // swift: HwpReader.gradientDeclaration
     /// S6-4: the SAME gradient, as the document declared it — stops and angle, no bitmap. Never
     /// called in place of `gradient_image` (that one still runs, unchanged, for the host's own
     /// drawing) — this is the tree/schema-v4 path's honest alternative, populated only when no
@@ -1436,7 +1434,7 @@ impl HwpReader {
     /// (`NSTextAlignment` has no distributed case, so distribute collapses to justify — same choice
     /// DocxReader makes for `w:jc="distribute"`); an unrecognized/absent value → `nil` so `rtl`/the
     /// theme default decides, never a hardcoded `.left`.
-    // swift: Render/Office/HwpReader.swift:868-881
+    // swift: HwpReader.alignment
     fn alignment(align: Option<&str>) -> Option<NSTextAlignment> {
         match align {
             Some("left") => Some(NSTextAlignment::Left),
@@ -1450,7 +1448,7 @@ impl HwpReader {
     /// HWP span `underline` string → (`underline` on/off, `underlineStyle`). `"none"`/absent → off;
     /// each named style maps to the matching `UnderlineStyle` case (all five HWP names have an exact
     /// AppKit equivalent, so no nearest-case approximation is needed).
-    // swift: Render/Office/HwpReader.swift:883-895
+    // swift: HwpReader.underline
     fn underline(u: Option<&str>) -> (bool, UnderlineStyle) {
         match u {
             Some("single") => (true, UnderlineStyle::Single),
@@ -1479,7 +1477,7 @@ impl HwpReader {
     /// HWP's own column declaration in this reader's vocabulary. Every length arrives in points
     /// already (rhwp divides by 100), EXCEPT the per-column widths when the document states shares
     /// — `proportional` says which, and `ColumnGeometry` is what resolves them against a real page.
-    // swift: Render/Office/HwpReader.swift:897-929
+    // swift: HwpReader.columnLayout
     fn column_layout(cd: &HwpColumnDef, authority: &ColumnAuthority) -> OfficeColumnLayout {
         // `authority` was built ONCE per read, from the raw document the live handle still holds
         // open (`read_mapped`), keyed by the SAME ten-field signature this DTO carries
@@ -1529,7 +1527,7 @@ use crate::render::office::script::script_run_splitter::ScriptRunSplitter;
 use crate::render::office::hwp_font_slots::HwpSlotTable;
 
 impl HwpReader {
-    // swift: Render/Office/HwpReader.swift:867-1035
+    // swift: HwpReader.mapSpan
     fn map_span(s: &HwpSpan, slot_fonts: &[HwpSlotFonts], column_authority: &ColumnAuthority) -> Vec<Span> {
         let (ul, ul_style) = Self::underline(s.underline.as_deref());
         // `Span` carries no `new`/`Default` (office_block.rs) — every field is spelled out here,
@@ -1698,7 +1696,7 @@ impl HwpReader {
     /// one letter spacing, so honouring a shape whose Hangul and Latin ask for different values
     /// would mean applying one script's answer to the other — measured, the slots agree on 95.9% of
     /// the char shapes that state a spacing at all, and the remaining 4.1% keep the font's own.
-    // swift: Render/Office/HwpReader.swift:1037-1055
+    // swift: HwpReader.applyDecor
     fn apply_decor(d: Option<&HwpCharDecor>, span: &mut Span) {
         let Some(d) = d else { return };
         if let Some(v) = Self::uniform_value(d.spacings.as_deref()) {
@@ -1719,7 +1717,7 @@ impl HwpReader {
 }
 
 impl HwpReader {
-    // swift: Render/Office/HwpReader.swift:1057-1063
+    // swift: HwpReader.uniformValue
     pub fn uniform_value(slots: Option<&[i64]>) -> Option<i64> {
         let slots = slots?;
         if slots.len() != 7 { return None; }
@@ -1738,7 +1736,7 @@ impl HwpReader {
     /// what keeps that degradation on the safe side of invariant 1's territory — a floor that is too
     /// generous adds space, while one that is too small lets the tall line set its own natural
     /// height and silently under-spaces exactly the line that needed the room.
-    // swift: Render/Office/HwpReader.swift:1065-1080
+    // swift: HwpReader.maxRunSize
     fn max_run_size(spans: &[HwpSpan]) -> Option<CGFloat> {
         // Same conversion `mapSpan` applies to `Span.fontSize` (base_size in HWPUNIT, ÷100 = points),
         // so the basis a line is spaced by is the size that line is actually drawn at.
@@ -1766,7 +1764,7 @@ impl HwpReader {
     /// coordinates that were not coordinates at all (`boxW` was 0 because a group child's own
     /// `common` is empty), and 1,510 paragraphs took an indent that left them almost no width — the
     /// 편람 went 520 pages to 436. A box that does not leave a readable column is not honoured.
-    // swift: Render/Office/HwpReader.swift:1082-1118
+    // swift: HwpReader.boxedFormat
     fn boxed_format(format: &ParagraphFormat, p: &HwpPara, shapes: &MediaContext) -> ParagraphFormat {
         let (Some(paper), Some(owner)) = (&shapes.paper, shapes.last_anchored_frame) else { return format.clone() };
         let (Some(bx), Some(bw)) = (p.box_x, p.box_w) else { return format.clone() };
@@ -1791,7 +1789,7 @@ impl HwpReader {
 use crate::render::office::office_block::LineHeight;
 
 impl HwpReader {
-    // swift: Render/Office/HwpReader.swift:1090-1204
+    // swift: HwpReader.paragraphFormat
     fn paragraph_format(p: &HwpPara, default_body_size: CGFloat, paged: bool) -> ParagraphFormat {
         let mut f = ParagraphFormat::default();
         f.spacing_before = Self::non_zero_points(p.space_before);
@@ -1892,7 +1890,7 @@ impl HwpReader {
     /// HWP's two line-break codes, in this reader's vocabulary. The export omits a zero, so a
     /// paragraph that never states one decodes to `nil` and the reader's own default stands — which
     /// is why "unstated" and "stated as 0" are deliberately NOT collapsed here.
-    // swift: Render/Office/HwpReader.swift:1206-1215
+    // swift: HwpReader.hangulBreak
     pub fn hangul_break(code: i64) -> Option<LineBreakGranularity> {
         match code {
             0 => Some(LineBreakGranularity::Word),
@@ -1904,7 +1902,7 @@ impl HwpReader {
     /// HWP's three page-break answers for a table, in this reader's vocabulary. An unknown string
     /// is not guessed at — a parser that grows a fourth answer should read as "said nothing" rather
     /// than as whichever case happened to be the default here.
-    // swift: Render/Office/HwpReader.swift:1217-1227
+    // swift: HwpReader.tablePageBreakPolicy
     pub fn table_page_break_policy(raw: &str) -> Option<TablePageBreakPolicy> {
         match raw {
             "none" => Some(TablePageBreakPolicy::Never),
@@ -1914,7 +1912,7 @@ impl HwpReader {
         }
     }
 
-    // swift: Render/Office/HwpReader.swift:1229-1236
+    // swift: HwpReader.latinBreak
     pub fn latin_break(code: i64) -> Option<LineBreakGranularity> {
         match code {
             0 => Some(LineBreakGranularity::Word),
@@ -1938,8 +1936,9 @@ impl HwpReader {
     /// fallback for documents whose English names were never filled in. Deliberately narrow: only
     /// the built-in outline/title styles, never a guess from font size or boldness, so a body
     /// paragraph in a custom style is never promoted into the table of contents.
-    // swift: Render/Office/HwpReader.swift:1207-1291
+    // swift: HwpReader.headingLevel
     pub fn heading_level(style_name: Option<&str>, local_name: Option<&str>) -> Option<i64> {
+        // swift: HwpReader.level
         // "Outline 1"…"Outline 7" / "개요 1"…"개요 7" — the level is the trailing digit.
         fn level(name: &str) -> Option<i64> {
             let n = name.trim().to_lowercase();
@@ -1956,7 +1955,7 @@ impl HwpReader {
             if n == "title" || n == "제목" { return Some(1); }
             None
         }
-        // swift: Render/Office/HwpReader.swift:1265-1285
+        // swift: HwpReader.customLevel
         /// Korean documents overwhelmingly name their own styles rather than using the built-ins —
         /// measured on real files: "각 장 제목" / "각 절 제목" (chapter/section title),
         /// "목차,발간사 제목". Those ARE headings and were being dropped. But the same corpus also
@@ -1996,7 +1995,7 @@ impl HwpReader {
     /// independently, but a picture whose height is resolved against the PAGE HEIGHT (which this
     /// reader has no measure of, being a continuous column rather than pages) would distort. Keeping
     /// the authored aspect is the honest degradation.
-    // swift: Render/Office/HwpReader.swift:1293-1309
+    // swift: HwpReader.relativeGraphicSize
     pub fn relative_graphic_size(w: i64, h: i64, criterion: Option<&str>, page_width: Option<CGFloat>) -> Option<CGSize> {
         let criterion = criterion?;
         if criterion == "absolute" { return None; }
@@ -2013,7 +2012,7 @@ impl HwpReader {
     /// margins) and have no meaning in a single continuous reading column, so they are reported as
     /// nil — the reader's default — rather than being flattened to left, which would state something
     /// the document did not.
-    // swift: Render/Office/HwpReader.swift:1311-1322
+    // swift: HwpReader.imageAlignment
     pub fn image_alignment(raw: Option<&str>) -> Option<NSTextAlignment> {
         match raw {
             Some("left") => Some(NSTextAlignment::Left),
@@ -2030,7 +2029,7 @@ use crate::render::office::office_block::{
 use crate::render::office::hwp_reader::schema::{HwpTable, HwpShape, HwpUnsupported, HwpEquation};
 
 impl HwpReader {
-    // swift: Render/Office/HwpReader.swift:1294-1571
+    // swift: HwpReader.mapBlock
     #[allow(clippy::too_many_arguments)]
     fn map_block(
         b: &HwpBlock, page_width: Option<CGFloat>, default_body_size: CGFloat,
@@ -2195,7 +2194,7 @@ impl HwpReader {
         }
     }
 
-    // swift: Render/Office/HwpReader.swift:1408-1471 (the `.image` arm, split out for one level less nesting)
+    // swift-range: Render/Office/HwpReader.swift:1408-1471 (the `.image` arm, split out for one level less nesting)
     fn map_image_block(im: &HwpImage, page_width: Option<CGFloat>, shapes: &mut MediaContext) -> OfficeBlock {
         // `read` resolves binDataId → pixels via `imageBase64` at read time (pre-decoded into
         // OfficeReadResult.images); the block only RESERVES the layout area here (invariant
@@ -2290,7 +2289,7 @@ impl HwpReader {
         }
     }
 
-    // swift: Render/Office/HwpReader.swift:1472-1521 (the `.shape` arm, split out for one level less nesting)
+    // swift-range: Render/Office/HwpReader.swift:1472-1521 (the `.shape` arm, split out for one level less nesting)
     fn map_shape_block(sh: &HwpShape, shapes: &mut MediaContext) -> OfficeBlock {
         // An ANCHORED drawing is placed by the document's own rule — the offsets ALONE are not
         // enough, and that is exactly what the float layer invariant 75 rejected got wrong: it
@@ -2409,7 +2408,7 @@ impl HwpReader {
 use crate::render::office::office_block::{Cell, CellVAlign, BorderSide};
 
 impl HwpReader {
-    // swift: Render/Office/HwpReader.swift:1539-1628
+    // swift: HwpReader.mapCell
     #[allow(clippy::too_many_arguments)]
     fn map_cell(
         c: &HwpCell, page_width: Option<CGFloat>, default_body_size: CGFloat,
@@ -2490,7 +2489,7 @@ impl HwpReader {
     /// A command whose operator or arity this reader does not recognise is DROPPED rather than
     /// guessed at — a mis-read control point draws a line across the page, which is worse than a
     /// missing segment.
-    // swift: Render/Office/HwpReader.swift:1630-1657
+    // swift: HwpReader.shapePath
     fn shape_path(p: &HwpShapePath) -> Option<crate::render::office::hwp_shape_path::PathSpec> {
         use crate::render::office::hwp_shape_path::{PathCommand, PathSpec};
         let mut commands: Vec<PathCommand> = Vec::new();
@@ -2522,7 +2521,7 @@ impl HwpReader {
 
     /// The box the paths themselves occupy — the fallback size for an object whose own record states
     /// none, so a drawing with real geometry is never collapsed to nothing.
-    // swift: Render/Office/HwpReader.swift:1659-1676
+    // swift: HwpReader.pathsExtent
     fn paths_extent(paths: &[crate::render::office::hwp_shape_path::PathSpec]) -> Option<CGSize> {
         use crate::render::office::hwp_shape_path::PathCommand;
         let (mut maxX, mut maxY, mut any) = (0.0 as CGFloat, 0.0 as CGFloat, false);
@@ -2542,7 +2541,7 @@ impl HwpReader {
 }
 
 impl HwpReader {
-    // swift: Render/Office/HwpReader.swift:1678-1685
+    // swift: HwpReader.borderFill
     fn border_fill<'a>(id: Option<i64>, fills: &'a [HwpBorderFill]) -> Option<&'a HwpBorderFill> {
         let id = id?;
         if id <= 0 { return None; }
@@ -2556,7 +2555,7 @@ impl HwpReader {
     /// this document turned off becomes `.suppressed` rather than nil. That distinction is the whole
     /// fix: nil would fall back through the cascade to the very border the document erased
     /// (invariant 47).
-    // swift: Render/Office/HwpReader.swift:1687-1698
+    // swift: HwpReader.edgeBorders
     fn edge_borders(id: Option<i64>, fills: &[HwpBorderFill]) -> Option<EdgeBorders> {
         let fill = Self::border_fill(id, fills)?;
         Some(EdgeBorders {
@@ -2570,7 +2569,7 @@ impl HwpReader {
     /// edge off) → `.suppressed`; anything else is a real rule at the width and colour the document
     /// gave. A width that failed to arrive falls back to the same 1pt the theme uses, so a malformed
     /// edge is still drawn rather than silently vanishing.
-    // swift: Render/Office/HwpReader.swift:1700-1708
+    // swift: HwpReader.borderDecl
     fn border_decl(edge: &HwpBorderEdge) -> BorderDecl {
         if edge.r#type == "none" { return BorderDecl::Suppressed; }
         let width = edge.width_pt.filter(|w| *w > 0.0).unwrap_or(1.0);
@@ -2585,7 +2584,7 @@ impl HwpReader {
     /// diagonal's width as its 16-step enum rather than resolved points (which is what an edge
     /// gets), so this reuses the edge's own resolved width when the document gave one and falls
     /// back to the 1pt every undeclared rule in this reader uses.
-    // swift: Render/Office/HwpReader.swift:1710-1731
+    // swift: HwpReader.cellDiagonal
     fn cell_diagonal(fill: Option<&HwpBorderFill>) -> Option<CellDiagonal> {
         let fill = fill?;
         let raw = fill.cell_diagonal.as_deref()?;
@@ -2622,7 +2621,7 @@ impl HwpReader {
     /// So the tab axis's real first task is not this: it is making a tab ARRIVE as a character at
     /// all (an exporter change), after which this mapping starts working with no further edit.
     /// Until then every HWP tab stop — alignment as much as leader — is inert.
-    // swift: Render/Office/HwpReader.swift:1733-1757
+    // swift: HwpReader.tabLeader
     fn tab_leader(fill_type: Option<i64>) -> TabLeader {
         match fill_type.unwrap_or(0) {
             0 => TabLeader::None,                 // 선 없음
@@ -2636,7 +2635,7 @@ impl HwpReader {
     /// width before exporting it as `widthPt`; a diagonal's width arrives raw, so the reader climbs
     /// the ladder itself here rather than shipping a diagonal at a width no document declared.
     /// Step 0 is 0.1mm — the finest line HWP can state, and never zero.
-    // swift: Render/Office/HwpReader.swift:1759-1769
+    // swift: HwpReader.diagonalWidthPt
     fn diagonal_width_pt(step: Option<i64>) -> CGFloat {
         // 0.1 / 0.12 / 0.15 / 0.2 / 0.25 / 0.3 / 0.4 / 0.5 / 0.6 / 0.7 / 1.0 / 1.5 / 2.0 / 3.0 / 4.0 / 5.0 mm
         let mm: [CGFloat; 16] = [0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5,
@@ -2648,7 +2647,7 @@ impl HwpReader {
     /// HWP's line-type CODE → the name the four edges arrive under, so one mapping table serves
     /// both. The parser exports an edge's type by name and a diagonal's by code; this is the bridge,
     /// and an unknown code stays `"solid"`, which is what an unrecognised edge does too.
-    // swift: Render/Office/HwpReader.swift:1771-1804
+    // swift: HwpReader.hwpLineTypeName
     fn hwp_line_type_name(code: i64) -> String {
         match code {
             1 => "solid", 2 => "dash", 3 => "dot", 4 => "dashDot", 5 => "dashDotDot",
@@ -2661,7 +2660,7 @@ impl HwpReader {
     /// HWP's 18-value line type (spec table 27, exported by name) → the four this reader paints.
     /// The dash family collapses to one dash and the multi-line family to `double`; `wave` and the
     /// four 3-D bevels have no honest match and stay `solid`, which is what they are made of.
-    // swift: Render/Office/HwpReader.swift:1793-1804
+    // swift: HwpReader.lineStyle
     fn line_style(r#type: &str) -> BorderLineStyle {
         match r#type {
             "dash" | "dashDot" | "dashDotDot" | "longDash" => BorderLineStyle::Dashed,
@@ -2834,31 +2833,3 @@ mod column_authority_tests {
         assert!(!is_complete_per_column_flow_gate(&layout));
     }
 }
-
-// Boundary lines (closing braces, blank separators, field/case lines already
-// covered in substance by the ranges above) that the coverage script's per-item
-// markers did not individually re-state:
-// swift: Render/Office/HwpReader.swift:118-118
-// swift: Render/Office/HwpReader.swift:155-155
-// swift: Render/Office/HwpReader.swift:164-164
-// swift: Render/Office/HwpReader.swift:174-174
-// swift: Render/Office/HwpReader.swift:268-268
-// swift: Render/Office/HwpReader.swift:665-665
-// swift: Render/Office/HwpReader.swift:682-682
-// swift: Render/Office/HwpReader.swift:790-792
-// swift: Render/Office/HwpReader.swift:802-802
-// swift: Render/Office/HwpReader.swift:855-855
-// swift: Render/Office/HwpReader.swift:1036-1036
-// swift: Render/Office/HwpReader.swift:1056-1056
-// swift: Render/Office/HwpReader.swift:1064-1064
-// swift: Render/Office/HwpReader.swift:1081-1081
-// swift: Render/Office/HwpReader.swift:1205-1205
-// swift: Render/Office/HwpReader.swift:1292-1292
-// swift: Render/Office/HwpReader.swift:1629-1629
-// swift: Render/Office/HwpReader.swift:1658-1658
-// swift: Render/Office/HwpReader.swift:1677-1677
-// swift: Render/Office/HwpReader.swift:1686-1686
-// swift: Render/Office/HwpReader.swift:1699-1699
-// swift: Render/Office/HwpReader.swift:1709-1709
-// swift: Render/Office/HwpReader.swift:1732-1732
-// swift: Render/Office/HwpReader.swift:1758-1758

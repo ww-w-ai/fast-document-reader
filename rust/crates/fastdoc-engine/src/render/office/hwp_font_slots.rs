@@ -1,7 +1,7 @@
 //! swift: Render/Office/HwpFontSlots.swift
 //! swift-range: 1-2
 
-// swift: Render/Office/HwpFontSlots.swift:3-24
+// swift: HwpFontSlot
 /// HWP's seven font slots, in the file format's own fixed order.
 ///
 /// A `CharShape` carries `font_ids: [u16; 7]` and the document's font table carries seven parallel
@@ -28,7 +28,7 @@ pub enum HwpFontSlot {
 
 impl HwpFontSlot {
     /// All cases, mirroring Swift's `CaseIterable` conformance.
-    // swift: Render/Office/HwpFontSlots.swift:3-23
+    // swift: HwpFontSlot
     pub const ALL: [HwpFontSlot; 7] = [
         HwpFontSlot::Hangul,
         HwpFontSlot::Latin,
@@ -53,7 +53,7 @@ impl HwpFontSlot {
     }
 }
 
-// swift: Render/Office/HwpFontSlots.swift:25-86
+// swift: HwpSlotFonts
 /// The seven families ONE char shape declared, each already resolved through HWP's fallback chain.
 ///
 /// Construction resolves every slot once, so the per-scalar path is an array index and the splitter's
@@ -105,7 +105,6 @@ impl HwpSlotFonts {
     /// therefore unreached on real files and is here as an honest total function, not as a behaviour
     /// change — which is also why the neutral path below can use this chain rather than having to
     /// carry rhwp's answer separately to stay byte-identical.
-    // swift: Render/Office/HwpFontSlots.swift:67-78
     pub fn new(row: &[String], decor: Option<crate::render::office::hwp_reader::HwpCharDecor>) -> Self {
         let names: Vec<Option<String>> = (0..7)
             .map(|i| {
@@ -127,7 +126,7 @@ impl HwpSlotFonts {
         HwpSlotFonts { resolved: chain, is_uniform, decor }
     }
 
-    // swift: Render/Office/HwpFontSlots.swift:80
+    // swift: HwpSlotFonts.family
     pub fn family(&self, slot: HwpFontSlot) -> Option<String> {
         self.resolved[slot.raw_value()].clone()
     }
@@ -135,13 +134,12 @@ impl HwpSlotFonts {
     /// The family a run with no classifying character at all falls back to — the Hangul slot's own
     /// resolution, which reproduces rhwp's `font` field exactly (slot 0, else slot 1) for every row
     /// where either is declared.
-    // swift: Render/Office/HwpFontSlots.swift:82-85
     pub fn neutral_family(&self) -> Option<String> {
         self.resolved[HwpFontSlot::Hangul.raw_value()].clone()
     }
 }
 
-// swift: Render/Office/HwpFontSlots.swift:87-103
+// swift: HwpSlotTable
 /// Which of HWP's seven slots a scalar selects — the whole per-character half of the HWP feature.
 ///
 /// ## rhwp's own `detect_lang_category` is NOT the model
@@ -167,7 +165,7 @@ impl HwpSlotTable {
     /// to weigh against that floor — unlike Word, whose MS-OI29500 §17.3.2.26 block table is explicit
     /// that ASCII digits select `ascii` — so there is nothing here to trade the floor against, and the
     /// digits in `제1항` ride along with the Hangul rather than splitting the run at every numeral.
-    // swift: Render/Office/HwpFontSlots.swift:104-127
+    // swift: HwpSlotTable.slot
     pub fn slot(scalar: char) -> Option<HwpFontSlot> {
         use crate::render::office::script::unicode_script::ScriptClass;
         let klass = crate::render::office::script::unicode_script::UnicodeScript::of(scalar);
@@ -187,7 +185,6 @@ impl HwpSlotTable {
         }
     }
 
-    // swift: Render/Office/HwpFontSlots.swift:88-219
     /// The measured exception to absorption, and the ONLY route to the Symbol slot.
     ///
     /// ## The tension, and the numbers that settled it
@@ -265,7 +262,7 @@ impl HwpSlotTable {
     /// which is the hand-maintained list this design forbids. (For completeness: 52,575 rows (45.8%)
     /// DO declare a User family differing from their Hangul one. A slot being declared is not
     /// evidence that any character selects it.)
-    // swift: Render/Office/HwpFontSlots.swift:129-219
+    // swift: HwpSlotTable.symbolSelectingScalar
     fn symbol_selecting_scalar(scalar: char) -> bool {
         match scalar as u32 {
             0x2190..=0x21FF   // arrows

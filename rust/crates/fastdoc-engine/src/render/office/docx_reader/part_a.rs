@@ -15,7 +15,7 @@
 //! `Render/Office/WordFontSlots.swift` — both in the port manifest, both possibly still being
 //! ported by other workers when this file was written. Referenced by their Swift names.
 
-// swift: Render/Office/DocxReader.swift:1-3
+// swift-range: Render/Office/DocxReader.swift:1-3
 use swiftshim::{CGFloat, NSColor, NSTextAlignment};
 
 use crate::render::office::zip_archive::ZipArchive;
@@ -47,10 +47,10 @@ use super::XMLNode;
 /// `OfficeDocumentReader` conformance itself is not modeled here: that protocol is declared
 /// outside this file's scope (`DocumentTypes.swift`, not in the port manifest for this sprint),
 /// so there is nothing in this crate yet to `impl` it against.
-// swift: Render/Office/DocxReader.swift:12-12
+// swift: DocxReader
 pub enum DocxReader {}
 
-// swift: Render/Office/DocxReader.swift:13-30
+// swift: DocxReader.ReadError
 /// `DocxReader.ReadError` — the errors `DocxReader::read` can throw.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocxReaderReadError {
@@ -63,7 +63,6 @@ pub enum DocxReaderReadError {
     MalformedXML(String),
 }
 
-// swift: Render/Office/DocxReader.swift:22-29
 impl DocxReaderReadError {
     pub fn error_description(&self) -> String {
         match self {
@@ -86,7 +85,7 @@ impl std::fmt::Display for DocxReaderReadError {
 impl std::error::Error for DocxReaderReadError {}
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:30-90
+    // swift: DocxReader.read
     /// This reader emits `.image` blocks (see `collectImages`) — PARSING only. Resolving an
     /// emitted id to actual pixels (reading the archive entry, drawing a placeholder for an
     /// unresolvable one) is a later sprint's job.
@@ -175,7 +174,7 @@ impl DocxReader {
         })
     }
 
-    // swift: Render/Office/DocxReader.swift:95-110
+    // swift: DocxReader.lineGridPitch
     /// The body section's line-grid pitch in points, or nil when it declares none — see
     /// `OfficeReadResult.lineGridPitch` for what it is FOR.
     ///
@@ -199,7 +198,7 @@ impl DocxReader {
         Some((twips / 20.0) as CGFloat)
     }
 
-    // swift: Render/Office/DocxReader.swift:112-153
+    // swift: DocxReader.typesetSectionProperties
     /// The section properties this document is TYPESET on — the section holding the most paragraphs,
     /// not the last one the body happens to end with.
     ///
@@ -251,7 +250,7 @@ impl DocxReader {
         Some(best.0)
     }
 
-    // swift: Render/Office/DocxReader.swift:154-165
+    // swift: DocxReader.pageContentWidth
     /// The document's page BODY width in points — the body-level `w:sectPr`'s `w:pgSz@w:w` minus its
     /// `w:pgMar@w:left`/`@w:right`, all in twips (÷20 = pt). The body's OWN trailing `w:sectPr` is the
     /// last section's page setup (invariant: `read`'s `:1789` note — the body's trailing `w:sectPr` is
@@ -265,7 +264,7 @@ impl DocxReader {
         Self::page_geometry(body).map(|g| g.content)
     }
 
-    // swift: Render/Office/DocxReader.swift:166-222
+    // swift: DocxReader.pageGeometry
     /// The body `w:sectPr`'s page geometry in points: the printable column and the margins either
     /// side of it, PLUS the vertical twin of that same pair — the printable row span and the margins
     /// above/below it (`OfficeReadResult.pageContentHeight`). The margins were always computed here in
@@ -343,7 +342,7 @@ impl DocxReader {
         })
     }
 
-    // swift: Render/Office/DocxReader.swift:212-284
+    // swift: DocxReader.documentDefaultBodyFontSize
     /// The source document's own default BODY run size, in points — `word/styles.xml`'s
     /// `w:docDefaults/w:rPrDefault/w:rPr/w:sz` (HALF-points), or **10pt** when the document declares
     /// none at all (no `word/styles.xml`, no `w:docDefaults`, or no `w:sz` inside it).
@@ -384,7 +383,7 @@ impl DocxReader {
 
 /// `pageGeometry`'s return tuple, named because Rust doesn't spell an inline 8-field tuple type
 /// as tersely as Swift's labeled tuple return — same fields, same order.
-// swift: Render/Office/DocxReader.swift:167-222
+// swift: DocxReader.pageGeometry
 #[derive(Debug, Clone, Copy)]
 struct PageGeometry {
     content: CGFloat,
@@ -397,7 +396,7 @@ struct PageGeometry {
     footer_distance: Option<CGFloat>,
 }
 
-// swift: Render/Office/DocxReader.swift:251-269
+// swift: DocxReader.CommentRangeTracking
 // MARK: Comments (word/comments.xml + w:commentRangeStart/End/Reference)
 
 /// Shared state for one body walk that tracks currently-OPEN comment ranges
@@ -409,7 +408,7 @@ struct PageGeometry {
 /// right now" state, the same threading pattern `NoteNumbering` uses for read-only footnote/
 /// endnote numbers, just mutable. `numberById` is precomputed once, before the walk starts (see
 /// `numberCommentReferences`), from first-appearance order of `w:commentRangeStart` in the body.
-// swift: Render/Office/DocxReader.swift:254-269
+// swift: DocxReader.CommentRangeTracking
 pub struct CommentRangeTracking {
     pub(crate) number_by_id: std::collections::HashMap<String, i32>,
     pub(crate) active_ids: std::cell::RefCell<Vec<String>>,
@@ -419,9 +418,11 @@ impl CommentRangeTracking {
     pub(crate) fn new(number_by_id: std::collections::HashMap<String, i32>) -> Self {
         CommentRangeTracking { number_by_id, active_ids: std::cell::RefCell::new(Vec::new()) }
     }
+    // swift: DocxReader.CommentRangeTracking.start
     pub(crate) fn start(&self, id: String) {
         self.active_ids.borrow_mut().push(id);
     }
+    // swift: DocxReader.CommentRangeTracking.end
     pub(crate) fn end(&self, id: &str) {
         self.active_ids.borrow_mut().retain(|x| x != id);
     }
@@ -431,7 +432,7 @@ impl CommentRangeTracking {
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:270-290
+    // swift: DocxReader.numberCommentReferences
     /// First pass over the body (mirrors `numberNoteReferences`): assigns each comment id the
     /// 1-based number of the ORDER its `w:commentRangeStart` first appears, document order,
     /// depth-first — the same number a comment sidebar would show. A comment id that never opens a
@@ -457,7 +458,7 @@ impl DocxReader {
         number_by_id
     }
 
-    // swift: Render/Office/DocxReader.swift:291-325
+    // swift: DocxReader.parseComments
     /// `word/comments.xml` — a flat `w:comments/w:comment` list, each `@w:id`/`@w:author`/`@w:date`
     /// plus the comment's own `w:p` paragraphs as its text. Absent entirely (no document part) is
     /// not an error — most documents have no comments — and yields no `OfficeComment`s. `numberById`
@@ -507,7 +508,7 @@ impl DocxReader {
         result
     }
 
-    // swift: Render/Office/DocxReader.swift:326-345
+    // swift: DocxReader.paragraphPlainText
     /// A comment's own paragraph, flattened to plain text (no run formatting — `OfficeComment.text`
     /// carries no `Span`s of its own, unlike a document paragraph) — every `w:t` under this node,
     /// concatenated, with `w:br`/`w:tab` turned into `\n`/`\t` exactly like `buildSpan`'s own text
@@ -529,11 +530,11 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:346-346
+// swift-range: Render/Office/DocxReader.swift:346-346
 // MARK: Footnotes / endnotes
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:348-370
+    // swift: DocxReader.parseNoteBodies
     /// `word/footnotes.xml` (and the identically-shaped `word/endnotes.xml`) is a flat list of
     /// `w:footnote`/`w:endnote` elements keyed by `w:id`, each holding ordinary `w:p` paragraphs —
     /// the note's actual author-written text. Two ids are reserved and carry NO real content:
@@ -565,7 +566,7 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:372-372
+// swift: DocxReader.NoteKind
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoteKind {
     Footnote,
@@ -576,7 +577,7 @@ enum NoteKind {
 /// Separate maps because footnotes and endnotes are separate numbering sequences in Word (both
 /// commonly start at 1) — collapsing them into one counter would make a document's second
 /// footnote and its first endnote fight over "2".
-// swift: Render/Office/DocxReader.swift:374-381
+// swift: DocxReader.NoteNumbering
 #[derive(Debug, Clone, Default)]
 pub struct NoteNumbering {
     pub(crate) footnote: std::collections::HashMap<String, i32>,
@@ -584,7 +585,7 @@ pub struct NoteNumbering {
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:382-418
+    // swift: DocxReader.numberNoteReferences
     /// One recursive walk of the ENTIRE body — not two separate searches — so the two kinds of
     /// reference come back in one true document order regardless of how they're nested (inside a
     /// table cell, a text box, a grouped drawing, an `w:sdt` wrapper …); interleaving them correctly
@@ -635,7 +636,7 @@ impl DocxReader {
         (footnote_number_by_id, endnote_number_by_id, citation_order)
     }
 
-    // swift: Render/Office/DocxReader.swift:419-454
+    // swift: DocxReader.collectNoteBlocks
     /// Turns each cited note into ordinary blocks, appended in citation order at document's end —
     /// never inlined at the reference point (see the sprint brief: Word keeps them visually
     /// separated). Reuses `parseBodyChild` for the note's own paragraphs/tables, exactly the same
@@ -690,7 +691,7 @@ impl DocxReader {
             .collect()
     }
 
-    // swift: Render/Office/DocxReader.swift:455-469
+    // swift: DocxReader.prependingMarker
     /// `nil` for `.table`/`.image` — there is no `[Span]` inside either to prepend into — so the
     /// caller falls back to a standalone marker paragraph instead.
     fn prepending_marker(marker: Span, block: OfficeBlock) -> Option<OfficeBlock> {
@@ -732,7 +733,6 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:470-470
 // MARK: styles.xml — styleId → outlineLvl (+ basedOn chain)
 
 /// A style's NAME is not a safe signal — a localized Word install renames "Heading1" to
@@ -749,7 +749,7 @@ impl DocxReader {
 /// (`resolvedRFonts`), so collapsing them into a single `fontName?` here would have exactly the
 /// effect this per-script work exists to undo: it would stop the walk at the first ancestor that
 /// mentioned ANY slot and lose the East Asian family declared further up.
-// swift: Render/Office/DocxReader.swift:473-498
+// swift: DocxReader.RunStyleProps
 #[derive(Debug, Clone, Default)]
 struct RunStyleProps {
     color: Option<NSColor>,
@@ -777,7 +777,7 @@ struct RunStyleProps {
 /// `contextualSpacing` is `Bool?`, not `Bool`, for the same reason: a level that never mentions
 /// `w:contextualSpacing` at all must be transparent to it (climb further), which a plain `Bool`
 /// defaulting to `false` could never distinguish from an explicit `w:val="0"`.
-// swift: Render/Office/DocxReader.swift:500-533
+// swift: DocxReader.ParaStyleProps
 #[derive(Debug, Clone, Default)]
 struct ParaStyleProps {
     alignment: Option<NSTextAlignment>,
@@ -801,7 +801,7 @@ struct ParaStyleProps {
     border: Option<(Option<NSColor>, Option<CGFloat>, RectEdge)>,
 }
 
-// swift: Render/Office/DocxReader.swift:534-612
+// swift: DocxReader.StyleInfo
 #[derive(Debug, Clone, Default)]
 pub struct StyleInfo {
     /// styleId → its OWN declared `w:outlineLvl`, only for styles that declare one at all
@@ -886,7 +886,7 @@ pub struct StyleInfo {
 /// whole-table default (`w:tblPr`/`w:tcPr` directly on the `w:style`) or one `w:tblStylePr`
 /// region block's shading/border. `nil` fields mean this level didn't say — the SAME
 /// transparent-cascade reading every other style-chain resolver in this reader uses.
-// swift: Render/Office/DocxReader.swift:614-622
+// swift: DocxReader.TableConditionalStyle
 #[derive(Debug, Clone, Default)]
 struct TableConditionalStyle {
     shading: Option<NSColor>,
@@ -899,7 +899,7 @@ struct TableConditionalStyle {
 /// `"band1Horz"`/`"band2Horz"`, `"band1Vert"`/`"band2Vert"`, the four corner cells). See
 /// `resolveCellTableStyle` for how a cell's grid position picks which of these apply and in
 /// what precedence.
-// swift: Render/Office/DocxReader.swift:624-632
+// swift: DocxReader.TableStyle
 #[derive(Debug, Clone, Default)]
 struct TableStyle {
     whole_table: TableConditionalStyle,
@@ -912,7 +912,7 @@ struct TableStyle {
 /// `w:lastColumn`/`w:noHBand`/`w:noVBand` boolean attributes; older documents instead carry
 /// only a hex `@w:val` bitmask (`0x0020` firstRow, `0x0040` lastRow, `0x0080` firstColumn,
 /// `0x0100` lastColumn, `0x0200` noHBand, `0x0400` noVBand) — see `parseTblLook`.
-// swift: Render/Office/DocxReader.swift:634-647
+// swift: DocxReader.TblLook
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TblLook {
     first_row: bool,
@@ -931,7 +931,7 @@ pub(crate) struct TblLook {
 /// (`resolvedNumPr`). `ilvl` is `Int?`, not a defaulted `Int`, for the same reason every other
 /// per-style optional here is: a style that names `w:numId` but omits `w:ilvl` still means
 /// something (level 0), and `resolvedNumPr` is where that default is actually applied, not here.
-// swift: Render/Office/DocxReader.swift:649-660
+// swift: DocxReader.WordNumPr
 #[derive(Debug, Clone, Default)]
 struct WordNumPr {
     num_id: Option<String>,
@@ -939,7 +939,7 @@ struct WordNumPr {
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:661-750
+    // swift: DocxReader.parseStyles
     /// Reads every per-style signal this reader now resolves through the `w:basedOn` chain:
     /// `resolvedOutlineLevel`'s pair (`w:outlineLvl`, `w:basedOn`), plus this sprint's own run
     /// (`RunStyleProps`) and paragraph (`ParaStyleProps`) formatting. `themeColors` is resolved
@@ -1047,7 +1047,7 @@ impl DocxReader {
         info
     }
 
-    // swift: Render/Office/DocxReader.swift:751-778
+    // swift: DocxReader.parseTableConditionalStyle
     /// One level of a table style's conditional formatting — either the `w:style` element itself
     /// (its own whole-table `w:tblPr`/`w:tcPr`) or one of its `w:tblStylePr` children (a region's
     /// `w:tcPr`/`w:tblPr`). Shading and border are each read cell-level (`w:tcPr/w:shd`,
@@ -1093,7 +1093,7 @@ impl DocxReader {
         result
     }
 
-    // swift: Render/Office/DocxReader.swift:779-808
+    // swift: DocxReader.parseTblLook
     /// `w:tblPr/w:tblLook` — see `TblLook`'s own doc for the two authoring forms. The attribute
     /// form wins whenever ANY of the six boolean attributes is present (a document that authors
     /// even one of them is using the modern form; a missing attribute among those six then means
@@ -1127,7 +1127,7 @@ impl DocxReader {
         look
     }
 
-    // swift: Render/Office/DocxReader.swift:809-813
+    // swift: DocxReader.tblLookFlag
     #[allow(dead_code)]
     fn tbl_look_flag(node: &XMLNode, key: &str) -> bool {
         let Some(val) = node.attributes.get(key) else { return false };
@@ -1136,7 +1136,7 @@ impl DocxReader {
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:814-838
+    // swift: DocxReader.resolvedTableConditional
     /// Resolves ONE region's (or the whole-table default's, when `region` is `nil`) conditional
     /// style by climbing `styleId`'s `w:basedOn` chain (`walkStyleChain` — the same cycle-guarded
     /// walk every other per-property resolver in this reader shares) until a style in the chain
@@ -1169,7 +1169,7 @@ impl DocxReader {
         })
     }
 
-    // swift: Render/Office/DocxReader.swift:839-889
+    // swift: DocxReader.resolveCellTableStyle
     /// Resolves a single cell's table-STYLE shading/border (P5) — the layer `Cell.styleShading`/
     /// `.styleBorderColor`/`.styleBorderWidth` carry — from the table's named style
     /// (`w:tblPr/w:tblStyle`) and this cell's position in the grid. Layers every APPLICABLE
@@ -1223,7 +1223,7 @@ impl DocxReader {
         (shading, border_color, border_width)
     }
 
-    // swift: Render/Office/DocxReader.swift:891-908
+    // swift: DocxReader.parseRunStyleProps
     /// One style's (or one run's own) `w:rPr`, reduced to the four fields this sprint resolves —
     /// shared by `parseStyles` (a style's `w:rPr`) and `buildSpan` (a run's direct `w:rPr`), so a
     /// literal-colour hex, a themeColor reference, a half-point size and an `w:rFonts` choice are
@@ -1246,7 +1246,7 @@ impl DocxReader {
         props
     }
 
-    // swift: Render/Office/DocxReader.swift:909-918
+    // swift: DocxReader.toggleState
     /// An OOXML on/off toggle (§17.17.4 `ST_OnOff`) as THREE states: the element absent (`nil` — this
     /// level says nothing), present and on (`true`), present and explicitly off (`false`). `isOn` —
     /// which every direct-run read uses — collapses the last two, which is right for a run's own
@@ -1257,7 +1257,7 @@ impl DocxReader {
         Some(!(val == "0" || val == "false" || val == "off"))
     }
 
-    // swift: Render/Office/DocxReader.swift:919-952
+    // swift: DocxReader.parseRFonts
     /// One level's `w:rPr/w:rFonts`, read into all four slots plus `w:hint`.
     ///
     /// Each slot accepts either a literal attribute (`w:ascii`) or a theme reference
@@ -1305,7 +1305,7 @@ impl DocxReader {
         decl
     }
 
-    // swift: Render/Office/DocxReader.swift:954-1014
+    // swift: DocxReader.parseParaStyleProps
     /// One style's (or one paragraph's own, or `w:docDefaults/w:pPrDefault`'s) `w:pPr`, reduced to
     /// `w:jc`/`w:tabs` plus (P2) `w:spacing`'s before/after/line/lineRule, `w:ind`'s
     /// start-or-left/end-or-right/firstLine/hanging, and `w:contextualSpacing` — shared by
@@ -1389,7 +1389,7 @@ impl DocxReader {
         props
     }
 
-    // swift: Render/Office/DocxReader.swift:1015-1040
+    // swift: DocxReader.paragraphBorder
     /// `w:pPr/w:pBdr`'s edges, reduced to ONE colour/width (see `ParaStyleProps.border`'s doc) —
     /// structurally identical to `cellBorder`'s own `w:tcBorders` walk (each edge is `w:top`/
     /// `w:left`/`w:bottom`/`w:right`, `@w:val` present-and-not-`nil`/`none` means drawn, `@w:sz` is
@@ -1425,7 +1425,7 @@ impl DocxReader {
         (found.0, found.1, edges)
     }
 
-    // swift: Render/Office/DocxReader.swift:1041-1052
+    // swift: DocxReader.onOffValue
     /// A `Bool?` sibling of `isOn` (below): `nil` when the tag is entirely absent — "this level has
     /// no opinion, keep climbing the cascade" — vs. an explicit `true`/`false` when it's present.
     /// `isOn` itself can't express that middle state (it collapses "absent" and "explicitly off" to
@@ -1438,7 +1438,7 @@ impl DocxReader {
         Some(val != "0" && val != "false")
     }
 
-    // swift: Render/Office/DocxReader.swift:1053-1069
+    // swift: DocxReader.alignmentFromJc
     /// `w:jc`'s values per ECMA-376 §17.18.44 (`ST_Jc`): `"both"`/`"distribute"` are Word's two
     /// justify-both-edges variants (this reader doesn't distinguish letter-spacing distribution
     /// from ordinary justification — `NSTextAlignment` has no third option), `"start"`/`"end"` are
@@ -1458,7 +1458,7 @@ impl DocxReader {
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1070-1107
+    // swift: DocxReader.parseTabStops
     /// `w:tabs`'s own `w:tab` children, each `w:pos` in TWIPS (Word's unit here, 20ths of a point —
     /// the SAME unit `w:tblW`/`w:tcW` use, see `cellWidth`) converted to points. A `w:val="clear"`
     /// entry REMOVES an inherited stop at that position rather than adding one of its own — this
@@ -1505,7 +1505,7 @@ impl DocxReader {
             .collect()
     }
 
-    // swift: Render/Office/DocxReader.swift:1109-1126
+    // swift: DocxReader.walkStyleChain
     /// Walks a style's `w:basedOn` chain (cycle-guarded exactly like `resolvedOutlineLevel`, whose
     /// walk this generalizes) trying `resolve` at each style in turn: the NEAREST style that has an
     /// answer wins, and a style with no answer for THIS property is transparent — the walk keeps
@@ -1530,19 +1530,19 @@ impl DocxReader {
         }
     }
 
-    // swift: Render/Office/DocxReader.swift:1127-1130
+    // swift: DocxReader.resolvedColor
     #[allow(dead_code)]
     pub(crate) fn resolved_color(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSColor> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.color.clone())
     }
 
-    // swift: Render/Office/DocxReader.swift:1131-1134
+    // swift: DocxReader.resolvedHighlight
     #[allow(dead_code)]
     pub(crate) fn resolved_highlight(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSColor> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.highlight.clone())
     }
 
-    // swift: Render/Office/DocxReader.swift:1135-1148
+    // swift: DocxReader.resolvedBold
     /// `w:b` / `w:i` resolved through the `w:basedOn` chain, the same way `resolvedFontSize` resolves
     /// size. Measured on four real documents: a Word heading's bold lives in its STYLE, not in its
     /// runs — TeamBridge declares 39 headings with ZERO run-level `w:b` while its `heading 1/2/3`
@@ -1558,19 +1558,19 @@ impl DocxReader {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.bold)
     }
 
-    // swift: Render/Office/DocxReader.swift:1149-1152
+    // swift: DocxReader.resolvedItalic
     #[allow(dead_code)]
     pub(crate) fn resolved_italic(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<bool> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.italic)
     }
 
-    // swift: Render/Office/DocxReader.swift:1153-1156
+    // swift: DocxReader.resolvedFontSize
     #[allow(dead_code)]
     pub(crate) fn resolved_font_size(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<CGFloat> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.run_props.get(id)?.font_size)
     }
 
-    // swift: Render/Office/DocxReader.swift:1157-1188
+    // swift: DocxReader.resolvedRFonts
     /// The four font slots and the hint, each resolved on its OWN through the whole cascade:
     /// direct `w:rPr` → the paragraph style's `w:basedOn` chain → the document's default paragraph
     /// style → `w:docDefaults`. Later levels win, and a level silent about ONE slot is transparent
@@ -1606,7 +1606,7 @@ impl DocxReader {
         out
     }
 
-    // swift: Render/Office/DocxReader.swift:1190-1214
+    // swift: DocxReader.resolvedNumPr
     /// Resolves one paragraph's numbering to a `(numId, ilvl)` pair for the HEADING-numbering path
     /// (`parseParagraph`'s heading branch) — the paragraph's OWN `w:numPr`, if it has one, wins as
     /// a WHOLE element (Word technically lets `w:numId` and `w:ilvl` be inherited independently,
@@ -1632,69 +1632,69 @@ impl DocxReader {
         Some((inherited.num_id, inherited.ilvl.unwrap_or(0)))
     }
 
-    // swift: Render/Office/DocxReader.swift:1215-1218
+    // swift: DocxReader.resolvedAlignment
     #[allow(dead_code)]
     pub(crate) fn resolved_alignment(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSTextAlignment> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.alignment.clone())
     }
 
-    // swift: Render/Office/DocxReader.swift:1219-1222
+    // swift: DocxReader.resolvedTabStops
     #[allow(dead_code)]
     pub(crate) fn resolved_tab_stops(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<Vec<TabStop>> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.tab_stops.clone())
     }
 
-    // swift: Render/Office/DocxReader.swift:1223-1226
+    // swift: DocxReader.resolvedShading
     fn resolved_shading(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<NSColor> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.shading.clone())
     }
 
-    // swift: Render/Office/DocxReader.swift:1227-1230
+    // swift: DocxReader.resolvedBorder
     fn resolved_border(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<(Option<NSColor>, Option<CGFloat>, RectEdge)> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.border.clone())
     }
 
-    // swift: Render/Office/DocxReader.swift:1231-1234
+    // swift: DocxReader.resolvedSpacingBefore
     fn resolved_spacing_before(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<CGFloat> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.spacing_before)
     }
 
-    // swift: Render/Office/DocxReader.swift:1235-1238
+    // swift: DocxReader.resolvedSpacingAfter
     fn resolved_spacing_after(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<CGFloat> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.spacing_after)
     }
 
-    // swift: Render/Office/DocxReader.swift:1239-1242
+    // swift: DocxReader.resolvedLineHeight
     fn resolved_line_height(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<LineHeight> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.line_height.clone())
     }
 
-    // swift: Render/Office/DocxReader.swift:1243-1246
+    // swift: DocxReader.resolvedIndentStart
     fn resolved_indent_start(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<CGFloat> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.indent_start)
     }
 
-    // swift: Render/Office/DocxReader.swift:1247-1250
+    // swift: DocxReader.resolvedIndentEnd
     fn resolved_indent_end(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<CGFloat> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.indent_end)
     }
 
-    // swift: Render/Office/DocxReader.swift:1251-1254
+    // swift: DocxReader.resolvedFirstLineIndent
     fn resolved_first_line_indent(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<CGFloat> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.first_line_indent)
     }
 
-    // swift: Render/Office/DocxReader.swift:1255-1258
+    // swift: DocxReader.resolvedHangingIndent
     fn resolved_hanging_indent(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<CGFloat> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.hanging_indent)
     }
 
-    // swift: Render/Office/DocxReader.swift:1259-1262
+    // swift: DocxReader.resolvedContextualSpacing
     fn resolved_contextual_spacing(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<bool> {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.contextual_spacing)
     }
 
-    // swift: Render/Office/DocxReader.swift:1263-1290
+    // swift: DocxReader.resolvedParagraphFormat
     /// The P2 cascade itself (spec area 9's `resolve_paragraph_properties`, restricted to the
     /// spacing/indent/line-height/contextualSpacing fields this sprint covers): for EACH property
     /// independently, low priority → high — `docDefaults` floor, then the style chain (`walkStyleChain`
@@ -1724,11 +1724,10 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:1291-1291
 // MARK: word/theme/theme1.xml — theme colour scheme
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1293-1318
+    // swift: DocxReader.parseThemeColors
     /// `word/theme/theme1.xml`'s `a:clrScheme` names twelve fixed slots (`a:dk1`, `a:lt1`, `a:dk2`,
     /// `a:lt2`, `a:accent1`…`a:accent6`, `a:hlink`, `a:folHlink`), each holding either a literal
     /// `a:srgbClr/@val` or a `a:sysClr` (a named system colour, e.g. `"windowText"`) whose
@@ -1762,7 +1761,7 @@ impl DocxReader {
         colors
     }
 
-    // swift: Render/Office/DocxReader.swift:1319-1362
+    // swift: DocxReader.parseThemeFonts
     /// `word/theme/theme1.xml`'s `a:fontScheme` — the same shape, guard for guard, as
     /// `parseThemeColors` above: the part path is fixed, `archive.contains` gates it, the scheme is
     /// found by `firstDescendant`, and anything absent or malformed degrades to an EMPTY scheme
@@ -1786,9 +1785,11 @@ impl DocxReader {
         let Ok(data) = archive.data_for("word/theme/theme1.xml") else { return WordThemeFonts::default() };
         let Ok(root) = Self::build_tree(&data.0) else { return WordThemeFonts::default() };
         let Some(font_scheme) = root.first_descendant("a:fontScheme") else { return WordThemeFonts::default() };
+        // swift: DocxReader.scheme
         fn scheme(font_scheme: &XMLNode, name: &str) -> crate::render::office::word_font_slots::WordThemeScheme {
             let mut out = crate::render::office::word_font_slots::WordThemeScheme::default();
             let Some(node) = font_scheme.child(name) else { return out };
+            // swift: DocxReader.typeface
             let typeface = |child: &str| -> Option<String> {
                 let value = node.child(child)?.attributes.get("typeface").cloned()?;
                 if value.is_empty() { None } else { Some(value) }
@@ -1811,7 +1812,7 @@ impl DocxReader {
         fonts
     }
 
-    // swift: Render/Office/DocxReader.swift:1364-1384
+    // swift: DocxReader.themeSlotName
     /// `w:themeColor`'s enumeration (ECMA-376 §17.18.98, `ST_ThemeColor`) names TEN colour roles —
     /// `"dark1"`/`"light1"`/`"dark2"`/`"light2"` AND the semantically-named `"text1"`/
     /// `"background1"`/`"text2"`/`"background2"` are two spellings for the SAME four scheme slots
@@ -1833,7 +1834,7 @@ impl DocxReader {
         }
     }
 
-    // swift: Render/Office/DocxReader.swift:1385-1408
+    // swift: DocxReader.resolvedColorElement
     /// A `w:color` element (a run's own `w:rPr/w:color`, or a style's), resolved to a literal —
     /// EITHER its literal `w:val` hex, OR — measured at 10% of the real corpus, a mechanism worth
     /// doing properly rather than approximating — a `w:themeColor` reference resolved against
@@ -1868,7 +1869,7 @@ impl DocxReader {
         Self::color_from_hex(val)
     }
 
-    // swift: Render/Office/DocxReader.swift:1410-1441
+    // swift: DocxReader.highlightColor
     /// `w:highlight`'s value (ECMA-376 §17.18.40, `ST_HighlightColor`) is a NAME from a fixed
     /// 17-entry enumeration, not a hex value — unlike `w:color`/`w:shd`, which are always literal
     /// or theme-relative. The sixteen real colours' RGB equivalents below are the standard values
@@ -1900,7 +1901,7 @@ impl DocxReader {
         hex.and_then(Self::color_from_hex)
     }
 
-    // swift: Render/Office/DocxReader.swift:1442-1455
+    // swift: DocxReader.colorFromHex
     /// A bare 6-digit `RRGGBB` hex string (docx never emits alpha in `w:val`/`w:fill`/`@lastClr`) →
     /// `NSColor`. `nil` for anything that isn't exactly 6 hex digits (a malformed document, or —
     /// for `w:fill` specifically — the literal string `"auto"`, already filtered by every caller
@@ -1922,7 +1923,7 @@ impl DocxReader {
         ))
     }
 
-    // swift: Render/Office/DocxReader.swift:1456-1467
+    // swift: DocxReader.builtInHeadingLevel
     /// Mechanism (b): a built-in heading style's id IS its heading level — `Heading1`…`Heading9`,
     /// compared case-insensitively (Word has written both `Heading1` and `heading1` over the years)
     /// against ONLY these nine ASCII ids, never against a style's (localized) name. Returns the same
@@ -1939,7 +1940,7 @@ impl DocxReader {
         }
     }
 
-    // swift: Render/Office/DocxReader.swift:1468-1487
+    // swift: DocxReader.resolvedOutlineLevel
     /// Resolves a paragraph style's outline level by walking its `w:basedOn` chain: at each style,
     /// an explicit `w:outlineLvl` wins; failing that, the style's own id being a built-in `HeadingN`
     /// counts as that level (this is what makes a CUSTOM style based on `Heading2` — which itself
@@ -1966,7 +1967,7 @@ impl DocxReader {
         }
     }
 
-    // swift: Render/Office/DocxReader.swift:1488-1502
+    // swift: DocxReader.headingLevel
     /// `outlineLvl` 0–8 are real heading levels; 9 is what Word gives its own `TOCHeading` style
     /// and must NOT be treated as a heading (it would otherwise put a table-of-contents label at
     /// sidebar depth 10) — that guard applies whether the level came from the paragraph's own
@@ -1990,7 +1991,7 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:1506-1529
+// swift: DocxReader.AbstractLevel
 // MARK: numbering.xml — numId → abstractNumId → level → format/text/start, with per-numId overrides
 
 /// One level's numbering definition, whether it came from `w:abstractNum` directly or replaced
@@ -1999,7 +2000,7 @@ impl DocxReader {
 /// into; `nil` when the source never declared one (rare, but not an error — `numberedListInfo`
 /// falls back to `OfficeTextBuilder`'s own counting in that case, same as an unresolvable
 /// numId). `start` defaults to 1 — Word omits `w:start` whenever a level simply starts there.
-// swift: Render/Office/DocxReader.swift:1506-1529
+// swift: DocxReader.AbstractLevel
 #[derive(Debug, Clone)]
 pub(crate) struct AbstractLevel {
     num_fmt: String,
@@ -2024,14 +2025,14 @@ pub(crate) struct AbstractLevel {
 /// where that level's counter begins (`w:startOverride`), `lvlReplacement` replaces the WHOLE
 /// level definition for this numId only (`w:lvlOverride/w:lvl`) — Word allows either, both, or
 /// neither on the same `w:lvlOverride` element.
-// swift: Render/Office/DocxReader.swift:1531-1538
+// swift: DocxReader.NumOverride
 #[derive(Debug, Clone, Default)]
 struct NumOverride {
     start_override: Option<i32>,
     lvl_replacement: Option<AbstractLevel>,
 }
 
-// swift: Render/Office/DocxReader.swift:1537-1590
+// swift: DocxReader.NumberingInfo
 #[derive(Debug, Clone, Default)]
 pub struct NumberingInfo {
     abstract_num_id_by_num_id: std::collections::HashMap<String, String>,
@@ -2040,7 +2041,7 @@ pub struct NumberingInfo {
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1545-1592
+    // swift: DocxReader.parseNumbering
     /// Parses BOTH `w:abstractNum` (the shared level definitions) and each `w:num`'s own
     /// `w:lvlOverride`s (a per-list exception to those shared definitions — a start value reset,
     /// or an entirely different level) — reading only `w:numFmt` as the old version of this
@@ -2102,7 +2103,7 @@ impl DocxReader {
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1593-1609
+    // swift: DocxReader.parseLevel
     /// A level missing `w:numFmt` entirely is not returned — there is nothing to classify it by,
     /// and the caller's existing "unresolvable" fallback (never fabricate a number) already covers
     /// that. `w:start`'s absence means 1, not "no start" — Word only writes the element when the
@@ -2119,7 +2120,7 @@ impl DocxReader {
         Some(AbstractLevel { num_fmt: fmt, lvl_text, start, is_lgl: lvl.child("w:isLgl").is_some(), suff })
     }
 
-    // swift: Render/Office/DocxReader.swift:1610-1625
+    // swift: DocxReader.resolvedLevel
     /// Resolves one `(numId, ilvl)` to its effective definition: the abstract level, with any
     /// `w:lvlOverride` for THIS numId layered on top (a full replacement first, since Word treats
     /// `w:lvlOverride/w:lvl` as swapping the entire level; then `w:startOverride`, which can apply
@@ -2149,21 +2150,21 @@ impl DocxReader {
 /// REFERENCE shared across the whole `read()` call (body, then footnotes, then endnotes, all
 /// walked from one `read()`) rather than a value threaded through every function's parameters
 /// with `inout`.
-// swift: Render/Office/DocxReader.swift:1627-1633
+// swift: DocxReader.ListCounterKey
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ListCounterKey {
     num_id: String,
     level: i32,
 }
 
-// swift: Render/Office/DocxReader.swift:1634-1634
+// swift: DocxReader.ListNumberingState
 #[derive(Debug, Clone, Default)]
 pub struct ListNumberingState {
     counters: std::collections::HashMap<ListCounterKey, i32>,
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1634-1645
+    // swift: DocxReader.clearCounters
     /// Clears every counter for this numId at `level` and DEEPER — used both when a
     /// shallower-or-equal ordered item breaks a deeper run (deeper only: `from: ilvl + 1`) and
     /// when a `bullet`/`none` item at `ilvl` breaks any ordered run AT that level too (self and
@@ -2173,7 +2174,7 @@ impl DocxReader {
         state.borrow_mut().counters.retain(|key, _| !(key.num_id == num_id && key.level >= from_level));
     }
 
-    // swift: Render/Office/DocxReader.swift:1646-1689
+    // swift: DocxReader.numberedListInfo
     /// The reader's own resolved rendering info for one numbered paragraph: `ordered` still drives
     /// `OfficeTextBuilder`'s indentation/bullet fallback (see `OfficeBlock.listItem`), `marker` is
     /// this item's pre-formatted display text when the source's numbering resolves that far. The
@@ -2219,7 +2220,7 @@ impl DocxReader {
         Some((true, Some(marker)))
     }
 
-    // swift: Render/Office/DocxReader.swift:1690-1721
+    // swift: DocxReader.substituteLevelText
     /// Substitutes every `%1`…`%9` token in `lvlText` with that level's counter, formatted by
     /// EITHER that level's own `w:numFmt` (the common case — e.g. `%1` decimal, `%2` letters) OR,
     /// when the CURRENT level is `w:isLgl`, always as decimal (Word's legal-numbering override —
@@ -2257,7 +2258,7 @@ impl DocxReader {
         result
     }
 
-    // swift: Render/Office/DocxReader.swift:1722-1757
+    // swift: DocxReader.formatNumber
     /// Formats one counter value per Word's `w:numFmt`. Only the formats the sprint brief lists as
     /// actually occurring in real documents get their own case; anything else — an exotic or
     /// future format this reader doesn't specifically know — falls back to plain decimal rather
@@ -2298,12 +2299,11 @@ impl DocxReader {
 
 /// `가나다라마바사아자차카타파하` — the 14 `w:numFmt="ganada"` glyphs, in Word's own cycling
 /// order. Verified against a real document's `1.`/`가.`/`나.`/`다.` clause numbering (1–3 only).
-// swift: Render/Office/DocxReader.swift:1759-1763
 const GANADA_GLYPHS: [char; 14] =
     ['가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파', '하'];
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1764-1795
+    // swift: DocxReader.ganadaSequence
     /// `n` (1-based) → its `ganada` glyph. 1...14 is settled; the overflow is a REASONED CHOICE
     /// between three real conventions, recorded here so it isn't re-litigated from scratch.
     ///
@@ -2342,15 +2342,14 @@ impl DocxReader {
 
 /// Ideograph numeral digits 0–9 (〇一二三四五六七八九) — CJK Unified Ideographs, the digit
 /// glyphs `w:numFmt="ideographDigital"` substitutes in place of each decimal digit.
-// swift: Render/Office/DocxReader.swift:1797-1799
 const CHINESE_DIGIT_GLYPHS: [char; 10] = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九'];
 /// Hangul numeral digits 0–9 (영일이삼사오육칠팔구) — the digit glyphs
 /// `w:numFmt="koreanDigital"` substitutes in place of each decimal digit.
-// swift: Render/Office/DocxReader.swift:1798-1817
+// swift: DocxReader.digitGlyphs
 const KOREAN_DIGIT_GLYPHS: [char; 10] = ['영', '일', '이', '삼', '사', '오', '육', '칠', '팔', '구'];
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1801-1817
+    // swift: DocxReader.digitGlyphs
     /// One decimal digit → one glyph, in order — `nil` for any input a digit-substitution table
     /// can't represent (negative `n`), so the caller's own `??` falls back to plain decimal.
     fn digit_glyphs(n: i32, table: &[char; 10]) -> Option<String> {
@@ -2370,7 +2369,7 @@ impl DocxReader {
         Some(digits.into_iter().collect())
     }
 
-    // swift: Render/Office/DocxReader.swift:1818-1834
+    // swift: DocxReader.romanNumeral
     fn roman_numeral(n: i32) -> String {
         if n <= 0 {
             return format!("{}", n);
@@ -2390,7 +2389,7 @@ impl DocxReader {
         result
     }
 
-    // swift: Render/Office/DocxReader.swift:1835-1852
+    // swift: DocxReader.letterSequence
     /// `w:numFmt="lowerLetter"`/`"upperLetter"`: 1→a … 26→z, then 27→aa, 28→bb, 29→cc — the letter
     /// REPEATED once per completed cycle, which is what Word draws. Lowercase; `formatNumber`
     /// uppercases it for `upperLetter`.
@@ -2413,10 +2412,10 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:1856-1862
+// swift: DocxReader.Relationship
 // MARK: word/_rels/document.xml.rels — relationship id → target
 
-// swift: Render/Office/DocxReader.swift:1856-1862
+// swift: DocxReader.Relationship
 pub(crate) struct Relationship {
     /// Embedded: the archive entry path (`"word/media/image1.png"`) `ZipArchive.data(for:)`
     /// can read directly. External: the raw `Target` (a `file:///…` URL) — never a path into
@@ -2425,7 +2424,7 @@ pub(crate) struct Relationship {
     pub(crate) external: bool,
 }
 
-// swift: Render/Office/DocxReader.swift:1864-1866
+// swift: DocxReader.Relationships
 #[derive(Debug, Clone, Default)]
 pub struct Relationships {
     pub(crate) by_id: std::collections::HashMap<String, Relationship>,
@@ -2443,7 +2442,7 @@ impl std::fmt::Debug for Relationship {
 }
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1868-1880
+    // swift: DocxReader.relsPath
     /// The relationships PART for a given content part, per OPC convention: `<dir>/_rels/<file>.rels`
     /// sits alongside the `_rels` folder in the SAME directory as the part itself. Every content
     /// part carries its OWN relationship id-space — `word/header1.xml`'s `rId1` can point somewhere
@@ -2453,7 +2452,7 @@ impl DocxReader {
     /// rather than a second mechanism) is what lets a header/footer part resolve through its own
     /// table instead of the body's.
     fn rels_path(part: &str) -> String {
-        // swift: Render/Office/DocxReader.swift:1876-1877 — (part as NSString).deletingLastPathComponent / .lastPathComponent
+        // swift-range: Render/Office/DocxReader.swift:1876-1877 — (part as NSString).deletingLastPathComponent / .lastPathComponent
         let (dir, file) = match part.rfind('/') {
             Some(idx) => (&part[..idx], &part[idx + 1..]),
             None => ("", part),
@@ -2465,7 +2464,7 @@ impl DocxReader {
         }
     }
 
-    // swift: Render/Office/DocxReader.swift:1881-1912
+    // swift: DocxReader.parseRelationships
     /// Absent from an image-less document exactly like `styles.xml`/`numbering.xml` — falls back
     /// to an empty table, so every `r:embed`/`r:link` lookup below simply misses and the reader
     /// still produces `.image` blocks (marked unresolvable) instead of crashing. Also the normal
@@ -2512,11 +2511,10 @@ impl DocxReader {
     }
 }
 
-// swift: Render/Office/DocxReader.swift:1913-1913
 // MARK: Headers/footers — w:sectPr's headerReference/footerReference (header-footer-design.md §2)
 
 impl DocxReader {
-    // swift: Render/Office/DocxReader.swift:1915-1974
+    // swift: DocxReader.headerFooterEntries
     /// The body's own trailing `w:sectPr`'s header/footer references (`tag` is
     /// `"w:headerReference"` or `"w:footerReference"`), resolved through `relationships` (the
     /// BODY's own table — `w:headerReference/@r:id` is one of the body's relationship ids, unlike
@@ -2610,101 +2608,78 @@ impl DocxReader {
 // paragraph of doc comment already reproduced verbatim on the declaration it documents above) —
 // nothing here is unported logic. Listed separately, grouped, rather than widening 97 individual
 // `// swift:` comments above, because the boundary itself carries no additional content to name.
-// swift: Render/Office/DocxReader.swift:4-11
-// swift: Render/Office/DocxReader.swift:32-93
-// swift: Render/Office/DocxReader.swift:95-110
-// swift: Render/Office/DocxReader.swift:112-153
-// swift: Render/Office/DocxReader.swift:155-165
-// swift: Render/Office/DocxReader.swift:167-222
-// swift: Render/Office/DocxReader.swift:224-250
-// swift: Render/Office/DocxReader.swift:252-261
-// swift: Render/Office/DocxReader.swift:254-269
-// swift: Render/Office/DocxReader.swift:271-290
-// swift: Render/Office/DocxReader.swift:292-325
-// swift: Render/Office/DocxReader.swift:327-345
-// swift: Render/Office/DocxReader.swift:347-347
-// swift: Render/Office/DocxReader.swift:349-370
-// swift: Render/Office/DocxReader.swift:372-381
-// swift: Render/Office/DocxReader.swift:374-381
-// swift: Render/Office/DocxReader.swift:383-418
-// swift: Render/Office/DocxReader.swift:420-454
-// swift: Render/Office/DocxReader.swift:456-469
-// swift: Render/Office/DocxReader.swift:471-485
-// swift: Render/Office/DocxReader.swift:498-511
-// swift: Render/Office/DocxReader.swift:500-533
-// swift: Render/Office/DocxReader.swift:612-616
-// swift: Render/Office/DocxReader.swift:622-627
-// swift: Render/Office/DocxReader.swift:632-638
-// swift: Render/Office/DocxReader.swift:647-655
-// swift: Render/Office/DocxReader.swift:649-660
-// swift: Render/Office/DocxReader.swift:662-750
-// swift: Render/Office/DocxReader.swift:752-778
-// swift: Render/Office/DocxReader.swift:780-808
-// swift: Render/Office/DocxReader.swift:810-813
-// swift: Render/Office/DocxReader.swift:815-838
-// swift: Render/Office/DocxReader.swift:840-890
-// swift: Render/Office/DocxReader.swift:892-908
-// swift: Render/Office/DocxReader.swift:910-918
-// swift: Render/Office/DocxReader.swift:920-953
-// swift: Render/Office/DocxReader.swift:955-1014
-// swift: Render/Office/DocxReader.swift:1016-1040
-// swift: Render/Office/DocxReader.swift:1042-1052
-// swift: Render/Office/DocxReader.swift:1054-1069
-// swift: Render/Office/DocxReader.swift:1071-1108
-// swift: Render/Office/DocxReader.swift:1110-1126
-// swift: Render/Office/DocxReader.swift:1128-1130
-// swift: Render/Office/DocxReader.swift:1132-1134
-// swift: Render/Office/DocxReader.swift:1136-1148
-// swift: Render/Office/DocxReader.swift:1150-1152
-// swift: Render/Office/DocxReader.swift:1154-1156
-// swift: Render/Office/DocxReader.swift:1158-1189
-// swift: Render/Office/DocxReader.swift:1191-1214
-// swift: Render/Office/DocxReader.swift:1216-1218
-// swift: Render/Office/DocxReader.swift:1220-1222
-// swift: Render/Office/DocxReader.swift:1224-1226
-// swift: Render/Office/DocxReader.swift:1228-1230
-// swift: Render/Office/DocxReader.swift:1232-1234
-// swift: Render/Office/DocxReader.swift:1236-1238
-// swift: Render/Office/DocxReader.swift:1240-1242
-// swift: Render/Office/DocxReader.swift:1244-1246
-// swift: Render/Office/DocxReader.swift:1248-1250
-// swift: Render/Office/DocxReader.swift:1252-1254
-// swift: Render/Office/DocxReader.swift:1256-1258
-// swift: Render/Office/DocxReader.swift:1260-1262
-// swift: Render/Office/DocxReader.swift:1264-1290
-// swift: Render/Office/DocxReader.swift:1292-1292
-// swift: Render/Office/DocxReader.swift:1294-1318
-// swift: Render/Office/DocxReader.swift:1320-1363
-// swift: Render/Office/DocxReader.swift:1365-1384
-// swift: Render/Office/DocxReader.swift:1386-1409
-// swift: Render/Office/DocxReader.swift:1411-1441
-// swift: Render/Office/DocxReader.swift:1443-1455
-// swift: Render/Office/DocxReader.swift:1457-1467
-// swift: Render/Office/DocxReader.swift:1469-1487
-// swift: Render/Office/DocxReader.swift:1489-1502
-// swift: Render/Office/DocxReader.swift:1504-1510
-// swift: Render/Office/DocxReader.swift:1529-1533
-// swift: Render/Office/DocxReader.swift:1531-1538
-// swift: Render/Office/DocxReader.swift:1540-1544
-// swift: Render/Office/DocxReader.swift:1546-1592
-// swift: Render/Office/DocxReader.swift:1594-1609
-// swift: Render/Office/DocxReader.swift:1625-1631
-// swift: Render/Office/DocxReader.swift:1634-1645
-// swift: Render/Office/DocxReader.swift:1636-1645
-// swift: Render/Office/DocxReader.swift:1647-1689
-// swift: Render/Office/DocxReader.swift:1691-1721
-// swift: Render/Office/DocxReader.swift:1757-1759
-// swift: Render/Office/DocxReader.swift:1759-1763
-// swift: Render/Office/DocxReader.swift:1765-1796
-// swift: Render/Office/DocxReader.swift:1801-1817
-// swift: Render/Office/DocxReader.swift:1805-1817
-// swift: Render/Office/DocxReader.swift:1819-1834
-// swift: Render/Office/DocxReader.swift:1836-1852
-// swift: Render/Office/DocxReader.swift:1850-1910
-// swift: Render/Office/DocxReader.swift:1856-1862
-// swift: Render/Office/DocxReader.swift:1864-1866
-// swift: Render/Office/DocxReader.swift:1868-1880
-// swift: Render/Office/DocxReader.swift:1882-1912
-// swift: Render/Office/DocxReader.swift:1914-1914
-// swift: Render/Office/DocxReader.swift:1916-1975
-
+// swift-range: Render/Office/DocxReader.swift:4-11
+// swift: DocxReader.read
+// swift: DocxReader.lineGridPitch
+// swift: DocxReader.typesetSectionProperties
+// swift: DocxReader.pageContentWidth
+// swift: DocxReader.pageGeometry
+// swift: DocxReader.documentDefaultBodyFontSize
+// swift-range: Render/Office/DocxReader.swift:271-290
+// swift: DocxReader.parseComments
+// swift-range: Render/Office/DocxReader.swift:347-347
+// swift: DocxReader.parseNoteBodies
+// swift: DocxReader.NoteNumbering
+// swift: DocxReader.collectNoteBlocks
+// swift: DocxReader.prependingMarker
+// swift: DocxReader.ParaStyleProps
+// swift: DocxReader.WordNumPr
+// swift: DocxReader.parseStyles
+// swift: DocxReader.parseTableConditionalStyle
+// swift: DocxReader.parseTblLook
+// swift: DocxReader.tblLookFlag
+// swift: DocxReader.resolvedTableConditional
+// swift: DocxReader.resolveCellTableStyle
+// swift: DocxReader.parseRunStyleProps
+// swift: DocxReader.toggleState
+// swift: DocxReader.parseParaStyleProps
+// swift: DocxReader.paragraphBorder
+// swift: DocxReader.onOffValue
+// swift: DocxReader.alignmentFromJc
+// swift: DocxReader.parseTabStops
+// swift: DocxReader.walkStyleChain
+// swift: DocxReader.resolvedColor
+// swift: DocxReader.resolvedHighlight
+// swift: DocxReader.resolvedBold
+// swift: DocxReader.resolvedItalic
+// swift: DocxReader.resolvedFontSize
+// swift: DocxReader.resolvedRFonts
+// swift: DocxReader.resolvedNumPr
+// swift: DocxReader.resolvedAlignment
+// swift: DocxReader.resolvedTabStops
+// swift: DocxReader.resolvedShading
+// swift: DocxReader.resolvedBorder
+// swift: DocxReader.resolvedSpacingBefore
+// swift: DocxReader.resolvedSpacingAfter
+// swift: DocxReader.resolvedLineHeight
+// swift: DocxReader.resolvedIndentStart
+// swift: DocxReader.resolvedIndentEnd
+// swift: DocxReader.resolvedFirstLineIndent
+// swift: DocxReader.resolvedHangingIndent
+// swift: DocxReader.resolvedContextualSpacing
+// swift: DocxReader.resolvedParagraphFormat
+// swift: DocxReader.parseThemeColors
+// swift: DocxReader.themeSlotName
+// swift: DocxReader.resolvedColorElement
+// swift: DocxReader.highlightColor
+// swift: DocxReader.colorFromHex
+// swift: DocxReader.builtInHeadingLevel
+// swift: DocxReader.resolvedOutlineLevel
+// swift: DocxReader.headingLevel
+// swift: DocxReader.NumOverride
+// swift: DocxReader.NumberingInfo
+// swift: DocxReader.parseNumbering
+// swift: DocxReader.parseLevel
+// swift: DocxReader.clearCounters
+// swift: DocxReader.numberedListInfo
+// swift: DocxReader.substituteLevelText
+// swift: DocxReader.ganadaSequence
+// swift: DocxReader.digitGlyphs
+// swift: DocxReader.digitGlyphs
+// swift: DocxReader.romanNumeral
+// swift: DocxReader.letterSequence
+// swift: DocxReader.Relationship
+// swift: DocxReader.Relationships
+// swift: DocxReader.relsPath
+// swift: DocxReader.parseRelationships
+// swift: DocxReader.headerFooterEntries

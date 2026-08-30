@@ -24,14 +24,14 @@ use crate::render::office::footnote_band_settle::FootnoteBandSettle;
 /// It does NOT carry width. One container has one width (invariant 57), so a section's wider paper
 /// is still typeset at the document's column — recording the height is what a single-column reader
 /// can honour, and `paper` keeps the declared width so a caller can see what was not honoured.
-// swift: Render/Office/PageGrid.swift:3-143
+// swift: PageGrid
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageGrid {
     pub pages: Vec<Page>,
 }
 
 /// One sheet: which section it belongs to, the paper it is cut from, and where it sits.
-// swift: Render/Office/PageGrid.swift:24-49
+// swift: PageGrid.Page
 #[derive(Debug, Clone, PartialEq)]
 pub struct Page {
     /// The section this page is typeset on, as an index into the document's own section list.
@@ -65,14 +65,14 @@ impl Page {
 }
 
 impl PageGrid {
-    // swift: Render/Office/PageGrid.swift:50-61
+    // swift: PageGrid.uniform
     pub fn count(&self) -> usize {
         self.pages.len()
     }
 
     /// The grid a document with ONE geometry produces — the scalar rule, expressed as a table, so a
     /// consumer that has moved over keeps working for every document that never needed this.
-    // swift: Render/Office/PageGrid.swift:54-62
+    // swift: PageGrid.uniform
     pub fn uniform(page_count: i64, pitch: CGFloat, section: i64, paper: PaperGeometry) -> PageGrid {
         let n = page_count.max(0);
         let pages = (0..n)
@@ -94,7 +94,7 @@ impl PageGrid {
     /// The band is measured once from the reader's own rendering of the running heads
     /// (`PageBandGeometry.measure`), and a section that hides them still reserves the same gap —
     /// changing that is a layout change, not a pagination one.
-    // swift: Render/Office/PageGrid.swift:63-95
+    // swift: PageGrid.build
     pub fn build(
         page_count: i64,
         band: CGFloat,
@@ -133,7 +133,7 @@ impl PageGrid {
     ///
     /// Out of range extends the last page the same way `textTop` does, so a caller walking off the
     /// end gets the strip the next sheet WOULD have rather than nothing.
-    // swift: Render/Office/PageGrid.swift:96-109
+    // swift: PageGrid.bodyBottom
     pub fn body_bottom(&self, page: i64) -> CGFloat {
         if self.pages.is_empty() {
             return 0.0;
@@ -146,7 +146,7 @@ impl PageGrid {
     /// The top of page `page`'s TEXT, from the top of the first page's text. Out of range extends the
     /// last page's pitch rather than returning nothing: a caller asking past the end is asking where
     /// the next sheet WOULD start, which is how printing walks off the end of a document.
-    // swift: Render/Office/PageGrid.swift:106-131
+    // swift: PageGrid.textTop
     pub fn text_top(&self, page: i64) -> CGFloat {
         if self.pages.is_empty() {
             return 0.0;
@@ -163,7 +163,7 @@ impl PageGrid {
 
     /// Which page a point in the text falls on — the inverse of `textTop`, and the lookup that
     /// replaces dividing by the pitch.
-    // swift: Render/Office/PageGrid.swift:121-136
+    // swift: PageGrid.page
     pub fn page(&self, text_y: CGFloat) -> i64 {
         if self.pages.is_empty() {
             return 0;
@@ -186,7 +186,6 @@ impl PageGrid {
 
     /// True when every page is cut from the same paper — the case the scalar pitch already gets
     /// exactly right, which is what lets a consumer keep the old path until it is ready.
-    // swift: Render/Office/PageGrid.swift:133-143
     pub fn is_uniform(&self) -> bool {
         let Some(first) = self.pages.first() else { return true };
         self.pages.iter().all(|p| p.paper == first.paper)
