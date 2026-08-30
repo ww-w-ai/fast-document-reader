@@ -238,7 +238,7 @@ final class ScreenPrintParityTests: XCTestCase {
     /// live toggle would fail THIS assertion even though the host-only test above could not see it.
     func testTheEnginesTablePlacementStillObeysTheSplitTablesToggle() throws {
         func firstTableTop(_ split: Bool) throws -> (top: CGFloat, answered: Int) {
-            PageViewOptionsStore.current = PageViewOptions(outline: true, splitTables: split)
+            PageViewOptionsStore.startingOptions = PageViewOptions(outline: true, splitTables: split)
             let wc = try openRealPagedFixture("docs/fixtures/office/bus-headings.docx")
             let handle = try XCTUnwrap(wc.mdDocument?.officeEngineHandle)
             let before = handle.answeredQueries

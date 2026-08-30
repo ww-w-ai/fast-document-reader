@@ -44,7 +44,7 @@ import AppKit
 /// numbers above are measured rather than reasoned about.
 final class PageGridMemoTests: XCTestCase {
 
-    /// `PageViewOptionsStore.current` is a UserDefaults-backed PREFERENCE, not a test fixture: a
+    /// `PageViewOptionsStore.startingOptions` is a UserDefaults-backed PREFERENCE, not a test fixture: a
     /// test that sets it and walks away has changed what the app does for every later test in this
     /// process — and, on a developer's machine, for the app itself. Measured the hard way: leaving
     /// the outline OFF here made the whole-reader probe report a 2.2 ms median viewport and 713
@@ -55,11 +55,11 @@ final class PageGridMemoTests: XCTestCase {
     override func setUp() {
         super.setUp()
         savedOptions = PageViewOptionsStore.intent
-        PageViewOptionsStore.current = PageViewOptions(outline: true)
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: true)
     }
 
     override func tearDown() {
-        if let savedOptions { PageViewOptionsStore.current = savedOptions }
+        if let savedOptions { PageViewOptionsStore.startingOptions = savedOptions }
         super.tearDown()
     }
 

@@ -151,7 +151,7 @@ final class MasterSelectionProbeTests: XCTestCase {
                                       n: max(requestedN, 30))
         } else {
             perf("stage=master_selection metric=selection_added note=\"this document's own master "
-                 + "page content was empty at probe time (PageViewOptionsStore.current.masterPage off, "
+                 + "page content was empty at probe time (the document's masterPage option off, "
                  + "or the fixture declares no 바탕쪽) — numbers 3/4 not measured\"")
         }
 

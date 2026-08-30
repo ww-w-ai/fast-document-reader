@@ -2100,13 +2100,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // S5C2-02: the engine's own decision for the SAME inputs the host would otherwise compute
         // this from. `nil` — no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()`
         // names which) — falls back to the host's own arithmetic below, the same failure
-        // direction S5C-1 established for the band query. `splitTables` is read fresh from
-        // `PageViewOptionsStore` on every call, so the toggle still reaches this decision exactly
-        // as it always has (invariant 64).
+        // direction S5C-1 established for the band query. `splitTables` comes from the DOCUMENT's
+        // own options, not the shared store: the toggle is per-document (`064b447`, the same repair
+        // `FontSizeStore` records), so reading the store here would let a choice made about one
+        // window decide another window's table splitting.
         if let placement = mdDocument?.officeEngineHandle?.tablePlacement(
             tables: tables, pageContentHeight: pageBandDelegate.pageContentHeight,
             band: pageBandDelegate.band, leadingBand: pageBandDelegate.leadingBand,
-            splitTables: PageViewOptionsStore.current.splitTables,
+            splitTables: mdDocument?.pageOptions.splitTables ?? false,
             alreadyPushed: pageBandDelegate.pushedTables, noteBands: pageBandDelegate.noteBands,
             alreadyOversized: pageBandDelegate.oversizedPieces) {
             next = placement.pushed
