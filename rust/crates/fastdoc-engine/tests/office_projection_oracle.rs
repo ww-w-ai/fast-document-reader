@@ -735,3 +735,107 @@ fn header_applicability_and_a_page_number_restart_project_identically() {
     };
     assert_projection_matches(&result, "header-applicability-and-restart.docx");
 }
+
+// -------------------------------------------------------------------------------------------
+// P4b — the edge-border table has to be built by the assembler a REAL document reaches.
+//
+// P4a shipped its first pooling into `office_export::to_json` alone, which no real document goes
+// through, and the payload did not move by a single byte: the failure showed up as NO CHANGE, not
+// as a red test, which is exactly the shape that reads as a pass. The oracle above cannot catch it
+// either — it asserts the two assemblers AGREE, so a pooling missing from both agrees perfectly.
+//
+// So this asserts the property directly, on a fixture built to have something to pool.
+// -------------------------------------------------------------------------------------------
+
+use fastdoc_engine::render::office::office_block::{BorderDecl, EdgeBorders};
+
+/// One declaration, worn by four cells.
+fn repeated_edge_border_result() -> OfficeReadResult {
+    let silenced = EdgeBorders {
+        top: Some(BorderDecl::Suppressed),
+        left: Some(BorderDecl::Suppressed),
+        bottom: Some(BorderDecl::Suppressed),
+        right: Some(BorderDecl::Suppressed),
+        ..Default::default()
+    };
+    let cell = |borders: &EdgeBorders| Cell {
+        blocks: vec![OfficeBlock::Paragraph {
+            spans: vec![plain_span("x")],
+            rtl: false,
+            alignment: None,
+            tab_stops: vec![],
+            format: ParagraphFormat::default(),
+        }],
+        edge_borders: Some(borders.clone()),
+        ..Cell::default()
+    };
+    OfficeReadResult {
+        blocks: vec![OfficeBlock::Table {
+            rows: vec![
+                vec![cell(&silenced), cell(&silenced)],
+                vec![cell(&silenced), cell(&silenced)],
+            ],
+            header_rows: 0,
+            column_widths: vec![100.0, 100.0],
+            format: TableFormat::default(),
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_projection_assembler_pools_repeated_edge_borders() {
+    let result = repeated_edge_border_result();
+    let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
+        format: DocumentFormat::Docx,
+        source_name: "repeated-edge-borders",
+        source_bytes: b"repeated-edge-borders",
+        result: &result,
+        resources: BTreeMap::new(),
+    })
+    .expect("from_office");
+    let projected: serde_json::Value =
+        serde_json::from_str(&project(&tree).expect("project")).expect("valid JSON");
+
+    // Four cells, one declaration: the table carries it once and nobody carries it inline.
+    let pool = projected["edge_border_pool"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the projection wrote no edge_border_pool:\n{projected:#}"));
+    assert_eq!(pool.len(), 1, "one distinct declaration, one entry");
+
+    let mut inline = 0usize;
+    let mut slots = 0usize;
+    fn count(v: &serde_json::Value, inline: &mut usize, slots: &mut usize) {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, child) in map {
+                    if k == "edge_borders" {
+                        *inline += 1;
+                    }
+                    if k == "edge_borders_ref" {
+                        *slots += 1;
+                    }
+                    count(child, inline, slots);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    count(item, inline, slots);
+                }
+            }
+            _ => {}
+        }
+    }
+    // The pool's own entries are `EdgeBorders` objects, not `edge_borders` KEYS, so they are not
+    // counted by the walk above — which is what makes "inline == 0" a real assertion.
+    count(&projected, &mut inline, &mut slots);
+    assert_eq!(inline, 0, "a pooled document must carry no inline declaration:\n{projected:#}");
+    assert_eq!(slots, 4, "every one of the four cells must carry a slot");
+}
+
+/// And the two assemblers must still agree on that fixture — the oracle's own job, applied to the
+/// case the oracle previously had no example of.
+#[test]
+fn both_assemblers_agree_on_a_document_with_repeated_edge_borders() {
+    assert_projection_matches(&repeated_edge_border_result(), "repeated-edge-borders");
+}

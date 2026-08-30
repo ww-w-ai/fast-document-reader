@@ -32,6 +32,7 @@ pub fn from_json(json: &str) -> Result<OfficeReadResult, serde_json::Error> {
     let envelope: OfficeDocumentEnvelope = serde_json::from_str(json)?;
     let mut result = envelope.result;
     super::picture_pool::expand(&mut result);
+    super::edge_border_pool::expand(&mut result);
     Ok(result)
 }
 
@@ -107,6 +108,9 @@ pub fn to_json(result: &OfficeReadResult) -> Result<String, NotExportable> {
     // One copy of each picture, not one per use — see `picture_pool`. The in-memory result is
     // untouched; this is a property of the wire, and `from_json` undoes it.
     super::picture_pool::intern(&mut pooled);
+    // The same repair for the field that is next-largest after the pictures — see
+    // `edge_border_pool`. Measured: 5,494 occurrences of 274 declarations on one real manual.
+    super::edge_border_pool::intern(&mut pooled);
     let envelope = OfficeDocumentEnvelope {
         v: SCHEMA_VERSION,
         result: pooled,

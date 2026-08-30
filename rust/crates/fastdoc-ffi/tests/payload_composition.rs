@@ -108,6 +108,13 @@ fn what_the_payload_is_made_of() {
     let owned = unsafe { CStr::from_ptr(json) }.to_string_lossy().into_owned();
     unsafe { fastdoc_engine_ffi::fastdoc_string_free(json) };
     let total = owned.len();
+    // A composition table says what the bytes ARE; deciding what to do about them needs the bytes
+    // themselves, so a run can hand the payload to a host-side decode measurement instead of being
+    // re-derived from a percentage. Off unless asked for.
+    if let Ok(out) = std::env::var("FMD_PAYLOAD_DUMP") {
+        std::fs::write(&out, owned.as_bytes()).expect("writable dump path");
+        println!("DUMP {out} ({total} bytes)");
+    }
 
     let value: serde_json::Value = serde_json::from_str(&owned).expect("tree is JSON");
     let mut by_path: BTreeMap<String, (usize, usize)> = BTreeMap::new();

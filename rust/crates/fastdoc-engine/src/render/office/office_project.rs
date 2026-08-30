@@ -296,6 +296,16 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     }
     let (_pooled, _distinct, picture_pool) = interner.finish();
 
+    // The per-edge border declarations get the same treatment, in the same assembler and for the
+    // same reason (`edge_border_pool`): 5,494 of them on one real manual for 274 distinct looks.
+    // Done AFTER the pictures so the two walks stay independent and either can be turned off alone.
+    let mut edge_interner = crate::render::office::edge_border_pool::Interner::new();
+    edge_interner.blocks(&mut blocks);
+    for header in &mut headers { edge_interner.blocks(&mut header.blocks); }
+    for footer in &mut footers { edge_interner.blocks(&mut footer.blocks); }
+    for footnote in &mut footnotes { edge_interner.blocks(&mut footnote.blocks); }
+    let (_interned, _distinct_edges, edge_border_pool) = edge_interner.finish();
+
     let mut result = serde_json::Map::new();
     // The version the ENGINE writes, not a copy of it. This was a literal `4` beside
     // `office_export::SCHEMA_VERSION`, and the two are the same contract: the moment the exporter
@@ -311,6 +321,10 @@ pub fn project(tree: &ValidatedRenderTree) -> Result<String, ProjectionError> {
     // is a disagreement even when both mean "no pooled pictures".
     if !picture_pool.is_empty() {
         result.insert("picture_pool".to_string(), to_value(&picture_pool)?);
+    }
+    // Same rule, same reason, for the edge-border table.
+    if !edge_border_pool.is_empty() {
+        result.insert("edge_border_pool".to_string(), to_value(&edge_border_pool)?);
     }
     result.insert("blocks".to_string(), to_value(&blocks)?);
     result.insert("comments".to_string(), to_value(&comments)?);
@@ -946,6 +960,7 @@ impl Projector {
             background_gradient,
             source_width: t.style.source_width_points,
             edge_borders: t.style.edge_borders.as_ref().map(convert_edge_borders_back),
+            edge_borders_ref: None,
             default_padding: t.style.default_padding.as_ref().map(optional_insets_to_edge_padding),
             repeat_header_rows: t.style.repeat_header_rows,
             page_break_policy: t.style.page_break_policy.map(convert_page_break_policy_back),
@@ -1279,6 +1294,7 @@ fn convert_cell_back(tc: wire::TableCell, blocks: Vec<OfficeBlock>) -> Cell {
         border_color: tc.direct_uniform_border.as_ref().and_then(|b| b.color).map(convert_color_back),
         border_width: tc.direct_uniform_border.as_ref().and_then(|b| b.width_points),
         edge_borders: tc.direct_edge_borders.as_ref().map(convert_edge_borders_back),
+        edge_borders_ref: None,
         width: tc.declared_width_points,
         vertical_alignment: tc.vertical_alignment.map(convert_cell_valign_back),
         padding: tc.uniform_padding_points,

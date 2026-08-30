@@ -180,9 +180,13 @@ enum RustEngine {
             // parses the whole document first and materializes on demand, so asking for one key
             // early is a lookup, not a second pass.
             let pool = try container.decodeIfPresent([String: Data].self, forKey: .picturePool) ?? [:]
-            result = try PictureBytes.withPool(pool) { try OfficeReadResult(from: decoder) }
+            // The edge-border table rides in on the same rule, for the same reason (P4b).
+            let edges = try container.decodeIfPresent([EdgeBorders].self, forKey: .edgeBorderPool) ?? []
+            result = try PictureBytes.withPool(pool) {
+                try EdgeBorderTable.withPool(edges) { try OfficeReadResult(from: decoder) }
+            }
         }
-        private enum VersionKey: String, CodingKey { case v, picturePool }
+        private enum VersionKey: String, CodingKey { case v, picturePool, edgeBorderPool }
     }
 
     static func extractMarkdown(_ data: Data, extension ext: String) -> String? {

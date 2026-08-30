@@ -2464,6 +2464,7 @@ impl HwpReader {
             border_color: None,
             border_width: None,
             edge_borders: Self::edge_borders(c.border_fill_id, border_fills),
+            edge_borders_ref: None,
             width: None,
             vertical_alignment: v_align,
             padding: None,

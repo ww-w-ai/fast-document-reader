@@ -838,3 +838,23 @@ this file tells you why, and why the obvious alternative does not work.
     **The third row is the row that keeps this honest.** The engine arm stops at JSON; the host arm ends at a laid-out attributed string, so quoting 44.3 against 410.7 would be the same error as quoting one document's print delta as a port's cost (invariant 126). The comparable figure is the engine plus its transport — **92.6 ms against 410.7 ms** — and even that is a floor, because a real consumer decodes into typed values and builds typography where this only scans bytes once.
 
     So the win is real (about 4x, transport included) and it is still not wired, deliberately. `RustCanonicalTree.swift` lifts `schemaVersion` and keeps the rest as opaque bytes, saying full typing "is S6's job"; **it has no callers anywhere in the app.** The tree it would have to type is 1,116 lines of wire schema inside 9,012 lines of render-tree code, and the consumer would then have to reach parity with the whole markdown renderer — code cards, mermaid and KaTeX blocks, tables, attachments, links, footnotes. That is a sprint. Half of it, landed on the format the app is named for, is worse than none of it, so what exists here is the measurement that makes the decision answerable and nothing that pretends to be the decision.
+
+129. **P4b: the repeated `edge_borders` object was a fifth of the host's decode, and the estimate that deferred it was wrong in the safe direction.** P4a pooled the pictures; the roadmap then parked `format` and `edge_borders` because the case for them rested on "about 300 ms" derived from an average, with a worry attached — Foundation opens a container per paragraph either way, so pooling might recover only half. **Neither half of that guess survived measurement.**
+
+    The ceiling was measured directly, not modelled: dump a real payload (`FMD_PAYLOAD_DUMP` on the `payload_composition` harness), delete the field from the JSON, and decode both through the SHIPPING path (`PayloadDecodeProbeTests` → `RustEngine.decodeOffice`). Release, the 2,562-page manual, minimum of three, quiet machine:
+
+    | payload | ms |
+    |---|---|
+    | as the engine writes it | **585.0** |
+    | `edge_borders` deleted | **445.5** (−139.5, −23.8%) |
+    | `format` deleted | **458.9** (−122.8) |
+    | both deleted | **329.6** (−252.1, −43.3%) |
+    | `format` reduced to its smallest LEGAL container | **505.0** (−80.0) |
+
+    The last row is the one that answers the worry: the nested container is worth about 43 ms of `format`'s 123, so removing the object entirely recovers half again as much as shrinking it. **The bytes were never the point — 5,494 nested containers were.**
+
+    Only `edge_borders` shipped. It was already `Option` on both sides, so it needed no schema change, and the host mechanism already existed: a task-local bound in `RustEngine.decodeOffice` before the body decodes, exactly as `PictureBytes` does, because the value has been folded into an `OfficeBlock` enum case before any post-pass could run. Measured on the same manual: payload **13,181,914 → 11,516,320 (−12.6%)**, 5,494 inline declarations → **0**, pool **274 entries** — the distinct count predicted by the composition table, exactly.
+
+    **The decode gain must be read from a PAIRED run, and this is where a wrong answer nearly shipped.** Measured alone after the change it read 791.9 ms against the 585.0 ms recorded earlier and looked like a 35% REGRESSION; the machine had simply gone from idle to load 18.9 in between. Alternating the two payloads on one build in one session, twice: **994.9 / 982.8 ms inline against 785.9 / 788.4 ms pooled, −20%** — most of the −23.8% ceiling, with the rest being the pool's own decode. Invariant 67 already recorded this exact trap for attribute hashing; it cost an hour again here. **Never compare a number taken now against one written down earlier.**
+
+    `format` is deliberately NOT done: it is a required field on four block variants, so pooling it means making the wire's `format` optional across the engine and the host — the schema change the roadmap correctly identified as bigger than P4a. Its ceiling is now a measurement (−123 ms whole, −80 ms as a shrunken container) instead of an average, so the decision no longer rests on a guess.

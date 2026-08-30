@@ -8,13 +8,14 @@ use crate::render::office::office_block::{
 };
 use std::collections::BTreeMap;
 
-const EXPECTED_DECISIONS: usize = 28;
+const EXPECTED_DECISIONS: usize = 29;
 const EXPECTED_KEYS: &[&str] = &[
     "OfficeReadResult.blocks",
     "OfficeReadResult.comments",
     "OfficeReadResult.images",
     "OfficeReadResult.pictures_declared_without_bytes",
     "OfficeReadResult.picture_pool",
+    "OfficeReadResult.edge_border_pool",
     "OfficeReadResult.vector_graphics",
     "OfficeReadResult.default_body_font_size",
     "OfficeReadResult.declared_faces",
@@ -170,6 +171,7 @@ pub(crate) fn account_office_read_result(
         images,
         pictures_declared_without_bytes,
         picture_pool,
+        edge_border_pool,
         vector_graphics,
         default_body_font_size,
         declared_faces,
@@ -232,6 +234,14 @@ pub(crate) fn account_office_read_result(
     debug_assert!(picture_pool.is_empty(), "picture_pool is a wire field, not a reader's output");
     let _ = picture_pool;
     ledger.record(derived("OfficeReadResult.picture_pool"))?;
+    // Same shape and same reason as `picture_pool` above, for the field P4b pooled: the exporter
+    // fills it and `from_json` drains it, so a reader's own result never carries one.
+    debug_assert!(
+        edge_border_pool.is_empty(),
+        "edge_border_pool is a wire field, not a reader's output"
+    );
+    let _ = edge_border_pool;
+    ledger.record(derived("OfficeReadResult.edge_border_pool"))?;
 
     // The four pagination facts are block-index lists re-keyed onto the node that owns the block
     // (`ParagraphPagination`). Deterministic and reversible by walking nodes in source order, so
@@ -609,16 +619,17 @@ mod tests {
     /// — so this assertion is about the TOP-LEVEL 27 only, not a claim the sub-ledger differs any
     /// more. (S6-5a added `pictures_declared_without_bytes`, `mapped` — see that field's own doc.)
     #[test]
-    fn account_office_read_result_records_exactly_twenty_six_decisions() {
+    fn account_office_read_result_records_exactly_twenty_nine_decisions() {
         let result = OfficeReadResult::default();
         let ledger = account_office_read_result(&result).unwrap();
-        assert_eq!(ledger.decision_count(), 28);
+        // P4b added `edge_border_pool`, `derived` for the same reason as `picture_pool`.
+        assert_eq!(ledger.decision_count(), 29);
         assert!(ledger.mapped_count() > 0);
         assert!(ledger.derived_count() > 0);
         assert_eq!(ledger.refused_count(), 0);
         assert_eq!(
             ledger.mapped_count() + ledger.derived_count() + ledger.refused_count(),
-            28
+            29
         );
     }
 
@@ -673,6 +684,7 @@ mod tests {
             ("OfficeReadResult.images", Mapped),
             ("OfficeReadResult.pictures_declared_without_bytes", Mapped),
             ("OfficeReadResult.picture_pool", Derived),
+            ("OfficeReadResult.edge_border_pool", Derived),
             ("OfficeReadResult.vector_graphics", Mapped),
             ("OfficeReadResult.headers", Mapped),
             ("OfficeReadResult.footers", Mapped),

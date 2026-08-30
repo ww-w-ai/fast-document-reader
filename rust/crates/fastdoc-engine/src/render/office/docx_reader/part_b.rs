@@ -1081,6 +1081,7 @@ impl super::DocxReader {
                         border_color,
                         border_width,
                         edge_borders: None,
+                        edge_borders_ref: None,
                         width: Self::cell_width(tc_pr),
                         vertical_alignment: Self::cell_valign(tc_pr),
                         padding: resolved_margin,

@@ -27,9 +27,15 @@ use std::ffi::{CStr, CString};
 /// 61 distinct pictures (610 table cells share 44 background images). They now travel once, in
 /// `picture_pool`, keyed by content (`office/picture_pool.rs`).
 ///
+/// At P4b: **11,516,320** — the same repair for the field next-largest after the pictures. The
+/// export wrote `edge_borders` once per CELL, 5,494 times for 274 distinct declarations; they now
+/// travel once in `edge_border_pool` (`office/edge_border_pool.rs`). Worth −20% of the HOST's
+/// decode, measured paired on one build (invariant 129) — the bytes are the visible half, the
+/// 5,494 nested containers Foundation no longer opens are the half that costs.
+///
 /// The ceiling is the measurement, not a budget with slack: a change that puts bytes back fails
 /// here, and a change that removes more is the next ceiling asking to be written down.
-const RECORDED_CEILING: usize = 13_181_914;
+const RECORDED_CEILING: usize = 11_516_320;
 
 /// Document paths come from the environment, and `cargo test` runs this binary with its CWD set to
 /// the PACKAGE directory — so a path written relative to the repo (`testdocs/...`, the way every

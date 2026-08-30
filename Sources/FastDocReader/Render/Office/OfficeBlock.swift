@@ -1624,7 +1624,7 @@ extension Span: Decodable {
 extension Cell: Decodable {
     enum CodingKeys: String, CodingKey {
         case blocks, rowSpan, colSpan, backgroundColor, backgroundImage, backgroundGradient, borderColor
-        case borderWidth, edgeBorders, width, verticalAlignment, padding
+        case borderWidth, edgeBorders, edgeBordersRef, width, verticalAlignment, padding
         case edgePadding, diagonal, styleShading, styleBorderColor, styleBorderWidth
     }
     public init(from decoder: Decoder) throws {
@@ -1637,7 +1637,9 @@ extension Cell: Decodable {
         backgroundGradient = try c.decodeIfPresent(WireGradient.self, forKey: .backgroundGradient)?.gradient
         borderColor = try c.decodeIfPresent(WireColor.self, forKey: .borderColor)?.color
         borderWidth = try c.decodeIfPresent(CGFloat.self, forKey: .borderWidth)
-        edgeBorders = try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders)
+        edgeBorders = try EdgeBorderTable.resolve(
+            try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders),
+            ref: try c.decodeIfPresent(Int.self, forKey: .edgeBordersRef))
         width = try c.decodeIfPresent(CGFloat.self, forKey: .width)
         verticalAlignment = try c.decodeIfPresent(CellVAlign.self, forKey: .verticalAlignment)
         padding = try c.decodeIfPresent(CGFloat.self, forKey: .padding)
@@ -1652,7 +1654,7 @@ extension Cell: Decodable {
 extension TableFormat: Decodable {
     enum CodingKeys: String, CodingKey {
         case defaultBorderColor, defaultBorderWidth, defaultShading, backgroundImage, backgroundGradient, sourceWidth, edgeBorders
-        case defaultPadding, repeatHeaderRows, pageBreakPolicy, outerMargin
+        case edgeBordersRef, defaultPadding, repeatHeaderRows, pageBreakPolicy, outerMargin
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1662,7 +1664,9 @@ extension TableFormat: Decodable {
         backgroundImage = try c.decodeIfPresent(WireImage.self, forKey: .backgroundImage)?.image
         backgroundGradient = try c.decodeIfPresent(WireGradient.self, forKey: .backgroundGradient)?.gradient
         sourceWidth = try c.decodeIfPresent(CGFloat.self, forKey: .sourceWidth)
-        edgeBorders = try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders)
+        edgeBorders = try EdgeBorderTable.resolve(
+            try c.decodeIfPresent(EdgeBorders.self, forKey: .edgeBorders),
+            ref: try c.decodeIfPresent(Int.self, forKey: .edgeBordersRef))
         defaultPadding = try c.decodeIfPresent(EdgePadding.self, forKey: .defaultPadding)
         repeatHeaderRows = try c.decodeIfPresent(Bool.self, forKey: .repeatHeaderRows)
         pageBreakPolicy = try c.decodeIfPresent(TablePageBreakPolicy.self, forKey: .pageBreakPolicy)

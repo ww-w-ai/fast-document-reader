@@ -377,3 +377,39 @@ extension OfficeBlock: Decodable {
         }
     }
 }
+
+/// The envelope's per-edge border table, in scope for exactly as long as one decode.
+///
+/// The same shape as `PictureBytes` above and for the same reason: a cell's `edgeBorders` is
+/// decoded from two places through `Decodable`, which has nowhere to carry a context, and a
+/// post-pass is impossible because the value has already been folded into an `OfficeBlock` enum
+/// case by the time one could run.
+///
+/// Why it exists at all: one real government manual writes `edge_borders` **5,494 times for 274
+/// distinct declarations**. Removing the repeats took the host's decode of that document from
+/// 585.0 ms to 445.5 ms, measured through this very path (invariant 129) — the bytes were never
+/// the point, the 5,494 nested containers were.
+enum EdgeBorderTable {
+    @TaskLocal static var pool: [EdgeBorders] = []
+
+    static func withPool<T>(_ pool: [EdgeBorders], _ body: () throws -> T) rethrows -> T {
+        try $pool.withValue(pool, operation: body)
+    }
+
+    /// The declaration itself when the wire repeated it, the pooled one when it did not.
+    ///
+    /// A slot the table cannot answer is a THROW, not a silent `nil`: `nil` already means "this
+    /// cell said nothing per-edge", so swallowing a bad slot would turn a broken envelope into a
+    /// document whose borders are quietly missing — the failure mode invariant 47 exists to keep
+    /// distinguishable.
+    static func resolve(_ inline: EdgeBorders?, ref: Int?) throws -> EdgeBorders? {
+        if let inline { return inline }
+        guard let ref else { return nil }
+        guard ref >= 0, ref < pool.count else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: [],
+                debugDescription: "edgeBordersRef \(ref) is outside the envelope's table of \(pool.count)"))
+        }
+        return pool[ref]
+    }
+}

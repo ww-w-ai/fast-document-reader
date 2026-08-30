@@ -86,7 +86,7 @@ const EXPECTED_KEYS: &[&str] = &[
     "OfficeBlock.ListItem.numbering",
 ];
 
-const TABLE_EXPECTED_DECISIONS: usize = 47;
+const TABLE_EXPECTED_DECISIONS: usize = 49;
 const TABLE_EXPECTED_KEYS: &[&str] = &[
     "Cell.blocks",
     "Cell.row_span",
@@ -97,6 +97,7 @@ const TABLE_EXPECTED_KEYS: &[&str] = &[
     "Cell.border_color",
     "Cell.border_width",
     "Cell.edge_borders",
+    "Cell.edge_borders_ref",
     "Cell.width",
     "Cell.vertical_alignment",
     "Cell.padding",
@@ -127,6 +128,7 @@ const TABLE_EXPECTED_KEYS: &[&str] = &[
     "TableFormat.background_gradient",
     "TableFormat.source_width",
     "TableFormat.edge_borders",
+    "TableFormat.edge_borders_ref",
     "TableFormat.default_padding",
     "TableFormat.repeat_header_rows",
     "TableFormat.page_break_policy",
@@ -174,6 +176,10 @@ pub enum AccountingError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DecisionKind {
     Mapped,
+    /// A field the WIRE owns rather than any source layer — filled by the exporter and drained by
+    /// `from_json`, so a reader's own value is always empty. Counted with the mapped ones because
+    /// it IS accounted for; what it is not is a decision still owed (`Deferred`).
+    Derived,
     Deferred,
 }
 
@@ -233,6 +239,15 @@ impl FieldDecisionLedger {
             .filter(|kind| matches!(kind, DecisionKind::Deferred))
             .count()
     }
+    /// Fields the WIRE owns — see `DecisionKind::Derived`. Kept apart from `mapped_count` so a
+    /// count keeps meaning what its name says.
+    pub fn derived_count(&self) -> usize {
+        self.decisions
+            .values()
+            .filter(|kind| matches!(kind, DecisionKind::Derived))
+            .count()
+    }
+
     pub fn mapped_count(&self) -> usize {
         self.decisions
             .values()
@@ -245,6 +260,15 @@ fn mapped(key: &'static str) -> DecisionToken {
     DecisionToken {
         key,
         kind: DecisionKind::Mapped,
+    }
+}
+/// A field the WIRE owns and no source layer maps — the exporter fills it and `from_json` drains
+/// it, so a reader's own value is always empty. Named to match `office_result_accounting`'s helper
+/// of the same name rather than inventing a second word for one idea.
+fn derived(key: &'static str) -> DecisionToken {
+    DecisionToken {
+        key,
+        kind: DecisionKind::Derived,
     }
 }
 fn deferred(key: &'static str) -> DecisionToken {
@@ -613,6 +637,7 @@ pub(crate) fn account_table_cell_source_layers(
         border_color,
         border_width,
         edge_borders: cell_edge_borders,
+        edge_borders_ref: cell_edge_borders_ref,
         width,
         vertical_alignment,
         padding,
@@ -629,6 +654,15 @@ pub(crate) fn account_table_cell_source_layers(
     ledger.record(mapped("Cell.background_image"))?;
     ledger.record(mapped("Cell.background_gradient"))?;
     ledger.record(mapped("Cell.edge_borders"))?;
+    // A WIRE field, like `OfficeReadResult.picture_pool`: `edge_border_pool` fills it on the way
+    // out and drains it on the way in, so a reader's own cell never carries one and there is no
+    // source layer for it to be mapped from.
+    debug_assert!(
+        cell_edge_borders_ref.is_none(),
+        "Cell.edge_borders_ref is a wire field, not a reader's output"
+    );
+    let _ = cell_edge_borders_ref;
+    ledger.record(derived("Cell.edge_borders_ref"))?;
     ledger.record(mapped("Cell.edge_padding"))?;
     record!(
         ledger,
@@ -687,6 +721,7 @@ pub(crate) fn account_table_cell_source_layers(
         background_gradient: table_background_gradient,
         source_width,
         edge_borders: table_edge_borders,
+        edge_borders_ref: table_edge_borders_ref,
         default_padding,
         repeat_header_rows,
         page_break_policy,
@@ -695,6 +730,12 @@ pub(crate) fn account_table_cell_source_layers(
     ledger.record(mapped("TableFormat.background_image"))?;
     ledger.record(mapped("TableFormat.background_gradient"))?;
     ledger.record(mapped("TableFormat.edge_borders"))?;
+    debug_assert!(
+        table_edge_borders_ref.is_none(),
+        "TableFormat.edge_borders_ref is a wire field, not a reader's output"
+    );
+    let _ = table_edge_borders_ref;
+    ledger.record(derived("TableFormat.edge_borders_ref"))?;
     record!(
         ledger,
         "TableFormat",
@@ -1174,6 +1215,7 @@ mod tests {
             border_color: Some(color),
             border_width: Some(1.0),
             edge_borders: Some(edges),
+            edge_borders_ref: None,
             width: Some(100.0),
             vertical_alignment: Some(CellVAlign::Center),
             padding: Some(5.0),
@@ -1191,6 +1233,7 @@ mod tests {
             background_gradient: None,
             source_width: Some(200.0),
             edge_borders: Some(edges),
+            edge_borders_ref: None,
             default_padding: Some(padding),
             repeat_header_rows: Some(true),
             page_break_policy: Some(TablePageBreakPolicy::AtRowBoundary),
@@ -1210,14 +1253,18 @@ mod tests {
     /// 41 -> 45 mapped, 2 deferred unchanged. Nothing is refused any more (`DecisionKind::Refused`
     /// was removed from this file along with its last producer — see that enum's own doc).
     #[test]
-    fn s2a1c3_exact_forty_seven_field_ledger_classifies_45_2() {
+    fn s2a1c3_exact_forty_nine_field_ledger_classifies_47_2() {
         let (cell, diagonal, side, edges, padding, format, table) = table_source_fixture();
         let ledger = account_table_cell_source_layers(
             &cell, &diagonal, &side, &edges, &padding, &format, &table,
         )
         .unwrap();
-        assert_eq!(ledger.decision_count(), 47);
+        // P4b added `edge_borders_ref` to both `Cell` and `TableFormat` — wire fields with no
+        // source layer, so they are `derived`, counted on their own: 47 -> 49 total, mapped and
+        // deferred both unchanged.
+        assert_eq!(ledger.decision_count(), 49);
         assert_eq!(ledger.mapped_count(), 45);
+        assert_eq!(ledger.derived_count(), 2);
         assert_eq!(ledger.deferred_count(), 2);
     }
 

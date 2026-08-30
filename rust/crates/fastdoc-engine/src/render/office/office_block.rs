@@ -421,6 +421,11 @@ pub struct Cell {
     /// format and markdown still use. `nil` = this cell said nothing per-edge → unchanged behaviour.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edge_borders: Option<EdgeBorders>,
+    /// Where `edge_borders` is, when the wire filed it in the envelope's table instead of repeating
+    /// it here — see `edge_border_pool`. Exactly one of the two is ever set on the wire, and this
+    /// one is always `None` in memory, so a result that round-trips equals the one that was read.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub edge_borders_ref: Option<u32>,
     // swift: Render/Office/OfficeBlock.swift:245-251
     /// The cell's own declared column width in POINTS (docx `w:tcPr/w:tcW`, converted from twips;
     /// odt column widths) — `nil` leaves `TableBlockBuilder`'s existing auto layout (equal-ish,
@@ -499,8 +504,8 @@ impl PartialEq for Cell {
     fn eq(&self, other: &Self) -> bool {
         let Self {
             blocks, row_span, col_span, background_color, background_image, background_gradient,
-            border_color, border_width, edge_borders, width, vertical_alignment, padding,
-            edge_padding, diagonal, style_shading, style_border_color, style_border_width,
+            border_color, border_width, edge_borders, edge_borders_ref, width, vertical_alignment,
+            padding, edge_padding, diagonal, style_shading, style_border_color, style_border_width,
         } = self;
         blocks == &other.blocks
             && row_span == &other.row_span
@@ -511,6 +516,7 @@ impl PartialEq for Cell {
             && border_color == &other.border_color
             && border_width == &other.border_width
             && edge_borders == &other.edge_borders
+            && edge_borders_ref == &other.edge_borders_ref
             && width == &other.width
             && vertical_alignment == &other.vertical_alignment
             && padding == &other.padding
@@ -538,6 +544,7 @@ impl Default for Cell {
             border_color: None,
             border_width: None,
             edge_borders: None,
+            edge_borders_ref: None,
             width: None,
             vertical_alignment: None,
             padding: None,
@@ -576,6 +583,7 @@ impl Cell {
             border_color: None,
             border_width: None,
             edge_borders: None,
+            edge_borders_ref: None,
             width: None,
             vertical_alignment: None,
             padding: None,
@@ -614,6 +622,7 @@ impl Cell {
             border_color,
             border_width,
             edge_borders,
+            edge_borders_ref: None,
             width,
             vertical_alignment,
             padding,
@@ -908,6 +917,9 @@ pub struct TableFormat {
     /// only place that knows where a cell sits in the grid.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edge_borders: Option<EdgeBorders>,
+    /// Where `edge_borders` is when the wire pooled it — see `Cell.edge_borders_ref`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub edge_borders_ref: Option<u32>,
     // swift: Render/Office/OfficeBlock.swift:531-538
     /// The table's own default cell margin/padding per edge (docx `w:tblPr/w:tblCellMar`; ODT has no
     /// table-wide equivalent — `fo:padding` lives on the cell's own STYLE only, so an ODT-sourced
@@ -963,8 +975,8 @@ impl PartialEq for TableFormat {
     fn eq(&self, other: &Self) -> bool {
         let Self {
             default_border_color, default_border_width, default_shading, background_image,
-            background_gradient, source_width, edge_borders, default_padding, repeat_header_rows,
-            page_break_policy, outer_margin,
+            background_gradient, source_width, edge_borders, edge_borders_ref, default_padding,
+            repeat_header_rows, page_break_policy, outer_margin,
         } = self;
         default_border_color == &other.default_border_color
             && default_border_width == &other.default_border_width
@@ -973,6 +985,7 @@ impl PartialEq for TableFormat {
             && background_gradient == &other.background_gradient
             && source_width == &other.source_width
             && edge_borders == &other.edge_borders
+            && edge_borders_ref == &other.edge_borders_ref
             && default_padding == &other.default_padding
             && repeat_header_rows == &other.repeat_header_rows
             && page_break_policy == &other.page_break_policy
@@ -2092,6 +2105,10 @@ pub struct OfficeReadResult {
     /// equal to the one that was read — which is what makes the round-trip check worth running.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub picture_pool: std::collections::HashMap<SwiftString, Data>,
+    /// Per-edge border declarations the WIRE carries once — see `edge_border_pool`. Empty in
+    /// memory and empty again after `office_export::from_json`, exactly like `picture_pool`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edge_border_pool: Vec<EdgeBorders>,
     /// Inline vector drawings keyed by the `.image(id:)` layout node that reserves their box.
     /// The host paints these paths and installs the resulting bytes into `images` before layout.
     pub vector_graphics: std::collections::HashMap<
@@ -2304,7 +2321,8 @@ pub struct OfficeReadResult {
 impl PartialEq for OfficeReadResult {
     fn eq(&self, other: &Self) -> bool {
         let Self {
-            blocks, comments, images, pictures_declared_without_bytes, picture_pool, vector_graphics,
+            blocks, comments, images, pictures_declared_without_bytes, picture_pool,
+            edge_border_pool, vector_graphics,
             default_body_font_size, declared_faces,
             page_content_width, page_margin_left, page_margin_right, page_content_height,
             page_margin_top, page_margin_bottom, page_header_distance, page_footer_distance,
@@ -2317,6 +2335,7 @@ impl PartialEq for OfficeReadResult {
             && map_eq(images, &other.images)
             && pictures_declared_without_bytes == &other.pictures_declared_without_bytes
             && map_eq(picture_pool, &other.picture_pool)
+            && edge_border_pool == &other.edge_border_pool
             && map_eq(vector_graphics, &other.vector_graphics)
             && default_body_font_size == &other.default_body_font_size
             && map_eq(declared_faces, &other.declared_faces)
@@ -2351,6 +2370,7 @@ impl Default for OfficeReadResult {
             images: std::collections::HashMap::new(),
             pictures_declared_without_bytes: std::collections::HashSet::new(),
             picture_pool: std::collections::HashMap::new(),
+            edge_border_pool: Vec::new(),
             vector_graphics: std::collections::HashMap::new(),
             default_body_font_size: 11.0,
             declared_faces: std::collections::HashMap::new(),
