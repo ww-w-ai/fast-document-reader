@@ -16,10 +16,28 @@ CONFIG="${1:-debug}"
 # in a public repo's permanent history, against a build script that is right here. So build it when
 # it is absent. A `.binaryTarget` naming a missing path fails the MANIFEST, which surfaces as an
 # unrelated SwiftPM error rather than "you have not built the engine yet".
-if [[ ! -d Vendor/FastdocEngine.xcframework ]]; then
+#
+# AND WHEN IT IS OLDER THAN THE SOURCE IT WAS BUILT FROM, which "absent" alone does not catch. Only
+# the Swift half rebuilds on `swift build`; a packaged library sitting in Vendor/ never does, so
+# editing Rust and running this script paired a NEW host with an OLD engine and said nothing. That
+# pair is not a build of anything: it read one real document into 543 pages against the 400 the
+# same commit produces when built properly, with twenty consecutive pages of text drawn over other
+# text — a product defect that does not exist, chased for hours before the timestamps were checked.
+# Staleness is decided by the packaged library's own mtime, so a rebuild that changes nothing still
+# clears it.
+ENGINE_LIB=Vendor/FastdocEngine.xcframework/macos-arm64/libfastdoc_engine_ffi.a
+if [[ ! -f "$ENGINE_LIB" ]]; then
   echo "==> Vendor/FastdocEngine.xcframework missing — building it"
   ./Scripts/build-engine.sh
+elif [[ -n "$(find rust/crates rust/Cargo.toml rust/Cargo.lock -type f -newer "$ENGINE_LIB" -print -quit 2>/dev/null)" ]]; then
+  echo "==> engine is older than the Rust source it was built from — rebuilding it"
+  ./Scripts/build-engine.sh
 fi
+
+# EVERY build product this tree carries, against the source it came from — the engine just handled
+# above, the committed rhwp library, and the two KaTeX files. Unconditional: a check that runs only
+# when someone remembers is the thing that failed here.
+./Scripts/check-freshness.sh
 
 swift build -c "$CONFIG"
 BIN="$(swift build -c "$CONFIG" --show-bin-path)/FastDocReader"

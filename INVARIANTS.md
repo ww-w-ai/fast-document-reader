@@ -1095,3 +1095,30 @@ this file tells you why, and why the obvious alternative does not work.
     master pages carry a full-sheet `.image` each (555.6 × 760.8pt) plus `.drawing(pdf)` and `.text`
     furniture. The full-sheet `.image` is the cover, and `.image` is the one branch that took the
     blit — which is why only covers were mirrored and the running furniture beside them was not.
+
+141. **A build step everyone passes through has to be true EVERY time, and `swift build` rebuilds
+    only the Swift half.** `make-app.sh` built the engine's xcframework when it was ABSENT and never
+    asked whether it was CURRENT, so editing Rust and rebuilding the app paired a new host with an
+    old engine and said nothing. That pair is not a build of any commit: it read
+    `2025_행정업무운영편람_최종.hwp` into **543 pages against the 400 the same commit produces when
+    built properly**, with twenty consecutive pages drawing text over other text. It was reported and
+    investigated as a pagination regression — a bisect over the branch, a second worktree built at
+    `origin/main`, a PDF overlap detector — and every commit measured **400 / 14 overlaps / no runs**,
+    which is what finally said the defect was in the build and not in the code. Hours, for a
+    timestamp.
+
+    **`Scripts/check-freshness.sh` now judges every product this tree carries that `swift build` does
+    not, and `make-app.sh` runs it unconditionally.** A check that runs only when someone remembers
+    is exactly the thing that failed.
+
+    **The three are judged differently, and the difference is the point.** An artifact that is NOT
+    committed carries its own build time, so mtime is honest — that is the engine. A COMMITTED
+    artifact carries no such thing: git stores no mtime, so a fresh clone or worktree stamps the
+    artifact and its sources at the same checkout time in arbitrary order, and comparing them reports
+    whatever the filesystem did. Measured here — `Vendor/rhwp-src`'s `Cargo.toml` and five test files
+    read as "newer" than the library they built, in a worktree where nothing had been edited at all.
+    So the committed ones are judged by a recorded FINGERPRINT: rhwp against the `library sha256` and
+    `rhwp commit` its own `Vendor/RHWP-SOURCE.txt` was already recording and nothing was reading, and
+    the two KaTeX files against each other, since they come from one npm package and must state one
+    version. Mutation-checked, all three arms: touching a Rust file, altering one character of the
+    recorded sha256, and moving the css's stamped version each turn it red.
