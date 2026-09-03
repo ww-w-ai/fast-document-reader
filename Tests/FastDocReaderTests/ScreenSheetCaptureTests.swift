@@ -43,6 +43,24 @@ final class ScreenSheetCaptureTests: XCTestCase {
             let dest = URL(fileURLWithPath: outDir).appendingPathComponent("sheet-\(page).png")
             try png.write(to: dest)
             print("PROBE wrote \(dest.path)  (\(rep.pixelsWide)×\(rep.pixelsHigh))")
+            if page == 1, ProcessInfo.processInfo.environment["FMD_SHEET_ASSERT_COVER_UPRIGHT"] != nil {
+                let left = 0..<(rep.pixelsWide / 2)
+                let third = rep.pixelsHigh / 3
+                func darkPixels(_ ys: Range<Int>) -> Int {
+                    ys.reduce(0) { count, y in
+                        count + left.reduce(0) { row, x in
+                            guard let color = rep.colorAt(x: x, y: y) else { return row }
+                            return row + (max(color.redComponent, color.greenComponent,
+                                              color.blueComponent) < 0.4 ? 1 : 0)
+                        }
+                    }
+                }
+                let top = darkPixels(0..<third)
+                let bottom = darkPixels((rep.pixelsHigh - third)..<rep.pixelsHigh)
+                print("PROBE cover dark pixels top=\(top) bottom=\(bottom)")
+                XCTAssertGreaterThan(bottom, top,
+                                     "the decoded HWP cover is vertically mirrored on screen")
+            }
 
             // WHAT OCCUPIES THE SHEET — an empty page is either nothing laid out there, or one
             // fragment reserving the whole of it. The two have different causes and the picture

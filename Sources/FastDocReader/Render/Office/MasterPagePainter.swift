@@ -275,14 +275,10 @@ enum MasterPagePainter {
         lastArtworkBlit = (target, pixelWidth, pixelHeight)
         cg.saveGState()
         cg.concatenate(ctm.inverted())      // out of the view's transform, into device pixels
-        // AND BACK THE OTHER WAY, ABOUT THIS RECTANGLE. Leaving the transform out was a claim that
-        // device space is already the right way up; it is not, and every real cover was drawn
-        // mirrored while the gate that was supposed to say so passed. `respectFlipped: true` is
-        // this app's ONE rule for which way up a picture goes — six other draw sites pass it,
-        // including this file's own `.drawing` and `.vector` branches — and stepping outside
-        // `NSImage` to buy the pixel-exact copy does not repeal it, it just means applying it here.
-        cg.translateBy(x: 0, y: target.minY + target.maxY)
-        cg.scaleBy(x: 1, y: -1)
+        // `ready` is already a CoreGraphics image in device orientation. Flipping it once more here
+        // mirrored real decoded HWP cover art vertically on screen, while printing (which bypasses
+        // this cache) stayed upright. Synthetic lockFocus images hid the defect; the real screen
+        // capture gate is the authority for this branch.
         cg.draw(ready, in: target)
         cg.restoreGState()
     }

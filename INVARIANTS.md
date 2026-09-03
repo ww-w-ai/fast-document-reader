@@ -1755,3 +1755,20 @@ this file tells you why, and why the obvious alternative does not work.
     bands while removing the overreach. Together with control-host collapse, settled `--pdf` moved
     from 503 to 483 pages (reproduced twice). The remaining difference from the official 429 is unresolved and must not
     be called normal or closed by matching rhwp's known-short 394.
+
+160. **SCREEN AND PDF READ THE SAME HWP MODEL BUT DO NOT SHARE THE FINAL DRAW/LAYOUT PASS — AND THE
+    SCREEN ARTWORK CACHE WAS FLIPPING REAL COVERS A SECOND TIME.** The screen draws a cached
+    device-space `CGImage`; printing deliberately bypasses that cache and draws the source
+    `NSImage`, after applying its own print page band and re-layout. The first-page comparison made
+    the consequence visible: PDF was upright while the screen cover was vertically mirrored.
+
+    The cached bitmap is already in device orientation. `drawArtwork` inverted the view CTM and
+    then applied another Y flip before `CGContext.draw`, which mirrored only the cached screen arm.
+    Removing that second flip makes the real cover match the PDF. The former synthetic lockFocus
+    gate passed both ways and was not evidence for a decoded HWP image. The real screen capture gate
+    now measures the asymmetric cover itself: fixed `top=3747, bottom=6113` dark pixels; restoring
+    the old flip produces `top=6056, bottom=3747` and fails by name.
+
+    Representative content anchors also separate drawing parity from pagination parity. Screen
+    100 maps to PDF 101, screen 250 to PDF 249, screen 400 to PDF 399-400, and the final colophon on
+    screen 493-494 maps to PDF 483. They share content, but print re-layout is not page-identical.
