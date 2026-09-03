@@ -1,29 +1,4 @@
 //! swift: Render/TableBlockBuilder.swift
-//! swift-range: 1-2
-//! swift-range: 9-10
-//! swift-range: 16-16
-//! swift-range: 132-133
-//! swift-range: 139-139
-//! swift-range: 144-144
-//! swift-range: 153-153
-//! swift-range: 158-158
-//! swift-range: 173-177
-//! swift-range: 197-197
-//! swift-range: 242-242
-//! swift-range: 849-853
-//! swift-range: 881-881
-//! swift-range: 893-893
-//! swift-range: 957-957
-//! swift-range: 1019-1019
-//! swift-range: 59-59
-//! swift-range: 285-288
-//! swift-range: 319-320
-//! swift-range: 336-336
-//! swift-range: 353-355
-//! swift-range: 403-403
-//! swift-range: 566-566
-//! swift-range: 691-691
-//! swift-range: 823-825
 
 use std::collections::{HashMap, HashSet};
 
@@ -285,6 +260,94 @@ impl TableBlockBuilder {
             edge(cell, table, |e| e.bottom),
             edge(cell, table, |e| e.right),
         )
+    }
+
+    /// The longest cell text this reader will surrender right margin for. A LABEL is short by
+    /// nature ("44.", "가.", "①"); past this a long unbroken run is a URL or an identifier, and
+    /// giving up the margin for it buys a line that still does not fit.
+    pub const MAX_RELIEVED_TOKEN_LENGTH: usize = 12;
+
+    // swift: TableBlockBuilder.oneTokenPaddingRelief
+    /// How much RIGHT padding a cell holding ONE unbreakable token should give back, or `None` to
+    /// keep all of it.
+    ///
+    /// Measured on the reference manual's Q&A rows: the source draws `44.` 25.1pt wide out of a
+    /// 28.1pt gap it was never given — it overflows the inner margin it declares rather than break
+    /// a token. This reader reserved the margin instead, TextKit force-broke the token, and the
+    /// full stop landed alone on a second line, stretching the row. So the margin is surrendered by
+    /// exactly what the token misses by, and no more.
+    ///
+    /// It is NOT required that the relief be ENOUGH. A guard demanding a COMPLETE fit was written
+    /// and removed: the source has no such rule, and adding it lost pages elsewhere.
+    pub fn one_token_padding_relief(
+        content: Option<&NSAttributedString>,
+        content_width: CGFloat,
+        right_padding: CGFloat,
+    ) -> Option<CGFloat> {
+        if right_padding <= 0.0 || content_width <= 0.0 {
+            return None;
+        }
+        let content = content?;
+        if content.length() == 0 || content.length() > Self::MAX_RELIEVED_TOKEN_LENGTH {
+            return None;
+        }
+        let trimmed = content.string().trim();
+        if trimmed.is_empty() || trimmed.chars().any(|c| c.is_whitespace()) {
+            return None;
+        }
+        let indent = match content.attribute(&NSAttributedStringKey::ParagraphStyle, 0) {
+            Some((AttrValue::ParagraphStyle(ps), _)) => ps.headIndent.max(ps.firstLineHeadIndent),
+            _ => 0.0,
+        };
+        let usable = content_width - (0.0 as CGFloat).max(indent);
+        let attributes = content.attributesAt(0).cloned().unwrap_or_default();
+        let needed = swiftshim::size_with_attributes(trimmed, &attributes).width.ceil();
+        if needed <= usable {
+            return None;
+        }
+        Some((0.0 as CGFloat).max(right_padding - (needed - usable)).floor())
+    }
+
+    /// The smallest line a decorative band is still allowed to reserve. A band the document sized
+    /// at zero would otherwise vanish entirely, taking its shading and rules with it.
+    pub const BAND_MINIMUM_LINE: CGFloat = 1.0;
+
+    // swift: TableBlockBuilder.decorativeBand
+    /// A row the DOCUMENT sized because nothing in it could: no text, and a declared height.
+    /// Returns the padding to charge each vertical edge and the line height to clamp the empty
+    /// line box to, or `None` when the row is an ordinary one that measures itself.
+    ///
+    /// Measured on the reference manual: 213 rows state a height under 5pt and 198 of those are
+    /// entirely empty — separator bands and shaded rules. Given a full empty line plus this
+    /// reader's own vertical padding, a 2.82pt band came out near 20pt, and the section-heading
+    /// box stood 48pt against the source's 30.5pt.
+    ///
+    /// The padding is kept when it fits and shrunk IN PROPORTION when it does not, so an
+    /// asymmetric declaration stays asymmetric rather than collapsing to zero on one edge.
+    pub fn decorative_band(
+        cell: Option<&CellContent>,
+        paged: bool,
+        padding_top: CGFloat,
+        padding_bottom: CGFloat,
+    ) -> Option<(CGFloat, CGFloat, CGFloat)> {
+        if !paged {
+            return None;
+        }
+        let cell = cell?;
+        let declared = cell.declared_height?;
+        if declared <= 0.0 || !cell.content.string().trim().is_empty() {
+            return None;
+        }
+        let room = (0.0 as CGFloat).max(declared - Self::BAND_MINIMUM_LINE);
+        let asked = padding_top + padding_bottom;
+        let (top, bottom) = if asked <= room {
+            (padding_top, padding_bottom)
+        } else if asked > 0.0 {
+            ((room * padding_top / asked).floor(), (room * padding_bottom / asked).floor())
+        } else {
+            (0.0, 0.0)
+        };
+        Some((top, bottom, Self::BAND_MINIMUM_LINE.max(declared - top - bottom)))
     }
 
     // swift: TableBlockBuilder.laidOutBorderWidth
@@ -988,7 +1051,9 @@ impl TableBlockBuilder {
             // sum to MORE than `availableForPadding`, reopening the very overshoot this exists to
             // shrink; rounding down never does.
             let available_for_padding = (0.0 as CGFloat).max(cell_width - left_width - right_width);
-            let (eff_left, eff_right): (CGFloat, CGFloat);
+            // A row the DOCUMENT sized because nothing in it could — see `decorative_band`.
+            let band = Self::decorative_band(placement.cell, paged, me.padding_top, me.padding_bottom);
+            let (mut eff_left, mut eff_right): (CGFloat, CGFloat);
             if paged {
                 // PER-EDGE — the left/right pair can genuinely differ (a document's own asymmetric
                 // margin), so each is capped independently against HALF the available room rather
@@ -998,10 +1063,19 @@ impl TableBlockBuilder {
                 let max_each_side = (available_for_padding / 2.0).floor();
                 eff_left = me.padding_left.min(max_each_side);
                 eff_right = me.padding_right.min(max_each_side);
+                // A label that cannot be broken takes the margin rather than break — see
+                // `one_token_padding_relief`.
+                if let Some(relieved) = Self::one_token_padding_relief(
+                    placement.cell.map(|c| &c.content),
+                    cell_width - eff_left - eff_right - left_width - right_width,
+                    eff_right,
+                ) {
+                    eff_right = relieved;
+                }
                 block.base.set_padding_edge(eff_left, NSRectEdge::MinX);
                 block.base.set_padding_edge(eff_right, NSRectEdge::MaxX);
-                block.base.set_padding_edge(me.padding_top, NSRectEdge::MinY);
-                block.base.set_padding_edge(me.padding_bottom, NSRectEdge::MaxY);
+                block.base.set_padding_edge(band.map(|b| b.0).unwrap_or(me.padding_top), NSRectEdge::MinY);
+                block.base.set_padding_edge(band.map(|b| b.1).unwrap_or(me.padding_bottom), NSRectEdge::MaxY);
             } else {
                 // UNCHANGED — the exact call this file made before the `paged` branch existed: ONE
                 // uniform value, set for all four edges via the no-`edge:` overload. `paddingLeft`
@@ -1012,8 +1086,10 @@ impl TableBlockBuilder {
                 eff_right = effective_padding;
                 block.base.set_padding_all(effective_padding);
             }
+            let cell_content_width =
+                (1.0 as CGFloat).max(cell_width - eff_left - eff_right - left_width - right_width);
             block.base.setContentWidth(
-                (1.0 as CGFloat).max(cell_width - eff_left - eff_right - left_width - right_width),
+                cell_content_width,
                 swiftshim::NSTextBlockValueType::AbsoluteValueType,
             );
             // The table's own OUTER margin, HORIZONTAL half only: reserved ENTIRELY by
@@ -1091,6 +1167,30 @@ impl TableBlockBuilder {
                         _ => NSMutableParagraphStyle::default(),
                     };
                     style.textBlocks.push(block_ref.clone());
+                    // swift: TableBlockBuilder.build — an indent pair that cannot fit this cell is
+                    // not this cell's. A shape's text box carries indents measured against the frame
+                    // the box was placed in; landing in a table cell, the two frames disagree and
+                    // the width left to lay a line in can be negative. Measured on the 편람's
+                    // 정책연구 flow chart: a 181.0pt cell indented `head 0.0 / tail -330.1`, drawn
+                    // one character per line. Only the impossible pair is touched — a tight indent
+                    // is the document's business.
+                    let usable = cell_content_width
+                        - (0.0 as CGFloat).max(style.headIndent)
+                        - (0.0 as CGFloat).max(-style.tailIndent);
+                    if usable <= 0.0 {
+                        style.headIndent = 0.0;
+                        style.firstLineHeadIndent = 0.0;
+                        style.tailIndent = 0.0;
+                    }
+                    // A decorative band's line box is CLAMPED to what the document declared, so an
+                    // empty paragraph cannot inflate a 2.82pt rule into a full text line.
+                    if let Some((_, _, line)) = band {
+                        style.minimumLineHeight = line;
+                        style.maximumLineHeight = line;
+                        style.lineSpacing = 0.0;
+                        style.paragraphSpacing = 0.0;
+                        style.paragraphSpacingBefore = 0.0;
+                    }
                     grafts.push((range, style));
                 },
             );
@@ -1327,6 +1427,9 @@ pub struct CellContent {
     /// Mirrors `Cell.verticalAlignment` — `nil` leaves `NSTextTableBlock`'s already-`.top`
     /// vertical alignment untouched.
     pub vertical_alignment: Option<CellVAlign>,
+    /// Mirrors `Cell.declaredHeight` — the row height the DOCUMENT stated, in points. Only a row
+    /// whose text cannot size it (an empty decorative band) reads this; see `decorative_band`.
+    pub declared_height: Option<CGFloat>,
     /// Mirrors `Cell.padding` — already resolved by the caller against any table default;
     /// `nil` means neither said anything, and `build` keeps its own pre-existing 7pt default.
     pub padding: Option<CGFloat>,
@@ -1358,6 +1461,7 @@ impl Default for CellContent {
             content: NSAttributedString::default(),
             row_span: 1,
             column_span: 1,
+            declared_height: None,
             background_color: None,
             background_image: None,
             border_color: None,

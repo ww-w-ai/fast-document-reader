@@ -1,7 +1,7 @@
 From 15bbb60329ad9e094fde66bf217295aa2a55e07a Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 16:19:08 +0900
-Subject: [PATCH 36/46] Do not claim to know what the diagonal byte means
+Subject: [PATCH 36/50] Do not claim to know what the diagonal byte means
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -20,7 +20,7 @@ travels uninterpreted, and the comment says so.
  1 file changed, 8 insertions(+), 2 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 048b027c..8163c5ac 100644
+index 048b027c4..8163c5acb 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -561,8 +561,14 @@ struct BorderFillDto {

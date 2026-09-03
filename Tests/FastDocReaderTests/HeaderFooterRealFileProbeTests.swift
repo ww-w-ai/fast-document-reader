@@ -24,7 +24,21 @@ final class HeaderFooterRealFileProbeTests: XCTestCase {
     /// for the same reason.
     override func setUp() {
         super.setUp()
+        // The shipped shape, and the ONLY one that has page furniture at all: `header`, `footer`
+        // and `separatesPages` are all `outline` now (`PageViewOptions`), so the state these
+        // assertions were first written against — `outline: false, header: true, footer: true`,
+        // furniture on and sheets off — no longer exists. Turning the pin off to recover the old
+        // reservation rule turns the header and footer off with it and measures a band of zero.
         PageViewOptionsStore.startingOptions = PageViewOptions(outline: true)
+    }
+
+    /// The pin above is load-bearing, not setup noise: with the outline ON the first page reserves
+    /// its FULL margin (invariant 60d), so "a cover with no header reserves nothing above it" is
+    /// false by design rather than by defect. Asserting the pin keeps the next mechanical rewrite of
+    /// `PageViewOptions` from turning these assertions into a report about the wrong mechanism.
+    func testTheProbeIsPinnedToTheStateThatHasFurnitureAtAll() {
+        XCTAssertTrue(PageViewOptionsStore.startingOptions.outline,
+                      "one switch drives header, footer and sheets — off means nothing to measure")
     }
 
     override func tearDown() {
@@ -44,9 +58,20 @@ final class HeaderFooterRealFileProbeTests: XCTestCase {
         // dispatch `MarkdownDocument.read` uses, so a `.hwp` (CFB, not a zip) never reaches
         // `ZipArchive` (invariant 44).
         let ext = url.pathExtension
-        let parsed: OfficeReadResult = DocumentTypes.isHwp(ext)
-            ? try HwpReader.read(data)
-            : try DocumentTypes.readOffice(try ZipArchive(data: data), extension: ext)
+        // THROUGH THE ENGINE, because that is what the window below is drawing. This read used to
+        // branch to `HwpReader.read` for a `.hwp` — the Swift reader, which `DocumentTypes` says in
+        // its first line nothing in the app calls any more: it is the REFERENCE the engine is
+        // checked against. So the probe was measuring one half of the app and asserting about the
+        // other, and on the 편람 the two disagree exactly where it matters — the Swift reader hands
+        // back a header and two footers, the engine drops them because they belong to a section the
+        // body is not typeset on (invariant 77), and the probe then demanded a band for entries the
+        // reader had correctly discarded. `resolvingFontSubstitution` is applied here for the same
+        // reason: it is part of what `DocumentTypes.readOffice` returns to the app, and the band is
+        // measured from the resolved fonts.
+        guard let engineRead = RustEngine.readOffice(data, extension: ext) else {
+            return XCTFail("the engine could not read \(url.lastPathComponent)")
+        }
+        let parsed: OfficeReadResult = engineRead.resolvingFontSubstitution()
         print("PROBE parsed: headers=\(parsed.headers.count) footers=\(parsed.footers.count) " +
               "pageContentHeight=\(String(describing: parsed.pageContentHeight))")
         for h in parsed.headers {
@@ -104,9 +129,15 @@ final class HeaderFooterRealFileProbeTests: XCTestCase {
             // same answer to the reader: reserve nothing.
             let firstPageHeader = PageBandPainter.applicableEntry(parsed.headers, pageIndex: 0)
             let coverDrawsNothing = !(firstPageHeader.map(draws) ?? false)
+            // The floor is the page's OWN top margin, not zero. Drawing sheets, the first and last
+            // pages get their full margins (invariant 60d) — without it the first sheet begins one
+            // margin above the view and shows no top edge at all. So "no header reaches page 0" no
+            // longer means "reserve nothing"; it means the header adds NOTHING TO the margin, which
+            // is the claim worth pinning and the one this arm now makes.
+            let marginTop = parsed.pageMarginTop ?? 0
             if coverDrawsNothing {
-                XCTAssertEqual(wc.pageBandDelegate.leadingBand, 0,
-                               "no header reaches page 0 (absent or blank) — must reserve nothing above it")
+                XCTAssertEqual(wc.pageBandDelegate.leadingBand, marginTop, accuracy: 0.5,
+                               "no header reaches page 0 — the margin, and not one point more")
             } else {
                 XCTAssertGreaterThan(wc.pageBandDelegate.leadingBand, 0,
                                      "a real header applying to page 0 must reserve room above the first line")
@@ -179,7 +210,16 @@ final class HeaderFooterRealFileProbeTests: XCTestCase {
         op.showsProgressPanel = false
         op.printInfo.jobDisposition = .save
         op.printInfo.dictionary()[NSPrintInfo.AttributeKey.jobSavingURL] = out
-        print("PROBE print pages=\(wc.printPageCount) paper=\(op.printInfo.paperSize) " +
+        // NOT the number ⌘P gives a reader, and reading it as one costs an afternoon. This probe
+        // wires the band itself, with the SCREEN's `RenderTheme.pageDeskGap` still in it — the desk
+        // you see between two sheets. The app's own print path passes `deskGap: 0`
+        // (`MarkdownDocument`, `forPrinting`), which is what makes the pitch exactly one sheet:
+        // measured on the 편람, 555.59 + (210.43 − 12) = 754.02, the paper to the point. So this
+        // count runs high — 523 where `--pdf` and the screen both say 503 — and what the assertion
+        // below is worth is the INTERNAL one: whatever this window paginated, the PDF has that many
+        // pages. Parity with the screen belongs to `--pdf` (invariant 66), which has it.
+        print("PROBE print pages=\(wc.printPageCount) (screen band, desk gap included — see above) " +
+              "paper=\(op.printInfo.paperSize) " +
               "sheet0=\(wc.printSheets.first.map { "\($0)" } ?? "none")")
         XCTAssertTrue(op.run(), "⌘P must produce a job for this real document")
         defer { try? FileManager.default.removeItem(at: out) }

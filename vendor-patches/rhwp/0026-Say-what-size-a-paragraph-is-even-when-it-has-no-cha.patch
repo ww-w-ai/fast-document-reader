@@ -1,7 +1,7 @@
 From 59649b20872ea835195ce830de61e4530841c72c Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Mon, 17 Aug 2026 16:03:12 +0900
-Subject: [PATCH 26/46] Say what size a paragraph is, even when it has no
+Subject: [PATCH 26/50] Say what size a paragraph is, even when it has no
  characters
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -19,7 +19,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  1 file changed, 18 insertions(+)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index fa0503e5..4a30d031 100644
+index fa0503e53..4a30d0312 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -518,6 +518,12 @@ struct ParaBlock {

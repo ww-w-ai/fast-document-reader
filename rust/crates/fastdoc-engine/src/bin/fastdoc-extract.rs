@@ -1,4 +1,5 @@
-//! swift: `App/HeadlessExtract.swift` — the `--extract` CLI, ported far enough to prove the engine
+//! swift: App/HeadlessExtract.swift
+//! the `--extract` CLI, ported far enough to prove the engine
 //! reads a real document end to end.
 //!
 //! This exists to be COMPARED, not shipped: it prints the same bytes the Swift reader prints for

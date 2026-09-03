@@ -1842,7 +1842,7 @@ extension HwpMappingTests {
             OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Running header")])]),
         ])
         XCTAssertEqual(result.footers, [
-            OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "Odd footer")])]),
+            OfficeHeaderFooter(appliesTo: .oddPages, blocks: [.paragraph(spans: [Span(text: "Odd footer")])]),
             OfficeHeaderFooter(appliesTo: .evenPages, blocks: [.paragraph(spans: [Span(text: "Even footer")])]),
         ])
     }
@@ -1855,17 +1855,22 @@ extension HwpMappingTests {
         XCTAssertEqual(result.footers, [])
     }
 
-    /// rhwp's `"both"` (no even override declared anywhere in the section) and `"odd"` (an even
-    /// override EXISTS elsewhere, so this entry is explicitly the non-even pages) both fold into
-    /// `.defaultPages` — see `HeaderFooterApplicability`'s own doc for why HWP's split is not
-    /// docx's three-way one. `"even"` is the one honest match.
-    func testApplyToBothAndOddBothMapToDefaultPagesWhileEvenMapsToEvenPages() throws {
+    /// Each of rhwp's three `applyTo` values keeps its own case: `"both"` is the section's
+    /// catch-all, `"odd"` and `"even"` are the two sides of the spread.
+    ///
+    /// `"odd"` used to fold into `.defaultPages`, on the reasoning that an even override elsewhere
+    /// left the remainder implicitly odd. That holds for a running head — a section declares at most
+    /// one of each — but NOT for a 바탕쪽: measured on `2025_행정업무운영편람_최종.hwp`, section 1
+    /// declares a `"both"` template AND an `"odd"` one, both arrived as `.defaultPages`, and the
+    /// selector (which takes the first default it finds) drew the cover's template on every body
+    /// page of the section while the odd one was never drawn at all.
+    func testEachApplyToValueKeepsItsOwnCase() throws {
         let json = """
         {"v":1,"blocks":[],
          "headers":[{"applyTo":"both","blocks":[]},{"applyTo":"odd","blocks":[]},{"applyTo":"even","blocks":[]}]}
         """
         let result = try HwpReader.mapJSON(json)
-        XCTAssertEqual(result.headers.map(\.appliesTo), [.defaultPages, .defaultPages, .evenPages])
+        XCTAssertEqual(result.headers.map(\.appliesTo), [.defaultPages, .oddPages, .evenPages])
     }
 
     /// An unrecognized `applyTo` (a future rhwp version this mapper doesn't yet know) degrades to

@@ -1,5 +1,4 @@
 //! swift: Render/Office/FontSubstitutionResolver.swift
-//! swift-range: 1-3
 
 use std::collections::{HashMap, HashSet};
 use swiftshim::SwiftString;

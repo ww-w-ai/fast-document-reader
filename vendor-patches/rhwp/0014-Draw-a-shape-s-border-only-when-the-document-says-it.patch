@@ -1,7 +1,7 @@
 From e985f537b37483bd7e64507dd9d0ce34800c2c57 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 01:53:58 +0900
-Subject: [PATCH 14/46] Draw a shape's border only when the document says it
+Subject: [PATCH 14/50] Draw a shape's border only when the document says it
  has one
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -25,7 +25,7 @@ rather than over it.
  3 files changed, 63 insertions(+), 12 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index e06789ba..2aeced8a 100644
+index e06789ba1..2aeced8ac 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -16,7 +16,7 @@ use crate::model::control::{AutoNumberType, Control, FieldType};
@@ -158,7 +158,7 @@ index e06789ba..2aeced8a 100644
                                  paths: Vec::new(),
                                  blocks: Vec::new(),
 diff --git a/src/renderer/layout.rs b/src/renderer/layout.rs
-index 1c33b1d9..12b331dd 100644
+index 1c33b1d9b..12b331dda 100644
 --- a/src/renderer/layout.rs
 +++ b/src/renderer/layout.rs
 @@ -1357,7 +1357,7 @@ pub struct LayoutEngine {
@@ -171,7 +171,7 @@ index 1c33b1d9..12b331dd 100644
  mod table_layout;
  mod table_partial;
 diff --git a/src/renderer/layout/shape_layout.rs b/src/renderer/layout/shape_layout.rs
-index ac142f89..1313e7ba 100644
+index ac142f899..1313e7ba7 100644
 --- a/src/renderer/layout/shape_layout.rs
 +++ b/src/renderer/layout/shape_layout.rs
 @@ -83,7 +83,7 @@ fn textbox_vpos_px(vertical_pos: i32, origin_hu: Option<i32>, dpi: f64) -> f64 {

@@ -1,7 +1,7 @@
 From 2fbf051c61c53002305c06fcaed2bfb668ed4dce Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 13:00:25 +0900
-Subject: [PATCH 31/46] Say what the font table knows about a face beyond its
+Subject: [PATCH 31/50] Say what the font table knows about a face beyond its
  name
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -36,7 +36,7 @@ Kept as a permanent regression: export_s2_font_table_fields.
  1 file changed, 67 insertions(+)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 756e954d..f207a2d6 100644
+index 756e954dc..f207a2d64 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -219,6 +219,27 @@ struct FontFaceDto {

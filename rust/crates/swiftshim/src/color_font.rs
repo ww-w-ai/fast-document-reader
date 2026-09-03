@@ -281,6 +281,15 @@ pub struct NSFont {
     familyName: Option<String>,
     pointSize: CGFloat,
     fontDescriptor: NSFontDescriptor,
+    /// The horizontal glyph scale this font was built with — AppKit's font MATRIX, which the host
+    /// applies via `NSFont(descriptor:textTransform:)`. `1.0` is the identity and is what every
+    /// constructor produces; only 장평 (HWP's per-script width scale) sets anything else.
+    ///
+    /// Nothing in this crate measures text, so this is carried rather than consumed — exactly as
+    /// `kern` is carried as an attribute and never applied here. It exists so the Rust builder and
+    /// the Swift builder hold the SAME font, and so the day this crate does measure, the scale is
+    /// already in the font instead of having to be rediscovered.
+    widthScale: CGFloat,
 }
 
 impl NSFont {
@@ -296,6 +305,19 @@ impl NSFont {
     pub fn fontDescriptor(&self) -> NSFontDescriptor {
         self.fontDescriptor.clone()
     }
+    pub fn widthScale(&self) -> CGFloat {
+        self.widthScale
+    }
+
+    /// swift: `NSFont(descriptor:textTransform:)` — the same face at a horizontal scale.
+    ///
+    /// The host passes a matrix carrying BOTH the size and the scale, because a font matrix maps a
+    /// 1-unit em; this side keeps them apart, since the size already has a home.
+    pub fn with_width_scale(&self, scale: CGFloat) -> Self {
+        let mut out = self.clone();
+        out.widthScale = scale;
+        out
+    }
 
     /// An `NSFont` for a face the provider issued, at a size.
     ///
@@ -309,6 +331,7 @@ impl NSFont {
             familyName: info.family,
             pointSize: size,
             fontDescriptor: NSFontDescriptor::fromFace(face, info.traits),
+            widthScale: 1.0,
         }
     }
 
@@ -324,6 +347,7 @@ impl NSFont {
             familyName: None,
             pointSize: size,
             fontDescriptor: NSFontDescriptor::default(),
+            widthScale: 1.0,
         }
     }
 
@@ -343,6 +367,7 @@ impl NSFont {
             familyName: Some(family.to_string()),
             pointSize: size,
             fontDescriptor: NSFontDescriptor::default().withSymbolicTraits(traits),
+            widthScale: 1.0,
         }
     }
 
@@ -365,6 +390,7 @@ impl NSFont {
             familyName: info.family,
             pointSize: size,
             fontDescriptor: NSFontDescriptor::of_face(face, info.traits),
+            widthScale: 1.0,
         }
     }
 

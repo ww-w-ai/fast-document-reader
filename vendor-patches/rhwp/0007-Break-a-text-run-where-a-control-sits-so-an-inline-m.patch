@@ -1,7 +1,7 @@
 From 6eeb08f5cdec62cc5d87b838646b2c8b7b1dfba5 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sat, 1 Aug 2026 20:42:41 +0900
-Subject: [PATCH 07/46] Break a text run where a control sits, so an inline
+Subject: [PATCH 07/50] Break a text run where a control sits, so an inline
  marker lands inside it
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,7 +23,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  1 file changed, 8 insertions(+), 1 deletion(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index d0debdc5..8202fcf7 100644
+index d0debdc59..8202fcf7d 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -454,6 +454,13 @@ fn build_spans(doc_info: &DocInfo, para: &Paragraph) -> Vec<Span> {

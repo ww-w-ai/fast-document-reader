@@ -487,6 +487,15 @@ impl Projector {
         })
     }
 
+    /// The section is READ BACK from the wire, never re-derived from where the node sits: the
+    /// reader is the one that knows whether its format names a section at all, and the projection
+    /// must answer identically or `office_projection_oracle` (rightly) fails.
+    ///
+    /// Dropping it (this returned `section: None` until measured on `2025_행정업무운영편람_최종.hwp`)
+    /// is not a missing nicety: `PageBandPainter.applicableEntry` reads `nil` as "declared by no
+    /// section, so it applies to EVERY page". That document declares a running head in exactly one
+    /// of its fourteen sections — the appendix — and the reader painted that section's `－N－`
+    /// footer on all 529 sheets, beside the page number the document's own 바탕쪽 already draws.
     fn header_footer(
         &mut self,
         node: &wire::Node,
@@ -501,7 +510,7 @@ impl Projector {
         Ok(OfficeHeaderFooter {
             applies_to: convert_hf_applicability(hf.applies_to),
             blocks,
-            section: None,
+            section: hf.section,
         })
     }
 
@@ -786,6 +795,7 @@ impl Projector {
             text_color: run.style.foreground.map(convert_color_back),
             highlight_color: run.style.background.map(convert_color_back),
             letter_spacing_percent: run.style.letter_spacing_percent,
+            width_scale_percent: run.style.width_scale_percent,
             baseline_offset_percent: run.style.baseline_offset_percent,
             underline_color: run.style.underline_color.map(convert_color_back),
             strikethrough_color: run.style.strikethrough_color.map(convert_color_back),
@@ -1000,6 +1010,7 @@ fn convert_hf_applicability(v: wire::HeaderFooterApplicability) -> ob::HeaderFoo
         wire::HeaderFooterApplicability::DefaultPages => ob::HeaderFooterApplicability::DefaultPages,
         wire::HeaderFooterApplicability::FirstPage => ob::HeaderFooterApplicability::FirstPage,
         wire::HeaderFooterApplicability::EvenPages => ob::HeaderFooterApplicability::EvenPages,
+        wire::HeaderFooterApplicability::OddPages => ob::HeaderFooterApplicability::OddPages,
     }
 }
 
@@ -1306,6 +1317,7 @@ fn convert_cell_back(tc: wire::TableCell, blocks: Vec<OfficeBlock>) -> Cell {
         blocks,
         row_span: tc.row_span as i64,
         col_span: tc.column_span as i64,
+        declared_height: tc.declared_height,
         background_color: tc.direct_shading.map(convert_color_back),
         // S6-4: patched onto the return value by `map_table`'s own loop, which alone has the
         // `&mut self` a resource lookup needs (this free function has none).
@@ -1647,11 +1659,6 @@ mod tests {
         );
     }
 
-    /// The one genuine ambiguity `declared_section_count` exists to resolve (`wire::Document`'s
-    /// own doc): a source that declared NO sections builds the identical single-`Section` tree a
-    /// source that declared exactly one does. `[]` is the honest answer for the former; a real
-    /// one-element array — carrying the declared value, not a default — for the latter.
-    #[test]
     /// The document's own page is a DIFFERENT fact from any section's, and a section that named no
     /// page of its own must not come back claiming the document's. `office_adapter` deliberately
     /// fills `wire::Section.paper` with the document's geometry so the section has an effective
@@ -1751,6 +1758,11 @@ mod tests {
         assert_eq!(doc.line_grid_pitch, Some(15.0), "the document's own pitch, not the section's 9");
     }
 
+    /// The one genuine ambiguity `declared_section_count` exists to resolve (`wire::Document`'s
+    /// own doc): a source that declared NO sections builds the identical single-`Section` tree a
+    /// source that declared exactly one does. `[]` is the honest answer for the former; a real
+    /// one-element array — carrying the declared value, not a default — for the latter.
+    #[test]
     fn zero_declared_sections_projects_empty_and_one_declared_projects_one_real_element() {
         let none_declared = ob::OfficeReadResult {
             blocks: vec![OfficeBlock::Paragraph {

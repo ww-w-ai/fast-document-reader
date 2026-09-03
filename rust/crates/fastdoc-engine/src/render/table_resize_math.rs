@@ -1,4 +1,5 @@
-//! swift: Render/TableBlockBuilder.swift:958-1002 (`resizeTables`'s per-cell target-width step)
+//! swift: Render/TableBlockBuilder.swift
+//! (`resizeTables`'s per-cell target-width step)
 //!
 //! S5B2a/S5B2b: host-to-Rust, the opposite direction from S5's text-measurement port. The live
 //! `NSTextStorage` walk and the write-back stay Swift's — only the arithmetic answering "how wide

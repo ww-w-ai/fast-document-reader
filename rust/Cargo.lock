@@ -872,7 +872,7 @@ dependencies = [
 [[package]]
 name = "rhwp"
 version = "0.7.19"
-source = "git+https://github.com/ww-w-ai/rhwp.git?rev=001fd0bfbb9c21af5393051963ee76dee625c7ec#001fd0bfbb9c21af5393051963ee76dee625c7ec"
+source = "git+https://github.com/ww-w-ai/rhwp.git?rev=bcf7acf2fa05a2f00bbe9d4c97b78daa1d20ea00#bcf7acf2fa05a2f00bbe9d4c97b78daa1d20ea00"
 dependencies = [
  "base64",
  "blake3",

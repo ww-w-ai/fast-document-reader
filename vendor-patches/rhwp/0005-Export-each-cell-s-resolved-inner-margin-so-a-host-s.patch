@@ -1,7 +1,7 @@
 From 9417eb8c8e106fd01483d5e4a96255f2720b5077 Mon Sep 17 00:00:00 2001
 From: Taehyoung Kim <taekim@ww-w.ai>
 Date: Sat, 1 Aug 2026 14:05:31 +0900
-Subject: [PATCH 05/46] Export each cell's resolved inner margin so a host
+Subject: [PATCH 05/50] Export each cell's resolved inner margin so a host
  stops inventing one
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -21,7 +21,7 @@ field, so the host cannot end up with a second, divergent rule.
  1 file changed, 24 insertions(+), 6 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index bdddcfe0..d0debdc5 100644
+index bdddcfe02..d0debdc59 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -291,6 +291,17 @@ struct CellDto {

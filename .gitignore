@@ -38,3 +38,4 @@ __pycache__/
 rust/target/
 rust/dist/
 /Vendor/FastdocEngine.xcframework/
+.cowork/

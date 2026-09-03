@@ -1,7 +1,7 @@
 From 84f98c22ec15e10ed5fec7d1eecc3c549e665f43 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 14:48:57 +0900
-Subject: [PATCH 34/46] feat(export): wire 21 new state-C branches into the
+Subject: [PATCH 34/50] feat(export): wire 21 new state-C branches into the
  structured JSON exporter
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -48,7 +48,7 @@ inline bits, OLE preview format).
  1 file changed, 1069 insertions(+), 4 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index b500eee4..5e32437b 100644
+index b500eee42..5e32437b7 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -150,9 +150,95 @@ struct DocumentJson {

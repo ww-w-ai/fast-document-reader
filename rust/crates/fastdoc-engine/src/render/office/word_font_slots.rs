@@ -1,5 +1,4 @@
 //! swift: Render/Office/WordFontSlots.swift
-//! swift-range: 1-15
 //!
 //! Word's own four-slot font vocabulary, its per-character slot table, and its theme font scheme —
 //! the parts of `w:rFonts` resolution that are pure data and pure decision, with no XML and no

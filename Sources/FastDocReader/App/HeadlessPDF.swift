@@ -76,7 +76,7 @@ enum HeadlessPDF {
         // The correction below takes the seed back out (invariant 127).
         wc.window?.setFrame(NSRect(x: 0, y: 0, width: seedWindowWidth, height: 640), display: false)
 
-        waitForRenderToSettle(doc: doc, wc: wc)
+        var settled = waitForRenderToSettle(doc: doc, wc: wc)
 
         // Put the reading column ON the paper, so `.fit` has nothing left to scale and the file
         // prints at the size it is read at. The relationship between the window and the text view
@@ -88,7 +88,7 @@ enum HeadlessPDF {
                                                  target: paperImageableWidth(),
                                                  isPaged: wc.pagedDocumentWidth != nil) {
             window.setFrame(NSRect(x: 0, y: 0, width: corrected, height: 640), display: false)
-            waitForRenderToSettle(doc: doc, wc: wc)
+            settled = waitForRenderToSettle(doc: doc, wc: wc) && settled
         }
 
         guard let container = wc.textView.textContainer else {
@@ -134,6 +134,13 @@ enum HeadlessPDF {
 
         out(outputURL.path)
         out("pages: \(pageCount)")
+        // Never let a half-settled render pass for a finished one. The page count above is the only
+        // number anyone reads out of this command, and on a timeout it is simply wrong.
+        if !settled {
+            out("settled: NO — the layout was still moving when the "
+                + "\(Int(settleTimeout))s budget ran out; this page count is NOT final "
+                + "(raise FMD_SETTLE_TIMEOUT and run again)")
+        }
         out("paper: \(pointString(box.width)) x \(pointString(box.height)) pt")
         out("size: \(pdfData.count) bytes")
         return 0
@@ -223,8 +230,33 @@ enum HeadlessPDF {
     /// by `timeout` so a dead network host can't hang the CLI forever. Internal (not `private`) so
     /// `HeadlessPDFTests` can settle its own reference `DocumentWindowController` the identical way
     /// before reading `printPageCount` off it.
+    /// The settle budget, in seconds. A COLD run — first launch after a build, caches empty, the
+    /// 20 MB engine and the document's fonts still being faulted in — genuinely needs longer than a
+    /// warm one, and running out used to be INVISIBLE: the walk simply stopped and whatever was laid
+    /// out so far got printed. Measured on the 394-page reference manual, three consecutive runs of
+    /// the SAME binary gave 517, 509, 509 pages, and the two warm runs were byte-identical while the
+    /// cold one was not — the 517 was a half-settled document, not a pagination difference.
+    /// `FMD_SETTLE_TIMEOUT` overrides it for a machine slower than this one.
+    /// How many CONSECUTIVE quiet 50 ms polls count as "finished". Three (150 ms) was not enough:
+    /// the render schedules its late corrections — media reconcile, giant-table splice-back — on the
+    /// main queue, and one arriving after a 150 ms lull leaves the walk returning a document that is
+    /// still going to move. Measured on the 394-page reference manual, the SAME binary printed 509
+    /// and 517 pages on consecutive warm runs at three polls.
+    static var settleQuietPolls: Int {
+        ProcessInfo.processInfo.environment["FMD_SETTLE_QUIET"].flatMap(Int.init) ?? 3
+    }
+
+    static var settleTimeout: TimeInterval {
+        ProcessInfo.processInfo.environment["FMD_SETTLE_TIMEOUT"].flatMap(TimeInterval.init) ?? 120
+    }
+
+    /// Returns TRUE when the render actually came to rest, FALSE when the budget ran out first —
+    /// and the caller MUST NOT treat a `false` document as finished. Silence here is the worst
+    /// possible failure: an unsettled document prints without complaint and looks like a real
+    /// answer, so every page count taken from one is wrong by an unknown amount.
+    @discardableResult
     static func waitForRenderToSettle(doc: MarkdownDocument, wc: DocumentWindowController,
-                                      timeout: TimeInterval = 20) {
+                                      timeout: TimeInterval = HeadlessPDF.settleTimeout) -> Bool {
         func layoutFully() {
             guard let tc = wc.textView.textContainer else { return }
             wc.textView.layoutManager?.ensureLayout(for: tc)
@@ -244,8 +276,9 @@ enum HeadlessPDF {
             lastHeight = height
             lastGeneration = generation
             quietPolls = quiet ? quietPolls + 1 : 0
-            if quietPolls >= 3 { return }
+            if quietPolls >= Self.settleQuietPolls { return true }
         }
+        return false
     }
 
     // MARK: - Argument parsing

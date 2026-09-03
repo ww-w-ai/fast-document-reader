@@ -1,5 +1,4 @@
 //! swift: Render/Office/Script/ScriptRanges.swift
-//! swift-range: 1-16
 //!
 //! GENERATED FILE -- do not edit by hand.
 //!

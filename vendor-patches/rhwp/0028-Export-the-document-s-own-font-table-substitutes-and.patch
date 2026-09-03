@@ -1,7 +1,7 @@
 From 01c7aa6a28d54c114166729039827dd733729eb7 Mon Sep 17 00:00:00 2001
 From: FastDocReader <taekim@ww-w.ai>
 Date: Tue, 18 Aug 2026 02:34:28 +0900
-Subject: [PATCH 28/46] Export the document's own font table, substitutes and
+Subject: [PATCH 28/50] Export the document's own font table, substitutes and
  all
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -19,7 +19,7 @@ glyph width is a page count.
  1 file changed, 50 insertions(+)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index db71aa9b..1b2dde71 100644
+index db71aa9b3..1b2dde719 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -76,6 +76,14 @@ struct DocumentJson {

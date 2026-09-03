@@ -1,7 +1,7 @@
 From e463c156f62ccc1b52a218b366c4d41c312e1b99 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sat, 15 Aug 2026 12:09:35 +0900
-Subject: [PATCH 21/46] Say where a text box sits in the coordinates its own
+Subject: [PATCH 21/50] Say where a text box sits in the coordinates its own
  drawing uses
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -19,7 +19,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  1 file changed, 60 insertions(+), 11 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index caf75ed7..4b1aa7de 100644
+index caf75ed76..4b1aa7deb 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -1412,8 +1412,18 @@ fn push_shape_text_boxes(doc: &Document, shape: &ShapeObject, out: &mut Vec<Bloc

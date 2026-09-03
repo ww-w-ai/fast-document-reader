@@ -79,12 +79,27 @@ enum DefaultAppClaim {
     static func isDefault(ext: String, id: String) -> Bool {
         guard let type = resolvedType(ext: ext, id: id),
               let current = NSWorkspace.shared.urlForApplication(toOpen: type) else { return false }
-        return current.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL
+        if current.standardizedFileURL == Bundle.main.bundleURL.standardizedFileURL { return true }
+        // Launch Services stores an IDENTIFIER, not a path, and resolves it back to whichever
+        // registered copy of that identifier it prefers. A Mac that still knows an OLDER copy of
+        // this app — one kept in the Trash, a download never removed, a second install — answers
+        // with THAT path, and a path-only comparison then reads a claim macOS actually accepted as
+        // a refusal. Measured here: approving the system dialog bound the identifier to a
+        // different copy of this app, after which every attempt reported failure however often it
+        // was pressed. Same identifier means the system does consider this app the handler.
+        return Bundle(url: current)?.bundleIdentifier == Bundle.main.bundleIdentifier
     }
 
     /// Claims each family, then hands back the names of the ones macOS refused — SORTED, because a
     /// bare `Set` iterates in a per-process hash-randomised order and the same refusal would list
     /// its families differently on each run (invariant 50's lesson, from a second direction).
+    /// How long a claim is given to appear in Launch Services before it counts as refused: eight
+    /// looks a quarter-second apart, so two seconds. Long enough for the commit that lags the
+    /// completion handler, short enough that a genuine refusal still answers while the reader is
+    /// looking at the dialog they just dismissed.
+    static let settleAttempts = 8
+    static let settleInterval: TimeInterval = 0.25
+
     static func apply(_ families: [Group], completion: @escaping ([String]) -> Void) {
         let appURL = Bundle.main.bundleURL
         let bundleID = Bundle.main.bundleIdentifier ?? ""
@@ -101,21 +116,44 @@ enum DefaultAppClaim {
                 guard let type = resolvedType(ext: member.ext, id: member.id) else {
                     note(family.name); continue
                 }
+                // Already ours: asking again would put the system's own confirmation dialog up
+                // for a change that is not a change. The families arriving here include the ones
+                // shown ticked-and-disabled, so this is what keeps that from costing a dialog.
+                if isDefault(ext: member.ext, id: member.id) { continue }
                 waiting.enter()
                 // Report SUCCESS only after reading the association back. macOS can answer noErr
                 // and change nothing when another installed app owns the type — measured on .hwp
                 // against Hancom's suite — so trusting the return value would tell the user it
                 // worked while the Finder still opens the file elsewhere.
-                func settle() {
-                    if !isDefault(ext: member.ext, id: member.id) { note(family.name) }
-                    waiting.leave()
+                //
+                // And read it back MORE THAN ONCE. Launch Services commits the change AFTER the
+                // completion handler runs, so a single immediate read can still answer with
+                // whatever was default a moment earlier. Measured on the shipped build: the app
+                // announced "Done. Those files now open in FastDoc." while the Finder went on
+                // opening markdown in Xcode — the reader is then told the setting took, sees that
+                // it did not, and has no way to tell the two apart.
+                func settle(_ attempt: Int) {
+                    if isDefault(ext: member.ext, id: member.id) { waiting.leave(); return }
+                    guard attempt < settleAttempts else { note(family.name); waiting.leave(); return }
+                    DispatchQueue.global().asyncAfter(deadline: .now() + settleInterval) {
+                        settle(attempt + 1)
+                    }
+                }
+                // The FIRST read waits too. Asked the instant the completion handler runs, Launch
+                // Services can answer with the change it has accepted but not yet committed — which
+                // is how the shipped build came to announce "Done. Those files now open in FastDoc."
+                // over a machine whose Finder went on opening markdown in Xcode. Letting the first
+                // look land after the same quarter-second as the retries costs nothing and makes a
+                // success claim mean the association was still ours a moment later.
+                func begin() {
+                    DispatchQueue.global().asyncAfter(deadline: .now() + settleInterval) { settle(0) }
                 }
                 if #available(macOS 14.0, *) {
-                    NSWorkspace.shared.setDefaultApplication(at: appURL, toOpen: type) { _ in settle() }
+                    NSWorkspace.shared.setDefaultApplication(at: appURL, toOpen: type) { _ in begin() }
                 } else {
                     _ = LSSetDefaultRoleHandlerForContentType(
                         type.identifier as CFString, .all, bundleID as CFString)
-                    settle()
+                    begin()
                 }
             }
         }
@@ -178,7 +216,13 @@ final class DefaultAppPicker: NSView {
                                   y: CGFloat(DefaultAppClaim.groups.count - 1 - i) * Self.rowHeight,
                                   width: width, height: Self.rowHeight - 4)
             addSubview(button)
-            if state != .claimed { boxes.append((button, group)) }
+            // EVERY family goes in the list, the already-ours ones included. They arrive at
+            // `apply` ticked and are skipped there without a system dialog, and that is the point:
+            // when this reads "already set" WRONGLY — Launch Services answers a stale yes for a
+            // while after a claim — leaving the family out would make the button claim nothing at
+            // all and still report success, which is the dead end a reader hits by pressing it
+            // again. Keeping it in means the second press re-asks the question.
+            boxes.append((button, group))
         }
     }
 

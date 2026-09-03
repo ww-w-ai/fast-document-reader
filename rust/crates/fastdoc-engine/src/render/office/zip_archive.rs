@@ -1,5 +1,4 @@
 //! swift: Render/Office/ZipArchive.swift
-//! swift-range: 1-2
 
 use swiftshim::{Data, NSRange};
 

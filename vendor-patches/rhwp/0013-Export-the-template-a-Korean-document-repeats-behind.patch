@@ -1,7 +1,7 @@
 From 81e97ce575ecdb1d94eb460b4291cca99a6e5ac7 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 01:11:17 +0900
-Subject: [PATCH 13/46] Export the template a Korean document repeats behind
+Subject: [PATCH 13/50] Export the template a Korean document repeats behind
  every page
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -19,7 +19,7 @@ has no paragraph a host could resolve.
  1 file changed, 120 insertions(+)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index ed5e958f..e06789ba 100644
+index ed5e958ff..e06789ba1 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -94,6 +94,10 @@ struct DocumentJson {

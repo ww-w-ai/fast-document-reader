@@ -1,7 +1,7 @@
 From e64b81369850228a985418aa2ad8a53b39641fd4 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sat, 15 Aug 2026 00:46:17 +0900
-Subject: [PATCH 19/46] Export what the model already knew and the host had to
+Subject: [PATCH 19/50] Export what the model already knew and the host had to
  guess
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -28,7 +28,7 @@ Everything here is data the model already held — nothing new is parsed.
  1 file changed, 160 insertions(+), 2 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 03f194f3..b647abe9 100644
+index 03f194f31..b647abe92 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -104,6 +104,11 @@ struct DocumentJson {

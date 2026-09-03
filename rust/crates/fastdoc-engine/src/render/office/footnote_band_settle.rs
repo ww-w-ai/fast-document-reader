@@ -1,5 +1,4 @@
 //! swift: Render/Office/FootnoteBandSettle.swift
-//! swift-range: 1-2
 
 use std::collections::HashMap;
 use swiftshim::CGFloat;

@@ -11,7 +11,7 @@ use crate::render::office::office_block::{
 };
 use std::collections::BTreeMap;
 
-const EXPECTED_DECISIONS: usize = 71;
+const EXPECTED_DECISIONS: usize = 72;
 const EXPECTED_KEYS: &[&str] = &[
     "Span.text",
     "Span.bold",
@@ -33,6 +33,7 @@ const EXPECTED_KEYS: &[&str] = &[
     "Span.text_color",
     "Span.highlight_color",
     "Span.letter_spacing_percent",
+    "Span.width_scale_percent",
     "Span.baseline_offset_percent",
     "Span.underline_color",
     "Span.strikethrough_color",
@@ -86,7 +87,7 @@ const EXPECTED_KEYS: &[&str] = &[
     "OfficeBlock.ListItem.numbering",
 ];
 
-const TABLE_EXPECTED_DECISIONS: usize = 49;
+const TABLE_EXPECTED_DECISIONS: usize = 50;
 const TABLE_EXPECTED_KEYS: &[&str] = &[
     "Cell.blocks",
     "Cell.row_span",
@@ -102,6 +103,7 @@ const TABLE_EXPECTED_KEYS: &[&str] = &[
     "Cell.vertical_alignment",
     "Cell.padding",
     "Cell.edge_padding",
+    "Cell.declared_height",
     "Cell.diagonal",
     "Cell.style_shading",
     "Cell.style_border_color",
@@ -318,6 +320,7 @@ pub(crate) fn account_current_office_slice(
         text_color,
         highlight_color,
         letter_spacing_percent,
+        width_scale_percent,
         baseline_offset_percent,
         underline_color,
         strikethrough_color,
@@ -352,6 +355,7 @@ pub(crate) fn account_current_office_slice(
         text_color,
         highlight_color,
         letter_spacing_percent,
+        width_scale_percent,
         baseline_offset_percent,
         underline_color,
         strikethrough_color,
@@ -639,6 +643,7 @@ pub(crate) fn account_table_cell_source_layers(
         vertical_alignment,
         padding,
         edge_padding: cell_edge_padding,
+        declared_height,
         diagonal,
         style_shading,
         style_border_color,
@@ -661,6 +666,7 @@ pub(crate) fn account_table_cell_source_layers(
     let _ = cell_edge_borders_ref;
     ledger.record(derived("Cell.edge_borders_ref"))?;
     ledger.record(mapped("Cell.edge_padding"))?;
+    ledger.record(mapped("Cell.declared_height"))?;
     record!(
         ledger,
         "Cell",
@@ -1002,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn real_source_destructuring_accounts_exactly_seventy_one_decisions() {
+    fn real_source_destructuring_accounts_exactly_seventy_two_decisions() {
         let mut span = Span::default();
         span.text = SwiftString::from("accounted");
         span.bold = true;
@@ -1037,7 +1043,7 @@ mod tests {
             enabled: true,
         });
         let ledger = account(span).unwrap();
-        assert_eq!(ledger.decision_count(), 71);
+        assert_eq!(ledger.decision_count(), 72);
         assert_eq!(ledger.deferred_count(), 1);
     }
 
@@ -1143,7 +1149,7 @@ mod tests {
             substituted.record(mapped(key)).unwrap();
         }
         substituted.record(mapped("bogus.same_count.key")).unwrap();
-        assert_eq!(substituted.decisions.len(), 71);
+        assert_eq!(substituted.decisions.len(), 72);
         let AccountingError::DecisionSetMismatch {
             missing,
             unexpected,
@@ -1217,6 +1223,7 @@ mod tests {
             vertical_alignment: Some(CellVAlign::Center),
             padding: Some(5.0),
             edge_padding: Some(padding),
+            declared_height: Some(24.0),
             diagonal: Some(diagonal),
             style_shading: Some(color),
             style_border_color: Some(color),
@@ -1258,9 +1265,10 @@ mod tests {
         .unwrap();
         // P4b added `edge_borders_ref` to both `Cell` and `TableFormat` — wire fields with no
         // source layer, so they are `derived`, counted on their own: 47 -> 49 total, mapped and
-        // deferred both unchanged.
-        assert_eq!(ledger.decision_count(), 49);
-        assert_eq!(ledger.mapped_count(), 45);
+        // deferred both unchanged. Invariant 152's `Cell.declared_height` — the row height the
+        // document itself states — is a mapped source field: 49 -> 50 total, 45 -> 46 mapped.
+        assert_eq!(ledger.decision_count(), 50);
+        assert_eq!(ledger.mapped_count(), 46);
         assert_eq!(ledger.derived_count(), 2);
         assert_eq!(ledger.deferred_count(), 2);
     }

@@ -1,0 +1,67 @@
+From 63ee515011d0804585a5755f28f98dde9accbc55 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 1 Sep 2026 11:52:53 +0900
+Subject: [PATCH 49/50] Export what a cell's own height is, and what its
+ symbols really are
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+호스트가 표 행 높이를 내용으로만 재면 문서가 2.8pt 짜리 색 띠로 그린 행을 글자 한
+줄 높이로 부풀린다 — 2025 행정업무운영편람 1,980 행 중 213 행이 5pt 미만이고 그중
+198 행은 글자가 아예 없다. 셀이 선언한 높이를 `heightPt` 로 함께 내보내, 내용이
+답할 수 없는 그 한 가지를 문서가 답하게 한다.
+
+그리고 한컴 PUA 를 표시 문자로 풀어서 내보낸다. 렌더러는 이미 이 표를
+(`expand_pua_display_text`) 갖고 있지만 그리는 순간에만 쓴다. 원문 그대로 흘리면
+호스트는 U+F0848 을 받아 아무 폴백 글꼴에나 붙이게 되고, 실측으로 체크박스 자리에
+하트가, 「▶」 자리에 「❶」이 찍힌다. 이 문서만 13 종 97 개다. 표를 호스트 쪽에
+복제하면 옛한글 자모 확장까지 두 벌로 갈라지므로 단일 출처인 `build_span` 에서 푼다.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index dd0fa652b..cafd604d3 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -1769,6 +1769,13 @@ struct CellDto {
+     /// 셀 필드 이름(한컴 셀 속성 → 필드 → 필드 이름). 지정 안 하면 없음.
+     #[serde(rename = "fieldName", skip_serializing_if = "Option::is_none")]
+     field_name: Option<String>,
++    /// 셀이 선언한 높이(pt). 문서가 표 행을 얼마나 높게 그리라고 적어 둔 값이고, 특히 **글자가
++    /// 없는 장식용 띠**에서 유일한 권위다 — 한컴은 2.8pt 짜리 회색 띠 행을 그대로 2.8pt 로
++    /// 그리는데, 이 값이 없는 호스트는 빈 문단에 글자 한 줄짜리 줄상자를 주어 그 행을 다섯 배로
++    /// 부풀린다. 이 문서(2025 행정업무운영편람)만 해도 5pt 미만 행이 213 개이고 그중 198 개가
++    /// 완전히 비어 있다. 0 이면 문서가 말하지 않은 것이니 호스트가 내용대로 재면 된다.
++    #[serde(rename = "heightPt", skip_serializing_if = "is_zero_f64")]
++    height_pt: f64,
+ }
+ 
+ #[derive(Serialize)]
+@@ -2627,6 +2634,12 @@ fn note_marker_span(number: u16, kind: &'static str,
+ }
+ 
+ fn build_span(doc_info: &DocInfo, char_shape_id: u32, text: String, link: Option<String>) -> Span {
++    // 한컴 PUA 를 표시 문자로 풀어서 내보낸다. 렌더러는 그리는 순간에만 이 표를 쓰는데
++    // (`expand_pua_display_text`), 내보내기가 원문 그대로 흘리면 호스트는 U+F0848 같은 코드를
++    // 받아 아무 폴백 글꼴에나 붙이게 되고 — 실측 — 체크박스 자리에 하트가, 「▶」 자리에 「❶」이
++    // 찍힌다. 이 문서만 해도 13 종 97 개다. 표를 호스트 쪽에 복제하면 옛한글 자모 확장까지
++    // 포함해 두 벌이 갈라지므로, 단일 출처인 이 함수에서 푼다.
++    let text = crate::renderer::composer::expand_pua_display_text(&text);
+     let cs = doc_info.char_shapes.get(char_shape_id as usize);
+     match cs {
+         Some(cs) => {
+@@ -2980,6 +2993,7 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {
+                     text_direction: cell.text_direction,
+                     apply_inner_margin: cell.apply_inner_margin,
+                     field_name: cell.field_name.clone(),
++                    height_pt: cell.height as f64 / 100.0,
+                 }
+             })
+             .collect();
+-- 
+2.50.1 (Apple Git-155)
+

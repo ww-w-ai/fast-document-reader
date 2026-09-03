@@ -1,7 +1,7 @@
 From ed512f86b1f2a5d079e3218cde98989de6a61399 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 19:07:28 +0900
-Subject: [PATCH 39/46] Say how big a picture's original is, so a crop can be
+Subject: [PATCH 39/50] Say how big a picture's original is, so a crop can be
  read
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -20,7 +20,7 @@ them resolves — no picture carrying a crop lacks an original size.
  1 file changed, 10 insertions(+)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index ec663601..675c550b 100644
+index ec663601e..675c550bd 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -1796,6 +1796,14 @@ struct ImageBlock {

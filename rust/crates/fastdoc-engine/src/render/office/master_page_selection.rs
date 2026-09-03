@@ -1,4 +1,5 @@
-//! swift: Render/Office/MasterPagePainter.swift:29-50 (`applicablePage`), `:73` (the section veto)
+//! swift: Render/Office/MasterPagePainter.swift
+//! (`applicablePage`), `:73` (the section veto)
 //!
 //! S5C3-01: the pure arithmetic `MasterPagePainter.applicablePage` does, ported unchanged. The
 //! per-object rect arithmetic (`draw(_:onSheet:…)`, `:88-135`) does NOT move — `s5c3.md` "Why the
@@ -52,13 +53,16 @@ pub fn applicable_template_index(
         return None;
     }
     let is_even_page_number = (page_index + 1) % 2 == 0;
-    if is_even_page_number {
-        if let Some(&i) = candidates
-            .iter()
-            .find(|&&i| templates[i].applies_to == HeaderFooterApplicability::EvenPages)
-        {
-            return Some(i);
-        }
+    let parity = if is_even_page_number {
+        HeaderFooterApplicability::EvenPages
+    } else {
+        HeaderFooterApplicability::OddPages
+    };
+    if let Some(&i) = candidates
+        .iter()
+        .find(|&&i| templates[i].applies_to == parity)
+    {
+        return Some(i);
     }
     candidates
         .iter()

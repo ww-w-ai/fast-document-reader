@@ -35,6 +35,13 @@ NAMED = re.compile(r"^\s*//\s*swift:\s*(?:(\S+\.swift)#)?([A-Za-z_][\w.]*)\s*$")
 RANGE = re.compile(r"^\s*//\s*swift-range:\s*(\S+?\.swift):(\d+)(?:-(\d+))?(?:\s|$)")
 MODULE = re.compile(r"^\s*//!\s*swift:\s*(\S+\.swift)\s*$")
 LEGACY = re.compile(r"^\s*//\s*swift:\s*\S+?\.swift:\d+")
+# The module header has its own two ways of going stale, and both used to slip past every check
+# above: a `//!` line is not a claim, so nothing read it. `//! swift-range:` is the module-level
+# remains of the line-based metric, and a header carrying `:12-34` or trailing prose stops
+# matching MODULE, which silently leaves every unqualified claim in that file with no file to
+# resolve against.
+MODULE_LEGACY = re.compile(r"^\s*//!\s*swift-range:")
+MODULE_ANY = re.compile(r"^\s*//!\s*swift:")
 RANGE_BUDGET = 4
 
 MANIFEST = REPO / "rust" / "PORT-MANIFEST.txt"
@@ -140,6 +147,9 @@ def claims():
             module = module.replace("Sources/FastDocReader/", "")
         for n, text in enumerate(lines, 1):
             site = f"{rs.relative_to(REPO)}:{n}"
+            if MODULE_LEGACY.match(text) or (MODULE_ANY.match(text) and not MODULE.match(text)):
+                legacy.append(f"{site}  {text.strip()[:80]}")
+                continue
             if LEGACY.match(text):
                 legacy.append(f"{site}  {text.strip()[:80]}")
                 continue

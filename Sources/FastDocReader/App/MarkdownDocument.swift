@@ -243,7 +243,7 @@ final class MarkdownDocument: NSDocument {
     /// Embedded office image bytes PRE-DECODED at read time, keyed by the `.image` block's id (see
     /// `OfficeReadResult.images`). The zip-backed readers (`DocxReader`/`OdtReader`) leave this `[:]`
     /// and resolve pixels lazily from `officeArchive`; HWP has no archive and its image FFI needs the
-    /// live parse handle (gone by reconcile time), so `HwpReader.read` fills this and `reconcileMedia`
+    /// live parse handle (gone by reconcile time), so the HWP read fills this and `reconcileMedia`
     /// checks it BEFORE the archive. `[:]` for every non-HWP document — byte-identical behaviour.
     private(set) var officeImageBytes: [String: Data] = [:]
 
@@ -433,8 +433,8 @@ final class MarkdownDocument: NSDocument {
         let ext = fileURL?.pathExtension ?? untitledExtension ?? ""
         // HWP/HWPX are NOT a `ZipArchive`: an `.hwp` is CFB binary (a `.hwpx` is a zip, but rhwp reads
         // both from raw `Data` itself), so they must branch BEFORE `ZipArchive(data:)` — which would
-        // throw on `.hwp` — and hand the bytes straight to `HwpReader.read`. No archive exists, so
-        // `officeArchive` stays nil; `HwpReader.read` pre-decodes every embedded image into
+        // throw on `.hwp` — and hand the bytes straight to the engine's HWP reader. No archive
+        // exists, so `officeArchive` stays nil; that read pre-decodes every embedded image into
         // `result.images` (S4 reconcile checks that map before the nil archive). HWP's own default
         // body size (Normal/"바탕글" style char-shape base size) rides the SAME rhwp parse —
         // `result.defaultBodyFontSize` is decoded off the export envelope's `defaultFontSizePt`,
@@ -666,8 +666,10 @@ final class MarkdownDocument: NSDocument {
             return .text(TextEncodingDetector.decode(data))
         }
         do {
-            // HWP branches to `HwpReader.read(Data)` before `ZipArchive` for the same reason as
-            // `read(from:)` — a `.hwp` is not a zip. Nil archive, images pre-decoded, and the SAME
+            // HWP branches before `ZipArchive` for the same reason as `read(from:)` — a `.hwp` is
+            // not a zip. It reads through the RUST ENGINE, like every office format does; the Swift
+            // `HwpReader` is the port's reference half and no longer on any path a reader takes
+            // (see that file's own banner). Nil archive, images pre-decoded, and the SAME
             // `result.defaultBodyFontSize`/`pageContentWidth` the first open uses (NOT a hardcoded
             // 11 — that made a ⌘R reload of an HWP whose declared body size ≠ 11 render differently
             // from its first open, the exact regression invariant 29 forbids).
@@ -1673,6 +1675,7 @@ final class MarkdownDocument: NSDocument {
                                            pageContentWidth: officePageContentWidth,
                                            tableWidth: max(1, colW - 2 * pad),
                                            lineGridPitch: officeLineGridPitch,
+                                           pageContentHeight: officePageContentHeight,
                                            comments: officeComments,
                                            deferringTables: deferredTables,
                                            sectionStartBlocks: officeSectionStartBlocks,
@@ -1836,6 +1839,7 @@ final class MarkdownDocument: NSDocument {
                                         pageContentWidth: officePageContentWidth,
                                         tableWidth: max(1, colW - 2 * pad),
                                         lineGridPitch: officeLineGridPitch,
+                                        pageContentHeight: officePageContentHeight,
                                         comments: officeComments))
             // A one-block build numbers its block from zero. The stand-in already holds the id this
             // table had in the full document, so the grid inherits it — two neighbours sharing an id

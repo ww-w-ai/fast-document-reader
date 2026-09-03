@@ -1,7 +1,7 @@
 From 6e09a6b273471141f5c1e4abb8716524dca61c3c Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 02:23:41 +0900
-Subject: [PATCH 15/46] Say where each section begins in the flat block stream
+Subject: [PATCH 15/50] Say where each section begins in the flat block stream
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -17,7 +17,7 @@ every other chapter's pages.
  1 file changed, 9 insertions(+)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 2aeced8a..805d432c 100644
+index 2aeced8ac..805d432c9 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -98,6 +98,12 @@ struct DocumentJson {

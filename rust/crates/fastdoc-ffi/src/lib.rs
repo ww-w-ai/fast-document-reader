@@ -1673,6 +1673,7 @@ pub unsafe extern "C" fn fastdoc_office_master_selection(
                 applies_to: match d.applies_to {
                     1 => HeaderFooterApplicability::FirstPage,
                     2 => HeaderFooterApplicability::EvenPages,
+                    3 => HeaderFooterApplicability::OddPages,
                     _ => HeaderFooterApplicability::DefaultPages,
                 },
             })

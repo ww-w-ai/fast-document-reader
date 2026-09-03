@@ -1,7 +1,7 @@
 From d376ef544bce0295a9b0f3eeef5b5141579162a5 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 22:47:36 +0900
-Subject: [PATCH 45/46] Count how often a corpus embeds a form control, and
+Subject: [PATCH 45/50] Count how often a corpus embeds a form control, and
  which kinds
 
 ---
@@ -11,7 +11,7 @@ Subject: [PATCH 45/46] Count how often a corpus embeds a form control, and
 
 diff --git a/examples/scan_forms.rs b/examples/scan_forms.rs
 new file mode 100644
-index 00000000..fd06899b
+index 000000000..fd06899be
 --- /dev/null
 +++ b/examples/scan_forms.rs
 @@ -0,0 +1,85 @@

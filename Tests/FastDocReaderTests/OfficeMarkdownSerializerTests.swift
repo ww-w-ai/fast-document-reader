@@ -188,3 +188,29 @@ final class OfficeMarkdownSerializerTests: XCTestCase {
         XCTAssertFalse(extracted.contains("****"), extracted)
     }
 }
+
+
+/// The line that opens a degraded table. It is repeated once per `<raw>` block — 162 times on one
+/// real document — and it is the ONLY thing a reader who arrives at a slice of this output has to
+/// tell it from a real pipe table, so both halves of its meaning are pinned here: the pipes are not
+/// a grid, and the rows are text as written. Shortening it further is fine; dropping either half is
+/// not, and this is what says so.
+final class RawTableNoteTests: XCTestCase {
+
+    func testTheNoteSaysThePipesAreNotAGrid() {
+        XCTAssertTrue(OfficeMarkdownSerializer.rawNote.contains("not a grid"),
+                      "a reader seeing only this block must not parse the pipes as columns")
+    }
+
+    func testTheNoteSaysTheRowsAreLiteral() {
+        XCTAssertTrue(OfficeMarkdownSerializer.rawNote.lowercased().contains("literal"),
+                      "the cells are the document's own text, not a reconstruction")
+    }
+
+    func testTheNoteIsPaidForOncePerDegradedTable() {
+        // It is not prose: on the document that drove this it is written 162 times, so a sentence
+        // that explains the CAUSE as well costs thousands of characters the feature exists to save.
+        XCTAssertLessThanOrEqual(OfficeMarkdownSerializer.rawNote.count, 56,
+                                 "this line is charged per table — keep it a marker, not a paragraph")
+    }
+}

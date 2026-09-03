@@ -1,4 +1,5 @@
-//! swift: Render/CodeCardLayoutManager.swift:7-12 — the code card's four measurements.
+//! swift: Render/CodeCardLayoutManager.swift
+//! the code card's four measurements.
 //!
 //! The Swift file they live in stays with the host: it is an `NSLayoutManager` subclass and a
 //! background-pass draw routine, neither of which the engine has. These four numbers are not

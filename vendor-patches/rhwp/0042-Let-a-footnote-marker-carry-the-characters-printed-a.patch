@@ -1,7 +1,7 @@
 From 97a7f4d8629f95cc23773ffe53fa573b39035005 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 21:35:28 +0900
-Subject: [PATCH 42/46] Let a footnote marker carry the characters printed
+Subject: [PATCH 42/50] Let a footnote marker carry the characters printed
  around its number
 
 The decoration was exported on the note's BODY run and not on the marker, so a
@@ -13,7 +13,7 @@ over 637 samples: 791 of 811 shape declarations close the number, none opens it.
  2 files changed, 47 insertions(+), 8 deletions(-)
 
 diff --git a/examples/scan_footnotes.rs b/examples/scan_footnotes.rs
-index 9a6b073f..db241bb4 100644
+index 9a6b073f8..db241bb4e 100644
 --- a/examples/scan_footnotes.rs
 +++ b/examples/scan_footnotes.rs
 @@ -47,6 +47,15 @@ struct Counts {
@@ -73,7 +73,7 @@ index 9a6b073f..db241bb4 100644
      println!("--- smallest footnote-citing samples ---");
      for (size, path, notes) in c.footnote_samples.iter().take(5) {
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index cbb8d8d4..37ddccbb 100644
+index cbb8d8d4e..37ddccbbe 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -2341,10 +2341,14 @@ fn build_spans(doc: &Document, para: &Paragraph) -> Vec<Span> {

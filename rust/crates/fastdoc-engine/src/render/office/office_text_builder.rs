@@ -1,5 +1,4 @@
 //! swift: Render/Office/OfficeTextBuilder.swift
-//! swift-range: 1-46
 
 // (Swift `import AppKit` — every AppKit symbol below is a swiftshim stand-in per
 // docs/plans/rust-port-convention.md §4's symbol-surface table.)
@@ -223,6 +222,7 @@ impl OfficeTextBuilder {
         page_margin_right: Option<CGFloat>,
         table_width: Option<CGFloat>,
         line_grid_pitch: Option<CGFloat>,
+        page_content_height: Option<CGFloat>,
         comments: &[OfficeComment],
         deferring_tables: &std::collections::HashSet<usize>,
         section_start_blocks: &[usize],
@@ -496,7 +496,71 @@ impl OfficeTextBuilder {
             tag_block(&mut result, start, index, &mut block_seq);
         }
         Self::unify_paragraph_terminators(&mut result);
+        Self::cap_line_heights_to_page(&mut result, page_content_height, font_size_scale);
         result.into()
+    }
+
+    // swift: OfficeTextBuilder.capLineHeightsToPage
+    /// No line may be taller than the page it has to sit on.
+    ///
+    /// A Korean chapter divider states its number as a single 580pt character with the document's own
+    /// 160% line spacing, which resolves to a line box of **928pt** against a page body of **555.6pt**.
+    /// A line that cannot fit any page does not simply move to the next one: it is laid out where it
+    /// starts and runs 372pt past the boundary, so the glyph is painted across the following sheet's
+    /// running header and 바탕쪽, and the words that belong beside it are pushed onto a page of their
+    /// own. Measured on `2025_행정업무운영편람_최종.hwp`: five such lines (the dividers numbered 1-5, on
+    /// sheets 9, 32, 242, 341 and 379) out of 14,646.
+    ///
+    /// The reference renderer never meets this case because it does not lay out at all — HWP stores
+    /// the line array 한글 itself composed (`LineSeg.vertical_pos`, an absolute y per line), and rhwp
+    /// replays it, so its divider's title sits INSIDE the big numeral's box at the y the authoring app
+    /// recorded. Lines cannot overlap in a re-typeset flow, so the honest equivalent here is to refuse
+    /// to let one line claim more than a page.
+    ///
+    /// Applied as a FINAL pass over the built string rather than threaded through the three
+    /// `apply_paragraph_format` callers, and it writes only to a paragraph that actually exceeds the
+    /// page — every other document, and every other paragraph of this one, is byte-identical to what
+    /// this function did not exist (invariant 37). Callers that build furniture rather than the body
+    /// (the page band, the master page, a footnote) pass no page height and are untouched.
+    fn cap_line_heights_to_page(
+        result: &mut NSMutableAttributedString,
+        page_content_height: Option<CGFloat>,
+        font_size_scale: CGFloat,
+    ) {
+        let Some(declared) = page_content_height else { return };
+        if !(declared > 0.0) {
+            return;
+        }
+        let cap = declared * font_size_scale;
+        if !(cap > 0.0) {
+            return;
+        }
+        let whole = NSRange::new(0, result.length());
+        let mut edits: Vec<(NSRange, NSParagraphStyle)> = Vec::new();
+        result.asAttributedString().enumerateAttribute(&swiftshim::NSAttributedStringKey::ParagraphStyle, whole, |value, range, _stop| {
+            let style = match value {
+                Some(swiftshim::AttrValue::ParagraphStyle(p)) => p,
+                _ => return,
+            };
+            if !(style.minimumLineHeight > cap || style.maximumLineHeight > cap) {
+                return;
+            }
+            let mut capped = style.clone();
+            if capped.minimumLineHeight > cap {
+                capped.minimumLineHeight = cap;
+            }
+            // A zero maximum means "no cap" and is left alone ONLY when the minimum already governs;
+            // here the line is over the page either way, so the ceiling is stated explicitly.
+            capped.maximumLineHeight = cap;
+            edits.push((range, capped));
+        });
+        for (range, style) in edits {
+            result.addAttribute(
+                swiftshim::NSAttributedStringKey::ParagraphStyle,
+                swiftshim::AttrValue::ParagraphStyle(style),
+                range,
+            );
+        }
     }
 
     // swift: OfficeTextBuilder.unifyParagraphTerminators
@@ -822,6 +886,17 @@ impl OfficeTextBuilder {
             if let Some(pct) = span.letter_spacing_percent {
                 if pct != 0.0 {
                     attrs.insert(swiftshim::NSAttributedStringKey::Custom("kern".to_string()), swiftshim::AttrValue::Double(font.pointSize() * pct / 100.0));
+                }
+            }
+            // 장평 — the document's own glyph width, as a FONT MATRIX rather than an expansion
+            // attribute. `NSAttributedString.Key.expansion` is the obvious reading of "scale the
+            // glyphs" and it is INERT: measured on the 편람, setting it changed the layout by
+            // nothing at all (516 sheets, 14,727 line fragments, every per-sheet count identical),
+            // because TextKit's typesetter never folds it into a glyph advance. The matrix carries
+            // the SIZE as well as the scale, since a font matrix maps a 1-unit em.
+            if let Some(pct) = span.width_scale_percent {
+                if pct > 0.0 && pct != 100.0 {
+                    font = font.with_width_scale(pct / 100.0);
                 }
             }
             if let Some(pct) = span.baseline_offset_percent {
@@ -1838,6 +1913,7 @@ impl OfficeTextBuilder {
                             content,
                             row_span: cell.row_span as usize,
                             column_span: cell.col_span as usize,
+                            declared_height: cell.declared_height,
                             background_color: cell.background_color.clone(),
                             background_image: cell.background_image.clone(),
                             border_color: cell.border_color.clone(),
@@ -2266,6 +2342,9 @@ impl OfficeTextBuilder {
         Self::fitted_office_size(scaled, limit)
     }
 
+    // Cross-platform: the card's CONTENT and geometry, for a host that has to draw it
+    // itself. macOS never gets here (AppKit paints), which is why the shim beneath is
+    // `todo!()` rather than unfinished work — invariant 139.
     // swift: OfficeTextBuilder.placeholderImage
     /// The chart/SmartArt frame's pixels. Extracted so a reflow can REDRAW it at the new size —
     /// invariant 31 means this case is sized by `.bounds` with an image that is never nil, so

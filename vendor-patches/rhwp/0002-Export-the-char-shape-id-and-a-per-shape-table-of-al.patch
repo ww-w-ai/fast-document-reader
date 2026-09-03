@@ -1,7 +1,7 @@
 From 17e67ee2e9155abae3befb7a532d9ddbaf7a7ef1 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 28 Jul 2026 08:32:16 +0900
-Subject: [PATCH 02/46] Export the char shape id and a per-shape table of all
+Subject: [PATCH 02/50] Export the char shape id and a per-shape table of all
  seven font slots
 
 FastDocReader needs per-script fonts, and HWP stores seven font ids per char
@@ -14,7 +14,7 @@ field and every run boundary are untouched and the rendered output cannot move.
  1 file changed, 103 insertions(+)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 28e6c112..e3cd3272 100644
+index 28e6c112e..e3cd3272d 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -39,9 +39,37 @@ struct DocumentJson {

@@ -1,7 +1,7 @@
 From 8b85c9086bd50aa428c11423987edb5f42a0260c Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Thu, 13 Aug 2026 23:00:09 +0900
-Subject: [PATCH 09/46] Export a drawing's paths, whether it sits in the text,
+Subject: [PATCH 09/50] Export a drawing's paths, whether it sits in the text,
  and what a fill really is
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -26,7 +26,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  1 file changed, 273 insertions(+), 6 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 07cecd31..076271c2 100644
+index 07cecd318..076271c23 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -16,9 +16,11 @@ use crate::model::control::{AutoNumberType, Control, FieldType};

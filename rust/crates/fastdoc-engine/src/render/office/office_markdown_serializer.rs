@@ -1,5 +1,4 @@
 //! swift: Render/Office/OfficeMarkdownSerializer.swift
-//! swift-range: 1-20
 
 // swift: OfficeMarkdownSerializer
 // Turns the format-neutral office block vocabulary (`OfficeBlock`, the SAME thing the reader
@@ -25,6 +24,11 @@ impl OfficeMarkdownSerializer {
     /// whether to include the `<raw>` explanation in the header note.
     pub const RAW_OPEN: &'static str = "<raw>";
     pub const RAW_CLOSE: &'static str = "</raw>";
+    /// swift: OfficeMarkdownSerializer.rawNote — the line opening every `<raw>` block. Written to
+    /// stand on its own in a SLICE of the output, so it says the pipes below are not a grid and
+    /// stops there: the cause (merged cells) is nothing the reader acts on. Measured on one real
+    /// document, 162 blocks: 7,938 characters against the 13,932 the older sentence cost.
+    pub const RAW_NOTE: &'static str = "[table — not a grid; rows below are literal text]";
 
     // swift: OfficeMarkdownSerializer.serialize
     /// `footnotes` are appended as a trailing section, because they are no longer IN `blocks`.
@@ -222,8 +226,7 @@ impl OfficeMarkdownSerializer {
     fn raw_table(rows: &[Vec<crate::render::office::office_block::Cell>]) -> String {
         let mut lines = vec![
             Self::RAW_OPEN.to_string(),
-            "[table — merged cells or block content; structure not mapped, cells below are literal]"
-                .to_string(),
+            Self::RAW_NOTE.to_string(),
         ];
         for row in rows {
             lines.push(

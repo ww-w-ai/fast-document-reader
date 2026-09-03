@@ -1,7 +1,7 @@
 From 001fd0bfbb9c21af5393051963ee76dee625c7ec Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Wed, 19 Aug 2026 09:25:59 +0900
-Subject: [PATCH 46/46] Say where a column declaration sits and how many tables
+Subject: [PATCH 46/50] Say where a column declaration sits and how many tables
  sit under one
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -16,7 +16,7 @@ typeset at the column's width rather than moved afterwards.
  1 file changed, 15 insertions(+), 2 deletions(-)
 
 diff --git a/examples/scan_columns.rs b/examples/scan_columns.rs
-index 0272f526..c078d33f 100644
+index 0272f5260..c078d33f6 100644
 --- a/examples/scan_columns.rs
 +++ b/examples/scan_columns.rs
 @@ -33,10 +33,17 @@ struct Counts {

@@ -1,5 +1,4 @@
 //! swift: Render/MarkdownRenderer.swift
-//! swift-range: 1-3
 
 // swift: this file names types from the `swift-markdown` package (`import Markdown`) — Document,
 // Markup, MarkupWalker, Heading, Paragraph, Text, Emphasis, Strong, InlineCode, Link, Image,

@@ -1,7 +1,7 @@
 From 770a1785292dd79ebd42750cd432d9ba470ff87f Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 08:40:03 +0900
-Subject: [PATCH 16/46] Keep the words a drawing carries, even when it also
+Subject: [PATCH 16/50] Keep the words a drawing carries, even when it also
  carries a picture
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -17,7 +17,7 @@ arrived with the picture and none of the words.
  1 file changed, 18 insertions(+)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 805d432c..0e6ef2bd 100644
+index 805d432c9..0e6ef2bdf 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -1117,6 +1117,11 @@ fn push_shape_blocks(doc: &Document, shape: &ShapeObject, out: &mut Vec<Block>)

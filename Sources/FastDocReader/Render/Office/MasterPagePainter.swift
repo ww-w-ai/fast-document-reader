@@ -50,9 +50,14 @@ enum MasterPagePainter {
         // single-answer behaviour this had before per-page selection.
         let candidates = section.map { s in pages.filter { $0.section == s } } ?? pages
         guard !candidates.isEmpty else { return nil }
-        let isEvenPageNumber = (pageIndex + 1) % 2 == 0
-        if isEvenPageNumber, let even = candidates.first(where: { $0.appliesTo == .evenPages }) {
-            return even
+        // THE PAGE'S OWN PARITY, then the section's catch-all. A 바탕쪽 section routinely declares
+        // a `"both"` template AND a parity-specific one; the parity-specific one is what that side
+        // of the spread asked for, and the default is what the other side falls back to. Asking
+        // only about EVEN (what this did before `oddPages` existed) makes an odd-only template
+        // indistinguishable from a both-pages one, and the first one declared wins every page.
+        let parity: HeaderFooterApplicability = (pageIndex + 1) % 2 == 0 ? .evenPages : .oddPages
+        if let own = candidates.first(where: { $0.appliesTo == parity }) {
+            return own
         }
         return candidates.first { $0.appliesTo == .defaultPages } ?? candidates.first
     }
@@ -373,9 +378,25 @@ enum MasterPagePainter {
                                                 documentDefaultFontSize: content.documentDefaultFontSize,
                                                 pageContentWidth: content.pageContentWidth)
             guard built.length > 0 else { return }
-            PageBandPainter.substitutingPageFields(built, page: shownPageNumber ?? (pageIndex + 1),
-                                                   totalPages: totalPages,
-                                                   hidesPageNumber: pageNumberHidden).draw(in: rect)
+            let filled = PageBandPainter.substitutingPageFields(
+                built, page: shownPageNumber ?? (pageIndex + 1),
+                totalPages: totalPages, hidesPageNumber: pageNumberHidden)
+            // DRAW WHAT IT NEEDS, ANCHORED AT THE BOX'S TOP — never clip a word away.
+            // `NSAttributedString.draw(in:)` clips, and a master box is sized by the DOCUMENT's own
+            // typesetter, not ours: the 편람's section tab stacks 공/문/서 down a 23.7x87.7pt strip
+            // with three empty paragraphs between the characters, which the source draws at the
+            // heights it recorded (36pt per glyph, all three inside the strip) and this reader
+            // re-typesets at a full line each — 136pt needed, so the third character was cut off
+            // on roughly 200 pages with nothing to show it had gone. The source's own rule when its
+            // text will not fit the box it declared is to overflow the box rather than lose the
+            // word (invariant 152), so this grows the rect DOWNWARD from the box's top, which
+            // leaves every fitting box drawn exactly where it was.
+            let needed = filled.boundingRect(
+                with: NSSize(width: rect.width, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading]).height
+            var box = rect
+            box.size.height = max(rect.height, needed.rounded(.up))
+            filled.draw(in: box)
         }
     }
 }

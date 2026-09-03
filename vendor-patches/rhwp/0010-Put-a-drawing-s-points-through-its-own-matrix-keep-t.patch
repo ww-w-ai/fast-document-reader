@@ -1,7 +1,7 @@
 From cce992a1e7a2a4fa0ff21a409e475c039ada02dc Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 00:05:11 +0900
-Subject: [PATCH 10/46] Put a drawing's points through its own matrix, keep the
+Subject: [PATCH 10/50] Put a drawing's points through its own matrix, keep the
  picture inside it, and stop filling a line
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -29,7 +29,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  1 file changed, 100 insertions(+), 16 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 076271c2..6a3ada7d 100644
+index 076271c23..6a3ada7de 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -505,6 +505,18 @@ struct ShapeBlock {

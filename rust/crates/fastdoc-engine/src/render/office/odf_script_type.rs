@@ -1,5 +1,4 @@
 //! swift: Render/Office/OdfScriptType.swift
-//! swift-range: 1-8
 //!
 //! The three script types ODF names, and the normative code-point table that decides which one a
 //! character belongs to.

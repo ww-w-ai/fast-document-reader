@@ -1,7 +1,7 @@
 From 04f33667281a6d3c2c8a8ee2862e3b5562f1a6b8 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 20:37:00 +0900
-Subject: [PATCH 40/46] Send a footnote out on its own, so a reader can put it
+Subject: [PATCH 40/50] Send a footnote out on its own, so a reader can put it
  where it belongs
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -28,7 +28,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 diff --git a/examples/scan_footnotes.rs b/examples/scan_footnotes.rs
 new file mode 100644
-index 00000000..58ee8685
+index 000000000..58ee8685b
 --- /dev/null
 +++ b/examples/scan_footnotes.rs
 @@ -0,0 +1,164 @@
@@ -197,7 +197,7 @@ index 00000000..58ee8685
 +    println!("endnote paragraphs  : {:?}", ep);
 +}
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 675c550b..cbb8d8d4 100644
+index 675c550bd..cbb8d8d4e 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -132,6 +132,15 @@ struct DocumentJson {

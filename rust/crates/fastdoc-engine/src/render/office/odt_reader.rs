@@ -1,5 +1,4 @@
 //! swift: Render/Office/OdtReader.swift
-//! swift-range: 1-4
 
 use swiftshim::{CGFloat, CGSize, NSColor, NSTextAlignment, Ref};
 use crate::render::office::office_block::{

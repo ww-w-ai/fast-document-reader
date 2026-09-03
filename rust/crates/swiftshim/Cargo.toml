@@ -15,7 +15,7 @@ publish.workspace = true
 # `FontMetric`, `HangulMetric`, `MetricMatch`) is reachable by path, no fork edit needed. See
 # `fastdoc-engine/tests/rhwp_metrics_reachable.rs` for the standing test that catches a future
 # rhwp bump narrowing this visibility.
-rhwp = { git = "https://github.com/ww-w-ai/rhwp.git", rev = "001fd0bfbb9c21af5393051963ee76dee625c7ec", default-features = false }
+rhwp = { git = "https://github.com/ww-w-ai/rhwp.git", rev = "bcf7acf2fa05a2f00bbe9d4c97b78daa1d20ea00", default-features = false }
 
 # See the workspace manifest for why these two crates, and why the RAW deflate decoder.
 quick-xml = { workspace = true }

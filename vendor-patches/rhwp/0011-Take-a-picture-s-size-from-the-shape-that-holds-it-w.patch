@@ -1,7 +1,7 @@
 From 65fa5b21f441b3ac53c125474be6dca1bc031edd Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 00:28:19 +0900
-Subject: [PATCH 11/46] Take a picture's size from the shape that holds it when
+Subject: [PATCH 11/50] Take a picture's size from the shape that holds it when
  it states none of its own
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -19,7 +19,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  1 file changed, 12 insertions(+), 2 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 6a3ada7d..b9f2f540 100644
+index 6a3ada7de..b9f2f540c 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -923,10 +923,20 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {

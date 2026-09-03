@@ -1,7 +1,7 @@
 From 7b212ea76645b86c857dd14441f8e106d5ddce5f Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sun, 16 Aug 2026 12:28:51 +0900
-Subject: [PATCH 23/46] Say whether an object holds space in the flow
+Subject: [PATCH 23/50] Say whether an object holds space in the flow
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -18,7 +18,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  1 file changed, 30 insertions(+), 1 deletion(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 328873f1..389dedbb 100644
+index 328873f14..389dedbbd 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -678,6 +678,10 @@ struct ImageBlock {

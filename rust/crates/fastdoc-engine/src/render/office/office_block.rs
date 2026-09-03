@@ -1,5 +1,4 @@
 //! swift: Render/Office/OfficeBlock.swift
-//! swift-range: 1-2
 
 use swiftshim::{
     CGFloat, CGRect, CGSize, Data, NSColor, NSEdgeInsets, NSFontDescriptor, NSImage,
@@ -138,6 +137,15 @@ pub struct Span {
     /// applied to all of them.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub letter_spacing_percent: Option<CGFloat>,
+    /// The run's GLYPH WIDTH as a percentage of its own em (HWP `CharShape.ratios`, 장평, 50…200).
+    /// `nil` = the source said nothing and the glyphs keep the face's own advance. Like letter
+    /// spacing this is a PAGINATION fact rather than a flourish: a Korean government document sets
+    /// its body at 95–99% and a reader drawing 100% breaks every line early, which compounds into
+    /// whole sheets wherever the document also declares a hard page break.
+    ///
+    /// Filled under the same all-slots-agree rule as `letter_spacing_percent` (93.3% agree).
+    #[serde(rename = "widthScalePercent", skip_serializing_if = "Option::is_none", default)]
+    pub width_scale_percent: Option<CGFloat>,
     /// The run's baseline shift as a percentage of its own em (HWP `CharShape.char_offsets`, 글자
     /// 위치), positive being UP. Distinct from `superscript`/`subscripted`, which also resize.
     /// Filled under the same all-slots-agree rule as `letter_spacing_percent` (99.7% agree).
@@ -257,6 +265,7 @@ impl Default for Span {
             text_color: None,
             highlight_color: None,
             letter_spacing_percent: None,
+            width_scale_percent: None,
             baseline_offset_percent: None,
             underline_color: None,
             strikethrough_color: None,
@@ -433,6 +442,17 @@ pub struct Cell {
     /// non-paged document renders byte-identical whether or not its reader populates this.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub edge_padding: Option<EdgePadding>,
+    /// The row height the DOCUMENT declared for this cell, in points — `nil` when it said nothing.
+    ///
+    /// It is the only authority for a row that holds no text. A Korean document builds its section
+    /// headings and panels out of tables with DECORATIVE BANDS: rows a couple of points high, every
+    /// cell empty, drawn as a thin rule of colour. A reader that measures such a row by its content
+    /// gives the empty paragraph a full line box and inflates the band five-fold. Measured on
+    /// `2025_행정업무운영편람_최종.hwp`: of 1,980 rows, 213 are declared under 5pt and 198 of those
+    /// are entirely empty, with 419 more between 5 and 15pt — every one of them taller here than the
+    /// document asked for.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub declared_height: Option<CGFloat>,
     /// The cell's own DIAGONAL, when the document drew one across it. `nil` = no diagonal, which is
     /// every cell of every other format this reader opens — only HWP states one, and the decision of
     /// whether a declaration IS a drawn diagonal is made by the parser (`BorderFill::cell_diagonal`),
@@ -462,7 +482,7 @@ impl PartialEq for Cell {
         let Self {
             blocks, row_span, col_span, background_color, background_image, background_gradient,
             border_color, border_width, edge_borders, edge_borders_ref, width, vertical_alignment,
-            padding, edge_padding, diagonal, style_shading, style_border_color, style_border_width,
+            padding, edge_padding, declared_height, diagonal, style_shading, style_border_color, style_border_width,
         } = self;
         blocks == &other.blocks
             && row_span == &other.row_span
@@ -478,6 +498,7 @@ impl PartialEq for Cell {
             && vertical_alignment == &other.vertical_alignment
             && padding == &other.padding
             && edge_padding == &other.edge_padding
+            && declared_height == &other.declared_height
             && diagonal == &other.diagonal
             && style_shading == &other.style_shading
             && style_border_color == &other.style_border_color
@@ -506,6 +527,7 @@ impl Default for Cell {
             vertical_alignment: None,
             padding: None,
             edge_padding: None,
+            declared_height: None,
             diagonal: None,
             style_shading: None,
             style_border_color: None,
@@ -545,6 +567,7 @@ impl Cell {
             vertical_alignment: None,
             padding: None,
             edge_padding: None,
+            declared_height: None,
             diagonal: None,
             style_shading: None,
             style_border_color: None,
@@ -572,6 +595,7 @@ impl Cell {
             blocks,
             row_span,
             col_span,
+            declared_height: None,
             background_color,
             background_image,
             background_gradient: None,
@@ -1491,8 +1515,8 @@ pub struct OfficeComment {
 pub enum HeaderFooterApplicability {
     // swift: OfficeComment
     /// docx `w:type="default"`; odt `style:header`/`style:footer` (the un-suffixed, base variant);
-    /// HWP `"both"` (no even override declared) and `"odd"` (an even override exists elsewhere, so
-    /// this entry is explicitly the non-even pages) both fold in here — see `HwpReader`.
+    /// HWP `"both"` — the template a section applies to EVERY page unless a parity-specific one
+    /// overrides it. HWP's `"odd"` is NOT this: it has its own case below.
     DefaultPages,
     // swift: OfficeComment
     /// docx `w:type="first"`, OR the explicit blank header/footer OOXML creates when `w:titlePg` is
@@ -1507,6 +1531,20 @@ pub enum HeaderFooterApplicability {
     /// approximation every other "first section only" scope in this reader makes); HWP `"even"` —
     /// the one case where every format means the same thing.
     EvenPages,
+    // swift: OfficeComment
+    /// HWP `"odd"`. docx and odt have no equivalent — Word and ODF name the mirrored pair
+    /// default+even, and an odd-only running head is not expressible there — so no reader but
+    /// `HwpReader` ever produces this.
+    ///
+    /// It used to FOLD into `DefaultPages`, on the reasoning that an even override elsewhere made
+    /// the remainder implicitly odd. That holds for a running head, where a section declares at
+    /// most one of each; it does NOT hold for a 바탕쪽, where a section declares a `"both"` template
+    /// AND an `"odd"` one and the two are told apart by nothing else. Measured on
+    /// `2025_행정업무운영편람_최종.hwp`: section 1 declares exactly that pair, both arrived as
+    /// `DefaultPages`, and the selector — which takes the FIRST default it finds — drew the cover's
+    /// template on every body page in the section (its artwork appearing as an empty white box, its
+    /// page number on the wrong edge) while the odd template was never drawn at all.
+    OddPages,
 }
 
 // swift: OfficeHeaderFooter

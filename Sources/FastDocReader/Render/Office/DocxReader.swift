@@ -2,6 +2,20 @@ import Foundation
 import CoreGraphics
 import AppKit
 
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// THE APP DOES NOT RUN THIS FILE. Reading docx is the RUST ENGINE's job — `MarkdownDocument`
+// opens one through `RustOfficeDocumentHandle`, and `--extract`/`--pdf`/Quick Look go the same
+// way. Nothing in `Sources/` calls `DocxReader.read` (grep it); every caller is a test or a probe.
+//
+// So EDITING THIS FILE CHANGES NOTHING A READER SEES. It is the port's reference half: the
+// Swift original the Rust twin is checked against, and the oracle the probes measure with.
+// A behaviour change belongs in BOTH — `rust/crates/fastdoc-engine/src/render/office/docx_reader.rs` first, because that is the one
+// that runs, and here second so the two keep saying the same thing.
+//
+// Measured the hard way: a width-scale (장평) fix was written here, built, and measured to have
+// changed the screen by exactly zero — because the screen had never been reading this file.
+// ────────────────────────────────────────────────────────────────────────────────────────────
+
 /// `.docx` bytes → `[OfficeBlock]`. Word's own container is three XML parts inside the ZIP
 /// `ZipArchive` already knows how to open: `word/document.xml` (the body, required), and two
 /// optional ones this reader consults to resolve what the body only references by id —

@@ -421,6 +421,8 @@ fn map_table_cell<'a>(
         source_spans: ctx.span_for(sourcepos),
         edit: None,
         payload: NodePayload::TableCell(WireTableCell {
+            // markdown has no table row height to declare.
+            declared_height: None,
             row,
             column,
             row_span: 1,

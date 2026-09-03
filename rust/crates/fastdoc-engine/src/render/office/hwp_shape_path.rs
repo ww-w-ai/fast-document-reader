@@ -1,4 +1,5 @@
-//! swift: Render/Office/HwpShapeRenderer.swift:17-31 — one shape's path, in points, relative to the
+//! swift: Render/Office/HwpShapeRenderer.swift
+//! one shape's path, in points, relative to the
 //! object's own box.
 //!
 //! The Swift file's other half (`pdf(paths:size:)`, which opens a `CGContext` and rasterises) stays

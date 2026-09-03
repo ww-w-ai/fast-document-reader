@@ -1,5 +1,4 @@
 //! swift: Render/MDAttr.swift
-//! swift-range: 1-6
 
 // swift: MDAttr
 // Centralized custom NSAttributedString attribute keys (C5).

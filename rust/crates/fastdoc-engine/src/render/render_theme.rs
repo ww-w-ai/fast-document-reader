@@ -1,5 +1,4 @@
 //! swift: Render/RenderTheme.swift
-//! swift-range: 1-2
 
 use swiftshim::{CGFloat, NSColor, NSFont};
 

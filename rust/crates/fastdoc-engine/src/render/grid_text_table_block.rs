@@ -1,17 +1,12 @@
 //! swift: Render/GridTextTableBlock.swift
-//! swift-range: 1-2
-//! swift-range: 19-19
-//! swift-range: 50-50
-//! swift-range: 80-80
-//! swift-range: 92-92
-//! swift-range: 100-100
-//! swift-range: 111-111
-//! swift-range: 116-116
-//! swift-range: 123-123
-//! swift-range: 129-129
-//! swift-range: 145-145
-//! swift-range: 222-222
-//! swift-range: 252-252
+//!
+//! **This module's drawing is NOT dead code, and it is not macOS's.** On macOS AppKit paints, so
+//! the FFI never reaches `paint` or `draw_diagonal` and the engine's own code is their only
+//! caller — from inside this repository they look exactly like transliterated leftovers, and a
+//! reader who trusts that impression will delete them. What lives here is the drawing LOGIC a
+//! NON-macOS host runs: where a rule goes, which edges a cut cell suppresses at a page boundary,
+//! how thick each is. Only the brush under it is per-platform, which is why `NSBezierPath.stroke`
+//! and `NSColor.setFill` are `todo!()` in `swiftshim`. See invariant 139.
 
 use std::collections::HashMap;
 
@@ -215,6 +210,8 @@ impl GridTextTableBlock {
         }
     }
 
+    // Cross-platform: a non-macOS host calls this to draw the cell. On macOS AppKit
+    // paints instead, so nothing here reaches it — see this module's header.
     // swift: GridTextTableBlock.paint
     fn paint(&self, rect: NSRect, cut_above: bool, cut_below: bool) {
         if let Some(background) = &self.base.backgroundColor {

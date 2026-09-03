@@ -17,8 +17,21 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 # The SAME rhwp commit the shipped xcframework was built from (Vendor/RHWP-SOURCE.txt). Pinned by
 # rev on purpose: the Swift reader links that xcframework, so a floating rev would let the two
 # readers parse a document with different parser builds — and every difference the corpus comparison
-# turns up would then be unattributable. Bump this and RHWP-SOURCE.txt together, never one alone.
-rhwp = { git = "https://github.com/ww-w-ai/rhwp.git", rev = "001fd0bfbb9c21af5393051963ee76dee625c7ec", default-features = false }
+# turns up would then be unattributable.
+#
+# THE PIN LIVES IN FIVE PLACES. Bumping this one alone builds green and changes NOTHING, because
+# `rust/Cargo.lock` keeps resolving the old commit — measured: the fork's PUA fix was pushed, this
+# line was bumped, the engine and app were rebuilt, and the document still carried all 97 private-use
+# characters. Bump ALL of these together:
+#   1. this line
+#   2. rust/crates/swiftshim/Cargo.toml  — the SECOND manifest pinning the same crate
+#   3. rust/Cargo.lock                   — `cd rust && cargo update -p rhwp` (name the full
+#                                          `git+…#rhwp@0.7.19` spec when two revs are present)
+#   4. Scripts/rust-baseline.py `PIN`    — the baseline checker's own copy
+#   5. Tests/Baseline/fixtures.json      — `immutableRevision` on every submodule-file fixture
+# and then Vendor/RHWP-SOURCE.txt via `./Scripts/record-rhwp-source.sh`, after rebuilding the
+# xcframework — otherwise the recorded sha256 describes a library that is no longer there.
+rhwp = { git = "https://github.com/ww-w-ai/rhwp.git", rev = "bcf7acf2fa05a2f00bbe9d4c97b78daa1d20ea00", default-features = false }
 flate2 = { workspace = true }
 base64 = "0.22"
 sha2 = "0.10"

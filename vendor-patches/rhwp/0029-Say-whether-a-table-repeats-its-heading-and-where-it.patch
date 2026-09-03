@@ -1,7 +1,7 @@
 From 3825afc25f81262e71e2ca4649731c7f3bf0538f Mon Sep 17 00:00:00 2001
 From: FastDocReader <taekim@ww-w.ai>
 Date: Tue, 18 Aug 2026 03:08:07 +0900
-Subject: [PATCH 29/46] Say whether a table repeats its heading, and where it
+Subject: [PATCH 29/50] Say whether a table repeats its heading, and where it
  may break
 
 headerRows already told a host WHICH rows are the heading, which is a
@@ -14,7 +14,7 @@ to decide both, and without these it applies one policy to every table.
  1 file changed, 23 insertions(+), 1 deletion(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 1b2dde71..c9de4963 100644
+index 1b2dde719..c9de4963d 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -22,7 +22,7 @@ use crate::model::style::{

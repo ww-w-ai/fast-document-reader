@@ -10,7 +10,9 @@ import AppKit
 /// text storage, no layout manager and no way to ask a question that makes layout. The strongest form
 /// of "information about the document must not be able to change the document".
 ///
-/// Page positions come from the ONE place that already knows them — `DocumentWindowController.pageSheets`,
+/// Page positions come from `DocumentWindowController.numberedSheets` — the TRUE page grid, not the
+/// welded drawing one: a cut cell hides the rule between two pages, it does not merge them (see that
+/// property, and invariant 61).
 /// the same rectangles the outline draws and the printer prints (invariants 59/60f) — converted from
 /// the text view's coordinates by AppKit, so scrolling, magnification and page centring are handled
 /// where they are already solved rather than re-derived here.
@@ -27,7 +29,7 @@ final class PageNumberDeskView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let wc = controller else { return }
         let textView = wc.textViewForDesk
-        let sheets = wc.pageSheets
+        let sheets = wc.numberedSheets
         guard !sheets.isEmpty else { return }
         for (index, sheet) in sheets.enumerated() {
             // The sheet's own top-left, in THIS view's coordinates — AppKit applies the scroll and

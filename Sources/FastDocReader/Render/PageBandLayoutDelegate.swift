@@ -150,16 +150,22 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         var markers = markedParagraphs(MDAttr.startsPage, in: storage).map(\.start)
         guard markers.count > 1 else { return Set(markers) }
         markers.sort()
-        var honoured: Set<Int> = [markers[0]]
-        var previous = markers[0]
-        for marker in markers.dropFirst() {
+        // The one marker that must survive whatever sits after it: the first, when nothing at all
+        // precedes it. What is above such a marker is the document's OPENING, not a page some
+        // earlier break abandoned — here the cover, whose body is empty only because its artwork is
+        // 바탕쪽 (invariant 78). Dropping it would run the cover into the page that follows. A first
+        // marker with real text above it is an ordinary marker and takes the rule below.
+        let opensTheDocument = text
+            .substring(to: markers[0]).unicodeScalars
+            .allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
+        var honoured = Set(markers)
+        for (index, marker) in markers.enumerated().dropFirst() {
+            let previous = markers[index - 1]
+            guard !(previous == markers[0] && opensTheDocument) else { continue }
             let between = text.substring(with: NSRange(location: previous, length: marker - previous))
-            let holdsNothing = between.unicodeScalars
-                .allSatisfy { CharacterSet.whitespacesAndNewlines.contains($0) }
-            let section = storage.attribute(MDAttr.sectionIndex, at: marker, effectiveRange: nil) as? Int
-            let previousSection = storage.attribute(MDAttr.sectionIndex, at: previous, effectiveRange: nil) as? Int
-            if !holdsNothing || section != previousSection { honoured.insert(marker) }
-            previous = marker
+            guard between.unicodeScalars
+                .allSatisfy({ CharacterSet.whitespacesAndNewlines.contains($0) }) else { continue }
+            honoured.remove(previous)
         }
         return honoured
     }
@@ -224,6 +230,22 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// Reset on every layout pass that re-runs, because a re-render re-decides every boundary; a
     /// stale entry would paint into space the new layout did not make.
     private(set) var openedBoundaries: Set<Int> = []
+
+    /// The boundaries a TABLE actually spans — the only ones the weld exists to protect.
+    ///
+    /// `openedBoundaries` answers "did this pass MOVE a line here", which is not the same question.
+    /// A boundary can be perfectly real and still open nothing: a table carried whole to the next
+    /// page leaves the prose after it starting exactly at a page top, so there is no line to move
+    /// and no band to record. `joiningUnopenedBoundaries` read that as "layout never broke here" and
+    /// welded the two sheets. Measured on `2025_행정업무운영편람_최종.hwp`: of the 21 boundaries left
+    /// unopened, **9 have a table across them and 12 have nothing at all**, and welding all 21 made
+    /// the appendix a single sheet 22 pages tall — the margin number stopped changing and Go to Page
+    /// could not reach past it.
+    ///
+    /// `nil` means NOBODY MEASURED (invariant 108's rule — a missing measurement is not an empty
+    /// one), and the weld then falls back to its old, wider behaviour rather than drawing page rules
+    /// through tables on a document whose settle has not run.
+    var tableStraddledBoundaries: Set<Int>?
 
     /// WHERE each opened band actually is: page `n` → the vertical span of the empty gap that was
     /// made after it, in text-container coordinates.
@@ -547,6 +569,23 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// the page once the lines have been moved, because the typesetter re-derives `x` per line and
     /// so erases the only evidence.
     var columnPlacements: [Int: (x: CGFloat, y: CGFloat)] = [:]
+
+    /// The page boundaries a COLUMN placement crosses, which nothing else can see.
+    ///
+    /// `openedBoundaries` is filled by the between-page rule, and a line the column map claims never
+    /// reaches it — `placeInColumn` runs FIRST and returns, deliberately, because the two rules move
+    /// a line in opposite directions and letting both touch one line would make the result depend on
+    /// which ran last. So a columned run opens no boundary at all, and
+    /// `PagePagination.joiningUnopenedBoundaries` reads that as "layout never broke here" and welds
+    /// the whole run into one enormous sheet: measured on `2025_행정업무운영편람_최종.hwp`, whose
+    /// two-column appendix runs from character 235,989 to the end of the document — every one of its
+    /// last 21 boundaries unopened, and the tail drawn as two sheets 11 and 10 pages tall.
+    ///
+    /// Filled by `DocumentWindowController.settleColumnPlacements` from the finished map rather than
+    /// per line, for the same reason the map itself is: the placement is decided ONCE and is the only
+    /// authority on which page a columned line is on. Set alongside `columnPlacements` and cleared
+    /// with it — carrying it into a different document would open boundaries that document never had.
+    var columnOpenedBoundaries: Set<Int> = []
 
     /// The width the columns are measured across — the body width this document is laid out in.
     /// Set beside the other page numbers; `0` disables the column rule entirely, which is what a

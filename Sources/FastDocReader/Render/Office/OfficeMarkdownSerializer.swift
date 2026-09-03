@@ -22,6 +22,14 @@ enum OfficeMarkdownSerializer {
     /// whether to include the `<raw>` explanation in the header note.
     static let rawOpen = "<raw>"
     static let rawClose = "</raw>"
+    /// The line that opens every `<raw>` block. It repeats once per degraded table — 162 times on
+    /// one real document — so it is written for a reader who arrives at a SLICE of this output and
+    /// never saw the legend at the top: it has to say, on its own, that the pipes below are not a
+    /// grid. What it does NOT do is explain WHY (merged cells), because nothing the reader does
+    /// depends on the cause, or say the same thing twice. Measured on that document: the sentence
+    /// this replaced cost 13,932 characters against 7,938 — in a feature whose whole purpose is
+    /// spending fewer tokens on a document than its own XML would.
+    static let rawNote = "[table — not a grid; rows below are literal text]"
 
     /// `footnotes` are appended as a trailing section, because they are no longer IN `blocks`.
     ///
@@ -147,7 +155,7 @@ enum OfficeMarkdownSerializer {
     }
 
     private static func rawTable(_ rows: [[Cell]]) -> String {
-        var lines = [rawOpen, "[table — merged cells or block content; structure not mapped, cells below are literal]"]
+        var lines = [rawOpen, rawNote]
         for row in rows {
             lines.append(row.map { plainCell($0) }.joined(separator: " | "))
         }

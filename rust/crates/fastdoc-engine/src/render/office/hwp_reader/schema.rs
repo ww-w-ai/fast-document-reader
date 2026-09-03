@@ -777,6 +777,10 @@ pub(crate) struct HwpCell {
     pub pad_top: Option<f64>,
     #[serde(rename = "padBottom")]
     pub pad_bottom: Option<f64>,
+    /// The row height the document declared for this cell, in POINTS (rhwp `Cell.height` ÷100).
+    /// Absent against a parser predating the export, which reads as "the document said nothing".
+    #[serde(rename = "heightPt")]
+    pub height_pt: Option<f64>,
     pub blocks: Vec<HwpBlock>,
 }
 

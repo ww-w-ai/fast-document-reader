@@ -1,0 +1,502 @@
+From 0f7fc78164ab87059f3fd288945d36c0fd86ce6a Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Wed, 19 Aug 2026 11:32:14 +0900
+Subject: [PATCH 47/50] Count what a corpus says about the backlog's last 46
+ declarations
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A sprint reading its scope needs to know which of those fields a real corpus
+actually varies, because a field every document states identically decides
+nothing and is not worth a reader change. Counts only — no text, no paths.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ examples/scan_backlog46.rs | 474 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 474 insertions(+)
+ create mode 100644 examples/scan_backlog46.rs
+
+diff --git a/examples/scan_backlog46.rs b/examples/scan_backlog46.rs
+new file mode 100644
+index 000000000..23ca699fa
+--- /dev/null
++++ b/examples/scan_backlog46.rs
+@@ -0,0 +1,474 @@
++// Backlog-46 — the S2/S4/S5/S6/S7 fields a prior sprint left un-adopted. Before honouring any of
++// them, measure what a real corpus actually says: how many DOCUMENTS declare it (breadth), how
++// many individual declarations there are (weight), and the DISTINCT VALUE distribution. A field
++// with one distinct value across the whole corpus decides nothing — the reader would honour a
++// constant.
++//
++// PRIVACY: counts only. No document text, no filename, no path is ever printed.
++
++use rhwp::model::control::Control;
++use rhwp::model::header_footer::{Footer, Header, MasterPage};
++use rhwp::model::paragraph::Paragraph;
++use rhwp::model::table::Table;
++use rhwp::DocumentCore;
++use std::collections::BTreeMap;
++use std::fmt::Debug;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++/// One field's tally: how many docs declare it at all, how many individual declarations, and the
++/// distribution of values seen (capped for the printed top-N, but distinct count is exact).
++#[derive(Default)]
++struct Field {
++    docs: usize,
++    decls: usize,
++    values: BTreeMap<String, usize>,
++    /// docs already counted this field, so multiple decls per doc count `docs` once.
++    seen_doc: bool,
++}
++
++impl Field {
++    fn hit<V: Debug>(&mut self, v: V) {
++        self.decls += 1;
++        if !self.seen_doc {
++            self.docs += 1;
++            self.seen_doc = true;
++        }
++        *self.values.entry(format!("{v:?}")).or_default() += 1;
++    }
++    fn reset_doc(&mut self) {
++        self.seen_doc = false;
++    }
++    fn report(&self, name: &str) {
++        let distinct = self.values.len();
++        let mut top: Vec<(&String, &usize)> = self.values.iter().collect();
++        top.sort_by(|a, b| b.1.cmp(a.1));
++        let top10: Vec<String> = top
++            .iter()
++            .take(10)
++            .map(|(v, n)| format!("{v}={n}"))
++            .collect();
++        println!(
++            "FIELD {name} docs={} decls={} distinct={} top={:?}",
++            self.docs, self.decls, distinct, top10
++        );
++    }
++}
++
++#[derive(Default)]
++struct Counts {
++    files_read: usize,
++    files_failed: usize,
++
++    // S2
++    font_alt_type: Field,
++    font_type_info_present: Field,
++    font_default_name_present: Field,
++    font_alt_name_present: Field,
++    subst_font_type: Field,
++
++    // S4
++    field_properties: Field,
++    field_extra_properties: Field,
++    field_ctrl_data_name_present: Field,
++
++    // S5
++    section_line_grid: Field,
++    section_char_grid: Field,
++    section_page_num: Field,
++    section_flags: Field,
++    section_hide_border: Field,
++    section_hide_fill: Field,
++    pbf_spacing_left: Field,
++    pbf_spacing_right: Field,
++    pbf_spacing_top: Field,
++    pbf_spacing_bottom: Field,
++    autonum_format: Field,
++    autonum_superscript: Field,
++    header_list_attr: Field,
++    header_text_width: Field,
++    footer_list_attr: Field,
++    footer_text_width: Field,
++    masterpage_is_extension: Field,
++    masterpage_overlap: Field,
++    masterpage_replace_base: Field,
++    masterpage_text_width: Field,
++    masterpage_text_height: Field,
++    pagedef_margin_gutter: Field,
++    pagedef_pagination_bottom_tolerance: Field,
++    pagedef_binding: Field,
++    pgnp_format: Field,
++    pgnp_position: Field,
++    pgnp_user_symbol: Field,
++    pgnp_prefix_char: Field,
++    pgnp_suffix_char: Field,
++    pgnp_dash_char: Field,
++    pagehide_hide_border: Field,
++    pagehide_hide_fill: Field,
++    pageareas_body_area: Field,
++
++    // S6
++    borderfill_attr: Field,
++
++    // S7
++    numbering_level_formats: Field,
++    numbering_level_start_numbers: Field,
++    bullet_char: Field,
++    style_english_name_present: Field,
++}
++
++impl Counts {
++    fn reset_doc(&mut self) {
++        macro_rules! r {
++            ($($f:ident),* $(,)?) => { $(self.$f.reset_doc();)* };
++        }
++        r!(
++            font_alt_type,
++            font_type_info_present,
++            font_default_name_present,
++            font_alt_name_present,
++            subst_font_type,
++            field_properties,
++            field_extra_properties,
++            field_ctrl_data_name_present,
++            section_line_grid,
++            section_char_grid,
++            section_page_num,
++            section_flags,
++            section_hide_border,
++            section_hide_fill,
++            pbf_spacing_left,
++            pbf_spacing_right,
++            pbf_spacing_top,
++            pbf_spacing_bottom,
++            autonum_format,
++            autonum_superscript,
++            header_list_attr,
++            header_text_width,
++            footer_list_attr,
++            footer_text_width,
++            masterpage_is_extension,
++            masterpage_overlap,
++            masterpage_replace_base,
++            masterpage_text_width,
++            masterpage_text_height,
++            pagedef_margin_gutter,
++            pagedef_pagination_bottom_tolerance,
++            pagedef_binding,
++            pgnp_format,
++            pgnp_position,
++            pgnp_user_symbol,
++            pgnp_prefix_char,
++            pgnp_suffix_char,
++            pgnp_dash_char,
++            pagehide_hide_border,
++            pagehide_hide_fill,
++            pageareas_body_area,
++            borderfill_attr,
++            numbering_level_formats,
++            numbering_level_start_numbers,
++            bullet_char,
++            style_english_name_present,
++        );
++    }
++}
++
++fn walk_header(h: &Header, c: &mut Counts) {
++    if h.list_attr != 0 {
++        c.header_list_attr.hit(h.list_attr);
++    }
++    if h.text_width != 0 {
++        c.header_text_width.hit(h.text_width);
++    }
++    for p in &h.paragraphs {
++        walk_paras_shared(std::slice::from_ref(p), c);
++    }
++}
++
++fn walk_footer(f: &Footer, c: &mut Counts) {
++    if f.list_attr != 0 {
++        c.footer_list_attr.hit(f.list_attr);
++    }
++    if f.text_width != 0 {
++        c.footer_text_width.hit(f.text_width);
++    }
++    for p in &f.paragraphs {
++        walk_paras_shared(std::slice::from_ref(p), c);
++    }
++}
++
++fn walk_masterpage(m: &MasterPage, c: &mut Counts) {
++    c.masterpage_is_extension.hit(m.is_extension);
++    c.masterpage_overlap.hit(m.overlap);
++    c.masterpage_replace_base.hit(m.replace_base);
++    if m.text_width != 0 {
++        c.masterpage_text_width.hit(m.text_width);
++    }
++    if m.text_height != 0 {
++        c.masterpage_text_height.hit(m.text_height);
++    }
++    for p in &m.paragraphs {
++        walk_paras_shared(std::slice::from_ref(p), c);
++    }
++}
++
++/// Controls that can themselves nest paragraphs (header/footer/field-memo) or tables. This is the
++/// SHARED control walk — called both from top-level section paragraphs and from inside
++/// header/footer/masterpage paragraphs, so a field control inside a header is not missed.
++fn walk_paras_shared(paras: &[Paragraph], c: &mut Counts) {
++    for p in paras {
++        for ctrl in &p.controls {
++            match ctrl {
++                Control::SectionDef(sd) => {
++                    if sd.line_grid != 0 {
++                        c.section_line_grid.hit(sd.line_grid);
++                    }
++                    if sd.char_grid != 0 {
++                        c.section_char_grid.hit(sd.char_grid);
++                    }
++                    if sd.page_num != 0 {
++                        c.section_page_num.hit(sd.page_num);
++                    }
++                    c.section_flags.hit(sd.flags);
++                    c.section_hide_border.hit(sd.hide_border);
++                    c.section_hide_fill.hit(sd.hide_fill);
++
++                    let pbf = &sd.page_border_fill;
++                    if pbf.spacing_left != 0 {
++                        c.pbf_spacing_left.hit(pbf.spacing_left);
++                    }
++                    if pbf.spacing_right != 0 {
++                        c.pbf_spacing_right.hit(pbf.spacing_right);
++                    }
++                    if pbf.spacing_top != 0 {
++                        c.pbf_spacing_top.hit(pbf.spacing_top);
++                    }
++                    if pbf.spacing_bottom != 0 {
++                        c.pbf_spacing_bottom.hit(pbf.spacing_bottom);
++                    }
++
++                    let pd = &sd.page_def;
++                    if pd.margin_gutter != 0 {
++                        c.pagedef_margin_gutter.hit(pd.margin_gutter);
++                    }
++                    if pd.pagination_bottom_tolerance != 0 {
++                        c.pagedef_pagination_bottom_tolerance
++                            .hit(pd.pagination_bottom_tolerance);
++                    }
++                    c.pagedef_binding.hit(format!("{:?}", pd.binding));
++
++                    let areas = rhwp::model::page::PageAreas::from_page_def(pd);
++                    c.pageareas_body_area.hit(format!(
++                        "{}x{}",
++                        areas.body_area.width(),
++                        areas.body_area.height()
++                    ));
++
++                    for mp in &sd.master_pages {
++                        walk_masterpage(mp, c);
++                    }
++                }
++                Control::Header(h) => walk_header(h, c),
++                Control::Footer(f) => walk_footer(f, c),
++                Control::AutoNumber(an) => {
++                    c.autonum_format.hit(an.format);
++                    c.autonum_superscript.hit(an.superscript);
++                }
++                Control::PageNumberPos(pn) => {
++                    c.pgnp_format.hit(pn.format);
++                    c.pgnp_position.hit(pn.position);
++                    if pn.user_symbol != '\0' {
++                        c.pgnp_user_symbol.hit(pn.user_symbol);
++                    }
++                    if pn.prefix_char != '\0' {
++                        c.pgnp_prefix_char.hit(pn.prefix_char);
++                    }
++                    if pn.suffix_char != '\0' {
++                        c.pgnp_suffix_char.hit(pn.suffix_char);
++                    }
++                    if pn.dash_char != '\0' {
++                        c.pgnp_dash_char.hit(pn.dash_char);
++                    }
++                }
++                Control::PageHide(ph) => {
++                    c.pagehide_hide_border.hit(ph.hide_border);
++                    c.pagehide_hide_fill.hit(ph.hide_fill);
++                }
++                Control::Field(f) => {
++                    if f.properties != 0 {
++                        c.field_properties.hit(f.properties);
++                    }
++                    if f.extra_properties != 0 {
++                        c.field_extra_properties.hit(f.extra_properties);
++                    }
++                    if let Some(cdn) = f.ctrl_data_name.as_deref().filter(|s| !s.is_empty()) {
++                        // does ctrl_data_name carry a name the field's own command-string
++                        // extraction (field_name()) does NOT already give us?
++                        let already_have = f.field_name() == Some(cdn);
++                        c.field_ctrl_data_name_present.hit(!already_have);
++                    }
++                    walk_paras_shared(&f.memo_paragraphs, c);
++                }
++                Control::Table(t) => walk_table(t, c),
++                _ => {}
++            }
++        }
++    }
++}
++
++fn walk_table(t: &Table, c: &mut Counts) {
++    for cell in &t.cells {
++        walk_paras_shared(&cell.paragraphs, c);
++    }
++}
++
++fn walk_docinfo(core: &rhwp::DocumentCore, c: &mut Counts) {
++    let di = &core.document().doc_info;
++
++    for slot_fonts in &di.font_faces {
++        for f in slot_fonts {
++            c.font_alt_type.hit(f.alt_type);
++            if f.type_info.is_some() {
++                c.font_type_info_present.hit(true);
++            }
++            // The presence decision is cheap; the real question is whether the field carries NEW
++            // information or just repeats `name` — so hit "differs"/"same" rather than "true".
++            if let Some(dn) = f.default_name.as_deref().filter(|s| !s.is_empty()) {
++                c.font_default_name_present.hit(dn != f.name);
++            }
++            if let Some(an) = f.alt_name.as_deref().filter(|s| !s.is_empty()) {
++                c.font_alt_name_present.hit(an != f.name);
++            }
++            if let Some(sf) = &f.subst_font {
++                c.subst_font_type.hit(sf.font_type);
++            }
++        }
++    }
++
++    for bf in &di.border_fills {
++        c.borderfill_attr.hit(bf.attr);
++    }
++
++    for n in &di.numberings {
++        // seven level slots per declaration — count each non-default slot as its own hit so the
++        // value distribution reflects what documents actually put in a level, not per-numbering.
++        for fmt in &n.level_formats {
++            if !fmt.is_empty() {
++                c.numbering_level_formats.hit(fmt.clone());
++            }
++        }
++        for &start in &n.level_start_numbers {
++            if start != 0 {
++                c.numbering_level_start_numbers.hit(start);
++            }
++        }
++    }
++
++    for b in &di.bullets {
++        c.bullet_char.hit(b.bullet_char);
++    }
++
++    for s in &di.styles {
++        if !s.english_name.is_empty() {
++            c.style_english_name_present.hit(s.english_name != s.local_name);
++        }
++    }
++}
++
++fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
++    let Ok(entries) = fs::read_dir(dir) else { return };
++    for e in entries.flatten() {
++        let path = e.path();
++        if path.is_dir() {
++            collect(&path, out);
++        } else if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
++            let ext = ext.to_ascii_lowercase();
++            if ext == "hwp" || ext == "hwpx" {
++                out.push(path);
++            }
++        }
++    }
++}
++
++fn main() {
++    let root = std::env::args().nth(1).unwrap_or_else(|| "samples".to_string());
++    let mut files = Vec::new();
++    collect(Path::new(&root), &mut files);
++    files.sort();
++
++    let mut c = Counts::default();
++    for path in &files {
++        let Ok(bytes) = fs::read(path) else {
++            c.files_failed += 1;
++            continue;
++        };
++        let Ok(core) = DocumentCore::from_bytes(&bytes) else {
++            c.files_failed += 1;
++            continue;
++        };
++        c.files_read += 1;
++        c.reset_doc();
++
++        for section in &core.document().sections {
++            walk_paras_shared(&section.paragraphs, &mut c);
++        }
++        walk_docinfo(&core, &mut c);
++    }
++
++    println!("files read : {} (failed {})", c.files_read, c.files_failed);
++    println!("---- S2 ----");
++    c.font_alt_type.report("Font.alt_type");
++    c.font_type_info_present.report("Font.type_info");
++    c.font_default_name_present.report("Font.default_name");
++    c.font_alt_name_present.report("Font.alt_name");
++    c.subst_font_type.report("SubstFont.font_type");
++    println!("---- S4 ----");
++    c.field_properties.report("Field.properties");
++    c.field_extra_properties.report("Field.extra_properties");
++    c.field_ctrl_data_name_present
++        .report("Field.ctrl_data_name");
++    println!("---- S5 ----");
++    c.section_line_grid.report("SectionDef.line_grid");
++    c.section_char_grid.report("SectionDef.char_grid");
++    c.section_page_num.report("SectionDef.page_num");
++    c.section_flags.report("SectionDef.flags");
++    c.section_hide_border.report("SectionDef.hide_border");
++    c.section_hide_fill.report("SectionDef.hide_fill");
++    c.pbf_spacing_left.report("PageBorderFill.spacing_left");
++    c.pbf_spacing_right.report("PageBorderFill.spacing_right");
++    c.pbf_spacing_top.report("PageBorderFill.spacing_top");
++    c.pbf_spacing_bottom.report("PageBorderFill.spacing_bottom");
++    c.autonum_format.report("AutoNumber.format");
++    c.autonum_superscript.report("AutoNumber.superscript");
++    c.header_list_attr.report("Header.list_attr");
++    c.header_text_width.report("Header.text_width");
++    c.footer_list_attr.report("Footer.list_attr");
++    c.footer_text_width.report("Footer.text_width");
++    c.masterpage_is_extension.report("MasterPage.is_extension");
++    c.masterpage_overlap.report("MasterPage.overlap");
++    c.masterpage_replace_base.report("MasterPage.replace_base");
++    c.masterpage_text_width.report("MasterPage.text_width");
++    c.masterpage_text_height.report("MasterPage.text_height");
++    c.pagedef_margin_gutter.report("PageDef.margin_gutter");
++    c.pagedef_pagination_bottom_tolerance
++        .report("PageDef.pagination_bottom_tolerance");
++    c.pagedef_binding.report("PageDef.binding");
++    c.pgnp_format.report("PageNumberPos.format");
++    c.pgnp_position.report("PageNumberPos.position");
++    c.pgnp_user_symbol.report("PageNumberPos.user_symbol");
++    c.pgnp_prefix_char.report("PageNumberPos.prefix_char");
++    c.pgnp_suffix_char.report("PageNumberPos.suffix_char");
++    c.pgnp_dash_char.report("PageNumberPos.dash_char");
++    c.pagehide_hide_border.report("PageHide.hide_border");
++    c.pagehide_hide_fill.report("PageHide.hide_fill");
++    c.pageareas_body_area.report("PageAreas.body_area");
++    println!("---- S6 ----");
++    c.borderfill_attr.report("BorderFill.attr");
++    println!("---- S7 ----");
++    c.numbering_level_formats
++        .report("Numbering.level_formats");
++    c.numbering_level_start_numbers
++        .report("Numbering.level_start_numbers");
++    c.bullet_char.report("Bullet.bullet_char");
++    c.style_english_name_present.report("Style.english_name");
++}
+-- 
+2.50.1 (Apple Git-155)
+

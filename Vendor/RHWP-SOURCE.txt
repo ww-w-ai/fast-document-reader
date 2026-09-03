@@ -3,10 +3,10 @@
 # The .a in this repo is a BUILD PRODUCT of the rhwp checkout below. Git knows nothing about that
 # relationship, so this file is the only record of it. Regenerate on every rebuild.
 
-rhwp commit   : 001fd0bfbb9c21af5393051963ee76dee625c7ec
-rhwp branch   : HEAD
-rhwp subject  : Say where a column declaration sits and how many tables sit under one
+rhwp commit   : bcf7acf2fa05a2f00bbe9d4c97b78daa1d20ea00
+rhwp branch   : fastdocreader/charshape-export
+rhwp subject  : Take the empty-paragraph height back out — it says nothing new
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 59158392
-library sha256: e6de09d1eb65536c1017f481ab4c3b50906b9fcefe831d695d861ad664a685de
+library bytes : 59292408
+library sha256: 8ea6a0d16876ac81547957926bef6da4ebd2fe9d0e706e5f8429df689ebfd1e1

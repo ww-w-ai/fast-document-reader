@@ -102,6 +102,14 @@ struct Span: Equatable {
     /// state it at all. A shape whose slots disagree carries nothing rather than one script's answer
     /// applied to all of them.
     var letterSpacingPercent: CGFloat? = nil
+    /// The run's GLYPH WIDTH as a percentage of its own em (HWP `CharShape.ratios`, 장평, 50…200).
+    /// `nil` = the source said nothing and the glyphs keep the face's own advance. Like letter
+    /// spacing this is a PAGINATION fact rather than a flourish: a Korean government document sets
+    /// its body at 95–99% and a reader drawing 100% breaks every line early, which compounds into
+    /// whole sheets wherever the document also declares a hard page break.
+    ///
+    /// Filled under the same all-slots-agree rule as `letterSpacingPercent` (93.3% agree).
+    var widthScalePercent: CGFloat? = nil
     /// The run's baseline shift as a percentage of its own em (HWP `CharShape.char_offsets`, 글자
     /// 위치), positive being UP. Distinct from `superscript`/`subscripted`, which also resize.
     /// Filled under the same all-slots-agree rule as `letterSpacingPercent` (99.7% agree).
@@ -286,6 +294,18 @@ struct Cell: Equatable {
     /// single `padding` value above, unaffected — this field did not exist before it, so a
     /// non-paged document renders byte-identical whether or not its reader populates this.
     var edgePadding: EdgePadding? = nil
+    /// The row height the DOCUMENT declared for this cell, in points — `nil` when it said nothing.
+    ///
+    /// It is the only authority for a row that holds no text. A Korean document builds its section
+    /// headings and panels out of tables with DECORATIVE BANDS: rows a couple of points high, every
+    /// cell empty, drawn as a thin rule of colour. A reader that measures such a row by its content
+    /// gives the empty paragraph a full line box and inflates the band five-fold. Measured on
+    /// `2025_행정업무운영편람_최종.hwp`: of 1,980 rows, 213 are declared under 5pt and 198 of those
+    /// hold no text at all, with 419 more between 5 and 15pt — every one of them taller here than
+    /// the document asked for. HWP is the only format that reaches this reader with a per-CELL
+    /// height; docx states one per ROW (`w:trPr/w:trHeight`) and this reader has never read it, so
+    /// a docx cell arrives `nil` and behaves exactly as it did before this existed.
+    var declaredHeight: CGFloat? = nil
     /// The cell's own DIAGONAL, when the document drew one across it. `nil` = no diagonal, which is
     /// every cell of every other format this reader opens — only HWP states one, and the decision of
     /// whether a declaration IS a drawn diagonal is made by the parser (`BorderFill::cell_diagonal`),
@@ -323,7 +343,8 @@ struct Cell: Equatable {
          borderColor: NSColor? = nil, borderWidth: CGFloat? = nil,
          edgeBorders: EdgeBorders? = nil,
          width: CGFloat? = nil, verticalAlignment: CellVAlign? = nil, padding: CGFloat? = nil,
-         edgePadding: EdgePadding? = nil, diagonal: CellDiagonal? = nil) {
+         edgePadding: EdgePadding? = nil, declaredHeight: CGFloat? = nil,
+         diagonal: CellDiagonal? = nil) {
         self.blocks = blocks
         self.rowSpan = rowSpan
         self.colSpan = colSpan
@@ -337,6 +358,7 @@ struct Cell: Equatable {
         self.verticalAlignment = verticalAlignment
         self.padding = padding
         self.edgePadding = edgePadding
+        self.declaredHeight = declaredHeight
         self.diagonal = diagonal
     }
 }
@@ -936,8 +958,8 @@ struct OfficeComment: Equatable {
 /// `"both"`/`"odd"`/`"even"` fold onto here, and what distinction is lost by doing so.
 enum HeaderFooterApplicability: Equatable {
     /// docx `w:type="default"`; odt `style:header`/`style:footer` (the un-suffixed, base variant);
-    /// HWP `"both"` (no even override declared) and `"odd"` (an even override exists elsewhere, so
-    /// this entry is explicitly the non-even pages) both fold in here — see `HwpReader`.
+    /// HWP `"both"` — the template a section applies to EVERY page unless a parity-specific one
+    /// overrides it. HWP's `"odd"` is NOT this: it has its own case below.
     case defaultPages
     /// docx `w:type="first"`, OR the explicit blank header/footer OOXML creates when `w:titlePg` is
     /// set and no `first`-type reference exists (see `DocxReader`'s own comment on that rule — both
@@ -950,6 +972,14 @@ enum HeaderFooterApplicability: Equatable {
     /// approximation every other "first section only" scope in this reader makes); HWP `"even"` —
     /// the one case where every format means the same thing.
     case evenPages
+    /// HWP `"odd"`. docx and odt have no equivalent, so no reader but `HwpReader` produces this.
+    ///
+    /// It used to fold into `defaultPages`. That holds for a running head — a section declares at
+    /// most one of each — but NOT for a 바탕쪽, where a section declares a `"both"` template AND an
+    /// `"odd"` one and nothing else tells them apart. Measured on `2025_행정업무운영편람_최종.hwp`:
+    /// section 1 declares exactly that pair, and the selector drew the cover's template on every
+    /// body page in the section while the odd template was never drawn.
+    case oddPages
 }
 
 /// One header or footer PART, resolved into the format-neutral block vocabulary (parsed through the
@@ -1588,7 +1618,7 @@ extension Span: Decodable {
         case code, caps, smallCaps, link, strikethrough
         case superscript, footnoteRef, formControl, columnLayout, subscripted
         case rtl, bookmarks, commentIds, textColor, highlightColor
-        case letterSpacingPercent, baselineOffsetPercent, underlineColor, strikethroughColor, fontSize
+        case letterSpacingPercent, widthScalePercent, baselineOffsetPercent, underlineColor, strikethroughColor, fontSize
         case fontName, pageNumberField
     }
     public init(from decoder: Decoder) throws {
@@ -1614,6 +1644,7 @@ extension Span: Decodable {
         textColor = try c.decodeIfPresent(WireColor.self, forKey: .textColor)?.color
         highlightColor = try c.decodeIfPresent(WireColor.self, forKey: .highlightColor)?.color
         letterSpacingPercent = try c.decodeIfPresent(CGFloat.self, forKey: .letterSpacingPercent)
+        widthScalePercent = try c.decodeIfPresent(CGFloat.self, forKey: .widthScalePercent)
         baselineOffsetPercent = try c.decodeIfPresent(CGFloat.self, forKey: .baselineOffsetPercent)
         underlineColor = try c.decodeIfPresent(WireColor.self, forKey: .underlineColor)?.color
         strikethroughColor = try c.decodeIfPresent(WireColor.self, forKey: .strikethroughColor)?.color
@@ -1627,7 +1658,7 @@ extension Cell: Decodable {
     enum CodingKeys: String, CodingKey {
         case blocks, rowSpan, colSpan, backgroundColor, backgroundImage, backgroundGradient, borderColor
         case borderWidth, edgeBorders, edgeBordersRef, width, verticalAlignment, padding
-        case edgePadding, diagonal, styleShading, styleBorderColor, styleBorderWidth
+        case edgePadding, declaredHeight, diagonal, styleShading, styleBorderColor, styleBorderWidth
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1646,6 +1677,7 @@ extension Cell: Decodable {
         verticalAlignment = try c.decodeIfPresent(CellVAlign.self, forKey: .verticalAlignment)
         padding = try c.decodeIfPresent(CGFloat.self, forKey: .padding)
         edgePadding = try c.decodeIfPresent(EdgePadding.self, forKey: .edgePadding)
+        declaredHeight = try c.decodeIfPresent(CGFloat.self, forKey: .declaredHeight)
         diagonal = try c.decodeIfPresent(CellDiagonal.self, forKey: .diagonal)
         styleShading = try c.decodeIfPresent(WireColor.self, forKey: .styleShading)?.color
         styleBorderColor = try c.decodeIfPresent(WireColor.self, forKey: .styleBorderColor)?.color
@@ -1878,6 +1910,7 @@ extension HeaderFooterApplicability: Decodable {
         case "defaultPages": self = .defaultPages
         case "firstPage": self = .firstPage
         case "evenPages": self = .evenPages
+        case "oddPages": self = .oddPages
         case let other:
             throw DecodingError.dataCorruptedError(
                 in: try decoder.singleValueContainer(),

@@ -1,7 +1,7 @@
 From 67c77e8b2b85635ee0a78e79547ccd8d16bb3583 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Thu, 13 Aug 2026 22:30:32 +0900
-Subject: [PATCH 08/46] Export the border-fill table, and take the page from
+Subject: [PATCH 08/50] Export the border-fill table, and take the page from
  the section that holds the document
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -20,7 +20,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  2 files changed, 133 insertions(+), 5 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 8202fcf7..07cecd31 100644
+index 8202fcf7d..07cecd318 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -17,12 +17,14 @@ use crate::model::document::{DocInfo, Document};
@@ -206,7 +206,7 @@ index 8202fcf7..07cecd31 100644
              footers: build_header_footer_entries(&self.document, &footer_ctrls),
              blocks,
 diff --git a/src/renderer/style_resolver.rs b/src/renderer/style_resolver.rs
-index 3ab11f02..67297be2 100644
+index 3ab11f02d..67297be2b 100644
 --- a/src/renderer/style_resolver.rs
 +++ b/src/renderer/style_resolver.rs
 @@ -892,7 +892,10 @@ fn resolve_border_styles(doc_info: &DocInfo) -> Vec<ResolvedBorderStyle> {

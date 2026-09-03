@@ -1,4 +1,5 @@
-//! swift: Render/WebBlock.swift — which engine draws a block, and the code it draws.
+//! swift: Render/WebBlock.swift
+//! which engine draws a block, and the code it draws.
 //!
 //! The Swift file carries no drawing at all: `WebBlockRenderer.swift` does that, and stays with the
 //! host (it is WebKit). What is here is vocabulary the renderer needs while BUILDING the document —

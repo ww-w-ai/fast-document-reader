@@ -1,7 +1,7 @@
 From 609763f6e2ec8741bcdb8d072fc17a65e41290f8 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 13:26:16 +0900
-Subject: [PATCH 32/46] Do not let a synthesised PANOSE byte travel as the
+Subject: [PATCH 32/50] Do not let a synthesised PANOSE byte travel as the
  document's own word
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -45,7 +45,7 @@ zero leak panose or defaultName after this change.
  1 file changed, 58 insertions(+), 25 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index f207a2d6..16932a2e 100644
+index f207a2d64..16932a2e6 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -219,19 +219,28 @@ struct FontFaceDto {

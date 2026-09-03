@@ -1,5 +1,4 @@
 //! swift: Render/Office/PageGrid.swift
-//! swift-range: 1-2
 
 use swiftshim::CGFloat;
 use crate::render::office::office_block::{OfficeSectionDeclaration, PaperGeometry};

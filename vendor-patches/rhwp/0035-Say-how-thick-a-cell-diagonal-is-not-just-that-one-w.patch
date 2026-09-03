@@ -1,7 +1,7 @@
 From 98843f151ec4178e936b1dffa5eacff05efd58bf Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 16:02:05 +0900
-Subject: [PATCH 35/46] Say how thick a cell diagonal is, not just that one was
+Subject: [PATCH 35/50] Say how thick a cell diagonal is, not just that one was
  declared
 
 A diagonal type alone cannot tell a consumer whether to draw: measured over
@@ -16,7 +16,7 @@ otherwise.
  1 file changed, 12 insertions(+), 2 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 5e32437b..048b027c 100644
+index 5e32437b7..048b027c4 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -562,10 +562,18 @@ struct BorderFillDto {

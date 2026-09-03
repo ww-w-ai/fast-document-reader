@@ -171,6 +171,86 @@ enum TableBlockBuilder {
         return (top: edge { $0.top }, left: edge { $0.left }, bottom: edge { $0.bottom }, right: edge { $0.right })
     }
 
+    /// The longest cell text this relief will even MEASURE. A label is short by definition, and
+    /// the guard keeps the measurement off every prose cell in a document — the reference manual
+    /// has 7,089 cell paragraphs and only a few hundred are labels.
+    static let maxRelievedTokenLength = 12
+
+    /// A cell's RIGHT inner margin, reduced by however much a SINGLE UNBREAKABLE token misses the
+    /// content width by — or `nil` when nothing needs relief (the ordinary case, and the only one
+    /// that costs nothing).
+    ///
+    /// Only a lone token qualifies: anything with a space in it has a break opportunity of its own,
+    /// so a wrap there is the document's own line breaking and not ours to undo. The head indent is
+    /// subtracted because it is room the token genuinely cannot use. Never returns a NEGATIVE
+    /// padding: a token wider than the whole cell still wraps, which is the honest answer.
+    static func oneTokenPaddingRelief(content: NSAttributedString?,
+                                      contentWidth: CGFloat,
+                                      rightPadding: CGFloat) -> CGFloat? {
+        guard rightPadding > 0, contentWidth > 0,
+              let content, content.length > 0, content.length <= maxRelievedTokenLength
+        else { return nil }
+        let trimmed = content.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.contains($0) })
+        else { return nil }
+        guard let range = content.string.range(of: trimmed) else { return nil }
+        let token = content.attributedSubstring(from: NSRange(range, in: content.string))
+        let style = content.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+        let indent = max(style?.headIndent ?? 0, style?.firstLineHeadIndent ?? 0)
+        let usable = contentWidth - max(0, indent)
+        let needed = token.size().width.rounded(.up)
+        // Surrender as much of the right margin as the token needs, and no more — but do NOT
+        // require that it be ENOUGH. The source sets the rule: it overflows the inner margin it
+        // declares rather than break a token, whether or not the overflow finishes the word on one
+        // line (measured on the reference manual's Q&A rows, `44.` is drawn 25.1pt wide out of a
+        // 28.1pt gap it was never given). A guard that demanded a COMPLETE fit was written and
+        // removed for being a rule the source does not have.
+        guard needed > usable else { return nil }
+        return max(0, rightPadding - (needed - usable)).rounded(.down)
+    }
+
+    /// The smallest line box a decorative band is ever held to. A row drawn as a rule of colour
+    /// still has to EXIST; collapsing it to nothing would erase a border the document drew.
+    static let bandMinimumLine: CGFloat = 1
+
+    /// For a cell that holds NO TEXT, the padding pair and line height that reproduce the row height
+    /// the DOCUMENT declared — or `nil` when this cell is not that case and measures itself as
+    /// before.
+    ///
+    /// Content cannot measure a band. A Korean document builds its section headings and panels out
+    /// of tables whose top and bottom rows are a couple of points high with every cell empty, drawn
+    /// as a thin rule of colour; a reader that measures one by its content gives the empty paragraph
+    /// a whole line box plus two paddings and draws a 2.8pt band 20pt tall. Measured on
+    /// `2025_행정업무운영편람_최종.hwp`, 213 of its 1,980 rows are declared under 5pt and 198 of
+    /// those hold no text — and the section-heading box that showed it is 48pt here against the
+    /// source's 30.5pt.
+    ///
+    /// Padding gives way first, exactly as it does when a column is too narrow for it (see `build`'s
+    /// own Step D): it is this reader's cosmetic choice and the declaration is the document's, so
+    /// the two paddings are scaled down IN PROPORTION to leave the line its minimum. They are never
+    /// grown — a document that declares a band TALLER than its padding keeps the padding it asked
+    /// for and the line takes the remainder.
+    static func decorativeBand(cell: CellContent?, paged: Bool,
+                               paddingTop: CGFloat, paddingBottom: CGFloat)
+        -> (top: CGFloat, bottom: CGFloat, line: CGFloat)? {
+        guard paged, let cell, let declared = cell.declaredHeight, declared > 0,
+              cell.content.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        let room = max(0, declared - Self.bandMinimumLine)
+        let asked = paddingTop + paddingBottom
+        let top: CGFloat, bottom: CGFloat
+        if asked <= room {
+            top = paddingTop; bottom = paddingBottom
+        } else if asked > 0 {
+            top = (room * paddingTop / asked).rounded(.down)
+            bottom = (room * paddingBottom / asked).rounded(.down)
+        } else {
+            top = 0; bottom = 0
+        }
+        return (top, bottom, max(Self.bandMinimumLine, declared - top - bottom))
+    }
+
     /// One already-styled cell, plus how many rows/columns its `NSTextTableBlock` covers.
     /// `rowSpan`/`columnSpan` default to 1, so a caller with no merges (every markdown table, and
     /// an office table before its parser learns `w:gridSpan`/`w:vMerge`) builds these without ever
@@ -235,6 +315,10 @@ enum TableBlockBuilder {
         /// whose reader didn't populate it) leaves the single `padding` value above governing,
         /// byte-identical to before this existed.
         var edgePadding: EdgePadding? = nil
+        /// Mirrors `Cell.declaredHeight` — the row height the DOCUMENT stated, in points. Used for
+        /// ONE thing: a row with no text in it, where content cannot measure what the document drew
+        /// as a thin band of colour. `nil` everywhere else, and the cell measures itself as before.
+        var declaredHeight: CGFloat? = nil
         /// Mirrors `Cell.diagonal` — the rule this cell draws ACROSS itself. `nil` for markdown and
         /// for every format but HWP, and for the great majority of HWP cells too.
         var diagonal: CellDiagonal? = nil
@@ -750,7 +834,10 @@ enum TableBlockBuilder {
             // sum to MORE than `availableForPadding`, reopening the very overshoot this exists to
             // shrink; rounding down never does.
             let availableForPadding = max(0, cellWidth - leftWidth - rightWidth)
-            let effLeft: CGFloat, effRight: CGFloat
+            // A row the DOCUMENT sized itself because nothing in it could — see `decorativeBand`.
+            let band = Self.decorativeBand(cell: placement.cell, paged: paged,
+                                           paddingTop: me.paddingTop, paddingBottom: me.paddingBottom)
+            var effLeft: CGFloat, effRight: CGFloat
             if paged {
                 // PER-EDGE — the left/right pair can genuinely differ (a document's own asymmetric
                 // margin), so each is capped independently against HALF the available room rather
@@ -760,10 +847,27 @@ enum TableBlockBuilder {
                 let maxEachSide = (availableForPadding / 2).rounded(.down)
                 effLeft = min(me.paddingLeft, maxEachSide)
                 effRight = min(me.paddingRight, maxEachSide)
+                // ONE-TOKEN RELIEF — the same "padding gives way first" rule as above, applied to
+                // the other way a cell runs out of room: not too many columns, but ONE word that
+                // cannot be broken. A label like `44.` is a single token, and a typesetter that
+                // breaks it puts the full stop alone at the start of a line, which no word processor
+                // does. Measured against rhwp on the reference manual's Q&A rows: the source draws
+                // `44.` from 10.66pt inside a 38.75pt cell out to 25.1pt of glyphs — PAST the right
+                // inner margin the same file declares — rather than wrap it. Reproducing that costs
+                // only the right padding, so the cell's OUTER width never moves and invariant 39's
+                // fixed grid is untouched.
+                if let relieved = Self.oneTokenPaddingRelief(
+                    content: placement.cell?.content,
+                    contentWidth: cellWidth - effLeft - effRight - leftWidth - rightWidth,
+                    rightPadding: effRight) {
+                    effRight = relieved
+                }
                 block.setWidth(effLeft, type: .absoluteValueType, for: .padding, edge: .minX)
                 block.setWidth(effRight, type: .absoluteValueType, for: .padding, edge: .maxX)
-                block.setWidth(me.paddingTop, type: .absoluteValueType, for: .padding, edge: .minY)
-                block.setWidth(me.paddingBottom, type: .absoluteValueType, for: .padding, edge: .maxY)
+                block.setWidth(band?.top ?? me.paddingTop,
+                               type: .absoluteValueType, for: .padding, edge: .minY)
+                block.setWidth(band?.bottom ?? me.paddingBottom,
+                               type: .absoluteValueType, for: .padding, edge: .maxY)
             } else {
                 // UNCHANGED — the exact call this file made before the `paged` branch existed: ONE
                 // uniform value, set for all four edges via the no-`edge:` overload. `paddingLeft`
@@ -774,8 +878,8 @@ enum TableBlockBuilder {
                 effRight = effectivePadding
                 block.setWidth(effectivePadding, type: .absoluteValueType, for: .padding)
             }
-            block.setContentWidth(max(1, cellWidth - effLeft - effRight - leftWidth - rightWidth),
-                                  type: .absoluteValueType)
+            let cellContentWidth = max(1, cellWidth - effLeft - effRight - leftWidth - rightWidth)
+            block.setContentWidth(cellContentWidth, type: .absoluteValueType)
             // The table's own OUTER margin, HORIZONTAL half only: reserved ENTIRELY by
             // `edges(forWidth:)` narrowing the grid — never a SECOND `.margin` box on the left/right
             // perimeter cells. That second box was tried and measured wrong: AppKit charges a
@@ -812,6 +916,35 @@ enum TableBlockBuilder {
                 let ps = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
                     ?? NSMutableParagraphStyle()
                 ps.textBlocks = [block]
+                // AN INDENT PAIR THAT CANNOT FIT THIS CELL IS NOT THIS CELL'S. A shape's text box
+                // carries its own left/right indents, measured against the frame the box was placed
+                // in; when the paragraph then lands inside a table cell, the two frames disagree and
+                // nothing downstream notices — TextKit simply lays the line out in whatever is left,
+                // and what is left can be nothing. Measured on the 편람's 정책연구 flow chart (sheet
+                // 267): a cell 181.0pt wide holding paragraphs indented `head 0.0 / tail -330.1` and
+                // `head 78.7 / tail -267.4`, so the usable width came out NEGATIVE and every label
+                // was drawn one character per line — 「차/별/성/검/토」 down the page where the
+                // reference renderer fits two characters to a line.
+                //
+                // Only the impossible case is touched: a pair that still leaves room is this cell's
+                // business, however tight, and a document is allowed to indent a cell hard. What is
+                // not allowed is asking for more width than the cell has, which no document means.
+                let usable = cellContentWidth - max(0, ps.headIndent) - max(0, -ps.tailIndent)
+                if usable <= 0 {
+                    ps.headIndent = 0
+                    ps.firstLineHeadIndent = 0
+                    ps.tailIndent = 0
+                }
+                if let band {
+                    // The block's padding alone does not shrink a row: the empty paragraph inside it
+                    // still asks for a full line box. Pin it, and drop the paragraph spacing that
+                    // would otherwise be added on top of a band two points high.
+                    ps.minimumLineHeight = band.line
+                    ps.maximumLineHeight = band.line
+                    ps.lineSpacing = 0
+                    ps.paragraphSpacing = 0
+                    ps.paragraphSpacingBefore = 0
+                }
                 cellStr.addAttribute(.paragraphStyle, value: ps, range: range)
             }
             result.append(cellStr)

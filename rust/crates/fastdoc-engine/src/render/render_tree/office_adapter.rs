@@ -588,6 +588,7 @@ impl<'a> Ctx<'a> {
         });
         let band = wire::HeaderFooter {
             applies_to: convert_header_footer_applicability(hf.applies_to),
+            section: hf.section,
         };
         let payload = if is_header {
             wire::NodePayload::Header(band)
@@ -1462,6 +1463,7 @@ fn empty_filler_cell(row: u32, column: u32) -> wire::TableCell {
         vertical_alignment: None,
         uniform_padding_points: None,
         edge_padding: None,
+        declared_height: None,
         diagonal: None,
         style_shading: None,
         style_uniform_border: None,
@@ -1486,6 +1488,7 @@ fn convert_cell(cell: &Cell, row: u32, column: u32, row_span: u32, column_span: 
         vertical_alignment: cell.vertical_alignment.map(convert_cell_valign),
         uniform_padding_points: cell.padding,
         edge_padding: cell.edge_padding.as_ref().map(insets_nonneg),
+        declared_height: cell.declared_height.filter(|v| *v > 0.0),
         diagonal: cell.diagonal.as_ref().map(convert_cell_diagonal),
         style_shading: cell.style_shading.map(convert_color),
         style_uniform_border: uniform_border(cell.style_border_color, cell.style_border_width),
@@ -1551,6 +1554,7 @@ fn convert_text_run(span: &Span) -> wire::TextRun {
             underline,
             vertical_position,
             letter_spacing_percent: span.letter_spacing_percent,
+            width_scale_percent: span.width_scale_percent,
             baseline_offset_percent: span.baseline_offset_percent,
             underline_color: if span.underline { span.underline_color.map(convert_color) } else { None },
             strikethrough_color: if span.strikethrough {
@@ -1854,6 +1858,9 @@ fn convert_header_footer_applicability(
         }
         office_block::HeaderFooterApplicability::FirstPage => {
             wire::HeaderFooterApplicability::FirstPage
+        }
+        office_block::HeaderFooterApplicability::OddPages => {
+            wire::HeaderFooterApplicability::OddPages
         }
         office_block::HeaderFooterApplicability::EvenPages => {
             wire::HeaderFooterApplicability::EvenPages

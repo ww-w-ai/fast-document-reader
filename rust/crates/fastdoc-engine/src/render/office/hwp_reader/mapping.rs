@@ -1,5 +1,4 @@
 //! swift: Render/Office/HwpReader.swift
-//! swift-range: 1-11
 //!
 //! Mapping half of the HWP port — see `hwp_reader/mod.rs` for why this file stops where it does.
 //! The schema half (rhwp's Codable model, lines 1767-2465) lives in `hwp_reader::schema` and is
@@ -551,6 +550,18 @@ pub struct MediaContext {
     /// from. Nil until the walk has passed an anchored object, which is exactly when a box
     /// coordinate cannot be resolved and is therefore ignored.
     pub last_anchored_frame: Option<CGRect>,
+    /// The frame of the drawing or picture emitted MOST RECENTLY — the object whose text box the
+    /// next boxed paragraphs belong to.
+    ///
+    /// It is NOT the same question as `last_anchored_frame`. rhwp emits a shape's own block and
+    /// then, immediately after it, that shape's text-box paragraphs carrying coordinates RELATIVE
+    /// to the shape's origin (`push_shape_text_boxes`), so the owner is whatever object came last
+    /// in the stream — anchored or not. Reading `last_anchored_frame` instead meant an object that
+    /// took an INLINE branch left the previous anchored object's frame standing, and its label was
+    /// placed against a shape it has nothing to do with. Measured on the reference manual's
+    /// "< 관 인 >" tab: the box states x=0 (its own shape's origin) and was resolved 78pt to the
+    /// right of the shape it belongs to.
+    pub last_object_frame: Option<CGRect>,
     /// The index of the top-level block being mapped, so an anchored object knows where in the
     /// document it belongs. Set by `mapJSON`'s own loop; nested content (a table cell) keeps the
     /// top-level block's index, which is the page-bearing one.
@@ -570,6 +581,7 @@ impl MediaContext {
             anchored: Vec::new(),
             paper: None,
             last_anchored_frame: None,
+            last_object_frame: None,
             block_index: 0,
             picture,
             next: 0,
@@ -1225,7 +1237,11 @@ impl HwpReader {
     /// version ahead of this mapper) degrades to `.defaultPages` too, rather than being dropped.
     // swift: HwpReader.mapHeaderFooterApplyTo
     fn map_header_footer_apply_to(raw: &str) -> HeaderFooterApplicability {
-        if raw == "even" { HeaderFooterApplicability::EvenPages } else { HeaderFooterApplicability::DefaultPages }
+        match raw {
+            "even" => HeaderFooterApplicability::EvenPages,
+            "odd" => HeaderFooterApplicability::OddPages,
+            _ => HeaderFooterApplicability::DefaultPages,
+        }
     }
 }
 
@@ -1552,6 +1568,7 @@ impl HwpReader {
             text_color: None,
             highlight_color: None,
             letter_spacing_percent: None,
+            width_scale_percent: None,
             baseline_offset_percent: None,
             underline_color: None,
             strikethrough_color: None,
@@ -1693,12 +1710,18 @@ impl HwpReader {
     /// The per-script values are applied ONLY when the document's seven slots agree. A span carries
     /// one letter spacing, so honouring a shape whose Hangul and Latin ask for different values
     /// would mean applying one script's answer to the other — measured, the slots agree on 95.9% of
-    /// the char shapes that state a spacing at all, and the remaining 4.1% keep the font's own.
+    /// the char shapes that state a spacing at all and 93.3% of those that state a width scale; the
+    /// rest keep the font's own.
     // swift: HwpReader.applyDecor
     fn apply_decor(d: Option<&HwpCharDecor>, span: &mut Span) {
         let Some(d) = d else { return };
         if let Some(v) = Self::uniform_value(d.spacings.as_deref()) {
             if v != 0 { span.letter_spacing_percent = Some(v as CGFloat); }
+        }
+        // 장평. `100` is the identity and means the same thing as saying nothing, so it is dropped
+        // here rather than travelling as a scale of 1 that every downstream site has to test for.
+        if let Some(v) = Self::uniform_value(d.ratios.as_deref()) {
+            if v != 100 && v > 0 { span.width_scale_percent = Some(v as CGFloat); }
         }
         if let Some(v) = Self::uniform_value(d.char_offsets.as_deref()) {
             if v != 0 { span.baseline_offset_percent = Some(v as CGFloat); }
@@ -1764,7 +1787,8 @@ impl HwpReader {
     /// 편람 went 520 pages to 436. A box that does not leave a readable column is not honoured.
     // swift: HwpReader.boxedFormat
     fn boxed_format(format: &ParagraphFormat, p: &HwpPara, shapes: &MediaContext) -> ParagraphFormat {
-        let (Some(paper), Some(owner)) = (&shapes.paper, shapes.last_anchored_frame) else { return format.clone() };
+        let owner = shapes.last_object_frame.or(shapes.last_anchored_frame);
+        let (Some(paper), Some(owner)) = (&shapes.paper, owner) else { return format.clone() };
         let (Some(bx), Some(bw)) = (p.box_x, p.box_w) else { return format.clone() };
         if bw <= 0 { return format.clone(); }
         let column = (paper.margin_left, paper.content_width);
@@ -1774,9 +1798,23 @@ impl HwpReader {
         let start = (box_left - column.0).max(0.0);
         let end = (column.1 - start - box_width).max(0.0);
         // Below this the "box" is telling us something we cannot draw — a coordinate we misread, or a
-        // box that genuinely sits outside the body column. Flowing at full width is wrong but legible;
-        // a 40pt column is neither.
-        if !(column.1 - start - end >= column.1 * 0.25) { return format.clone(); }
+        // box that genuinely sits outside the body column.
+        //
+        // THE FLOOR IS A LINE OF TEXT, NOT A SHARE OF THE COLUMN. It used to be a quarter of the
+        // body column, whose comment reasoned that "flowing at full width is wrong but legible; a
+        // 40pt column is neither" — but a quarter of a 396pt column is 99pt, and a document's own
+        // labels are routinely narrower than that on purpose. Measured across 341 real HWP/HWPX
+        // documents: 2,339 paragraphs carry a shape box and 722 of them (31%) state a box under a
+        // quarter of the column, in 60 documents (18% of the corpus). Every one of those was being
+        // flowed at FULL width — the reference manual's "< 관 인 >" tab, a 60pt label that belongs
+        // on the left edge of a Q&A band, was drawn centred across the whole column instead.
+        //
+        // What the floor is really protecting against is a MISREAD coordinate, and a misread one
+        // does not leave room for a couple of characters. So the test is whether the box can hold
+        // them: twice the paragraph's own declared size, never less than 16pt.
+        let line = p.base_size_pt.unwrap_or(10.0).max(8.0) * 2.0;
+        let floor = line.max(16.0);
+        if !(column.1 - start - end >= floor) { return format.clone(); }
         let mut f = format.clone();
         f.indent_start = Some(start);
         f.indent_end = Some(end);
@@ -2232,6 +2270,8 @@ impl HwpReader {
                         offset, &paper,
                     ) {
                         shapes.last_anchored_frame = Some(frame);
+                    shapes.last_object_frame = Some(frame);
+                        shapes.last_object_frame = Some(frame);
                         shapes.anchored.push(OfficeAnchoredObject {
                             block_index: shapes.block_index as i64,
                             object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Image(image) },
@@ -2267,6 +2307,8 @@ impl HwpReader {
                         offset, &paper,
                     ) {
                         shapes.last_anchored_frame = Some(frame);
+                    shapes.last_object_frame = Some(frame);
+                        shapes.last_object_frame = Some(frame);
                         shapes.anchored.push(OfficeAnchoredObject {
                             block_index: shapes.block_index as i64,
                             object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Image(image) },
@@ -2311,6 +2353,23 @@ impl HwpReader {
             paths: paths.clone(),
             size,
         };
+        // WHERE THIS OBJECT IS, recorded before any branch below returns — the text-box paragraphs
+        // rhwp emits right after it state their coordinates relative to THIS origin. An inline
+        // shape has no anchored frame, and its label still has to be placed against it rather than
+        // against whatever was anchored last (see `MediaContext.last_object_frame`). The body
+        // column's own left edge is the inline case's origin, which is where an inline object is
+        // laid.
+        if let Some(paper) = shapes.paper.as_ref() {
+            let placed = Self::anchored_frame(
+                size, sh.vert_rel_to.as_deref().unwrap_or("para"), sh.horz_rel_to.as_deref().unwrap_or("para"),
+                sh.vert_align.as_deref().unwrap_or("top"), sh.horz_align.as_deref().unwrap_or("left"),
+                offset, paper,
+            );
+            shapes.last_object_frame = Some(placed.unwrap_or(CGRect {
+                origin: CGPoint { x: paper.margin_left, y: 0.0 },
+                size,
+            }));
+        }
         // PINNED TO THE PAPER — a cover's decoration, a rule down a margin. Placed by the
         // document's own rule (`anchoredFrame`) and drawn on the sheet the anchoring block falls
         // on, rather than pushed into the text where inlining one cost 29 pages (invariant 75).
@@ -2322,6 +2381,7 @@ impl HwpReader {
                     offset, &paper,
                 ) {
                     shapes.last_anchored_frame = Some(frame);
+                    shapes.last_object_frame = Some(frame);
                     shapes.anchored.push(OfficeAnchoredObject {
                         block_index: shapes.block_index as i64,
                         object: OfficeMasterObject {
@@ -2349,6 +2409,7 @@ impl HwpReader {
                     offset, &paper,
                 ) {
                     shapes.last_anchored_frame = Some(frame);
+                    shapes.last_object_frame = Some(frame);
                     shapes.anchored.push(OfficeAnchoredObject {
                         block_index: shapes.block_index as i64,
                         object: OfficeMasterObject {
@@ -2467,6 +2528,9 @@ impl HwpReader {
         }
         Cell {
             blocks, row_span: c.row_span, col_span: c.col_span,
+            // A row the document declared as a thin decorative band is the one place the content
+            // cannot be trusted to measure it — see `Cell::declared_height`.
+            declared_height: c.height_pt.filter(|v| *v > 0.0).map(|v| v as CGFloat),
             background_color: shading,
             background_image: fill_image,
             background_gradient,

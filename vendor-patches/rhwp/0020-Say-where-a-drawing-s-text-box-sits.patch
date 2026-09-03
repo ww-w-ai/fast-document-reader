@@ -1,7 +1,7 @@
 From 2288e08460e75469728acbf599638c1185002636 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sat, 15 Aug 2026 02:00:37 +0900
-Subject: [PATCH 20/46] Say where a drawing's text box sits
+Subject: [PATCH 20/50] Say where a drawing's text box sits
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -20,7 +20,7 @@ not the paper's. Resolving that is this renderer's own group-origin walk
  1 file changed, 47 insertions(+), 2 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index b647abe9..caf75ed7 100644
+index b647abe92..caf75ed76 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -512,6 +512,16 @@ struct ParaBlock {

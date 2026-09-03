@@ -2,6 +2,20 @@ import Foundation
 import AppKit
 import CRhwpNative
 
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// THE APP DOES NOT RUN THIS FILE. Reading HWP/HWPX is the RUST ENGINE's job — `MarkdownDocument`
+// opens one through `RustOfficeDocumentHandle`, and `--extract`/`--pdf`/Quick Look go the same
+// way. Nothing in `Sources/` calls `HwpReader.read` (grep it); every caller is a test or a probe.
+//
+// So EDITING THIS FILE CHANGES NOTHING A READER SEES. It is the port's reference half: the
+// Swift original the Rust twin is checked against, and the oracle the probes measure with.
+// A behaviour change belongs in BOTH — `rust/crates/fastdoc-engine/src/render/office/hwp_reader/` first, because that is the one
+// that runs, and here second so the two keep saying the same thing.
+//
+// Measured the hard way: a width-scale (장평) fix was written here, built, and measured to have
+// changed the screen by exactly zero — because the screen had never been reading this file.
+// ────────────────────────────────────────────────────────────────────────────────────────────
+
 // Bridge to the rhwp (Rust, MIT — github.com/edwardkim/rhwp, forked: FFI drift fix +
 // structured-export FFI added) HWP/HWPX parser, statically linked via the RhwpNative
 // xcframework. See docs/BUILD-RHWP.md to rebuild the binary.
@@ -710,7 +724,11 @@ enum HwpReader {
     /// page not covered by a more specific entry" — the same shape. An unrecognized value (a rhwp
     /// version ahead of this mapper) degrades to `.defaultPages` too, rather than being dropped.
     private static func mapHeaderFooterApplyTo(_ raw: String) -> HeaderFooterApplicability {
-        raw == "even" ? .evenPages : .defaultPages
+        switch raw {
+        case "even": return .evenPages
+        case "odd": return .oddPages
+        default: return .defaultPages
+        }
     }
 
     /// What rhwp's per-script font export looks like once THIS file's own decoder has read it.
@@ -1043,12 +1061,16 @@ enum HwpReader {
     /// real documents and invariant 97 carries the table that decided which is which.
     ///
     /// The per-script values are applied ONLY when the document's seven slots agree. A span carries
-    /// one letter spacing, so honouring a shape whose Hangul and Latin ask for different values
-    /// would mean applying one script's answer to the other — measured, the slots agree on 95.9% of
-    /// the char shapes that state a spacing at all, and the remaining 4.1% keep the font's own.
+    /// one letter spacing and one width scale, so honouring a shape whose Hangul and Latin ask for
+    /// different values would mean applying one script's answer to the other — measured, the slots
+    /// agree on 95.9% of the char shapes that state a spacing at all and 93.3% of those that state a
+    /// width scale; the rest keep the font's own.
     private static func applyDecor(_ d: HwpCharDecor?, to span: inout Span) {
         guard let d else { return }
         if let v = uniformValue(d.spacings), v != 0 { span.letterSpacingPercent = CGFloat(v) }
+        // 장평. `100` is the identity and means the same thing as saying nothing, so it is dropped
+        // here rather than travelling as a scale of 1 that every downstream site has to test for.
+        if let v = uniformValue(d.ratios), v != 100, v > 0 { span.widthScalePercent = CGFloat(v) }
         if let v = uniformValue(d.charOffsets), v != 0 { span.baselineOffsetPercent = CGFloat(v) }
         if let c = d.underlineColor { span.underlineColor = color(c) }
         if let c = d.strikeColor { span.strikethroughColor = color(c) }

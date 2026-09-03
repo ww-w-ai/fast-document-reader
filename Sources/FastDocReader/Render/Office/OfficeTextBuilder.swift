@@ -128,6 +128,7 @@ enum OfficeTextBuilder {
                       pageMarginRight: CGFloat? = nil,
                       tableWidth: CGFloat? = nil,
                       lineGridPitch: CGFloat? = nil,
+                      pageContentHeight: CGFloat? = nil,
                       comments: [OfficeComment] = [],
                       deferringTables: Set<Int> = [],
                       sectionStartBlocks: [Int] = [],
@@ -223,6 +224,10 @@ enum OfficeTextBuilder {
         // declaration is still in force above it.
         let blockColumnWidths = columnWidthPerBlock(blocks, bodyWidth: columnWidth)
         let blockColumnLayouts = columnLayoutPerBlock(blocks)
+        // What `tableWidth` already took off the reading column (the text container's own padding on
+        // each side). Read back rather than passed in, so the column cap below narrows by the same
+        // amount the page-wide width did and the two can never drift apart.
+        let containerPadding = max(0, columnWidth.isFinite ? columnWidth - (tableWidth ?? columnWidth) : 0)
         for (index, block) in blocks.enumerated() {
             let start = result.length
             let colW = blockColumnWidths[index]
@@ -231,8 +236,31 @@ enum OfficeTextBuilder {
             // no character for an attribute to live on — the same shape a bookmark arrives as.
             defer {
                 if let layout = blockColumnLayouts[index], result.length > start {
-                    result.addAttribute(MDAttr.columnLayout, value: layout,
-                                        range: NSRange(location: start, length: result.length - start))
+                    let range = NSRange(location: start, length: result.length - start)
+                    result.addAttribute(MDAttr.columnLayout, value: layout, range: range)
+                    // And the block's TEXT breaks at the column edge. Nothing else does this: `colW`
+                    // reaches the tab stops, the pictures and the grid, but a prose line was still
+                    // wrapped by the text container, so a paragraph in column 1 ran the full width
+                    // of the page and was then MOVED to column 1 — drawing straight across column 2
+                    // (measured on the reference manual's appendix: a 396pt line inside a 186.5pt
+                    // column). `tailIndent` is the one lever that narrows a line without moving it,
+                    // and it is measured from the container's trailing edge, hence negative.
+                    //
+                    // A CELL is left alone: it already breaks at its own cell width, and the table
+                    // around it is capped to the column by `maxWidth` (see `appendTable`). A style
+                    // that already carries a tail indent is left alone too — that is the document's
+                    // own right indent, and this must narrow the column, never argue with the page.
+                    if layout.splitsText, columnWidth.isFinite, colW < columnWidth {
+                        let inset = columnWidth - colW
+                        result.enumerateAttribute(.paragraphStyle, in: range) { value, r, _ in
+                            guard let ps = value as? NSParagraphStyle,
+                                  !(ps.textBlocks.first is NSTextTableBlock), ps.tailIndent == 0
+                            else { return }
+                            let narrowed = ps.mutableCopy() as! NSMutableParagraphStyle
+                            narrowed.tailIndent = -inset
+                            result.addAttribute(.paragraphStyle, value: narrowed, range: r)
+                        }
+                    }
                 }
             }
             // P2's `w:contextualSpacing` adjacency rule (spec area 5): suppress THIS paragraph's
@@ -317,7 +345,14 @@ enum OfficeTextBuilder {
                             // format stated one, else it falls back to the page — never left unscaled.
                             graphicBasis: tableFormat.sourceWidth ?? pageBasis,
                             paged: paged, lineGridPitch: lineGridPitch,
-                            tableWidth: tableWidth)
+                            tableWidth: tableWidth,
+                            // A table under a multi-column declaration is capped to its COLUMN.
+                            // `colW` is already that column's width; `tableWidth` is the page-wide
+                            // reading column minus the text container's own padding, so the cap
+                            // subtracts the same padding to stay in one vocabulary. `nil` for every
+                            // single-column run, which is the identity (invariant 37).
+                            columnCap: blockColumnLayouts[index]?.splitsText == true
+                                ? max(1, colW - containerPadding) : nil)
 
             case let .image(id, size, alignment):
                 appendImage(id: id, size: size, columnWidth: colW, basis: pageBasis,
@@ -360,7 +395,47 @@ enum OfficeTextBuilder {
             tagBlock(from: start, index: index)
         }
         unifyParagraphTerminators(in: result)
+        capLineHeightsToPage(in: result, pageContentHeight: pageContentHeight, fontSizeScale: fontSizeScale)
         return result
+    }
+
+    /// No line may be taller than the page it has to sit on.
+    ///
+    /// A Korean chapter divider states its number as a single 580pt character with the document's own
+    /// 160% line spacing, which resolves to a line box of **928pt** against a page body of **555.6pt**.
+    /// A line that cannot fit any page does not simply move to the next one: it is laid out where it
+    /// starts and runs 372pt past the boundary, so the glyph is painted across the following sheet's
+    /// running header and 바탕쪽, and the words that belong beside it are pushed onto a page of their
+    /// own. Measured on `2025_행정업무운영편람_최종.hwp`: five such lines (the dividers numbered 1-5, on
+    /// sheets 9, 32, 242, 341 and 379) out of 14,646.
+    ///
+    /// The reference renderer never meets this case because it does not lay out at all — HWP stores
+    /// the line array 한글 itself composed (`LineSeg.vertical_pos`, an absolute y per line), and rhwp
+    /// replays it, so its divider's title sits INSIDE the big numeral's box at the y the authoring app
+    /// recorded. Lines cannot overlap in a re-typeset flow, so the honest equivalent here is to refuse
+    /// to let one line claim more than a page.
+    ///
+    /// Applied as a FINAL pass over the built string rather than threaded through the three
+    /// `applyParagraphFormat` callers, and it writes only to a paragraph that actually exceeds the
+    /// page — every other document, and every other paragraph of this one, is byte-identical to what
+    /// this function did not exist (invariant 37). Callers that build furniture rather than the body
+    /// (the page band, the master page, a footnote) pass no page height and are untouched.
+    private static func capLineHeightsToPage(in result: NSMutableAttributedString,
+                                             pageContentHeight: CGFloat?, fontSizeScale: CGFloat) {
+        guard let declared = pageContentHeight, declared > 0 else { return }
+        let cap = declared * fontSizeScale
+        guard cap > 0 else { return }
+        let whole = NSRange(location: 0, length: result.length)
+        result.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
+            guard let style = value as? NSParagraphStyle,
+                  style.minimumLineHeight > cap || style.maximumLineHeight > cap else { return }
+            let capped = style.mutableCopy() as! NSMutableParagraphStyle
+            if capped.minimumLineHeight > cap { capped.minimumLineHeight = cap }
+            // A zero maximum means "no cap" and is left alone ONLY when the minimum already governs;
+            // here the line is over the page either way, so the ceiling is stated explicitly.
+            capped.maximumLineHeight = cap
+            result.addAttribute(.paragraphStyle, value: capped, range: range)
+        }
     }
 
     /// Give every paragraph's terminating `"\n"` the attributes of the paragraph it ENDS.
@@ -612,6 +687,26 @@ enum OfficeTextBuilder {
                 ]]
                 let descriptor = font.fontDescriptor.addingAttributes([.featureSettings: smallCapsAttrs])
                 font = NSFont(descriptor: descriptor, size: font.pointSize) ?? font
+            }
+            // 장평 — the document's own glyph width, applied as a FONT MATRIX and applied LAST, so
+            // it rides whatever face the whole pipeline above produced rather than being rebuilt
+            // away by one of its `NSFont(descriptor:size:)` steps (each of those takes a SIZE and
+            // would drop a matrix).
+            //
+            // A matrix and not `NSAttributedString.Key.expansion`: that attribute is the obvious
+            // reading of "scale the glyphs" and it is INERT here. Measured on the 편람 — with it set
+            // to `log(pct/100)` on every run the document scales, the layout came back byte-identical
+            // to not setting it at all (516 sheets, 14,727 fragments, 18.0 characters per line, every
+            // per-sheet count the same). TextKit's typesetter does not fold it into glyph advances,
+            // so the lines never re-break and the page count never moves. Invariant 97's "needs a
+            // font matrix" was right.
+            //
+            // The matrix carries the SIZE as well as the scale: a font matrix maps a 1-unit em, so
+            // dropping the size here would draw the run at one point.
+            if let pct = span.widthScalePercent, pct > 0, pct != 100 {
+                let size = font.pointSize
+                let matrix = AffineTransform(scaleByX: size * pct / 100, byY: size)
+                font = NSFont(descriptor: font.fontDescriptor, textTransform: matrix) ?? font
             }
             attrs[.font] = font
             attrs[.foregroundColor] = color
@@ -1386,7 +1481,8 @@ enum OfficeTextBuilder {
                                     graphicBasis: CGFloat? = nil,
                                     paged: Bool = false,
                                     lineGridPitch: CGFloat? = nil,
-                                    tableWidth: CGFloat? = nil) {
+                                    tableWidth: CGFloat? = nil,
+                                    columnCap: CGFloat? = nil) {
         guard rows.contains(where: { !$0.isEmpty }) else {
             result.append(NSAttributedString(string: "\n"))
             return
@@ -1444,7 +1540,15 @@ enum OfficeTextBuilder {
         // is ALSO handed to `TableBlockBuilder.build` below so a LATER reflow re-derives the same
         // clamp against the full column rather than re-stretching the table back out to it.
         let requestedWidth = tableWidth ?? columnWidth
-        let maxWidth: CGFloat? = paged ? tableFormat.sourceWidth : nil
+        // The ceiling this table may not exceed, from the two independent things that impose one:
+        // its own authored width (paged only), and the COLUMN it sits in when the document declared
+        // more than one. The narrower wins. Carried on the table (`GridTextTable.maxWidth`) rather
+        // than only applied here, because `resizeTables` re-solves every table against the full
+        // reading column on the next reflow and would otherwise stretch a columned table straight
+        // back across its neighbour — invariant 48's "build and resizeTables must use the IDENTICAL
+        // formula" is satisfied by the ceiling travelling with the table, not by the caller.
+        let maxWidth: CGFloat? = [paged ? tableFormat.sourceWidth : nil, columnCap]
+            .compactMap { $0 }.filter { $0 > 0 }.min()
         let solvedWidth = GridTextTable.clampedWidth(requestedWidth, maxWidth: maxWidth)
         // The GRID this table's columns actually solve across — `solvedWidth` narrowed by the
         // table's own outer margin, mirroring `GridTextTable.edges(forWidth:)`'s own subtraction
@@ -1474,6 +1578,7 @@ enum OfficeTextBuilder {
                                                       styleBorderColor: cell.styleBorderColor,
                                                       styleBorderWidth: cell.styleBorderWidth,
                                                       edgeBorders: cell.edgeBorders, edgePadding: cell.edgePadding,
+                                                      declaredHeight: cell.declaredHeight,
                                                       diagonal: cell.diagonal)
             }
         }

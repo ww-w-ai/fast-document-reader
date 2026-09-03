@@ -52,7 +52,7 @@ all_string_enums! {
     TabAlignment { Left => "left", Center => "center", Right => "right", Decimal => "decimal" },
     TabLeader { None => "none", Dot => "dot", Hyphen => "hyphen", Underscore => "underscore" },
     LineHeightMode { Multiple => "multiple", Exact => "exact", AtLeast => "atLeast" },
-    HeaderFooterApplicability { DefaultPages => "defaultPages", FirstPage => "firstPage", EvenPages => "evenPages" },
+    HeaderFooterApplicability { DefaultPages => "defaultPages", FirstPage => "firstPage", EvenPages => "evenPages", OddPages => "oddPages" },
     LineBreakGranularity { Word => "word", Hyphen => "hyphen", Character => "character" },
     ListNumberingGlyphs { Decimal => "decimal", CircledDecimal => "circledDecimal", RomanUpper => "romanUpper", RomanLower => "romanLower", LatinUpper => "latinUpper", LatinLower => "latinLower", HangulSyllable => "hangulSyllable", HangulNumber => "hangulNumber", HanjaNumber => "hanjaNumber" },
     ColorSpace { Srgb => "sRGB", DeviceRgb => "deviceRGB" },
@@ -412,6 +412,8 @@ pub struct CharacterStyle {
     pub vertical_position: VerticalPosition,
     #[serde(default)]
     pub letter_spacing_percent: Option<f64>,
+    #[serde(default)]
+    pub width_scale_percent: Option<f64>,
     #[serde(default)]
     pub baseline_offset_percent: Option<f64>,
     #[serde(default)]
@@ -810,6 +812,10 @@ pub struct TableCell {
     pub uniform_padding_points: Option<f64>,
     #[serde(default)]
     pub edge_padding: Option<OptionalInsets>,
+    /// The row height the DOCUMENT declared for this cell, in points. The only authority for a row
+    /// that holds no text — see `office_block::Cell::declared_height`.
+    #[serde(default)]
+    pub declared_height: Option<f64>,
     #[serde(default)]
     pub diagonal: Option<CellDiagonal>,
     #[serde(default)]
@@ -921,6 +927,17 @@ pub struct RawHtml {
 #[serde(rename_all = "camelCase")]
 pub struct HeaderFooter {
     pub applies_to: HeaderFooterApplicability,
+    /// WHICH SECTION declared this running head, when the format says. A running head belongs to
+    /// its own section (invariant 77), and the host reads `None` as "declared by no section, so it
+    /// applies to EVERY page" — so dropping it here is not a lost nicety, it silently widens one
+    /// section's header to the whole document. Measured on `2025_행정업무운영편람_최종.hwp`, which
+    /// declares a running head in exactly one of its fourteen sections (the appendix): the reader
+    /// carried `Some(11)` and the projection rebuilt it as `None`, so that section's `－N－` footer
+    /// was painted on all 529 sheets beside the page number the document's own 바탕쪽 already draws.
+    /// `None` stays honest for docx and odt, which read one dominant `sectPr` and have no
+    /// per-section running head to name.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub section: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

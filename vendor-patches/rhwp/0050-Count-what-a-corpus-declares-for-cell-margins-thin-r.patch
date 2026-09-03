@@ -1,0 +1,172 @@
+From c125f47b59496a979cbbaae60b1e91ea64a4e35e Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 1 Sep 2026 11:52:53 +0900
+Subject: [PATCH 50/50] Count what a corpus declares for cell margins, thin
+ rows and column widths
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+세 가지를 숫자로 확정해 두어, 다음 판단이 추측 대신 실측에서 출발하게 한다: 열 폭
+해소기가 실제 문서에서 무엇을 바꾸는지(열 폭까지 함께 찍는다), 셀이 자기 안 여백을
+쓰라고 했는지 표 기본값을 쓰라고 했는지, 그리고 문서가 얼마나 얇은 행을 선언하는지.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ tests/fmd_cell_margin_probe.rs  | 40 +++++++++++++++++++++
+ tests/fmd_column_width_probe.rs | 16 +++++++--
+ tests/fmd_thin_row_probe.rs     | 63 +++++++++++++++++++++++++++++++++
+ 3 files changed, 117 insertions(+), 2 deletions(-)
+ create mode 100644 tests/fmd_cell_margin_probe.rs
+ create mode 100644 tests/fmd_thin_row_probe.rs
+
+diff --git a/tests/fmd_cell_margin_probe.rs b/tests/fmd_cell_margin_probe.rs
+new file mode 100644
+index 000000000..e0cb0f856
+--- /dev/null
++++ b/tests/fmd_cell_margin_probe.rs
+@@ -0,0 +1,40 @@
++use rhwp::model::control::Control;
++use rhwp::wasm_api::HwpDocument;
++use std::{fs, path::Path};
++
++fn walk<'a>(controls: &'a [Control], out: &mut Vec<&'a rhwp::model::table::Table>) {
++    for c in controls {
++        if let Control::Table(t) = c {
++            out.push(t);
++            for cell in &t.cells {
++                for p in &cell.paragraphs { walk(&p.controls, out); }
++            }
++        }
++    }
++}
++
++#[test]
++fn probe_cell_margins() {
++    let Ok(path) = std::env::var("FMD_CM_DOC") else { return };
++    let bytes = fs::read(Path::new(&path)).expect("read");
++    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
++    let mut tables = Vec::new();
++    for s in &doc.document().sections {
++        for p in &s.paragraphs { walk(&p.controls, &mut tables); }
++    }
++    let mut lines = vec![];
++    for (i, t) in tables.iter().enumerate() {
++        if !(296..=300).contains(&i) { continue; }
++        lines.push(format!("t{i} cols {} rows {} declared {} table-pad {:?}",
++            t.col_count, t.row_count, t.common.width, t.padding));
++        for c in t.cells.iter() {
++            let txt: String = c.paragraphs.iter().flat_map(|p| p.text.chars()).take(20).collect();
++            lines.push(format!(
++                "   r{} c{} span {}x{} w {:<6} h {:<6} apply_inner {:<5} pad {:?} valign {:?} |{}|",
++                c.row, c.col, c.col_span, c.row_span, c.width, c.height,
++                c.apply_inner_margin, c.padding, c.vertical_align, txt));
++        }
++    }
++    let out = std::env::var("FMD_CM_OUT").unwrap_or_else(|_| "/tmp/fmd-cm.txt".into());
++    fs::write(out, lines.join("\n") + "\n").unwrap();
++}
+diff --git a/tests/fmd_column_width_probe.rs b/tests/fmd_column_width_probe.rs
+index 083b4a3ea..f7dee0fcc 100644
+--- a/tests/fmd_column_width_probe.rs
++++ b/tests/fmd_column_width_probe.rs
+@@ -35,13 +35,25 @@ fn probe_column_widths() {
+         let res = t.get_column_widths_resolved();
+         naive_default += naive.iter().filter(|w| **w == 1800).count();
+         resolved_default += res.iter().filter(|w| **w == 1800).count();
++        let first_text: String = t
++            .cells
++            .first()
++            .map(|c| {
++                c.paragraphs
++                    .iter()
++                    .flat_map(|p| p.text.chars())
++                    .take(12)
++                    .collect::<String>()
++            })
++            .unwrap_or_default();
+         if i < 40 || naive != res {
+             lines.push(format!(
+-                "t{:<4} cols {:<3} declared {:<7} naive sum {:<8} resolved sum {:<8} {}",
++                "t{:<4} cols {:<3} declared {:<7} naive sum {:<8} resolved sum {:<8} {:<8} naive {:?} resolved {:?} first |{}|",
+                 i, t.col_count, t.common.width,
+                 naive.iter().map(|w| *w as u64).sum::<u64>(),
+                 res.iter().map(|w| *w as u64).sum::<u64>(),
+-                if naive == res { "same" } else { "CHANGED" }));
++                if naive == res { "same" } else { "CHANGED" },
++                naive, res, first_text));
+         }
+     }
+     lines.push(format!("columns left at the 1800 default: naive {naive_default}  resolved {resolved_default}"));
+diff --git a/tests/fmd_thin_row_probe.rs b/tests/fmd_thin_row_probe.rs
+new file mode 100644
+index 000000000..10fe5495d
+--- /dev/null
++++ b/tests/fmd_thin_row_probe.rs
+@@ -0,0 +1,63 @@
++//! 문서가 「얇은 띠」로 선언한 표 행이 몇 개인가 — 우리가 글자 한 줄로 부풀리는 그 행들.
++use rhwp::model::control::Control;
++use rhwp::wasm_api::HwpDocument;
++use std::{collections::BTreeMap, fs, path::Path};
++
++fn walk<'a>(controls: &'a [Control], out: &mut Vec<&'a rhwp::model::table::Table>) {
++    for c in controls {
++        if let Control::Table(t) = c {
++            out.push(t);
++            for cell in &t.cells {
++                for p in &cell.paragraphs { walk(&p.controls, out); }
++            }
++        }
++    }
++}
++
++#[test]
++fn probe_thin_rows() {
++    let Ok(path) = std::env::var("FMD_THIN_DOC") else { return };
++    let bytes = fs::read(Path::new(&path)).expect("read");
++    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
++    let mut tables = Vec::new();
++    for s in &doc.document().sections {
++        for p in &s.paragraphs { walk(&p.controls, &mut tables); }
++    }
++    // 행 높이 = 그 행 시작 셀들의 height 최소값 (rowSpan 1 인 것만)
++    let mut hist: BTreeMap<i64, usize> = BTreeMap::new();
++    let (mut thin, mut thin_empty, mut total) = (0usize, 0usize, 0usize);
++    let mut thin_pt = 0f64;
++    for t in &tables {
++        let mut rows: BTreeMap<u16, (i32, bool)> = BTreeMap::new();
++        for c in &t.cells {
++            if c.row_span != 1 { continue; }
++            let empty = c.paragraphs.iter().all(|p| p.text.trim().is_empty());
++            let e = rows.entry(c.row).or_insert((i32::MAX, true));
++            e.0 = e.0.min(c.height as i32);
++            e.1 &= empty;
++        }
++        for (_r, (h, empty)) in rows {
++            if h == i32::MAX { continue; }
++            total += 1;
++            hist.entry((h as i64 / 500) * 5).and_modify(|v| *v += 1).or_insert(1);
++            if h < 500 {
++                thin += 1;
++                if empty { thin_empty += 1; }
++                // 우리가 한 줄로 부풀릴 때의 손해: 대략 14pt 짜리 줄상자 - 선언 높이
++                thin_pt += 14.0 - (h as f64) / 100.0;
++            }
++        }
++    }
++    let mut lines = vec![
++        format!("tables {}  rows {}", tables.len(), total),
++        format!("rows under 5pt: {thin}   of which every cell is empty: {thin_empty}"),
++        format!("if each such row costs a 14pt line box: {:.0} pt = {:.1} pages of 555.6pt",
++                thin_pt, thin_pt / 555.6),
++        "histogram (row height, 5pt buckets):".into(),
++    ];
++    for (b, n) in hist.iter().take(14) {
++        lines.push(format!("  {:>3}..{:>3} pt   {}", b, b + 5, n));
++    }
++    let out = std::env::var("FMD_THIN_OUT").unwrap_or_else(|_| "/tmp/fmd-thin.txt".into());
++    fs::write(out, lines.join("\n") + "\n").unwrap();
++}
+-- 
+2.50.1 (Apple Git-155)
+

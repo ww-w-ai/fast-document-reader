@@ -1158,11 +1158,15 @@ final class PageBandReservationTests: XCTestCase {
         ])
         let honoured = PageBandLayoutDelegate.honouredPageBreaks(in: storage)
 
-        XCTAssertTrue(honoured.contains(locations[0]),
-                      "the break that MADE the page is the one that has work to do")
-        XCTAssertFalse(honoured.contains(locations[1]),
-                       "a break one empty paragraph below a page top would open a page holding " +
-                       "nothing — HWP does not spend a sheet on it and neither may this reader")
+        XCTAssertEqual(honoured.count, 1,
+                       "the pair must cost ONE page — HWP does not spend a sheet on a break whose " +
+                       "page would hold only the empty paragraph the other break left there")
+        XCTAssertTrue(honoured.contains(locations[1]),
+                      "and the survivor is the LATER one: a marker opens the page that FOLLOWS it, " +
+                      "so the blank page is the EARLIER marker's. Keeping the earlier one instead " +
+                      "leaves that blank page standing whenever the later marker cannot be dropped " +
+                      "— it begins a section — and then applies the OLD section's paper to it " +
+                      "(invariant 147)")
     }
 
     /// The narrowing that keeps a real page: the moment anything glyph-bearing sits between two

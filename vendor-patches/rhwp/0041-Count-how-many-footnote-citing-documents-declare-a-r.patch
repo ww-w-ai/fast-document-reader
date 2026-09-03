@@ -1,7 +1,7 @@
 From 8e48d7d5ba33a0ec9c3922fc297921205b2155e5 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 21:17:54 +0900
-Subject: [PATCH 41/46] Count how many footnote-citing documents declare a
+Subject: [PATCH 41/50] Count how many footnote-citing documents declare a
  running head
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -15,7 +15,7 @@ widen. It does: 17 of the 22 are neither.
  1 file changed, 23 insertions(+)
 
 diff --git a/examples/scan_footnotes.rs b/examples/scan_footnotes.rs
-index 58ee8685..9a6b073f 100644
+index 58ee8685b..9a6b073f8 100644
 --- a/examples/scan_footnotes.rs
 +++ b/examples/scan_footnotes.rs
 @@ -41,6 +41,12 @@ struct Counts {

@@ -1,7 +1,7 @@
 From 1efef7a3fd52519a415c49e6d671c612ed4c65f6 Mon Sep 17 00:00:00 2001
 From: Taehyoung Kim <taekim@ww-w.ai>
 Date: Sat, 1 Aug 2026 16:17:27 +0900
-Subject: [PATCH 06/46] Place an unlocatable inline control at its gap, not at
+Subject: [PATCH 06/50] Place an unlocatable inline control at its gap, not at
  the end of the line
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -23,7 +23,7 @@ claimed by another control. With no gap at all the old behaviour stands.
  1 file changed, 26 insertions(+), 2 deletions(-)
 
 diff --git a/src/model/paragraph.rs b/src/model/paragraph.rs
-index 6a82b2fe..a83bdc69 100644
+index 6a82b2fe0..a83bdc698 100644
 --- a/src/model/paragraph.rs
 +++ b/src/model/paragraph.rs
 @@ -1193,8 +1193,32 @@ impl Paragraph {

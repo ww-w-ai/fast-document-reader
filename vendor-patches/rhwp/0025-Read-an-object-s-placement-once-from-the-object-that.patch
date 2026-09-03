@@ -1,7 +1,7 @@
 From 87bceab8b1cb425422230f1c205426770e5d868e Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Sun, 16 Aug 2026 22:25:05 +0900
-Subject: [PATCH 25/46] Read an object's placement once, from the object that
+Subject: [PATCH 25/50] Read an object's placement once, from the object that
  was placed
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -27,7 +27,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  1 file changed, 135 insertions(+), 39 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 30e221cd..fa0503e5 100644
+index 30e221cd3..fa0503e53 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -1276,7 +1276,8 @@ fn build_table_block(doc: &Document, table: &Table) -> Block {

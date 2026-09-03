@@ -1,7 +1,7 @@
 From 117642ae608c9a86b956ae0aeff47bc7ad2ea3b2 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 22:33:16 +0900
-Subject: [PATCH 43/46] Say how wide each column is, not just how many there
+Subject: [PATCH 43/50] Say how wide each column is, not just how many there
  are
 
 A viewer could split a page equally and no more: the per-column widths, their
@@ -15,7 +15,7 @@ gaps and the spacing between columns were in the model and in no export. 57 of
 
 diff --git a/examples/scan_columns.rs b/examples/scan_columns.rs
 new file mode 100644
-index 00000000..1a79854c
+index 000000000..1a79854cf
 --- /dev/null
 +++ b/examples/scan_columns.rs
 @@ -0,0 +1,122 @@
@@ -142,7 +142,7 @@ index 00000000..1a79854c
 +    }
 +}
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 37ddccbb..4fee92fd 100644
+index 37ddccbbe..4fee92fdc 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -1551,6 +1551,22 @@ struct ColumnDefDto {

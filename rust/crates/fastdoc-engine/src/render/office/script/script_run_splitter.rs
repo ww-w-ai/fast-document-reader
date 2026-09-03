@@ -1,5 +1,4 @@
 //! swift: Render/Office/Script/ScriptRunSplitter.swift
-//! swift-range: 1-49
 //!
 //! Cuts one run of text into the fewest pieces that each want a different typeface, so a reader can
 //! draw every character in the family the DOCUMENT chose for that character's writing system.

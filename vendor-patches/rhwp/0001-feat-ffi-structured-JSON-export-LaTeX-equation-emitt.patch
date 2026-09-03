@@ -1,7 +1,7 @@
 From dccf2f39a0e7c203730b1d6cc05dcd143d4055f4 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Mon, 27 Jul 2026 02:50:33 +0900
-Subject: [PATCH 01/46] feat(ffi): structured JSON export + LaTeX equation
+Subject: [PATCH 01/50] feat(ffi): structured JSON export + LaTeX equation
  emitter for FastDocReader
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -37,7 +37,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  create mode 100644 src/renderer/equation/latex.rs
 
 diff --git a/bindings/Native/Cargo.toml b/bindings/Native/Cargo.toml
-index 977a7f03..81957e18 100644
+index 977a7f035..81957e18e 100644
 --- a/bindings/Native/Cargo.toml
 +++ b/bindings/Native/Cargo.toml
 @@ -10,3 +10,4 @@ crate-type = ["cdylib", "staticlib"]
@@ -46,7 +46,7 @@ index 977a7f03..81957e18 100644
  rhwp_core = { package = "rhwp", path = "../.." }
 +base64 = "0.22"
 diff --git a/bindings/Native/src/lib.rs b/bindings/Native/src/lib.rs
-index 8d02ef26..8f67d044 100644
+index 8d02ef26f..8f67d044b 100644
 --- a/bindings/Native/src/lib.rs
 +++ b/bindings/Native/src/lib.rs
 @@ -6,13 +6,84 @@
@@ -147,7 +147,7 @@ index 8d02ef26..8f67d044 100644
              return Ok(Some((mime, data)));
          }
 diff --git a/bindings/swift/Sources/CRhwpNative/rhwp_native_ffi.h b/bindings/swift/Sources/CRhwpNative/rhwp_native_ffi.h
-index 2e63c9b5..0d8afb7b 100644
+index 2e63c9b5f..0d8afb7bf 100644
 --- a/bindings/swift/Sources/CRhwpNative/rhwp_native_ffi.h
 +++ b/bindings/swift/Sources/CRhwpNative/rhwp_native_ffi.h
 @@ -1,6 +1,8 @@
@@ -175,7 +175,7 @@ index 2e63c9b5..0d8afb7b 100644
  #endif
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
 new file mode 100644
-index 00000000..28e6c112
+index 000000000..28e6c112e
 --- /dev/null
 +++ b/src/document_core/queries/document_json.rs
 @@ -0,0 +1,863 @@
@@ -1043,7 +1043,7 @@ index 00000000..28e6c112
 +    }
 +}
 diff --git a/src/document_core/queries/mod.rs b/src/document_core/queries/mod.rs
-index 679f82d7..05d19767 100644
+index 679f82d7a..05d197679 100644
 --- a/src/document_core/queries/mod.rs
 +++ b/src/document_core/queries/mod.rs
 @@ -2,6 +2,7 @@ mod bookmark_query;
@@ -1056,7 +1056,7 @@ index 679f82d7..05d19767 100644
  pub mod rendering;
 diff --git a/src/renderer/equation/latex.rs b/src/renderer/equation/latex.rs
 new file mode 100644
-index 00000000..866bd29b
+index 000000000..866bd29bb
 --- /dev/null
 +++ b/src/renderer/equation/latex.rs
 @@ -0,0 +1,451 @@
@@ -1512,7 +1512,7 @@ index 00000000..866bd29b
 +    }
 +}
 diff --git a/src/renderer/equation/mod.rs b/src/renderer/equation/mod.rs
-index 7e3a269b..54ad1eab 100644
+index 7e3a269b7..54ad1eabb 100644
 --- a/src/renderer/equation/mod.rs
 +++ b/src/renderer/equation/mod.rs
 @@ -6,6 +6,7 @@
@@ -1524,7 +1524,7 @@ index 7e3a269b..54ad1eab 100644
  pub mod parser;
  pub mod svg_render;
 diff --git a/src/renderer/style_resolver.rs b/src/renderer/style_resolver.rs
-index f4f5d1bf..3ab11f02 100644
+index f4f5d1bf7..3ab11f02d 100644
 --- a/src/renderer/style_resolver.rs
 +++ b/src/renderer/style_resolver.rs
 @@ -450,7 +450,7 @@ pub fn detect_lang_category(ch: char) -> usize {

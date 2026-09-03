@@ -202,3 +202,30 @@ extension WelcomeAndDefaultAppTests {
         }
     }
 }
+
+/// The dead end a reader hits when Launch Services answers a stale "yes" after a claim: the panel
+/// shows every family "already set", the button then has nothing to claim, and the app reports
+/// success while the Finder goes on opening the file somewhere else. Pressing it again has to
+/// re-ask the question, so an already-ours family must still reach `apply`.
+final class StaleAlreadySetTests: XCTestCase {
+
+    func testAFamilyThatReadsAsAlreadyOursIsStillClaimedWhenTicked() {
+        let picker = DefaultAppPicker(isDefault: { _, _ in true })
+        XCTAssertEqual(picker.chosen.count, DefaultAppClaim.groups.count,
+                       "every ticked family must reach apply, including the ones shown 'already set'")
+    }
+
+    func testNothingTickedStillClaimsNothing() {
+        let picker = DefaultAppPicker(isDefault: { _, _ in false })
+        for case let box as NSButton in picker.subviews { box.state = .off }
+        XCTAssertTrue(picker.chosen.isEmpty)
+    }
+
+    func testAClaimIsGivenARealWindowToAppearIn() {
+        // A zero budget is the pre-fix shape: one immediate read, which Launch Services can answer
+        // with whatever was default a moment earlier.
+        XCTAssertGreaterThanOrEqual(
+            Double(DefaultAppClaim.settleAttempts) * DefaultAppClaim.settleInterval, 1.0,
+            "a claim must be re-read for at least a second before it counts as refused")
+    }
+}

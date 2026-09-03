@@ -1,7 +1,6 @@
 //! swift: Render/Office/ColumnGeometry.swift
-//! swift-range: 1-2
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use swiftshim::{CGFloat, NSColor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -404,9 +403,18 @@ impl ColumnGeometry {
         let per_page = column_height * count;
         let first_per_page = first_height * count;
         let mut out: HashMap<i64, (CGFloat, CGFloat)> = HashMap::new();
-        for line in lines {
+        // What earlier pushes have already spent. A line moved whole to the next column (below)
+        // leaves the rest of that column empty, and every line after it has to move down by the
+        // same amount — exactly as the page band moves everything under a line it pushes off a
+        // sheet. Without it the pushed line is drawn ON the lines that follow (invariant 150).
+        let mut carry: CGFloat = 0.0;
+        // In FLOW ORDER, because the carry is cumulative: a line can only be moved by pushes above
+        // it. A table's cells interleave within a row, and this ordering keeps them together.
+        let mut ordered: Vec<&(i64, CGFloat, CGFloat)> = lines.iter().collect();
+        ordered.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        for line in ordered {
             let (location, top, line_height) = *line;
-            let d = top - run_origin;
+            let d = top - run_origin + carry;
             if !(d >= -0.01) {
                 continue;
             }
@@ -449,9 +457,46 @@ impl ColumnGeometry {
                     // even when the line came off the run's short first one.
                     column_top = page * pitch + leading_band;
                 }
+                carry += height - within_column;
                 top_within = 0.0;
             }
             out.insert(location, (columns[column_index as usize].x, column_top + top_within));
+        }
+        out
+    }
+
+    /// The page boundaries a finished placement map crosses.
+    ///
+    /// A columned line never reaches the between-page rule that fills
+    /// `PageBandLayoutDelegate.openedBoundaries` — the column rule runs first and returns — so
+    /// without this the weld reads a whole columned run as one unbroken sheet
+    /// (`PagePagination::joining_unopened_boundaries`). Every boundary BETWEEN the first and last
+    /// page the map occupies is real, INCLUDING one whose own page carries only a second column's
+    /// lines: the run is continuous by construction, so a page inside it cannot be empty.
+    ///
+    /// Arithmetic only, like everything else here — it takes the map, not the layout.
+    // swift: ColumnGeometry.crossedBoundaries
+    pub fn crossed_boundaries(
+        placements: &HashMap<i64, (CGFloat, CGFloat)>,
+        leading_band: CGFloat,
+        pitch: CGFloat,
+    ) -> HashSet<i64> {
+        let mut out: HashSet<i64> = HashSet::new();
+        if !(pitch > 0.0) || placements.is_empty() {
+            return out;
+        }
+        let mut low = i64::MAX;
+        let mut high = i64::MIN;
+        for placed in placements.values() {
+            let page = (((placed.1 - leading_band) / pitch) + 1e-6).floor() as i64;
+            low = low.min(page);
+            high = high.max(page);
+        }
+        if !(high > low) {
+            return out;
+        }
+        for boundary in low.max(0)..high {
+            out.insert(boundary);
         }
         out
     }

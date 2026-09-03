@@ -1,5 +1,4 @@
 //! swift: Render/PlainTextRenderer.swift
-//! swift-range: 1-2
 
 // swift: PlainTextRenderer
 /// Renders a NON-markdown text file (.txt, .csv, .log, …) verbatim. Nothing is parsed, so `#`,

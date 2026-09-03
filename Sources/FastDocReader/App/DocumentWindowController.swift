@@ -797,7 +797,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     /// Set while the sidebar animates: width changes are ignored until it settles (see the toggle).
     private var suspendReflow = false
-    private var pageNumberDesk: PageNumberDeskView?
+    /// Internal, not private, so a test can ask whether the desk is actually ATTACHED — the half of
+    /// the margin-number setting that lives outside `textView.marginNumbers`.
+    private(set) var pageNumberDesk: PageNumberDeskView?
 
     /// Not private: `MarkdownDocument.render(into:)` calls this right before it reads the reading
     /// column, which it uses BOTH as `OfficeTextBuilder.build`'s `columnWidth` and as the numerator of
@@ -1777,6 +1779,10 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // lookup would use, so what a line belongs to has to be something the rule cannot move.
         columnRunsSettled = false
         pageBandDelegate.columnPlacements = [:]
+        // Cleared WITH the map it was derived from: the boundaries are page indices into a grid this
+        // render is about to replace, and keeping them would open boundaries in a document that has
+        // none there.
+        pageBandDelegate.columnOpenedBoundaries = []
         textView.recomputeHeadingOffsets()
         reloadOutline()
         reloadCommentPanel()
@@ -2090,10 +2096,32 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// would leave the two halves describing different layouts; re-deriving all of it is one honest
     /// pass, and the measurement above says it is affordable.
     @discardableResult
+    /// Which page boundaries a table is drawn ACROSS — read from the same completed layout the
+    /// settle already measured, so it costs nothing beyond the arithmetic.
+    ///
+    /// A table spans boundary `b` when its own top is above that boundary and its bottom below it.
+    /// That is deliberately the whole test: whether the break inside it lands on a cell edge or in
+    /// a cell's middle changes what is DRAWN there (invariant 61's policy — a cut cell shows no
+    /// rule, a cell-boundary split does), not whether the two sheets are one sheet.
+    private func straddledBoundaries(of tables: [PagePagination.LaidOutTable]) -> Set<Int> {
+        let d = pageBandDelegate
+        let pitch = d.pageContentHeight + d.band
+        guard pitch > 0 else { return [] }
+        var out: Set<Int> = []
+        for t in tables where t.bottom > t.visualTop {
+            let first = Int(((t.visualTop - d.leadingBand) / pitch).rounded(.down))
+            let last = Int(((t.bottom - d.leadingBand) / pitch).rounded(.down))
+            guard last > first else { continue }
+            for b in max(0, first)..<last { out.insert(b) }
+        }
+        return out
+    }
+
     func settlePagedTables() -> Bool {
         guard pageBandDelegate.isActive, let lm = textView.layoutManager,
               let storage = textView.textStorage, storage.length > 0 else { return false }
         let tables = laidOutTables()
+        pageBandDelegate.tableStraddledBoundaries = straddledBoundaries(of: tables)
         guard !tables.isEmpty else { return false }
         let next: [Int: PagePagination.TableMetrics]
         let oversized: [Int: Int]
@@ -2408,11 +2436,25 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             let columns = ColumnGeometry.columns(inWidth: pageBandDelegate.columnBodyWidth,
                                                  layout: run.layout)
             guard columns.count > 1 else { continue }
-            var lines: [(location: Int, top: CGFloat, height: CGFloat)] = []
+            var lines: [(location: Int, top: CGFloat, height: CGFloat, insetX: CGFloat)] = []
             let glyphs = lm.glyphRange(forCharacterRange: run.range, actualCharacterRange: nil)
+            // A TABLE cell's own place across the column is carried; everything else is zero, so a
+            // run with no table in it produces exactly the map it produced before (invariant 37).
+            // Read from the SAME uncolumned layout the rest of this measurement is taken from,
+            // which is the only frame where a cell's `x` still means what the table decided.
+            var runLeft = CGFloat.greatestFiniteMagnitude
+            lm.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, _, _ in
+                runLeft = min(runLeft, rect.minX)
+            }
             lm.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, glyphRange, _ in
                 let chars = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-                lines.append((chars.location, rect.minY, rect.height))
+                let ps = storage.length > chars.location
+                    ? storage.attribute(.paragraphStyle, at: chars.location,
+                                        effectiveRange: nil) as? NSParagraphStyle
+                    : nil
+                let inset = ps?.textBlocks.first is NSTextTableBlock && runLeft.isFinite
+                    ? max(0, rect.minX - runLeft) : 0
+                lines.append((chars.location, rect.minY, rect.height, inset))
             }
             guard let first = lines.first else { continue }
             // A run does NOT have to begin at a page top — HWP puts the declaration in the text, so
@@ -2444,6 +2486,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         columnRunsSettled = true
         guard !placements.isEmpty else { return false }
         pageBandDelegate.columnPlacements = placements
+        // Which page boundaries this run actually crosses. The map is the only authority on that —
+        // a columned line never reaches the between-page rule that fills `openedBoundaries` — and
+        // without it the weld reads the whole run as one unbroken sheet (see
+        // `PageBandLayoutDelegate.columnOpenedBoundaries`). Every boundary BETWEEN two pages the run
+        // occupies is real, including one whose own page holds only the second column's lines.
+        pageBandDelegate.columnOpenedBoundaries = ColumnGeometry.crossedBoundaries(
+            placements: placements, leadingBand: pageBandDelegate.leadingBand, pitch: pitch)
         lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
                             actualCharacterRange: nil)
         return true
@@ -3403,7 +3452,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let alert = NSAlert()
         alert.messageText = unit == .pages ? "Go to Page" : "Go to Line"
         alert.informativeText = unit == .pages
-            ? "Page 1 to \(max(1, pageSheets.count))."
+            ? "Page 1 to \(max(1, numberedSheets.count))."
             : "The number shown in the margin. Out-of-range numbers go to the nearest line."
         alert.addButton(withTitle: "Go")          // the DEFAULT button, so Return alone submits
         alert.addButton(withTitle: "Cancel")
@@ -3438,7 +3487,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// through to whatever else wants it rather than being swallowed by a dead feature.
     @discardableResult
     func appendJumpDigit(_ digit: Character) -> Bool {
-        guard jumpUnit == .lines || !pageSheets.isEmpty else { return false }
+        guard jumpUnit == .lines || !numberedSheets.isEmpty else { return false }
         guard jumpBuffer.count < Self.maxJumpDigits else { return true }
         jumpBuffer.append(digit)
         showJump()
@@ -3483,7 +3532,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }()
         if indicator.superview !== scrollView { scrollView.addSubview(indicator) }
         indicator.frame = scrollView.bounds
-        let total = jumpUnit == .pages ? " / \(pageSheets.count)" : ""
+        let total = jumpUnit == .pages ? " / \(numberedSheets.count)" : ""
         indicator.text = (jumpUnit == .pages ? "Page " : "Line ") + jumpBuffer + total + "  ⏎"
         // Long enough to finish a three-digit number without hurrying, short enough that a stray
         // keystroke does not sit on screen (ax-lecture's own 1.8s, which reads right in use).
@@ -3497,7 +3546,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         switch jumpUnit {
         case .pages:
             guard let index = MarginNumberNavigator.sheetIndex(forPage: number,
-                                                               sheetCount: pageSheets.count) else { return }
+                                                               sheetCount: numberedSheets.count) else { return }
             scrollSheetToTop(index)
         case .lines:
             guard let storage = textView.textStorage,
@@ -3511,7 +3560,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// leading band below the paper's edge, so jumping by character would cut the top margin (and the
     /// header living in it) off every page.
     func scrollSheetToTop(_ index: Int) {
-        let sheets = pageSheets
+        let sheets = numberedSheets
         guard sheets.indices.contains(index) else { return }
         var y = sheets[index].minY
         // Page 1's own top margin is above its first line with nothing needing the room, so go to the
@@ -3529,6 +3578,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     func applyMarginNumbers() {
         textView.marginNumbers = MarginNumberStore.unit(paged: isPaged,
                                                         drawingPages: (mdDocument?.pageOptions.outline ?? false))
+        // The gutter and the DESK are two halves of one setting: the gutter draws a line number,
+        // the desk draws the page number beside the sheet. Setting only the first left the desk
+        // attached (or missing) until some unrelated reflow happened to call `applyPagedViewState`,
+        // so the menu item reported one thing and the window showed the other.
+        syncPageNumberDesk()
     }
 
     /// Counts how many times a page option was actually applied — the same shape as
@@ -3727,6 +3781,20 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// The sheets to DRAW on screen — the same rectangles printing puts on paper, from the same
     /// function, so the page a reader sees and the page that comes out of the printer can never be
     /// two different things. Empty unless the outline is on and the reader actually paginated.
+    /// The sheets a page NUMBER is counted against, and the ones "Go to Page" can reach.
+    ///
+    /// This is `printSheets`, NOT `pageSheets`, and the difference is the whole point. `pageSheets`
+    /// welds two sheets whenever layout opened no band between them, because a page rule must not be
+    /// drawn through a cell the flow cuts in half — the owner's rule (invariant 61): *"셀 중간이
+    /// 잘리는 경우에는 라인이 없고, 셀로 구분되어 잘릴 때는 라인이 있는 것"*. That is a statement about
+    /// what is DRAWN. It says nothing about how many pages there are, and numbering from the drawing
+    /// grid made the pages disappear: on `2025_행정업무운영편람_최종.hwp` the appendix's cut cells welded
+    /// 22 sheets into one, so the margin number stopped at 492 no matter how far the reader scrolled
+    /// and Go to Page could not reach 500 at all. Paper has those pages — `--pdf` prints 513 — so
+    /// numbering from the drawing grid also made the screen and the paper disagree, which is the one
+    /// thing the paged view promises they cannot.
+    var numberedSheets: [CGRect] { printSheets }
+
     var pageSheets: [CGRect] {
         guard (mdDocument?.pageOptions.outline ?? false) else { return [] }
         // The PRINTED sheets, joined across any boundary layout could not open, so a page break is
@@ -3734,13 +3802,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // copies of this arithmetic is exactly how the screen and the paper would come to disagree
         // about where a page is, and the whole promise of the paged view is that they cannot.
         let opened = pageBandDelegate.openedBoundaries
-        if let memo = joinedGridMemo, memo.key == printGridKey, memo.opened == opened {
+            .union(pageBandDelegate.columnOpenedBoundaries)
+        let straddled = pageBandDelegate.tableStraddledBoundaries
+        if let memo = joinedGridMemo, memo.key == printGridKey, memo.opened == opened,
+           memo.straddled == straddled {
             return memo.sheets
         }
         pageGridComputations += 1
         let joined = PagePagination.joiningUnopenedBoundaries(printSheets,
-                                                              openedBoundaries: opened)
-        joinedGridMemo = (printGridKey, opened, joined)
+                                                              openedBoundaries: opened,
+                                                              straddledByATable: straddled)
+        joinedGridMemo = (printGridKey, opened, straddled, joined)
         return joined
     }
 
@@ -3788,7 +3860,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     private var printGridMemo: (key: PageGridKey, sheets: [CGRect])?
-    private var joinedGridMemo: (key: PageGridKey?, opened: Set<Int>, sheets: [CGRect])?
+    private var joinedGridMemo: (key: PageGridKey?, opened: Set<Int>, straddled: Set<Int>?, sheets: [CGRect])?
 
     /// How many times a full page grid has been BUILT — the print grid or the joined one. The
     /// deterministic axis invariant 113 asks for, and it has to be its own counter rather than

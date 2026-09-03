@@ -1,5 +1,4 @@
 //! swift: Render/Office/PagePagination.swift
-//! swift-range: 1-2
 
 use std::collections::{HashMap, HashSet};
 use swiftshim::{CGFloat, CGPoint, CGRect, CGSize};
@@ -142,7 +141,11 @@ impl PagePagination {
     /// SCREEN ONLY. Paper cannot stretch, so `rectForPage` keeps the paper-sized grid — the divergence
     /// is the medium's, not a disagreement between two implementations.
     // swift: PagePagination.joiningUnopenedBoundaries
-    pub fn joining_unopened_boundaries(sheets: &[CGRect], opened_boundaries: Option<&HashSet<i64>>) -> Vec<CGRect> {
+    pub fn joining_unopened_boundaries(
+        sheets: &[CGRect],
+        opened_boundaries: Option<&HashSet<i64>>,
+        straddled_by_a_table: Option<&HashSet<i64>>,
+    ) -> Vec<CGRect> {
         let Some(opened_boundaries) = opened_boundaries else { return sheets.to_vec() };
         if sheets.len() <= 1 {
             return sheets.to_vec();
@@ -150,7 +153,7 @@ impl PagePagination {
         let mut out: Vec<CGRect> = Vec::new();
         for (page, sheet) in sheets.iter().enumerate() {
             // Boundary `page - 1` is the one between the previous sheet and this one.
-            if page > 0 && !opened_boundaries.contains(&((page - 1) as i64)) {
+            if page > 0 && Self::weld((page - 1) as i64, opened_boundaries, straddled_by_a_table) {
                 if let Some(last) = out.pop() {
                     out.push(union_rect(last, *sheet));
                     continue;
@@ -159,6 +162,30 @@ impl PagePagination {
             out.push(*sheet);
         }
         out
+    }
+
+    /// Whether ONE boundary is welded shut.
+    ///
+    /// "Layout opened no band here" is necessary and NOT sufficient. The weld exists for one thing —
+    /// never drawing a page rule through a table — and a boundary where nothing needed moving is not
+    /// that. Measured on `2025_행정업무운영편람_최종.hwp`: of 21 unopened boundaries, **9 had a table
+    /// straddling them and 12 had nothing at all**, and welding all 21 drew the appendix as a single
+    /// sheet 22 pages tall. `None` means nobody measured which boundaries a table crosses, and then
+    /// every unopened boundary welds exactly as it did before this existed (invariant 108: missing is
+    /// not empty).
+    // swift: PagePagination.weld
+    fn weld(
+        boundary: i64,
+        opened_boundaries: &HashSet<i64>,
+        straddled_by_a_table: Option<&HashSet<i64>>,
+    ) -> bool {
+        if opened_boundaries.contains(&boundary) {
+            return false;
+        }
+        match straddled_by_a_table {
+            None => true,
+            Some(straddled) => straddled.contains(&boundary),
+        }
     }
 
     /// One table as a COMPLETED layout shows it — the only four numbers `tablesToPush` needs, so the

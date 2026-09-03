@@ -1,5 +1,4 @@
 //! swift: Render/Office/Script/UnicodeScript.swift
-//! swift-range: 1-16
 //!
 //! Which writing system a scalar belongs to, at the granularity the three office formats' own
 //! font-slot vocabularies need — Word's 4 slots, ODF's 3, HWP's 7 — expressed as ISO-15924 script

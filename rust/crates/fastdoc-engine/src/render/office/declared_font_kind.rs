@@ -1,5 +1,4 @@
 //! swift: Render/Office/DeclaredFontKind.swift
-//! swift-range: 1-2
 
 use std::collections::HashMap;
 use std::sync::OnceLock;

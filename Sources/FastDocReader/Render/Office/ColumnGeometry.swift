@@ -111,6 +111,30 @@ enum ColumnGeometry {
         return out
     }
 
+    /// The page boundaries a finished placement map crosses.
+    ///
+    /// A columned line never reaches the between-page rule that fills
+    /// `PageBandLayoutDelegate.openedBoundaries` — the column rule runs first and returns — so
+    /// without this the weld reads a whole columned run as one unbroken sheet
+    /// (`PagePagination.joiningUnopenedBoundaries`). Every boundary BETWEEN the first and last page
+    /// the map occupies is real, INCLUDING one whose own page carries only a second column's lines:
+    /// the run is continuous by construction, so a page inside it cannot be empty.
+    ///
+    /// Arithmetic only, like everything else here — it takes the map, not the layout.
+    static func crossedBoundaries(placements: [Int: (x: CGFloat, y: CGFloat)],
+                                  leadingBand: CGFloat, pitch: CGFloat) -> Set<Int> {
+        guard pitch > 0, !placements.isEmpty else { return [] }
+        var low = Int.max
+        var high = Int.min
+        for placed in placements.values {
+            let page = Int((((placed.y - leadingBand) / pitch) + 1e-6).rounded(.down))
+            low = min(low, page)
+            high = max(high, page)
+        }
+        guard high > low else { return [] }
+        return Set(max(0, low)..<high)
+    }
+
     /// Where each line of a columned run belongs, worked out from ONE measurement of the run laid
     /// out as a single tall stack.
     ///
@@ -144,7 +168,30 @@ enum ColumnGeometry {
     ///
     /// `runOrigin` is where the run's own first column starts, which is NOT a page top for such a
     /// run: the lines above it belong to the single-column flow and must not be drawn over.
+    /// The shape every caller used before tables under a column declaration were honoured: no line
+    /// carries an inset, which is what a run of prose actually says.
     static func placements(lines: [(location: Int, top: CGFloat, height: CGFloat)],
+                           runOrigin: CGFloat, firstPage: CGFloat,
+                           columns: [Column], columnHeight: CGFloat,
+                           pitch: CGFloat, leadingBand: CGFloat,
+                           firstColumnHeight: CGFloat? = nil) -> [Int: (x: CGFloat, y: CGFloat)] {
+        placements(lines: lines.map { ($0.location, $0.top, $0.height, 0) },
+                   runOrigin: runOrigin, firstPage: firstPage, columns: columns,
+                   columnHeight: columnHeight, pitch: pitch, leadingBand: leadingBand,
+                   firstColumnHeight: firstColumnHeight)
+    }
+
+    /// `insetX` is how far this line sits from the run's own left edge, and it is ZERO for every
+    /// line that is not inside a table.
+    ///
+    /// A prose line starts at the column's left edge, so the column's `x` IS its answer. A TABLE
+    /// cell does not: its horizontal place is what tells one cell from the next, and assigning the
+    /// column's own `x` to every line of a row stacks the whole row at the column edge. Measured on
+    /// `2025_행정업무운영편람_최종.hwp`, whose appendix forms are tables under a two-column
+    /// declaration: the label 「연구기간」 at x=5 and its value cell at x=0, drawn one on top of the
+    /// other — 18 sheets and 400-odd overlapping line pairs, all of them inside the column run and
+    /// none anywhere else in the document.
+    static func placements(lines: [(location: Int, top: CGFloat, height: CGFloat, insetX: CGFloat)],
                            runOrigin: CGFloat, firstPage: CGFloat,
                            columns: [Column], columnHeight: CGFloat,
                            pitch: CGFloat, leadingBand: CGFloat,
@@ -155,8 +202,21 @@ enum ColumnGeometry {
         let perPage = columnHeight * count
         let firstPerPage = firstHeight * count
         var out: [Int: (x: CGFloat, y: CGFloat)] = [:]
-        for line in lines {
-            let d = line.top - runOrigin
+        // What earlier pushes have already spent. A line that would straddle a column foot is moved
+        // WHOLE to the next column (below), which leaves the rest of that column empty — and every
+        // line after it has to move down by the same amount, exactly as the page band moves
+        // everything under a line it pushes off a sheet. Without this the pushed line lands at the
+        // next column's top while the lines that follow keep their unpushed places, so it is drawn
+        // ON them. Measured on `2025_행정업무운영편람_최종.hwp`, whose appendix forms are tables
+        // under a two-column declaration: a cell cut at the boundary between sheets 506 and 507 put
+        // its remainder 「용」 at the top of 507 and the NEXT table row 8.6pt below it, while that
+        // remainder is 11.7 tall — 11 sheets overlapped this way (invariant 150).
+        var carry: CGFloat = 0
+        // In FLOW ORDER, because the carry is cumulative: a line can only be moved by pushes that
+        // happened above it. `enumerateLineFragments` already yields that order, and a table's cells
+        // interleave within a row, which this ordering keeps.
+        for line in lines.sorted(by: { $0.top < $1.top }) {
+            let d = line.top - runOrigin + carry
             guard d >= -0.01 else { continue }
             // Which sheet of the run this line falls on. The first sheet is measured separately
             // because it is the short one; every later sheet is the same full one, so the rest is
@@ -197,9 +257,10 @@ enum ColumnGeometry {
                     // even when the line came off the run's short first one.
                     columnTop = page * pitch + leadingBand
                 }
+                carry += height - withinColumn
                 top = 0
             }
-            out[line.location] = (columns[columnIndex].x, columnTop + top)
+            out[line.location] = (columns[columnIndex].x + line.insetX, columnTop + top)
         }
         return out
     }

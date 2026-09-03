@@ -87,7 +87,7 @@ this file tells you why, and why the obvious alternative does not work.
 
 39. **Tables are a REAL `NSTextTable`, so cell text is selectable, copyable and searchable — with columns pinned to ABSOLUTE INTEGER point widths, never percentages.** `TableBlockBuilder` lays every cell into a `GridTextTable` (an `NSTextTable` subclass remembering its column PROPORTIONS) as ordinary paragraphs carrying an `NSTextTableBlock`, so the text is part of the document — the whole point: a custom-drawn attachment, however crisply aligned, is a *picture* the reader can't select, copy or ⌘F. Columns are absolute integer point widths (cumulative ROUNDED edges of proportion × reading-column width): `NSTextTable` recomputes a percentage per row, so a boundary lands on a different fractional pixel in a 4-cell row than in a span-merged one (the "열이 살짝 어긋남" drift). `DocumentWindowController.resizeTableColumns` → `TableBlockBuilder.resizeTables` re-solves those widths on every reflow — and an OFFICE table is BUILT at that width, so the first paint is the final one (invariant 48). Because cell content (INCLUDING image/diagram/formula attachments) lives in the TOP-LEVEL storage as ordinary paragraphs, the existing top-level media passes (`presizeKnownMedia`/`prerenderAllDiagrams`/`reconcileMedia`/`measureRemoteImages`) size and paint cell media natively — no per-table descent. **History (don't rebuild it):** an earlier custom-drawn engine (`TableAttachmentCell` + `TableGeometry` + `CellText`, added `c1173cb`, removed 2026-07-24) computed its own x-edges to kill that drift, but the drift was a wrong-algorithm choice (percentage widths), NOT an `NSTextTable` limitation — absolute integer widths fix it while keeping real text, in far less code. `MarkdownRendererTests`/`OfficeTextBuilderTests` inspect the `NSTextTableBlock`s (block span/shading/border + `GridTextTable.columnProportions` + cell text in the top-level string).
 
-40. **`--extract` is a HEADLESS branch of the same binary, gated in `main.swift` BEFORE `NSApplication`.** `FastDocReader --extract <file>` prints Markdown to stdout and `exit()`s without ever constructing `NSApplication` (no window, no Dock icon, no `AppDelegate`) — the arg check must stay first in `main.swift` or the GUI spins up. Its purpose is token economy for an AI reading a `.docx`/`.odt`: it reuses the app's OWN office reader via the SAME `DocumentTypes.readOffice` dispatch (invariant 29), then `OfficeMarkdownSerializer` (`[OfficeBlock] -> String`, pure/view-free, unit-tested without AppKit). The serializer's contract is **conservative + honest**: map to real Markdown only when unambiguous, and degrade anything a GFM pipe table can't hold (merged cells via `colSpan`/`rowSpan` ≠ 1, or non-`.paragraph` block content in a cell) to a `<raw>…</raw>` plain-text dump rather than a fabricated grid — a wrong table is worse than none for the AI consuming it. Escaping is deliberately minimal (only `|` inside a pipe cell, newlines→spaces); an AI tolerates messy text but not a mis-structured table. `stdout` is ONLY the document (errors → stderr, exit 1 read/parse · 2 usage). Coverage: docx family + odt plus md/txt verbatim (decoded through `TextEncodingDetector`, invariant 18); legacy `.doc`/`.rtf` unsupported, same as the reader. Proven both as pure serializer units AND through the real dispatch (`OfficeDocumentTests.testHeadlessExtractSerializesThroughTheRealOfficeDispatch`) — a serializer unit test alone can't prove the reader FEEDS it (invariant 29 again).
+40. **`--extract` is a HEADLESS branch of the same binary, gated in `main.swift` BEFORE `NSApplication`.** `FastDocReader --extract <file>` prints Markdown to stdout and `exit()`s without ever constructing `NSApplication` (no window, no Dock icon, no `AppDelegate`) — the arg check must stay first in `main.swift` or the GUI spins up. Its purpose is token economy for an AI reading a `.docx`/`.odt`: it reuses the app's OWN office reader via the SAME `DocumentTypes.readOffice` dispatch (invariant 29), then `OfficeMarkdownSerializer` (`[OfficeBlock] -> String`, pure/view-free, unit-tested without AppKit). The serializer's contract is **conservative + honest**: map to real Markdown only when unambiguous, and degrade anything a GFM pipe table can't hold (merged cells via `colSpan`/`rowSpan` ≠ 1, or non-`.paragraph` block content in a cell) to a `<raw>…</raw>` plain-text dump rather than a fabricated grid — a wrong table is worse than none for the AI consuming it. Escaping is deliberately minimal (only `|` inside a pipe cell, newlines→spaces); an AI tolerates messy text but not a mis-structured table. `stdout` is ONLY the document (errors → stderr, exit 1 read/parse · 2 usage). Coverage: docx family + odt plus md/txt verbatim (decoded through `TextEncodingDetector`, invariant 18); legacy `.doc`/`.rtf` unsupported, same as the reader. Proven both as pure serializer units AND through the real dispatch (`OfficeDocumentTests.testHeadlessExtractSerializesThroughTheRealOfficeDispatch`) — a serializer unit test alone can't prove the reader FEEDS it (invariant 29 again). **The line that OPENS each `<raw>` block is charged per table, and that is what sizes it.** On the 편람 it is written 162 times against 161 tables that map cleanly, so a sentence explaining the cause as well cost 13,932 characters in a feature whose purpose is spending fewer tokens than the document's own XML would. It is now `OfficeMarkdownSerializer.rawNote` (Rust twin `RAW_NOTE`) and says only what a reader arriving at a SLICE of the output must act on — the pipes below are not a grid, the rows are literal text — because the legend at the top is exactly what such a reader never saw. Both halves are pinned by `RawTableNoteTests`, along with a length cap: shortening it further is allowed, dropping either half is not. Measured: 7,938 characters, and the whole extract 612,692 → 606,698 bytes. The payload was never at issue — every cell's text is inside the block, 88,982 characters of it; only the grid is withheld.
 
 41. **A markdown feature can ship DEAD, and only rendering it proves otherwise — `MarkdownFeatureAuditTests` renders every CommonMark+GFM feature through the real `MarkdownRenderer.render` path and asserts its evidence attribute.** Strikethrough (`~~x~~`) shipped for a long time producing PLAIN text: the parser emits a `Strikethrough` node (GFM is on — tables prove it), but `inlineFragment` had no case for it, so it fell through `default` to unstyled children while the README advertised it. GFM task-list `[ ]`/`[x]` had the same fate — swift-markdown consumes the box into `ListItem.checkbox`, and `renderList` ignored it, so the ticks vanished. Both fixed (strikethrough → `.strikethroughStyle`; checkbox → `☐`/`☑` in place of the bullet). The lesson is invariant 30/34's: a parser unit test (or a grep of the visitor) can't see an unREACHED case — only the render path can, so any new inline/block support MUST add an audit assertion. **Footnotes (`[^id]`) are deliberately NOT rendered yet** — swift-markdown does not parse them, so a real implementation must source-scan like `scanMathSpans` (superscript refs + a collected section + srcRange/blockId wiring), tracked as a deferred unit; README must not claim footnotes until then (`testFootnotesAreNotYetRenderedButContentSurvives` characterizes the current preserve-but-don't-render behaviour).
 
@@ -188,6 +188,13 @@ this file tells you why, and why the obvious alternative does not work.
     **(i) A stored global preference makes any test that measures the band depend on it.** `PageBandReservationTests` pins the pre-feature shape in `setUp` (outline off, header and footer on) — otherwise nine of its assertions move with the shipped default and the suite reads differently for a developer who had switched the outline off. Every new test here resets the store on both sides.
 
 61. **A table that will not fit on the rest of its page is MOVED WHOLE to the next one — decided by measuring a layout that already happened, and carried out by shifting exactly ONE line.** Until this existed a table ran past its page's text bottom, so its rows printed inside the margin: on the reference report 4 of 16 tables overran by 71 / 139 / 145 / 236pt, three of its eight sheets. The screen could tell that truth (`PagePagination.joiningUnopenedBoundaries` unions the sheets), paper cannot.
+
+
+    **THE OWNER'S POLICY, stated here so it is not found six sub-items down — measurements and the three parts are in (f).**
+
+    > 셀이 페이지를 넘어가면 **잘라서** 표현한다. 그런데 윗부분이 **2~3줄 차이로 애매하면** 그냥 셀을 **다음 페이지부터** 시작하게 넘긴다.
+
+    Given twice in the same words — *"3줄 이하일 때만 다음 페이지로 넘겨야지 왜 통째로 넘겨"* and the line above. The threshold lives in ONE place, `DocumentWindowController.orphanRunStarts` (`lines.count <= 3`), and the record it fills is `PageBandLayoutDelegate.pullToNextPage`. Anything that reads "a table line cannot be shifted" describes a MECHANISM, never this policy: the policy is that such a table IS broken, and only a stub of three lines or fewer is carried on.
 
     **(a) SPLITTING was built and measured here, and invariant 64 later shipped it under a menu — read both.** What follows is why it is not the DEFAULT and can never be unconditional. Letting the ordinary between-page rule shift table lines produces a real Word-like split, and on a table of single-line rows it is flawless: rows stay whole, each page's segment keeps its own border box, header and footer land in the gap (`docs/fixtures/office/paged-visual/tablepage.docx`, captured). On a real report it TEARS. A vertically merged cell spans the boundary, so the half of the row that moved leaves that cell stretched across the gap — with this reader's own running header and page number painted inside the table — and the row's two halves end up a page apart. Splitting honestly needs `NSTextTableBlock` geometry we deliberately do not own (invariants 39/42). The safe-row-boundary variant is what invariant 64 built; it does not save the reference report's first table, whose left column is merged across the very boundary in question, so that one is still carried whole.
 
@@ -1122,3 +1129,606 @@ this file tells you why, and why the obvious alternative does not work.
     the two KaTeX files against each other, since they come from one npm package and must state one
     version. Mutation-checked, all three arms: touching a Rust file, altering one character of the
     recorded sha256, and moving the css's stamped version each turn it red.
+
+142. **A LINE MAY NOT BE TALLER THAN THE PAGE IT SITS ON, and the reference renderer never meets the
+    case because it does not lay out at all.** A Korean chapter divider states its number as one 580pt
+    character carrying the document's own 160% line spacing, which resolves to a line box of **928pt**
+    against a page body of **555.6pt**. A line that fits no page does not move to the next one — it is
+    laid out where it starts and runs **372pt past the boundary**, painting the numeral across the
+    following sheet's running header and 바탕쪽 and pushing the divider's own title onto a page of its
+    own. Measured on `2025_행정업무운영편람_최종.hwp` (`FMD_LINE_DUMP`): exactly **five** such lines out
+    of 14,646 — the dividers numbered 1-5, on sheets 9, 32, 242, 341 and 379 — and none between 555.6pt
+    and 928pt, so the rule fires on the five and on nothing else. `OfficeTextBuilder.capLineHeightsToPage`
+    clamps them as a FINAL pass over the built string: it writes only to a paragraph that actually
+    exceeds the page, so every other paragraph and every other document is byte-identical (invariant
+    37), and callers that build furniture rather than body text (the page band, the master page, a
+    footnote) pass no page height and are untouched.
+    **Why rhwp shows the divider on ONE page and this reader cannot.** HWP stores the line array 한글
+    itself composed — `LineSeg { vertical_pos, line_height, text_height, baseline_distance }`, an
+    absolute y per line (`Vendor/rhwp-src/src/model/paragraph.rs:139`) — and rhwp REPLAYS it. Its own
+    `compute_line_spacing_hwp` is a fallback for a paragraph whose `linesegarray` is absent, as that
+    call site says in as many words (`line_breaking.rs:1086`). So rhwp places the divider's title at
+    the y the authoring app recorded, INSIDE the big numeral's box, because replayed lines are allowed
+    to overlap. A re-typeset flow has no way to express that, which is the structural reason this
+    reader's sheet count for a heavily-composed HWP runs above rhwp's and will keep doing so; it is not
+    a defect to be found in the pagination. Clamping fixes the painting, not the count — the divider
+    still costs two sheets here and one there.
+
+143. **A COLUMN PLACEMENT SETS A LINE'S `x`, WHICH IS EXACTLY WRONG FOR A TABLE CELL — the map never
+    carried the cell's own place across the column, so every cell of a row was stacked at the column
+    edge.** Invariant 100's map is keyed by character and stores `(x, y)`; the measurement that fills
+    it recorded `(location, top, height)` and nothing else, so `placements` assigned the COLUMN's `x`
+    to every line. For prose that is the right answer — a line starts at its column's left edge. For a
+    cell it destroys the one thing that tells one cell from the next. Measured on
+    `2025_행정업무운영편람_최종.hwp`, whose appendix 별지 서식 are tables under a two-column declaration
+    (`FMD_OVERLAP_PROBE`, which reports the line pairs whose rectangles actually intersect — the line
+    dump carries `y` alone and cannot tell a table row from two lines painted on top of each other):
+    **18 sheets held overlapping lines and every one of them was inside the column run**, none
+    anywhere else in the 487. The label 「연구기간」 at x=5 and its value cell at x=0, drawn one over
+    the other; sheet 511 alone had 73 such pairs.
+
+    The fix carries `insetX` — a line's distance from its run's own left edge — and places at
+    `column.x + insetX`. It is **zero for every line not inside a table**, so a run of prose produces
+    the map it produced before (invariant 37), and the old three-tuple entry point is kept for the
+    callers that mean exactly that. Effect: worst sheet **73 → 3** pairs, the document **18 → 15**
+    sheets, and the appendix's forms draw as forms.
+
+    **What is left is a different defect, and it is not this one** — a block built wider than the
+    column it is placed in, which invariant 144 is about.
+
+144. **A BLOCK UNDER A MULTI-COLUMN DECLARATION MUST BE BUILT AT ITS COLUMN'S WIDTH — `colW`
+    reached the tab stops, the pictures and the grid's `columnWidth`, but neither of the two things
+    that decide how wide a block actually DRAWS.** A prose paragraph was still wrapped by the text
+    container, and a table was still solved across `tableWidth`, the page-wide reading column. Both
+    then drew straight across the neighbouring column, which is what remained on
+    `2025_행정업무운영편람_최종.hwp` after invariant 143.
+
+    **The suspect was measured and cleared first.** `columnWidthPerBlock` returns the FIRST column's
+    width for every block, and the obvious reading is that unequal columns (38% of declarations,
+    invariant 100) make the built width disagree with the placed one. Measured on the reference
+    manual (`FMD_COLWIDTH_PROBE`, which prints both): body 395.7, two columns 22.68 apart, and the
+    built and placed geometry are **identical — `x0 w186.5 | x209.2 w186.5`, delta 0.0**. The
+    declaration is equal, so that was never the cause here.
+
+    What was: a line 396pt wide — the whole container — inside a 186.5pt column, and a grid solved
+    at 390. Nothing narrowed either. `colW` is read only by `resolvedTabStops`, `appendImage` and
+    `appendTable`'s `columnWidth`; the paragraph style has no width, and `requestedWidth` is
+    `tableWidth ?? columnWidth`, so a caller that supplies `tableWidth` (every real one does — it is
+    the reading column minus the container's own padding) hands every table the page.
+
+    Two fixes, in the two vocabularies that already exist:
+    - **Prose** narrows by `tailIndent = -(columnWidth - colW)`, stamped in the same `defer` that
+      stamps `MDAttr.columnLayout`. `tailIndent` is the one lever that narrows a line without moving
+      it. A CELL is skipped (it breaks at its own cell width), and so is a style that already
+      carries a tail indent — that is the document's own right indent, and this narrows the column,
+      it does not argue with the page.
+    - **A table** folds the column into `GridTextTable.maxWidth`, alongside the authored width it
+      already held for a paged document; the narrower wins. It must be the CEILING and not just the
+      requested width, because `TableBlockBuilder.resizeTables` re-solves every table against the
+      full reading column on the next reflow and would otherwise stretch a columned table straight
+      back across its neighbour — invariant 48's "build and resizeTables must use the IDENTICAL
+      formula" is satisfied here by the ceiling travelling WITH the table.
+
+    Effect on the reference manual: overlapping sheets **15 → 13**, worst sheet **4 → 2** pairs.
+    Every pair that survives is the same shape — two lines at the SAME `x` in one column or one
+    cell, whose y-advance (11–13pt) is a point or two under their own line height (13–14pt). That is
+    a line-advance question, not a column one, and no column change can reach it.
+
+145. **A PAGE BOUNDARY A COLUMN PLACEMENT CROSSES IS AN OPEN BOUNDARY, and nothing else in the app
+    can know that.** `openedBoundaries` is filled by the between-page rule, and a columned line never
+    reaches it: `placeInColumn` runs FIRST in `shouldSetLineFragmentRect` and returns, deliberately —
+    the two rules move a line in opposite directions (the page rule pushes DOWN to the next sheet, a
+    column break sends the line back UP and across), and letting both touch one line would make the
+    result depend on which ran last. So a columned run opens no boundary at all, and
+    `PagePagination.joiningUnopenedBoundaries` reads that as "layout never broke here" and welds.
+
+    Measured on `2025_행정업무운영편람_최종.hwp`, whose two-column appendix runs from character
+    235,989 to the end of the document — the last 21 boundaries all unopened, drawn as two sheets
+    **11 and 10 pages tall**. That is what the owner reported as 「492 페이지 이후 수십장이 그냥 다
+    492페이지로 뭉쳐 있어서 500 페이지로 이동 자체도 안됨」, and it survived both earlier fixes:
+    invariant 61's straddle test (a table really does straddle there) and the numbering split onto
+    `printSheets`, which restored navigation while leaving the drawn sheet enormous.
+
+    The boundaries come from the MAP, not from the layout — `ColumnGeometry.crossedBoundaries`, pure
+    arithmetic like everything else in that file, filled once by `settleColumnPlacements` and cleared
+    with `columnPlacements` in the same breath (they are page indices into a grid the next render
+    replaces). Every boundary between the first and last page the map occupies is open, INCLUDING one
+    whose own page carries only a second column's lines: the run is continuous by construction, so a
+    page inside it cannot be empty. A run that never leaves one page opens nothing.
+
+    **It beats the straddle test, deliberately.** `pageSheets` unions these into `openedBoundaries`
+    before the weld reads them, so a boundary the map crossed does not weld even when a table
+    straddles it — which is the opposite of what invariant 61 decides everywhere else. The reason is
+    that 61's weld exists for one case: layout could not MOVE the line, so the page ran long and a
+    rule drawn there would cut a row nobody chose to cut. Inside a columned run that premise is
+    false — the map places every line on a page by construction, which is the owner's own rule
+    (「셀이 페이지를 넘어가면 잘라서 표현한다」) actually being carried out. Welding there would draw a
+    sheet 11 pages tall to avoid a rule the reader deliberately placed.
+
+    Effect on the reference manual: `pageSheets` **497 → 518**, identical to `printSheets` — the
+    appendix no longer welds anywhere, so the drawn grid, the page numbers and what `--pdf` prints
+    are finally the same 518 sheets.
+
+146. **A ROW THAT COMES OUT TALLER THAN THE REFERENCE RENDERER'S IS A FONT-METRIC ANSWER BEFORE IT
+    IS A TABLE ANSWER — measure the GLYPH RUN against the reference before touching any grid.** The
+    owner reported the reference manual's Q&A block as 「늘어나고 뭉개지는」, and the row is genuinely
+    wrong: the question number 「36.」 wraps onto two lines of 45pt in a cell whose neighbouring answer
+    is three lines of 16.8pt, so the row is 90pt where it should be about 50.
+
+    Everything about the grid checks out. rhwp's own tree for that page (`export-render-tree`, page
+    310) gives the table 529.1 units and the number cell 51.7 of them; this reader lays the same
+    table out at 390 points and gives the same cell 38 — the ratio is 0.737 both times. The
+    proportions are right, the clamp is right, the squeeze from the table's authored 403.6 to the
+    page's 395.7 is right.
+
+    What differs is the TEXT. rhwp draws 「36.」 as one run 30.0 units wide — 22.1 at our scale. This
+    reader measures 「36」 at 23.0 and 「.」 at 2.9, **25.9 points for the same three characters at the
+    same 25pt size, 17% wider**, and with the paragraph's own 5pt indent that is 30.9 against 28
+    points of cell content. It misses by 2.9 points, and a miss of any size wraps.
+
+    So the cause is which FACE answered, not how wide the cell is (invariants 52/53/93/95). Widening
+    the cell, dropping the indent or refusing to wrap a short run would each hide this one row and
+    leave the real difference — every line in the document set in a face wider than the one it was
+    written for — exactly where it was. **Do not "fix" the table.**
+
+    **SUPERSEDED IN PART BY INVARIANT 152 — the closing instruction above was wrong.** The face
+    really is 17% wider and that half stands. What does not is the conclusion: the source does not
+    fit `44.` either, it **overflows the right inner margin it declares rather than break a token**,
+    which is a rule this reader did not have and now does. The measurements here fitted both stories
+    equally well; what separated them was rendering the same page in both engines and overlaying
+    them. Read that as a warning about this whole file: a number that is consistent with a
+    hypothesis is not evidence FOR it when it is equally consistent with another.
+
+147. **WHERE TWO DECLARED PAGE BREAKS HAVE NOTHING BETWEEN THEM, DROP THE EARLIER ONE, NOT THE
+    LATER.** `honouredPageBreaks` already suppressed one of an empty pair. It suppressed the wrong
+    one, and the wrong one is invisible until a document makes the two differ.
+
+    A marker opens the page that FOLLOWS it. So when the run from marker A to marker B holds only
+    whitespace, the page that comes out blank is **A's**, and B's is the one that gets the content.
+    Suppressing B merges them onto A's page — the same page count, and correct while A and B agree
+    about everything else. They do not always agree: a marker that also begins a SECTION had to be
+    honoured (구역 나누기 can change the paper, invariant 73), so the old rule kept BOTH, left A's
+    page blank, AND applied the OLD section's paper to the page the new section opened.
+
+    Dropping A instead gives the one page in every case and lets B carry its own section. The
+    document's FIRST marker is still never dropped — nothing precedes it, so what sits above it is
+    the document's opening rather than a page a break abandoned (here, the cover, whose body is
+    empty only because its artwork is 바탕쪽, invariant 78).
+
+    Measured on `2025 행정업무운영편람_최종.hwp`: sheets **518 → 511**, sheets holding no text at
+    all **26 → 21**, dead space 66,626pt → 63,495pt. The reference renderer draws that document in
+    394 pages and leaves ONE page without body text.
+
+148. **THE TWO HALVES OF THE MARGIN-NUMBER SETTING MUST BE SET TOGETHER.** `applyMarginNumbers`
+    wrote `textView.marginNumbers` and nothing else; the `PageNumberDeskView` beside the sheet was
+    attached and detached only by `syncPageNumberDesk`, which ran from `applyPagedViewState`. So
+    toggling the menu item changed the gutter and left the desk where it was until some unrelated
+    reflow — a resize, a zoom, another page option — happened to run and quietly corrected it.
+
+    A setting that "fixes itself if you touch something else" reads as a rendering bug and is
+    reported as one. `applyMarginNumbers` now calls `syncPageNumberDesk` itself.
+    `MarginNumberDeskSyncTests` pins it, and removing the call makes that test fail on the FIRST
+    assertion — the desk never attaches at all when nothing else reflows.
+
+149. **A COLUMN THAT APPEARS ONLY INSIDE A MERGED CELL HAS NO WIDTH UNTIL SOMEONE SOLVES FOR IT —
+    AND THE PLACEHOLDER IT FALLS BACK TO IS EXACTLY 18 POINTS.** rhwp's structured export took the
+    grid from `Table::get_column_widths`, which reads only cells with `col_span == 1`. Every other
+    column came out zero and was defaulted to 1800 HWPUNIT — 0.25 inch, 18.0pt — which is why a
+    table's proportions read as a run of identical thin columns whenever a 서식 merges heavily.
+
+    On the reference manual's 기안문 form table, 6 of 11 columns were that placeholder. The table
+    was therefore built 342.2pt wide where the reference renderer draws it **393.0**, and the cell
+    holding 「국무총리」 got 31.0pt of content instead of 71.5 — so a four-character label wrapped
+    and its row doubled. 167 short labels wrapped across the document for this reason.
+
+    rhwp's own renderer never had the defect: `Layout::resolve_column_widths` skips locally-resized
+    rows, then solves the merged-cell constraints iteratively. It could not be reused because it
+    takes the layout's dpi and answers in pixels. `Table::get_column_widths_resolved` (fork commit
+    `67ef9e576`) carries the same procedure in HWPUNIT, and the export calls it.
+
+    Measured on that manual: **336 placeholder columns → 0**, 126 of 388 tables change, and the form
+    table's eleven columns land within 0.2pt of the reference renderer's own tree — 69.2/6.7/62.1/
+    40.9/35.0/36.6/35.4/11.4/22.8/2.0/71.5 against 69.0/6.7/62.2/40.8/35.0/36.4/35.4/11.2/22.8/2.0/
+    71.5. Short-label wraps fall 167 → 136.
+
+    **Two things this does NOT do.** Seventy of the 126 tables come out NARROWER, every one of them
+    landing exactly on the width the table itself declares: the naive maximum had been inflated by
+    rows the author resized by hand, and those tables were previously drawn at a clamped 395.7
+    rather than their own width. And the document's sheet count goes **511 → 518** — a table drawn
+    at its declared width wraps more than one drawn at the reading column's. The geometry is right
+    where it was wrong; the page count is not the thing this fixes.
+
+    **It cannot ship from the working tree alone.** `rust/crates/fastdoc-engine/Cargo.toml` pins
+    rhwp by git rev, so a parser change reaches the app only after the fork commit is pushed and the
+    rev bumped. Measuring it needs a temporary `[patch."https://github.com/ww-w-ai/rhwp.git"]`
+    pointing at `Vendor/rhwp-src`, and that patch must come back out — a build from it is not
+    reproducible by anyone who has only the pushed history.
+
+150. **A LINE PUSHED OFF A COLUMN FOOT MUST TAKE THE LINES UNDER IT ALONG — THE MAP MOVED ONLY
+    THE LINE ITSELF.** `ColumnGeometry.placements` moves a line WHOLE to the next column when it
+    would straddle the foot, deliberately: it is the answer the page band gives a line that would
+    straddle a sheet. But the page band also moves everything BELOW that line, and this map did not.
+    The pushed line therefore arrived at the next column's top while every line after it kept its
+    unpushed place, and was drawn on top of them.
+
+    After invariants 143/144/145 the reference manual still overlapped on **11 of its 511 sheets**
+    (487, 489, 492, 495, 498, 500, 501, 506, 507, 509, 511), every one inside the two-column
+    appendix and nothing anywhere else in the document. Sheet 507 is the whole story: a cell cut at
+    the boundary with sheet 506 (「연구내」 last on 506, 「용」 first on 507) put its remainder at the
+    top of 507, and the next table ROW began 8.6pt below it while that remainder is 11.7 tall.
+
+    **What it was not**, each checked rather than assumed: not the map disagreeing with the drawing
+    (every one of those lines is column-placed and the map's answer matches the drawn position to a
+    tenth of a point), not a declared row height honoured too literally (neither `TableBlockBuilder`
+    nor `OfficeTextBuilder` ever sets an `NSTextBlock` height), and not vertical alignment (row 15's
+    centred cell sits exactly (46.8−14)/2 = 16.4 below its first line, which is correct).
+
+    The fix is a running `carry`, added to every later line's flow offset when a push spends the
+    rest of a column — the same bookkeeping a real column flow does. Lines are walked in flow order
+    for it (`sorted(by: top)`), which also keeps a table row's interleaved cells in the order the
+    typesetter produced them.
+
+    Effect on that manual: overlapping sheets **11 → 1**, the worst sheet **3 pairs → 1**, page
+    count unchanged at 511, dead space 63,495 → 63,070pt. `ColumnPushCarryTests` pins it; zeroing
+    the carry puts the following line back INSIDE the pushed one (20 where 30 is required) and the
+    census back to 11 sheets.
+
+    **The one that remains is a different animal.** Sheet 500 overlaps two lines 372 characters
+    apart — the last row of one form and the header row of the NEXT (「비고(이 난은 서식에 포함하지
+    아니한다)」 under 「■ 행정업무의 운영 및 혁신에 관한 규정 시행규칙 [별지…]」), 1pt apart at the
+    same column edge. That is two separate TABLES meeting inside one column run, not a cut cell, and
+    it is not fixed by anything above.
+
+151. **A HEADLESS PRINT MUST SAY WHETHER IT SETTLED — "QUIET FOR THREE POLLS" IS NOT "FINISHED",
+    AND A PAGE COUNT TAKEN FROM AN UNSETTLED RENDER IS A FABRICATION.** `--pdf` waits for the
+    render to come to rest by polling observable state every 50 ms and returning after three
+    consecutive quiet polls, capped by a timeout. Both halves were wrong in a way that produced
+    *plausible numbers*, which is the worst kind of wrong. Measured on
+    `2025_행정업무운영편람_최종.hwp` with ONE unchanged binary, three consecutive runs printed
+    **509 / 517 / 509 pages** — and the two 509s were byte-identical files while the 517 was not.
+    The 20 s budget was the first cause: a COLD run (first launch after a build, caches empty, the
+    engine and the document's fonts still faulting in) ran out, the walk simply stopped, and
+    whatever was laid out so far got printed **without a word**. Raising it to 120 s removed the
+    cold case but not the disagreement, because the second cause is the quiet rule itself — the
+    render schedules its late corrections (media reconcile, giant-table splice-back, invariant 55's
+    deferral) on the main queue, and one arriving after a 150 ms lull leaves the walk returning a
+    document that is still going to move. So `waitForRenderToSettle` now RETURNS whether it settled,
+    `--pdf` prints `settled: NO` and says the count is not final, and both bounds are overridable
+    (`FMD_SETTLE_TIMEOUT`, `FMD_SETTLE_QUIET`) for a slower machine. **Nothing measured against a
+    page count is trustworthy without this line**: a whole session's worth of before/after
+    comparisons in this file's own history were taken on a mixture of settled and unsettled runs,
+    and one of them was written into a source comment as an 8-page regression that never happened.
+    A number that cannot be reproduced twice is not a measurement.
+
+152. **A ROW WITH NO TEXT IN IT IS SIZED BY THE DOCUMENT, NOT BY ITS CONTENT — AND A LABEL THAT
+    CANNOT BE BROKEN TAKES THE INNER MARGIN RATHER THAN WRAP.** Two ways a cell's geometry is the
+    source's answer and not the content's, both found by putting this reader's page beside rhwp's
+    and LOOKING after measurement alone had pointed at the wrong cause twice.
+
+    **(a) The band.** A Korean document builds its section headings and panels out of tables whose
+    top and bottom rows are a couple of points high with every cell empty, drawn as a thin rule of
+    colour. Content cannot measure that: an empty paragraph asks for a whole line box, and two
+    paddings sit on top of it, so a 2.82pt band was drawn about 20pt tall and the 편람's section
+    heading box came out **48pt against the source's 30.5pt**. Measured across that file, **213 of
+    its 1,980 rows are declared under 5pt and 198 of those hold no text**, with 419 more between 5
+    and 15pt. The declaration was not reaching this reader AT ALL — rhwp exported cell padding but
+    never cell height — so the fix is a chain, not a patch: `heightPt` out of `document_json.rs`,
+    `height_pt` through the engine's HWP schema and mapping, `declared_height` on the engine's
+    `Cell`, on the wire, and on Swift's, and finally `TableBlockBuilder.decorativeBand`. Padding
+    gives way first, exactly as it does when a column is too narrow for it: the two paddings scale
+    down IN PROPORTION to leave the line `bandMinimumLine`, and are never grown. Only HWP arrives
+    with this — docx states a height per ROW (`w:trPr/w:trHeight`) and this reader has never read
+    it, so every docx cell arrives `nil` and renders exactly as before.
+
+    **(b) The label.** `44.` is one token. A cell 38.75pt wide with 5pt of padding each side and a
+    5pt head indent leaves 24.0pt, the resolved face draws it 25.9pt wide, and the typesetter breaks
+    it — putting the full stop alone at the start of a line, which no word processor does. rhwp
+    draws the same label from 10.66pt inside the cell out to 25.1pt of glyphs, PAST the right inner
+    margin the same file declares: **the source overflows its own margin rather than break a token.**
+    So `oneTokenPaddingRelief` surrenders as much of the right padding as a lone token misses by —
+    and deliberately does NOT require that it be enough, because a token that still wraps wraps into
+    fewer lines with the margin than without it. The cell's OUTER width never moves, so invariant
+    39's fixed grid is untouched. Measured: short labels that wrapped **167 → 141**, and the Q&A
+    bubble that had been stretching with the row (91.9pt on a wrapped row against 55.5pt on an
+    unwrapped one) went uniform.
+
+    **Invariant 146 said "do not fix the table" and was wrong** — it had diagnosed the 17%-wider
+    resolved face and stopped there. The numbers fitted both stories; only the overlay separated
+    them. Correcting it is the point of this entry.
+
+153. **A MASTER PAGE'S LABEL CAN LIVE INSIDE A GROUP, AND A MASTER TEXT BOX MUST NEVER CLIP A WORD
+    AWAY — BOTH HALVES MEASURED ON THE 편람'S SECTION TAB.**
+
+    A Korean manual pins a section tab down the outer edge of every page. It is one 바탕쪽 object
+    to look at and TWO separate defects to fix, and the first hid the second.
+
+    **The label is a group's child, not the group's own text.** The coloured strip is a `Group`;
+    the words are in two `Rectangle` children of it:
+
+    ```
+    Group      w 6483  h 11368        ← all the export sent
+      Rectangle  "제1절"              ← lost
+      Rectangle  "공문서"             ← lost
+    ```
+
+    `build_master_pages` asked only the top-level shape for a text box (`shape_text_box`), and a
+    group never has one, so every body page arrived with a strip and no words in it. The fix walks
+    the group's children and sends each text box out with its OWN box in the master page's
+    coordinates (`collect_master_text_boxes`, vendor patch 0051); a child the matrix rotates or
+    shears is skipped rather than given an axis-aligned box it does not have, which is the same
+    refusal `push_shape_text_boxes_in_group` already makes on the body path. Measured: 13 master
+    pages, every body one carrying such a group with two labelled children.
+
+    **A source comment said this was deliberate, and it was reading the wrong object.** The engine's
+    `map_master_page` drops a text box whose declared width is under 0.5pt and its comment named "a
+    rotated tab label" as the reason. That IS one real object — the cover's spine strip, w=10
+    HWPUNIT — but it is not the body's tab, whose children state 64.8×21.3pt and 23.7×87.7pt. Trust
+    the measurement over the comment; the comment was about a different object with a similar name.
+
+    **Then the words fit the page but not the box.** `NSAttributedString.draw(in:)` CLIPS. The tab
+    stacks 공/문/서 down a 23.7×87.7pt strip, and the document puts three EMPTY paragraphs between
+    the characters, which the source draws at the heights it recorded (36pt per glyph, all three
+    inside the strip) and this reader re-typesets at a full line each — 136.0pt needed against
+    87.7pt given. So 서 was cut off on roughly 200 pages with nothing to show it had gone: a page
+    that reads 공/문 and looks deliberate.
+
+    `MasterPagePainter.draw` now grows the rect DOWNWARD from the box's top to whatever the text
+    measures, and draws there. Anchoring at the top is what makes it safe: every box whose text
+    already fits is drawn in exactly the same place. This follows the source's own rule when its
+    text will not fit the box it declared — overflow the box rather than lose the word (invariant
+    152's second half, measured on the Q&A row).
+
+    `MasterTextFitProbeTests` (`FMD_MASTER_FIT_PROBE`) reports every master text object that needs
+    more than its declared box, so the next such document says so instead of quietly losing a word.
+
+    **What this is NOT.** Paragraph indentation was suspected in the same pass and cleared by
+    measurement — the leftmost inked pixel per row, on the SAME content in both renderers:
+
+    | | first lines | continuation lines |
+    |---|---|---|
+    | rhwp p29 | 102.4 – 103.9 pt | 92.4 – 92.9 pt |
+    | this reader, the same paragraphs | 101.9 – 102.9 pt | 91.4 – 92.4 pt |
+
+    They agree within about a point, and the arithmetic behind them agrees too: the section states
+    marginLeft 73.7pt, the paragraph states indentStart 3700 and indentFirst 2000, and both readers
+    divide a ParaShape metric by 200 (100 HWPUNIT per point, times the 2× that shape stores) to get
+    73.7 + 18.5 = 92.2 for a continuation line and + 10.0 = 102.2 for a first line. The earlier
+    "our indent is half" reading came from comparing two DIFFERENT pages: the two renderers drift
+    apart by page 30, so a left edge is only comparable after the same paragraph is found in both.
+
+    **Measure the picture, not the PDF's text layer.** `PDFPage.characterBoundsAtIndex` returned
+    zero rects for master furniture and out-of-order x for body lines split into several runs by
+    font substitution, which is what produced the false indent reading in the first place. The
+    leftmost-inked-pixel scan (`scratchpad/leftedge.py`) has neither problem and is what settled it.
+
+154. **A SHAPE'S TEXT BOX BELONGS TO THE OBJECT EMITTED JUST BEFORE IT, NOT TO THE LAST ONE THAT
+    HAPPENED TO BE ANCHORED — AND THE BOX'S OWN WIDTH IS THE FLOOR, NOT A SHARE OF THE COLUMN.**
+
+    rhwp emits a drawing's own block and then, immediately after it, that drawing's text-box
+    paragraphs, each carrying `boxX`/`boxY`/`boxW`/`boxH` **relative to that drawing's origin**
+    (`push_shape_text_boxes`, whose own comment says the host must reuse the placement it already
+    computes for the object). So the owner of a boxed paragraph is simply whatever object came last
+    in the stream.
+
+    ```
+    rhwp's order    [shape A] [A's words] [shape B] [B's words] …
+    what we asked   "the most recently ANCHORED object"   ← an INLINE shape is not one
+    ```
+
+    `HwpReader.boxed_format` read `last_anchored_frame`, which is only written inside the anchored
+    branches. A shape that took an inline branch left the PREVIOUS object's frame standing, and its
+    own label was then placed against a shape it has nothing to do with. Measured on the reference
+    manual's "< 관 인 >" tab: the box states `boxX = 0` — its own shape's origin — and was resolved
+    78pt to the right of the shape it belongs to, in the middle of the reading column.
+    `MediaContext.last_object_frame` now records EVERY drawing's own frame as it is emitted,
+    anchored or not, and an inline one falls back to the body column's left edge.
+
+    **The share-of-column floor was rejecting the document's own labels.** The same function
+    refused any box leaving less than a QUARTER of the body column — 99pt in this document — with
+    the reasoning "flowing at full width is wrong but legible; a 40pt column is neither". Measured
+    across 341 real HWP/HWPX documents:
+
+    | box width, as a share of the body column | paragraphs |
+    |---|---|
+    | under 10% | 217 |
+    | 10–25% | 505 |
+    | 25% and over | 1,617 |
+
+    So **722 of 2,339 (31%)**, in **60 of 341 documents (18%)**, were being flowed at full width —
+    every section tab, callout label and stamp caption a Korean manual pins beside its text. What
+    the floor was really protecting against is a MISREAD coordinate, and a misread one does not
+    leave room for a couple of characters, so the test is now whether the box can hold them: twice
+    the paragraph's own declared size, never under 16pt.
+
+    **What is still not right, and what it would cost.** The horizontal half is now the document's:
+    the label lands at its shape's own x, in its shape's own width. The VERTICAL half is not — the
+    paragraph still takes its place in the flow, so the label sits one line BELOW its shape instead
+    of on it, and it charges the flow a line the source does not. Putting it ON the shape means
+    turning the paragraph into an anchored `.text` object (the vocabulary already exists, and
+    `MasterPagePainter.draw` already draws that content — invariant 153) and dropping it from the
+    flow. That is a `--extract` contract change: `OfficeMarkdownSerializer` walks blocks only, so
+    those paragraphs would leave the extracted markdown unless the serializer is taught to splice
+    an anchored text object back in at its `blockIndex`. Not done; measured and left named.
+
+155. **A PARAGRAPH THAT HOLDS AN OBJECT IS NOT AN EMPTY PARAGRAPH — AND ONCE THE OBJECTS ARE OUT,
+    THE SOURCE'S RECORDED HEIGHT FOR AN EMPTY LINE IS A NUMBER THIS READER ALREADY HAS.**
+
+    Built, measured, REJECTED, and reverted in both halves. The reasoning was sound and the
+    measurement killed it, which is the only reason this entry exists: without it the same idea
+    reads as an obvious win.
+
+    **The idea.** A paragraph with text gets its height from typesetting, so a reader that
+    re-typesets is right to compute its own. A paragraph with NO text has nothing to measure — its
+    height is purely a declaration — so the source's own `LineSeg.line_height` should be honoured,
+    the same way invariant 152 honours a decorative row's declared height. A first pass measured
+    3,203 empty in-cell paragraphs at a mean 10.59pt with 744 of them near 1pt, and 800 body ones
+    averaging 75.74pt, which looked like tens of pages of difference in both directions.
+
+    **What killed it, in two steps.**
+
+    1. **The first measurement counted the wrong paragraphs.** A paragraph that holds a picture or a
+       drawing has no TEXT, and its line segment records THE OBJECT's height. So an anchored
+       full-page graphic read as a 700pt "empty line". Honouring those took the reference document
+       from 503 pages to **595**. Filtering on `controls.is_empty()` as well as text drops the body
+       count from 800 to **395** and its mean from 75.74pt to **10.15pt** — most of the apparent
+       body difference was never empty lines at all.
+    2. **What remained was a number this reader already has.** Across all 3,449 genuinely empty
+       paragraphs in the document, the recorded segment height and the paragraph's own char-shape
+       size (`baseSizePt`) are the SAME value — `0` of 3,449 differ by as much as half a point.
+       `HwpReader.paragraph_format` already resolves a percentage line height against
+       `max_run_size(spans).or(base_size_pt)`, and a paragraph with no runs falls to `base_size_pt`,
+       so it was already landing on exactly that answer.
+
+    Do not re-add `emptyLineHeightPt`. `LineSeg.line_height` is the line's own FONT SIZE (rhwp's own
+    note: 10pt → 1000, 12pt → 1200, 25pt → 2500 HWPUNIT), not the height the line occupies, and for
+    an empty line that font size is the char shape this reader already reads.
+
+    The probe stays as `Vendor/rhwp-src/tests/fmd_empty_line_probe.rs` (`FMD_EL_DOC`), now filtering
+    on controls, and reports the char-shape comparison alongside — so the next person asking gets
+    the answer rather than the trap.
+
+    **The corollary matters more than the finding.** Any census that calls a paragraph "empty"
+    because it has no text is counting objects too. The earlier decomposition of this document's
+    page difference into "body empty lines 39.2 pages / in-cell empty lines 70.4 pages" was built on
+    that definition and has to be re-derived before it is used to aim any further work.
+
+    **RE-DERIVED, and it does not rest on any definition of "empty".** Two measurements that need no
+    such judgement — the reason each page stopped where it did, and how many characters each page
+    actually carries — put the 109-page difference where it belongs:
+
+    ```
+                                   rhwp     ours
+      pages                         394      503     +109
+      pages holding <= 150 chars     41      103      +62   ← sparse pages
+      mean chars per page           507      388     -23%
+      dead space                   35.4     119.1  sheets
+
+      why ours stopped early      sheets    wasted
+        the document declared a break  168   82.7 sheets
+        inside a table                 150   21.2
+        the next line is taller        151    9.7
+        a table that may not be split   21    4.3
+        the next line WOULD have fitted  1    0.0   ← this reader wastes essentially nothing by mistake
+    ```
+
+    So the gap is two things, not one: **~62 pages that end far too early** and **~47 pages' worth of
+    lower density** (14.74pt per line against 13.61, and 14,954 lines against 13,896). The last row is
+    the reassuring one — the pagination itself is not leaving room it could have used.
+
+    **The breaks are real; the earlier suspicion that rhwp ignored most of them was wrong.** The
+    reader sees two raw signals: `breakBefore=page` 171 times and `breakBefore=section` 14 times;
+    this document has no style-level `pageBreakBefore`. In rhwp's recorded 394-page placement, all
+    **185 of 185** declarations start a page. Two initially appeared unmatched only because they
+    start multi-page tables and `dump-pages` names their first item `PartialTable`, not
+    `FullParagraph`. `Scripts/hwp-page-break-audit.py` includes every first-item variant and fails
+    closed when the dump contract yields an empty set or an unrecognized last page.
+
+    Therefore removing or weakening page breaks is not a valid lever. The same real boundaries cost
+    this reader more because the intervals between them are already less dense: 14.74pt per line
+    against 13.61, and 14,954 lines against 13,896. Each real break rounds that accumulated reflow
+    to a fresh sheet, so the density difference is repeatedly crystallized instead of amortized
+    across the whole document. The remaining investigation belongs to the two measured density
+    terms, not to pagination policy. Do not tune the pagination to close a page count — that is how
+    a reader stops matching its source everywhere else.
+
+156. **"Set as default app" can announce success and change nothing, and the report is what makes
+    it unfixable.** Reported from a friend's App Store install: the macOS confirmation dialog
+    appeared, they approved it, and the app went on not being the default however many times they
+    tried. Reproduced here against the shipped `/Applications` build, twice — the panel showed
+    **"Done. Those files now open in FastDoc."** while `net.daringfireball.markdown` was bound to
+    **Xcode**. Three separate things had to be true for that, and each is fixed in
+    `DefaultAppClaim`.
+
+    **(a) Launch Services binds an IDENTIFIER, not the path you hand it.** `setDefaultApplication(at:)`
+    takes a URL, but what is stored is the bundle id, and the system resolves that back to whichever
+    registered copy it prefers. Measured: approving the dialog from the build in this worktree bound
+    the association to `fast-md-reader-sprint-rust-engine/FastDocReader.app` — a different copy
+    carrying the same id — and `lsregister -dump` found **14 bundles sharing `…fast-md-reader.dev`
+    and 4 sharing the shipping `ai.ww-w.fast-md-reader`** on one machine. The old read-back compared
+    `Bundle.main.bundleURL` against that answer, so a claim macOS had ACCEPTED read as a refusal, and
+    pressing again could never help. `isDefault` now falls back to comparing bundle identifiers.
+    Consequence to know: a shipped notarized build and a store build carry the SAME identifier
+    (invariant 28), so a recipient who was handed a zip before installing from the store has two.
+
+    **(b) The read-back has to wait.** Asked inside the completion handler, Launch Services answers
+    with a change it has accepted but not committed. Both the first look and the retries are now
+    scheduled a quarter-second apart, eight of them — two seconds. A success claim therefore means
+    the association was still ours a moment later, not that the API was optimistic.
+
+    **(c) A family shown "already set" must still be claimed when ticked.** The panel disabled those
+    rows and dropped them from the list it handed to `apply`, so when that reading was WRONG — (b)
+    leaves a stale yes behind for a while — the button claimed nothing at all, `failures` was empty,
+    and the reader was told "Done" over an unchanged system. That is the exact dead end the friend
+    hit. Every ticked family now reaches `apply`, which skips the ones that really are ours without
+    a system dialog, so a second press re-asks the question instead of congratulating itself.
+
+    Mutation-checked from both directions: restoring the old exclusion and zeroing the settle budget
+    each turn `StaleAlreadySetTests` red. What no unit test can see is the part that mattered — the
+    machine's real Launch Services database — so the check that decided this was handing `.md` to
+    Xcode, claiming it back through the app's own menu, and reading the association from a separate
+    process. **Do that, not a screenshot of the panel**: the panel is the thing that was lying.
+
+157. **`FMD_HEADER_FOOTER_PROBE` was reading the REFERENCE half and asserting about the LIVE one,
+    and every conclusion drawn from it was about a pipeline the app does not run.** It parsed a
+    `.hwp` with `HwpReader.read` — the Swift reader whose own file says, in its first line, that
+    nothing in the app calls it any more — and then built a real window, which reads through the
+    engine. On `2025_행정업무운영편람_최종.hwp` the two disagree exactly where the probe asserts.
+    It now reads through `RustEngine.readOffice` + `resolvingFontSubstitution`, the same door
+    `DocumentTypes.readOffice` opens for the app. **Any probe that both parses and renders has this
+    failure available to it; parse through the door the render uses.**
+
+    **The rule it was asserting no longer exists.** The arms were written against
+    `PageViewOptions(outline: false, header: true, footer: true)` — furniture on, sheets off. When
+    the three switches became one (`70dd059`) that line was rewritten to `outline: true`, the
+    opposite of the shape the paragraph above it still described, and `header`, `footer` and
+    `separatesPages` are now all just `outline`. So neither pin can satisfy both arms: ON gives the
+    first page its FULL margin (invariant 60d), so "a cover with no header reserves nothing above
+    it" is false by design; OFF turns the header and footer off with the sheets and measures a band
+    of zero. The arms are rewritten to the rule that actually holds — the outer edges reserve
+    `max(furniture, margin)`, so a cover no header reaches reserves **the margin and not one point
+    more**, which is the claim still worth pinning. Measured: 110.56pt, exactly `pageMarginTop`.
+    Mutation-checked (demanding 0 again reddens it by name), and the pin itself is now asserted so
+    the next mechanical rewrite of `PageViewOptions` cannot silently retarget the probe.
+
+    **Its print count is not ⌘P's, and reading it as one costs an afternoon.** The probe wires the
+    band itself, screen desk gap included, so it reports **523** where `--pdf` and the screen both
+    say **503**. That is not a parity failure: the app's print path passes `deskGap: 0`
+    (`MarkdownDocument`, `forPrinting`), which makes the pitch exactly one sheet —
+    555.59 + (210.43 − 12) = **754.02**, the paper to the point (`RenderTheme.pageDeskGap` = 12).
+    The assertion the probe is worth is the internal one it already makes: whatever this window
+    paginated, the PDF has that many pages. Screen/paper parity is `--pdf`'s (invariant 66), and it
+    holds — 503 both sides, verified on this document.
+
+    **None of the three was a defect in the app**, which is the reason to write them down: each read
+    exactly like one, and one of them was reported as the largest remaining screen defect before it
+    was measured.
+
+158. **An indent pair a paragraph brings from a WIDER frame can leave a table cell no width at all,
+    and TextKit will lay the line out in what is left rather than complain.** The 편람's 정책연구
+    flow chart (sheet 267) drew every label one character per line — 「차/별/성/검/토」 straight down
+    the page, and `(부서장)` as five stacked lines — where rhwp fits two characters to a line. Not a
+    font, not a column width, not the merge resolver: the line dump named it in one row.
+
+    ```
+    cell content 181.0    head  0.0   tail -330.1   →  181 − 330.1 < 0   →  drawn 1.0pt
+    cell content 181.0    head 78.7   tail -267.4   →  same
+    ```
+
+    A shape's TEXT BOX carries its own left/right indents, measured against the frame the box was
+    placed in (invariant 154). When that paragraph then lands inside a table cell the two frames
+    disagree, and nothing downstream notices — `setContentWidth` promises the cell's width, the
+    paragraph asks for more than all of it, and the line box collapses to about one glyph.
+
+    `TableBlockBuilder.build` (Rust twin `table_block_builder.rs`) now drops `headIndent`,
+    `firstLineHeadIndent` and `tailIndent` when they leave the cell **no usable width**, at the one
+    place the cell's content width and the paragraph's own style are both in hand — the graft that
+    was already rewriting the style to attach the block. **Only the impossible pair.** A document is
+    allowed to indent a cell hard, and a rule that clamped every tight indent would be a second
+    defect wearing the first one's clothes; `CellIndentThatCannotFitTests` has an arm for exactly
+    that and mutation-checking proves both directions bite (never clamping reddens 4 assertions,
+    always clamping reddens the one that guards the legitimate case).
+
+    Measured on the document: short labels that wrap 153 → **125**, every one of the 18 entries on
+    sheets 266–267 gone, page count unchanged at **503**. **Found by looking, not by measuring** —
+    the census had reported these cells for a while as ordinary wraps, and only the rendered page
+    showed that a five-character label was five lines tall.

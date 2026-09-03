@@ -1,7 +1,7 @@
 From 64d9bbdfacb8a75c83abe56ab06e658900ee49bc Mon Sep 17 00:00:00 2001
 From: FastDocReader <taekim@ww-w.ai>
 Date: Tue, 18 Aug 2026 02:18:21 +0900
-Subject: [PATCH 27/46] Say where a paragraph allows its lines to break
+Subject: [PATCH 27/50] Say where a paragraph allows its lines to break
 
 A host that re-typesets the text rather than replaying HWP's own line
 segmentation has to decide where a line may break, and the document
@@ -15,7 +15,7 @@ paragraphs ask for the setting the host was not being told about.
  1 file changed, 38 insertions(+)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 4a30d031..db71aa9b 100644
+index 4a30d0312..db71aa9b3 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -555,6 +555,30 @@ struct ParaBlock {

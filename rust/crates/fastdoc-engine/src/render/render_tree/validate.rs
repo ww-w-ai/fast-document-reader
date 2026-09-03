@@ -1018,6 +1018,7 @@ pub(super) fn character_style_colors(
         underline: _,
         vertical_position: _,
         letter_spacing_percent: _,
+        width_scale_percent: _,
         baseline_offset_percent: _,
         underline_color,
         strikethrough_color,
@@ -1093,6 +1094,7 @@ pub(super) fn table_cell_colors(v: &wire::TableCell) -> [(&'static str, Option<&
         vertical_alignment: _,
         uniform_padding_points: _,
         edge_padding: _,
+        declared_height: _,
         diagonal,
         style_shading,
         style_uniform_border,
@@ -1168,6 +1170,7 @@ fn validate_character_style(v: &wire::CharacterStyle) -> Result<(), DecodeError>
     if v.font_size_points.is_some_and(|x| !finite_nonnegative(x))
         || v.baseline_offset_points.is_some_and(|x| !x.is_finite())
         || v.letter_spacing_percent.is_some_and(|x| !x.is_finite())
+        || v.width_scale_percent.is_some_and(|x| !x.is_finite() || x <= 0.0)
         || v.baseline_offset_percent.is_some_and(|x| !x.is_finite())
     {
         return Err(invalid("character metric is invalid"));

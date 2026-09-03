@@ -1,5 +1,4 @@
 //! swift: Render/Office/HwpFontSlots.swift
-//! swift-range: 1-2
 
 // swift: HwpFontSlot
 /// HWP's seven font slots, in the file format's own fixed order.

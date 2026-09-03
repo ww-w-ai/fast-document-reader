@@ -2,6 +2,20 @@ import Foundation
 import CoreGraphics
 import AppKit
 
+// ────────────────────────────────────────────────────────────────────────────────────────────
+// THE APP DOES NOT RUN THIS FILE. Reading ODT is the RUST ENGINE's job — `MarkdownDocument`
+// opens one through `RustOfficeDocumentHandle`, and `--extract`/`--pdf`/Quick Look go the same
+// way. Nothing in `Sources/` calls `OdtReader.read` (grep it); every caller is a test or a probe.
+//
+// So EDITING THIS FILE CHANGES NOTHING A READER SEES. It is the port's reference half: the
+// Swift original the Rust twin is checked against, and the oracle the probes measure with.
+// A behaviour change belongs in BOTH — `rust/crates/fastdoc-engine/src/render/office/odt_reader.rs` first, because that is the one
+// that runs, and here second so the two keep saying the same thing.
+//
+// Measured the hard way: a width-scale (장평) fix was written here, built, and measured to have
+// changed the screen by exactly zero — because the screen had never been reading this file.
+// ────────────────────────────────────────────────────────────────────────────────────────────
+
 /// `.odt` bytes → `[OfficeBlock]`. An ODT is a ZIP holding `content.xml` (the body, required) and
 /// optionally `styles.xml` — this reader consults BOTH for `text:list-style` (bullet vs number per
 /// level) and text-formatting styles, because LibreOffice sometimes defines a list style used by the

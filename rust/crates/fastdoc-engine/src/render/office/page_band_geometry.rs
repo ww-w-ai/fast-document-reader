@@ -1,5 +1,4 @@
 //! swift: Render/Office/PageBandGeometry.swift
-//! swift-range: 1-2
 
 use std::collections::HashMap;
 use swiftshim::{CGFloat, NSAttributedString};
@@ -297,6 +296,8 @@ impl PageBandGeometry {
             None,
             None,
             None,
+            // Furniture, not the body: no page height, so the line-height cap is not applied here.
+            None,
             &[],
             &std::collections::HashSet::new(),
             &[],
@@ -368,6 +369,8 @@ impl PageBandGeometry {
             page_content_width,
             None,
             None,
+            None,
+            // Furniture, not the body: no page height, so the line-height cap is not applied here.
             None,
             &[],
             &std::collections::HashSet::new(),

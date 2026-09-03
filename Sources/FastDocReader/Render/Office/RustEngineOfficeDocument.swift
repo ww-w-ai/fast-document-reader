@@ -430,15 +430,21 @@ final class RustOfficeDocumentHandle {
 
 }
 
-private extension HeaderFooterApplicability {
+extension HeaderFooterApplicability {
     /// The wire tag `fastdoc_office_master_selection`'s own comment defines: `0` = `.defaultPages`,
-    /// `1` = `.firstPage`, `2` = `.evenPages` — the same three-way vocabulary a master page shares
-    /// with a running header/footer.
+    /// `1` = `.firstPage`, `2` = `.evenPages`, `3` = `.oddPages` — the same vocabulary a master
+    /// page shares with a running header/footer.
+    ///
+    /// Internal rather than private so the probe that measures this call encodes its templates
+    /// through THIS switch instead of restating it. The restated copy went stale the moment
+    /// `oddPages` was added, and a second encoder is exactly the kind of drift the engine crossing
+    /// cannot detect: both sides compile, and the tag on the wire is simply wrong.
     var wireTag: Int32 {
         switch self {
         case .defaultPages: return 0
         case .firstPage: return 1
         case .evenPages: return 2
+        case .oddPages: return 3
         }
     }
 }

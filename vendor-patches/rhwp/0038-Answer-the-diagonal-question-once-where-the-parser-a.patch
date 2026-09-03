@@ -1,7 +1,7 @@
 From 2ce36c0af1eaff5496678f80a18bdaff9414361d Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Tue, 18 Aug 2026 17:39:36 +0900
-Subject: [PATCH 38/46] Answer the diagonal question once, where the parser
+Subject: [PATCH 38/50] Answer the diagonal question once, where the parser
  already knew it
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -29,7 +29,7 @@ Measured, following cell references rather than fill declarations: 47 of
  3 files changed, 85 insertions(+), 15 deletions(-)
 
 diff --git a/src/document_core/commands/table_ops.rs b/src/document_core/commands/table_ops.rs
-index 38c7697d..31e30c5d 100644
+index 38c7697d7..31e30c5dd 100644
 --- a/src/document_core/commands/table_ops.rs
 +++ b/src/document_core/commands/table_ops.rs
 @@ -975,19 +975,10 @@ impl DocumentCore {
@@ -56,7 +56,7 @@ index 38c7697d..31e30c5d 100644
  
      fn sync_cellzone_origin_cell_diagonal_override(
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index 9f3f662f..ec663601 100644
+index 9f3f662f1..ec663601e 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -567,9 +567,12 @@ struct BorderFillDto {
@@ -102,7 +102,7 @@ index 9f3f662f..ec663601 100644
          })
          .collect()
 diff --git a/src/model/style.rs b/src/model/style.rs
-index fe1068fb..4e84dcf8 100644
+index fe1068fbf..4e84dcf85 100644
 --- a/src/model/style.rs
 +++ b/src/model/style.rs
 @@ -477,6 +477,70 @@ pub enum CenterLine {

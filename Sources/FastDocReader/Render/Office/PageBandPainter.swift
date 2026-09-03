@@ -189,9 +189,13 @@ enum PageBandPainter {
         if pageIndex == 0, let first = entries.first(where: { $0.appliesTo == .firstPage }) {
             return first
         }
+        // The page's own parity, then the catch-all — the same rule `MasterPagePainter` uses, so a
+        // running head and the 바탕쪽 behind it never disagree about which side of the spread a page
+        // is on.
         let humanPage = pageIndex + 1
-        if humanPage % 2 == 0, let even = entries.first(where: { $0.appliesTo == .evenPages }) {
-            return even
+        let parity: HeaderFooterApplicability = humanPage % 2 == 0 ? .evenPages : .oddPages
+        if let own = entries.first(where: { $0.appliesTo == parity }) {
+            return own
         }
         return entries.first(where: { $0.appliesTo == .defaultPages })
     }

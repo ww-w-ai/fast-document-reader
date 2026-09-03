@@ -1,0 +1,277 @@
+From e6b8ce5c21890215d143b1057e9f41d828ee9403 Mon Sep 17 00:00:00 2001
+From: taekim <taekim@day34.com>
+Date: Tue, 1 Sep 2026 02:57:35 +0900
+Subject: [PATCH 48/50] Give the export the column widths the renderer already
+ resolves
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+`get_column_widths` only reads cells with `col_span == 1`, so a column that
+appears exclusively inside a merged cell gets no width and falls back to
+1800 HWPUNIT (18pt). On a 서식 table that is most of the grid: the 2025
+행정업무운영 편람's 기안문 form table had 6 of its 11 columns at that
+placeholder, so a table the renderer draws 393.0pt wide was exported as
+342.2pt and a host laying it out from those widths gave 「국무총리」 31pt of
+content instead of 71.5 — the label wrapped and the row doubled.
+
+`Layout::resolve_column_widths` already solves this for the renderer, but it
+takes `&self` for the dpi and answers in pixels, so a model-only caller
+cannot use it. `get_column_widths_resolved` carries the same procedure in
+HWPUNIT: skip locally-resized rows, take single-column cells, solve the
+merged-cell constraints iteratively, split what stays unknown, give a
+constraint's deficit to its last column, default only what remains, then
+hand any residual against the table's declared width to the last column.
+
+Measured on that manual: 388 tables, 336 columns at the placeholder become
+0, 126 tables change, and the form table's eleven columns match the
+renderer's own tree to within 0.2pt.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ src/document_core/queries/document_json.rs |   2 +-
+ src/model/table.rs                         | 105 +++++++++++++++++++++
+ src/model/table/tests.rs                   |  43 +++++++++
+ tests/fmd_column_width_probe.rs            |  50 ++++++++++
+ 4 files changed, 199 insertions(+), 1 deletion(-)
+ create mode 100644 tests/fmd_column_width_probe.rs
+
+diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
+index 4fee92fdc..dd0fa652b 100644
+--- a/src/document_core/queries/document_json.rs
++++ b/src/document_core/queries/document_json.rs
+@@ -2956,7 +2956,7 @@ fn break_before_str(t: crate::model::paragraph::ColumnBreakType) -> Option<&'sta
+ }
+ 
+ fn build_table_block(doc: &Document, table: &Table) -> Block {
+-    let col_widths: Vec<i32> = table.get_column_widths().iter().map(|w| *w as i32).collect();
++    let col_widths: Vec<i32> = table.get_column_widths_resolved().iter().map(|w| *w as i32).collect();
+     let mut rows: Vec<Vec<CellDto>> = Vec::new();
+     for r in 0..table.row_count {
+         // 앵커 셀만: table.cells 는 앵커 셀(행 우선)만 담는다.
+diff --git a/src/model/table.rs b/src/model/table.rs
+index c5415aabb..718a3463b 100644
+--- a/src/model/table.rs
++++ b/src/model/table.rs
+@@ -786,6 +786,111 @@ impl Table {
+         widths
+     }
+ 
++    /// 열별 폭(HWPUNIT) — 병합 셀 제약까지 풀어서 답한다.
++    ///
++    /// `get_column_widths` 는 `col_span == 1` 인 셀만 본다. 그래서 **병합 셀 안에서만 등장하는
++    /// 열**은 폭을 못 얻고 1800 HWPUNIT(18pt) 기본값으로 떨어진다. 결재란처럼 병합이 많은 서식
++    /// 표에서는 그런 열이 절반을 넘어, 표 전체가 실제보다 훨씬 좁아진다 — 2025 행정업무운영
++    /// 편람의 기안문 서식 표는 11열 중 6열이 그 기본값이 되어 393.0pt 짜리 표가 342.2pt 로
++    /// 나왔고, 그만큼 좁아진 칸 안에서 「국무총리」 같은 네 글자 라벨이 줄바꿈돼 행이 두 배로
++    /// 늘어났다.
++    ///
++    /// 렌더러는 같은 문제를 `Layout::resolve_column_widths` 에서 이미 푼다. 여기 있는 것은 그
++    /// 절차를 HWPUNIT 단위로 옮긴 것이다 — 렌더러 쪽은 `&self`(dpi)가 있어야 하고 픽셀로 답하므로
++    /// 모델만 있는 호출자(구조화 내보내기)가 쓸 수 없다. 단계·판정은 그쪽과 같게 유지한다.
++    pub fn get_column_widths_resolved(&self) -> Vec<HwpUnit> {
++        let col_count = self.col_count as usize;
++        if col_count == 0 {
++            return Vec::new();
++        }
++        // 행 단위로 개별 조정된 행은 표의 격자를 말해 주지 않는다 — 렌더러와 같은 제외 규칙.
++        let inferred = self.inferred_local_resize_rows();
++        let skip = |row: u16| self.local_resize_rows.contains(&row) || inferred.contains(&row);
++
++        // 1단계: 병합하지 않은 셀에서 열 폭을 직접 얻는다.
++        let mut widths = vec![0.0f64; col_count];
++        for cell in &self.cells {
++            if skip(cell.row) || cell.col_span != 1 {
++                continue;
++            }
++            let c = cell.col as usize;
++            if c < col_count {
++                widths[c] = widths[c].max(cell.width as f64);
++            }
++        }
++
++        // 2단계: 병합 셀이 남긴 제약을 푼다. 미지수가 하나면 확정, 여럿이면 균등 분배.
++        let mut constraints: Vec<(usize, usize, f64)> = Vec::new();
++        for cell in &self.cells {
++            if skip(cell.row) {
++                continue;
++            }
++            let c = cell.col as usize;
++            let span = cell.col_span as usize;
++            if span > 1 && c + span <= col_count {
++                let total = cell.width as f64;
++                match constraints.iter_mut().find(|x| x.0 == c && x.1 == span) {
++                    Some(existing) => existing.2 = existing.2.max(total),
++                    None => constraints.push((c, span, total)),
++                }
++            }
++        }
++        constraints.sort_by_key(|&(_, span, _)| span);
++        for _ in 0..(col_count + constraints.len()) {
++            let mut progress = false;
++            for &(c, span, total) in &constraints {
++                let known: f64 = (c..c + span).map(|i| widths[i]).sum();
++                let unknown: Vec<usize> = (c..c + span).filter(|&i| widths[i] == 0.0).collect();
++                if unknown.len() == 1 {
++                    widths[unknown[0]] = (total - known).max(0.0);
++                    progress = true;
++                }
++            }
++            if !progress {
++                break;
++            }
++        }
++        for &(c, span, total) in &constraints {
++            let known: f64 = (c..c + span).map(|i| widths[i]).sum();
++            let unknown: Vec<usize> = (c..c + span).filter(|&i| widths[i] == 0.0).collect();
++            if !unknown.is_empty() {
++                let per = (total - known).max(0.0) / unknown.len() as f64;
++                for i in unknown {
++                    widths[i] = per;
++                }
++            }
++        }
++        // 이미 다 아는 열들로만 이루어진 제약이 총합에 못 미치면 한컴은 뒤쪽 열을 넓힌다.
++        for &(c, span, total) in &constraints {
++            let known: f64 = (c..c + span).map(|i| widths[i]).sum();
++            let deficit = total - known;
++            if deficit > 0.5 {
++                let target = c + span - 1;
++                if target < col_count {
++                    widths[target] += deficit;
++                }
++            }
++        }
++
++        // 3단계: 그래도 모르는 열에만 기본값.
++        for w in &mut widths {
++            if *w <= 0.0 {
++                *w = 1800.0;
++            }
++        }
++        // 표가 자기 폭을 말했으면 남는 만큼을 마지막 열에 준다 — 렌더러와 같다.
++        let declared = self.common.width as f64;
++        if declared > 0.0 {
++            let residual = declared - widths.iter().sum::<f64>();
++            if residual > 0.5 {
++                if let Some(last) = widths.last_mut() {
++                    *last += residual;
++                }
++            }
++        }
++        widths.iter().map(|w| w.round().max(0.0) as HwpUnit).collect()
++    }
++
+     /// 열별 폭(HWPUNIT)을 절대값으로 설정한다.
+     ///
+     /// `widths.len()` 은 `col_count` 와 같아야 한다. 병합 셀(`col_span > 1`)은
+diff --git a/src/model/table/tests.rs b/src/model/table/tests.rs
+index 9f2eda3f0..5f1f2c47d 100644
+--- a/src/model/table/tests.rs
++++ b/src/model/table/tests.rs
+@@ -1154,3 +1154,46 @@ fn insert_column_inherits_shape_when_row_has_only_merged_cells() {
+         assert_inherited(cell, "insert_column");
+     }
+ }
++
++/// 병합 셀 안에만 등장하는 열도 폭을 얻어야 한다.
++///
++/// `get_column_widths` 는 `col_span == 1` 인 셀만 보므로, 결재란 같은 서식 표에서 병합 셀에만
++/// 걸린 열이 1800 HWPUNIT(18pt) 기본값으로 떨어져 표 전체가 좁아진다. 렌더러는 같은 문제를
++/// `resolve_column_widths` 에서 제약 해소로 푼다 — 내보내기도 같은 답을 해야 한다.
++#[test]
++fn test_get_column_widths_resolved_solves_a_merged_span() {
++    let mut table = Table::default();
++    table.row_count = 2;
++    table.col_count = 3;
++    // 1행: 0열만 단독으로 나타나고, 1~2열은 병합 셀 하나에 묶여 있다.
++    table.cells.push(Cell { col: 0, row: 0, col_span: 1, row_span: 1, width: 3000,
++                            ..Default::default() });
++    table.cells.push(Cell { col: 1, row: 0, col_span: 2, row_span: 1, width: 7000,
++                            ..Default::default() });
++    // 2행: 1열만 단독으로 나타난다 → 2열은 제약으로만 풀린다.
++    table.cells.push(Cell { col: 0, row: 1, col_span: 1, row_span: 1, width: 3000,
++                            ..Default::default() });
++    table.cells.push(Cell { col: 1, row: 1, col_span: 1, row_span: 1, width: 4000,
++                            ..Default::default() });
++    table.cells.push(Cell { col: 2, row: 1, col_span: 1, row_span: 1, width: 0,
++                            ..Default::default() });
++
++    // 오래된 답: 2열을 모르니 기본값으로 채우고 표가 좁아진다.
++    assert_eq!(table.get_column_widths(), vec![3000, 4000, 1800]);
++    // 새 답: 병합 셀 7000 에서 이미 아는 4000 을 빼 2열이 3000 으로 확정된다.
++    assert_eq!(table.get_column_widths_resolved(), vec![3000, 4000, 3000]);
++}
++
++/// 표가 자기 폭을 말했으면 남는 만큼은 마지막 열이 받는다 — 렌더러와 같은 규칙.
++#[test]
++fn test_get_column_widths_resolved_gives_the_residual_to_the_last_column() {
++    let mut table = Table::default();
++    table.row_count = 1;
++    table.col_count = 2;
++    table.common.width = 10_000;
++    table.cells.push(Cell { col: 0, row: 0, col_span: 1, row_span: 1, width: 3000,
++                            ..Default::default() });
++    table.cells.push(Cell { col: 1, row: 0, col_span: 1, row_span: 1, width: 4000,
++                            ..Default::default() });
++    assert_eq!(table.get_column_widths_resolved(), vec![3000, 7000]);
++}
+diff --git a/tests/fmd_column_width_probe.rs b/tests/fmd_column_width_probe.rs
+new file mode 100644
+index 000000000..083b4a3ea
+--- /dev/null
++++ b/tests/fmd_column_width_probe.rs
+@@ -0,0 +1,50 @@
++//! 병합 셀만 가진 열이 실제 문서에서 폭을 얻는지 — 내보내기가 쓰는 답을 그대로 찍는다.
++use rhwp::model::control::Control;
++use rhwp::wasm_api::HwpDocument;
++use std::{fs, path::Path};
++
++fn walk<'a>(controls: &'a [Control], out: &mut Vec<&'a rhwp::model::table::Table>) {
++    for c in controls {
++        if let Control::Table(t) = c {
++            out.push(t);
++            for cell in &t.cells {
++                for p in &cell.paragraphs {
++                    walk(&p.controls, out);
++                }
++            }
++        }
++    }
++}
++
++#[test]
++fn probe_column_widths() {
++    let Ok(path) = std::env::var("FMD_COLW_DOC") else { return };
++    let bytes = fs::read(Path::new(&path)).expect("read");
++    let doc = HwpDocument::from_bytes(&bytes).expect("parse");
++    let mut tables = Vec::new();
++    for s in &doc.document().sections {
++        for p in &s.paragraphs {
++            walk(&p.controls, &mut tables);
++        }
++    }
++    let mut lines = vec![format!("tables {}", tables.len())];
++    let mut naive_default = 0usize;
++    let mut resolved_default = 0usize;
++    for (i, t) in tables.iter().enumerate() {
++        let naive = t.get_column_widths();
++        let res = t.get_column_widths_resolved();
++        naive_default += naive.iter().filter(|w| **w == 1800).count();
++        resolved_default += res.iter().filter(|w| **w == 1800).count();
++        if i < 40 || naive != res {
++            lines.push(format!(
++                "t{:<4} cols {:<3} declared {:<7} naive sum {:<8} resolved sum {:<8} {}",
++                i, t.col_count, t.common.width,
++                naive.iter().map(|w| *w as u64).sum::<u64>(),
++                res.iter().map(|w| *w as u64).sum::<u64>(),
++                if naive == res { "same" } else { "CHANGED" }));
++        }
++    }
++    lines.push(format!("columns left at the 1800 default: naive {naive_default}  resolved {resolved_default}"));
++    let out = std::env::var("FMD_COLW_OUT").unwrap_or_else(|_| "/tmp/fmd-colw.txt".into());
++    fs::write(out, lines.join("\n") + "\n").unwrap();
++}
+-- 
+2.50.1 (Apple Git-155)
+

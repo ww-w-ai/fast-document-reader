@@ -1,7 +1,7 @@
 From 34af3c03d45b334c775cd302ed4650a481985853 Mon Sep 17 00:00:00 2001
 From: taekim <taekim@day34.com>
 Date: Fri, 14 Aug 2026 00:50:39 +0900
-Subject: [PATCH 12/46] Say which section a running head came from, and which
+Subject: [PATCH 12/50] Say which section a running head came from, and which
  section the document is typeset on
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -19,7 +19,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
  1 file changed, 40 insertions(+), 6 deletions(-)
 
 diff --git a/src/document_core/queries/document_json.rs b/src/document_core/queries/document_json.rs
-index b9f2f540..ed5e958f 100644
+index b9f2f540c..ed5e958ff 100644
 --- a/src/document_core/queries/document_json.rs
 +++ b/src/document_core/queries/document_json.rs
 @@ -88,6 +88,12 @@ struct DocumentJson {

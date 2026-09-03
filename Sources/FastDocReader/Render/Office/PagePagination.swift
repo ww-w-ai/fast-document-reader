@@ -108,12 +108,24 @@ enum PagePagination {
     /// SCREEN ONLY. Paper cannot stretch, so `rectForPage` keeps the paper-sized grid — the divergence
     /// is the medium's, not a disagreement between two implementations.
     static func joiningUnopenedBoundaries(_ sheets: [CGRect],
-                                          openedBoundaries: Set<Int>?) -> [CGRect] {
+                                          openedBoundaries: Set<Int>?,
+                                          straddledByATable: Set<Int>? = nil) -> [CGRect] {
         guard let openedBoundaries, sheets.count > 1 else { return sheets }
         var out: [CGRect] = []
+        // A boundary is welded when layout opened no band there AND something is actually drawn
+        // across it. Without the second half, a boundary layout simply had no line to move at —
+        // the prose that follows a table carried whole starts at a page top on its own — reads as
+        // "never broke here" and welds two real sheets into one (see
+        // `PageBandLayoutDelegate.tableStraddledBoundaries` for the measurement). A `nil` straddle
+        // set means nobody measured, and the old, wider behaviour is kept.
+        func weld(_ boundary: Int) -> Bool {
+            guard !openedBoundaries.contains(boundary) else { return false }
+            guard let straddledByATable else { return true }
+            return straddledByATable.contains(boundary)
+        }
         for (page, sheet) in sheets.enumerated() {
             // Boundary `page - 1` is the one between the previous sheet and this one.
-            if page > 0, !openedBoundaries.contains(page - 1), let last = out.popLast() {
+            if page > 0, weld(page - 1), let last = out.popLast() {
                 out.append(last.union(sheet))
             } else {
                 out.append(sheet)

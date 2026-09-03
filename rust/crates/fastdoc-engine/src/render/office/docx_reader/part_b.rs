@@ -1044,6 +1044,9 @@ impl super::DocxReader {
                         border_width,
                         edge_borders: None,
                         edge_borders_ref: None,
+                        // docx states a row height on `w:trPr/w:trHeight`, not on the cell — this
+                        // reader has never read it, so the honest answer here is "nothing said".
+                        declared_height: None,
                         width: Self::cell_width(tc_pr),
                         vertical_alignment: Self::cell_valign(tc_pr),
                         padding: resolved_margin,

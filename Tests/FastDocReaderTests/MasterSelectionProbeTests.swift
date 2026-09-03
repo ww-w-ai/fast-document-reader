@@ -208,15 +208,11 @@ final class MasterSelectionProbeTests: XCTestCase {
     private func measureSelectionAddedCost(
         content: MasterPageContent, sheets: [CGRect], sectionOfPage: (Int) -> Int?, n: Int
     ) {
-        func tag(_ a: HeaderFooterApplicability) -> Int32 {
-            switch a {
-            case .defaultPages: return 0
-            case .firstPage: return 1
-            case .evenPages: return 2
-            }
-        }
+        // The SHIPPING encoder, not a copy of it: this probe used to restate the same switch, and
+        // the copy silently went out of date the moment `oddPages` was added — a compile error here
+        // rather than a wrong tag on the wire only because Swift makes a switch exhaustive.
         let templates = content.pages.map {
-            FastdocMasterTemplateDesc(section: Int64($0.section), applies_to: tag($0.appliesTo))
+            FastdocMasterTemplateDesc(section: Int64($0.section), applies_to: $0.appliesTo.wireTag)
         }
         let vetoed = content.sectionsHidingMasterPage.map { Int64($0) }
         let pages: [FastdocMasterPageQuery] = (0..<sheets.count).map { index in
