@@ -231,10 +231,10 @@ enum TableBlockBuilder {
     /// the two paddings are scaled down IN PROPORTION to leave the line its minimum. They are never
     /// grown — a document that declares a band TALLER than its padding keeps the padding it asked
     /// for and the line takes the remainder.
-    static func decorativeBand(cell: CellContent?, paged: Bool,
+    static func decorativeBand(cell: CellContent?, paged: Bool, rowIsEmpty: Bool = true,
                                paddingTop: CGFloat, paddingBottom: CGFloat)
         -> (top: CGFloat, bottom: CGFloat, line: CGFloat)? {
-        guard paged, let cell, let declared = cell.declaredHeight, declared > 0,
+        guard paged, rowIsEmpty, let cell, let declared = cell.declaredHeight, declared > 0,
               cell.content.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
         let room = max(0, declared - Self.bandMinimumLine)
@@ -835,7 +835,11 @@ enum TableBlockBuilder {
             // shrink; rounding down never does.
             let availableForPadding = max(0, cellWidth - leftWidth - rightWidth)
             // A row the DOCUMENT sized itself because nothing in it could — see `decorativeBand`.
+            let rowIsEmpty = rows[placement.row].allSatisfy {
+                $0.content.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
             let band = Self.decorativeBand(cell: placement.cell, paged: paged,
+                                           rowIsEmpty: rowIsEmpty,
                                            paddingTop: me.paddingTop, paddingBottom: me.paddingBottom)
             var effLeft: CGFloat, effRight: CGFloat
             if paged {

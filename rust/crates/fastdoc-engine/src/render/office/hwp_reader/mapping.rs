@@ -709,10 +709,27 @@ impl HwpReader {
         let mut blocks: Vec<OfficeBlock> = Vec::with_capacity(envelope.blocks.len());
         for (index, block) in envelope.blocks.iter().enumerate() {
             shapes.block_index = index;
-            blocks.push(Self::map_block(
+            let mut mapped = Self::map_block(
                 block, page_width, default_body_size, &slot_fonts, &border_fills, &mut shapes, paged,
                 column_authority,
-            ));
+            );
+            // `document_json::build_blocks` emits each paragraph first and then that paragraph's
+            // control blocks. A text-empty paragraph immediately followed by a non-paragraph is
+            // therefore the control's anchor, not an additional visible line. Keep its block and
+            // index for page/section breaks and anchored placement, but collapse its text metrics.
+            // This is body-only: cell block arrays are mapped separately, and rhwp's cell layout
+            // has different empty-paragraph rules.
+            let control_only_host = paged
+                && matches!(block, HwpBlock::Para(p) if p.spans.iter().all(|span| span.text.trim().is_empty()))
+                && envelope.blocks.get(index + 1).is_some_and(|next| !matches!(next, HwpBlock::Para(_)));
+            if control_only_host {
+                if let OfficeBlock::Paragraph { format, .. } = &mut mapped {
+                    format.line_height = Some(LineHeight::Exact(0.01));
+                    format.spacing_before = Some(0.0);
+                    format.spacing_after = Some(0.0);
+                }
+            }
+            blocks.push(mapped);
         }
         let mut result = OfficeReadResult { blocks, comments: Vec::new(), ..Default::default() };
         // What the DOCUMENT's own font table says about each family it names, handed to the format-
@@ -2065,6 +2082,17 @@ use crate::render::office::office_block::{
 use crate::render::office::hwp_reader::schema::{HwpTable, HwpShape, HwpUnsupported, HwpEquation};
 
 impl HwpReader {
+    fn zero_height_anchor() -> OfficeBlock {
+        let mut format = ParagraphFormat::default();
+        format.line_height = Some(LineHeight::Exact(0.01));
+        format.spacing_before = Some(0.0);
+        format.spacing_after = Some(0.0);
+        OfficeBlock::Paragraph {
+            spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
+            format, format_ref: None,
+        }
+    }
+
     // swift: HwpReader.mapBlock
     #[allow(clippy::too_many_arguments)]
     fn map_block(
@@ -2277,11 +2305,7 @@ impl HwpReader {
                             object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Image(image) },
                             paragraph_anchor: None,
                         });
-                        return OfficeBlock::Paragraph {
-                            spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
-                            format: ParagraphFormat::default(),
-                            format_ref: None,
-                        };
+                        return Self::zero_height_anchor();
                     }
                 }
             }
@@ -2314,11 +2338,7 @@ impl HwpReader {
                             object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Image(image) },
                             paragraph_anchor: Some(anchor),
                         });
-                        return OfficeBlock::Paragraph {
-                            spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
-                            format: ParagraphFormat::default(),
-                            format_ref: None,
-                        };
+                        return Self::zero_height_anchor();
                     }
                 }
             }
@@ -2390,11 +2410,7 @@ impl HwpReader {
                         },
                         paragraph_anchor: None,
                     });
-                    return OfficeBlock::Paragraph {
-                        spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
-                        format: ParagraphFormat::default(),
-                        format_ref: None,
-                    };
+                    return Self::zero_height_anchor();
                 }
             }
         }
@@ -2418,27 +2434,15 @@ impl HwpReader {
                         },
                         paragraph_anchor: Some(anchor),
                     });
-                    return OfficeBlock::Paragraph {
-                        spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
-                        format: ParagraphFormat::default(),
-                        format_ref: None,
-                    };
+                    return Self::zero_height_anchor();
                 }
             }
         }
         if sh.as_char != Some(true) {
-            return OfficeBlock::Paragraph {
-                spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
-                format: ParagraphFormat::default(),
-                format_ref: None,
-            };
+            return Self::zero_height_anchor();
         }
         if vector.paths.is_empty() || vector.size.width <= 0.5 || vector.size.height <= 0.5 {
-            return OfficeBlock::Paragraph {
-                spans: Vec::new(), rtl: false, alignment: None, tab_stops: Vec::new(),
-                format: ParagraphFormat::default(),
-                format_ref: None,
-            };
+            return Self::zero_height_anchor();
         }
         let id = shapes.add_vector(vector);
         OfficeBlock::Image {

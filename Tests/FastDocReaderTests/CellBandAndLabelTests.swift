@@ -104,6 +104,12 @@ final class CellBandAndLabelTests: XCTestCase {
             cell: c, paged: true, paddingTop: 5, paddingBottom: 5))
     }
 
+    func testAnEmptyCellBesideTextIsNotTreatedAsAnEmptyRowBand() {
+        XCTAssertNil(TableBlockBuilder.decorativeBand(
+            cell: empty(declaredHeight: 40), paged: true, rowIsEmpty: false,
+            paddingTop: 5, paddingBottom: 5))
+    }
+
     func testACellTheDocumentSaidNothingAboutMeasuresItselfAsBefore() {
         XCTAssertNil(TableBlockBuilder.decorativeBand(
             cell: empty(declaredHeight: nil), paged: true, paddingTop: 5, paddingBottom: 5))

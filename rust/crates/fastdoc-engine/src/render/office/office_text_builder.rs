@@ -848,6 +848,15 @@ impl OfficeTextBuilder {
                 // so this takes that SAME fallback now rather than panicking on any small-caps run —
                 // the feature request itself is still unwired, not "small caps are done".
             }
+            // Keep this before the font attribute is captured. The Swift reference applies the
+            // authored HWP width matrix last in the font pipeline and only then stores `.font`.
+            // Storing first makes the calculation below inert: the attributed string retains the
+            // unscaled clone while only this local variable changes.
+            if let Some(pct) = span.width_scale_percent {
+                if pct > 0.0 && pct != 100.0 {
+                    font = font.with_width_scale(pct / 100.0);
+                }
+            }
             attrs.insert(swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(font.clone()));
             attrs.insert(swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(color.clone()));
             // Always drawn exactly as authored — see `Span.highlightColor`'s doc for why a
@@ -886,17 +895,6 @@ impl OfficeTextBuilder {
             if let Some(pct) = span.letter_spacing_percent {
                 if pct != 0.0 {
                     attrs.insert(swiftshim::NSAttributedStringKey::Custom("kern".to_string()), swiftshim::AttrValue::Double(font.pointSize() * pct / 100.0));
-                }
-            }
-            // 장평 — the document's own glyph width, as a FONT MATRIX rather than an expansion
-            // attribute. `NSAttributedString.Key.expansion` is the obvious reading of "scale the
-            // glyphs" and it is INERT: measured on the 편람, setting it changed the layout by
-            // nothing at all (516 sheets, 14,727 line fragments, every per-sheet count identical),
-            // because TextKit's typesetter never folds it into a glyph advance. The matrix carries
-            // the SIZE as well as the scale, since a font matrix maps a 1-unit em.
-            if let Some(pct) = span.width_scale_percent {
-                if pct > 0.0 && pct != 100.0 {
-                    font = font.with_width_scale(pct / 100.0);
                 }
             }
             if let Some(pct) = span.baseline_offset_percent {

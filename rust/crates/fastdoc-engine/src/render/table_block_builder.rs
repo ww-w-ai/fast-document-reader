@@ -327,10 +327,11 @@ impl TableBlockBuilder {
     pub fn decorative_band(
         cell: Option<&CellContent>,
         paged: bool,
+        row_is_empty: bool,
         padding_top: CGFloat,
         padding_bottom: CGFloat,
     ) -> Option<(CGFloat, CGFloat, CGFloat)> {
-        if !paged {
+        if !paged || !row_is_empty {
             return None;
         }
         let cell = cell?;
@@ -1052,7 +1053,16 @@ impl TableBlockBuilder {
             // shrink; rounding down never does.
             let available_for_padding = (0.0 as CGFloat).max(cell_width - left_width - right_width);
             // A row the DOCUMENT sized because nothing in it could — see `decorative_band`.
-            let band = Self::decorative_band(placement.cell, paged, me.padding_top, me.padding_bottom);
+            let row_is_empty = rows[placement.row]
+                .iter()
+                .all(|cell| cell.content.string().trim().is_empty());
+            let band = Self::decorative_band(
+                placement.cell,
+                paged,
+                row_is_empty,
+                me.padding_top,
+                me.padding_bottom,
+            );
             let (mut eff_left, mut eff_right): (CGFloat, CGFloat);
             if paged {
                 // PER-EDGE — the left/right pair can genuinely differ (a document's own asymmetric

@@ -1732,3 +1732,26 @@ this file tells you why, and why the obvious alternative does not work.
     sheets 266–267 gone, page count unchanged at **503**. **Found by looking, not by measuring** —
     the census had reported these cells for a while as ordinary wraps, and only the rendered page
     showed that a five-character label was five lines tall.
+
+159. **THE 503-PAGE HWP WAS NOT NORMAL, AND TWO EMPTY-LAYOUT RULES WERE CHARGING HEIGHT TWICE.**
+    The reference manual declares 185 real page/section breaks and rhwp executes all 185; that
+    finding rules out fake breaks, not a density defect. The official viewer count recorded for
+    this file is 429 pages, while rhwp's 394 is itself about 8% short, so 394 must not be treated as
+    a tuning target.
+
+    **A control-only paragraph is an anchor, not another line.** rhwp's structured export is ordered
+    `paragraph, that paragraph's controls, next paragraph`. The engine kept the empty host paragraph
+    at full line height and then rendered its table/image/shape sibling as well. The mapper now keeps
+    the block and index needed by page breaks and anchored placement but collapses the text metrics;
+    anchored objects' own placeholder paragraphs use the same zero-height anchor. No text-storage
+    mutation and no guessed control type is involved.
+
+    **A decorative band is a property of an empty ROW, not any empty CELL.** `declaredHeight` was
+    correctly exported, but `decorativeBand` tested only the current cell. An empty neighbour in an
+    otherwise ordinary text row therefore received the whole declared row height as its line height.
+    The gate now requires every cell in that row to be empty. On the fixed document, the identical
+    Rust model's summed TextKit line height fell from 282,688pt to 252,721pt; discarding declared
+    heights entirely was worse at 260,454pt, proving that the narrow gate keeps the real decorative
+    bands while removing the overreach. Together with control-host collapse, settled `--pdf` moved
+    from 503 to 483 pages (reproduced twice). The remaining difference from the official 429 is unresolved and must not
+    be called normal or closed by matching rhwp's known-short 394.
