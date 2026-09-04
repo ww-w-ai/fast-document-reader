@@ -1851,9 +1851,10 @@ this file tells you why, and why the obvious alternative does not work.
     bare `NSTextTable`. Two consequences, both measured on the live text storage: every cell read
     back `border=[0,0,0,0] pad=[0,0,0,0] bg=nil colW=0`, and `resizeTables` — which keys on the
     `GridTextTable` subclass and its `columnProportions` — skipped every markdown table on every
-    reflow. Screen and `--pdf` agreed, and so did the shipped 1.4.1, which already carried the
-    markdown engine; the reader's own builder tests were green throughout because they never cross
-    the wire.
+    reflow. Screen and `--pdf` agreed; the reader's own builder tests were green throughout because
+    they never cross the wire. (The shipped 1.4.1, which predates the markdown engine, shows the
+    same bare look through a path this entry did not trace — the user's memory of ruled tables is
+    of a build older than that.)
 
     The wire is version 2 now. `WireTable` carries the grid (`column_proportions`, the outer
     margins, `max_width`) and `WireTableBlock` the cell's box (`content_width`, `padding[4]`,
