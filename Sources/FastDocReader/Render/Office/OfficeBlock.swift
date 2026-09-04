@@ -779,6 +779,12 @@ struct ParagraphFormat: Equatable {
     /// own `minimumLineHeight`). `OfficeTextBuilder.applyLineModel` carries such a pitch as
     /// `size + lineSpacing`, and the page band lets that spacing run past the foot of a page.
     var lineSpacingBelow: Bool? = nil
+    /// The document's own page break in front of this paragraph (docx `w:pageBreakBefore`, or the
+    /// paragraph a `<w:br w:type="page"/>` opens); `OfficeReadResult.pageBreakBlocks` is where a
+    /// top-level block's answer is read from.
+    var pageBreakBefore: Bool? = nil
+    /// docx `w:keepNext` — see `OfficeReadResult.keepWithNextBlocks`.
+    var keepWithNext: Bool? = nil
 }
 
 /// How finely a line may be broken inside one script's text — see `ParagraphFormat`'s two
@@ -1718,7 +1724,7 @@ extension ParagraphFormat: Decodable {
         case indentEnd, firstLineIndent, hangingIndent, contextualSpacing, shading
         case borderColor, borderWidth, borderEdges, eastAsianLineBreak, latinLineBreak
         case autoSpaceEastAsianLatin, autoSpaceEastAsianNumber, lineHeightFromFontMetrics
-        case lineSpacingBelow
+        case lineSpacingBelow, pageBreakBefore, keepWithNext
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1741,6 +1747,8 @@ extension ParagraphFormat: Decodable {
         autoSpaceEastAsianNumber = try c.decodeIfPresent(Bool.self, forKey: .autoSpaceEastAsianNumber)
         lineHeightFromFontMetrics = try c.decodeIfPresent(Bool.self, forKey: .lineHeightFromFontMetrics)
         lineSpacingBelow = try c.decodeIfPresent(Bool.self, forKey: .lineSpacingBelow)
+        pageBreakBefore = try c.decodeIfPresent(Bool.self, forKey: .pageBreakBefore)
+        keepWithNext = try c.decodeIfPresent(Bool.self, forKey: .keepWithNext)
     }
 }
 

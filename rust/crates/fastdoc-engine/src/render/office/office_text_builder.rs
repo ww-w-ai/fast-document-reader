@@ -500,6 +500,8 @@ impl OfficeTextBuilder {
             // run past the foot of a page, the way 한글 does (invariant 161).
             if Self::paragraph_format(block).and_then(|f| f.line_spacing_below) == Some(true) {
                 Self::apply_line_model_from(&mut result, start);
+            } else if Self::paragraph_format(block).is_some() {
+                Self::apply_declared_face_line_height(&mut result, start);
             }
         }
         Self::unify_paragraph_terminators(&mut result);
@@ -742,6 +744,11 @@ impl OfficeTextBuilder {
                 attrs.insert(MDAttr::inline_code(), swiftshim::AttrValue::Bool(true));
             } else if let Some(name) = &span.font_name {
                 // Family override — never applied to a `code` span (see `Span.fontName`'s doc).
+                // The DECLARED face's line ratio travels with the run even when the face is
+                // absent and a substitute draws it (invariant 163).
+                if let Some(ratio) = Self::declared_face_line_height_ratio(&name.to_string()) {
+                    attrs.insert(MDAttr::declared_face_line_ratio(), swiftshim::AttrValue::Double(ratio));
+                }
                 if let Some(named) = NSFont::named(&name.to_string(), font.pointSize()) {
                     font = named;
                 }
@@ -2176,10 +2183,12 @@ impl OfficeTextBuilder {
         for (i, range) in paragraphs.iter().enumerate() {
             let Some(base) = Self::paragraph_style_at(&result, range.location) else { continue };
             let mut m = base;
-            if i == 0 {
+            // A PAGED cell keeps them: Word and 한글 both lay a cell paragraph's own space-before
+            // and space-after inside the row (invariant 163).
+            if i == 0 && !paged {
                 m.paragraphSpacingBefore = 0.0;
             }
-            if i == last {
+            if i == last && !paged {
                 m.paragraphSpacing = 0.0;
             }
             let _ = Self::apply_line_model(&mut m, *range, &result, i == last && (last_line_keeps_no_gap || paragraphs.len() == 1));
@@ -2258,9 +2267,60 @@ impl OfficeTextBuilder {
         m.maximumLineHeight = size;
         m.lineSpacing = gap;
         if drops_trailing_gap {
-            m.paragraphSpacing = -gap;
+            m.paragraphSpacing -= gap;
         }
         true
+    }
+
+    /// swift: `OfficeTextBuilder.declaredFaceLineHeightRatio` — the line height Word gives a face
+    /// this machine may not draw with that face's own metrics, per declared family (invariant 163).
+    fn declared_face_line_height_ratio(family: &str) -> Option<f64> {
+        match family {
+            "맑은 고딕" | "Malgun Gothic" | "맑은 고딕 Semilight" | "Malgun Gothic Semilight" => Some(1.733),
+            "Arial Unicode MS" => Some(1.742),
+            _ => None,
+        }
+    }
+
+    /// Floors every paragraph from `start` at the declared face's line height (times the
+    /// paragraph's own multiple) where a run carries `MDAttr::declared_face_line_ratio`; an exact
+    /// height is left alone and a floor is only ever raised.
+    // swift: OfficeTextBuilder.applyDeclaredFaceLineHeight
+    fn apply_declared_face_line_height(result: &mut NSMutableAttributedString, start: usize) {
+        let ns = Self::as_ns_string(result);
+        let mut location = start;
+        while location < result.length() {
+            let mut line_start = 0usize;
+            let mut line_end = 0usize;
+            let mut contents_end = 0usize;
+            ns.getLineStart(Some(&mut line_start), &mut line_end, &mut contents_end, NSRange::new(location, 0));
+            let paragraph = NSRange::new(line_start, line_end.saturating_sub(line_start));
+            if paragraph.length == 0 {
+                break;
+            }
+            location = paragraph.maxRange();
+            let mut natural: f64 = 0.0;
+            result.enumerateAttribute(&MDAttr::declared_face_line_ratio(), paragraph, |value, range, _| {
+                let Some(swiftshim::AttrValue::Double(ratio)) = value else { return };
+                if let Some((swiftshim::AttrValue::Font(font), _)) = result.attribute(&NSAttributedStringKey::Font, range.location) {
+                    natural = natural.max((font.pointSize() * ratio * 100.0).round() / 100.0);
+                }
+            });
+            if !(natural > 0.0) {
+                continue;
+            }
+            let Some(style) = Self::paragraph_style_at(result, paragraph.location) else { continue };
+            if style.maximumLineHeight != 0.0 {
+                continue;
+            }
+            let floor = natural * style.lineHeightMultiple.max(1.0);
+            if !(floor > style.minimumLineHeight) {
+                continue;
+            }
+            let mut m = style;
+            m.minimumLineHeight = floor;
+            result.replace_attribute_value(NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(m), paragraph);
+        }
     }
 
     /// Finishes the paragraph pass above: gives a paragraph's terminating `"\n"` the rest of the

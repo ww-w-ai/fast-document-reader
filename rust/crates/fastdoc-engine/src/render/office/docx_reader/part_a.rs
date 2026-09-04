@@ -145,10 +145,29 @@ impl DocxReader {
         let footers = Self::header_footer_entries(
             &body, "w:footerReference", &relationships, archive, &style_info, &numbering,
         );
+        // The author's OWN page breaks and keep-with-next, as block indices — `w:pageBreakBefore`
+        // (direct or styled) and the paragraph a `<w:br w:type="page"/>` opened (`parse_paragraph`
+        // splits the run there). The first block is never a break: nothing precedes it, so what a
+        // break would abandon is the document's opening (invariant 147's rule, invariant 163).
+        let page_break_blocks: Vec<i64> = body_blocks
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(_, b)| Self::paragraph_format_of(b).map_or(false, |f| f.page_break_before == Some(true)))
+            .map(|(i, _)| i as i64)
+            .collect();
+        let keep_with_next_blocks: Vec<i64> = body_blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| Self::paragraph_format_of(b).map_or(false, |f| f.keep_with_next == Some(true)))
+            .map(|(i, _)| i as i64)
+            .collect();
         let mut blocks = body_blocks;
         blocks.extend(note_blocks);
         Ok(OfficeReadResult {
             blocks,
+            page_break_blocks,
+            keep_with_next_blocks,
             comments: office_comments,
             // The document's own default body run size, answered by the SAME parse that produced
             // these blocks. It used to be reachable only through a separate entry point that opened
@@ -788,6 +807,10 @@ struct ParaStyleProps {
     first_line_indent: Option<CGFloat>,
     hanging_indent: Option<CGFloat>,
     contextual_spacing: Option<bool>,
+    /// `w:pageBreakBefore` / `w:keepNext` as this level said them — `None` keeps climbing, and an
+    /// explicit `w:val="0"` is `Some(false)`, which is how a style's break is turned off again.
+    page_break_before: Option<bool>,
+    keep_next: Option<bool>,
     /// P2b — `w:pPr/w:shd/@w:fill`, read exactly like `Cell`'s own shading (`cellShading`):
     /// `nil` means this level didn't set it (keep climbing); `"auto"`/absent is unshaded, same
     /// sentinel as the cell's.
@@ -1316,8 +1339,17 @@ impl DocxReader {
     /// default when `w:spacing` sets `@w:line` but omits `@w:lineRule`) is `line/240` as a
     /// MULTIPLE of the font's own single-spaced height, never a point value; `exact`/`atLeast` are
     /// both `line/20` points, differing only in whether the result is a hard cap or a floor.
+    /// A `w:pPr` on/off child as a tri-state: absent = nothing said here, present = on unless its
+    /// `w:val` is `0`/`false`/`off` (ECMA-376 `ST_OnOff`).
+    fn on_off(p_pr: Option<&XMLNode>, name: &str) -> Option<bool> {
+        let node = p_pr?.child(name)?;
+        Some(!matches!(node.attributes.get("w:val").map(String::as_str), Some("0") | Some("false") | Some("off")))
+    }
+
     fn parse_para_style_props(p_pr: Option<&XMLNode>) -> ParaStyleProps {
         let mut props = ParaStyleProps::default();
+        props.page_break_before = Self::on_off(p_pr, "w:pageBreakBefore");
+        props.keep_next = Self::on_off(p_pr, "w:keepNext");
         if let Some(val) = p_pr.and_then(|n| n.child("w:jc")).and_then(|n| n.attributes.get("w:val").cloned()) {
             props.alignment = Self::alignment_from_jc(&val);
         }
@@ -1692,6 +1724,14 @@ impl DocxReader {
         Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.contextual_spacing)
     }
 
+    fn resolved_page_break_before(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<bool> {
+        Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.page_break_before)
+    }
+
+    fn resolved_keep_next(p_style_id: Option<String>, style_info: &StyleInfo) -> Option<bool> {
+        Self::walk_style_chain(p_style_id, style_info, |id| style_info.para_props.get(id)?.keep_next)
+    }
+
     // swift: DocxReader.resolvedParagraphFormat
     /// The P2 cascade itself (spec area 9's `resolve_paragraph_properties`, restricted to the
     /// spacing/indent/line-height/contextualSpacing fields this sprint covers): for EACH property
@@ -1712,6 +1752,8 @@ impl DocxReader {
         format.first_line_indent = direct.first_line_indent.or_else(|| Self::resolved_first_line_indent(p_style_id.clone(), style_info)).or(defaults.first_line_indent);
         format.hanging_indent = direct.hanging_indent.or_else(|| Self::resolved_hanging_indent(p_style_id.clone(), style_info)).or(defaults.hanging_indent);
         format.contextual_spacing = direct.contextual_spacing.or_else(|| Self::resolved_contextual_spacing(p_style_id.clone(), style_info)).or(defaults.contextual_spacing).unwrap_or(false);
+        format.page_break_before = direct.page_break_before.or_else(|| Self::resolved_page_break_before(p_style_id.clone(), style_info)).or(defaults.page_break_before);
+        format.keep_with_next = direct.keep_next.or_else(|| Self::resolved_keep_next(p_style_id.clone(), style_info)).or(defaults.keep_next);
         // P2b — shading/border join the SAME cascade, one property at a time, same priority order.
         format.shading = direct.shading.clone().or_else(|| Self::resolved_shading(p_style_id.clone(), style_info)).or(defaults.shading.clone());
         let border = direct.border.clone().or_else(|| Self::resolved_border(p_style_id.clone(), style_info)).or(defaults.border.clone());
@@ -1734,6 +1776,16 @@ impl DocxReader {
     /// Absent or malformed (no `word/theme/theme1.xml` at all, or one without `a:clrScheme`)
     /// degrades to an empty table, never a crash — every `w:themeColor` lookup against it then
     /// simply misses, same as a document with no theme colours ever declared.
+    /// The paragraph-level format a block carries, for the three block kinds that have one.
+    pub(crate) fn paragraph_format_of(block: &OfficeBlock) -> Option<&ParagraphFormat> {
+        match block {
+            OfficeBlock::Paragraph { format, .. }
+            | OfficeBlock::Heading { format, .. }
+            | OfficeBlock::ListItem { format, .. } => Some(format),
+            _ => None,
+        }
+    }
+
     fn parse_theme_colors(archive: &ZipArchive) -> std::collections::HashMap<String, NSColor> {
         if !archive.contains("word/theme/theme1.xml") {
             return std::collections::HashMap::new();

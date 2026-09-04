@@ -240,6 +240,8 @@ enum OfficeTextBuilder {
                 // spacing — run past the foot of a page, the way 한글 does (invariant 161).
                 if paragraphFormat(of: block)?.lineSpacingBelow == true {
                     applyLineModel(in: result, from: start)
+                } else if paragraphFormat(of: block) != nil {
+                    applyDeclaredFaceLineHeight(in: result, from: start)
                 }
                 if let layout = blockColumnLayouts[index], result.length > start {
                     let range = NSRange(location: start, length: result.length - start)
@@ -592,9 +594,14 @@ enum OfficeTextBuilder {
                 font = theme.codeFont
                 color = theme.inlineCodeColor
                 attrs[MDAttr.inlineCode] = true
-            } else if let name = span.fontName, let named = NSFont(name: name, size: font.pointSize) {
+            } else if let name = span.fontName {
                 // Family override — never applied to a `code` span (see `Span.fontName`'s doc).
-                font = named
+                // The DECLARED face's line ratio travels with the run even when the face is
+                // absent and a substitute draws it (invariant 163).
+                if let ratio = declaredFaceLineHeightRatio[name] {
+                    attrs[MDAttr.declaredFaceLineRatio] = ratio
+                }
+                if let named = NSFont(name: name, size: font.pointSize) { font = named }
             }
             // `resolvedFontDescriptor` (see its own doc) is `nil` for the overwhelming majority of
             // spans — the font just assigned above already covers every character, so this is a
@@ -1794,8 +1801,11 @@ enum OfficeTextBuilder {
             guard let base = result.attribute(.paragraphStyle, at: range.location,
                                               effectiveRange: nil) as? NSParagraphStyle else { continue }
             let m = base.mutableCopy() as! NSMutableParagraphStyle
-            if i == 0 { m.paragraphSpacingBefore = 0 }
-            if i == paragraphs.count - 1 { m.paragraphSpacing = 0 }
+            // A PAGED cell keeps them: Word lays a cell's first paragraph's space-before and last
+            // paragraph's space-after inside the row, and so does 한글 (rhwp's `height_measurer`
+            // sums `spacing_before + lines + spacing_after` per cell paragraph) — invariant 163.
+            if i == 0, !paged { m.paragraphSpacingBefore = 0 }
+            if i == paragraphs.count - 1, !paged { m.paragraphSpacing = 0 }
             applyLineModel(to: m, paragraph: range, in: result,
                                dropsTrailingGap: i == paragraphs.count - 1 && (lastLineKeepsNoGap || paragraphs.count == 1))
             result.addAttribute(.paragraphStyle, value: m.copy() as! NSParagraphStyle, range: range)
@@ -1862,7 +1872,50 @@ enum OfficeTextBuilder {
         m.minimumLineHeight = size
         m.maximumLineHeight = size
         m.lineSpacing = gap
-        if dropsTrailingGap { m.paragraphSpacing = -gap }
+        if dropsTrailingGap { m.paragraphSpacing -= gap }
+    }
+
+    /// The line height Word gives a face, per DECLARED family, as a multiple of the character
+    /// size. Word lays an East Asian-capable face at 1.3× its ascent+descent box — measured from
+    /// Word's own PDFs on four documents: 맑은 고딕 (box 1.33) sets 9pt at 15.6, 11pt at 19.0,
+    /// 12pt at 20.8, 15pt at 25.9; Arial Unicode MS (box 1.34) sets 12pt single at 20.9
+    /// (invariant 163). Carried by name because the face this machine draws with may be a
+    /// substitute with a different box (Apple SD Gothic Neo is 1.2×, so every 맑은 고딕 line came
+    /// out 30% short and a 60-page report fit in 44).
+    static let declaredFaceLineHeightRatio: [String: CGFloat] = [
+        "맑은 고딕": 1.733, "Malgun Gothic": 1.733,
+        "맑은 고딕 Semilight": 1.733, "Malgun Gothic Semilight": 1.733,
+        "Arial Unicode MS": 1.742,
+    ]
+
+    /// Floors every paragraph from `start` at the declared face's line height (times the
+    /// paragraph's own multiple), for paragraphs whose runs carry `MDAttr.declaredFaceLineRatio`.
+    /// An exact line height is the document's own and is left alone; a floor is raised, never
+    /// lowered. Not applied to a paragraph that puts its spacing below the glyphs (HWP), whose
+    /// pitch is the document's own declaration rather than a face's.
+    private static func applyDeclaredFaceLineHeight(in result: NSMutableAttributedString, from start: Int) {
+        let ns = result.string as NSString
+        var location = start
+        while location < result.length {
+            let paragraph = ns.paragraphRange(for: NSRange(location: location, length: 0))
+            guard paragraph.length > 0 else { break }
+            location = NSMaxRange(paragraph)
+            var natural: CGFloat = 0
+            result.enumerateAttribute(MDAttr.declaredFaceLineRatio, in: paragraph) { value, range, _ in
+                guard let ratio = value as? CGFloat,
+                      let font = result.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont else { return }
+                natural = max(natural, ((font.pointSize * ratio) * 100).rounded() / 100)
+            }
+            guard natural > 0,
+                  let style = result.attribute(.paragraphStyle, at: paragraph.location,
+                                               effectiveRange: nil) as? NSParagraphStyle,
+                  style.maximumLineHeight == 0 else { continue }
+            let floor = natural * max(1, style.lineHeightMultiple)
+            guard floor > style.minimumLineHeight else { continue }
+            let m = style.mutableCopy() as! NSMutableParagraphStyle
+            m.minimumLineHeight = floor
+            result.addAttribute(.paragraphStyle, value: m, range: paragraph)
+        }
     }
 
     /// Finishes the paragraph pass above: gives a paragraph's terminating `"\n"` the rest of the

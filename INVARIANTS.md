@@ -1874,3 +1874,79 @@ this file tells you why, and why the obvious alternative does not work.
     way AppKit keeps them. `MarkdownEngineParityTests` compares the engine's cell to the host's
     field by field (subclass, grid shares, width, padding, rules, rule colour, tint) and refuses two
     empties; `markdown_wire_projection` asserts the roles arrive on the Rust side.
+
+163. **A DOCX WAS LAID OUT 20-25% DENSER THAN WORD, AND FIVE SEPARATE CAUSES SHARED THE GAP — NONE OF THEM
+    "THE FONT".** Six real documents were printed by Word itself (AppleScript `save as … format PDF`,
+    revisions hidden) and by `--pdf`, and each page-count gap was decomposed line by line, page by
+    page, until every point of it was charged to a field. Before → after, against Word:
+    d1 1→1 / 2 · d2 15→18 / 19 · d3 11→11 / 11 · d4 111→137 / 134 · d5 25→32 / 34 · d6 44→58 / 60.
+    The HWP manual of invariant 161 stays at 391 through the same build. The five causes, in the
+    order of what they cost:
+
+    **(1) An explicit page break was a line break.** `<w:br w:type="page"/>` was pushed into the
+    span as `\n`. A page-per-section report (d6) carries 58 of them, 50 in otherwise EMPTY
+    paragraphs before the next heading, and Word starts a page at every one of the 50; this reader
+    started a page at 0 of 50 and reclaimed the slack Word leaves under each — 13.6 of the 16
+    missing pages. `build_span` now carries the break as a FORM FEED and `parse_paragraph` splits
+    the paragraph there (`split_at_page_breaks`): the text before it stays, the remainder — or the
+    paragraph mark alone, Word's own empty first line on the new page — gets
+    `ParagraphFormat.page_break_before`, and `OfficeReadResult.page_break_blocks` (already the
+    HWP path's vocabulary) lists it. A break at the very start of a paragraph opens the page with
+    THAT paragraph rather than leaving an empty one behind it. `w:pageBreakBefore` and `w:keepNext`
+    are read too, through the style chain, as `Option<bool>` (ST_OnOff, so an explicit "0" is
+    off, not unsaid) — 75 accounted decisions now. The 8 breaks inside table cells are ignored,
+    which is what Word does with them.
+
+    **(2) Word lays an East Asian-capable face at 1.3× its ascent+descent box, and that is not a
+    substitution artefact.** Every one of the six documents declares 맑은 고딕 (theme minor
+    font); it is absent from this machine (Word bundles it privately) and Apple SD Gothic Neo draws
+    it at 1.20× — 9pt lines of 10.8. Word's own PDFs put those lines at **15.6** (11pt 19.0, 12pt
+    20.8, 15pt 25.9): 1.733× the size, which is Malgun's hhea/win box (1.330) × 1.30. Installing
+    the face would NOT close it — 78% of the per-line deficit is Word's rule, 22% the substitute
+    (d1's verifier re-measured this). d4 proves it is the face class, not the missing file: it
+    declares Arial Unicode MS, which IS installed and whose box is 1.340, and Word lays its 12pt
+    single line at 20.9 = 1.340 × 1.30 × 12, on Hangul-free lines too; this reader had 16.08. The
+    fix is carried by the DECLARED name: `Span.fontName` in a small table
+    (`OfficeTextBuilder.declaredFaceLineHeightRatio` — 맑은 고딕 family 1.733, Arial Unicode MS
+    1.742) stamps `MDAttr.declaredFaceLineRatio` on the run, and `applyDeclaredFaceLineHeight`
+    floors each paragraph at size × ratio × its own `lineHeightMultiple` — a floor only ever
+    raised, never over an exact height, and never on a paragraph whose spacing sits below the
+    glyphs (HWP's `lineSpacingBelow`, invariant 161, whose pitch is the document's own). The table
+    is deliberately a table and not "any font that covers Hangul": Apple SD Gothic Neo covers Hangul
+    and is 1.2×, and inflating every Korean ODT and every substituted face by 1.3× would re-earn a
+    different gap. Extend it one measured face at a time. **Trap for the test:** on SCREEN the
+    theme's reading floor (23pt at 16px) hides this entirely — the assertion only means something
+    with `pageContentWidth` set, where every line is the document's own size.
+
+    **(3) Word's built-in cell margin is 0 above and below and 5.4pt at the sides**, and it sits
+    under the table, its style and the default table style (invariant 138's three layers). An edge
+    none of them mentioned fell to `TableBlockBuilder.defaultCellPadding` = 7pt on all four sides,
+    standing a one-line 9pt row 26pt tall against Word's 17.5 and 180 matched rows of d6 at 23.6
+    against 18.6. `with_word_default_cell_margins` fills only the edges left `None`.
+    **Consequence for a test:** `bus-headings.docx`'s FIRST table now fits its page, so a test that
+    judged the split-tables toggle by "the first table moves down when kept whole" saw the same top
+    both ways; both placement tests judge across EVERY table's top now.
+
+    **(4) A cell's paragraph spacing was trimmed on paper.** `cellContent` zeroed the first
+    paragraph's space-before and the last's space-after; Word lays both inside the row, and so does
+    한글 (rhwp's `height_measurer` sums `spacing_before + lines + spacing_after` per cell paragraph).
+    Kept when `paged`, still trimmed on screen where the reading rhythm is the theme's. The trailing
+    line-gap hand-back of invariant 161 is now `paragraphSpacing -= gap`, so it composes with a
+    kept space-after instead of overwriting it.
+
+    **(5) An empty paragraph BESIDE content in a cell was dropped.** Word gives every paragraph
+    mark a line — the blank an author leaves above a label, or under a nested table. Only a cell
+    holding NOTHING but empties is blank (the placeholder `<w:p/>` every empty `<w:tc>` carries),
+    and blank must stay blockless: a paged row with no text takes its height from the document's
+    declared band, and a phantom line would defeat that (`collect_cell_blocks`).
+
+    **What is still open, with its size.** d1 (1 vs 2): Word's page 2 is pure overflow — an outer
+    form table of 758pt on a 770pt column leaves 11.7pt, less than one 11pt line — and this reader
+    FLATTENS its nested tables into a single tab-separated paragraph (table B 124pt in Word,
+    70pt here; table C 207 vs 82), which is the whole remaining deficit; real nested grids are the
+    next thing to build. `w:trHeight` (a row's declared height, `atLeast`/`exact`) is still not
+    read. d3's paper origin sits +12.5pt down and right of Word's. d4 now OVERSHOOTS by 3 pages —
+    the 908 lines following an in-paragraph `<w:br/>` measure 22.4 here against 18.4 for a plain
+    continuation line, which Word does not do. Tests: `DocxDensityTests` (eight, through the real
+    `readOffice` dispatch and the real builder; the ratio-table mutation is caught), `office_accounting`
+    at 75 decisions, and the two rewritten placement tests.

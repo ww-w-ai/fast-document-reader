@@ -237,34 +237,21 @@ final class ScreenPrintParityTests: XCTestCase {
     /// (`answeredQueries` grew), so a build that hardcoded one behaviour Rust-side and dropped the
     /// live toggle would fail THIS assertion even though the host-only test above could not see it.
     func testTheEnginesTablePlacementStillObeysTheSplitTablesToggle() throws {
-        func firstTableTop(_ split: Bool) throws -> (top: CGFloat, answered: Int) {
+        func tableTops(_ split: Bool) throws -> (tops: [CGFloat], answered: Int) {
             PageViewOptionsStore.startingOptions = PageViewOptions(outline: true, splitTables: split)
             let wc = try openRealPagedFixture("docs/fixtures/office/bus-headings.docx")
             let handle = try XCTUnwrap(wc.mdDocument?.officeEngineHandle)
             let before = handle.answeredQueries
             wc.settlePagedTablesFully()
-            let layout = try XCTUnwrap(wc.textView.layoutManager)
-            let container = try XCTUnwrap(wc.textView.textContainer)
-            let storage = try XCTUnwrap(wc.textView.textStorage)
-            var top = CGFloat.greatestFiniteMagnitude
-            layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { rect, _, _, gr, stop in
-                let cr = layout.characterRange(forGlyphRange: gr, actualGlyphRange: nil)
-                guard cr.location < storage.length,
-                      let style = storage.attribute(.paragraphStyle, at: cr.location,
-                                                    effectiveRange: nil) as? NSParagraphStyle,
-                      style.textBlocks.first is NSTextTableBlock else { return }
-                top = min(top, rect.minY)
-                stop.pointee = true
-            }
-            return (top, handle.answeredQueries - before)
+            return (try PagedTableOverrunTests.tableTops(in: wc), handle.answeredQueries - before)
         }
-        let whole = try firstTableTop(false)
-        let split = try firstTableTop(true)
+        let whole = try tableTops(false)
+        let split = try tableTops(true)
         XCTAssertGreaterThan(whole.answered, 0, "the whole-tables run must have reached the engine")
         XCTAssertGreaterThan(split.answered, 0, "the split-tables run must have reached the engine")
-        XCTAssertLessThan(split.top, whole.top,
-                          "breaking leaves the table where it started; keeping it whole carries it " +
-                          "down to the next page, so its top is lower — through the engine's own " +
-                          "decision, not just the host's")
+        XCTAssertTrue(zip(split.tops, whole.tops).contains { $0 < $1 },
+                      "breaking leaves a table where it started; keeping it whole carries it " +
+                      "down to the next page, so its top is lower — through the engine's own " +
+                      "decision, not just the host's; tops split \(split.tops) whole \(whole.tops)")
     }
 }

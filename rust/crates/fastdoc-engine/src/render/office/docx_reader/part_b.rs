@@ -22,6 +22,10 @@ use crate::render::office::script::script_run_splitter::ScriptRunSplitter;
 use crate::render::office::word_font_slots::{WordFontBlockTable, WordFontSlot};
 use swiftshim::{CGFloat, CGSize, NSColor, SwiftString};
 
+/// How `build_span` carries `<w:br w:type="page"/>` inside a span's text until `parse_paragraph`
+/// splits the paragraph there — a form feed, which no document text contains.
+const PAGE_BREAK: char = '\u{0C}';
+
 // Provenance for doc-comment / blank lines whose content is already carried by the doc
 // comment on the item immediately below in this file (the comment text was ported there,
 // word for word) — these lines close the gaps `port-coverage.py` reports for the comment's
@@ -850,11 +854,77 @@ impl super::DocxReader {
         }
         let mut blocks: Vec<OfficeBlock> = Vec::new();
         if let Some(text_block) = text_block {
-            blocks.push(text_block);
+            blocks.extend(Self::split_at_page_breaks(text_block));
         }
         blocks.extend(drawing_blocks);
         blocks.extend(formula_blocks);
         blocks
+    }
+
+    /// A paragraph holding `<w:br w:type="page"/>` is two paragraphs to a reader: the text before
+    /// the break stays, and the text after it — or the paragraph mark alone, when nothing follows,
+    /// which is Word's own empty first line on the new page — opens the next page. The break is
+    /// carried as `PAGE_BREAK` by `build_span` and removed here; a paragraph without one comes back
+    /// as it was (invariant 163).
+    fn split_at_page_breaks(block: OfficeBlock) -> Vec<OfficeBlock> {
+        let Some(spans) = Self::spans_of(&block) else { return vec![block] };
+        if !spans.iter().any(|s| s.text.to_string().contains(PAGE_BREAK)) {
+            return vec![block];
+        }
+        let mut out: Vec<OfficeBlock> = Vec::new();
+        let mut current: Vec<Span> = Vec::new();
+        let mut opens_page = false;
+        for span in spans {
+            let text = span.text.to_string();
+            let mut pieces = text.split(PAGE_BREAK).peekable();
+            while let Some(piece) = pieces.next() {
+                if !piece.is_empty() {
+                    let mut part = span.clone();
+                    part.text = piece.to_string().into();
+                    current.push(part);
+                }
+                if pieces.peek().is_some() {
+                    // A break follows this piece: what was gathered so far is a paragraph of its
+                    // own only if it holds something — a break at the very start opens the page
+                    // with THIS paragraph rather than leaving an empty one behind it.
+                    if current.iter().any(|s| !s.text.to_string().trim().is_empty()) {
+                        out.push(Self::with_spans(&block, std::mem::take(&mut current), opens_page));
+                    } else {
+                        current.clear();
+                    }
+                    opens_page = true;
+                }
+            }
+        }
+        out.push(Self::with_spans(&block, current, opens_page));
+        out
+    }
+
+    fn spans_of(block: &OfficeBlock) -> Option<&Vec<Span>> {
+        match block {
+            OfficeBlock::Paragraph { spans, .. }
+            | OfficeBlock::Heading { spans, .. }
+            | OfficeBlock::ListItem { spans, .. } => Some(spans),
+            _ => None,
+        }
+    }
+
+    /// The same block with its spans replaced, and its format's own page break raised when the
+    /// piece opens a page.
+    fn with_spans(block: &OfficeBlock, new_spans: Vec<Span>, opens_page: bool) -> OfficeBlock {
+        let mut copy = block.clone();
+        match &mut copy {
+            OfficeBlock::Paragraph { spans, format, .. }
+            | OfficeBlock::Heading { spans, format, .. }
+            | OfficeBlock::ListItem { spans, format, .. } => {
+                *spans = new_spans;
+                if opens_page {
+                    format.page_break_before = Some(true);
+                }
+            }
+            _ => {}
+        }
+        copy
     }
 
     /// Finds every `m:oMathPara` (a display equation on its own line) anywhere inside a paragraph
@@ -975,6 +1045,11 @@ impl super::DocxReader {
                 .as_deref()
                 .and_then(|id| style_info.table_cell_margins.get(id).cloned())
         });
+        // Beneath every layer sits Word's own built-in cell margin — 0 above and below, 0.08in
+        // (108 twips) at the sides. An edge nobody mentioned used to fall to the renderer's 7pt
+        // on all four sides, which stood a single 9pt line 26pt tall against Word's 17.5
+        // (invariant 163).
+        let table_default_edge_padding = Some(Self::with_word_default_cell_margins(table_default_edge_padding));
         let mut rows: Vec<Vec<Cell>> = Vec::new();
         // Parallel to `rows` — each anchor cell's own starting grid column, so a second pass
         // (below, after the grid's full row/column extent is known) can resolve its table-STYLE
@@ -1372,6 +1447,18 @@ impl super::DocxReader {
     /// twips = 5.4pt sides, EXPLICITLY zero top/bottom) survive as a real zero rather than being
     /// smeared with the left value the way `cellMargin`'s single-value model necessarily does.
     // swift: DocxReader.cellEdgePadding
+    /// Word's built-in cell margins under whatever a table, its style, or the default table style
+    /// declared: 0 top and bottom, 5.4pt (108 twips) left and right.
+    fn with_word_default_cell_margins(declared: Option<EdgePadding>) -> EdgePadding {
+        let d = declared.unwrap_or(EdgePadding { top: None, left: None, bottom: None, right: None });
+        EdgePadding {
+            top: d.top.or(Some(0.0)),
+            left: d.left.or(Some(5.4)),
+            bottom: d.bottom.or(Some(0.0)),
+            right: d.right.or(Some(5.4)),
+        }
+    }
+
     pub(crate) fn cell_edge_padding(mar_node: Option<&XMLNode>) -> Option<EdgePadding> {
         let mar_node = mar_node?;
         // swift: DocxReader.edge
@@ -1473,7 +1560,12 @@ impl super::DocxReader {
                 _ => continue,
             }
         }
-        blocks.into_iter().filter(|b| !Self::is_empty_text_block(b)).collect()
+        // Word gives every paragraph mark in a cell a line, so an empty paragraph BESIDE content —
+        // the blank line an author left above a label, or under a nested table — keeps its line.
+        // Only a cell that holds nothing but empties is blank (the placeholder `<w:p/>` every empty
+        // `<w:tc>` carries), and blank must stay blockless: a paged row with no text takes its height
+        // from the document's declared band, and a phantom line would defeat that.
+        if blocks.iter().all(|b| Self::is_empty_text_block(b)) { Vec::new() } else { blocks }
     }
 
     /// A cell's content as plain spans, no block structure — used ONLY by `flattenNestedTable`,
@@ -2134,7 +2226,11 @@ impl super::DocxReader {
         for child in &run.children {
             match child.name.as_str() {
                 "w:t" => text.push_str(&child.text),
-                "w:br" => text.push('\n'),
+                // A page break is carried as a form feed so `parse_paragraph` can split the
+                // paragraph there; every other break is a line break within the paragraph.
+                "w:br" => text.push(
+                    if child.attributes.get("w:type").map(String::as_str) == Some("page") { PAGE_BREAK } else { '\n' },
+                ),
                 "w:tab" => text.push('\t'),
                 "w:sym" => text.push_str(
                     &Self::mapped_symbol_character(

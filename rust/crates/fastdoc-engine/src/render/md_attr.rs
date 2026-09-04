@@ -263,6 +263,13 @@ impl MDAttr {
     pub fn footnote_ref() -> swiftshim::NSAttributedStringKey {
         swiftshim::NSAttributedStringKey::Custom("mdFootnoteRef".to_string())
     }
+    /// `Double`: the line-height ratio of the face a run DECLARED, when that face is one Word lays
+    /// out taller than any substitute this machine draws it with
+    /// (`OfficeTextBuilder::declared_face_line_height_ratio`). Read once per paragraph by
+    /// `apply_declared_face_line_height`.
+    pub fn declared_face_line_ratio() -> swiftshim::NSAttributedStringKey {
+        swiftshim::NSAttributedStringKey::Custom("mdDeclaredFaceLineRatio".to_string())
+    }
 
     /// Where the document changes its column layout — an `OfficeColumnLayout`, on the run the
     /// declaration sat at. Read from the LAID-OUT text rather than the block model for the same

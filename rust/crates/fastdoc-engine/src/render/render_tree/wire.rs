@@ -483,6 +483,10 @@ pub struct ParagraphStyle {
     pub line_height_from_font_metrics: Option<bool>,
     #[serde(default)]
     pub line_spacing_below: Option<bool>,
+    #[serde(default)]
+    pub page_break_before: Option<bool>,
+    #[serde(default)]
+    pub keep_with_next: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

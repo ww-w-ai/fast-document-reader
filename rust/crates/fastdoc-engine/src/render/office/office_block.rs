@@ -1183,6 +1183,15 @@ pub struct ParagraphFormat {
     /// `nil` = unstated (above).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub line_spacing_below: Option<bool>,
+    /// The document's own page break in front of this paragraph — docx `w:pageBreakBefore` (direct
+    /// or through the style chain) and the paragraph opened by a `<w:br w:type="page"/>`. Read into
+    /// `OfficeReadResult.page_break_blocks` for a top-level block; ignored inside a cell.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub page_break_before: Option<bool>,
+    /// docx `w:keepNext`: this paragraph stays on the page of the one that follows it. Read into
+    /// `OfficeReadResult.keep_with_next_blocks` the same way.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub keep_with_next: Option<bool>,
 }
 
 impl ParagraphFormat {
@@ -1218,6 +1227,8 @@ impl Default for ParagraphFormat {
             auto_space_east_asian_number: None,
             line_height_from_font_metrics: None,
             line_spacing_below: None,
+            page_break_before: None,
+            keep_with_next: None,
         }
     }
 }

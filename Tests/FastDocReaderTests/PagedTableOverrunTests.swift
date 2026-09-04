@@ -710,31 +710,46 @@ final class PagedTableOverrunTests: XCTestCase {
     /// it stands instead of being carried down. Judged by where the reference report's first
     /// overrunning table ends up — one page earlier when it is allowed to break.
     func testTheSettingDecidesBetweenBreakingATableAndCarryingItDown() throws {
-        func firstTableTop(_ split: Bool) throws -> CGFloat {
+        // The top of every table, in document order. Which table is the first to overrun its page
+        // moves as cell metrics change (Word's own 0pt top/bottom cell margin, invariant 163, made
+        // the report's first table fit its page), so the judgement is over all of them.
+        func tableTops(_ split: Bool) throws -> [CGFloat] {
             PageViewOptionsStore.startingOptions = PageViewOptions(outline: true, splitTables: split)
             let wc = try openPaged("docs/fixtures/office/bus-headings.docx")
             wc.settlePagedTablesFully()
             XCTAssertEqual(try linesInMargins(wc), [], "either way, nothing may end in a margin")
-            let layout = try XCTUnwrap(wc.textView.layoutManager)
-            let container = try XCTUnwrap(wc.textView.textContainer)
-            let storage = try XCTUnwrap(wc.textView.textStorage)
-            var top = CGFloat.greatestFiniteMagnitude
-            layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { rect, _, _, gr, stop in
-                let cr = layout.characterRange(forGlyphRange: gr, actualGlyphRange: nil)
-                guard cr.location < storage.length,
-                      let style = storage.attribute(.paragraphStyle, at: cr.location,
-                                                    effectiveRange: nil) as? NSParagraphStyle,
-                      style.textBlocks.first is NSTextTableBlock else { return }
-                top = min(top, rect.minY)
-                stop.pointee = true
-            }
-            return top
+            return try Self.tableTops(in: wc)
         }
-        let whole = try firstTableTop(false)
-        let split = try firstTableTop(true)
-        XCTAssertLessThan(split, whole,
-                          "breaking leaves the table where it started; keeping it whole carries it "
-                          + "down to the next page, so its top is lower")
+        let whole = try tableTops(false)
+        let split = try tableTops(true)
+        XCTAssertEqual(whole.count, split.count, "the same tables exist under both settings")
+        XCTAssertTrue(zip(split, whole).contains { $0 < $1 },
+                      "breaking leaves a table where it started; keeping it whole carries it "
+                      + "down to the next page, so its top is lower — tops split \(split) whole \(whole)")
+    }
+
+    /// The minimum line-fragment top of each distinct table, in document order.
+    static func tableTops(in wc: DocumentWindowController) throws -> [CGFloat] {
+        let layout = try XCTUnwrap(wc.textView.layoutManager)
+        let container = try XCTUnwrap(wc.textView.textContainer)
+        let storage = try XCTUnwrap(wc.textView.textStorage)
+        var tops: [CGFloat] = []
+        var seen: [ObjectIdentifier: Int] = [:]
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { rect, _, _, gr, _ in
+            let cr = layout.characterRange(forGlyphRange: gr, actualGlyphRange: nil)
+            guard cr.location < storage.length,
+                  let style = storage.attribute(.paragraphStyle, at: cr.location,
+                                                effectiveRange: nil) as? NSParagraphStyle,
+                  let block = style.textBlocks.first as? NSTextTableBlock else { return }
+            let key = ObjectIdentifier(block.table)
+            if let i = seen[key] {
+                tops[i] = min(tops[i], rect.minY)
+            } else {
+                seen[key] = tops.count
+                tops.append(rect.minY)
+            }
+        }
+        return tops
     }
 
     /// Printing must not depend on the ASYNCHRONOUS settle having finished: ⌘P straight after opening

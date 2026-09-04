@@ -168,6 +168,10 @@ enum MDAttr {
     /// the body flow where it already belongs (`OfficeReadResult.footnotes`), so nothing needs to
     /// find it.
     static let footnoteRef = NSAttributedString.Key("mdFootnoteRef")
+    /// `Double`: the line-height ratio of the face a run DECLARED, when that face is one Word lays
+    /// out taller than any substitute this machine draws it with (`OfficeTextBuilder.
+    /// declaredFaceLineHeightRatio`). Read once per paragraph by `applyDeclaredFaceLineHeight`.
+    static let declaredFaceLineRatio = NSAttributedString.Key("mdDeclaredFaceLineRatio")
     /// Where the document changes its column layout — an `OfficeColumnLayout`, on the run the
     /// declaration sat at. Read from the LAID-OUT text rather than the block model for the same
     /// reason `footnoteRef` is: the decision it feeds is taken from a finished layout, where the

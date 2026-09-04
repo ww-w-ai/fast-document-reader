@@ -217,7 +217,9 @@
      "autoSpaceEastAsianLatin": true,
      "autoSpaceEastAsianNumber": false,
      "lineHeightFromFontMetrics": true,
-     "lineSpacingBelow": true
+     "lineSpacingBelow": true,
+     "pageBreakBefore": true,
+     "keepWithNext": false
     },
     "tabStops": [
      {
