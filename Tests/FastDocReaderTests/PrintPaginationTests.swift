@@ -179,6 +179,27 @@ final class PrintPaginationTests: XCTestCase {
 
     /// Markdown has no paper, so it must keep AppKit's own line-aware pagination — and must still
     /// print. The grid is gated on the DOCUMENT, never on "is this an office file".
+    /// The sheet is the paper, at (0, 0). Asked for an A4-sized sheet, `paperSize` snaps to the
+    /// printer's own `iso-a4`, whose imageable area is inset 12.47pt on every side, and AppKit puts
+    /// the page's origin there — so every printed page sat 12.47pt down and to the right of the
+    /// document's own margins (invariant 167). A sheet no printer knows (this file's 500 × 600)
+    /// never snapped, which is why the fixture here is A4 and not `openPaged`'s.
+    func testTheDocumentsSheetIsThePaperWithNoHardwareInset() throws {
+        let a4 = NSSize(width: 595.45, height: 841.7)
+        let snapped = NSPrintInfo()
+        snapped.paperSize = a4
+        try XCTSkipUnless(snapped.imageablePageBounds.origin.x > 1 || abs(snapped.paperSize.width - a4.width) > 0.05,
+                          "this machine's printer neither snaps nor insets an A4 sheet, so the trap cannot be shown here")
+        let info = NSPrintInfo()
+        info.adoptDocumentPaper(a4)
+        XCTAssertEqual(info.paperSize.width, a4.width, accuracy: 0.01, "the sheet's own width, not iso-a4's")
+        XCTAssertEqual(info.paperSize.height, a4.height, accuracy: 0.01)
+        XCTAssertEqual(info.imageablePageBounds.origin.x, 0, accuracy: 0.01, "no hardware inset on the left")
+        XCTAssertEqual(info.imageablePageBounds.origin.y, 0, accuracy: 0.01, "nor above")
+        XCTAssertEqual(info.imageablePageBounds.width, a4.width, accuracy: 0.01)
+        XCTAssertEqual(info.leftMargin, 0); XCTAssertEqual(info.topMargin, 0)
+    }
+
     func testAMarkdownDocumentStillPrintsAndDoesNotUseThePageGrid() throws {
         let (_, wc) = try openMarkdown(String(repeating: "A paragraph of prose.\n\n", count: 200))
         XCTAssertTrue(wc.printSheets.isEmpty, "markdown has no page grid to print on")

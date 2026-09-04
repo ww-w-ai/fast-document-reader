@@ -2015,3 +2015,21 @@ this file tells you why, and why the obvious alternative does not work.
     an exact line height is the document's own. Page counts did not move on the six documents —
     the rows that bind are rare — and the test is mutation-checked (the floor disabled → 0 against
     30).
+
+167. **THE DOCUMENT'S SHEET IS THE PAPER — REGISTERED AS A CUSTOM `PMPaper`, NOT ASSIGNED AS
+    `paperSize`.** Every page of every `--pdf` and ⌘P printout sat 12.47pt down and to the right
+    of Word's (d3/d4/d6 of invariant 163: left margin printed at 84.47 for a declared 72). The
+    print info's `paperSize` is not a size but a REQUEST, and the session's printer answers it
+    with the nearest paper it knows: an A4 document's 595.45 × 841.7 became `iso-a4` (595.28 ×
+    841.89) whose imageable area is inset 12.47pt on every side, and AppKit puts the page's origin
+    at that inset whatever the margins say (measured on the Samsung default here; another
+    printer's inset will differ, which is why the offset was "about 12.5" and never derivable).
+    A sheet no printer knows — the test fixture's 500 × 600 — never snapped, which is why the
+    print tests were green throughout. The one thing that returns a full-page imageable area is a
+    custom paper on the session's own printer (`PMPaperCreateCustom` with zero margins, copied
+    onto the session's page format, then `updateFromPMPageFormat`; the copy brings the printer's
+    default margins back and they are zeroed again after). `NSPrintInfo.adoptDocumentPaper` does
+    it for both paged branches; the unpaged branch keeps the user's paper because that IS paper.
+    d4's left margin now prints at 72.00, d6's at 72.00; page counts unchanged. The test asks for
+    an A4 sheet through a bare `NSPrintInfo` and skips itself on a machine whose printer neither
+    snaps nor insets, rather than passing there for nothing.

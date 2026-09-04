@@ -4047,16 +4047,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             // The SHEET's height, not the pitch: while the page outline is on, the band also carries
             // the desk between two drawn sheets, and desk is not paper. Taken from the sheet itself
             // so the paper can never be a different size from the rectangle `rectForPage` hands back.
-            info.paperSize = NSSize(width: width, height: first.height)
-            info.topMargin = 0; info.bottomMargin = 0; info.leftMargin = 0; info.rightMargin = 0
+            info.adoptDocumentPaper(NSSize(width: width, height: first.height))
             info.horizontalPagination = .clip
             info.verticalPagination = .clip
         } else if let width = pagedDocumentWidth, let body = pagedHeight {
             let top = pagedMarginTop ?? 0
             let bottom = pagedMarginBottom ?? 0
-            info.paperSize = NSSize(width: width, height: top + body + bottom)
+            info.adoptDocumentPaper(NSSize(width: width, height: top + body + bottom))
             info.topMargin = top; info.bottomMargin = bottom
-            info.leftMargin = 0; info.rightMargin = 0
             info.horizontalPagination = .clip
             info.verticalPagination = .automatic
         } else {
@@ -4265,5 +4263,40 @@ final class EdgeFadeView: NSView {
         let bg = Palette.codeCardBg
         let gradient = NSGradient(colors: [bg.withAlphaComponent(0), bg])!
         gradient.draw(in: bounds, angle: 0)   // 0° = clear on the left, solid at the right edge
+    }
+}
+
+extension NSPrintInfo {
+    /// Makes the DOCUMENT's own sheet the paper, with no hardware margin under it.
+    ///
+    /// Assigning `paperSize` snaps to the nearest paper the session's printer knows — an A4
+    /// document asked for 595.45 × 841.7 and got `iso-a4` with the printer's imageable area inset
+    /// 12.47pt on every side, so AppKit put the sheet's origin at that inset and every `--pdf` and
+    /// ⌘P page came out 12.47pt down and to the right of Word's (invariant 167). A custom
+    /// `PMPaper` with zero margins is the one thing that gives back a full-page imageable area;
+    /// measured through the same session: paper 595.45 × 841.7, imageable (0, 0, 595.45, 841.7).
+    /// Every margin is zeroed too — the sheet rectangle `rectForPage` hands back IS the page.
+    func adoptDocumentPaper(_ size: NSSize) {
+        topMargin = 0; bottomMargin = 0; leftMargin = 0; rightMargin = 0
+        let session = OpaquePointer(pmPrintSession())
+        var printer: PMPrinter?
+        PMSessionGetCurrentPrinter(session, &printer)
+        var margins = PMPaperMargins(top: 0, left: 0, bottom: 0, right: 0)
+        var paper: PMPaper?
+        guard PMPaperCreateCustom(printer, "ai.ww-w.fast-md-reader.document-paper" as CFString,
+                                  "Document" as CFString, Double(size.width), Double(size.height),
+                                  &margins, &paper) == noErr, let paper else {
+            paperSize = size
+            return
+        }
+        var format: PMPageFormat?
+        guard PMCreatePageFormatWithPMPaper(&format, paper) == noErr, let format,
+              PMCopyPageFormat(format, OpaquePointer(pmPageFormat())) == noErr else {
+            paperSize = size
+            return
+        }
+        updateFromPMPageFormat()
+        // The copy above carries the printer's default margins back in; the sheet has none.
+        topMargin = 0; bottomMargin = 0; leftMargin = 0; rightMargin = 0
     }
 }
