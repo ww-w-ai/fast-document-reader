@@ -2106,13 +2106,9 @@ impl OfficeTextBuilder {
                     let mut str = NSMutableAttributedString::from_attributed_string(&Self::spans_attributed_string(
                         spans, base_font, &theme.text_color(), theme, font_size_scale, paged, &HashMap::new(),
                     ));
-                    let declared = spans
-                        .iter()
-                        .filter_map(|s| s.font_size)
-                        .fold(None, |acc: Option<CGFloat>, v| Some(acc.map_or(v, |a| a.max(v))));
-                    if let (0, true, Some(size)) = (str.length(), paged, declared) {
-                        // Nothing to attribute: the paragraph IS its separator (invariant 169).
-                        str = Self::empty_cell_line(size * font_size_scale, &style, base_font);
+                    if str.length() == 0 && paged {
+                        // Nothing to attribute: the paragraph IS its separator (invariants 169, 170).
+                        str = Self::empty_cell_line(spans, &style, base_font, font_size_scale);
                         joined_by_own_separator = true;
                     } else {
                         let whole = NSRange::new(0, str.length());
@@ -2229,16 +2225,41 @@ impl OfficeTextBuilder {
     /// (invariant 169). The paragraph becomes its own separator — one `"\n"` carrying the size —
     /// sized by the run's declared size when the reader carried one, else the cell's base font.
     fn empty_cell_line(
-        declared: CGFloat,
+        spans: &[Span],
         style: &NSMutableParagraphStyle,
         base_font: &NSFont,
+        font_size_scale: CGFloat,
     ) -> NSMutableAttributedString {
-        let size = declared.max(1.0);
-        let font = NSFont::with_descriptor(&base_font.fontDescriptor(), size).unwrap_or_else(|| base_font.clone());
         let mut m = style.clone();
-        m.minimumLineHeight = size;
-        m.maximumLineHeight = size;
-        m.lineSpacing = 0.0;
+        let mut font = base_font.clone();
+        let declared = spans
+            .iter()
+            .filter_map(|s| s.font_size)
+            .fold(None, |acc: Option<CGFloat>, v| Some(acc.map_or(v, |a| a.max(v))));
+        if let Some(declared) = declared {
+            let size = (declared * font_size_scale).max(1.0);
+            let face = spans
+                .iter()
+                .find(|s| s.font_size == Some(declared))
+                .and_then(|s| s.font_name.as_ref().map(|n| n.to_string()));
+            font = face
+                .as_deref()
+                .and_then(|name| NSFont::named(name, size))
+                .or_else(|| NSFont::with_descriptor(&base_font.fontDescriptor(), size))
+                .unwrap_or_else(|| base_font.clone());
+            if let Some(face) = face {
+                if m.maximumLineHeight == 0.0 {
+                    if let Some(ratio) = Self::declared_face_line_height_ratio(&face) {
+                        let natural = ((size * ratio) * 100.0).round() / 100.0;
+                        m.minimumLineHeight = m.minimumLineHeight.max(natural * m.lineHeightMultiple.max(1.0));
+                    }
+                }
+            } else {
+                m.minimumLineHeight = size;
+                m.maximumLineHeight = size;
+                m.lineSpacing = 0.0;
+            }
+        }
         let mut attrs: HashMap<NSAttributedStringKey, swiftshim::AttrValue> = HashMap::new();
         attrs.insert(NSAttributedStringKey::Font, swiftshim::AttrValue::Font(font));
         attrs.insert(NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(m));

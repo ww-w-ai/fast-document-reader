@@ -2164,7 +2164,8 @@ enum DocxReader: OfficeDocumentReader {
     private static func isEmptyTextBlock(_ block: OfficeBlock) -> Bool {
         switch block {
         case .paragraph(let spans, _, _, _, _), .heading(_, let spans, _, _, _, _), .listItem(_, _, let spans, _, _, _, _, _, _):
-            return spans.isEmpty
+            // A paragraph whose only run is its MARK (`paragraphMarkSpan`) holds no text.
+            return spans.allSatisfy { $0.text.isEmpty }
         case .table, .image, .unsupportedGraphic, .formula:
             return false
         }
@@ -2446,7 +2447,7 @@ enum DocxReader: OfficeDocumentReader {
             }
             return resolvedTabStops(pStyleId: pStyleIdForAlignment, styleInfo: styleInfo) ?? []
         }()
-        let spans = collectSpans(in: p, styleInfo: styleInfo, relationships: relationships, notes: notes, comments: comments)
+        var spans = collectSpans(in: p, styleInfo: styleInfo, relationships: relationships, notes: notes, comments: comments)
         // The graphics this paragraph produced inherit ITS alignment (a centred figure is the norm in
         // a report and used to render hard left — see `OfficeBlock.image`'s `alignment`). Stamped
         // here rather than inside `collectDrawingBlocks`, which recurses through runs, alternate
@@ -2488,6 +2489,13 @@ enum DocxReader: OfficeDocumentReader {
         // turns out to be, exactly like `alignment`/`tabStops` above.
         let format = resolvedParagraphFormat(pPr: pPr, pStyleId: pStyleId, styleInfo: styleInfo)
         let textBlock: OfficeBlock?
+        // An empty paragraph still has a paragraph MARK, and the mark's size and face are the line
+        // Word draws for it (invariant 170). Carried as a text-less run so nothing downstream needs
+        // a new field; `isEmptyTextBlock` still reads such a paragraph as empty.
+        if spans.isEmpty, drawingBlocks.isEmpty, formulaBlocks.isEmpty,
+           let mark = paragraphMarkSpan(pPr: pPr, pStyleId: pStyleId, styleInfo: styleInfo) {
+            spans.append(mark)
+        }
         let skipEmptyText = spans.isEmpty && (!drawingBlocks.isEmpty || !formulaBlocks.isEmpty)
         if let level = headingLevel(pPr: pPr, pStyleId: pStyleId, styleInfo: styleInfo) {
             var headingSpans = spans
@@ -3008,7 +3016,12 @@ enum DocxReader: OfficeDocumentReader {
                 continue
             }
         }
-        return blocks.filter { !isEmptyTextBlock($0) }
+        // An empty paragraph BESIDE content — the blank line an author left above a label, or under
+        // a nested table — keeps its line. Only a cell that holds nothing but empties is blank (the
+        // placeholder `<w:p/>` every empty `<w:tc>` carries), and blank must stay blockless: a paged
+        // row with no text takes its height from the document's declared band, and a phantom line
+        // would defeat that.
+        return blocks.allSatisfy { isEmptyTextBlock($0) } ? [] : blocks
     }
 
     /// `w:trPr/w:trHeight/@w:val`, twips to points — the height Word holds the row to. `w:hRule`
@@ -3467,6 +3480,19 @@ enum DocxReader: OfficeDocumentReader {
     /// piece. Split out so the per-character font work reads as one concern and the twenty-odd
     /// toggles as another; the font is filled in by the caller, which is the only thing that varies
     /// within one run.
+    /// The paragraph mark's own run — `w:pPr/w:rPr`, then the style chain — as a text-less `Span`
+    /// carrying the size and the face the mark would draw at. `nil` when nothing in the document
+    /// states a size, so a reader that cannot vouch says nothing.
+    private static func paragraphMarkSpan(pPr: XMLNode?, pStyleId: String?, styleInfo: StyleInfo) -> Span? {
+        let rPr = pPr?.child("w:rPr")
+        let direct: CGFloat? = rPr?.child("w:sz")?.attributes["w:val"].flatMap(Double.init).map { CGFloat($0 / 2) }
+        guard let size = direct ?? resolvedFontSize(pStyleId: pStyleId, styleInfo: styleInfo) else { return nil }
+        let rFonts = resolvedRFonts(pStyleId: pStyleId, styleInfo: styleInfo, direct: parseRFonts(rPr))
+        let family = rFonts.family(for: .eastAsia, script: nil, theme: styleInfo.themeFonts)
+            ?? rFonts.family(for: .ascii, script: nil, theme: styleInfo.themeFonts)
+        return Span(text: "", fontSize: size, fontName: family)
+    }
+
     private static func buildSpan(from run: XMLNode, styleInfo: StyleInfo, pStyleId: String?) -> Span? {
         var text = ""
         for child in run.children {

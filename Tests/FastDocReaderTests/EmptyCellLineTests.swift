@@ -47,31 +47,27 @@ final class EmptyCellLineTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(fragmentHeights(out).first), 9, accuracy: 0.5)
     }
 
-    /// Only a reader that VOUCHED for the size gets the line: a docx empty paragraph carries none and
-    /// keeps the path it had.
-    func testAnEmptyParagraphWithNoDeclaredSizeKeepsTheOldPath() {
-        let out = build([[Cell(blocks: [.paragraph(spans: [])])]])
-        XCTAssertNil(out.attribute(.font, at: 0, effectiveRange: nil))
+    /// A paragraph with no vouched size is still its own line — at the cell's base font and its own
+    /// paragraph style — so a TRAILING empty paragraph beside content, which used to contribute no
+    /// line at all, gets the line Word draws (invariant 170).
+    func testATrailingEmptyParagraphWithNoDeclaredSizeStillGetsItsLine() throws {
         let beside = Cell(blocks: [.paragraph(spans: [Span(text: "위")]), .paragraph(spans: [])])
-        let two = build([[beside]])
-        // As before: the join after "위" is the only separator, so a TRAILING empty paragraph with no
-        // declared size contributes no line of its own — Word keeps that line, and closing it is a
-        // docx reader decision (carry the mark's size), not this builder's.
-        XCTAssertEqual(two.string, "위\n\n\n")
+        let out = build([[beside]])
+        XCTAssertEqual(out.string, "위\n\n\n\n", "one line for 위, one for the empty paragraph, two closes")
+        let empty = (out.string as NSString).range(of: "위\n").location + 2
+        let font = try XCTUnwrap(out.attribute(.font, at: empty, effectiveRange: nil) as? NSFont)
+        XCTAssertEqual(font.pointSize, theme.bodyFont.pointSize, accuracy: 0.01)
+        XCTAssertEqual(fragmentHeights(out).count, 4)
     }
 
-    /// A cell with NO block at all — every docx empty cell, whose reader drops the placeholder
-    /// paragraph — keeps the bare terminator it always had.
-    func testACellWithNoBlocksKeepsItsBareTerminator() {
-        let out = build([[Cell(blocks: [])]])
-        XCTAssertEqual(out.string, "\n\n\n")
-        XCTAssertNil(out.attribute(.font, at: 0, effectiveRange: nil))
-    }
-
-    func testTheNonPagedModelIsUntouched() {
-        let empty = Cell(blocks: [.paragraph(spans: [Span(text: "", fontSize: 9)])])
-        let out = build([[empty]], paged: false)
-        XCTAssertNil(out.attribute(.font, at: 0, effectiveRange: nil))
+    /// A docx paragraph mark carries a face: the line is the face's own — the declared ratio when
+    /// it has one (맑은 고딕 at 9pt is 15.6, invariant 163), never the bare size.
+    func testAMarkWithADeclaredFaceTakesThatFacesLine() throws {
+        let empty = Cell(blocks: [.paragraph(spans: [Span(text: "", fontSize: 9, fontName: "맑은 고딕")])])
+        let out = build([[empty]])
+        let ps = try XCTUnwrap(out.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(ps.minimumLineHeight, 15.6, accuracy: 0.01)
+        XCTAssertEqual(ps.maximumLineHeight, 0, "a floor, the way a text line of that face is floored")
     }
 
     func testAnEmptyParagraphBetweenTwoOthersIsItsOwnSeparator() throws {

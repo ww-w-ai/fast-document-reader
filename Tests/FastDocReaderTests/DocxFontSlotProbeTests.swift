@@ -69,6 +69,9 @@ final class DocxFontSlotProbeTests: XCTestCase {
             case let .heading(_, spans, _, _, _, _),
                  let .paragraph(spans, _, _, _, _),
                  let .listItem(_, _, spans, _, _, _, _, _, _):
+                // An empty paragraph's one run is its MARK (invariant 170), not a split piece —
+                // the splitter never sees it, so it is not what the emptiness assertion is about.
+                if spans.count == 1, spans[0].text.isEmpty { continue }
                 out += spans
             case let .table(rows, _, _, _):
                 for row in rows { for cell in row { out += allSpans(cell.blocks) } }

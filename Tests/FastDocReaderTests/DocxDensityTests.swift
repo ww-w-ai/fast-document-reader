@@ -142,6 +142,19 @@ final class DocxDensityTests: XCTestCase {
         XCTAssertEqual(t.rows[0][2].blocks.count, 0, "nor are two of them")
     }
 
+    /// An empty paragraph carries its MARK's size and face as a text-less run (invariant 170); a
+    /// cell of nothing but such paragraphs is still blockless.
+    func testAnEmptyParagraphCarriesItsParagraphMarksSizeAndFace() throws {
+        let mark = "<w:p><w:pPr><w:rPr><w:rFonts w:eastAsia=\"맑은 고딕\"/><w:sz w:val=\"18\"/></w:rPr></w:pPr></w:p>"
+        let t = try firstTable(try read(table("", cells: [p("라벨") + mark, mark + mark])))
+        XCTAssertEqual(t.rows[0][0].blocks.count, 2)
+        guard case let .paragraph(spans, _, _, _, _) = t.rows[0][0].blocks[1] else { return XCTFail("a paragraph") }
+        XCTAssertEqual(spans.map(\.text), [""], "one text-less run")
+        XCTAssertEqual(spans.first?.fontSize, 9)
+        XCTAssertEqual(spans.first?.fontName, "맑은 고딕")
+        XCTAssertEqual(t.rows[0][1].blocks.count, 0, "marks alone do not make a cell non-blank")
+    }
+
     func testADeclaredRowHeightReachesEveryCellOfTheRow() throws {
         let t = try firstTable(try read(
             "<w:tbl><w:tr><w:trPr><w:trHeight w:val=\"340\"/></w:trPr><w:tc>" + p("가") + "</w:tc><w:tc>" + p("나") + "</w:tc></w:tr>"

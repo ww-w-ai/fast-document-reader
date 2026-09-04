@@ -1193,22 +1193,69 @@ enum TableBlockBuilder {
         let whole = NSRange(location: 0, length: storage.length)
         var touched: [NSRange] = []
 
+        // One pass per nesting depth, outermost first. Depth 0 is solved at the reading column;
+        // depth k at the content width its PARENT cell settled on in the pass before — the same
+        // width `OfficeTextBuilder.cellContent` built the inner grid at, so a nested grid follows
+        // its cell through a reflow instead of keeping its build width (invariant 168).
+        // The first pass reports how deep the runs go, so a document with no nesting — nearly every
+        // document — is walked exactly ONCE (`RustEngineTableResizeCutoverTests` counts the walk).
+        var depth = 0
+        var deepest = 1
+        while depth < deepest {
+            deepest = max(deepest, resizeTables(in: storage, depth: depth, toWidth: width, touched: &touched))
+            depth += 1
+        }
+
+        // Widths changed on the shared block objects; nudge layout to pick them up — ONCE, over the
+        // span they cover, not once per cell. Measured on a 62-table Korean form (1,702 cell
+        // paragraphs): per-cell invalidation cost 73 ms against 5 ms for a 610-cell Word report — a
+        // 14× gap on 2.8× the cells, because each `invalidateLayout` call re-walks what follows it.
+        // One call over the union is the same instruction to the layout manager, paid once. The
+        // union is taken by MIN/MAX over every touched range rather than `touched.first`/`.last`,
+        // which costs nothing and does not depend on the walk above happening to append in
+        // ascending document order.
+        guard let lower = touched.map({ $0.location }).min(),
+              let upperBound = touched.map({ $0.location + $0.length }).max(),
+              let lm = storage.layoutManagers.first else { return touched.count }
+        let upper = min(storage.length, upperBound)
+        guard upper > lower else { return touched.count }
+        lm.invalidateLayout(forCharacterRange: NSRange(location: lower, length: upper - lower),
+                            actualCharacterRange: nil)
+        return touched.count
+    }
+
+    /// One depth of `resizeTables`: every table whose block sits at `depth` in its runs'
+    /// `textBlocks`, re-solved as one batch. Returns the deepest `textBlocks` count any run in
+    /// the storage carries, which is how many passes the caller needs in all.
+    private static func resizeTables(in storage: NSTextStorage, depth: Int, toWidth width: CGFloat,
+                                     touched: inout [NSRange]) -> Int {
+        let whole = NSRange(location: 0, length: storage.length)
         var request = RustEngineTableResize.BatchRequest()
         var cells: [(block: NSTextTableBlock, range: NSRange)] = []
         var openTable: ObjectIdentifier?
         var closedTables: Set<ObjectIdentifier> = []
         var orderingBroken = false
+        var deepest = 0
         storage.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
-            guard let ps = value as? NSParagraphStyle,
-                  let block = ps.textBlocks.first as? NSTextTableBlock,
+            guard let ps = value as? NSParagraphStyle else { return }
+            deepest = max(deepest, ps.textBlocks.count)
+            guard ps.textBlocks.count > depth,
+                  let block = ps.textBlocks[depth] as? NSTextTableBlock,
                   let table = block.table as? GridTextTable, !table.columnProportions.isEmpty else { return }
+            let available: CGFloat
+            if depth == 0 {
+                available = width
+            } else {
+                guard let parent = ps.textBlocks[depth - 1] as? NSTextTableBlock else { return }
+                available = parent.contentWidth
+            }
             let key = ObjectIdentifier(table)
             if openTable != key {
                 if let previous = openTable { closedTables.insert(previous) }
                 if closedTables.contains(key) { orderingBroken = true }
                 openTable = key
                 request.beginTable(
-                    columnProportions: table.columnProportions, availableWidth: width,
+                    columnProportions: table.columnProportions, availableWidth: available,
                     outerMarginLeft: table.outerMarginLeft, outerMarginRight: table.outerMarginRight,
                     maxWidth: table.maxWidth)
             }
@@ -1236,23 +1283,7 @@ enum TableBlockBuilder {
                 touched.append(entry.range)
             }
         }
-
-        // Widths changed on the shared block objects; nudge layout to pick them up — ONCE, over the
-        // span they cover, not once per cell. Measured on a 62-table Korean form (1,702 cell
-        // paragraphs): per-cell invalidation cost 73 ms against 5 ms for a 610-cell Word report — a
-        // 14× gap on 2.8× the cells, because each `invalidateLayout` call re-walks what follows it.
-        // One call over the union is the same instruction to the layout manager, paid once. The
-        // union is taken by MIN/MAX over every touched range rather than `touched.first`/`.last`,
-        // which costs nothing and does not depend on the walk above happening to append in
-        // ascending document order.
-        guard let lower = touched.map({ $0.location }).min(),
-              let upperBound = touched.map({ $0.location + $0.length }).max(),
-              let lm = storage.layoutManagers.first else { return touched.count }
-        let upper = min(storage.length, upperBound)
-        guard upper > lower else { return touched.count }
-        lm.invalidateLayout(forCharacterRange: NSRange(location: lower, length: upper - lower),
-                            actualCharacterRange: nil)
-        return touched.count
+        return deepest
     }
         // port-exclude-end
 }

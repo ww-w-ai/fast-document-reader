@@ -1747,9 +1747,9 @@ enum OfficeTextBuilder {
                 var str = NSMutableAttributedString(attributedString:
                     spansAttributedString(spans, baseFont: baseFont, baseColor: theme.textColor,
                                           theme: theme, fontSizeScale: fontSizeScale, paged: paged))
-                if str.length == 0, paged, let size = spans.compactMap(\.fontSize).max() {
-                    // Nothing to attribute: the paragraph IS its separator (invariant 169).
-                    str = emptyCellLine(size: size * fontSizeScale, style: style, baseFont: baseFont)
+                if str.length == 0, paged {
+                    // Nothing to attribute: the paragraph IS its separator (invariants 169, 170).
+                    str = emptyCellLine(spans: spans, style: style, baseFont: baseFont, fontSizeScale: fontSizeScale)
                     joinedByOwnSeparator = true
                 } else {
                     str.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: str.length))
@@ -1847,19 +1847,39 @@ enum OfficeTextBuilder {
     ///
     /// The paragraph becomes its own separator — one `"\n"` carrying the size — so a middle block
     /// needs no join appended after it and a last block IS the cell's terminator (`TableBlockBuilder`
-    /// appends its own only when the content does not already end in one). Only a paragraph whose
-    /// reader VOUCHED for its size takes it — `HwpReader` gives an empty paragraph a text-less run
-    /// at its char shape's size for exactly this. A docx empty paragraph beside content carries no
-    /// size and keeps the base-font join it had (invariant 167's (5)), and the non-paged model is
-    /// byte-identical to before this existed.
-    private static func emptyCellLine(size declared: CGFloat, style: NSParagraphStyle,
-                                      baseFont: NSFont) -> NSMutableAttributedString {
-        let size = max(1, declared)
-        let font = NSFont(descriptor: baseFont.fontDescriptor, size: size) ?? baseFont
+    /// appends its own only when the content does not already end in one) — which is what gives a
+    /// TRAILING empty paragraph its line at all (invariant 170). The line's height is what the
+    /// reader vouched for:
+    ///
+    /// - a size and no face (`HwpReader`'s text-less run at the char shape's size): the size
+    ///   exactly, 한글's rule — a one-paragraph cell's last line carries no spacing;
+    /// - a size and a face (`DocxReader`'s paragraph mark): the face's own line — the declared
+    ///   ratio when the face has one (invariant 163), else the face's natural line — under the
+    ///   paragraph's own rule (`lineHeightMultiple`, an exact height), the way a text line of that
+    ///   face is measured by `applyDeclaredFaceLineHeight`;
+    /// - nothing: the cell's base font and the paragraph's own style, the natural line.
+    ///
+    /// The non-paged model is byte-identical to before this existed.
+    private static func emptyCellLine(spans: [Span], style: NSParagraphStyle, baseFont: NSFont,
+                                      fontSizeScale: CGFloat) -> NSMutableAttributedString {
         let m = style.mutableCopy() as! NSMutableParagraphStyle
-        m.minimumLineHeight = size
-        m.maximumLineHeight = size
-        m.lineSpacing = 0
+        var font = baseFont
+        if let declared = spans.compactMap(\.fontSize).max() {
+            let size = max(1, declared * fontSizeScale)
+            let face = spans.first { $0.fontSize == declared }?.fontName
+            font = face.flatMap { NSFont(name: $0, size: size) }
+                ?? NSFont(descriptor: baseFont.fontDescriptor, size: size) ?? baseFont
+            if let face {
+                if m.maximumLineHeight == 0, let ratio = declaredFaceLineHeightRatio[face] {
+                    let natural = ((size * ratio) * 100).rounded() / 100
+                    m.minimumLineHeight = max(m.minimumLineHeight, natural * max(1, m.lineHeightMultiple))
+                }
+            } else {
+                m.minimumLineHeight = size
+                m.maximumLineHeight = size
+                m.lineSpacing = 0
+            }
+        }
         return NSMutableAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: m])
     }
 

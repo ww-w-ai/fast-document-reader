@@ -299,9 +299,10 @@ impl super::DocxReader {
     // swift: DocxReader.isEmptyTextBlock
     fn is_empty_text_block(block: &OfficeBlock) -> bool {
         match block {
-            OfficeBlock::Paragraph { spans, .. } => spans.is_empty(),
-            OfficeBlock::Heading { spans, .. } => spans.is_empty(),
-            OfficeBlock::ListItem { spans, .. } => spans.is_empty(),
+            // A paragraph whose only run is its MARK (`paragraph_mark_span`) holds no text.
+            OfficeBlock::Paragraph { spans, .. } => spans.iter().all(|s| s.text.is_empty()),
+            OfficeBlock::Heading { spans, .. } => spans.iter().all(|s| s.text.is_empty()),
+            OfficeBlock::ListItem { spans, .. } => spans.iter().all(|s| s.text.is_empty()),
             OfficeBlock::Table { .. }
             | OfficeBlock::Image { .. }
             | OfficeBlock::UnsupportedGraphic { .. }
@@ -692,7 +693,7 @@ impl super::DocxReader {
             }
             stops
         };
-        let spans =
+        let mut spans =
             Self::collect_spans(p, style_info, relationships, notes, comments);
         // The graphics this paragraph produced inherit ITS alignment (a centred figure is the norm in
         // a report and used to render hard left — see `OfficeBlock.image`'s `alignment`). Stamped
@@ -740,6 +741,14 @@ impl super::DocxReader {
         // turns out to be, exactly like `alignment`/`tabStops` above.
         let format =
             Self::resolved_paragraph_format(p_pr, p_style_id.clone(), style_info);
+        // An empty paragraph still has a paragraph MARK, and the mark's size and face are the line
+        // Word draws for it (invariant 170). Carried as a text-less run so nothing downstream needs
+        // a new field; `is_empty_text_block` still reads such a paragraph as empty.
+        if spans.is_empty() && drawing_blocks.is_empty() && formula_blocks.is_empty() {
+            if let Some(mark) = Self::paragraph_mark_span(p_pr, p_style_id.as_deref(), style_info) {
+                spans.push(mark);
+            }
+        }
         let skip_empty_text = spans.is_empty() && (!drawing_blocks.is_empty() || !formula_blocks.is_empty());
         let text_block: Option<OfficeBlock>;
         if let Some(level) = Self::heading_level(p_pr, p_style_id.clone(), style_info) {
@@ -2163,6 +2172,31 @@ impl super::DocxReader {
     /// toggles as another; the font is filled in by the caller, which is the only thing that varies
     /// within one run.
     // swift: DocxReader.buildSpan
+    // swift: DocxReader.paragraphMarkSpan
+    /// The paragraph mark's own run — `w:pPr/w:rPr`, then the style chain — as a text-less `Span`
+    /// carrying the size and the face the mark would draw at. `None` when nothing in the document
+    /// states a size, so a reader that cannot vouch says nothing.
+    fn paragraph_mark_span(p_pr: Option<&XMLNode>, p_style_id: Option<&str>, style_info: &StyleInfo) -> Option<Span> {
+        let r_pr = p_pr.and_then(|n| n.child("w:rPr"));
+        let direct: Option<CGFloat> = r_pr
+            .and_then(|n| n.child("w:sz"))
+            .and_then(|n| n.attributes.get("w:val"))
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|half| half / 2.0);
+        let size = direct.or_else(|| Self::resolved_font_size(p_style_id.map(|s| s.to_string()), style_info))?;
+        let r_fonts = Self::resolved_r_fonts(p_style_id.map(|s| s.to_string()), style_info, &Self::parse_r_fonts(r_pr));
+        let theme = &style_info.theme_fonts;
+        let family = r_fonts
+            .family(WordFontSlot::EastAsia, None, theme)
+            .or_else(|| r_fonts.family(WordFontSlot::Ascii, None, theme));
+        Some(Span {
+            text: SwiftString::from(""),
+            font_size: Some(size),
+            font_name: family.map(SwiftString::from),
+            ..Default::default()
+        })
+    }
+
     fn build_span(run: &XMLNode, style_info: &StyleInfo, p_style_id: Option<&str>) -> Option<Span> {
         let mut text = String::new();
         for child in &run.children {

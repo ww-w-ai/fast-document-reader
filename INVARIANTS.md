@@ -2047,10 +2047,12 @@ this file tells you why, and why the obvious alternative does not work.
     `TableBlockBuilder` stamps `ps.textBlocks = [block] + ps.textBlocks` over every run of the
     cell, never assigns and never appends, because the inner table is built first and TextKit
     reads `textBlocks` outermost first; the print-side picture clamp reads `textBlocks.last`, the
-    innermost cell, for the same reason. What is deliberately NOT done: `resizeTables` still
-    re-solves only outermost tables, so on an UNPAGED screen reflow an inner grid keeps the width
-    it was built at — a paged document builds at its final width, so paper and the paged screen
-    are exact. Measured: the two-page d1 (a 신고서 whose 인감 제출자 panel is a table in a cell)
+    innermost cell, for the same reason. `resizeTables` runs one pass per nesting depth,
+    outermost first: depth 0 at the reading column, depth k at the content width its parent cell
+    settled on in the pass before — the width the inner grid was built at — so an inner grid
+    follows its cell through a window resize (`NestedTableReflowTests`: at 400 → 800 the inner
+    boxes still sum to the outer cell's NEW content width, and a reflow at the build width moves
+    no inner cell). Measured: the two-page d1 (a 신고서 whose 인감 제출자 panel is a table in a cell)
     stays 2 pages against Word's 2 and draws the panel as the grid Word draws; the reference
     manual's 31 nested forms became grids and took the manual 391 → 394 — and the next invariant
     takes two of those three pages back.
@@ -2081,7 +2083,27 @@ this file tells you why, and why the obvious alternative does not work.
     block at all keeps the bare terminator; the non-paged model is byte-identical. The declared
     bands survive untouched: the census's 268pt and 30.8pt "empty" lines are `decorativeBand`
     rows the document drew that tall (invariant 152), and a band is stamped after this line and
-    wins. Found on the way and NOT done: a docx cell's TRAILING empty paragraph beside content
-    contributes no line at all — the join after the previous block is its only separator —
-    while Word keeps that line; that is a docx-reader decision (carry the mark's size) and a
-    candidate for the −1/−2 pages the six Word documents still run short.
+    wins. Word's side of the same rule is the next invariant.
+
+170. **A DOCX EMPTY PARAGRAPH IS ITS PARAGRAPH MARK'S LINE — AND A TRAILING ONE IN A CELL IS A
+    LINE AT ALL.** Two defects under one rule. (1) A cell's TRAILING empty paragraph beside content
+    contributed no line: the join after the previous block was its only separator, and
+    `TableBlockBuilder` appends no terminator to content that already ends in one — so the blank
+    line an author leaves under a label (Word draws it) was gone, while the same paragraph ABOVE
+    the label kept its line through the join. (2) Every empty paragraph was laid at the cell's
+    base font, whatever the paragraph mark said. Word sizes an empty paragraph by its MARK —
+    `w:pPr/w:rPr`'s `w:sz` and `w:rFonts`, then the style chain — and at the face's own line
+    (맑은 고딕 9pt → 15.6, invariant 163). `DocxReader.paragraphMarkSpan` gives an empty paragraph
+    a text-less run carrying that size and face (eastAsia slot, else ascii), the same shape
+    invariant 169 gave HWP, so `isEmptyTextBlock` now asks "no run carries text" rather than "no
+    run" — the placeholder `<w:p/>` of a blank cell and a text box's own empty paragraph are
+    still filtered, and a cell of nothing but marks is still blockless. `OfficeTextBuilder.
+    emptyCellLine` then makes EVERY empty cell paragraph its own separator: a size and no face is
+    한글's exact size; a size and a face is the face's line — the declared ratio when it has one,
+    under the paragraph's own `lineHeightMultiple`, as a floor the way `applyDeclaredFaceLineHeight`
+    floors a text line — and no size at all is the base font at the paragraph's own style. The
+    Swift reader's cell filter had also drifted from the engine's (it dropped every empty
+    paragraph; the engine keeps those beside content) and is realigned. Measured against Word's own page counts: d2 18 → 19 (Word 19), d6 58 → 59
+    (Word 60), d1/d3/d4/d5 unchanged at 2/11/132/32 (Word 2/11/134/34); the reference manual
+    392 → 391 (한컴 383), every HWP empty cell paragraph now its own line whatever block it sits
+    in.
