@@ -2115,7 +2115,20 @@ impl HwpReader {
         if !matches!(b, HwpBlock::Para(p) if p.box_x.is_some()) { shapes.open_text_box = None; }
         match b {
             HwpBlock::Para(p) => {
-                let spans: Vec<Span> = p.spans.iter().flat_map(|s| Self::map_span(s, slot_fonts, column_authority)).collect();
+                let mut spans: Vec<Span> = p.spans.iter().flat_map(|s| Self::map_span(s, slot_fonts, column_authority)).collect();
+                // An empty paragraph still has a character size — its own char shape's — and that
+                // size is the height of the line it occupies (`empty_cell_line`, invariant 169).
+                // Carried as a run with no text, so the vocabulary needs no new field.
+                // A paragraph the export gave no size falls back to the document's default body
+                // size, so every HWP empty paragraph is vouched for.
+                // A paragraph holding only a bookmark anchor is empty too, and its anchor run
+                // carries no size.
+                if paged && spans.iter().all(|s| s.text.is_empty() && s.font_size.is_none()) {
+                    let size = match p.base_size_pt { Some(s) if s > 0.0 => s, _ => default_body_size };
+                    if size > 0.0 {
+                        spans.push(Span { text: SwiftString::from(""), font_size: Some(size), ..Default::default() });
+                    }
+                }
                 let align = Self::alignment(p.align.as_deref());
                 let base = Self::paragraph_format(p, default_body_size, paged);
                 // NOT indented to `boxX`/`boxW`, deliberately. A text box that is a GROUP's child states

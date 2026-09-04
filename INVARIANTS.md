@@ -2033,3 +2033,55 @@ this file tells you why, and why the obvious alternative does not work.
     d4's left margin now prints at 72.00, d6's at 72.00; page counts unchanged. The test asks for
     an A4 sheet through a bare `NSPrintInfo` and skips itself on a machine whose printer neither
     snaps nor insets, rather than passing there for nothing.
+
+168. **A NESTED TABLE IS A GRID INSIDE THE CELL, AND ITS BLOCKS ARE STACKED OUTERMOST FIRST.**
+    Every reader already delivered a table inside a cell as a real `.table` block in
+    `Cell.blocks` (docx and ODT through the same `parseTable` as a body table, HWP through
+    rhwp), and `--extract` already wrote it (invariant 164); the renderer alone flattened it to
+    lines of text joined by newlines. `OfficeTextBuilder.cellContent`'s `.table` arm now builds a
+    SECOND `GridTextTable` through the same `appendTable` a body table takes, solved at the outer
+    cell's content width (the `imageColumnWidth` the cell already computes for its pictures) with
+    the nested table's own `sourceWidth` as its graphic basis, and marks the block
+    `joinedByOwnSeparator`: the inner grid's own two collapsed closes (invariant 161) are the join
+    to whatever follows, so no third separator is manufactured under it. **The graft PREPENDS.**
+    `TableBlockBuilder` stamps `ps.textBlocks = [block] + ps.textBlocks` over every run of the
+    cell, never assigns and never appends, because the inner table is built first and TextKit
+    reads `textBlocks` outermost first; the print-side picture clamp reads `textBlocks.last`, the
+    innermost cell, for the same reason. What is deliberately NOT done: `resizeTables` still
+    re-solves only outermost tables, so on an UNPAGED screen reflow an inner grid keeps the width
+    it was built at — a paged document builds at its final width, so paper and the paged screen
+    are exact. Measured: the two-page d1 (a 신고서 whose 인감 제출자 panel is a table in a cell)
+    stays 2 pages against Word's 2 and draws the panel as the grid Word draws; the reference
+    manual's 31 nested forms became grids and took the manual 391 → 394 — and the next invariant
+    takes two of those three pages back.
+
+169. **AN EMPTY CELL PARAGRAPH IS A LINE OF ITS OWN CHARACTER SIZE, NOT OF APPKIT'S DEFAULT.**
+    An empty paragraph builds to an empty string, an empty string carries no attributes, and so
+    every empty cell reached `TableBlockBuilder` as a bare terminator: Helvetica 12, a 14.0pt
+    line, whatever size the document set the cell in. Invariant 51's measurement that `.font` is
+    inert on a terminator holds for a paragraph WITH glyphs; a paragraph that is ONLY its
+    terminator takes its line from that font (measured: Helvetica 12 → 14.0, the system font at
+    10 → 12.0, and with `minimumLineHeight = maximumLineHeight = size` the line is the size
+    exactly). 한글 lays an empty paragraph at the size its own char shape declares and charges a
+    one-paragraph cell's last line no spacing (invariants 155, 161), so a 9pt form cell stands
+    9pt tall there and stood 14 here. Census of the reference manual's print arm before: 1,069
+    empty cell lines at 14.0 (14,966pt, 26.9 sheets) plus the 225 that invariant 168's grids
+    made real (3,150pt); after: the same lines at 10.0 (396), 11.0 (191), 9.0 (142), 13.0 (82),
+    the forms' own sizes. Manual 394 → 392 (한컴 383); the last page is a boundary effect worth
+    about twenty 10pt lines, measured by widening the rule to size-less paragraphs too, which
+    gave 391 and was not kept — see below for why the rule is narrow. Two pieces: `HwpReader` gives an empty paragraph a
+    TEXT-LESS run at the paragraph's `baseSizePt` (paged only; the document default when the export
+    gave none, and a paragraph holding only a bookmark anchor counts as empty), so the vocabulary
+    needs no new field and the serializer prints nothing for it; `OfficeTextBuilder.emptyCellLine` then makes
+    the paragraph ITS OWN separator — one `"\n"` carrying the sized font and an exact line —
+    so a middle block needs no join after it and a last block is the cell's terminator
+    (`TableBlockBuilder` appends its own only when the content does not already end in one).
+    **Only a paragraph whose reader vouched for its size takes it.** A docx empty paragraph
+    carries no run and keeps the base-font join it had (invariant 167's (5)); a cell with no
+    block at all keeps the bare terminator; the non-paged model is byte-identical. The declared
+    bands survive untouched: the census's 268pt and 30.8pt "empty" lines are `decorativeBand`
+    rows the document drew that tall (invariant 152), and a band is stamped after this line and
+    wins. Found on the way and NOT done: a docx cell's TRAILING empty paragraph beside content
+    contributes no line at all — the join after the previous block is its only separator —
+    while Word keeps that line; that is a docx-reader decision (carry the mark's size) and a
+    candidate for the −1/−2 pages the six Word documents still run short.

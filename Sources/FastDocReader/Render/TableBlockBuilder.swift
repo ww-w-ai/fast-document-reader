@@ -948,7 +948,9 @@ enum TableBlockBuilder {
             cellStr.enumerateAttribute(.paragraphStyle, in: whole) { value, range, _ in
                 let ps = (value as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle
                     ?? NSMutableParagraphStyle()
-                ps.textBlocks = [block]
+                // PREPENDED, never assigned: a run inside a nested table already carries the inner
+                // table's block, and TextKit reads `textBlocks` outermost first (invariant 168).
+                ps.textBlocks = [block] + ps.textBlocks
                 // AN INDENT PAIR THAT CANNOT FIT THIS CELL IS NOT THIS CELL'S. A shape's text box
                 // carries its own left/right indents, measured against the frame the box was placed
                 // in; when the paragraph then lands inside a table cell, the two frames disagree and

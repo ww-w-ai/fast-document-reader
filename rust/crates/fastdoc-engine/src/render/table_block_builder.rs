@@ -1231,7 +1231,8 @@ impl TableBlockBuilder {
                         Some(AttrValue::ParagraphStyle(existing)) => existing.clone(),
                         _ => NSMutableParagraphStyle::default(),
                     };
-                    style.textBlocks.push(block_ref.clone());
+                    // PREPENDED — TextKit reads `textBlocks` outermost first (invariant 168).
+                    style.textBlocks.insert(0, block_ref.clone());
                     // swift: TableBlockBuilder.build — an indent pair that cannot fit this cell is
                     // not this cell's. A shape's text box carries indents measured against the frame
                     // the box was placed in; landing in a table cell, the two frames disagree and

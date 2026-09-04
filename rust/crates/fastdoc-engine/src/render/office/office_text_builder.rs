@@ -2025,11 +2025,8 @@ impl OfficeTextBuilder {
     /// renders BYTE-IDENTICAL to the pre-sprint `spansAttributedString(cell.spans, …)` call this
     /// replaces: no separator is ever emitted around a lone block.
     ///
-    /// `.table` is handled by flattening rather than recursing into `appendTable`/
-    /// `TableBlockBuilder` — a cell must never contain a REAL nested `NSTextTable` grid (the
-    /// project's standing "nested tables flatten to text" decision, applied identically by both
-    /// readers at parse time; this is the renderer's own backstop in case a `.table` block ever
-    /// reaches a cell some other way).
+    /// `.table` recurses into `appendTable`: a nested table is a REAL grid inside the cell, solved
+    /// at the cell's own content width (invariant 168).
     /// `imageColumnWidth` is the cell's resolved content width (from `appendTable`'s
     /// `TableBlockBuilder.anchorContentWidths`); a cell `.image`/`.unsupportedGraphic` wider than it
     /// is shrunk aspect-preserving via `fittedOfficeSize`, exactly as a top-level image clamps to the
@@ -2076,6 +2073,7 @@ impl OfficeTextBuilder {
         };
         let mut result = NSMutableAttributedString::new();
         for (index, block) in blocks.iter().enumerate() {
+            let mut joined_by_own_separator = false;
             match block {
                 // `rtl`/`alignment`/`tabStops` are dropped here (`_`), not lost: a cell's own paragraph
                 // style comes from `TableBlockBuilder`'s shared `cellLH` treatment, not from
@@ -2101,18 +2099,29 @@ impl OfficeTextBuilder {
                     result.append(&str);
                 }
                 OfficeBlock::Paragraph { spans, rtl, alignment, tab_stops, format, .. } => {
+                    let style = Self::body_paragraph_style(
+                        theme, *rtl, alignment.clone(), tab_stops, Some(format.clone()), font_size_scale,
+                        paged, line_grid_pitch, CGFloat::MAX,
+                    );
                     let mut str = NSMutableAttributedString::from_attributed_string(&Self::spans_attributed_string(
                         spans, base_font, &theme.text_color(), theme, font_size_scale, paged, &HashMap::new(),
                     ));
-                    let whole = NSRange::new(0, str.length());
-                    str.addAttribute(
-                        NSAttributedStringKey::ParagraphStyle,
-                        swiftshim::AttrValue::ParagraphStyle(Self::body_paragraph_style(
-                            theme, *rtl, alignment.clone(), tab_stops, Some(format.clone()), font_size_scale,
-                            paged, line_grid_pitch, CGFloat::MAX,
-                        )),
-                        whole,
-                    );
+                    let declared = spans
+                        .iter()
+                        .filter_map(|s| s.font_size)
+                        .fold(None, |acc: Option<CGFloat>, v| Some(acc.map_or(v, |a| a.max(v))));
+                    if let (0, true, Some(size)) = (str.length(), paged, declared) {
+                        // Nothing to attribute: the paragraph IS its separator (invariant 169).
+                        str = Self::empty_cell_line(size * font_size_scale, &style, base_font);
+                        joined_by_own_separator = true;
+                    } else {
+                        let whole = NSRange::new(0, str.length());
+                        str.addAttribute(
+                            NSAttributedStringKey::ParagraphStyle,
+                            swiftshim::AttrValue::ParagraphStyle(style),
+                            whole,
+                        );
+                    }
                     result.append(&str);
                 }
                 OfficeBlock::ListItem { level, ordered, spans, marker, .. } => {
@@ -2127,8 +2136,18 @@ impl OfficeTextBuilder {
                         result.replaceCharacters(NSRange::new(result.length() - 1, 1), "");
                     }
                 }
-                OfficeBlock::Table { rows: nested_rows, .. } => {
-                    result.append(&Self::flatten_table_to_text(nested_rows, base_font, theme));
+                OfficeBlock::Table { rows: nested_rows, header_rows, column_widths, format } => {
+                    let inner_width = if image_column_width.is_finite() && image_column_width > 0.0 {
+                        Some(image_column_width)
+                    } else {
+                        None
+                    };
+                    Self::append_table(
+                        nested_rows, *header_rows as usize, column_widths, format, &mut result, theme,
+                        font_size_scale, inner_width.unwrap_or(CGFloat::MAX),
+                        format.source_width.or(graphic_basis), paged, line_grid_pitch, inner_width,
+                    );
+                    joined_by_own_separator = true;
                 }
                 OfficeBlock::Image { id, size, alignment } => {
                     // A CELL picture is clamped whether paged or not — see `fittedOfficeSize`'s doc for
@@ -2157,7 +2176,7 @@ impl OfficeTextBuilder {
                     }
                 }
             }
-            if index < blocks.len() - 1 {
+            if index < blocks.len() - 1 && !joined_by_own_separator {
                 let sep_range = {
                     let before = result.length();
                     result.append(&NSAttributedString::new("\n"));
@@ -2205,6 +2224,27 @@ impl OfficeTextBuilder {
 
     /// swift: `applyLineModel(in:from:)` — every paragraph from `start` to the end of `result`
     /// takes the line model below; a block-level twin of the cell pass.
+    // swift: OfficeTextBuilder.emptyCellLine
+    /// The line an EMPTY cell paragraph stands at: its own character size, and nothing else
+    /// (invariant 169). The paragraph becomes its own separator — one `"\n"` carrying the size —
+    /// sized by the run's declared size when the reader carried one, else the cell's base font.
+    fn empty_cell_line(
+        declared: CGFloat,
+        style: &NSMutableParagraphStyle,
+        base_font: &NSFont,
+    ) -> NSMutableAttributedString {
+        let size = declared.max(1.0);
+        let font = NSFont::with_descriptor(&base_font.fontDescriptor(), size).unwrap_or_else(|| base_font.clone());
+        let mut m = style.clone();
+        m.minimumLineHeight = size;
+        m.maximumLineHeight = size;
+        m.lineSpacing = 0.0;
+        let mut attrs: HashMap<NSAttributedStringKey, swiftshim::AttrValue> = HashMap::new();
+        attrs.insert(NSAttributedStringKey::Font, swiftshim::AttrValue::Font(font));
+        attrs.insert(NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(m));
+        NSMutableAttributedString::with_attributes("\n", attrs)
+    }
+
     // swift: OfficeTextBuilder.applyLineModel
     fn apply_line_model_from(result: &mut NSMutableAttributedString, start: usize) {
         let ns = Self::as_ns_string(result);
@@ -2389,45 +2429,6 @@ impl OfficeTextBuilder {
             return;
         }
         result.setAttributes(start.clone(), terminator);
-    }
-
-    /// Flattens a nested table's cells into one run of text — a tab between cells, a newline after
-    /// each non-empty row — so a reader glancing at the flattened text can still tell where one
-    /// cell ended and the next began, even though the grid itself is gone. Mirrors the readers' own
-    /// `flattenNestedTable` (applied when a `<w:tbl>`/`<table:table>` is found while COLLECTING a
-    /// cell's spans, before a `Cell` even exists); this is the renderer-side twin for the case
-    /// where a `.table` block reaches `cellContent` directly instead.
-    // swift: OfficeTextBuilder.flattenTableToText
-    fn flatten_table_to_text(rows: &[Vec<Cell>], base_font: &NSFont, theme: &RenderTheme) -> NSAttributedString {
-        let mut result = NSMutableAttributedString::new();
-        for row in rows {
-            let mut row_has_content = false;
-            for cell in row {
-                let text = Self::cell_content(&cell.blocks, base_font, theme, 1.0, CGFloat::MAX, None, false, None, CGFloat::MAX, false);
-                if text.length() == 0 {
-                    continue;
-                }
-                if row_has_content {
-                    let r = {
-                        let before = result.length();
-                        result.append(&NSAttributedString::new("\t"));
-                        NSRange::new(before, result.length() - before)
-                    };
-                    result.addAttribute(NSAttributedStringKey::Font, swiftshim::AttrValue::Font(base_font.clone()), r);
-                }
-                result.append(&text);
-                row_has_content = true;
-            }
-            if row_has_content {
-                let r = {
-                    let before = result.length();
-                    result.append(&NSAttributedString::new("\n"));
-                    NSRange::new(before, result.length() - before)
-                };
-                result.addAttribute(NSAttributedStringKey::Font, swiftshim::AttrValue::Font(base_font.clone()), r);
-            }
-        }
-        result.into()
     }
 
     // MARK: Images

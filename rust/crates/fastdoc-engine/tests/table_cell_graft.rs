@@ -150,17 +150,19 @@ fn the_terminator_does_not_gain_its_own_attribute_run() {
 
 /// Nested cell (a cell inside a cell) is what `textBlocks` being a `Vec` is FOR (S5B1-01) — this
 /// exercises that through the graft itself rather than only through the shim's own round-trip
-/// test: a paragraph style already carrying one block (as if an outer cell had already grafted
-/// itself) gets a SECOND block appended, innermost last, not replaced.
+/// test. The INNER table is built first (`OfficeTextBuilder.cellContent` builds a nested grid
+/// inside the outer cell's content), so a paragraph style already carrying one block is carrying
+/// the inner cell's, and the outer cell's block is PREPENDED to it — TextKit reads `textBlocks`
+/// outermost first (invariant 168). Never replaced, never appended.
 #[test]
 fn a_paragraph_already_inside_one_block_keeps_it_when_grafted_again() {
     let mut left = CellContent::default();
     let mut content = NSMutableAttributedString::fromString("inner");
     let len = content.length();
     let mut style = NSParagraphStyle::default();
-    let outer_table = swiftshim::NSTextTable::new();
-    let outer_block = swiftshim::NSTextTableBlock::new(outer_table, 0, 1, 0, 1);
-    style.textBlocks.push(outer_block.clone());
+    let inner_table = swiftshim::NSTextTable::new();
+    let inner_block = swiftshim::NSTextTableBlock::new(inner_table, 0, 1, 0, 1);
+    style.textBlocks.push(inner_block.clone());
     content.add_paragraph_style(style, NSRange::new(0, len));
     left.content = content.into_immutable();
 
@@ -178,7 +180,8 @@ fn a_paragraph_already_inside_one_block_keeps_it_when_grafted_again() {
     assert_eq!(
         styles[0].textBlocks.len(),
         2,
-        "the outer block survives and the cell's own block is appended after it"
+        "the inner block survives and the grafting cell's own block is put before it"
     );
-    assert_eq!(styles[0].textBlocks[0], outer_block, "outer block unchanged, still first");
+    assert_eq!(styles[0].textBlocks[1], inner_block, "inner block unchanged, now second");
+    assert_ne!(styles[0].textBlocks[0], inner_block, "the outer block is first");
 }

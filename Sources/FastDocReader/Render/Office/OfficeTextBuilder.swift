@@ -1675,11 +1675,10 @@ enum OfficeTextBuilder {
     /// renders BYTE-IDENTICAL to the pre-sprint `spansAttributedString(cell.spans, …)` call this
     /// replaces: no separator is ever emitted around a lone block.
     ///
-    /// `.table` is handled by flattening rather than recursing into `appendTable`/
-    /// `TableBlockBuilder` — a cell must never contain a REAL nested `NSTextTable` grid (the
-    /// project's standing "nested tables flatten to text" decision, applied identically by both
-    /// readers at parse time; this is the renderer's own backstop in case a `.table` block ever
-    /// reaches a cell some other way).
+    /// `.table` recurses into `appendTable`: a nested table is a REAL grid inside the cell, solved
+    /// at the cell's own content width, and its cell runs carry `[outer, inner]` in `textBlocks` —
+    /// the order TextKit nests blocks in (invariant 168). The grid's closing separator (collapsed,
+    /// invariant 161) doubles as the join to the next block, so none is added after it.
     /// `imageColumnWidth` is the cell's resolved content width (from `appendTable`'s
     /// `TableBlockBuilder.anchorContentWidths`); a cell `.image`/`.unsupportedGraphic` wider than it
     /// is shrunk aspect-preserving via `fittedOfficeSize`, exactly as a top-level image clamps to the
@@ -1719,6 +1718,7 @@ enum OfficeTextBuilder {
         }()
         let result = NSMutableAttributedString()
         for (index, block) in blocks.enumerated() {
+            var joinedByOwnSeparator = false
             switch block {
             // `rtl`/`alignment`/`tabStops` are dropped here (`_`), not lost: a cell's own paragraph
             // style comes from `TableBlockBuilder`'s shared `cellLH` treatment, not from
@@ -1741,14 +1741,19 @@ enum OfficeTextBuilder {
                     range: NSRange(location: 0, length: str.length))
                 result.append(str)
             case let .paragraph(spans, rtl, alignment, tabStops, format):
-                let str = NSMutableAttributedString(attributedString:
+                let style = bodyParagraphStyle(theme: theme, rtl: rtl, alignment: alignment,
+                                               tabStops: tabStops, format: format, fontSizeScale: fontSizeScale,
+                                               paged: paged, lineGridPitch: lineGridPitch)
+                var str = NSMutableAttributedString(attributedString:
                     spansAttributedString(spans, baseFont: baseFont, baseColor: theme.textColor,
                                           theme: theme, fontSizeScale: fontSizeScale, paged: paged))
-                str.addAttribute(.paragraphStyle,
-                    value: bodyParagraphStyle(theme: theme, rtl: rtl, alignment: alignment,
-                                              tabStops: tabStops, format: format, fontSizeScale: fontSizeScale,
-                                              paged: paged, lineGridPitch: lineGridPitch),
-                    range: NSRange(location: 0, length: str.length))
+                if str.length == 0, paged, let size = spans.compactMap(\.fontSize).max() {
+                    // Nothing to attribute: the paragraph IS its separator (invariant 169).
+                    str = emptyCellLine(size: size * fontSizeScale, style: style, baseFont: baseFont)
+                    joinedByOwnSeparator = true
+                } else {
+                    str.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: str.length))
+                }
                 result.append(str)
             case let .listItem(level, ordered, spans, marker, _, _, _, _, _):
                 // Cell-local numbering state — a list embedded in one cell doesn't continue a
@@ -1760,8 +1765,14 @@ enum OfficeTextBuilder {
                 if result.length > 0, endsInNewline(result) {
                     result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
                 }
-            case let .table(nestedRows, _, _, _):
-                result.append(flattenTableToText(nestedRows, baseFont: baseFont, theme: theme))
+            case let .table(nestedRows, nestedHeaderRows, nestedColumnWidths, nestedFormat):
+                let innerWidth: CGFloat? = imageColumnWidth.isFinite && imageColumnWidth > 0 ? imageColumnWidth : nil
+                appendTable(nestedRows, headerRows: nestedHeaderRows, columnWidths: nestedColumnWidths,
+                            tableFormat: nestedFormat, into: result, theme: theme, fontSizeScale: fontSizeScale,
+                            columnWidth: innerWidth ?? .greatestFiniteMagnitude,
+                            graphicBasis: nestedFormat.sourceWidth ?? graphicBasis,
+                            paged: paged, lineGridPitch: lineGridPitch, tableWidth: innerWidth)
+                joinedByOwnSeparator = true
             case let .image(id, size, alignment):
                 // A CELL picture is clamped whether paged or not — see `fittedOfficeSize`'s doc for
                 // why the bleed decision stops at the cell edge (invariant 39's fixed grid).
@@ -1784,7 +1795,7 @@ enum OfficeTextBuilder {
                     result.deleteCharacters(in: NSRange(location: result.length - 1, length: 1))
                 }
             }
-            if index < blocks.count - 1 {
+            if index < blocks.count - 1, !joinedByOwnSeparator {
                 result.append(NSAttributedString(string: "\n", attributes: [.font: baseFont]))
             }
         }
@@ -1820,6 +1831,36 @@ enum OfficeTextBuilder {
             unifyTerminator(of: range, in: result, string: ns)
         }
         return result
+    }
+
+    /// The line an EMPTY cell paragraph stands at: its own character size, and nothing else.
+    ///
+    /// An empty paragraph builds to an empty string, and an empty string carries no attributes — so
+    /// the cell reached `TableBlockBuilder` with nothing but a bare terminator, laid out at AppKit's
+    /// default Helvetica 12, a 14pt line, whatever size the document set the cell in. 한글 lays an
+    /// empty paragraph at the character size its own char shape declares (rhwp's composer resolves
+    /// the paragraph's `CharShapeRef` and `height_measurer` charges the line its `line_height`, the
+    /// character size — invariant 155), and the last line of a one-paragraph cell carries no
+    /// spacing (`applyLineModel`). Measured on `2025_행정업무운영편람_최종.hwp`: 1,294 empty cell
+    /// lines, 225 of them inside the nested tables invariant 168 made real, the forms' 9pt cells
+    /// standing 14pt tall (invariant 169).
+    ///
+    /// The paragraph becomes its own separator — one `"\n"` carrying the size — so a middle block
+    /// needs no join appended after it and a last block IS the cell's terminator (`TableBlockBuilder`
+    /// appends its own only when the content does not already end in one). Only a paragraph whose
+    /// reader VOUCHED for its size takes it — `HwpReader` gives an empty paragraph a text-less run
+    /// at its char shape's size for exactly this. A docx empty paragraph beside content carries no
+    /// size and keeps the base-font join it had (invariant 167's (5)), and the non-paged model is
+    /// byte-identical to before this existed.
+    private static func emptyCellLine(size declared: CGFloat, style: NSParagraphStyle,
+                                      baseFont: NSFont) -> NSMutableAttributedString {
+        let size = max(1, declared)
+        let font = NSFont(descriptor: baseFont.fontDescriptor, size: size) ?? baseFont
+        let m = style.mutableCopy() as! NSMutableParagraphStyle
+        m.minimumLineHeight = size
+        m.maximumLineHeight = size
+        m.lineSpacing = 0
+        return NSMutableAttributedString(string: "\n", attributes: [.font: font, .paragraphStyle: m])
     }
 
     /// A cell paragraph's line box, in the source's own vocabulary: a LINE of the paragraph's
@@ -1980,28 +2021,6 @@ enum OfficeTextBuilder {
         let start = result.attributes(at: paragraph.location, effectiveRange: nil)
         guard start.keys.allSatisfy({ TableBlockBuilder.inheritableTerminatorAttributes.contains($0) }) else { return }
         result.setAttributes(start, range: terminator)
-    }
-
-    /// Flattens a nested table's cells into one run of text — a tab between cells, a newline after
-    /// each non-empty row — so a reader glancing at the flattened text can still tell where one
-    /// cell ended and the next began, even though the grid itself is gone. Mirrors the readers' own
-    /// `flattenNestedTable` (applied when a `<w:tbl>`/`<table:table>` is found while COLLECTING a
-    /// cell's spans, before a `Cell` even exists); this is the renderer-side twin for the case
-    /// where a `.table` block reaches `cellContent` directly instead.
-    private static func flattenTableToText(_ rows: [[Cell]], baseFont: NSFont, theme: RenderTheme) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        for row in rows {
-            var rowHasContent = false
-            for cell in row {
-                let text = cellContent(cell.blocks, baseFont: baseFont, theme: theme)
-                guard text.length > 0 else { continue }
-                if rowHasContent { result.append(NSAttributedString(string: "\t", attributes: [.font: baseFont])) }
-                result.append(text)
-                rowHasContent = true
-            }
-            if rowHasContent { result.append(NSAttributedString(string: "\n", attributes: [.font: baseFont])) }
-        }
-        return result
     }
 
     // MARK: Images

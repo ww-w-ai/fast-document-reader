@@ -51,6 +51,9 @@ final class FragmentAnchorProbeTests: XCTestCase {
         // `FMD_FRAG_NTH=2` takes the second occurrence — a manual's index quotes its own headings.
         let nth = Int(env["FMD_FRAG_NTH"] ?? "") ?? 1
         var hit = ns.range(of: anchor)
+        // `FMD_FRAG_AT=<char>` anchors on a character index instead — the census names an EMPTY
+        // fragment's location this way, since it has no text to anchor on.
+        if let at = Int(env["FMD_FRAG_AT"] ?? ""), at < ns.length { hit = NSRange(location: at, length: 1) }
         for _ in 1..<max(1, nth) where hit.location != NSNotFound {
             let from = hit.location + hit.length
             hit = ns.range(of: anchor, range: NSRange(location: from, length: ns.length - from))
@@ -75,8 +78,8 @@ final class FragmentAnchorProbeTests: XCTestCase {
                            ps.paragraphSpacingBefore, ps.paragraphSpacing, ps.minimumLineHeight,
                            ps.maximumLineHeight, ps.lineHeightMultiple, ps.lineSpacing)
             if let tb = ps.textBlocks.last as? NSTextTableBlock {
-                s += String(format: "  CELL row %d  pad t%.1f b%.1f  margin t%.1f b%.1f",
-                            tb.startingRow,
+                s += String(format: "  CELL%@ row %d  pad t%.1f b%.1f  margin t%.1f b%.1f",
+                            ps.textBlocks.count > 1 ? "x\(ps.textBlocks.count)" : "", tb.startingRow,
                             tb.width(for: .padding, edge: .minY), tb.width(for: .padding, edge: .maxY),
                             tb.width(for: .margin, edge: .minY), tb.width(for: .margin, edge: .maxY))
                 if tb.contentWidthValueType == .absoluteValueType || tb.contentWidth > 0 {
@@ -101,7 +104,7 @@ final class FragmentAnchorProbeTests: XCTestCase {
                 let ps = attrs[.paragraphStyle] as? NSParagraphStyle
                 let font = attrs[.font] as? NSFont
                 let key = String(format: "%@ %@ %@ %-24@ h %5.1f min %5.1f max %5.1f",
-                                 empty ? "EMPTY" : "text ", (ps?.textBlocks.last is NSTextTableBlock) ? "cell" : "body",
+                                 empty ? "EMPTY" : "text ", (ps?.textBlocks.last is NSTextTableBlock) ? ((ps?.textBlocks.count ?? 0) > 1 ? "nest" : "cell") : "body",
                                  ps == nil ? "NOSTYLE" : "styled ", (font?.fontName ?? "-") as NSString,
                                  rect.height, ps?.minimumLineHeight ?? -1, ps?.maximumLineHeight ?? -1)
                 var e = census[key] ?? (0, 0); e.n += 1; e.pt += rect.height; census[key] = e
@@ -109,8 +112,9 @@ final class FragmentAnchorProbeTests: XCTestCase {
                     var k = census["KEEPSWHOLE fragments (tables the source said not to split)"] ?? (0, 0)
                     k.n += 1; k.pt += rect.height; census["KEEPSWHOLE fragments (tables the source said not to split)"] = k
                 }
-                if example[key] == nil, !empty {
-                    example[key] = String(ns.substring(with: cr).replacingOccurrences(of: "\n", with: "⏎").prefix(36))
+                if example[key] == nil {
+                    example[key] = empty ? "@\(cr.location)"
+                        : String(ns.substring(with: cr).replacingOccurrences(of: "\n", with: "⏎").prefix(36))
                 }
             }
             let sheet = max(1, wc.pageBandDelegate.pageContentHeight)

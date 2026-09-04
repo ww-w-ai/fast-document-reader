@@ -1171,24 +1171,41 @@ final class OfficeTextBuilderTests: XCTestCase {
         XCTAssertEqual(try cellImageReservedSize(in: out), size, "a fitting cell image must not be resized")
     }
 
-    /// The nested-table decision (flatten, never build a real grid) must hold even when a `.table`
-    /// block reaches a cell directly, not only when a reader has already flattened one into spans
-    /// before `Cell` existed. There must be exactly ONE `GridTextTable` (the outer table); the nested
-    /// table is flattened to TEXT inside the outer cell's content, never a second grid.
-    func testCellContainingANestedTableBlockFlattensToTextRatherThanBuildingARealNestedGrid() {
-        let nested: OfficeBlock = .table(rows: [[Cell(spans: [span("Nested")])]], headerRows: 0)
-        let outer = Cell(blocks: [.paragraph(spans: [span("Outer")]), nested])
+    /// A `.table` block inside a cell is a REAL grid: a second `GridTextTable`, solved at the outer
+    /// cell's content width, whose cell runs carry `[outer, inner]` in `textBlocks` — the order
+    /// TextKit nests blocks in. The inner grid's closing separator is the join to what follows and
+    /// is collapsed (invariant 161), so no blank line is manufactured under it (invariant 168).
+    func testCellContainingANestedTableBlockBuildsARealNestedGrid() throws {
+        let nested: OfficeBlock = .table(rows: [[Cell(spans: [span("Nested")]), Cell(spans: [span("Twice")])]], headerRows: 0)
+        let outer = Cell(blocks: [.paragraph(spans: [span("Outer")]), nested, .paragraph(spans: [span("After")])])
         let out = build([.table(rows: [[outer]], headerRows: 0)])
-        // The outer cell's content is the flattened text: "Outer" + separator + the nested table's
-        // own flattened "Nested\n" — building a REAL nested grid instead (the mutation this guards
-        // against) would place a second `GridTextTable` here rather than plain text.
-        let cells = tableCells(in: out)
-        let outerCell = try! XCTUnwrap(cells.first)
-        XCTAssertEqual(outerCell.text, "Outer\nNested\n")
-        // Every placed cell must belong to the SAME table — the flattened nested table is plain text
-        // carrying the outer cell's own block, not a second grid.
-        let distinctTables = Set(cells.compactMap { ($0.block.table as? GridTextTable).map(ObjectIdentifier.init) })
-        XCTAssertEqual(distinctTables.count, 1, "the nested table must be flattened to text — no nested grid")
+        let ns = out.string as NSString
+        XCTAssertEqual(out.string, "Outer\nNested\nTwice\n\n\nAfter\n\n\n",
+                       "one join before the grid; the grid's own two collapsed closes after it, then the outer's")
+        let nestedAt = ns.range(of: "Nested").location
+        let inner = try XCTUnwrap(out.attribute(.paragraphStyle, at: nestedAt, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(inner.textBlocks.count, 2, "outer cell first, then the nested cell")
+        let outerBlock = try XCTUnwrap(inner.textBlocks[0] as? NSTextTableBlock)
+        let innerBlock = try XCTUnwrap(inner.textBlocks[1] as? NSTextTableBlock)
+        XCTAssertFalse(outerBlock.table === innerBlock.table, "two grids")
+        let outerAt = ns.range(of: "Outer").location
+        let outerStyle = try XCTUnwrap(out.attribute(.paragraphStyle, at: outerAt, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertTrue((outerStyle.textBlocks.first as? NSTextTableBlock)?.table === outerBlock.table)
+        XCTAssertEqual(outerStyle.textBlocks.count, 1)
+        // The inner grid is solved for the outer cell's content width: its two cells' boxes sum to it.
+        let twiceAt = ns.range(of: "Twice").location
+        let twice = try XCTUnwrap((out.attribute(.paragraphStyle, at: twiceAt, effectiveRange: nil) as? NSParagraphStyle)?.textBlocks.last as? NSTextTableBlock)
+        func box(_ b: NSTextTableBlock) -> CGFloat {
+            b.contentWidth + b.width(for: .padding, edge: .minX) + b.width(for: .padding, edge: .maxX)
+                + b.width(for: .border, edge: .minX) + b.width(for: .border, edge: .maxX)
+        }
+        XCTAssertEqual(box(innerBlock) + box(twice), outerBlock.contentWidth, accuracy: 2,
+                       "inner \(box(innerBlock)) + \(box(twice)) against outer content \(outerBlock.contentWidth)")
+        // The collapsed close carries only the OUTER block, and is a sub-point line.
+        let closeAt = ns.range(of: "\n\nAfter").location + 1
+        let close = try XCTUnwrap(out.attribute(.paragraphStyle, at: closeAt, effectiveRange: nil) as? NSParagraphStyle)
+        XCTAssertEqual(close.textBlocks.count, 1)
+        XCTAssertEqual(close.maximumLineHeight, OfficeTextBuilder.collapsedTerminatorLineHeight)
     }
 
     /// The anchor-cells-only merge contract must still hold for a cell built the NEW way

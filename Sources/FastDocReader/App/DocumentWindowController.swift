@@ -1310,7 +1310,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             let clampWidth: CGFloat = {
                 guard let ps = storage.attribute(.paragraphStyle, at: range.location,
                                                  effectiveRange: nil) as? NSParagraphStyle,
-                      let block = ps.textBlocks.first as? NSTextTableBlock else { return column }
+                      let block = ps.textBlocks.last as? NSTextTableBlock else { return column }
+                // The INNERMOST cell — a picture inside a nested table is clamped by that table's
+                // cell, not the outer one (invariant 168).
                 let cellWidth = block.contentWidth
                 return cellWidth > 1 ? cellWidth : column
             }()

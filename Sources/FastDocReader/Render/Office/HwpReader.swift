@@ -1352,7 +1352,20 @@ enum HwpReader {
                                  shapes: MediaContext, paged: Bool) -> OfficeBlock {
         switch b {
         case .para(let p):
-            let spans = p.spans.flatMap { mapSpan($0, slotFonts: slotFonts) }
+            var spans = p.spans.flatMap { mapSpan($0, slotFonts: slotFonts) }
+            // An empty paragraph still has a character size — its own char shape's — and that size
+            // is the height of the line it occupies (`OfficeTextBuilder.emptyCellLine`, invariant
+            // 169). Carried as a run with no text, so the vocabulary needs no new field and the
+            // serializer prints nothing for it. Paged only, like everything the size decides. A
+            // paragraph the export gave no size falls back to the document's default body size —
+            // the same fallback its percent line spacing takes — so every HWP empty paragraph is
+            // vouched for (a run without one costs the reference manual a page).
+            // A paragraph holding only a bookmark anchor is empty too, and its anchor run carries
+            // no size.
+            if paged, spans.allSatisfy({ $0.text.isEmpty && $0.fontSize == nil }) {
+                let size = (p.baseSizePt ?? 0) > 0 ? p.baseSizePt! : defaultBodySize
+                if size > 0 { spans.append(Span(text: "", fontSize: size)) }
+            }
             let align = alignment(p.align)
             let base = paragraphFormat(p, defaultBodySize: defaultBodySize, paged: paged)
             // NOT indented to `boxX`/`boxW`, deliberately. A text box that is a GROUP's child states
