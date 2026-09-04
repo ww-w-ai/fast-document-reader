@@ -2620,6 +2620,7 @@ impl HwpReader {
             blocks, row_span: c.row_span, col_span: c.col_span,
             // A row the document declared as a thin decorative band is the one place the content
             // cannot be trusted to measure it — see `Cell::declared_height`.
+            minimum_row_height: None,
             declared_height: c.height_pt.filter(|v| *v > 0.0).map(|v| v as CGFloat),
             background_color: shading,
             background_image: fill_image,

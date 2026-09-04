@@ -142,6 +142,38 @@ final class DocxDensityTests: XCTestCase {
         XCTAssertEqual(t.rows[0][2].blocks.count, 0, "nor are two of them")
     }
 
+    func testADeclaredRowHeightReachesEveryCellOfTheRow() throws {
+        let t = try firstTable(try read(
+            "<w:tbl><w:tr><w:trPr><w:trHeight w:val=\"340\"/></w:trPr><w:tc>" + p("가") + "</w:tc><w:tc>" + p("나") + "</w:tc></w:tr>"
+            + "<w:tr><w:tc>" + p("다") + "</w:tc></w:tr></w:tbl>"))
+        XCTAssertEqual(t.rows[0].map(\.minimumRowHeight), [17, 17], "340 twips is 17pt, on both cells")
+        XCTAssertEqual(t.rows[1].first?.minimumRowHeight, nil, "a row that said nothing stays nil")
+        XCTAssertEqual(t.rows[0].map(\.declaredHeight), [nil, nil], "a floor is not a drawn height")
+    }
+
+    /// A one-line cell in a paged row is held to the row height the document declared; a cell that
+    /// wraps, an exact line height, and the screen are left alone (invariant 166).
+    func testAOneLineCellIsHeldToTheDeclaredRowHeightOnPaperOnly() throws {
+        func cellOf(_ text: String, declared: CGFloat?, exact: CGFloat? = nil) -> Cell {
+            var f = ParagraphFormat(); if let exact { f.lineHeight = .exact(exact) }
+            var c = Cell(blocks: [.paragraph(spans: [Span(text: text, fontSize: 9)], format: f)])
+            c.minimumRowHeight = declared; c.edgePadding = EdgePadding(top: 0, left: 0, bottom: 0, right: 0)
+            return c
+        }
+        let long = String(repeating: "긴 글이 여러 줄로 감깁니다 ", count: 8)
+        let rows = [[cellOf("한 줄", declared: 30), cellOf(long, declared: 30)],
+                    [cellOf("고정", declared: 30, exact: 12), cellOf("말 없음", declared: nil)]]
+        let blocks: [OfficeBlock] = [.table(rows: rows, headerRows: 0)]
+        let paged = OfficeTextBuilder.build(blocks, theme: theme, documentDefaultFontSize: 16,
+                                            pageContentWidth: 300, tableWidth: 300, pageContentHeight: 700)
+        XCTAssertEqual(try style(of: paged, at: "한 줄").minimumLineHeight, 30, accuracy: 0.01, "held to the row")
+        XCTAssertLessThan(try style(of: paged, at: "긴 글이").minimumLineHeight, 20, "a wrapping cell is left alone")
+        XCTAssertEqual(try style(of: paged, at: "고정").maximumLineHeight, 12, accuracy: 0.01, "an exact height is the document's own")
+        XCTAssertLessThan(try style(of: paged, at: "말 없음").minimumLineHeight, 20)
+        let screen = OfficeTextBuilder.build(blocks, theme: theme, documentDefaultFontSize: 16, tableWidth: 300)
+        XCTAssertLessThan(try style(of: screen, at: "한 줄").minimumLineHeight, 30, "the screen keeps its reading rhythm")
+    }
+
     // MARK: the builder
 
     private let theme = RenderTheme.current(size: 16)
@@ -167,6 +199,32 @@ final class DocxDensityTests: XCTestCase {
         let screen = OfficeTextBuilder.build(blocks, theme: theme, documentDefaultFontSize: 16, tableWidth: 300)
         XCTAssertEqual(try style(of: screen, at: "첫째").paragraphSpacingBefore, 0, accuracy: 0.01)
         XCTAssertEqual(try style(of: screen, at: "둘째").paragraphSpacing, 0, accuracy: 0.01)
+    }
+
+    /// `<w:br/>` is a line break INSIDE its paragraph: the line after it owes no paragraph spacing.
+    /// Carried as `\n` it was a TextKit paragraph, and the document's own 4pt space-after landed
+    /// under every stanza line of a 137-page transcript (invariant 165).
+    func testAForcedLineBreakStaysInsideItsParagraphAndOwesNoParagraphSpacing() throws {
+        var f = ParagraphFormat(); f.spacingAfter = 4
+        let blocks: [OfficeBlock] = [.paragraph(spans: [Span(text: "첫 줄\n둘째 줄", fontSize: 12)], format: f),
+                                     .paragraph(spans: [Span(text: "다음 문단", fontSize: 12)], format: f)]
+        let out = OfficeTextBuilder.build(blocks, theme: theme, documentDefaultFontSize: 16, pageContentWidth: 500)
+        XCTAssertTrue(out.string.contains("\u{2028}"), "the break is a line separator")
+        XCTAssertEqual(out.string.components(separatedBy: "\n").count - 1, 2, "two paragraphs, two terminators")
+        let storage = NSTextStorage(attributedString: out)
+        let lm = NSLayoutManager()
+        let tc = NSTextContainer(size: NSSize(width: 800, height: CGFloat.greatestFiniteMagnitude))
+        tc.lineFragmentPadding = 0
+        storage.addLayoutManager(lm); lm.addTextContainer(tc); lm.ensureLayout(for: tc)
+        var rects: [NSRect] = []
+        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, _, _ in rects.append(rect) }
+        guard rects.count >= 3 else { return XCTFail("expected three lines, got \(rects)") }
+        // TextKit folds a paragraph's space-after into its LAST line's fragment rect, so the line
+        // before the break must be 4pt shorter than the paragraph's last line, and the first
+        // paragraph's last line as tall as the second's (both carry the 4pt).
+        XCTAssertEqual(rects[1].height - rects[0].height, 4, accuracy: 0.01,
+                       "the line before the break owes no space-after; heights \(rects.map(\.height))")
+        XCTAssertEqual(rects[1].height, rects[2].height, accuracy: 0.01)
     }
 
     func testADeclaredMalgunGothicLineIsFlooredAtWordsRatioWhateverFaceDrawsIt() throws {

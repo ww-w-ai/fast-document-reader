@@ -423,6 +423,7 @@ fn map_table_cell<'a>(
         payload: NodePayload::TableCell(WireTableCell {
             // markdown has no table row height to declare.
             declared_height: None,
+            minimum_row_height: None,
             row,
             column,
             row_span: 1,

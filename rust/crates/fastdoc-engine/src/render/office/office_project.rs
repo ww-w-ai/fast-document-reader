@@ -1318,6 +1318,7 @@ fn convert_cell_back(tc: wire::TableCell, blocks: Vec<OfficeBlock>) -> Cell {
         row_span: tc.row_span as i64,
         col_span: tc.column_span as i64,
         declared_height: tc.declared_height,
+        minimum_row_height: tc.minimum_row_height,
         background_color: tc.direct_shading.map(convert_color_back),
         // S6-4: patched onto the return value by `map_table`'s own loop, which alone has the
         // `&mut self` a resource lookup needs (this free function has none).

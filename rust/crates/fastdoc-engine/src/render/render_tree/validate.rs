@@ -1098,6 +1098,7 @@ pub(super) fn table_cell_colors(v: &wire::TableCell) -> [(&'static str, Option<&
         uniform_padding_points: _,
         edge_padding: _,
         declared_height: _,
+        minimum_row_height: _,
         diagonal,
         style_shading,
         style_uniform_border,

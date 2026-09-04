@@ -589,7 +589,14 @@ enum OfficeTextBuilder {
             // `caps` is a DISPLAY-only transform (see `Span.caps`'s doc) — computed on a local copy
             // of the run's text, never on `span` itself, so nothing downstream (undo, re-render,
             // the source model) ever sees an uppercased string that wasn't authored.
-            let displayText = span.caps ? span.text.uppercased() : span.text
+            // A forced line break INSIDE a paragraph (`<w:br/>`, `text:line-break`, HWP's own) is
+            // carried by the readers as `\n`; in the attributed string it must be U+2028, the way
+            // the markdown renderer joins a code block's lines. A `\n` is a PARAGRAPH separator to
+            // TextKit, so every forced break was paying the paragraph's own space-after again —
+            // 4pt per break on a 137-page transcript whose every stanza is `<w:br/>`-joined
+            // (invariant 165).
+            let displayText = (span.caps ? span.text.uppercased() : span.text)
+                .replacingOccurrences(of: "\n", with: "\u{2028}")
             if span.code {
                 font = theme.codeFont
                 color = theme.inlineCodeColor
@@ -1593,6 +1600,7 @@ enum OfficeTextBuilder {
                                                       styleBorderWidth: cell.styleBorderWidth,
                                                       edgeBorders: cell.edgeBorders, edgePadding: cell.edgePadding,
                                                       declaredHeight: cell.declaredHeight,
+                                                      minimumRowHeight: cell.minimumRowHeight,
                                                       diagonal: cell.diagonal)
             }
         }

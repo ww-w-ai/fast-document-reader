@@ -453,6 +453,13 @@ pub struct Cell {
     /// document asked for.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub declared_height: Option<CGFloat>,
+    /// The height the document HOLDS this cell's row to, in points — docx `w:trPr/w:trHeight`
+    /// (`atLeast` and `exact` alike; this reader never clips content). A FLOOR, distinct from
+    /// `declared_height` (what a document drew, HWP's per-cell height): a one-line cell in a paged
+    /// row is raised to it, a wrapping cell is left to its content (invariant 166). `None` for every
+    /// format but docx.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub minimum_row_height: Option<CGFloat>,
     /// The cell's own DIAGONAL, when the document drew one across it. `nil` = no diagonal, which is
     /// every cell of every other format this reader opens — only HWP states one, and the decision of
     /// whether a declaration IS a drawn diagonal is made by the parser (`BorderFill::cell_diagonal`),
@@ -482,7 +489,7 @@ impl PartialEq for Cell {
         let Self {
             blocks, row_span, col_span, background_color, background_image, background_gradient,
             border_color, border_width, edge_borders, edge_borders_ref, width, vertical_alignment,
-            padding, edge_padding, declared_height, diagonal, style_shading, style_border_color, style_border_width,
+            padding, edge_padding, declared_height, minimum_row_height, diagonal, style_shading, style_border_color, style_border_width,
         } = self;
         blocks == &other.blocks
             && row_span == &other.row_span
@@ -499,6 +506,7 @@ impl PartialEq for Cell {
             && padding == &other.padding
             && edge_padding == &other.edge_padding
             && declared_height == &other.declared_height
+            && minimum_row_height == &other.minimum_row_height
             && diagonal == &other.diagonal
             && style_shading == &other.style_shading
             && style_border_color == &other.style_border_color
@@ -528,6 +536,7 @@ impl Default for Cell {
             padding: None,
             edge_padding: None,
             declared_height: None,
+            minimum_row_height: None,
             diagonal: None,
             style_shading: None,
             style_border_color: None,
@@ -568,6 +577,7 @@ impl Cell {
             padding: None,
             edge_padding: None,
             declared_height: None,
+            minimum_row_height: None,
             diagonal: None,
             style_shading: None,
             style_border_color: None,
@@ -596,6 +606,7 @@ impl Cell {
             row_span,
             col_span,
             declared_height: None,
+            minimum_row_height: None,
             background_color,
             background_image,
             background_gradient: None,

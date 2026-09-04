@@ -90,7 +90,7 @@ const EXPECTED_KEYS: &[&str] = &[
     "OfficeBlock.ListItem.numbering",
 ];
 
-const TABLE_EXPECTED_DECISIONS: usize = 50;
+const TABLE_EXPECTED_DECISIONS: usize = 51;
 const TABLE_EXPECTED_KEYS: &[&str] = &[
     "Cell.blocks",
     "Cell.row_span",
@@ -107,6 +107,7 @@ const TABLE_EXPECTED_KEYS: &[&str] = &[
     "Cell.padding",
     "Cell.edge_padding",
     "Cell.declared_height",
+    "Cell.minimum_row_height",
     "Cell.diagonal",
     "Cell.style_shading",
     "Cell.style_border_color",
@@ -653,6 +654,7 @@ pub(crate) fn account_table_cell_source_layers(
         padding,
         edge_padding: cell_edge_padding,
         declared_height,
+        minimum_row_height,
         diagonal,
         style_shading,
         style_border_color,
@@ -676,6 +678,7 @@ pub(crate) fn account_table_cell_source_layers(
     ledger.record(derived("Cell.edge_borders_ref"))?;
     ledger.record(mapped("Cell.edge_padding"))?;
     ledger.record(mapped("Cell.declared_height"))?;
+    ledger.record(mapped("Cell.minimum_row_height"))?;
     record!(
         ledger,
         "Cell",
@@ -1236,6 +1239,7 @@ mod tests {
             padding: Some(5.0),
             edge_padding: Some(padding),
             declared_height: Some(24.0),
+            minimum_row_height: Some(17.0),
             diagonal: Some(diagonal),
             style_shading: Some(color),
             style_border_color: Some(color),
@@ -1279,8 +1283,10 @@ mod tests {
         // source layer, so they are `derived`, counted on their own: 47 -> 49 total, mapped and
         // deferred both unchanged. Invariant 152's `Cell.declared_height` — the row height the
         // document itself states — is a mapped source field: 49 -> 50 total, 45 -> 46 mapped.
-        assert_eq!(ledger.decision_count(), 50);
-        assert_eq!(ledger.mapped_count(), 46);
+        // Invariant 166's `Cell.minimum_row_height` — the floor docx holds a row to — is another:
+        // 50 -> 51 total, 46 -> 47 mapped.
+        assert_eq!(ledger.decision_count(), 51);
+        assert_eq!(ledger.mapped_count(), 47);
         assert_eq!(ledger.derived_count(), 2);
         assert_eq!(ledger.deferred_count(), 2);
     }

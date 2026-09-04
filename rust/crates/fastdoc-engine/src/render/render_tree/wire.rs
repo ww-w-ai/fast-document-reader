@@ -822,6 +822,10 @@ pub struct TableCell {
     /// that holds no text — see `office_block::Cell::declared_height`.
     #[serde(default)]
     pub declared_height: Option<f64>,
+    /// The height the document HOLDS the row to (docx `w:trHeight`) — a floor, see
+    /// `office_block::Cell::minimum_row_height`.
+    #[serde(default)]
+    pub minimum_row_height: Option<f64>,
     #[serde(default)]
     pub diagonal: Option<CellDiagonal>,
     #[serde(default)]

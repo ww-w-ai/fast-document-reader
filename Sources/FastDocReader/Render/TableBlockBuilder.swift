@@ -214,6 +214,29 @@ enum TableBlockBuilder {
     /// still has to EXIST; collapsing it to nothing would erase a border the document drew.
     static let bandMinimumLine: CGFloat = 1
 
+    /// The line box a SINGLE-LINE cell in a paged row is held to when the document holds the row
+    /// to a height (docx `w:trHeight`; never HWP's per-cell height, which is what 한글 DREW and
+    /// raised the reference manual a page when tried as a floor): the declaration minus the paddings,
+    /// and only when the cell's one paragraph fits one line unwrapped at `contentWidth`. TextKit
+    /// ignores `NSTextBlock`'s `.minimumHeight` (measured: 60pt asked, 15pt drawn), so the floor
+    /// goes on the paragraph as `minimumLineHeight`; a cell that wraps is left alone, because a
+    /// floor on EVERY line would double it, and a wrapped cell already exceeds a one-line floor
+    /// in every real document measured (invariant 166). `nil` = nothing to hold.
+    static func singleLineRowFloor(cell: CellContent?, paged: Bool, rowIsEmpty: Bool,
+                                   contentWidth: CGFloat, paddingTop: CGFloat, paddingBottom: CGFloat) -> CGFloat? {
+        guard paged, !rowIsEmpty, let cell, let declared = cell.minimumRowHeight, declared > 0 else { return nil }
+        let text = cell.content.string
+        let body = text.hasSuffix("\n") ? String(text.dropLast()) : text
+        guard !body.isEmpty, !body.contains("\n"), !body.contains("\u{2028}") else { return nil }
+        let style = cell.content.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+        let indent = max(0, max(style?.headIndent ?? 0, style?.firstLineHeadIndent ?? 0)) + max(0, -(style?.tailIndent ?? 0))
+        let needed = cell.content.attributedSubstring(from: NSRange(location: 0, length: (body as NSString).length))
+            .size().width.rounded(.up)
+        guard needed <= contentWidth - indent else { return nil }
+        let floor = declared - paddingTop - paddingBottom
+        return floor > 0 ? floor : nil
+    }
+
     /// For a cell that holds NO TEXT, the padding pair and line height that reproduce the row height
     /// the DOCUMENT declared — or `nil` when this cell is not that case and measures itself as
     /// before.
@@ -319,6 +342,8 @@ enum TableBlockBuilder {
         /// ONE thing: a row with no text in it, where content cannot measure what the document drew
         /// as a thin band of colour. `nil` everywhere else, and the cell measures itself as before.
         var declaredHeight: CGFloat? = nil
+        /// Mirrors `Cell.minimumRowHeight` — the floor a docx row is held to (invariant 166).
+        var minimumRowHeight: CGFloat? = nil
         /// Mirrors `Cell.diagonal` — the rule this cell draws ACROSS itself. `nil` for markdown and
         /// for every format but HWP, and for the great majority of HWP cells too.
         var diagonal: CellDiagonal? = nil
@@ -884,6 +909,10 @@ enum TableBlockBuilder {
             }
             let cellContentWidth = max(1, cellWidth - effLeft - effRight - leftWidth - rightWidth)
             block.setContentWidth(cellContentWidth, type: .absoluteValueType)
+            let rowFloor = Self.singleLineRowFloor(cell: placement.cell, paged: paged, rowIsEmpty: rowIsEmpty,
+                                                   contentWidth: cellContentWidth,
+                                                   paddingTop: band?.top ?? me.paddingTop,
+                                                   paddingBottom: band?.bottom ?? me.paddingBottom)
             // The table's own OUTER margin, HORIZONTAL half only: reserved ENTIRELY by
             // `edges(forWidth:)` narrowing the grid — never a SECOND `.margin` box on the left/right
             // perimeter cells. That second box was tried and measured wrong: AppKit charges a
@@ -948,6 +977,9 @@ enum TableBlockBuilder {
                     ps.lineSpacing = 0
                     ps.paragraphSpacing = 0
                     ps.paragraphSpacingBefore = 0
+                } else if let rowFloor, ps.maximumLineHeight == 0, ps.minimumLineHeight < rowFloor {
+                    // A one-line cell held to the row height the document declared (invariant 166).
+                    ps.minimumLineHeight = rowFloor
                 }
                 cellStr.addAttribute(.paragraphStyle, value: ps, range: range)
             }

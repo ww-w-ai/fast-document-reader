@@ -2635,6 +2635,7 @@ enum DocxReader: OfficeDocumentReader {
         // of becoming a cell of its own.
         var openMerge: [Int: (row: Int, cell: Int)] = [:]
         for row in rowNodes {
+            let rowHeight = rowDeclaredHeight(row)
             var rowCells: [Cell] = []
             var rowPositions: [Int] = []
             var gridCol = 0
@@ -2680,6 +2681,9 @@ enum DocxReader: OfficeDocumentReader {
                     // resolution cascades cell-edge > table-edge > theme fallback itself, so merging
                     // the two here would just hide the table default's own doc-comment-visible layer.
                     cell.edgePadding = cellEdgePadding(tcPr?.child("w:tcMar"))
+                    // docx states a row height per ROW, and it is a FLOOR; every cell of the row
+                    // carries it (invariant 166).
+                    cell.minimumRowHeight = rowHeight
                     rowCells.append(cell)
                     rowPositions.append(gridCol)
                     if vMerge != nil {
@@ -3005,6 +3009,15 @@ enum DocxReader: OfficeDocumentReader {
             }
         }
         return blocks.filter { !isEmptyTextBlock($0) }
+    }
+
+    /// `w:trPr/w:trHeight/@w:val`, twips to points — the height Word holds the row to. `w:hRule`
+    /// is deliberately not distinguished: `atLeast` (the default) is a floor, and `exact` is a floor
+    /// too for this reader, which never clips content (invariant 166).
+    private static func rowDeclaredHeight(_ row: XMLNode) -> CGFloat? {
+        guard let raw = row.child("w:trPr")?.child("w:trHeight")?.attributes["w:val"],
+              let val = Double(raw), val > 0 else { return nil }
+        return CGFloat(val / 20)
     }
 
     /// Walks a paragraph (or a table cell's paragraph) collecting `w:r` runs into `Span`s,

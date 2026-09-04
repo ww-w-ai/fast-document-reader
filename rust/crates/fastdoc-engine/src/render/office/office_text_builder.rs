@@ -737,7 +737,11 @@ impl OfficeTextBuilder {
             // `caps` is a DISPLAY-only transform (see `Span.caps`'s doc) — computed on a local copy
             // of the run's text, never on `span` itself, so nothing downstream (undo, re-render,
             // the source model) ever sees an uppercased string that wasn't authored.
-            let display_text = if span.caps { span.text.to_string().to_uppercase() } else { span.text.to_string() };
+            // A forced line break inside a paragraph is U+2028 in the attributed string, never a
+            // `\n` — a paragraph separator to TextKit, charged the paragraph's own space-after
+            // (invariant 165).
+            let display_text = if span.caps { span.text.to_string().to_uppercase() } else { span.text.to_string() }
+                .replace('\n', "\u{2028}");
             if span.code {
                 font = theme.code_font().clone();
                 color = theme.inline_code_color().clone();
@@ -1927,6 +1931,7 @@ impl OfficeTextBuilder {
                             row_span: cell.row_span as usize,
                             column_span: cell.col_span as usize,
                             declared_height: cell.declared_height,
+                            minimum_row_height: cell.minimum_row_height,
                             background_color: cell.background_color.clone(),
                             background_image: cell.background_image.clone(),
                             border_color: cell.border_color.clone(),

@@ -740,6 +740,7 @@
      "bottom": null,
      "left": 2
     },
+    "minimumRowHeight": 17.0,
     "diagonal": {
      "direction": "both",
      "side": {

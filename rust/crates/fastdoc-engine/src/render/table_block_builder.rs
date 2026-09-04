@@ -308,6 +308,47 @@ impl TableBlockBuilder {
         Some((0.0 as CGFloat).max(right_padding - (needed - usable)).floor())
     }
 
+    /// The line box a single-line cell in a paged row is held to when the document holds the row
+    /// to a height (docx `w:trHeight`) — see the Swift original for why the floor is a paragraph
+    /// attribute and why a wrapped cell is left alone (invariant 166).
+    // swift: TableBlockBuilder.singleLineRowFloor
+    pub fn single_line_row_floor(
+        cell: Option<&CellContent>,
+        paged: bool,
+        row_is_empty: bool,
+        content_width: CGFloat,
+        padding_top: CGFloat,
+        padding_bottom: CGFloat,
+    ) -> Option<CGFloat> {
+        if !paged || row_is_empty {
+            return None;
+        }
+        let cell = cell?;
+        let declared = cell.minimum_row_height?;
+        if declared <= 0.0 {
+            return None;
+        }
+        let text = cell.content.string();
+        let body = text.strip_suffix('\n').unwrap_or(&text);
+        if body.is_empty() || body.contains('\n') || body.contains('\u{2028}') {
+            return None;
+        }
+        let (indent_head, indent_tail) = match cell.content.attribute(&NSAttributedStringKey::ParagraphStyle, 0) {
+            Some((AttrValue::ParagraphStyle(ps), _)) => (
+                (0.0 as CGFloat).max(ps.headIndent.max(ps.firstLineHeadIndent)),
+                (0.0 as CGFloat).max(-ps.tailIndent),
+            ),
+            _ => (0.0, 0.0),
+        };
+        let attributes = cell.content.attributesAt(0).cloned().unwrap_or_default();
+        let needed = swiftshim::size_with_attributes(body, &attributes).width.ceil();
+        if needed > content_width - indent_head - indent_tail {
+            return None;
+        }
+        let floor = declared - padding_top - padding_bottom;
+        if floor > 0.0 { Some(floor) } else { None }
+    }
+
     /// The smallest line a decorative band is still allowed to reserve. A band the document sized
     /// at zero would otherwise vanish entirely, taking its shading and rules with it.
     pub const BAND_MINIMUM_LINE: CGFloat = 1.0;
@@ -1108,6 +1149,14 @@ impl TableBlockBuilder {
                 cell_content_width,
                 swiftshim::NSTextBlockValueType::AbsoluteValueType,
             );
+            let row_floor = Self::single_line_row_floor(
+                placement.cell,
+                paged,
+                row_is_empty,
+                cell_content_width,
+                band.map(|b| b.0).unwrap_or(me.padding_top),
+                band.map(|b| b.1).unwrap_or(me.padding_bottom),
+            );
             // The table's own OUTER margin, HORIZONTAL half only: reserved ENTIRELY by
             // `edges(forWidth:)` narrowing the grid — never a SECOND `.margin` box on the left/right
             // perimeter cells. That second box was tried and measured wrong: AppKit charges a
@@ -1206,6 +1255,11 @@ impl TableBlockBuilder {
                         style.lineSpacing = 0.0;
                         style.paragraphSpacing = 0.0;
                         style.paragraphSpacingBefore = 0.0;
+                    } else if let Some(floor) = row_floor {
+                        // A one-line cell held to the row height the document declared (invariant 166).
+                        if style.maximumLineHeight == 0.0 && style.minimumLineHeight < floor {
+                            style.minimumLineHeight = floor;
+                        }
                     }
                     grafts.push((range, style));
                 },
@@ -1446,6 +1500,8 @@ pub struct CellContent {
     /// Mirrors `Cell.declaredHeight` — the row height the DOCUMENT stated, in points. Only a row
     /// whose text cannot size it (an empty decorative band) reads this; see `decorative_band`.
     pub declared_height: Option<CGFloat>,
+    /// Mirrors `Cell.minimum_row_height` — the floor a docx row is held to (invariant 166).
+    pub minimum_row_height: Option<CGFloat>,
     /// Mirrors `Cell.padding` — already resolved by the caller against any table default;
     /// `nil` means neither said anything, and `build` keeps its own pre-existing 7pt default.
     pub padding: Option<CGFloat>,
@@ -1478,6 +1534,7 @@ impl Default for CellContent {
             row_span: 1,
             column_span: 1,
             declared_height: None,
+            minimum_row_height: None,
             background_color: None,
             background_image: None,
             border_color: None,

@@ -306,6 +306,12 @@ struct Cell: Equatable {
     /// height; docx states one per ROW (`w:trPr/w:trHeight`) and this reader has never read it, so
     /// a docx cell arrives `nil` and behaves exactly as it did before this existed.
     var declaredHeight: CGFloat? = nil
+    /// The height the document HOLDS this cell's row to, in points — docx `w:trPr/w:trHeight`
+    /// (`atLeast` and `exact` alike; this reader never clips content). A FLOOR, distinct from
+    /// `declaredHeight` (what a document drew — HWP's per-cell height, an empty band's rule): a
+    /// one-line cell in a paged row is raised to it and a wrapping cell is left to its content
+    /// (invariant 166). `nil` for every format but docx.
+    var minimumRowHeight: CGFloat? = nil
     /// The cell's own DIAGONAL, when the document drew one across it. `nil` = no diagonal, which is
     /// every cell of every other format this reader opens — only HWP states one, and the decision of
     /// whether a declaration IS a drawn diagonal is made by the parser (`BorderFill::cell_diagonal`),
@@ -1668,7 +1674,7 @@ extension Cell: Decodable {
     enum CodingKeys: String, CodingKey {
         case blocks, rowSpan, colSpan, backgroundColor, backgroundImage, backgroundGradient, borderColor
         case borderWidth, edgeBorders, edgeBordersRef, width, verticalAlignment, padding
-        case edgePadding, declaredHeight, diagonal, styleShading, styleBorderColor, styleBorderWidth
+        case edgePadding, declaredHeight, minimumRowHeight, diagonal, styleShading, styleBorderColor, styleBorderWidth
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1688,6 +1694,7 @@ extension Cell: Decodable {
         padding = try c.decodeIfPresent(CGFloat.self, forKey: .padding)
         edgePadding = try c.decodeIfPresent(EdgePadding.self, forKey: .edgePadding)
         declaredHeight = try c.decodeIfPresent(CGFloat.self, forKey: .declaredHeight)
+        minimumRowHeight = try c.decodeIfPresent(CGFloat.self, forKey: .minimumRowHeight)
         diagonal = try c.decodeIfPresent(CellDiagonal.self, forKey: .diagonal)
         styleShading = try c.decodeIfPresent(WireColor.self, forKey: .styleShading)?.color
         styleBorderColor = try c.decodeIfPresent(WireColor.self, forKey: .styleBorderColor)?.color

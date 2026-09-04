@@ -1984,3 +1984,34 @@ this file tells you why, and why the obvious alternative does not work.
     table of tables stays a pipe table; a nested table inside a merged-cell grid goes through the
     `<raw>` path with the same `<br>`/`\|` shape. Tests: `OfficeMarkdownSerializerTests` (three),
     the two reader tests that used to pin flattening now pin the block shape.
+
+165. **A FORCED LINE BREAK IS U+2028 IN THE ATTRIBUTED STRING, NEVER `\n`.** The readers carry
+    `<w:br/>`, `text:line-break` and HWP's own break as `\n` inside a span, which is right for the
+    vocabulary (`--extract` folds it to a space) and wrong for TextKit, where `\n` is a PARAGRAPH
+    separator: the line after every forced break was charged the paragraph's own space-after, and
+    on a 137-page transcript whose every stanza is `<w:br/>`-joined (908 such lines) that was 4pt
+    a line — d4 of invariant 163 overshot Word by 3 pages AFTER the density fixes. Both builders
+    replace `\n` with U+2028 as the span's display text goes in, the way the markdown renderer
+    already joins a code block's lines (invariant 12's neighbourhood). d4 137 → 132 against
+    Word's 134. `DocxDensityTests` lays the three lines out and asserts the line before the break
+    is exactly the space-after shorter than the paragraph's last line.
+
+166. **A DOCX ROW HEIGHT IS A FLOOR, IT LIVES ON THE ROW, AND IT IS NOT `declaredHeight`.**
+    `w:trPr/w:trHeight` had never been read (its own comment said so). It is common — 475 of d6's
+    502 rows, 79 of d5's 179 — and most of it is a hair under the natural line (13.2–17pt at 9pt
+    type), so honouring it moves nothing there; where it binds (25.5pt rows holding a 10pt label)
+    the reader had drawn the row at the line's height. It is read into a NEW field,
+    `Cell.minimumRowHeight`, on every cell of the row, and NOT into `declaredHeight`: that field is
+    what a document DREW (HWP's per-cell height, an empty band's rule, invariant 152), and trying
+    it as a floor raised the reference manual 391 → 392 — a floor and a drawing are different
+    quantities, so they are different fields, and the accounting ledger counts a 51st table
+    decision for it. `w:hRule` is not distinguished: `atLeast` is a floor and `exact` is a floor
+    too for a reader that never clips content. **The floor is a paragraph attribute, not a block
+    one:** TextKit ignores `NSTextBlock`'s `.minimumHeight` outright (measured — 60pt asked, 15pt
+    drawn), so `TableBlockBuilder.singleLineRowFloor` raises `minimumLineHeight` on the cell's
+    paragraph, and only when the cell is ONE line that fits its content width unwrapped: a floor on
+    every line of a wrapping cell would multiply it, and a wrapped cell already exceeds a one-line
+    floor in every document measured. Screen is untouched (the reading rhythm is the theme's) and
+    an exact line height is the document's own. Page counts did not move on the six documents —
+    the rows that bind are rare — and the test is mutation-checked (the floor disabled → 0 against
+    30).

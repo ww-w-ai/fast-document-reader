@@ -1068,6 +1068,7 @@ impl super::DocxReader {
         let mut open_merge: std::collections::HashMap<usize, (usize, usize)> =
             std::collections::HashMap::new();
         for row in &row_nodes {
+            let row_height = Self::row_declared_height(row);
             let mut row_cells: Vec<Cell> = Vec::new();
             let mut row_positions: Vec<usize> = Vec::new();
             let mut grid_col: usize = 0;
@@ -1119,9 +1120,10 @@ impl super::DocxReader {
                         border_width,
                         edge_borders: None,
                         edge_borders_ref: None,
-                        // docx states a row height on `w:trPr/w:trHeight`, not on the cell — this
-                        // reader has never read it, so the honest answer here is "nothing said".
                         declared_height: None,
+                        // docx states a row height on `w:trPr/w:trHeight`, per ROW, and it is a
+                        // FLOOR; every cell of the row carries it (invariant 166).
+                        minimum_row_height: row_height,
                         width: Self::cell_width(tc_pr),
                         vertical_alignment: Self::cell_valign(tc_pr),
                         padding: resolved_margin,
@@ -1555,6 +1557,21 @@ impl super::DocxReader {
         // `<w:tc>` carries), and blank must stay blockless: a paged row with no text takes its height
         // from the document's declared band, and a phantom line would defeat that.
         if blocks.iter().all(|b| Self::is_empty_text_block(b)) { Vec::new() } else { blocks }
+    }
+
+    /// `w:trPr/w:trHeight/@w:val`, twips to points — the height Word holds the row to. `w:hRule`
+    /// is deliberately not distinguished: `atLeast` (the default) is a floor, and `exact` is a floor
+    /// too for this reader, which never clips content (invariant 166).
+    // swift: DocxReader.rowDeclaredHeight
+    fn row_declared_height(row: &XMLNode) -> Option<CGFloat> {
+        let val: f64 = row
+            .child("w:trPr")?
+            .child("w:trHeight")?
+            .attributes
+            .get("w:val")?
+            .parse()
+            .ok()?;
+        if val > 0.0 { Some(val / 20.0) } else { None }
     }
 
     /// Walks a paragraph (or a table cell's paragraph) collecting `w:r` runs into `Span`s,
