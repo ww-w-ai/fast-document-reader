@@ -968,6 +968,12 @@ impl TableBlockBuilder {
 
         // swift: TableBlockBuilder.build
         // the per-placement emission loop
+        // The block clones `table.base`, and the wire reads the grid from the block — so the grid
+        // geometry is written onto the base BEFORE the first clone is taken (invariant 162).
+        table.base.column_proportions = table.column_proportions.clone();
+        table.base.outer_margin_left = table.outer_margin_left;
+        table.base.outer_margin_right = table.outer_margin_right;
+        table.base.max_width = table.max_width;
         for (idx, placement) in placements.iter().enumerate() {
             let me = &info[idx];
             // `GridTextTableBlock`, not the bare AppKit class: a cell a page passes THROUGH has to

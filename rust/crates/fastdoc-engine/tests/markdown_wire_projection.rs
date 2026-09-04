@@ -127,3 +127,24 @@ fn what_one_real_document_weighs() {
     );
     assert!(!wire.layer_location.is_empty(), "an empty projection would report nothing");
 }
+
+/// A cell leaves the builder with a grid share, 7pt of padding, 1pt rules in the theme's rule
+/// colour and a tinted header row; the host must be handed exactly that, as roles, or it rebuilds
+/// a bare grid — every markdown table drew with no rules and no padding for as long as the wire
+/// carried only the cell's position (invariant 162).
+#[test]
+fn a_cell_carries_its_grid_padding_rules_and_tint() {
+    let wire = wire_for("| a | b |\n|---|---|\n| 1 | 2 |\n");
+    let table = &wire.tables[0];
+    assert_eq!(table.column_proportions.len(), 2, "one share per column");
+    assert!((table.column_proportions.iter().sum::<f64>() - 1.0).abs() < 1e-6, "sharing the whole width");
+    let blocks: Vec<_> = wire.paragraph_styles.iter().flat_map(|s| s.text_blocks.iter()).collect();
+    assert!(!blocks.is_empty());
+    assert!(blocks.iter().all(|b| b.padding.iter().all(|p| *p > 0.0)), "every cell keeps its padding: {blocks:?}");
+    assert!(blocks.iter().any(|b| b.border.iter().any(|w| *w > 0.0)), "the grid has rules: {blocks:?}");
+    let header = blocks.iter().find(|b| b.row == 0).expect("a header cell");
+    let tint = header.background.expect("the header row is tinted");
+    assert_eq!(wire.colors[tint as usize].role, "tableHeaderBg", "the tint travels as a role");
+    let (_, rule) = blocks.iter().flat_map(|b| b.border_colors.iter()).next().copied().expect("a rule has a colour");
+    assert_eq!(wire.colors[rule as usize].role, "tableBorder", "the rule colour travels as a role");
+}

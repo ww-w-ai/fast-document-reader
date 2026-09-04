@@ -167,6 +167,46 @@ final class MarkdownEngineParityTests: XCTestCase {
     // MARK: - comparison
 
     /// Every way the two strings' attributes differ, as sentences. Empty means identical.
+    /// The cell the engine sends is the cell the host's own builder makes: the same grid table
+    /// with the same column shares, the same subclass, the same width, padding, rules and tint.
+    /// For as long as the wire carried only a cell's position, every markdown table drew with no
+    /// rules and no padding and was skipped by every reflow (invariant 162).
+    func testATableCellCrossesTheWireWithItsGridPaddingRulesAndTint() throws {
+        let source = "| Document | What to look at |\n|---|---|\n| one | two |\n| three | four |\n"
+        let theme = RenderTheme.current(size: 16)
+        let host = MarkdownRenderer.render(source, theme: theme)
+        let engine = try XCTUnwrap(RustMarkdownEngine.render(source, theme: theme),
+                                   RustMarkdownEngine.lastFailure ?? "the engine returned nil")
+        let edges: [NSRectEdge] = [.minX, .minY, .maxX, .maxY]
+        for text in ["Document", "one", "four"] {
+            let h = try XCTUnwrap(Self.cell(in: host, at: text), "host \(text)")
+            let e = try XCTUnwrap(Self.cell(in: engine, at: text), "engine \(text)")
+            XCTAssertTrue(e is GridTextTableBlock, "\(text): the engine's cell is the host's own subclass")
+            let hg = try XCTUnwrap(h.table as? GridTextTable, "\(text): the host grid")
+            let eg = try XCTUnwrap(e.table as? GridTextTable, "\(text): the engine's table is the grid table")
+            XCTAssertEqual(eg.columnProportions, hg.columnProportions, "\(text): column shares")
+            XCTAssertEqual(e.contentWidth, h.contentWidth, accuracy: 0.01, "\(text): width")
+            for edge in edges {
+                XCTAssertEqual(e.width(for: .padding, edge: edge), h.width(for: .padding, edge: edge), accuracy: 0.01, "\(text): padding")
+                XCTAssertEqual(e.width(for: .border, edge: edge), h.width(for: .border, edge: edge), accuracy: 0.01, "\(text): rule")
+                XCTAssertEqual(e.borderColor(for: edge) != nil, h.borderColor(for: edge) != nil, "\(text): rule colour")
+            }
+            XCTAssertEqual(e.backgroundColor != nil, h.backgroundColor != nil, "\(text): tint")
+        }
+        // The comparison is of two FULL cells, not two empties.
+        let header = try XCTUnwrap(Self.cell(in: engine, at: "Document"))
+        XCTAssertNotNil(header.backgroundColor, "the header row is tinted")
+        XCTAssertGreaterThan(header.width(for: .padding, edge: .minX), 0, "the cell has padding")
+        XCTAssertGreaterThan(header.width(for: .border, edge: .minY) + header.width(for: .border, edge: .maxY), 0, "the grid has rules")
+    }
+
+    private static func cell(in s: NSAttributedString, at text: String) -> NSTextTableBlock? {
+        let r = (s.string as NSString).range(of: text)
+        guard r.location != NSNotFound else { return nil }
+        return (s.attribute(.paragraphStyle, at: r.location, effectiveRange: nil) as? NSParagraphStyle)?
+            .textBlocks.last as? NSTextTableBlock
+    }
+
     fileprivate static func differences(engine: NSAttributedString, host: NSAttributedString) -> [String] {
         var found: [String] = []
         let whole = NSRange(location: 0, length: host.length)

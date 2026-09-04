@@ -68,8 +68,11 @@ impl<T: Copy + Default> EdgeValues<T> {
 /// (rather than a trait) since the reader never subclasses it directly, only `NSTextTableBlock`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NSTextBlock {
-    widths: EdgeValues<CGFloat>,
-    width_types: EdgeValues<Option<NSTextBlockValueType>>,
+    /// One set of edge widths PER LAYER — padding, border, margin — the way AppKit keeps them.
+    /// A single set let the border write over the padding (whichever the builder set last won),
+    /// and nothing noticed until the wire read both back (invariant 162).
+    widths: [EdgeValues<CGFloat>; 3],
+    width_types: [EdgeValues<Option<NSTextBlockValueType>>; 3],
     border_colors: EdgeValues<Option<NSColor>>,
     content_width: Option<(CGFloat, NSTextBlockValueType)>,
     pub backgroundColor: Option<NSColor>,
@@ -82,15 +85,24 @@ impl NSTextBlock {
     }
 
     /// swift: .setWidth(_:type:for:) — the layer-uniform overload (all four edges at once).
-    pub fn setWidth(&mut self, value: CGFloat, r#type: NSTextBlockValueType, _for: NSTextBlockLayer) {
+    fn layer_index(layer: NSTextBlockLayer) -> usize {
+        match layer {
+            NSTextBlockLayer::Padding => 0,
+            NSTextBlockLayer::Border => 1,
+            NSTextBlockLayer::Margin => 2,
+        }
+    }
+
+    pub fn setWidth(&mut self, value: CGFloat, r#type: NSTextBlockValueType, layer: NSTextBlockLayer) {
+        let index = Self::layer_index(layer);
         for edge in [
             NSRectEdge::MinX,
             NSRectEdge::MaxX,
             NSRectEdge::MinY,
             NSRectEdge::MaxY,
         ] {
-            self.widths.set(edge, value);
-            self.width_types.set(edge, Some(r#type));
+            self.widths[index].set(edge, value);
+            self.width_types[index].set(edge, Some(r#type));
         }
     }
 
@@ -100,15 +112,16 @@ impl NSTextBlock {
         &mut self,
         value: CGFloat,
         r#type: NSTextBlockValueType,
-        _for: NSTextBlockLayer,
+        layer: NSTextBlockLayer,
         edge: NSRectEdge,
     ) {
-        self.widths.set(edge, value);
-        self.width_types.set(edge, Some(r#type));
+        let index = Self::layer_index(layer);
+        self.widths[index].set(edge, value);
+        self.width_types[index].set(edge, Some(r#type));
     }
 
-    pub fn width(&self, _for: NSTextBlockLayer, edge: NSRectEdge) -> CGFloat {
-        self.widths.get(edge)
+    pub fn width(&self, layer: NSTextBlockLayer, edge: NSRectEdge) -> CGFloat {
+        self.widths[Self::layer_index(layer)].get(edge)
     }
 
     pub fn setBorderColorForEdge(&mut self, color: NSColor, edge: NSRectEdge) {
@@ -296,6 +309,15 @@ pub struct NSTextTable {
     pub numberOfColumns: i32,
     pub collapsesBorders: bool,
     pub hidesEmptyCells: bool,
+    /// swift: `GridTextTable.columnProportions` / `.outerMarginLeft` / `.outerMarginRight` /
+    /// `.maxWidth` — the grid geometry AppKit keeps on a SUBCLASS. Here it lives on the table
+    /// itself, because a block holds a clone of the table and the wire reads the grid from the
+    /// block: a subclass field would not survive the clone, and a host rebuilding the table from
+    /// the wire would have no proportions to resize by (invariant 162).
+    pub column_proportions: Vec<CGFloat>,
+    pub outer_margin_left: CGFloat,
+    pub outer_margin_right: CGFloat,
+    pub max_width: Option<CGFloat>,
     /// Which table this IS, kept across clones.
     ///
     /// In AppKit `NSTextTable` is a class and every cell of one grid points at the same object;
@@ -317,6 +339,10 @@ impl Default for NSTextTable {
             numberOfColumns: 0,
             collapsesBorders: false,
             hidesEmptyCells: false,
+            column_proportions: Vec::new(),
+            outer_margin_left: 0.0,
+            outer_margin_right: 0.0,
+            max_width: None,
             id: next_table_id(),
         }
     }
@@ -329,6 +355,10 @@ impl PartialEq for NSTextTable {
             && self.numberOfColumns == other.numberOfColumns
             && self.collapsesBorders == other.collapsesBorders
             && self.hidesEmptyCells == other.hidesEmptyCells
+            && self.column_proportions == other.column_proportions
+            && self.outer_margin_left == other.outer_margin_left
+            && self.outer_margin_right == other.outer_margin_right
+            && self.max_width == other.max_width
     }
 }
 

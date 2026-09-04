@@ -50,7 +50,7 @@ use swiftshim::{AttrValue, NSAttributedString, NSAttributedStringKey, NSRange};
 
 /// Bumped when the shape below changes in a way a host built against the old one would misread.
 /// The host refuses a wire it does not know rather than reading fields that have moved.
-pub const MARKDOWN_WIRE_VERSION: u32 = 1;
+pub const MARKDOWN_WIRE_VERSION: u32 = 2;
 
 /// A font as the renderer MEANT it: which of the theme's three roles it came from, plus whatever
 /// traits were laid on top.
@@ -111,6 +111,21 @@ pub struct WireTable {
     pub columns: i32,
     pub collapses_borders: bool,
     pub hides_empty_cells: bool,
+    /// The grid: one share per column summing to 1, the outer margins and the width cap —
+    /// what the host's `resizeTables` re-solves a table by on every reflow. Without it the host
+    /// built a bare `NSTextTable`, which that pass skips (invariant 162).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_proportions: Vec<f64>,
+    #[serde(default)]
+    pub outer_margin_left: f64,
+    #[serde(default)]
+    pub outer_margin_right: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_width: Option<f64>,
+}
+
+fn all_zero(edges: &[f64; 4]) -> bool {
+    edges.iter().all(|w| *w == 0.0)
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -121,6 +136,21 @@ pub struct WireTableBlock {
     pub row_span: i32,
     pub column: i32,
     pub column_span: i32,
+    /// The cell's box, as the builder decided it — `minX, minY, maxX, maxY` for the two edge
+    /// arrays, colours as indices into the colour pool (a rule's colour is a theme ROLE, so it
+    /// resolves to the appearance drawing it, like every other colour on this wire). A block that
+    /// left the builder with padding, rules and a header tint and arrived at the host with none
+    /// is invariant 162.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_width: Option<f64>,
+    #[serde(default, skip_serializing_if = "all_zero")]
+    pub padding: [f64; 4],
+    #[serde(default, skip_serializing_if = "all_zero")]
+    pub border: [f64; 4],
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub border_colors: Vec<(i32, u32)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -367,6 +397,9 @@ impl ThemeRoles {
             ("systemPink", system_colors::systemPink()),
             ("systemTeal", system_colors::systemTeal()),
             ("secondaryLabel", system_colors::secondaryLabelColor()),
+            ("tableBorder", crate::render::render_theme::Palette::table_border()),
+            ("tableBorderAuthored", crate::render::render_theme::Palette::table_border_authored()),
+            ("tableHeaderBg", crate::render::render_theme::Palette::table_header_bg()),
         ] {
             colors.entry(color_key(&color)).or_insert(role.to_string());
         }
@@ -390,6 +423,61 @@ fn wire_table(table: &NSTextTable) -> WireTable {
         columns: table.numberOfColumns,
         collapses_borders: table.collapsesBorders,
         hides_empty_cells: table.hidesEmptyCells,
+        column_proportions: table.column_proportions.clone(),
+        outer_margin_left: table.outer_margin_left,
+        outer_margin_right: table.outer_margin_right,
+        max_width: table.max_width,
+    }
+}
+
+/// AppKit's `NSRectEdge` raw values, which is what the host decodes the edge as.
+const WIRE_EDGES: [(swiftshim::NSRectEdge, i32); 4] = [
+    (swiftshim::NSRectEdge::MinX, 0),
+    (swiftshim::NSRectEdge::MinY, 1),
+    (swiftshim::NSRectEdge::MaxX, 2),
+    (swiftshim::NSRectEdge::MaxY, 3),
+];
+
+fn interned_color(color: &NSColor, roles: &ThemeRoles, colors: &mut Pool<WireColor>) -> u32 {
+    let mut projected = wire_color(color);
+    if let Some(role) = roles.colors.get(&color_key(color)) {
+        projected.role = role.clone();
+    }
+    colors.intern(projected)
+}
+
+fn wire_table_block(
+    block: &NSTextTableBlock,
+    tables: &mut Pool<WireTable>,
+    roles: &ThemeRoles,
+    colors: &mut Pool<WireColor>,
+) -> WireTableBlock {
+    use swiftshim::NSTextBlockLayer;
+    let edge_widths = |layer: NSTextBlockLayer| -> [f64; 4] {
+        let mut out = [0.0; 4];
+        for (i, (edge, _)) in WIRE_EDGES.iter().enumerate() {
+            out[i] = block.base.width(layer, *edge);
+        }
+        out
+    };
+    WireTableBlock {
+        // Keyed by IDENTITY, never by the table's declaration: every markdown table declares the
+        // same thing, so pooling by value merged every table in a document into one grid.
+        table: tables.intern_by(block.table.identity(), || wire_table(&block.table)),
+        row: block.startingRow,
+        row_span: block.rowSpan,
+        column: block.startingColumn,
+        column_span: block.columnSpan,
+        content_width: block.base.contentWidth().map(|(width, _)| width),
+        padding: edge_widths(NSTextBlockLayer::Padding),
+        border: edge_widths(NSTextBlockLayer::Border),
+        border_colors: WIRE_EDGES
+            .iter()
+            .filter_map(|(edge, code)| {
+                block.base.borderColor(*edge).map(|c| (*code, interned_color(&c, roles, colors)))
+            })
+            .collect(),
+        background: block.base.backgroundColor.as_ref().map(|c| interned_color(c, roles, colors)),
     }
 }
 
@@ -418,7 +506,12 @@ fn appkit_writing_direction(direction: NSWritingDirection) -> i32 {
     }
 }
 
-fn wire_paragraph_style(style: &NSParagraphStyle, tables: &mut Pool<WireTable>) -> WireParagraphStyle {
+fn wire_paragraph_style(
+    style: &NSParagraphStyle,
+    tables: &mut Pool<WireTable>,
+    roles: &ThemeRoles,
+    colors: &mut Pool<WireColor>,
+) -> WireParagraphStyle {
     WireParagraphStyle {
         alignment: appkit_alignment(style.alignment),
         line_spacing: style.lineSpacing,
@@ -442,17 +535,7 @@ fn wire_paragraph_style(style: &NSParagraphStyle, tables: &mut Pool<WireTable>) 
         text_blocks: style
             .textBlocks
             .iter()
-            .map(|block: &NSTextTableBlock| WireTableBlock {
-                // Keyed by IDENTITY, never by the table's declaration. Every markdown table
-                // declares the same thing (n columns, borders collapsed), so pooling them by value
-                // merges every table in the document into one grid — measured, 60 tables in one
-                // document became 1, and AppKit then laid all sixty out as a single table.
-                table: tables.intern_by(block.table.identity(), || wire_table(&block.table)),
-                row: block.startingRow,
-                row_span: block.rowSpan,
-                column: block.startingColumn,
-                column_span: block.columnSpan,
-            })
+            .map(|block: &NSTextTableBlock| wire_table_block(block, tables, roles, colors))
             .collect(),
     }
 }
@@ -523,14 +606,10 @@ pub fn project(rendered: &NSAttributedString, theme: &RenderTheme) -> MarkdownWi
                     wire.layer_font[index] = fonts.intern(projected) as i32;
                 }
                 (NSAttributedStringKey::ForegroundColor, AttrValue::Color(c)) => {
-                    let mut projected = wire_color(c);
-                    if let Some(role) = roles.colors.get(&color_key(c)) {
-                        projected.role = role.clone();
-                    }
-                    wire.layer_color[index] = colors.intern(projected) as i32;
+                    wire.layer_color[index] = interned_color(c, &roles, &mut colors) as i32;
                 }
                 (NSAttributedStringKey::ParagraphStyle, AttrValue::ParagraphStyle(p)) => {
-                    let projected = wire_paragraph_style(p, &mut tables);
+                    let projected = wire_paragraph_style(p, &mut tables, &roles, &mut colors);
                     wire.layer_paragraph[index] = styles.intern(projected) as i32;
                 }
                 (NSAttributedStringKey::Attachment, AttrValue::Attachment(a)) => {

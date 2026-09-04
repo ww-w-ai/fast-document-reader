@@ -44,7 +44,19 @@ enum MarkdownWireMaterializer {
         // Built ONCE, before any layer is replayed: AppKit decides a grid by object identity, so
         // every cell of one table must be handed the same instance (see `MarkdownWire`'s doc).
         let tables = wire.tables.map { spec -> NSTextTable in
-            let table = NSTextTable()
+            // A table that carries its grid is rebuilt as the GRID table, or `resizeTables` — which
+            // keys on the subclass and its proportions — would skip it on every reflow.
+            let table: NSTextTable
+            if let proportions = spec.columnProportions, !proportions.isEmpty {
+                let grid = GridTextTable()
+                grid.columnProportions = proportions.map { CGFloat($0) }
+                grid.outerMarginLeft = CGFloat(spec.outerMarginLeft ?? 0)
+                grid.outerMarginRight = CGFloat(spec.outerMarginRight ?? 0)
+                grid.maxWidth = spec.maxWidth.map { CGFloat($0) }
+                table = grid
+            } else {
+                table = NSTextTable()
+            }
             table.numberOfColumns = max(1, Int(spec.columns))
             table.collapsesBorders = spec.collapsesBorders
             table.hidesEmptyCells = spec.hidesEmptyCells
@@ -52,7 +64,7 @@ enum MarkdownWireMaterializer {
         }
         let fonts = wire.fonts.map { font($0, theme: theme) }
         let colors = wire.colors.map { color($0, theme: theme) }
-        let styles = try wire.paragraphStyles.map { try paragraphStyle($0, tables: tables) }
+        let styles = try wire.paragraphStyles.map { try paragraphStyle($0, tables: tables, colors: colors) }
 
         // Extras arrive sorted by layer, so one walk over them keeps pace with the layer loop
         // rather than costing a dictionary of arrays.
@@ -170,7 +182,8 @@ enum MarkdownWireMaterializer {
         }
     }
 
-    private static func paragraphStyle(_ spec: MarkdownWire.ParagraphStyle, tables: [NSTextTable]) throws -> NSParagraphStyle {
+    private static func paragraphStyle(_ spec: MarkdownWire.ParagraphStyle, tables: [NSTextTable],
+                                       colors: [NSColor]) throws -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
         style.alignment = NSTextAlignment(rawValue: Int(spec.alignment)) ?? .natural
         style.lineSpacing = CGFloat(spec.lineSpacing)
@@ -197,13 +210,41 @@ enum MarkdownWireMaterializer {
                 return NSTextTab(textAlignment: alignment, location: CGFloat(pair[1]))
             }
         }
-        style.textBlocks = try spec.textBlocks.map { block in
-            let table = try element(tables, Int(block.table), "table")
-            return NSTextTableBlock(table: table,
-                                    startingRow: Int(block.row), rowSpan: Int(block.rowSpan),
-                                    startingColumn: Int(block.column), columnSpan: Int(block.columnSpan))
-        }
+        style.textBlocks = try spec.textBlocks.map { try tableBlock($0, tables: tables, colors: colors) }
         return style
+    }
+
+    /// The cell exactly as the builder left it: the same subclass the host's own builder makes
+    /// (its `drawBackground` is where a page band's cut through a cell is drawn), its width, its
+    /// padding and rules per edge, and its tint. The edge codes are AppKit's own `NSRectEdge`.
+    private static func tableBlock(_ spec: MarkdownWire.TableBlock, tables: [NSTextTable],
+                                   colors: [NSColor]) throws -> NSTextTableBlock {
+        let table = try element(tables, Int(spec.table), "table")
+        let cell = GridTextTableBlock(table: table,
+                                      startingRow: Int(spec.row), rowSpan: Int(spec.rowSpan),
+                                      startingColumn: Int(spec.column), columnSpan: Int(spec.columnSpan))
+        let edges: [NSRectEdge] = [.minX, .minY, .maxX, .maxY]
+        if let width = spec.contentWidth {
+            cell.setContentWidth(CGFloat(width), type: .absoluteValueType)
+        }
+        if let padding = spec.padding, padding.count == edges.count {
+            for (edge, value) in zip(edges, padding) {
+                cell.setWidth(CGFloat(value), type: .absoluteValueType, for: .padding, edge: edge)
+            }
+        }
+        if let border = spec.border, border.count == edges.count {
+            for (edge, value) in zip(edges, border) where value > 0 {
+                cell.setWidth(CGFloat(value), type: .absoluteValueType, for: .border, edge: edge)
+            }
+        }
+        for pair in spec.borderColors ?? [] where pair.count == 2 {
+            guard let edge = NSRectEdge(rawValue: UInt(max(0, pair[0]))) else { continue }
+            cell.setBorderColor(try element(colors, Int(pair[1]), "color"), for: edge)
+        }
+        if let background = spec.background {
+            cell.backgroundColor = try element(colors, Int(background), "color")
+        }
+        return cell
     }
 
     /// The box only. Which picture goes in it is carried by this layer's `mdImage`/`mdMermaid`/

@@ -43,7 +43,7 @@ struct MarkdownWire: Decodable {
     /// The version this build of the host knows how to replay. The engine stamps its own into `v`;
     /// a mismatch means the two halves were built from different sources, which is a build-system
     /// failure rather than a document one and must be loud.
-    static let supportedVersion: UInt32 = 1
+    static let supportedVersion: UInt32 = 2
 
     private enum CodingKeys: String, CodingKey {
         case v, text, fonts, colors
@@ -132,22 +132,40 @@ struct MarkdownWire: Decodable {
         var columns: Int32
         var collapsesBorders: Bool
         var hidesEmptyCells: Bool
+        /// The grid a `GridTextTable` is rebuilt from — absent on a wire that carried none.
+        var columnProportions: [Double]?
+        var outerMarginLeft: Double?
+        var outerMarginRight: Double?
+        var maxWidth: Double?
 
         private enum CodingKeys: String, CodingKey {
             case columns
             case collapsesBorders = "collapses_borders"
             case hidesEmptyCells = "hides_empty_cells"
+            case columnProportions = "column_proportions"
+            case outerMarginLeft = "outer_margin_left"
+            case outerMarginRight = "outer_margin_right"
+            case maxWidth = "max_width"
         }
     }
 
     struct TableBlock: Decodable {
         var table: UInt32
         var row: Int32, rowSpan: Int32, column: Int32, columnSpan: Int32
+        /// The cell's box: `minX, minY, maxX, maxY` widths, per-edge rule colours as
+        /// `[edge, colourIndex]` pairs, and the background — all indices into the colour pool.
+        var contentWidth: Double?
+        var padding: [Double]?
+        var border: [Double]?
+        var borderColors: [[Int64]]?
+        var background: UInt32?
 
         private enum CodingKeys: String, CodingKey {
-            case table, row, column
+            case table, row, column, padding, border, background
             case rowSpan = "row_span"
             case columnSpan = "column_span"
+            case contentWidth = "content_width"
+            case borderColors = "border_colors"
         }
     }
 

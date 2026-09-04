@@ -1840,3 +1840,36 @@ this file tells you why, and why the obvious alternative does not work.
     with them split once (a) closed each table at its edge; the toggle test now judges by the
     laid-out height dropping and bounds the page count, since fewer pages follows only when the
     gaps the carry gave back add up to a page.
+
+162. **THE MARKDOWN WIRE CARRIED A CELL'S POSITION AND NOTHING ELSE, SO EVERY MARKDOWN TABLE DREW
+    WITH NO RULES, NO PADDING AND NO HEADER TINT — AND THE SHIM UNDERNEATH COULD NOT HAVE SENT THEM.**
+    `TableBlockBuilder.build` leaves a cell with a 184pt width, 7pt of padding on every edge, 1pt
+    rules in `Palette.tableBorder` and the header row in `Palette.tableHeaderBg` — the host's own
+    unit render shows exactly that. The window did not: the app renders markdown through the
+    engine's wire, `WireTableBlock` carried `table/row/rowSpan/column/columnSpan` and `WireTable`
+    only a column count and two flags, and the materializer rebuilt a bare `NSTextTableBlock` in a
+    bare `NSTextTable`. Two consequences, both measured on the live text storage: every cell read
+    back `border=[0,0,0,0] pad=[0,0,0,0] bg=nil colW=0`, and `resizeTables` — which keys on the
+    `GridTextTable` subclass and its `columnProportions` — skipped every markdown table on every
+    reflow. Screen and `--pdf` agreed, and so did the shipped 1.4.1, which already carried the
+    markdown engine; the reader's own builder tests were green throughout because they never cross
+    the wire.
+
+    The wire is version 2 now. `WireTable` carries the grid (`column_proportions`, the outer
+    margins, `max_width`) and `WireTableBlock` the cell's box (`content_width`, `padding[4]`,
+    `border[4]` as `minX,minY,maxX,maxY`, `border_colors` as `(NSRectEdge raw, colour index)`
+    pairs, `background`), with the colours as theme ROLES — `tableBorder`, `tableBorderAuthored`,
+    `tableHeaderBg` — so a rule resolves against the appearance drawing it like every other colour
+    on the wire. The materializer builds a `GridTextTable` when the grid travels and always a
+    `GridTextTableBlock` (whose `drawBackground` is where a page band's cut through a cell is
+    drawn). The grid geometry lives on the shim's `NSTextTable` itself rather than on the Rust
+    `GridTextTable` wrapper, because a block holds a CLONE of the table and the wire reads the grid
+    from the block — a wrapper field does not survive the clone.
+
+    **The shim trap under it.** `swiftshim::NSTextBlock` kept ONE set of edge widths for all three
+    layers, so `setWidth(… for: .border)` wrote over the padding and whichever the builder set last
+    won; the first projection sent `border = [7,7,7,7]`. Nothing had noticed because nothing read a
+    layered width back until the wire did. Widths are per layer now — padding, border, margin — the
+    way AppKit keeps them. `MarkdownEngineParityTests` compares the engine's cell to the host's
+    field by field (subclass, grid shares, width, padding, rules, rule colour, tint) and refuses two
+    empties; `markdown_wire_projection` asserts the roles arrive on the Rust side.
