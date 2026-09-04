@@ -165,7 +165,7 @@ impl OfficeMarkdownSerializer {
 
     // swift: OfficeMarkdownSerializer.isSimpleGrid
     /// A grid a GFM pipe table can hold: rectangular, no merged cells, and every cell's content is
-    /// plain paragraph text (no nested table, list, image, or formula inside a cell).
+    /// paragraph text or a nested table that is itself such a grid (invariant 164).
     fn is_simple_grid(rows: &[Vec<crate::render::office::office_block::Cell>]) -> bool {
         use crate::render::office::office_block::OfficeBlock;
         use std::collections::HashSet;
@@ -188,6 +188,7 @@ impl OfficeMarkdownSerializer {
                 for b in &cell.blocks {
                     match b {
                         OfficeBlock::Paragraph { .. } => continue,
+                        OfficeBlock::Table { rows: nested, .. } if Self::is_simple_grid(nested) => continue,
                         _ => return false,
                     }
                 }
@@ -245,14 +246,30 @@ impl OfficeMarkdownSerializer {
         use crate::render::office::office_block::OfficeBlock;
         let mut parts: Vec<String> = Vec::new();
         for b in &cell.blocks {
-            if let OfficeBlock::Paragraph { spans, .. } = b {
-                let s = Self::inline(spans, true);
-                if !s.is_empty() {
-                    parts.push(s);
+            match b {
+                OfficeBlock::Paragraph { spans, .. } => {
+                    let s = Self::inline(spans, true);
+                    if !s.is_empty() {
+                        parts.push(s);
+                    }
                 }
+                OfficeBlock::Table { rows, .. } => {
+                    for row in rows {
+                        let line = row
+                            .iter()
+                            .map(|c| Self::cell_inline(c))
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" \\| ");
+                        if !line.is_empty() {
+                            parts.push(line);
+                        }
+                    }
+                }
+                _ => continue,
             }
         }
-        parts.join(" ")
+        parts.join("<br>")
     }
 
     // swift: OfficeMarkdownSerializer.plainCell
@@ -261,9 +278,10 @@ impl OfficeMarkdownSerializer {
             .blocks
             .iter()
             .map(|b| Self::plain_block(b))
+            .filter(|s| !s.is_empty())
             .collect::<Vec<_>>()
-            .join(" ");
-        joined.replace('\n', " ")
+            .join("<br>");
+        joined.replace('\n', "<br>")
     }
 
     // MARK: - Inline spans
@@ -432,16 +450,20 @@ impl OfficeMarkdownSerializer {
             OfficeBlock::ListItem { spans, .. } => {
                 spans.iter().map(|s| s.text.to_string()).collect::<Vec<_>>().join("")
             }
+            // A table INSIDE a raw cell: its own cells split by an escaped bar so they cannot be
+            // mistaken for the outer row's separators, its rows by the cell's own line break.
             OfficeBlock::Table { rows, .. } => rows
                 .iter()
                 .map(|row| {
                     row.iter()
                         .map(|c| Self::plain_cell(c))
+                        .filter(|s| !s.is_empty())
                         .collect::<Vec<_>>()
-                        .join(" | ")
+                        .join(" \\| ")
                 })
+                .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
-                .join("\n"),
+                .join("<br>"),
             OfficeBlock::Image { id, .. } => format!("[image {}]", id),
             OfficeBlock::UnsupportedGraphic { label, .. } => format!("[{}]", label),
             OfficeBlock::Formula { latex } => latex.to_string(),

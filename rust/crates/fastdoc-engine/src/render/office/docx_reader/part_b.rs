@@ -1510,11 +1510,9 @@ impl super::DocxReader {
     /// it does across an ordinary paragraph. A numbered item inside a cell therefore continues the
     /// document's numbering, never restarts at 1.
     ///
-    /// Three of the same places `collectCellSpans` already knew text could hide — `w:p`, `w:sdt`, a
-    /// nested `w:tbl` — but a nested table is still FLATTENED to a single `.paragraph` of spans
-    /// (`flattenNestedTable`/`collectCellSpans`, unchanged), never a real nested `.table` block: that
-    /// was decided earlier and is enforced again by the renderer, and this sprint's brief is
-    /// explicit that it must not change.
+    /// A nested `w:tbl` is a REAL `.table` block inside the cell — read by the same `parseTable`
+    /// as a body table, so its grid, merges, borders and every paragraph inside it survive into the
+    /// vocabulary; whether to draw it as a grid is the renderer's decision (invariant 164).
     ///
     /// An empty paragraph — Word's own placeholder for a cell the author left blank, or the stray
     /// `<w:p/>` a genuinely empty cell always carries (a `<w:tc>` is never bodiless in real OOXML) —
@@ -1537,18 +1535,9 @@ impl super::DocxReader {
                 "w:p" => blocks.extend(Self::parse_paragraph(
                     child, style_info, numbering, relationships, notes, comments, list_state,
                 )),
-                "w:tbl" => {
-                    let spans = Self::flatten_nested_table(
-                        child, style_info, relationships, notes, comments,
-                    );
-                    if !spans.is_empty() {
-                        blocks.push(OfficeBlock::Paragraph {
-                            spans, rtl: false, alignment: None, tab_stops: Vec::new(),
-                            format: Default::default(),
-                            format_ref: None,
-                        });
-                    }
-                }
+                "w:tbl" => blocks.push(Self::parse_table(
+                    child, style_info, numbering, relationships, notes, comments, list_state,
+                )),
                 "w:sdt" => {
                     if let Some(content) = child.child("w:sdtContent") {
                         blocks.extend(Self::collect_cell_blocks(
@@ -1566,70 +1555,6 @@ impl super::DocxReader {
         // `<w:tc>` carries), and blank must stay blockless: a paged row with no text takes its height
         // from the document's declared band, and a phantom line would defeat that.
         if blocks.iter().all(|b| Self::is_empty_text_block(b)) { Vec::new() } else { blocks }
-    }
-
-    /// A cell's content as plain spans, no block structure — used ONLY by `flattenNestedTable`,
-    /// which deliberately squashes a nested table's grid down to text (`Cell` has no room for a
-    /// second, real nested `.table` block). `collectCellBlocks` above is what a table's OWN cells
-    /// go through now; this stays exactly as it was for the flatten-only path.
-    // swift: DocxReader.collectCellSpans
-    fn collect_cell_spans(
-        tc: &XMLNode,
-        style_info: &StyleInfo,
-        relationships: &Relationships,
-        notes: &NoteNumbering,
-        comments: &CommentRangeTracking,
-    ) -> Vec<Span> {
-        let mut spans: Vec<Span> = Vec::new();
-        for child in &tc.children {
-            match child.name.as_str() {
-                "w:p" => spans.extend(Self::collect_spans(
-                    child, style_info, relationships, notes, comments,
-                )),
-                "w:tbl" => spans.extend(Self::flatten_nested_table(
-                    child, style_info, relationships, notes, comments,
-                )),
-                "w:sdt" => {
-                    if let Some(content) = child.child("w:sdtContent") {
-                        spans.extend(Self::collect_cell_spans(
-                            content, style_info, relationships, notes, comments,
-                        ));
-                    }
-                }
-                _ => continue,
-            }
-        }
-        spans
-    }
-
-    /// Flattens a nested table's cells into one run of spans — a tab between cells, a newline
-    /// after each non-empty row — so a reader glancing at the flattened text can still tell where
-    /// one cell ended and the next began, even though the grid itself is gone. Recurses through
-    /// `collectCellSpans`, so a table nested inside a nested table (and a content control inside
-    /// THAT) also survives — no depth cap is enforced; real documents don't go more than one or
-    /// two levels, per the research survey.
-    // swift: DocxReader.flattenNestedTable
-    fn flatten_nested_table(
-        table: &XMLNode,
-        style_info: &StyleInfo,
-        relationships: &Relationships,
-        notes: &NoteNumbering,
-        comments: &CommentRangeTracking,
-    ) -> Vec<Span> {
-        let mut spans: Vec<Span> = Vec::new();
-        for row in table.children.iter().filter(|n| n.name == "w:tr") {
-            let mut row_has_content = false;
-            for cell in row.children.iter().filter(|n| n.name == "w:tc") {
-                let cell_spans =
-                    Self::collect_cell_spans(cell, style_info, relationships, notes, comments);
-                if cell_spans.is_empty() { continue; }
-                if row_has_content { spans.push(Span { text: "\t".into(), ..Default::default() }); }
-                spans.extend(cell_spans);
-                row_has_content = true;
-            }
-            if row_has_content { spans.push(Span { text: "\n".into(), ..Default::default() }); }
-        }
-        spans
     }
 
     /// Walks a paragraph (or a table cell's paragraph) collecting `w:r` runs into `Span`s,

@@ -136,7 +136,10 @@ enum OfficeMarkdownSerializer {
     }
 
     /// A grid a GFM pipe table can hold: rectangular, no merged cells, and every cell's content is
-    /// plain paragraph text (no nested table, list, image, or formula inside a cell).
+    /// paragraph text or a nested table that is itself such a grid (no list, image, or formula
+    /// inside a cell). A nested grid is written INTO the cell — rows split by `<br>`, cells by an
+    /// escaped bar — so a form laid out as a table of tables keeps every field on its own line
+    /// (invariant 164).
     private static func isSimpleGrid(_ rows: [[Cell]]) -> Bool {
         let widths = Set(rows.map { $0.count })
         guard widths.count == 1, let width = widths.first, width > 0 else { return false }
@@ -144,8 +147,11 @@ enum OfficeMarkdownSerializer {
             for cell in row {
                 if cell.rowSpan != 1 || cell.colSpan != 1 { return false }
                 for b in cell.blocks {
-                    if case .paragraph = b { continue }
-                    return false
+                    switch b {
+                    case .paragraph: continue
+                    case let .table(nested, _, _, _): if isSimpleGrid(nested) { continue } else { return false }
+                    default: return false
+                    }
                 }
             }
         }
@@ -175,20 +181,32 @@ enum OfficeMarkdownSerializer {
         return lines.joined(separator: "\n")
     }
 
+    /// Every paragraph of a cell on its own line (`<br>`, the one line break a pipe cell can
+    /// carry); a nested table as its rows, each row's cells split by an escaped bar. Joining
+    /// paragraphs with a space ran an author's sentences together — "…합니다.2. 인감…" on a real
+    /// registration form (invariant 164).
     private static func cellInline(_ cell: Cell) -> String {
         var parts: [String] = []
         for b in cell.blocks {
-            if case let .paragraph(spans, _, _, _, _) = b {
+            switch b {
+            case let .paragraph(spans, _, _, _, _):
                 let s = inline(spans, inCell: true)
                 if !s.isEmpty { parts.append(s) }
+            case let .table(rows, _, _, _):
+                for row in rows {
+                    let line = row.map { cellInline($0) }.filter { !$0.isEmpty }.joined(separator: " \\| ")
+                    if !line.isEmpty { parts.append(line) }
+                }
+            default:
+                continue
             }
         }
-        return parts.joined(separator: " ")
+        return parts.joined(separator: "<br>")
     }
 
     private static func plainCell(_ cell: Cell) -> String {
-        cell.blocks.map { plainBlock($0) }.joined(separator: " ")
-            .replacingOccurrences(of: "\n", with: " ")
+        cell.blocks.map { plainBlock($0) }.filter { !$0.isEmpty }.joined(separator: "<br>")
+            .replacingOccurrences(of: "\n", with: "<br>")
     }
 
     // MARK: - Inline spans
@@ -300,7 +318,10 @@ enum OfficeMarkdownSerializer {
         case let .paragraph(spans, _, _, _, _): return spans.map(\.text).joined()
         case let .listItem(_, _, spans, _, _, _, _, _, _): return spans.map(\.text).joined()
         case let .table(rows, _, _, _):
-            return rows.map { $0.map { plainCell($0) }.joined(separator: " | ") }.joined(separator: "\n")
+            // A table INSIDE a raw cell: its own cells split by an escaped bar so they cannot be
+            // mistaken for the outer row's separators, its rows by the cell's own line break.
+            return rows.map { $0.map { plainCell($0) }.filter { !$0.isEmpty }.joined(separator: " \\| ") }
+                .filter { !$0.isEmpty }.joined(separator: "<br>")
         case let .image(id, _, _): return "[image \(id)]"
         case let .unsupportedGraphic(label, _, _): return "[\(label)]"
         case let .formula(latex): return latex

@@ -1993,10 +1993,8 @@ impl OdtReader {
     /// counts a cell's list items the same way it already counts the body's, so nothing extra is
     /// threaded through here for numbering to "continue" — there is no reader-level counter to share.
     ///
-    /// A nested `<table:table>` is still FLATTENED to a single `.paragraph` of spans
-    /// (`flattenNestedTable`/`collectCellSpans`, unchanged), never a real nested `.table` block — the
-    /// same depth-1 shortcut the body's own top-level table already uses, and this sprint's brief is
-    /// explicit that it must not change. An empty paragraph is filtered with the SAME
+    /// A nested `<table:table>` is a REAL `.table` block inside the cell — read by the same
+    /// `parseTable` as a body table (invariant 164). An empty paragraph is filtered with the SAME
     /// `isEmptyTextBlock` check above: a truly empty cell must produce no block at all, never a
     /// phantom `.paragraph(spans: [])` standing in for "nothing here".
     // swift: OdtReader.collectCellBlocks
@@ -2048,10 +2046,7 @@ impl OdtReader {
                     blocks.extend(Self::parse_list(&child, 0, None, styles, archive, notes));
                 }
                 "table:table" => {
-                    let spans = Self::flatten_nested_table(&child, &styles.text_styles, notes);
-                    if !spans.is_empty() {
-                        blocks.push(OfficeBlock::Paragraph { spans, rtl: false, alignment: None, tab_stops: vec![], format: ParagraphFormat::default(), format_ref: None });
-                    }
+                    blocks.push(Self::parse_table(&child, styles, archive, notes));
                 }
                 _ => continue,
             }
@@ -2059,57 +2054,6 @@ impl OdtReader {
         blocks.into_iter().filter(|b| !Self::is_empty_text_block(b)).collect()
     }
 
-    /// A cell's content as plain spans, no block structure — used ONLY by `flattenNestedTable`,
-    /// which deliberately squashes a nested table's grid down to text (`Cell` has no room for a
-    /// second, real nested `.table` block). `collectCellBlocks` above is what a table's OWN cells
-    /// go through now; this stays exactly as it was for the flatten-only path.
-    // swift: OdtReader.collectCellSpans
-    fn collect_cell_spans(cell: &Ref<XMLNode>, text_styles: &std::collections::HashMap<String, TextStyle>, notes: &NoteCollector) -> Vec<Span> {
-        let mut spans: Vec<Span> = Vec::new();
-        for child in XMLNode::children(cell) {
-            match XMLNode::name(&child).as_str() {
-                "text:p" | "text:h" => {
-                    spans.extend(Self::collect_spans(&child, &TextStyle::default(), text_styles, notes));
-                }
-                "table:table" => {
-                    spans.extend(Self::flatten_nested_table(&child, text_styles, notes));
-                }
-                _ => continue,
-            }
-        }
-        spans
-    }
-
-    /// Flattens a nested table's cells into one run of spans — a tab between cells, a newline after
-    /// each non-empty row — so a reader glancing at the flattened text can still tell where one cell
-    /// ended and the next began, even though the grid itself is gone. Recurses through
-    /// `collectCellSpans`, so a table nested inside a nested table also survives (no depth cap is
-    /// enforced; real documents don't go more than one or two levels, per the research survey).
-    // swift: OdtReader.flattenNestedTable
-    fn flatten_nested_table(table: &Ref<XMLNode>, text_styles: &std::collections::HashMap<String, TextStyle>, notes: &NoteCollector) -> Vec<Span> {
-        let rows: Vec<Ref<XMLNode>> = XMLNode::children(table).into_iter().flat_map(|node| -> Vec<Ref<XMLNode>> {
-            if XMLNode::name(&node) == "table:table-header-rows" {
-                return XMLNode::children(&node).into_iter().filter(|c| XMLNode::name(c) == "table:table-row").collect();
-            }
-            if XMLNode::name(&node) == "table:table-row" {
-                return vec![node];
-            }
-            Vec::new()
-        }).collect();
-        let mut spans: Vec<Span> = Vec::new();
-        for row in rows {
-            let mut row_has_content = false;
-            for cell in XMLNode::children(&row).into_iter().filter(|c| XMLNode::name(c) == "table:table-cell") {
-                let cell_spans = Self::collect_cell_spans(&cell, text_styles, notes);
-                if cell_spans.is_empty() { continue; }
-                if row_has_content { spans.push(Span { text: "\t".to_string().into(), ..Default::default() }); }
-                spans.extend(cell_spans);
-                row_has_content = true;
-            }
-            if row_has_content { spans.push(Span { text: "\n".to_string().into(), ..Default::default() }); }
-        }
-        spans
-    }
 }
 
 impl OdtReader {

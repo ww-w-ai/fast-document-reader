@@ -2970,11 +2970,9 @@ enum DocxReader: OfficeDocumentReader {
     /// it does across an ordinary paragraph. A numbered item inside a cell therefore continues the
     /// document's numbering, never restarts at 1.
     ///
-    /// Three of the same places `collectCellSpans` already knew text could hide — `w:p`, `w:sdt`, a
-    /// nested `w:tbl` — but a nested table is still FLATTENED to a single `.paragraph` of spans
-    /// (`flattenNestedTable`/`collectCellSpans`, unchanged), never a real nested `.table` block: that
-    /// was decided earlier and is enforced again by the renderer, and this sprint's brief is
-    /// explicit that it must not change.
+    /// A nested `w:tbl` is a REAL `.table` block inside the cell — read by the same `parseTable`
+    /// as a body table, so its grid, merges, borders and every paragraph inside it survive into the
+    /// vocabulary; whether to draw it as a grid is the renderer's decision (invariant 164).
     ///
     /// An empty paragraph — Word's own placeholder for a cell the author left blank, or the stray
     /// `<w:p/>` a genuinely empty cell always carries (a `<w:tc>` is never bodiless in real OOXML) —
@@ -2993,8 +2991,9 @@ enum DocxReader: OfficeDocumentReader {
                     child, styleInfo: styleInfo, numbering: numbering, relationships: relationships, notes: notes, comments: comments,
                     listState: listState))
             case "w:tbl":
-                let spans = flattenNestedTable(child, styleInfo: styleInfo, relationships: relationships, notes: notes, comments: comments)
-                if !spans.isEmpty { blocks.append(.paragraph(spans: spans)) }
+                blocks.append(parseTable(
+                    child, styleInfo: styleInfo, numbering: numbering, relationships: relationships,
+                    notes: notes, comments: comments, listState: listState))
             case "w:sdt":
                 if let content = child.child("w:sdtContent") {
                     blocks.append(contentsOf: collectCellBlocks(
@@ -3006,51 +3005,6 @@ enum DocxReader: OfficeDocumentReader {
             }
         }
         return blocks.filter { !isEmptyTextBlock($0) }
-    }
-
-    /// A cell's content as plain spans, no block structure — used ONLY by `flattenNestedTable`,
-    /// which deliberately squashes a nested table's grid down to text (`Cell` has no room for a
-    /// second, real nested `.table` block). `collectCellBlocks` above is what a table's OWN cells
-    /// go through now; this stays exactly as it was for the flatten-only path.
-    private static func collectCellSpans(_ tc: XMLNode, styleInfo: StyleInfo, relationships: Relationships, notes: NoteNumbering, comments: CommentRangeTracking) -> [Span] {
-        var spans: [Span] = []
-        for child in tc.children {
-            switch child.name {
-            case "w:p":
-                spans.append(contentsOf: collectSpans(in: child, styleInfo: styleInfo, relationships: relationships, notes: notes, comments: comments))
-            case "w:tbl":
-                spans.append(contentsOf: flattenNestedTable(child, styleInfo: styleInfo, relationships: relationships, notes: notes, comments: comments))
-            case "w:sdt":
-                if let content = child.child("w:sdtContent") {
-                    spans.append(contentsOf: collectCellSpans(content, styleInfo: styleInfo, relationships: relationships, notes: notes, comments: comments))
-                }
-            default:
-                continue
-            }
-        }
-        return spans
-    }
-
-    /// Flattens a nested table's cells into one run of spans — a tab between cells, a newline
-    /// after each non-empty row — so a reader glancing at the flattened text can still tell where
-    /// one cell ended and the next began, even though the grid itself is gone. Recurses through
-    /// `collectCellSpans`, so a table nested inside a nested table (and a content control inside
-    /// THAT) also survives — no depth cap is enforced; real documents don't go more than one or
-    /// two levels, per the research survey.
-    private static func flattenNestedTable(_ table: XMLNode, styleInfo: StyleInfo, relationships: Relationships, notes: NoteNumbering, comments: CommentRangeTracking) -> [Span] {
-        var spans: [Span] = []
-        for row in table.children where row.name == "w:tr" {
-            var rowHasContent = false
-            for cell in row.children where cell.name == "w:tc" {
-                let cellSpans = collectCellSpans(cell, styleInfo: styleInfo, relationships: relationships, notes: notes, comments: comments)
-                guard !cellSpans.isEmpty else { continue }
-                if rowHasContent { spans.append(Span(text: "\t")) }
-                spans.append(contentsOf: cellSpans)
-                rowHasContent = true
-            }
-            if rowHasContent { spans.append(Span(text: "\n")) }
-        }
-        return spans
     }
 
     /// Walks a paragraph (or a table cell's paragraph) collecting `w:r` runs into `Span`s,

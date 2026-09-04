@@ -103,6 +103,32 @@ final class OfficeMarkdownSerializerTests: XCTestCase {
         XCTAssertFalse(s.contains("| --- |"), "a merged table must NOT be emitted as a pipe table")
     }
 
+    func testEveryParagraphOfACellKeepsItsOwnLine() {
+        // Joined with a space, an author's two sentences ran together ("…합니다.2. 인감…" on a real
+        // registration form); `<br>` is the one line break a pipe cell can carry.
+        let two = Cell(blocks: [.paragraph(spans: [Span(text: "첨부하여야 합니다.")]),
+                                .paragraph(spans: [Span(text: "2. 인감을 날인합니다.")])])
+        let s = md([.table(rows: [[two, cell("b")]], headerRows: 1)])
+        XCTAssertTrue(s.contains("| 첨부하여야 합니다.<br>2. 인감을 날인합니다. | b |"), s)
+    }
+
+    func testANestedTableIsWrittenIntoItsCellRowByRow() {
+        let inner: OfficeBlock = .table(rows: [[cell("성명"), cell("김")], [cell("주소"), cell("수원")]], headerRows: 0)
+        let outer = Cell(blocks: [.paragraph(spans: [Span(text: "인감제출자")]), inner])
+        let s = md([.table(rows: [[outer, cell("b")]], headerRows: 1)])
+        XCTAssertTrue(s.contains("| 인감제출자<br>성명 \\| 김<br>주소 \\| 수원 | b |"), s)
+        XCTAssertFalse(s.contains(OfficeMarkdownSerializer.rawOpen), "a nested simple grid keeps the pipe table")
+    }
+
+    func testANestedTableInsideAMergedGridStaysReadableInRaw() {
+        let inner: OfficeBlock = .table(rows: [[cell("a"), cell("b")]], headerRows: 0)
+        let rows = [[Cell(blocks: [.paragraph(spans: [Span(text: "wide")]), inner], colSpan: 2)],
+                    [cell("x"), cell("y")]]
+        let s = md([.table(rows: rows, headerRows: 0)])
+        XCTAssertTrue(s.contains(OfficeMarkdownSerializer.rawOpen), s)
+        XCTAssertTrue(s.contains("wide<br>a \\| b"), "the nested cells stay apart from the outer row's bars, got \(s)")
+    }
+
     func testBlockContentInCellDegradesToRaw() {
         // A list item inside a cell is more than a pipe table can hold → raw, not a fabricated grid.
         let rows = [[Cell(blocks: [.listItem(level: 0, ordered: false, spans: [Span(text: "x")])]), cell("b")]]

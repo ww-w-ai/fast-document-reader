@@ -1666,10 +1666,8 @@ enum OdtReader: OfficeDocumentReader {
     /// counts a cell's list items the same way it already counts the body's, so nothing extra is
     /// threaded through here for numbering to "continue" — there is no reader-level counter to share.
     ///
-    /// A nested `<table:table>` is still FLATTENED to a single `.paragraph` of spans
-    /// (`flattenNestedTable`/`collectCellSpans`, unchanged), never a real nested `.table` block — the
-    /// same depth-1 shortcut the body's own top-level table already uses, and this sprint's brief is
-    /// explicit that it must not change. An empty paragraph is filtered with the SAME
+    /// A nested `<table:table>` is a REAL `.table` block inside the cell — read by the same
+    /// `parseTable` as a body table (invariant 164). An empty paragraph is filtered with the SAME
     /// `isEmptyTextBlock` check above: a truly empty cell must produce no block at all, never a
     /// phantom `.paragraph(spans: [])` standing in for "nothing here".
     private static func collectCellBlocks(_ cell: XMLNode, styles: ParsedStyles, archive: ZipArchive, notes: NoteCollector) -> [OfficeBlock] {
@@ -1703,58 +1701,12 @@ enum OdtReader: OfficeDocumentReader {
                 blocks.append(contentsOf: parseList(
                     child, level: 0, inheritedStyleName: nil, styles: styles, archive: archive, notes: notes))
             case "table:table":
-                let spans = flattenNestedTable(child, textStyles: styles.textStyles, notes: notes)
-                if !spans.isEmpty { blocks.append(.paragraph(spans: spans)) }
+                blocks.append(parseTable(child, styles: styles, archive: archive, notes: notes))
             default:
                 continue
             }
         }
         return blocks.filter { !isEmptyTextBlock($0) }
-    }
-
-    /// A cell's content as plain spans, no block structure — used ONLY by `flattenNestedTable`,
-    /// which deliberately squashes a nested table's grid down to text (`Cell` has no room for a
-    /// second, real nested `.table` block). `collectCellBlocks` above is what a table's OWN cells
-    /// go through now; this stays exactly as it was for the flatten-only path.
-    private static func collectCellSpans(_ cell: XMLNode, textStyles: [String: TextStyle], notes: NoteCollector) -> [Span] {
-        var spans: [Span] = []
-        for child in cell.children {
-            switch child.name {
-            case "text:p", "text:h":
-                spans.append(contentsOf: collectSpans(in: child, style: TextStyle(), textStyles: textStyles, notes: notes))
-            case "table:table":
-                spans.append(contentsOf: flattenNestedTable(child, textStyles: textStyles, notes: notes))
-            default:
-                continue
-            }
-        }
-        return spans
-    }
-
-    /// Flattens a nested table's cells into one run of spans — a tab between cells, a newline after
-    /// each non-empty row — so a reader glancing at the flattened text can still tell where one cell
-    /// ended and the next began, even though the grid itself is gone. Recurses through
-    /// `collectCellSpans`, so a table nested inside a nested table also survives (no depth cap is
-    /// enforced; real documents don't go more than one or two levels, per the research survey).
-    private static func flattenNestedTable(_ table: XMLNode, textStyles: [String: TextStyle], notes: NoteCollector) -> [Span] {
-        let rows = table.children.flatMap { node -> [XMLNode] in
-            if node.name == "table:table-header-rows" { return node.children.filter { $0.name == "table:table-row" } }
-            if node.name == "table:table-row" { return [node] }
-            return []
-        }
-        var spans: [Span] = []
-        for row in rows {
-            var rowHasContent = false
-            for cell in row.children where cell.name == "table:table-cell" {
-                let cellSpans = collectCellSpans(cell, textStyles: textStyles, notes: notes)
-                guard !cellSpans.isEmpty else { continue }
-                if rowHasContent { spans.append(Span(text: "\t")) }
-                spans.append(contentsOf: cellSpans)
-                rowHasContent = true
-            }
-            if rowHasContent { spans.append(Span(text: "\n")) }
-        }
-        return spans
     }
 
     // MARK: Images — draw:frame > draw:image

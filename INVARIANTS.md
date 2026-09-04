@@ -1950,3 +1950,37 @@ this file tells you why, and why the obvious alternative does not work.
     continuation line, which Word does not do. Tests: `DocxDensityTests` (eight, through the real
     `readOffice` dispatch and the real builder; the ratio-table mutation is caught), `office_accounting`
     at 75 decisions, and the two rewritten placement tests.
+
+164. **A NESTED TABLE IS A TABLE — the readers no longer flatten it, and the serializer writes it
+    into its cell.** "Nested tables flatten to text" was a standing decision applied at parse time
+    by both docx and odt readers (`flattenNestedTable`/`collectCellSpans`: every inner cell's
+    paragraphs concatenated, a tab between cells, a newline after each row). It cost two things
+    that were measured on a real registration form (d1 of invariant 163). On paper, the inner
+    grids' rows collapsed — table B 124pt in Word against 70 here, table C 207 against 82 — which
+    was the whole of that document's one-page deficit; with the grid kept, the same renderer
+    prints it at Word's 2 pages. In `--extract`, an author's sentences ran together
+    ("…첨부하여야 합니다.2. 인감…") because a nested cell's paragraphs were joined with nothing,
+    which is worse than useless to an AI reading the extraction. HWP had ALREADY been delivering
+    nested tables as real `.table` blocks inside `Cell.blocks` (rhwp exports them, and
+    `office_feature_fixtures` asserts it), so the vocabulary and the renderer's cell path were
+    both in place; only docx and odt were still flattening. Both now hand a nested `w:tbl` /
+    `table:table` to the same `parseTable` as a body table, and the four flatten helpers are gone
+    (Swift and Rust alike — the port gate counts 689 declarations, four fewer).
+
+    **What draws it.** `OfficeTextBuilder.cellContent` still lays a nested table out as text —
+    `flattenTableToText`, a tab between cells and a newline after each row — but per inner cell
+    through `cellContent` itself, so every inner paragraph keeps its own line and its own
+    paragraph spacing. That is why the page count moved without touching `TableBlockBuilder`.
+    A real inner `NSTextTable` (TextKit nests them through `textBlocks`) is the next step and is
+    NOT this one: `TableBlockBuilder` re-stamps `ps.textBlocks = [block]` over every run of a cell
+    (it would have to prepend), the width solver would need the outer cell's content width as its
+    table width, and the paged path's row-boundary cuts (invariants 61/64/72) have never seen an
+    inner grid.
+
+    **What `--extract` writes.** A cell's paragraphs are split by `<br>` — the one line break a
+    GFM pipe cell can carry — and a nested table is written into its cell row by row, its cells
+    split by an escaped bar (`a \| b`) so they cannot be read as the outer row's separators.
+    `isSimpleGrid` admits a nested table that is itself a simple grid, so a form laid out as a
+    table of tables stays a pipe table; a nested table inside a merged-cell grid goes through the
+    `<raw>` path with the same `<br>`/`\|` shape. Tests: `OfficeMarkdownSerializerTests` (three),
+    the two reader tests that used to pin flattening now pin the block shape.

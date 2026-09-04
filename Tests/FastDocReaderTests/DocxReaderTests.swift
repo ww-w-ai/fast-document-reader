@@ -1440,26 +1440,23 @@ final class DocxReaderTests: XCTestCase {
         XCTAssertEqual(blocks, [.table(rows: [[Cell(blocks: [])]], headerRows: 0)])
     }
 
-    /// A `<w:tbl>` nested directly inside a `<w:tc>` — `Cell` has no case for a nested `.table`
-    /// block, so its text is FLATTENED into the containing cell's spans (a tab between the nested
-    /// table's cells, a newline after each of its non-empty rows) rather than silently dropped —
-    /// mirrors `OdtReader`'s identical handling of ODF's equivalent construct, and the same loose
-    /// "the words all survive somewhere" assertion style its test uses, since flattening does not
-    /// merge every span into one and pinning exact span boundaries would over-specify the point.
-    func testNestedTableInsideACellFlattensToTextRatherThanDisappearing() throws {
-        // Same shape as OdtReaderTests' equivalent: the outer cell's own paragraph ("Outer")
-        // alongside a nested table whose own cell says "Nested" — both must survive somewhere.
-        let cellContent = para("Outer") + "<w:tbl><w:tr>\(tc(para("Nested")))</w:tr></w:tbl>"
+    /// A `<w:tbl>` nested directly inside a `<w:tc>` is a REAL `.table` block inside the cell, read
+    /// by the same `parseTable` as a body table — its grid survives, beside the cell's own paragraph
+    /// (invariant 164).
+    func testNestedTableInsideACellIsARealTableBlockBesideTheCellsOwnParagraph() throws {
+        let cellContent = para("Outer") + "<w:tbl><w:tr>\(tc(para("Nested")))\(tc(para("Twice")))</w:tr></w:tbl>"
         let blocks = try read(document: "<w:tbl><w:tr>\(tc(cellContent))</w:tr></w:tbl>")
         guard case .table(let rows, _, _, _) = blocks.first else { return XCTFail("expected a table block") }
-        // `Cell` holds `blocks`, not `spans`, since S7 — the reader still flattens a nested table
-        // into a single `.paragraph` at parse time, so pull its spans back out for this assertion.
-        let allText = rows.flatMap { $0 }.flatMap { $0.blocks }.flatMap { block -> [Span] in
-            if case .paragraph(let spans, _, _, _, _) = block { return spans }
-            return []
-        }.map(\.text).joined()
-        XCTAssertTrue(allText.contains("Outer"), "the cell's own paragraph text must survive")
-        XCTAssertTrue(allText.contains("Nested"), "the nested table's text must survive, not disappear")
+        let outer = try XCTUnwrap(rows.first?.first)
+        XCTAssertEqual(outer.blocks.count, 2, "the cell's own paragraph and the nested table, got \(outer.blocks)")
+        guard case .paragraph(let spans, _, _, _, _) = outer.blocks[0] else { return XCTFail("first block is the paragraph") }
+        XCTAssertEqual(spans.map(\.text).joined(), "Outer")
+        guard case .table(let inner, _, _, _) = outer.blocks[1] else { return XCTFail("second block is the nested table, got \(outer.blocks[1])") }
+        XCTAssertEqual(inner.count, 1)
+        XCTAssertEqual(inner[0].count, 2, "both nested cells survive as cells")
+        let texts = inner[0].map { $0.blocks.flatMap { b -> [Span] in
+            if case .paragraph(let s, _, _, _, _) = b { return s }; return [] }.map(\.text).joined() }
+        XCTAssertEqual(texts, ["Nested", "Twice"])
     }
 
     // MARK: Hyperlinks
