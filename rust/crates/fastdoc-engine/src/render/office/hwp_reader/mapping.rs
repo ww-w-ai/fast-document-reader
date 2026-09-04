@@ -562,6 +562,13 @@ pub struct MediaContext {
     /// "< 관 인 >" tab: the box states x=0 (its own shape's origin) and was resolved 78pt to the
     /// right of the shape it belongs to.
     pub last_object_frame: Option<CGRect>,
+    /// Whether the shape or picture mapped last was PINNED to the page (an anchored object with no
+    /// paragraph anchor). The text boxes the exporter sends right after such a shape are pinned with
+    /// it — see `pinned_text_box_frame`.
+    pub pinned_text_boxes: bool,
+    /// The pinned text box currently being filled: its box key and the index of its `Text` object in
+    /// `anchored`, so consecutive paragraphs of ONE box land in ONE object rather than one each.
+    pub open_text_box: Option<((i64, i64, i64, i64), usize)>,
     /// The index of the top-level block being mapped, so an anchored object knows where in the
     /// document it belongs. Set by `mapJSON`'s own loop; nested content (a table cell) keeps the
     /// top-level block's index, which is the page-bearing one.
@@ -582,6 +589,8 @@ impl MediaContext {
             paper: None,
             last_anchored_frame: None,
             last_object_frame: None,
+            pinned_text_boxes: false,
+            open_text_box: None,
             block_index: 0,
             picture,
             next: 0,
@@ -1935,6 +1944,9 @@ impl HwpReader {
         f.auto_space_east_asian_latin = p.auto_space_kr_en;
         f.auto_space_east_asian_number = p.auto_space_kr_num;
         f.line_height_from_font_metrics = p.font_line_height;
+        // 한글 draws a line's glyphs at the TOP of its line box and the rest of the pitch under
+        // them, so at the foot of a page the glyphs are what has to fit (invariant 161).
+        f.line_spacing_below = Some(true);
         f
     }
 }
@@ -2100,6 +2112,7 @@ impl HwpReader {
         slot_fonts: &[HwpSlotFonts], border_fills: &[HwpBorderFill], shapes: &mut MediaContext, paged: bool,
         column_authority: &ColumnAuthority,
     ) -> OfficeBlock {
+        if !matches!(b, HwpBlock::Para(p) if p.box_x.is_some()) { shapes.open_text_box = None; }
         match b {
             HwpBlock::Para(p) => {
                 let spans: Vec<Span> = p.spans.iter().flat_map(|s| Self::map_span(s, slot_fonts, column_authority)).collect();
@@ -2128,47 +2141,17 @@ impl HwpReader {
                         Some(TabStop { position, alignment, leader: Self::tab_leader(stop.fill_type) })
                     })
                     .collect();
+                // A text box the exporter sent right after a PINNED shape is drawn where the shape
+                // is, not flowed as body text: on the reference manual each chapter divider's numeral
+                // (a 580pt glyph) and title were flowing as paragraphs under the panel they belong on,
+                // three sheets for a page Hancom draws as one (invariant 161).
+                if let Some(frame) = Self::pinned_text_box_frame(p, shapes) {
+                    let block = Self::finish_para(p, spans, align, tab_stops, Self::box_bounded_format(&base, p));
+                    Self::pin_text_box(block, p, frame, shapes);
+                    return Self::zero_height_anchor();
+                }
                 let format = Self::boxed_format(&base, p, shapes);
-                // An EXPLICIT outline paragraph is a heading because the document said so — no second
-                // guessing. A STYLE-derived one is an inference, so it also has to look like a heading:
-                // non-empty, and short enough to be a label rather than a sentence. Measured need — one
-                // document applies its "…제목" style to running body text, which produced 80-character
-                // "headings" in the table of contents. `headingTextLimit` is generous on purpose (Korean
-                // section titles run long); it only rejects prose.
-                if let Some(explicit) = p.heading {
-                    return OfficeBlock::Heading {
-                        level: explicit, spans, rtl: false, alignment: align, tab_stops: Vec::new(), format, format_ref: None,
-                    };
-                }
-                if let Some(inferred) = Self::heading_level(p.style_name.as_deref(), p.style_local_name.as_deref()) {
-                    let text: String = spans.iter().map(|s| s.text.to_string()).collect::<String>()
-                        .trim().to_string();
-                    if !text.is_empty() && text.chars().count() <= Self::HEADING_TEXT_LIMIT {
-                        return OfficeBlock::Heading {
-                            level: inferred, spans, rtl: false, alignment: align, tab_stops: Vec::new(), format, format_ref: None,
-                        };
-                    }
-                }
-                if let Some(list) = &p.list {
-                    let mut format = format;
-                    // The document's own gap between a marker and its text. `ordered` picks which of the
-                    // two the level actually has — a numbered head and a bullet are the same fact in two
-                    // records, and a level is one or the other.
-                    let raw = if list.ordered { list.numbering_head_text_distance } else { list.bullet_text_distance };
-                    if let Some(raw) = raw {
-                        if raw > 0 { format.list_text_distance = Some(Self::points(raw)); }
-                    }
-                    return OfficeBlock::ListItem {
-                        level: list.level, ordered: list.ordered, spans,
-                        marker: list.marker.clone().map(SwiftString::from),
-                        rtl: false, alignment: align, tab_stops, format, format_ref: None,
-                        numbering: Some(ListNumbering {
-                            glyphs: Self::list_numbering_glyphs(list.number_format.as_deref().unwrap_or("")),
-                            start_number: list.start_number,
-                        }),
-                    };
-                }
-                OfficeBlock::Paragraph { spans, rtl: false, alignment: align, tab_stops, format, format_ref: None }
+                Self::finish_para(p, spans, align, tab_stops, format)
             }
             HwpBlock::Table(t) => {
                 let rows: Vec<Vec<_>> = t.rows.iter()
@@ -2261,6 +2244,7 @@ impl HwpReader {
     // swift: HwpReader.mapBlock
     // (the `.image` arm, split out for one level less nesting)
     fn map_image_block(im: &HwpImage, page_width: Option<CGFloat>, shapes: &mut MediaContext) -> OfficeBlock {
+        shapes.pinned_text_boxes = false;
         // `read` resolves binDataId → pixels via `imageBase64` at read time (pre-decoded into
         // OfficeReadResult.images); the block only RESERVES the layout area here (invariant
         // 1/2/11). id is the stable key `collectImages`/`reconcileMedia` look the bytes up by.
@@ -2305,6 +2289,7 @@ impl HwpReader {
                             object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Image(image) },
                             paragraph_anchor: None,
                         });
+                        shapes.pinned_text_boxes = true;
                         return Self::zero_height_anchor();
                     }
                 }
@@ -2353,6 +2338,7 @@ impl HwpReader {
     // swift: HwpReader.mapBlock
     // (the `.shape` arm, split out for one level less nesting)
     fn map_shape_block(sh: &HwpShape, shapes: &mut MediaContext) -> OfficeBlock {
+        shapes.pinned_text_boxes = false;
         // An ANCHORED drawing is placed by the document's own rule — the offsets ALONE are not
         // enough, and that is exactly what the float layer invariant 75 rejected got wrong: it
         // guessed the reference edge and laid a 431pt rule over a table's own column label.
@@ -2410,6 +2396,7 @@ impl HwpReader {
                         },
                         paragraph_anchor: None,
                     });
+                    shapes.pinned_text_boxes = true;
                     return Self::zero_height_anchor();
                 }
             }
@@ -2454,6 +2441,105 @@ impl HwpReader {
     /// `ListNumbering.Glyphs(rawValue:) ?? .decimal` — a Swift `String`-backed enum's raw values,
     /// restated as a match since `ListNumberingGlyphs` (office_block.rs) carries no `FromStr`/
     /// raw-value constructor of its own.
+    /// The paragraph, heading or list item a `Para` becomes once its format is settled — shared by
+    /// the body path and the pinned-text-box path, which differ only in where the block goes.
+    fn finish_para(p: &HwpPara, spans: Vec<Span>, align: Option<NSTextAlignment>, tab_stops: Vec<TabStop>,
+                   format: ParagraphFormat) -> OfficeBlock {
+        // An EXPLICIT outline paragraph is a heading because the document said so — no second
+        // guessing. A STYLE-derived one is an inference, so it also has to look like a heading:
+        // non-empty, and short enough to be a label rather than a sentence. Measured need — one
+        // document applies its "…제목" style to running body text, which produced 80-character
+        // "headings" in the table of contents. `headingTextLimit` is generous on purpose (Korean
+        // section titles run long); it only rejects prose.
+        if let Some(explicit) = p.heading {
+            return OfficeBlock::Heading {
+                level: explicit, spans, rtl: false, alignment: align, tab_stops: Vec::new(), format, format_ref: None,
+            };
+        }
+        if let Some(inferred) = Self::heading_level(p.style_name.as_deref(), p.style_local_name.as_deref()) {
+            let text: String = spans.iter().map(|s| s.text.to_string()).collect::<String>()
+                .trim().to_string();
+            if !text.is_empty() && text.chars().count() <= Self::HEADING_TEXT_LIMIT {
+                return OfficeBlock::Heading {
+                    level: inferred, spans, rtl: false, alignment: align, tab_stops: Vec::new(), format, format_ref: None,
+                };
+            }
+        }
+        if let Some(list) = &p.list {
+            let mut format = format;
+            // The document's own gap between a marker and its text. `ordered` picks which of the
+            // two the level actually has — a numbered head and a bullet are the same fact in two
+            // records, and a level is one or the other.
+            let raw = if list.ordered { list.numbering_head_text_distance } else { list.bullet_text_distance };
+            if let Some(raw) = raw {
+                if raw > 0 { format.list_text_distance = Some(Self::points(raw)); }
+            }
+            return OfficeBlock::ListItem {
+                level: list.level, ordered: list.ordered, spans,
+                marker: list.marker.clone().map(SwiftString::from),
+                rtl: false, alignment: align, tab_stops, format, format_ref: None,
+                numbering: Some(ListNumbering {
+                    glyphs: Self::list_numbering_glyphs(list.number_format.as_deref().unwrap_or("")),
+                    start_number: list.start_number,
+                }),
+            };
+        }
+        OfficeBlock::Paragraph { spans, rtl: false, alignment: align, tab_stops, format, format_ref: None }
+    }
+
+    /// Where a text-box paragraph is drawn when its owner was pinned to the page: the owner's frame
+    /// plus the box's own offset inside it, at the box's own size. `None` for every paragraph that is
+    /// not a text box, or whose owner flows with the text (as-character, wrapped, or anchored to a
+    /// paragraph) — those keep the flattened body path.
+    fn pinned_text_box_frame(p: &HwpPara, shapes: &MediaContext) -> Option<CGRect> {
+        if !shapes.pinned_text_boxes { return None; }
+        let owner = shapes.last_anchored_frame?;
+        let (bx, by, bw, bh) = (p.box_x?, p.box_y?, p.box_w?, p.box_h?);
+        if bw <= 0 || bh <= 0 { return None; }
+        Some(CGRect {
+            origin: CGPoint { x: owner.origin.x + Self::points(bx), y: owner.origin.y + Self::points(by) },
+            size: CGSize { width: Self::points(bw), height: Self::points(bh) },
+        })
+    }
+
+    /// A line inside a box is never taller than the box: the divider numeral declares 160% of its
+    /// 580pt glyph, 928pt, inside a 580pt box that Hancom draws at the box's height.
+    fn box_bounded_format(base: &ParagraphFormat, p: &HwpPara) -> ParagraphFormat {
+        let mut f = base.clone();
+        let cap = p.box_h.map(Self::points).unwrap_or(0.0);
+        if cap > 0.0 {
+            f.line_height = match f.line_height {
+                Some(LineHeight::AtLeast(v)) if v > cap => Some(LineHeight::AtLeast(cap)),
+                Some(LineHeight::Exact(v)) if v > cap => Some(LineHeight::Exact(cap)),
+                other => other,
+            };
+        }
+        f
+    }
+
+    /// Append `block` to the pinned `Text` object for its box, opening one at `frame` when this is the
+    /// box's first paragraph. The object is charged to the CURRENT block — the zero-height anchor the
+    /// paragraph leaves in the flow — so it is drawn on whatever page that anchor lands on.
+    fn pin_text_box(block: OfficeBlock, p: &HwpPara, frame: CGRect, shapes: &mut MediaContext) {
+        let key = (p.box_x.unwrap_or(0), p.box_y.unwrap_or(0), p.box_w.unwrap_or(0), p.box_h.unwrap_or(0));
+        if let Some((open_key, index)) = shapes.open_text_box {
+            if open_key == key {
+                if let Some(OfficeAnchoredObject {
+                    object: OfficeMasterObject { content: OfficeMasterObjectContent::Text(blocks), .. }, ..
+                }) = shapes.anchored.get_mut(index) {
+                    blocks.push(block);
+                    return;
+                }
+            }
+        }
+        shapes.anchored.push(OfficeAnchoredObject {
+            block_index: shapes.block_index as i64,
+            object: OfficeMasterObject { frame, content: OfficeMasterObjectContent::Text(vec![block]) },
+            paragraph_anchor: None,
+        });
+        shapes.open_text_box = Some((key, shapes.anchored.len() - 1));
+    }
+
     fn list_numbering_glyphs(raw: &str) -> ListNumberingGlyphs {
         match raw {
             "decimal" => ListNumberingGlyphs::Decimal,
@@ -2899,5 +2985,109 @@ mod column_authority_tests {
         let layout = HwpReader::column_layout(&cd, &authority);
         assert!(layout.flow_type.is_none());
         assert!(!is_complete_per_column_flow_gate(&layout));
+    }
+}
+
+#[cfg(test)]
+mod pinned_text_box_tests {
+    use super::*;
+    use crate::render::office::office_block::{OfficeMasterObjectContent, LineHeight};
+
+    /// A page-pinned shape followed by the text boxes the exporter sends right after it, then an
+    /// ordinary body paragraph. `owner` chooses whether the shape is pinned (paper-relative, not
+    /// as-character) or flows as a character.
+    fn envelope(as_char: bool) -> String {
+        format!(r#"{{"v":4,"defaultFontSizePt":10,"pageContentWidth":400,"pageContentHeight":600,
+            "pageMarginLeft":50,"pageMarginRight":50,"pageMarginTop":40,"pageMarginBottom":40,
+            "blocks":[
+              {{"t":"shape","w":34025,"h":50052,"asChar":{as_char},"wrapsText":false,
+                "vertRelTo":"paper","horzRelTo":"paper","offsetX":1000,"offsetY":2000,
+                "vertAlign":"top","horzAlign":"left","paths":[]}},
+              {{"t":"para","spans":[{{"text":"2"}}],"baseSizePt":580,
+                "lineHeight":{{"type":"percent","value":160}},
+                "boxX":0,"boxY":7841,"boxW":34025,"boxH":50052}},
+              {{"t":"para","spans":[{{"text":"title"}}],
+                "boxX":0,"boxY":7841,"boxW":34025,"boxH":50052}},
+              {{"t":"para","spans":[{{"text":"body"}}]}}
+            ]}}"#)
+    }
+
+    fn read(as_char: bool) -> OfficeReadResult {
+        HwpReader::map_json(&envelope(as_char), None, &ColumnAuthority::default()).expect("maps")
+    }
+
+    fn text_of(block: &OfficeBlock) -> String {
+        match block {
+            OfficeBlock::Paragraph { spans, .. } | OfficeBlock::Heading { spans, .. } =>
+                spans.iter().map(|s| s.text.to_string()).collect(),
+            _ => String::new(),
+        }
+    }
+
+    #[test]
+    fn text_boxes_of_a_page_pinned_shape_become_one_anchored_text_object() {
+        let result = read(false);
+        assert_eq!(result.blocks.len(), 4);
+        // The flow keeps only zero-height anchors for the two box paragraphs…
+        for i in 1..=2 {
+            match &result.blocks[i] {
+                OfficeBlock::Paragraph { spans, format, .. } => {
+                    assert!(spans.is_empty(), "block {i} must be a zero-height anchor");
+                    assert_eq!(format.line_height, Some(LineHeight::Exact(0.01)));
+                }
+                other => panic!("block {i}: {other:?}"),
+            }
+        }
+        // …and the body paragraph after them is untouched.
+        assert_eq!(text_of(&result.blocks[3]), "body");
+        // The shape's own vector, then ONE text object holding both paragraphs of the box.
+        assert_eq!(result.anchored_objects.len(), 2);
+        let text = &result.anchored_objects[1];
+        assert_eq!(text.block_index, 1, "charged to the first box paragraph's anchor");
+        assert!(text.paragraph_anchor.is_none());
+        let blocks = match &text.object.content {
+            OfficeMasterObjectContent::Text(blocks) => blocks,
+            other => panic!("expected text content, got {other:?}"),
+        };
+        assert_eq!(blocks.iter().map(text_of).collect::<Vec<_>>(), vec!["2", "title"]);
+        // Placed at the owner's frame plus the box's own offset, at the box's own size.
+        let frame = text.object.frame;
+        assert!((frame.origin.x - 10.0).abs() < 0.01, "x {}", frame.origin.x);
+        assert!((frame.origin.y - (20.0 + 78.41)).abs() < 0.01, "y {}", frame.origin.y);
+        assert!((frame.size.width - 340.25).abs() < 0.01);
+        assert!((frame.size.height - 500.52).abs() < 0.01);
+        // And a line inside the box is never taller than the box: 160% of 580pt is 928pt, capped.
+        match &blocks[0] {
+            OfficeBlock::Paragraph { format, .. } | OfficeBlock::Heading { format, .. } => {
+                match format.line_height {
+                    Some(LineHeight::AtLeast(v)) => assert!((v - 500.52).abs() < 0.01, "line height {v}"),
+                    other => panic!("line height {other:?}"),
+                }
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_hwp_paragraph_puts_its_line_spacing_below_the_glyphs() {
+        let result = read(true);
+        for block in &result.blocks {
+            // Every REAL paragraph — a zero-height anchor an in-flow shape leaves says nothing.
+            if let OfficeBlock::Paragraph { spans, format, .. } = block {
+                if spans.is_empty() { continue; }
+                assert_eq!(format.line_spacing_below, Some(true));
+            }
+        }
+    }
+
+    #[test]
+    fn text_boxes_of_a_shape_that_flows_as_a_character_stay_in_the_body() {
+        let result = read(true);
+        assert_eq!(result.blocks.len(), 4);
+        assert_eq!(text_of(&result.blocks[1]), "2");
+        assert_eq!(text_of(&result.blocks[2]), "title");
+        assert!(result.anchored_objects.iter()
+            .all(|a| !matches!(a.object.content, OfficeMasterObjectContent::Text(_))),
+            "an in-flow shape's text boxes are flattened into the body, not pinned");
     }
 }

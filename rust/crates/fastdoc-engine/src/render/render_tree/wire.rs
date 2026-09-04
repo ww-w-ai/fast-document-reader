@@ -481,6 +481,8 @@ pub struct ParagraphStyle {
     pub auto_space_east_asian_number: Option<bool>,
     #[serde(default)]
     pub line_height_from_font_metrics: Option<bool>,
+    #[serde(default)]
+    pub line_spacing_below: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -2215,8 +2215,12 @@ final class OfficeTextBuilderTests: XCTestCase {
         let ps = try! XCTUnwrap(out.attribute(.paragraphStyle, at: cell.range.location, effectiveRange: nil) as? NSParagraphStyle)
         XCTAssertEqual(ps.headIndent, 0, "no table indent added on top of the cell's own paragraph style")
         XCTAssertEqual(ps.tailIndent, 0)
-        XCTAssertEqual(ps.minimumLineHeight, (theme.baseFontSize * theme.lineHeightRatio).rounded(),
-                       "the cell content keeps its own body line-height")
+        // The cell keeps its own body line PITCH — carried as a line of the character size plus the
+        // rest as spacing, the source's own vocabulary (invariant 161), not as a floor.
+        XCTAssertEqual(ps.minimumLineHeight + ps.lineSpacing, (theme.baseFontSize * theme.lineHeightRatio).rounded(),
+                       "the cell content keeps its own body line pitch")
+        XCTAssertEqual(ps.minimumLineHeight, theme.baseFontSize, "the line is the character size")
+        XCTAssertEqual(ps.maximumLineHeight, theme.baseFontSize)
     }
 
     /// `nil` (every markdown table, and a docx table/cell with no declared margin) keeps the

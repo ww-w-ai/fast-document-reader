@@ -431,7 +431,14 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
         }
         let page = ((rect.minY - leadingBand) / pitch).rounded(.down)
         let textBottom = self.textBottom(ofPage: page)
-        guard (rect.maxY - leadingBand) > textBottom else { return false }
+        // What has to fit is the line's GLYPHS. A paragraph that carries its pitch as
+        // `lineSpacing` (the HWP model, `OfficeTextBuilder.applyLineModel`) keeps that spacing
+        // under the glyphs, and 한글 lets it run into the band: on the reference manual the last
+        // line of a page sits with its glyph bottom 0.5pt above the text bottom and its spacing
+        // 8pt below it. Fitting the whole box pushed such a line to the next page — one line in
+        // three pages, 23pt of foot gap per page on average (invariant 161).
+        let trailing = trailingLineSpacing(layoutManager, glyphRange)
+        guard (rect.maxY - trailing - leadingBand) > textBottom else { return false }
         let target = (page + 1) * pitch + leadingBand
         let shift = target - rect.minY
         lineFragmentRect.pointee.origin.y += shift
@@ -601,6 +608,17 @@ final class PageBandLayoutDelegate: NSObject, NSLayoutManagerDelegate {
     /// table-aware pass in this reader keys off. Checked at the glyph range's first character only,
     /// matching the rest of the codebase's per-paragraph attribute reads (e.g.
     /// `drawMDDecorations`'s `charRange.location`): a line fragment never spans two paragraphs.
+    /// The `lineSpacing` the line's paragraph style puts UNDER it — the part of a fragment that
+    /// may hang past the foot of a page. Zero for every style that carries no spacing.
+    private func trailingLineSpacing(_ layoutManager: NSLayoutManager, _ glyphRange: NSRange) -> CGFloat {
+        guard let storage = layoutManager.textStorage else { return 0 }
+        let chars = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        guard chars.location < storage.length,
+              let style = storage.attribute(.paragraphStyle, at: chars.location,
+                                            effectiveRange: nil) as? NSParagraphStyle else { return 0 }
+        return max(0, style.lineSpacing)
+    }
+
     private func isInsideTable(_ layoutManager: NSLayoutManager, _ glyphRange: NSRange) -> Bool {
         guard glyphRange.length > 0, let storage = layoutManager.textStorage else { return false }
         let charRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)

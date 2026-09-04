@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use swiftshim::{
     CGFloat, CGSize, NSAttributedString, NSAttributedStringKey, NSFont, NSFontDescriptor, NSImage,
-    NSMutableAttributedString, NSMutableParagraphStyle, NSNumber, NSParagraphStyle, NSPoint,
+    NSMutableAttributedString, NSMutableParagraphStyle, NSNotFound, NSNumber, NSParagraphStyle, NSPoint,
     NSRange, NSRect, NSTextAlignment, NSTextAttachment, NSTextTab, NSUnderlineStyle,
     NSWritingDirection, SizedAttachmentCell, NS_NOT_FOUND, URL,
 };
@@ -494,6 +494,13 @@ impl OfficeTextBuilder {
                 }
             }
             tag_block(&mut result, start, index, &mut block_seq);
+            // swift: `defer { if paragraphFormat(of: block)?.lineSpacingBelow == true { ... } }` —
+            // a format that puts its line spacing UNDER the glyphs carries its pitch as
+            // `size + lineSpacing`, so the page band can let the spacing — and only the spacing —
+            // run past the foot of a page, the way 한글 does (invariant 161).
+            if Self::paragraph_format(block).and_then(|f| f.line_spacing_below) == Some(true) {
+                Self::apply_line_model_from(&mut result, start);
+            }
         }
         Self::unify_paragraph_terminators(&mut result);
         Self::cap_line_heights_to_page(&mut result, page_content_height, font_size_scale);
@@ -1906,6 +1913,7 @@ impl OfficeTextBuilder {
                             &cell.blocks, cell_base_font, theme,
                             font_size_scale, cell_content_widths[r][i], graphic_basis, paged, line_grid_pitch,
                             solved_width,
+                            table_format.page_break_policy == Some(crate::render::office::office_block::TablePageBreakPolicy::AtRowBoundary),
                         );
                         CellContent {
                             content,
@@ -1947,7 +1955,52 @@ impl OfficeTextBuilder {
             result.addAttribute(MDAttr::table_keeps_whole(), swiftshim::AttrValue::Bool(true), NSRange::new(table_start, result.length() - table_start));
         }
         result.append(&NSAttributedString::new("\n"));
+        Self::collapse_table_terminators(result, table_start);
     }
+
+    /// The text after a table starts at the table's bottom edge, not one or two blank lines below
+    /// it. A table is closed by two paragraph separators — `TableBlockBuilder::build`'s own and
+    /// `append_table`'s — and a separator that is a paragraph of its OWN, left bare, is laid out at
+    /// AppKit's default font: a 14pt line each under every table, which no source format draws
+    /// (646 such lines on the 388-table reference manual, invariant 161). The separators stay —
+    /// they keep the next block out of the last cell — their line boxes must not.
+    // swift: OfficeTextBuilder.collapseTableTerminators
+    fn collapse_table_terminators(result: &mut NSMutableAttributedString, table_start: usize) {
+        let ns = Self::as_ns_string(result);
+        let mut end = result.length();
+        let mut terminators = 0;
+        while end > table_start && terminators < 2 && ns.characterAt(end - 1) == 10 {
+            // Only a separator that is a paragraph of its OWN — a newline whose previous character
+            // is also a newline, or the table's last cell terminator. A cell's own terminator sits
+            // inside a text block; stop at the first character that belongs to a cell.
+            let in_block = match result.attribute(&NSAttributedStringKey::ParagraphStyle, end - 1) {
+                Some((swiftshim::AttrValue::ParagraphStyle(p), _)) => !p.textBlocks.is_empty(),
+                _ => false,
+            };
+            if in_block {
+                break;
+            }
+            end -= 1;
+            terminators += 1;
+        }
+        if terminators == 0 {
+            return;
+        }
+        let mut collapsed = NSMutableParagraphStyle::default();
+        collapsed.minimumLineHeight = Self::COLLAPSED_TERMINATOR_LINE_HEIGHT;
+        collapsed.maximumLineHeight = Self::COLLAPSED_TERMINATOR_LINE_HEIGHT;
+        collapsed.lineSpacing = 0.0;
+        collapsed.paragraphSpacing = 0.0;
+        collapsed.paragraphSpacingBefore = 0.0;
+        result.addAttribute(
+            NSAttributedStringKey::ParagraphStyle,
+            swiftshim::AttrValue::ParagraphStyle(collapsed),
+            NSRange::new(end, result.length() - end),
+        );
+    }
+
+    /// swift: `OfficeTextBuilder.collapsedTerminatorLineHeight`
+    pub const COLLAPSED_TERMINATOR_LINE_HEIGHT: CGFloat = 0.01;
 
     /// Renders one cell's blocks. Deliberately NOT `build(_:theme:columnWidth:)` reused wholesale:
     /// that function ends every block with its own trailing `"\n"` PLUS a block-level paragraph
@@ -2000,6 +2053,7 @@ impl OfficeTextBuilder {
         paged: bool,
         line_grid_pitch: Option<CGFloat>,
         table_width: CGFloat,
+        last_line_keeps_no_gap: bool,
     ) -> NSAttributedString {
         // A cell picture's scale is the TABLE's on-screen width over the table's source width — not
         // the cell's over the cell's. They are the same ratio (every column keeps its proportion when
@@ -2128,10 +2182,85 @@ impl OfficeTextBuilder {
             if i == last {
                 m.paragraphSpacing = 0.0;
             }
+            let _ = Self::apply_line_model(&mut m, *range, &result, i == last && (last_line_keeps_no_gap || paragraphs.len() == 1));
             result.addAttribute(NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(m), *range);
             Self::unify_terminator(*range, &mut result, &ns);
         }
         result.into()
+    }
+
+    /// swift: `applyLineModel(in:from:)` — every paragraph from `start` to the end of `result`
+    /// takes the line model below; a block-level twin of the cell pass.
+    // swift: OfficeTextBuilder.applyLineModel
+    fn apply_line_model_from(result: &mut NSMutableAttributedString, start: usize) {
+        let ns = Self::as_ns_string(result);
+        let mut location = start;
+        while location < result.length() {
+            let mut line_start = 0usize;
+            let mut line_end = 0usize;
+            let mut contents_end = 0usize;
+            ns.getLineStart(Some(&mut line_start), &mut line_end, &mut contents_end, NSRange::new(location, 0));
+            let paragraph = NSRange::new(line_start, line_end.saturating_sub(line_start));
+            if paragraph.length == 0 {
+                break;
+            }
+            if let Some(style) = Self::paragraph_style_at(result, paragraph.location) {
+                let mut m = style;
+                // The shim's `addAttribute` stacks a second run over the same range rather than
+                // merging, and the measurement wire makes a paragraph of every `ParagraphStyle` run
+                // it meets — a re-added unchanged style measured every note of a document twice.
+                // Only a changed style is written, and written IN PLACE.
+                if Self::apply_line_model(&mut m, paragraph, result, false) {
+                    result.replace_attribute_value(NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(m), paragraph);
+                }
+            }
+            location = paragraph.maxRange();
+        }
+    }
+
+    /// A paragraph's line box in the source's own vocabulary: a LINE of the paragraph's character
+    /// size plus a SPACING after it — and, when `drops_trailing_gap`, no spacing at all after the
+    /// last line. Only a plain floor qualifies (`minimumLineHeight` set, no maximum, no spacing
+    /// yet), and never a paragraph holding a picture — a picture is not a glyph.
+    // swift: OfficeTextBuilder.applyLineModel
+    fn apply_line_model(
+        m: &mut NSMutableParagraphStyle,
+        paragraph: NSRange,
+        result: &NSMutableAttributedString,
+        drops_trailing_gap: bool,
+    ) -> bool {
+        if !(m.maximumLineHeight == 0.0 && m.minimumLineHeight > 0.0 && m.lineSpacing == 0.0) {
+            return false;
+        }
+        let ns = Self::as_ns_string(result);
+        if ns.range_of("\u{FFFC}", paragraph).location != NSNotFound {
+            return false;
+        }
+        // The separator is not the paragraph's: between two blocks it still carries the cell's base
+        // font (`unify_terminator` gives it the paragraph's own only after this), and a 16pt
+        // separator would read as the size of a 10pt line.
+        let ends_in_separator = paragraph.length > 0 && ns.characterAt(paragraph.location + paragraph.length - 1) == 10;
+        let body = NSRange::new(paragraph.location, paragraph.length - usize::from(ends_in_separator));
+        if body.length == 0 {
+            return false;
+        }
+        let mut size: CGFloat = 0.0;
+        result.enumerateAttribute(&NSAttributedStringKey::Font, body, |value, _, _| {
+            if let Some(swiftshim::AttrValue::Font(font)) = value {
+                size = size.max(font.pointSize());
+            }
+        });
+        if !(size > 0.0 && m.minimumLineHeight > size) {
+            return false;
+        }
+        let gap = m.minimumLineHeight - size;
+        m.minimumLineHeight = size;
+        m.maximumLineHeight = size;
+        m.lineSpacing = gap;
+        if drops_trailing_gap {
+            m.paragraphSpacing = -gap;
+        }
+        true
     }
 
     /// Finishes the paragraph pass above: gives a paragraph's terminating `"\n"` the rest of the
@@ -2209,7 +2338,7 @@ impl OfficeTextBuilder {
         for row in rows {
             let mut row_has_content = false;
             for cell in row {
-                let text = Self::cell_content(&cell.blocks, base_font, theme, 1.0, CGFloat::MAX, None, false, None, CGFloat::MAX);
+                let text = Self::cell_content(&cell.blocks, base_font, theme, 1.0, CGFloat::MAX, None, false, None, CGFloat::MAX, false);
                 if text.length() == 0 {
                     continue;
                 }

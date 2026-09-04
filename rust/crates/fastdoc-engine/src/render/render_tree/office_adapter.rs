@@ -1645,6 +1645,7 @@ fn paragraph_style(
         auto_space_east_asian_latin: format.auto_space_east_asian_latin,
         auto_space_east_asian_number: format.auto_space_east_asian_number,
         line_height_from_font_metrics: format.line_height_from_font_metrics,
+        line_spacing_below: format.line_spacing_below,
     }
 }
 

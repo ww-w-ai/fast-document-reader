@@ -1063,6 +1063,7 @@ pub(super) fn paragraph_style_colors(
         auto_space_east_asian_latin: _,
         auto_space_east_asian_number: _,
         line_height_from_font_metrics: _,
+        line_spacing_below: _,
     } = v;
     let [top, right, bottom, left, inside_horizontal, inside_vertical] =
         border_set_colors(borders.as_ref());

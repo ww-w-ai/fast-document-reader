@@ -385,6 +385,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         settledFootnotePages = nil
         pageBandDelegate.noteBands = [:]
         // This render replaces the storage, so where the section markers sit is about to change.
+        // The column placements are ABSOLUTE positions on the grid this call is replacing, so they go
+        // with it and are settled again against the new one. Kept across the switch to the print
+        // grid, the appendix of the reference manual — placed for a 766pt screen pitch — printed on a
+        // 754pt pitch 7,646pt below the text before it: nine blank sheets that the screen never
+        // showed (invariant 161).
+        columnRunsSettled = false
+        pageBandDelegate.columnPlacements = [:]
+        pageBandDelegate.columnOpenedBoundaries = []
         cachedSectionStarts = nil
         cachedHiddenPageNumberPages = nil
         cachedPageNumberRestarts = nil
@@ -2432,10 +2440,19 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         lm.ensureLayout(for: tc)
 
         var placements: [Int: (x: CGFloat, y: CGFloat)] = [:]
+        // IN DOCUMENT ORDER, each run against the layout that already holds the placements of every
+        // run before it. A run's origin is its first line's top, and that top is only right once the
+        // runs above it have been flowed: measured from one single-column layout for all runs, the
+        // origin carried the full unflowed height of every earlier run, and the space those runs gave
+        // back by flowing into their columns was left blank. On the reference manual the appendix
+        // began 7,646pt below the end of the two-column regulation before it — nine blank printed
+        // sheets (invariant 161). So after a run's placements are made they are handed to the
+        // delegate and the text from that run on is laid out again before the next run is measured.
         for run in runs {
             let columns = ColumnGeometry.columns(inWidth: pageBandDelegate.columnBodyWidth,
                                                  layout: run.layout)
             guard columns.count > 1 else { continue }
+            lm.ensureLayout(forCharacterRange: run.range)
             var lines: [(location: Int, top: CGFloat, height: CGFloat, insetX: CGFloat)] = []
             let glyphs = lm.glyphRange(forCharacterRange: run.range, actualCharacterRange: nil)
             // A TABLE cell's own place across the column is carried; everything else is zero, so a
@@ -2477,11 +2494,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                                                         pageContentHeight: pageBandDelegate.pageContentHeight,
                                                         noteBands: pageBandDelegate.noteBands)
             guard firstHeight > 0, laterHeight > 0 else { continue }
-            placements.merge(ColumnGeometry.placements(lines: lines, runOrigin: origin,
-                                                       firstPage: startPage, columns: columns,
-                                                       columnHeight: laterHeight, pitch: pitch,
-                                                       leadingBand: pageBandDelegate.leadingBand,
-                                                       firstColumnHeight: firstHeight)) { a, _ in a }
+            let runPlacements = ColumnGeometry.placements(lines: lines, runOrigin: origin,
+                                                          firstPage: startPage, columns: columns,
+                                                          columnHeight: laterHeight, pitch: pitch,
+                                                          leadingBand: pageBandDelegate.leadingBand,
+                                                          firstColumnHeight: firstHeight)
+            guard !runPlacements.isEmpty else { continue }
+            placements.merge(runPlacements) { a, _ in a }
+            pageBandDelegate.columnPlacements = placements
+            lm.invalidateLayout(forCharacterRange: NSRange(location: run.range.location,
+                                                            length: storage.length - run.range.location),
+                                actualCharacterRange: nil)
         }
         columnRunsSettled = true
         guard !placements.isEmpty else { return false }

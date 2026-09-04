@@ -800,12 +800,25 @@ final class PagedTableOverrunTests: XCTestCase {
         wc.settlePagedTablesFully()
         let whole = wc.printPageCount
         XCTAssertEqual(try linesInMargins(wc), [])
+        XCTAssertGreaterThan(wc.pageBandDelegate.pushedTables.count, 0,
+                             "the fixture must carry at least one table whole, or the toggle has nothing to change")
+        let lm = try XCTUnwrap(wc.textView.layoutManager)
+        let tc = try XCTUnwrap(wc.textView.textContainer)
+        lm.ensureLayout(for: tc)
+        let carriedHeight = lm.usedRect(for: tc).height
 
         wc.toggleSplitTables(nil)
         XCTAssertTrue(PageViewOptionsStore.startingOptions.splitTables, "the menu item must store the choice")
         wc.settlePagedTablesFully()
-        XCTAssertLessThan(wc.printPageCount, whole,
-                          "breaking tables fits the same document into fewer pages than carrying them")
+        lm.ensureLayout(for: tc)
+        // Breaking a table at a row boundary fills the foot of the page the carry left empty: the
+        // same text ends HIGHER, always — and on fewer pages only when the gaps it gave back added
+        // up to a page, which the eight-page fixture's no longer do once a table is closed at its
+        // bottom edge (invariant 161). So the height must drop and the page count is bounded.
+        XCTAssertLessThan(lm.usedRect(for: tc).height, carriedHeight,
+                          "breaking tables gives back the foot of every page a carry left empty")
+        XCTAssertLessThanOrEqual(wc.printPageCount, whole,
+                                 "breaking tables never needs more pages than carrying them")
         XCTAssertEqual(try linesInMargins(wc), [])
     }
 

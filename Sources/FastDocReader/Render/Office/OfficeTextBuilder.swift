@@ -235,6 +235,12 @@ enum OfficeTextBuilder {
             // that declared it: that run is a zero-width anchor with no text of its own, so there is
             // no character for an attribute to live on — the same shape a bookmark arrives as.
             defer {
+                // A format that puts its line spacing UNDER the glyphs carries its pitch as
+                // `size + lineSpacing`, so the page band can let the spacing — and only the
+                // spacing — run past the foot of a page, the way 한글 does (invariant 161).
+                if paragraphFormat(of: block)?.lineSpacingBelow == true {
+                    applyLineModel(in: result, from: start)
+                }
                 if let layout = blockColumnLayouts[index], result.length > start {
                     let range = NSRange(location: start, length: result.length - start)
                     result.addAttribute(MDAttr.columnLayout, value: layout, range: range)
@@ -1568,7 +1574,8 @@ enum OfficeTextBuilder {
                                           theme: theme, fontSizeScale: fontSizeScale,
                                           imageColumnWidth: cellContentWidths[r][i],
                                           graphicBasis: graphicBasis, paged: paged,
-                                          lineGridPitch: lineGridPitch, tableWidth: solvedWidth)
+                                          lineGridPitch: lineGridPitch, tableWidth: solvedWidth,
+                                          lastLineKeepsNoGap: tableFormat.pageBreakPolicy == .atRowBoundary)
                 return TableBlockBuilder.CellContent(content: content, rowSpan: cell.rowSpan, columnSpan: cell.colSpan,
                                                       backgroundColor: cell.backgroundColor,
                                                       backgroundImage: cell.backgroundImage,
@@ -1602,7 +1609,45 @@ enum OfficeTextBuilder {
                                 range: NSRange(location: tableStart, length: result.length - tableStart))
         }
         result.append(NSAttributedString(string: "\n"))
+        collapseTableTerminators(in: result, tableStart: tableStart)
     }
+
+    /// The two paragraph separators that close a table — `TableBlockBuilder.build`'s own and the one
+    /// appended above — are structure, not content: they exist so the next block is not pulled into
+    /// the last cell. Left bare they are two EMPTY paragraphs, and an empty paragraph with no style
+    /// is laid out at AppKit's default Helvetica 12pt, a 14pt line each. The source has no such line:
+    /// in HWP, docx and ODT alike the text after a table starts at the cell's bottom padding, which
+    /// is what the reference renderers draw. Measured on `2025_행정업무운영편람_최종.hwp`: 646 such
+    /// lines, 9,044pt, 16 sheets of the screen arm — the largest single term of the page-count gap
+    /// to the official PDF (invariant 161). Pinned to a line box the layout manager cannot see,
+    /// the way a decorative band (`TableBlockBuilder`) and a control-only host paragraph
+    /// (invariant 159) already are.
+    private static func collapseTableTerminators(in result: NSMutableAttributedString, tableStart: Int) {
+        let ns = result.string as NSString
+        var end = result.length
+        var terminators = 0
+        while end > tableStart, terminators < 2, ns.character(at: end - 1) == 0x0A {
+            // Only a separator that is a paragraph of its OWN — a newline whose previous character
+            // is also a newline, or the table's last cell terminator. A cell's own terminator sits
+            // inside a text block; stop at the first character that belongs to a cell.
+            let attrs = result.attributes(at: end - 1, effectiveRange: nil)
+            if (attrs[.paragraphStyle] as? NSParagraphStyle)?.textBlocks.isEmpty == false { break }
+            end -= 1
+            terminators += 1
+        }
+        guard terminators > 0 else { return }
+        let collapsed = NSMutableParagraphStyle()
+        collapsed.minimumLineHeight = collapsedTerminatorLineHeight
+        collapsed.maximumLineHeight = collapsedTerminatorLineHeight
+        collapsed.lineSpacing = 0
+        collapsed.paragraphSpacing = 0
+        collapsed.paragraphSpacingBefore = 0
+        result.addAttribute(.paragraphStyle, value: collapsed,
+                            range: NSRange(location: end, length: result.length - end))
+    }
+
+    /// Not 0: TextKit treats a zero maximum as "no maximum" and falls back to the font's height.
+    static let collapsedTerminatorLineHeight: CGFloat = 0.01
 
     /// Renders one cell's blocks. Deliberately NOT `build(_:theme:columnWidth:)` reused wholesale:
     /// that function ends every block with its own trailing `"\n"` PLUS a block-level paragraph
@@ -1648,7 +1693,8 @@ enum OfficeTextBuilder {
                                     graphicBasis: CGFloat? = nil,
                                     paged: Bool = false,
                                     lineGridPitch: CGFloat? = nil,
-                                    tableWidth: CGFloat = .greatestFiniteMagnitude) -> NSAttributedString {
+                                    tableWidth: CGFloat = .greatestFiniteMagnitude,
+                                    lastLineKeepsNoGap: Bool = false) -> NSAttributedString {
         // A cell picture's scale is the TABLE's on-screen width over the table's source width — not
         // the cell's over the cell's. They are the same ratio (every column keeps its proportion when
         // the table is stretched), and using the table's avoids needing each cell's source width.
@@ -1750,10 +1796,73 @@ enum OfficeTextBuilder {
             let m = base.mutableCopy() as! NSMutableParagraphStyle
             if i == 0 { m.paragraphSpacingBefore = 0 }
             if i == paragraphs.count - 1 { m.paragraphSpacing = 0 }
+            applyLineModel(to: m, paragraph: range, in: result,
+                               dropsTrailingGap: i == paragraphs.count - 1 && (lastLineKeepsNoGap || paragraphs.count == 1))
             result.addAttribute(.paragraphStyle, value: m.copy() as! NSParagraphStyle, range: range)
             unifyTerminator(of: range, in: result, string: ns)
         }
         return result
+    }
+
+    /// A cell paragraph's line box, in the source's own vocabulary: a LINE of the paragraph's
+    /// character size plus a SPACING after it — and, for the cell's last line, no spacing at all.
+    ///
+    /// The rule is rhwp's `height_measurer` (its `include_trailing_ls`), measured against 한글 across
+    /// its corpus: every line in a cell is `line_height + line_spacing`, and the cell's last line
+    /// contributes `line_height` alone when the cell holds a single paragraph, or whenever the table
+    /// is a block table that breaks at row boundaries. `line_height` IS the character size
+    /// (invariant 155), so the spacing is `the declared floor − the largest run size`.
+    ///
+    /// The floor this reader carries (`.atLeast(pitch)`, `maximumLineHeight` 0) puts the whole pitch
+    /// on every line, the last included, so a one-line `36.` at 25pt/180% held its row at 55pt here
+    /// against the source's 25, and every single-line form cell at 160% carried 60% of its font size
+    /// the source does not draw — most of what made this reader's tables taller than 한글's on every
+    /// page (invariant 161). TextKit offers exactly one way to take a last line's spacing back off:
+    /// a negative `paragraphSpacing` cancels `lineSpacing` (measured: 25pt line + 20 spacing − 20 = 25)
+    /// and cancels NOTHING of a `minimumLineHeight` floor (45 floor − 20 = 45). So the pitch is
+    /// re-expressed as `minimumLineHeight = maximumLineHeight = size` with `lineSpacing = gap`, which
+    /// lays every line out at the same pitch as before whenever the font sits inside its size — and a
+    /// face taller than its size overflows the box by the same amount 한글 lets it, rather than being
+    /// held looser. A paragraph carrying an attachment keeps the floor: a picture is not a glyph.
+    /// `applyLineModel(to:paragraph:in:dropsTrailingGap:)` over every paragraph appended since
+    /// `start` — a body paragraph, heading or list item, which is one paragraph each.
+    private static func applyLineModel(in result: NSMutableAttributedString, from start: Int) {
+        let ns = result.string as NSString
+        var location = start
+        while location < result.length {
+            let paragraph = ns.paragraphRange(for: NSRange(location: location, length: 0))
+            guard paragraph.length > 0 else { break }
+            if let style = result.attribute(.paragraphStyle, at: paragraph.location,
+                                            effectiveRange: nil) as? NSParagraphStyle {
+                let m = style.mutableCopy() as! NSMutableParagraphStyle
+                applyLineModel(to: m, paragraph: paragraph, in: result, dropsTrailingGap: false)
+                result.addAttribute(.paragraphStyle, value: m, range: paragraph)
+            }
+            location = NSMaxRange(paragraph)
+        }
+    }
+
+    private static func applyLineModel(to m: NSMutableParagraphStyle, paragraph: NSRange,
+                                           in result: NSAttributedString, dropsTrailingGap: Bool) {
+        guard m.maximumLineHeight == 0, m.minimumLineHeight > 0, m.lineSpacing == 0 else { return }
+        let ns = result.string as NSString
+        guard ns.range(of: "\u{FFFC}", options: [], range: paragraph).location == NSNotFound else { return }
+        // The separator is not the paragraph's: between two blocks it still carries the cell's base
+        // font (`unifyTerminator` gives it the paragraph's own only after this), and a 16pt separator
+        // would read as the size of a 10pt line.
+        let endsInSeparator = paragraph.length > 0 && ns.character(at: paragraph.location + paragraph.length - 1) == 0x0A
+        let body = NSRange(location: paragraph.location, length: paragraph.length - (endsInSeparator ? 1 : 0))
+        guard body.length > 0 else { return }
+        var size: CGFloat = 0
+        result.enumerateAttribute(.font, in: body) { value, _, _ in
+            if let font = value as? NSFont { size = max(size, font.pointSize) }
+        }
+        guard size > 0, m.minimumLineHeight > size else { return }
+        let gap = m.minimumLineHeight - size
+        m.minimumLineHeight = size
+        m.maximumLineHeight = size
+        m.lineSpacing = gap
+        if dropsTrailingGap { m.paragraphSpacing = -gap }
     }
 
     /// Finishes the paragraph pass above: gives a paragraph's terminating `"\n"` the rest of the

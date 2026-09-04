@@ -11,7 +11,7 @@ use crate::render::office::office_block::{
 };
 use std::collections::BTreeMap;
 
-const EXPECTED_DECISIONS: usize = 72;
+const EXPECTED_DECISIONS: usize = 73;
 const EXPECTED_KEYS: &[&str] = &[
     "Span.text",
     "Span.bold",
@@ -60,6 +60,7 @@ const EXPECTED_KEYS: &[&str] = &[
     "ParagraphFormat.auto_space_east_asian_latin",
     "ParagraphFormat.auto_space_east_asian_number",
     "ParagraphFormat.line_height_from_font_metrics",
+    "ParagraphFormat.line_spacing_below",
     "TabStop.position",
     "TabStop.alignment",
     "TabStop.leader",
@@ -391,6 +392,7 @@ pub(crate) fn account_current_office_slice(
         auto_space_east_asian_latin,
         auto_space_east_asian_number,
         line_height_from_font_metrics,
+        line_spacing_below,
     } = paragraph_format;
     let unknown_border_bits =
         border_edges.raw_value & !crate::render::office::office_block::RectEdge::ALL.raw_value;
@@ -419,7 +421,8 @@ pub(crate) fn account_current_office_slice(
         latin_line_break,
         auto_space_east_asian_latin,
         auto_space_east_asian_number,
-        line_height_from_font_metrics
+        line_height_from_font_metrics,
+        line_spacing_below
     );
 
     let TabStop {
@@ -965,6 +968,7 @@ mod tests {
             auto_space_east_asian_latin: Some(true),
             auto_space_east_asian_number: Some(false),
             line_height_from_font_metrics: Some(true),
+            line_spacing_below: Some(true),
         };
         let tab = TabStop::new(36.0, TabAlignment::Decimal, TabLeader::Dot);
         let numbering = ListNumbering {
@@ -1008,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn real_source_destructuring_accounts_exactly_seventy_two_decisions() {
+    fn real_source_destructuring_accounts_exactly_seventy_three_decisions() {
         let mut span = Span::default();
         span.text = SwiftString::from("accounted");
         span.bold = true;
@@ -1043,7 +1047,7 @@ mod tests {
             enabled: true,
         });
         let ledger = account(span).unwrap();
-        assert_eq!(ledger.decision_count(), 72);
+        assert_eq!(ledger.decision_count(), 73);
         assert_eq!(ledger.deferred_count(), 1);
     }
 
@@ -1149,7 +1153,7 @@ mod tests {
             substituted.record(mapped(key)).unwrap();
         }
         substituted.record(mapped("bogus.same_count.key")).unwrap();
-        assert_eq!(substituted.decisions.len(), 72);
+        assert_eq!(substituted.decisions.len(), 73);
         let AccountingError::DecisionSetMismatch {
             missing,
             unexpected,

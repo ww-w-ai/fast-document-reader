@@ -1177,6 +1177,12 @@ pub struct ParagraphFormat {
     /// `nil` = unstated.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub line_height_from_font_metrics: Option<bool>,
+    /// Whether a line's spacing sits BELOW its glyphs (HWP: the glyphs at the top of the line box,
+    /// the rest of the pitch under them) rather than above (Word, and TextKit's own floor). Decides
+    /// how the builder carries an at-least pitch and what has to fit at the foot of a page.
+    /// `nil` = unstated (above).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub line_spacing_below: Option<bool>,
 }
 
 impl ParagraphFormat {
@@ -1211,6 +1217,7 @@ impl Default for ParagraphFormat {
             auto_space_east_asian_latin: None,
             auto_space_east_asian_number: None,
             line_height_from_font_metrics: None,
+            line_spacing_below: None,
         }
     }
 }

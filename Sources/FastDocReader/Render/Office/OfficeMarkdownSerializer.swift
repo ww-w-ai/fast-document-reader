@@ -39,12 +39,24 @@ enum OfficeMarkdownSerializer {
     /// read a document WITHOUT the reader — losing a third of a scholarly page's content there is
     /// the worst kind of failure, because nothing reports it. Endnotes need no such handling: they
     /// are still ordinary trailing blocks.
-    static func serialize(_ blocks: [OfficeBlock], footnotes: [OfficeFootnote] = []) -> String {
+    static func serialize(_ blocks: [OfficeBlock], footnotes: [OfficeFootnote] = [],
+                          anchoredObjects: [OfficeAnchoredObject] = []) -> String {
+        // Text pinned to a page through a block — a chapter divider's numeral and title, drawn
+        // where their shape is rather than flowed — is emitted right after the block it hangs on,
+        // so `--extract` still carries it (invariant 161).
+        var pinnedText: [Int: [OfficeBlock]] = [:]
+        for object in anchoredObjects {
+            if case .text(let pinned) = object.object.content {
+                pinnedText[object.blockIndex, default: []].append(contentsOf: pinned)
+            }
+        }
         var pieces: [(text: String, isList: Bool)] = []
-        for block in blocks {
-            let rendered = render(block)
-            guard !rendered.text.isEmpty else { continue }
-            pieces.append(rendered)
+        for (index, block) in blocks.enumerated() {
+            for candidate in [block] + (pinnedText[index] ?? []) {
+                let rendered = render(candidate)
+                guard !rendered.text.isEmpty else { continue }
+                pieces.append(rendered)
+            }
         }
         var out = ""
         for (i, p) in pieces.enumerated() {

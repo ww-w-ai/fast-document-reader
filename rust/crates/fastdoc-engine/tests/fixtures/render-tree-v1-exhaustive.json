@@ -216,7 +216,8 @@
      "latinLineBreak": "word",
      "autoSpaceEastAsianLatin": true,
      "autoSpaceEastAsianNumber": false,
-     "lineHeightFromFontMetrics": true
+     "lineHeightFromFontMetrics": true,
+     "lineSpacingBelow": true
     },
     "tabStops": [
      {

@@ -1772,3 +1772,71 @@ this file tells you why, and why the obvious alternative does not work.
     Representative content anchors also separate drawing parity from pagination parity. Screen
     100 maps to PDF 101, screen 250 to PDF 249, screen 400 to PDF 399-400, and the final colophon on
     screen 493-494 maps to PDF 483. They share content, but print re-layout is not page-identical.
+
+161. **THE REMAINING 100-PAGE GAP TO 한글 WAS FIVE SEPARATE DENSITY LOSSES, EACH CHARGED TO A NAMED
+    FIELD BEFORE IT WAS TOUCHED — AND THE LAST ONE WAS NOT A LAYOUT RULE AT ALL.** The reference is
+    `Vendor/rhwp-src/pdf/2025 행정업무운영 편람(최종)-2024.pdf`, 383 pages from 한글 for the 388-table
+    manual `testdocs/tables/2025_행정업무운영편람_최종.hwp`; this reader printed 439. Every step below
+    was reproduced twice through `--pdf`, and the fragment probe (`FMD_FRAG_PROBE`, with
+    `FMD_FRAG_PRINT` for the paper arm and `FMD_FRAG_CENSUS` for the whole-document weight) is what
+    turned "the page is looser" into a paragraph-style field with a number on it.
+
+    (a) **Table terminators, 439 → 426 with (b).** A table is closed by two separators — the grid
+    builder's and `appendTable`'s — and a separator that is a paragraph of its OWN was laid out at
+    AppKit's default font: 14pt each, 28pt under every table, 646 such lines on this manual. They stay
+    (they keep the next block out of the last cell); `collapseTableTerminators` gives them a 0.01pt
+    box. The collapse stops at the first character inside a text block, or the last row shrinks.
+
+    (b) **A cell's last line is a LINE, not a line plus its spacing.** rhwp's `height_measurer`
+    (`include_trailing_ls`): every cell line is `line_height + line_spacing` except the cell's last,
+    which is `line_height` alone when the cell holds one paragraph, or always in a table that breaks
+    at rows. This reader floored every line at the full pitch, so a one-line 25pt cell at 180% stood
+    45pt against the source's 25. The pitch is now `size + lineSpacing` and the last line hands its
+    gap back as a negative `paragraphSpacing` — the only paragraph knob that shortens a last line's
+    box. A picture paragraph keeps its floor (a picture is not a glyph), and so does `.exact`.
+
+    (c) **Column placements are absolute positions on ONE page grid, 426 → 416.** The screen grid
+    (band 210.43, desk gap) and the print grid (band 198.43) differ, and the placements settled for
+    the screen were being reused on paper, so a second column run started 48pt off its sheet and
+    every run after it inherited the error. Runs now settle SEQUENTIALLY per grid — each run's
+    placement is written and the layout from that run onward invalidated before the next run is
+    measured — and `configurePageBand` clears the placements so a grid change re-settles them.
+
+    (d) **A text box pinned to the page is drawn where its frame says, 416 → 399.** rhwp exports a
+    page-pinned shape's text as ordinary paragraphs with `boxX/boxY/boxW/boxH` right after the shape;
+    they were flowing in the body as full-width paragraphs, so a chapter divider that is one sheet in
+    한글 took three. `pin_text_box` folds them into the shape's anchored object (`content: .text`,
+    built at the frame's width, line height capped at the box) and the body gets a zero-height
+    anchor. `--extract` still prints them, after their host block.
+
+    (e) **HWP puts a line's spacing BELOW its glyphs, and the last line's spacing may overflow the
+    page, 399 → 391.** rhwp: `line = line_height + line_spacing`, glyphs at the top; TextKit's
+    `minimumLineHeight` puts the extra space ABOVE. 한글 lets the trailing spacing run past the body
+    (page 12: glyph bottom 671.3 against a body bottom of 671.8). Every HWP paragraph format now
+    carries `lineSpacingBelow`, the builder converts its floor to `size + lineSpacing`, and the page
+    band's between-page rule subtracts the line's `lineSpacing` before asking whether it fits.
+
+    **The measurement wire trap.** Porting (e) to the Rust builder measured every footnote of
+    `footnote-01.hwp` at 54 against the host's 36. The engine's built string was one paragraph; the
+    swiftshim `addAttribute` STACKS a second run over the same range rather than merging, and
+    `ResolvedText::from_attributed_string` makes a paragraph of every `ParagraphStyle` run it meets —
+    so a style re-added unchanged doubled the note's text on the wire. A changed style is written in
+    place (`replace_attribute_value`); an unchanged one is not written. `apply_line_model` returns
+    whether it changed anything for exactly this reason. The cell loop's pre-existing `addAttribute`
+    over the same range has the same shape and is measured through the same wire only when a band
+    holds a table.
+
+    **Where the rest is (391 vs 383).** 한글's count includes 14 blank facing pages this reader does
+    not emit ([1,2,10,26,28,42,182,184,250,252,276,278,308,310]; this reader makes ~4 empty
+    sheets), so the content excess is ~18 pages, not 8. Page map: h100→f98, h200→203, h300→309,
+    h380→386. Chapter 1 uses its own section geometry (content 566.9 tall, top 104.9) while the
+    reader applies one global geometry (555.6, top 110.6, from the section with most paragraphs):
+    about one page. The table-heavy h140–h300 stretch is +9: rows pushed whole where 한글 splits
+    inside a cell (policy census: never=57, atRow=327, anywhere=4). Mean body bottom is 605.6 against
+    한글's 628.9, and 20 pages reach y≥660 against 41. None of that is a single defect; it is the
+    per-section geometry and the in-cell split, in that order.
+
+    **A test premise this moved.** `bus-headings.docx` fit 9 pages with tables carried whole and 9
+    with them split once (a) closed each table at its edge; the toggle test now judges by the
+    laid-out height dropping and bounds the page count, since fewer pages follows only when the
+    gaps the carry gave back add up to a page.

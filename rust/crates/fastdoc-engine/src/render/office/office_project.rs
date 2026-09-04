@@ -1443,6 +1443,7 @@ fn paragraph_format_back(style: &wire::ParagraphStyle) -> (ParagraphFormat, Opti
         auto_space_east_asian_latin: style.auto_space_east_asian_latin,
         auto_space_east_asian_number: style.auto_space_east_asian_number,
         line_height_from_font_metrics: style.line_height_from_font_metrics,
+        line_spacing_below: style.line_spacing_below,
     };
     (format, alignment, rtl)
 }

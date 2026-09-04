@@ -775,6 +775,10 @@ struct ParagraphFormat: Equatable {
     /// character size the paragraph declares (HWP attr1 bit 22 — 글꼴에 어울리는 줄 높이).
     /// `nil` = unstated.
     var lineHeightFromFontMetrics: Bool? = nil
+    /// Whether a line's spacing sits BELOW its glyphs (HWP) rather than above (Word, and TextKit's
+    /// own `minimumLineHeight`). `OfficeTextBuilder.applyLineModel` carries such a pitch as
+    /// `size + lineSpacing`, and the page band lets that spacing run past the foot of a page.
+    var lineSpacingBelow: Bool? = nil
 }
 
 /// How finely a line may be broken inside one script's text — see `ParagraphFormat`'s two
@@ -1714,6 +1718,7 @@ extension ParagraphFormat: Decodable {
         case indentEnd, firstLineIndent, hangingIndent, contextualSpacing, shading
         case borderColor, borderWidth, borderEdges, eastAsianLineBreak, latinLineBreak
         case autoSpaceEastAsianLatin, autoSpaceEastAsianNumber, lineHeightFromFontMetrics
+        case lineSpacingBelow
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1735,6 +1740,7 @@ extension ParagraphFormat: Decodable {
         autoSpaceEastAsianLatin = try c.decodeIfPresent(Bool.self, forKey: .autoSpaceEastAsianLatin)
         autoSpaceEastAsianNumber = try c.decodeIfPresent(Bool.self, forKey: .autoSpaceEastAsianNumber)
         lineHeightFromFontMetrics = try c.decodeIfPresent(Bool.self, forKey: .lineHeightFromFontMetrics)
+        lineSpacingBelow = try c.decodeIfPresent(Bool.self, forKey: .lineSpacingBelow)
     }
 }
 
