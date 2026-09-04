@@ -66,9 +66,11 @@ final class RustOfficeDocumentHandle {
     /// only caller is the one that just opened the handle from those same bytes.
     func officeContent(bytes data: Data) -> OfficeReadResult? {
         answeredQueries += 1
+        // `fastdoc_office_tree_json` borrows the SAME parse this handle already paid for, so
+        // P1's single-read guarantee holds.
         let json: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { raw in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
-            return fastdoc_office_content_json(handle, base, raw.count)
+            return fastdoc_office_tree_json(handle, base, raw.count)
         }
         guard let json else {
             // The same rule the other reader follows: record it, do not print it. Whoever asked for
@@ -77,7 +79,7 @@ final class RustOfficeDocumentHandle {
             return nil
         }
         defer { fastdoc_string_free(json) }
-        return RustEngine.decodeOffice(json)
+        return RustEngine.decodeOfficeTree(json)
     }
 
     /// One embedded picture's bytes, fetched from the parse this handle still holds.

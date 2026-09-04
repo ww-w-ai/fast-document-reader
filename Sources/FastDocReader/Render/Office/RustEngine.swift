@@ -16,12 +16,11 @@ enum RustEngine {
     /// checked byte-for-byte against this reader across 551 real documents, so a wrong answer here
     /// means the LINK is wrong — the bytes, the encoding, the ownership — and not the engine. A
     /// boundary whose first traffic has an unknown right answer cannot tell those apart.
-    /// What the engine's envelope is, and what this build knows how to read.
-    ///
-    /// Checked before anything else. The engine ships as a prebuilt library, so a stale one is a
-    /// real state to be in — and a version mismatch has to read as "use the other reader", not as
-    /// a document that decoded most of the way.
-    static let schemaVersion = 5
+    /// The `EnvelopeV1`/`ffiVersion` this build understands — `fastdoc_office_tree_json`'s own
+    /// doc: "`ffiVersion` versions this envelope; `ok`'s `schemaVersion` … versions the tree — the
+    /// two never mean the same thing". Checked defensively: a mismatch reads as "use the other
+    /// reader" rather than a document that decoded most of the way.
+    static let treeFfiVersion = 1
 
     /// How many times the engine has PARSED a document's bytes in this process.
     ///
@@ -31,8 +30,8 @@ enum RustEngine {
     /// results, exactly as invariant 103 says asking and using are; a count is what makes the
     /// second read observable at all.
     ///
-    /// Incremented by the two entry points that cause a parse (`fastdoc_read_office_json` and
-    /// `fastdoc_office_open`) and by nothing else — `fastdoc_office_content_json` borrows a parse
+    /// Incremented by the two entry points that cause a parse (`fastdoc_read_office_tree` and
+    /// `fastdoc_office_open`) and by nothing else — `fastdoc_office_tree_json` borrows a parse
     /// that already happened, which is the whole point of it.
     private(set) static var documentReads = 0
 
@@ -98,6 +97,17 @@ enum RustEngine {
                                                   raw: raw)
     }
 
+    /// U4: records a diagnostic that did NOT come from `fastdoc_take_last_error` — either the tree
+    /// envelope's own `error` object (`fastdoc_office_tree_json`'s own doc: "the envelope IS the
+    /// diagnostic channel", so this export never touches that slot) or a decode/adapter failure on
+    /// the HOST side (`RenderTreeOfficeAdapter` could not honestly build this document's tree). The
+    /// setter stays here — `lastOfficeReadFailure` is `private(set)`, and Swift's `private` is
+    /// file-scoped, so only this file may write it — but the caller is the tree path, in
+    /// `RenderTreeOfficeAdapter.swift`.
+    static func recordOfficeTreeFailure(kind: String?, message: String, raw: String? = nil) {
+        lastOfficeReadFailure = OfficeReadFailure(kind: kind, message: message, raw: raw ?? message)
+    }
+
     static func readOffice(_ data: Data, extension ext: String) -> OfficeReadResult? {
         #if DEBUG
         if DocumentEngineTrace.currentEntryPoint == "bridge-tree" {
@@ -110,10 +120,11 @@ enum RustEngine {
         #endif
         RustEngineFonts.install()
         noteDocumentRead()
+        // `EnvelopeV1` is the only contract a host reads (decision 2 of the cutover plan).
         let json: UnsafeMutablePointer<CChar>? = data.withUnsafeBytes { raw -> UnsafeMutablePointer<CChar>? in
             guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
             return ext.withCString { extensionC in
-                fastdoc_read_office_json(base, raw.count, extensionC)
+                fastdoc_read_office_tree(base, raw.count, extensionC)
             }
         }
         guard let json else {
@@ -121,79 +132,51 @@ enum RustEngine {
             return nil
         }
         defer { fastdoc_string_free(json) }
-        return decodeOffice(json)
+        return decodeOfficeTree(json)
     }
 
-    /// The engine's JSON turned into this app's vocabulary — the half of `readOffice` that has
-    /// nothing to do with reading.
+    /// U4: `EnvelopeV1` turned into this app's vocabulary through `RenderTreeOfficeAdapter` — the
+    /// tree twin of `decodeOffice` below, crossed by BOTH doors that read one
+    /// (`readOffice` above, `RustOfficeDocumentHandle.officeContent`), so a version check and a
+    /// decode failure are handled once, not twice.
     ///
-    /// Split out so the export a handle serves (`fastdoc_office_content_json`) crosses the SAME
-    /// decoder, version check and vector-painting pass. Two decoders for one wire format is the
-    /// shape that drifts (this file's own `unifyTerminator` lesson, one layer up).
-    static func decodeOffice(_ json: UnsafeMutablePointer<CChar>) -> OfficeReadResult? {
+    /// Invariant 115's fallback is unchanged by the cutover: a failure at ANY stage here — the FFI
+    /// call itself, the envelope's own `error`, or the adapter's own refusal — returns `nil` exactly
+    /// as a schema-v5 decode failure always has, and the caller falls back exactly as before (there
+    /// is no second Swift-native reader in production any more — see this app's own "Architecture
+    /// authority" — so "falls back" means "the read fails and the caller reports it", not a second
+    /// engine).
+    static func decodeOfficeTree(_ json: UnsafeMutablePointer<CChar>) -> OfficeReadResult? {
         let bytes = Data(bytesNoCopy: json, count: strlen(json), deallocator: .none)
-        let decoder = JSONDecoder()
-        // The engine names fields the way Rust does. This is what saves every type in the
-        // vocabulary from repeating its own field names a second time just to be decoded.
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let envelope: WireTreeEnvelope
         do {
-            let envelope = try decoder.decode(Envelope.self, from: bytes)
-            guard envelope.v == schemaVersion else { return nil }
-            var result = envelope.result
-            for (id, graphic) in result.vectorGraphics {
-                guard let pdf = HwpShapeRenderer.pdf(paths: graphic.paths, size: graphic.size) else {
-                    FileHandle.standardError.write(
-                        Data("fastdoc: host could not paint vector \(id) at \(graphic.size)\n".utf8)
-                    )
-                    return nil
-                }
-                result.images[id] = pdf
-            }
-            result.vectorGraphics.removeAll(keepingCapacity: false)
-            return result
+            envelope = try JSONDecoder().decode(WireTreeEnvelope.self, from: bytes)
         } catch {
-            // The host cannot RECOVER from a decode failure — there is no second reader behind this
-            // one any more — but it must not hide one either. A silent nil here reads exactly like
-            // "the engine could not parse the document", and the two have completely different
-            // causes: one is a document the engine cannot read, the other is a field the two sides
-            // spell differently. Saying which is the difference between a five-minute fix and an
-            // afternoon. It goes into the same slot every other failure here uses, so the caller
-            // that received the `nil` says it once in its own sentence — it used to write itself to
-            // stderr on the way past, which is the habit `OfficeReadFailure` exists to end.
-            let text = "the engine's JSON did not decode: \(error)"
-            lastOfficeReadFailure = OfficeReadFailure(kind: "envelopeDecodeFailed",
-                                                      message: text, raw: text)
+            let text = "the tree envelope did not decode: \(error)"
+            recordOfficeTreeFailure(kind: "envelopeDecodeFailed", message: text)
             return nil
         }
-    }
-
-    private struct Envelope: Decodable {
-        let v: Int
-        let result: OfficeReadResult
-        init(from decoder: Decoder) throws {
-            // The version and the document share one object — the engine flattens the result into
-            // the envelope so a host reads one thing, not a wrapper around a thing.
-            let container = try decoder.container(keyedBy: VersionKey.self)
-            v = try container.decode(Int.self, forKey: .v)
-            // The picture pool is read BEFORE the body, so every `WireImage` the body contains can
-            // resolve its key as it decodes (`PictureBytes`). Order costs nothing here: JSONDecoder
-            // parses the whole document first and materializes on demand, so asking for one key
-            // early is a lookup, not a second pass.
-            let pool = try container.decodeIfPresent([String: Data].self, forKey: .picturePool) ?? [:]
-            // The edge-border table rides in on the same rule, for the same reason (P4b).
-            let edges = try container.decodeIfPresent([EdgeBorders].self, forKey: .edgeBorderPool) ?? []
-            // The paragraph-format table rides in on the same rule, for the same reason, and turned
-            // out to carry twice the occurrences the borders did.
-            let formats = try container.decodeIfPresent([ParagraphFormat].self,
-                                                        forKey: .paragraphFormatPool) ?? []
-            result = try PictureBytes.withPool(pool) {
-                try EdgeBorderTable.withPool(edges) {
-                    try ParagraphFormatTable.withPool(formats) { try OfficeReadResult(from: decoder) }
-                }
-            }
+        guard envelope.ffiVersion == treeFfiVersion else { return nil }
+        if let failure = envelope.error {
+            // `fastdoc_office_tree_json`'s own doc: "the envelope IS the diagnostic channel" — this
+            // is a genuine per-document refusal the engine reported, not a host-side decode bug, so
+            // it is recorded with the engine's own kind/message. `raw` is the WHOLE envelope's own
+            // JSON text (matching `recordOfficeReadFailure`'s contract that `raw` is a JSON blob a
+            // log can keep, and `sentence` — `message` here — is the one prose line a caller
+            // prints; `EngineDiagnosticSurfaceTests` is what pins this apart).
+            let rawText = String(data: bytes, encoding: .utf8) ?? failure.message
+            recordOfficeTreeFailure(kind: failure.kind, message: failure.message, raw: rawText)
+            return nil
         }
-        private enum VersionKey: String, CodingKey {
-            case v, picturePool, edgeBorderPool, paragraphFormatPool
+        guard let tree = envelope.ok else { return nil }
+        do {
+            return try RenderTreeOfficeAdapter.project(tree)
+        } catch let error as RenderTreeAdapterError {
+            recordOfficeTreeFailure(kind: "treeAdapterFailed", message: error.detail)
+            return nil
+        } catch {
+            recordOfficeTreeFailure(kind: "treeAdapterFailed", message: "\(error)")
+            return nil
         }
     }
 

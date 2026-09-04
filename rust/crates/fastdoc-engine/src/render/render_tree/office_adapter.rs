@@ -73,6 +73,22 @@ pub enum OfficeAdapterError {
     InvalidColumnAuthority(AccountingError),
 }
 
+impl OfficeAdapterError {
+    /// The bucket name a census reports this variant under — the one place this mapping is
+    /// written, so a census that tabulates outcomes by kind and any other caller naming a
+    /// refusal never spell the same variant two different ways.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::AnchoredObjectTargetMissing(_) => "OfficeAdapterError::AnchoredObjectTargetMissing",
+            Self::SectionIndexMissing(_) => "OfficeAdapterError::SectionIndexMissing",
+            Self::UnresolvedCommentId(_) => "OfficeAdapterError::UnresolvedCommentId",
+            Self::NegativeFootnoteNumber(_) => "OfficeAdapterError::NegativeFootnoteNumber",
+            Self::Canonicalization(_) => "OfficeAdapterError::Canonicalization",
+            Self::InvalidColumnAuthority(_) => "OfficeAdapterError::InvalidColumnAuthority",
+        }
+    }
+}
+
 pub(super) fn from_office(
     input: OfficeAdapterInput<'_>,
 ) -> Result<ValidatedRenderTree, OfficeAdapterError> {
@@ -541,6 +557,7 @@ impl<'a> Ctx<'a> {
                 author,
                 text: comment.text.to_string(),
                 date_iso: comment.date_iso.as_ref().map(|s| s.to_string()),
+                number: comment.number,
             });
         }
     }
@@ -3076,6 +3093,38 @@ mod tests {
         assert!(json.contains("second comment"));
     }
 
+    /// `OfficeComment.number` (the reader's own 1-based DISPLAY order, computed by the format
+    /// reader before the tree is ever built) must survive onto `wire::Comment.number` unchanged —
+    /// a reviewer-pane reader shows THIS number, not the wire mint `id`, and an unanchored comment
+    /// (continuing the source's own file-order sequence past every anchored one) proves the two
+    /// numbers are allowed to diverge: mint order here is 1, 2 but display order is 2, 1.
+    #[test]
+    fn comment_display_number_survives_onto_the_wire_and_can_differ_from_the_mint_order() {
+        let mut result = OfficeReadResult::default();
+        result.comments.push(OfficeComment {
+            id: SwiftString::from("c-unanchored"),
+            author: Some(SwiftString::from("Reviewer A")),
+            date_iso: None,
+            text: SwiftString::from("never anchored, numbered last"),
+            number: 2,
+        });
+        result.comments.push(OfficeComment {
+            id: SwiftString::from("c-anchored"),
+            author: Some(SwiftString::from("Reviewer B")),
+            date_iso: None,
+            text: SwiftString::from("anchored, numbered first"),
+            number: 1,
+        });
+        let tree = ValidatedRenderTree::from_office(input(&result)).unwrap();
+        let json = String::from_utf8(tree.encode_json().unwrap()).unwrap();
+        // Mint order (registration order == source array order): id 1 is "c-unanchored".
+        assert!(json.contains("\"id\":1,\"sourceId\":\"c-unanchored\""));
+        assert!(json.contains("\"id\":2,\"sourceId\":\"c-anchored\""));
+        // Display order is the opposite of mint order — this is the field this test exists for.
+        assert!(json.contains("\"number\":2"), "the unanchored comment keeps display number 2");
+        assert!(json.contains("\"number\":1"), "the anchored comment keeps display number 1");
+    }
+
     /// Two source comment ids likely to collide under a naive scheme (a hash, or truncation) must
     /// still resolve to two different wire ids — this adapter uses a plain counter precisely to
     /// make that impossible regardless of the strings involved.
@@ -3222,7 +3271,7 @@ mod tests {
     /// A chart/SmartArt/OLE placeholder occupies real space on the page — losing its size changes
     /// the document's layout, not just its decoration. `map_single_block`'s `UnsupportedGraphic`
     /// arm used to discard `size`/`alignment` (`size: _, alignment: _`), which is what forced
-    /// `office_project::project` to refuse every document carrying one. This asserts the specific
+    /// the tree -> `OfficeReadResult` projection to refuse every document carrying one. This asserts the specific
     /// non-default values a real document declares — width 42, height 17, `.right` — survive into
     /// the wire node rather than a coincidental default (`0x0`/`.natural`) that would pass even if
     /// the fields were still being thrown away and re-invented as zero.
@@ -3503,7 +3552,7 @@ mod tests {
     /// The tree's own record of how many sections the SOURCE declared
     /// (`wire::Document.declared_section_count`) — `0` when the source declared none at all (the
     /// synthetic single-section fallback docx/odt always build), and the real count otherwise. This
-    /// is what `office_project::project` reads to tell that ambiguity apart; a regression that
+    /// is what the tree -> `OfficeReadResult` projection reads to tell that ambiguity apart; a regression that
     /// always writes `0`, or always writes `sections.len().max(1)`, breaks it silently unless this
     /// field is asserted directly.
     #[test]

@@ -227,16 +227,16 @@ pub(crate) fn account_office_read_result(
     let _ = section_start_blocks;
     ledger.record(derived("OfficeReadResult.section_start_blocks"))?;
 
-    // `picture_pool` exists only on the WIRE: `office_export::to_json` fills it and `from_json`
-    // drains it, so a result reaching this ledger always has it empty. The canonical tree carries
-    // the same bytes in its own hash-keyed resource table, which is where the pooling idea came
-    // from — so it is derived, not dropped, and asserting it is empty here says out loud that a
-    // reader is never the thing that fills it.
+    // `picture_pool` exists only on a WIRE that chooses to pool — a result reaching this
+    // ledger always has it empty. The canonical tree carries the same bytes in its own
+    // hash-keyed resource table, which is where the pooling idea came from — so it is derived,
+    // not dropped, and asserting it is empty here says out loud that a reader is never the
+    // thing that fills it.
     debug_assert!(picture_pool.is_empty(), "picture_pool is a wire field, not a reader's output");
     let _ = picture_pool;
     ledger.record(derived("OfficeReadResult.picture_pool"))?;
-    // Same shape and same reason as `picture_pool` above, for the field P4b pooled: the exporter
-    // fills it and `from_json` drains it, so a reader's own result never carries one.
+    // Same shape and same reason as `picture_pool` above, for the field P4b pooled: a wire
+    // encoder fills it, so a reader's own result never carries one.
     debug_assert!(
         edge_border_pool.is_empty(),
         "edge_border_pool is a wire field, not a reader's output"
@@ -244,8 +244,7 @@ pub(crate) fn account_office_read_result(
     let _ = edge_border_pool;
     ledger.record(derived("OfficeReadResult.edge_border_pool"))?;
     // Same shape and same reason as `picture_pool`/`edge_border_pool` above, for the paragraph
-    // format pool: the exporter fills it and `from_json` drains it, so a reader's own result
-    // never carries one.
+    // format pool: a wire encoder fills it, so a reader's own result never carries one.
     debug_assert!(
         paragraph_format_pool.is_empty(),
         "paragraph_format_pool is a wire field, not a reader's output"
@@ -349,11 +348,11 @@ pub(crate) fn account_office_header_footer(
     } = header_footer;
     // MAPPED, not refused. This entry said the canonical tree could not carry which pages a running
     // head applies to, while `office_adapter.rs:591` has been converting it onto
-    // `wire::HeaderFooter.applies_to` and `office_project.rs:431` reading it back. The label was
-    // stale in the CONSERVATIVE direction — it under-reported the tree, and a sprint reading this
-    // ledger to plan what the tree still cannot express would have found a gap that is not there.
-    // Proven by round trip, not by reading the code:
-    // `office_projection_oracle::header_applicability_and_a_page_number_restart_project_identically`.
+    // `wire::HeaderFooter.applies_to`, read back on the host side by
+    // `RenderTreeOfficeAdapter.applicability`. The label was stale in the CONSERVATIVE
+    // direction — it under-reported the tree, and a sprint reading this ledger to plan what the
+    // tree still cannot express would have found a gap that is not there. Proven by round trip,
+    // not by reading the code.
     record!(ledger, "OfficeHeaderFooter", blocks, applies_to);
     let _ = section;
     ledger.record(derived("OfficeHeaderFooter.section"))?;
@@ -397,9 +396,8 @@ pub(crate) fn account_page_number_restart(
     // `block` is the paragraph's INDEX, which the tree keeps as the node's position rather than as
     // a number (`office_adapter.rs:653` writes `ParagraphPagination.page_number_restart` onto the
     // node itself); `number` rides there unchanged. Walking nodes in source order recovers both
-    // (`office_project.rs:635`), which is what makes this derived rather than mapped: the source
-    // shape and the canonical shape are not the same. Proven by round trip —
-    // `office_projection_oracle::header_applicability_and_a_page_number_restart_project_identically`.
+    // (`RenderTreeOfficeAdapter`, host side), which is what makes this derived rather than mapped:
+    // the source shape and the canonical shape are not the same. Proven by round trip.
     let _ = (block, number);
     ledger.record(derived("OfficePageNumberRestart.block"))?;
     ledger.record(derived("OfficePageNumberRestart.number"))?;
@@ -449,9 +447,9 @@ pub(crate) fn account_section_declaration(
     // These six moved from REFUSED to MAPPED once `wire::Section` gained somewhere to put them
     // (`footnote_separator`/`page_border`/`hides_header`/`hides_footer`/`hides_master_page`/
     // `is_vertical` — `wire.rs`'s own field list) and `office_adapter::from_office` started
-    // carrying every one of them onto the tree, with `office_project::project` reconstructing them
-    // back for real instead of refusing `ProjectionError::Field("sections")` for any document that
-    // declared more than one section.
+    // carrying every one of them onto the tree, with the tree -> `OfficeReadResult` projection
+    // (`RenderTreeOfficeAdapter.swift`) reconstructing them back for real instead of dropping any
+    // document that declared more than one section.
     ledger.record(mapped("OfficeSectionDeclaration.footnote_separator"))?;
     ledger.record(mapped("OfficeSectionDeclaration.page_border"))?;
     ledger.record(mapped("OfficeSectionDeclaration.hides_header"))?;
@@ -601,8 +599,9 @@ mod tests {
         let section = account_section_declaration(&OfficeSectionDeclaration::default()).unwrap();
         assert_eq!(section.decision_count(), 9);
         // All nine are MAPPED now: `wire::Section` carries every one of
-        // `OfficeSectionDeclaration`'s fields, and `office_project::project` reconstructs them for
-        // real instead of refusing a multi-section document outright.
+        // `OfficeSectionDeclaration`'s fields, and the tree -> `OfficeReadResult` projection
+        // (`RenderTreeOfficeAdapter.swift`) reconstructs them for real instead of refusing a
+        // multi-section document outright.
         assert_eq!(section.mapped_count(), 9);
         assert_eq!(section.derived_count(), 0);
         assert_eq!(section.refused_count(), 0);

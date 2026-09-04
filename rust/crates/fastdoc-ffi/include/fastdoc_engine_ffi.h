@@ -18,21 +18,16 @@
 // UTF-8 string, or NULL if it could not be read. Free the result with fastdoc_string_free.
 char *fastdoc_extract_markdown(const unsigned char *bytes, size_t len, const char *extension);
 
-// Reads an office document and returns the JSON envelope a host decodes, or NULL. NULL also means
-// "read, but cannot be handed over intact" — the host should use its own reader. Free with
-// fastdoc_string_free.
-char *fastdoc_read_office_json(const unsigned char *bytes, size_t len, const char *extension);
-
 // Takes the diagnostic from the most recent failed call on this thread, or NULL. The caller owns
 // a non-NULL result and must free it with fastdoc_string_free. Taking clears the diagnostic.
 char *fastdoc_take_last_error(void);
 
 // Reads an office document into the canonical RenderTree wire form and returns it as a
 // self-describing envelope: {"ffiVersion":1,"ok":<tree JSON>} on success, or
-// {"ffiVersion":1,"error":{"kind":...,"message":...,"location":...}} on failure. Unlike the two
-// exports above, this one does NOT return NULL for a document-level failure — the error is inside
-// the returned string. The caller owns the result IN BOTH SHAPES and must free it with
-// fastdoc_string_free either way. NULL comes back only when the envelope itself could not be
+// {"ffiVersion":1,"error":{"kind":...,"message":...,"location":...}} on failure. Unlike
+// fastdoc_extract_markdown above, this one does NOT return NULL for a document-level failure —
+// the error is inside the returned string. The caller owns the result IN BOTH SHAPES and must
+// free it with fastdoc_string_free either way. NULL comes back only when the envelope itself could not be
 // built (never on a normal document, read or unreadable).
 char *fastdoc_read_office_tree(const unsigned char *bytes, size_t len, const char *extension);
 
@@ -165,15 +160,18 @@ FastdocOfficeDocument *fastdoc_office_open(const unsigned char *bytes, size_t le
  * doc already makes for a double-freed string, extended to this second owned resource. */
 void fastdoc_office_close(FastdocOfficeDocument *handle);
 
-/* The schema-v4 export of a document this handle ALREADY read — fastdoc_read_office_json without
- * its read. The app used to read every office document twice (once for its content, once to open
- * the handle); this is the call that makes the second read unnecessary. bytes/len are the
- * document's own source bytes, which the caller already holds — they are taken rather than stored
- * so the handle does not keep a second copy of the document alive. Returns a JSON string the
- * caller frees with fastdoc_string_free, or NULL on failure (fastdoc_take_last_error names why).
- * The bytes are indistinguishable from fastdoc_read_office_json's, deliberately. */
-char *fastdoc_office_content_json(const FastdocOfficeDocument *handle,
-                                  const unsigned char *bytes, size_t len);
+/* U3: the canonical-tree export of a document this handle ALREADY read — fastdoc_read_office_tree
+ * without its read. This is a SECOND projection of the same parsed model the handle already holds
+ * (never a re-parse). bytes/len are taken because the adapter records the source's sha256 and
+ * length from them, not a second copy of the document kept alive in the handle.
+ *
+ * Returns the SAME self-describing envelope fastdoc_read_office_tree returns
+ * ({"ffiVersion":1,"ok":<tree>} or {"ffiVersion":1,"error":{"kind","message","location"}}) —
+ * never NULL for a document-level failure, including a NULL handle/bytes, unlike this file's
+ * other handle exports. Owned by this library in both shapes and freed with fastdoc_string_free
+ * either way; NULL comes back only when the envelope itself could not be built. */
+char *fastdoc_office_tree_json(const FastdocOfficeDocument *handle,
+                               const unsigned char *bytes, size_t len);
 
 /* One embedded picture's bytes, base64, from the parse this handle still holds. An .hwp is CFB
  * binary, so its pictures are reachable only through the parse that produced the document — which

@@ -93,16 +93,9 @@ fn what_the_payload_is_made_of() {
     let path = resolve(&path);
     let data = std::fs::read(&path).expect("readable document");
     let ext = CString::new(path.extension().unwrap().to_str().unwrap()).unwrap();
-    // Which payload: the canonical TREE, or the schema-v4 export the HOST actually decodes.
-    // They are different documents of different sizes, and a composition measured on one does not
-    // transfer to the other — `FMD_PAYLOAD_COMPOSITION_TREE=1` asks for the tree explicitly.
-    let want_tree = std::env::var("FMD_PAYLOAD_COMPOSITION_TREE").is_ok();
+    // The canonical TREE — the only wire the host decodes now that schema-v4 is retired.
     let json = unsafe {
-        if want_tree {
-            fastdoc_engine_ffi::fastdoc_read_office_tree(data.as_ptr(), data.len(), ext.as_ptr())
-        } else {
-            fastdoc_engine_ffi::fastdoc_read_office_json(data.as_ptr(), data.len(), ext.as_ptr())
-        }
+        fastdoc_engine_ffi::fastdoc_read_office_tree(data.as_ptr(), data.len(), ext.as_ptr())
     };
     assert!(!json.is_null(), "the engine refused {}", path.display());
     let owned = unsafe { CStr::from_ptr(json) }.to_string_lossy().into_owned();
@@ -122,7 +115,7 @@ fn what_the_payload_is_made_of() {
 
     let mut rows: Vec<(&String, &(usize, usize))> = by_path.iter().collect();
     rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
-    println!("COMPOSITION {} [{}] total={total} bytes", path.display(), if want_tree { "tree" } else { "v4 export — what the host decodes" });
+    println!("COMPOSITION {} [tree] total={total} bytes", path.display());
     for (p, (bytes, count)) in rows.iter().take(40) {
         let share = *bytes as f64 * 100.0 / total as f64;
         println!("  {share:5.1}%  {bytes:>11}  n={count:<7} {p}");
@@ -131,13 +124,7 @@ fn what_the_payload_is_made_of() {
     // paragraph looks and then repeats them once per node; if that is what the bytes are, the
     // repair is a table and an index, not a new encoding — and it takes bytes out of the engine's
     // serialize and the host's decode at the same time.
-    for field in [
-        // tree vocabulary
-        "style", "directEdgeBorders", "pagination", "tabStops", "edgePadding",
-        // schema-v4 vocabulary — the export the HOST decodes spells the same ideas differently,
-        // and it is the one whose weight has to come down.
-        "background_image", "data", "format", "edge_borders", "spans",
-    ] {
+    for field in ["style", "directEdgeBorders", "pagination", "tabStops", "edgePadding"] {
         let mut seen: BTreeMap<String, usize> = BTreeMap::new();
         let mut occurrences = 0usize;
         let mut bytes = 0usize;

@@ -69,7 +69,7 @@ fn an_office_extension_is_refused_rather_than_read_as_text() {
 }
 
 /// A failure is a VALUE here, the same as for an office document: the envelope comes back, owned,
-/// with the reason inside it. This is the rule `fastdoc_read_office_json` does NOT follow (it
+/// with the reason inside it. This is the rule `fastdoc_extract_markdown` does NOT follow (it
 /// returns NULL and records the reason separately), and the two must not be conflated.
 #[test]
 fn a_document_level_failure_is_an_envelope_not_a_null() {

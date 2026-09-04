@@ -1080,7 +1080,8 @@
     "id": 1,
     "author": "A",
     "text": "Comment",
-    "dateIso": "2026-08-24"
+    "dateIso": "2026-08-24",
+    "number": 1
    }
   ],
   "bookmarks": [

@@ -567,6 +567,8 @@ this file tells you why, and why the obvious alternative does not work.
 
     The fix computes the expected side through BOTH layers in the same order the symbol walks them. Proven to bite by deleting the export layer's `projection_ledger::record` — the old test could not fail on that mutation, the new one does. **The rule: when a check mirrors a pipeline, the mirror must have as many stages as the pipeline. A stage the mirror omits is untested precisely when an earlier stage stops shadowing it — which is what every successful refusal-reduction sprint causes.**
 
+    Since 2026-09-05 `office_fallback_ledger_ffi.rs`, `projection_ledger` and `office_project::project` no longer exist — the export layer they cross-checked went with schema-v5 (invariant 172). The rule stands; the file names are history.
+
 107. **A PRESENCE TEST PROVES THE VALUE ARRIVED, NEVER THAT NOTHING WAS DESTROYED GETTING THERE — and a ledger that calls a field "derived" is making the stronger claim without proving it.** Found in S6-7, traced rather than reasoned. `OfficeReadResult.default_body_font_size` is recorded as `Derived` (`office_result_accounting.rs:243`), defended by a test whose own doc comment states the standard: *"That is only true if a run which states no size of its own actually carries the document's default — otherwise the fact is simply dropped and the tree is not self-contained."* The test passes. The tree is still lossy.
 
     `convert_text_run` stamps a size on EVERY run (`office_adapter.rs:1465`, `span.font_size.or(Some(default_body_font_size))`), so inside the canonical tree a run that DECLARED 11pt and a run that INHERITED 11pt are the same bytes. The document's default is then thrown away — `wire.rs` has no field for it anywhere. Both facts the document stated are gone: what each run declared, and what the document's default was.
@@ -612,6 +614,8 @@ this file tells you why, and why the obvious alternative does not work.
 
     **The rule: name the gate by what it must cover, never by a crate you happen to be working in.** A `-p` flag is a development convenience; it becomes a lie the moment its output is reported as the gate's verdict. Same shape as the `--skip OfficeDocumentTests` excuse (CLAUDE.md's own gate note) — a scope narrowed for a good reason on Monday is an unread scope by Friday.
 
+    `office_fallback_ledger_ffi` was deleted with schema-v5 on 2026-09-05 (invariant 172); the workspace gate is 348 tests today and still takes no `-p`.
+
 112. **A PAYLOAD'S SIZE IS NOT ITS VOCABULARY'S SIZE — attribute the bytes before letting one number justify a rewrite.** Found in S9-3, where the number had already been carried through a whole sprint as settled. The roadmap's only argument against schema-v4 was one measurement: `2025_행정업무운영편람_최종.hwp` exports a **77,946,260-byte** JSON, written down as "a number S9 must not leave alone" when it retires `OfficeBlock`. The reading behind it was that the vocabulary is bloated and the canonical tree would be leaner. `office_payload_size_census.rs` measured the two exports side by side through the real FFI symbols and none of that survived:
 
     **69% of that document's export is picture payload** — 53,937,512 bytes of base64 that both vocabularies carry identically, because they carry the same pictures. The vocabulary's own share is 24,008,748. A vocabulary change cannot touch the other two thirds.
@@ -625,6 +629,8 @@ this file tells you why, and why the obvious alternative does not work.
     **So S9 closes `OfficeBlock` the other way the roadmap allows — explicitly isolated, not removed** — and the isolation is now a test rather than a paragraph. `RustEngineBridgeTests.testNoProductionSourceCallsASwiftOfficeReader` walks `Sources/FastDocReader`, strips comments (the readers are cited in prose all over this codebase — `OfficeBlock.swift` alone names `DocxReader.isOn` and `HwpReader.read` half a dozen times to say where a field comes from), and fails naming file and line if a production file calls one. `DocumentTypes.officeReaderType(for:)` — the last place the app still named a reader type — became `zipBackedOfficeExtensions`, a registration set, because picking a reader is no longer a thing the app does. Proven to bite: `if ext.isEmpty { return try DocxReader.read(archive) }` inserted into `DocumentTypes.readOffice` failed the test on `DocumentTypes.swift:151` before the line was removed.
 
     **The rule: a number is an argument only once you know what it is made of.** "78MB" and "78MB of which 24MB is ours" point at different work — the second says the lever is how pictures travel, not which vocabulary describes them.
+
+    Since 2026-09-05 this entry's `office_payload_size_census.rs` command cannot be run: schema-v5 and its export were deleted (invariant 172). The attribution stays as the reason the vocabulary was never the lever.
 
 113. **A PERFORMANCE CLAIM SURVIVES AS A COUNT, NOT AS A CLOCK — gate the property that bought the speed, not the milliseconds it bought.** S10's job was to put gates under three numbers this roadmap had recorded and never guarded. All three had the same shape: an optimisation whose ANSWERS are identical to the slow version's, so the entire existing suite stays green if someone writes the slow shape back. Only the cost moves, and cost is what no other test here can see.
 
@@ -658,6 +664,8 @@ this file tells you why, and why the obvious alternative does not work.
 
     **The rule: a truncated population must announce its truncation in the same breath as its counts.** "400 examined, 0 fell back" and "400 of 669 examined, 0 fell back" are different claims, and only the second one is honest about being unable to support the first.
 
+    `office_project_corpus_census.rs` and `fastdoc_read_office_json` were deleted on 2026-09-05 (invariant 172). The surviving census is `office_corpus_census` (`FMD_OFFICE_TREE_CENSUS=1`, 669 of 669), and it walks the whole corpus as this entry demands.
+
 115. **THE CANONICAL TREE CANNOT CARRY A ZIP DOCUMENT'S PICTURES, AND THAT IS THE LAZY-MEDIA DESIGN RATHER THAN A HOLE.** Measured in S10, after invariant 114 uncapped the census and the fallback rate went from a reassuring 0 to a real 13 of 669. Eleven of those thirteen refuse as `MissingResource`, and every one is a docx or an odt.
 
     **No production call site has ever built a non-empty `resources` map.** `fastdoc_read_office_json`, `fastdoc_read_office_tree` and every other caller pass `BTreeMap::new()`. HWP is unaffected because its pictures ride inside `OfficeReadResult.images` (rhwp pre-decodes them), so the adapter finds them; a docx or odt keeps its pictures in the archive and the reader emits only the relationship target (`word/media/image1.png`), so `resolve_resource` asks for a key nothing supplied.
@@ -690,6 +698,8 @@ this file tells you why, and why the obvious alternative does not work.
     **What this costs is validation, not correctness.** The output is identical either way — `project` round-trips (invariant 112's oracle) and `to_json(&result)` is the same shape — but a document that falls back never passes through the tree's validation. So S4's claim reads more broadly than it holds: every shipping payload is derived from a validated tree *unless the document keeps its pictures in its own archive*, which no test said out loud until this census could see all 669 documents.
 
     **The rule: when a refusal is the design, say so where the refusal is counted.** A `MissingResource` that no caller can avoid is not a defect waiting to be fixed, and leaving it unexplained invites someone to "fix" it by populating the map — which would trade a validation gap for a memory and first-paint one.
+
+    Since 2026-09-05 the projection that fell back for those eleven is gone with schema-v5 (invariant 172): the host reads the tree from the parse handle, the tree census accepts 669 of 669, and a docx/odt's pictures reach the host on demand through that handle rather than inside the tree — the design this entry describes, now without the layer that counted it as a refusal.
 
 116. **THE PORT'S ONLY END-TO-END PARITY CHECK NEEDS A BINARY FROM BEFORE THE CUTOVER, AND THAT BINARY IS NOT REPRODUCIBLE FROM THIS BRANCH.** S10's parity axis is `extract_matches_swift.rs`: it drives real `.docx`/`.odt` through this engine's `--extract` and compares the bytes against an installed FastDocReader's `--extract` for the same file. Its own doc calls this "the only check in the workspace that can tell a faithful port from a plausible one", and it is right — nothing else in either suite reads a real document with both implementations.
 
@@ -2107,3 +2117,104 @@ this file tells you why, and why the obvious alternative does not work.
     (Word 60), d1/d3/d4/d5 unchanged at 2/11/132/32 (Word 2/11/134/34); the reference manual
     392 → 391 (한컴 383), every HWP empty cell paragraph now its own line whatever block it sits
     in.
+
+171. **THE ORACLE AND THE ENGINE ARE COMPARED BY A HARNESS, NOT BY EYE — AND EVERY DIFFERENCE IT
+    FOUND WAS THE ORACLE'S.** Until 2026-09-04 nothing read a real document through BOTH
+    implementations and compared what came out: `FMD_RENDER_CORPUS` is a crash gate, the Rust
+    censuses count one side, `S1BBehaviorOracleTests` asks which engine ran. `OfficeDifferentialHarnessTests`
+    is that comparison. `FMD_DIFF_CORPUS=<colon-separated dirs> FMD_DIFF_OUT=<tsv>` reads every
+    docx/odt/hwp/hwpx twice — through the Swift oracle readers `DocxReader`/`OdtReader`/`HwpReader`
+    (the one job invariant 112 keeps them for) and through the production door,
+    `MarkdownDocument.read(from:ofType:)`, so the engine side is exactly what a user opens. Both
+    `OfficeReadResult`s go through `OfficeDiffNormalizer`: text as a SORTED multiset of paragraph
+    texts, so span boundaries and block order are not differences; images by count and sorted byte
+    length, never pixels (a decoded-pixel compare is invariant 115's fallback class, not a diff);
+    table shapes; page geometry rounded; the ordered block sets (`sectionStart`, `pageBreak`,
+    `keepWithNext`) by the text hash of the block rather than its index. One TSV line per document
+    — `path, ext, oracle_ok, engine_ok, diff_fields, sheets_oracle, sheets_engine, class`, class in
+    {same, fallback, text, table, geometry, images, sheets, error} — and NO document text, ever:
+    the corpus is private. `testNormalizerAndDifferAgreeOnDeterministicFixture` runs without a
+    corpus so the normalizer itself is always under test.
+
+    **Sheets are counted the way `--pdf` counts them, or they are not counted.** The harness lays
+    each side out through the same window controller and reads `printSheets.count` only after
+    `beginPrintLayout` + `settlePagedTablesFully` + `applyTrailingFooterBand`. Read before those
+    calls, the manual (`2025_행정업무운영편람_최종.hwp`) counts 403 where `--pdf` writes 391, because
+    a table crossing a page boundary is only resolved by the settle (invariants 61/64/72) — and the
+    raw pre-print pass reports 1869. `testEngineSheetCountPinnedToHeadlessPDF` (`FMD_DIFF_PIN_DOC=
+    <document>`) runs a real `--pdf` on the same file and requires the harness's engine count to
+    sit within ±2 of it, so the count the harness reports can never quietly become a third number.
+
+    **On testdocs (20 documents, `diff-38e.tsv`): same 9, text 4, images 3, sheets 3, geometry 1 —
+    and after triage, engine defects 0.** Every difference was on the oracle's side or the
+    encoder's. (a) The docx oracle never parsed `w:keepNext` or `w:br w:type="page"`: five docx
+    rows, `keepWithNext` 0 against 219 on `Zero100-2` (sheets still 132 = 132), `pageBreak` 0
+    against 50 on `덕소5B구역`, and the oracle carrying a page break as a paragraph holding a literal
+    `\n` where the engine has an empty paragraph plus a `pageBreakBlocks` entry. (b) The oracle
+    counts sheets without the engine handle, so footnote height, band side and section restarts fall
+    back to host arithmetic: 444 against 391 on the manual, 13 against 2 on `s7-page-restart.hwp`
+    (the file that exists to test section restarts), 36 against 31 and 7 against 6 on two others
+    whose block lists are identical. (c) A CROPPED picture re-encoded by AppKit on the oracle side
+    and by the Rust image crate on the engine side differs by 5–15% in bytes while every uncropped
+    picture matches byte for byte — 2 of 4 on `s9-picture-crop.hwp`, 2 of 50 on `1790387`, 30 of 89
+    on the manual. None of the three is something a reader shows.
+
+    **The one finding filed as an engine defect was a relocation, not a loss.** The manual's cover
+    showed three blocks with text on the oracle side and none on the engine side, at the same
+    indices, with the block count identical at 10,948. `HwpReader::map_block` (`hwp_reader/mapping.rs`)
+    meets a text-box paragraph that follows a shape PINNED to the page, computes its frame from the
+    shape's, moves the paragraph — spans and all — into `anchoredObjects` as an `OfficeAnchoredObject`
+    with text content, and leaves a zero-height anchor in its place so the text is drawn where the
+    shape is (invariant 161, the chapter dividers). The oracle keeps the paragraph in the flow. The
+    rule the normalizer now carries: **text the engine parks on `anchoredObjects` is still the
+    document's text**, and the multiset folds it in before comparing. Mutation check: disabling the
+    text compare made a docx's text finding vanish, so the harness bites; and the rule for anyone
+    triaging a `text` row is to look for a moved block before a dropped one — a count that matches
+    while an index goes empty is the relocation signature.
+
+172. **`RenderTree` IS THE ONLY OFFICE CONTRACT — schema-v5 is deleted, and the host reads the tree
+    from the parse it already paid for.** Until 2026-09-05 the engine crate carried two contracts:
+    `office_export::SCHEMA_VERSION = 5` (the JSON the macOS host actually decoded) and `EnvelopeV1`
+    (`render_tree/wire.rs`, `schema_version` 1, which nothing consumed). A Windows/Linux/mobile host
+    consumes only the tree (`docs/CROSS-PLATFORM.md` §2), so keeping v5 alive meant two hosts with
+    two truths and no harness between them. Invariant 171 supplied the harness; this entry is the
+    cut-over it made safe.
+
+    **Deleted, not deprecated.** FFI `fastdoc_read_office_json` and `fastdoc_office_content_json`;
+    Rust modules `office_export.rs`, `office_project.rs`, `projection_ledger.rs`, `picture_pool.rs`,
+    `edge_border_pool.rs`, `paragraph_format_pool.rs` (about 2,300 lines); eight Rust test files
+    that only measured v5 (`export_round_trip`, `office_projection_oracle`, `engine_stage_cost`,
+    `office_fallback_ledger_ffi`, `office_payload_size_census`, `office_project_corpus_census`,
+    `payload_budget`, `transport_cost_probe`) and three Swift ones (`OfficeTransportCostTests`,
+    `PayloadDecodeProbeTests`, `PooledPictureDecodingTests`); Swift `RustEngine.decodeOffice(json:)`,
+    `schemaVersion`, and the v5 envelope mirror. Invariants 106, 111, 112, 114 and 115 cite those
+    files — they stay as the measurements they were, each with a note saying the command is gone.
+
+    **What replaced it.** `fastdoc_office_tree_json(handle, bytes, len)` is a SECOND projection of
+    the model the `fastdoc_office_open` handle already parsed — no re-parse, so the single-read
+    rule (one 565 ms parse per document, `RustEngineOfficeDocument.swift`) holds; the one-shot
+    `fastdoc_read_office_tree` stays for a read with no handle. On the Swift side
+    `Render/Office/RenderTreeWire.swift` is the `Decodable` mirror of `EnvelopeV1` (every key is
+    camelCase except the VALUES of `declared_faces`, which cross as Rust's snake_case — the mirror
+    says so where it decodes them) and `Render/Office/RenderTreeOfficeAdapter.swift` turns the tree
+    into `OfficeReadResult`. `RustEngine.readOffice` calls `fastdoc_read_office_tree`;
+    `RustOfficeDocumentHandle.officeContent` calls `fastdoc_office_tree_json`. An error envelope
+    still returns nil and records the failure, with no Swift reader behind it (invariant 115's
+    family). `OfficeReadResult` and `OfficeBlock` remain — as the HOST's vocabulary that the adapter
+    fills, not as a wire. The gap audit before the cut found ONE field the host used that the tree
+    did not carry, a comment's 1-based display number; it went into `wire.rs`'s `Comment` under
+    `#[serde(default)]` and `schema_version` stayed 1, because a version bump protects consumers
+    and the tree had none yet. `FMD_OFFICE_TREE_CENSUS`: 669 of 669 accepted before and after.
+
+    **The gap is pinned, not assumed away.** `RenderTreeAdapterParityTests.testTreeDoorMatchesTheKnownOracleGap`
+    records, per testdocs file, the exact `diff_fields` invariant 171's harness reports between the
+    oracle and the tree door (minus `sheets`, which the oracle cannot count the engine's way) and
+    fails if that set widens OR narrows — a silent narrowing is an oracle that stopped reading
+    something, which is as much a change as a new difference. Mutation check: swapping the
+    adapter's `keepWithNext`/`pageBreak` derivation failed the pin on four documents. Gates after
+    the cut: `cargo test` workspace 348 passed / 0 failed; `build-engine.sh` clean; `swift test`
+    1,931 tests, 96 skipped, 0 failures; `port-coverage.py --gate` 692/692; the harness TSV
+    byte-identical before and after the host switched wires (`diff-38e` = `diff-38f`); the manual
+    `--pdf` 391; d1–d6 2/19/11/132/32/59. **The rule: one boundary, and the host reads it from the
+    handle.** A second projection "for compatibility" is how the crate came to have two, and the
+    reason it took a harness to remove one.

@@ -12,9 +12,9 @@
 //! the resulting `OfficeReadResult`: a `Span.column_layout` whose `count` is actually `> 1`, a
 //! `Cell.diagonal`, a `Span.form_control`, a nested `OfficeBlock::Table` inside a cell, a
 //! `Cell.background_image` (a picture fill), pre-decoded bytes in `OfficeReadResult.images`, and —
-//! S6-4's own proof — `office_export::to_json` actually carrying that picture fill's bytes into
-//! the exported envelope (`assert_exportable` no longer refuses it; the boundary this file used to
-//! anchor on was the fact this content was DROPPED, and that fact no longer holds).
+//! S6-4's own proof — a picture fill actually carrying non-empty bytes on the reader's own result
+//! (the boundary this file used to anchor on was the fact this content was DROPPED, and that fact
+//! no longer holds).
 //! "It parsed without error" is never accepted as an anchor here: every assertion
 //! first pins the expected COUNT (`assert!(... >= N)` or `assert_eq!`) before it inspects contents,
 //! so a walk that silently found nothing fails loudly rather than passing vacuously.
@@ -34,7 +34,6 @@
 use fastdoc_engine::render::office::hwp_reader::mapping::PictureBytes;
 use fastdoc_engine::render::office::hwp_reader::HwpReader;
 use fastdoc_engine::render::office::office_block::{Cell, OfficeBlock, OfficeReadResult};
-use fastdoc_engine::render::office::office_export::{assert_exportable, to_json};
 use swiftshim::Data;
 
 /// `Vendor/rhwp-src/samples/<relative>`, resolved from `CARGO_MANIFEST_DIR` (this crate is
@@ -347,23 +346,27 @@ fn hwpx_nested_table_and_resources_arrive() {
 // picture-fill export (S6-4) — issue2083_hide_fill_page.hwpx
 // -------------------------------------------------------------------------------------------
 
-/// S6-4: this fixture's ONE unexportable-before-S6-4 fact was a cell picture fill — no master
-/// page, no anchored object ahead of it in `assert_exportable`'s own check order (the manifest's
-/// own `why`). It now exports, and the picture's bytes are proven present in the envelope, not
-/// silently dropped the way `#[serde(skip)]` used to drop it before this sprint.
+/// S6-4: this fixture's ONE previously-unreachable fact was a cell picture fill. It now reaches
+/// the reader's own result with the picture's bytes present, not silently dropped.
 #[test]
 fn hwpx_picture_fill_now_exports_with_its_bytes_present() {
     assert_matches_manifest("feature-picture-fill-refusal-hwpx", "issue2083_hide_fill_page.hwpx");
     let result = read("issue2083_hide_fill_page.hwpx");
-    // Pin the anchor is actually present before asking whether it exports — a document with
-    // zero picture fills would trivially export for an unrelated reason.
+    // Pin the anchor is actually present before asking whether its bytes made it across — a
+    // document with zero picture fills would trivially pass for an unrelated reason.
     let cell_fills = cell_background_image_count(&result);
     assert!(cell_fills >= 1, "issue2083_hide_fill_page.hwpx: expected at least 1 cell with a picture fill, found {cell_fills}");
-    assert_eq!(assert_exportable(&result), Ok(()));
-    let json = to_json(&result).unwrap();
+    let mut found_bytes = false;
+    walk_cells(&result.blocks, &mut |cell| {
+        if let Some(image) = &cell.background_image {
+            if image.data.as_ref().is_some_and(|d| !d.0.is_empty()) {
+                found_bytes = true;
+            }
+        }
+    });
     assert!(
-        json.contains("\"background_image\""),
-        "issue2083_hide_fill_page.hwpx: the cell's real picture must appear in the envelope, not vanish silently"
+        found_bytes,
+        "issue2083_hide_fill_page.hwpx: the cell's real picture must carry non-empty bytes, not vanish silently"
     );
 }
 

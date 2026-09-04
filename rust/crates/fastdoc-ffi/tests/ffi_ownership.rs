@@ -182,7 +182,7 @@ fn fastdoc_string_free_of_null_does_nothing() {
     unsafe { fastdoc_engine_ffi::fastdoc_string_free(std::ptr::null_mut::<c_char>()) };
     // Reaching this line without aborting/crashing IS the assertion — a NULL argument must be
     // safe to pass, since that is exactly what a caller reading a genuine-absence NULL from
-    // `fastdoc_extract_markdown`/`fastdoc_read_office_json`/`fastdoc_take_last_error` would do if
+    // `fastdoc_extract_markdown`/`fastdoc_read_office_tree`/`fastdoc_take_last_error` would do if
     // it always calls free defensively.
 }
 

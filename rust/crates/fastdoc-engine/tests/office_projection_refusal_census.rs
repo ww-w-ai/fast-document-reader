@@ -27,10 +27,8 @@
 //! programming error, not a document fact, and can never be "fixed" out of existence the way a
 //! real document's own defect can.
 //!
-//! `adapter_error_kind` (`office::projection_ledger`) is the SAME function S4-05's fallback ledger
-//! uses to name a `from_office` refusal — sharing it is what lets a later cross-check test compare
-//! this census's counts against the ledger's without the two ever disagreeing about what to call a
-//! variant.
+//! `OfficeAdapterError::kind_name` is the one place this bucket-name mapping is written, so this
+//! census and any other caller naming a refusal never spell the same variant two different ways.
 
 use fastdoc_engine::render::office::docx_reader::DocxReader;
 use fastdoc_engine::render::office::hwp_reader::mapping::HwpReader;
@@ -39,7 +37,6 @@ use fastdoc_engine::render::office::office_block::{
     OfficeAnchoredObject, OfficeBlock, OfficeMasterObject, OfficeMasterObjectContent,
     OfficeReadResult,
 };
-use fastdoc_engine::render::office::projection_ledger::adapter_error_kind;
 use fastdoc_engine::render::office::zip_archive::ZipArchive;
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
 use swiftshim::geometry::{CGPoint, CGRect};
@@ -185,7 +182,7 @@ fn rhwp_fixture(subdir: &str, name: &str) -> Vec<u8> {
 // The census.
 // -------------------------------------------------------------------------------------------
 
-/// `Ok("accepted")` or the `adapter_error_kind` string — the one outcome vocabulary this file
+/// `Ok("accepted")` or the `OfficeAdapterError::kind_name` string — the one outcome vocabulary this file
 /// tabulates over.
 fn outcome_for(format: DocumentFormat, source_name: &str, source_bytes: &[u8]) -> String {
     let result = match format {
@@ -220,7 +217,7 @@ fn outcome_for(format: DocumentFormat, source_name: &str, source_bytes: &[u8]) -
         resources: BTreeMap::new(),
     }) {
         Ok(_) => "accepted".to_string(),
-        Err(error) => adapter_error_kind(&error).to_string(),
+        Err(error) => error.kind_name().to_string(),
     }
 }
 
@@ -339,7 +336,7 @@ fn refusal_census_over_every_registered_fixture() {
 /// The corroboration `refusal_census_over_every_registered_fixture` used to get from "at least
 /// one real fixture refuses" — removed because that made the census fail on the day this crate
 /// succeeds at its own goal (`INVARIANTS.md` 109). This proves the SAME thing (the adapter can
-/// still refuse, and `outcome_for`/`adapter_error_kind` can still NAME the refusal) with an input
+/// still refuse, and `outcome_for`/`kind_name` can still NAME the refusal) with an input
 /// that refuses by CONSTRUCTION rather than by a real document's current defect.
 ///
 /// It used to use a missing resource key. P2c made that case legal — an unresolved key is now

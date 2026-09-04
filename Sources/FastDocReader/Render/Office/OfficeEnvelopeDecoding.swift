@@ -62,7 +62,7 @@ struct WireImage: Decodable {
 /// `Decodable`, which has nowhere to carry a context — and rather than a post-pass over the decoded
 /// document because one of those places (`OfficeMasterObject.Content.image`) holds a real `NSImage`
 /// and throws when there are no bytes, so by the time a post-pass ran the decode would already have
-/// failed. Bound in `RustEngine.decodeOffice`, empty everywhere else.
+/// failed. Bound while `OfficeReadResult`'s own `Decodable` init runs, empty everywhere else.
 enum PictureBytes {
     @TaskLocal static var pool: [String: Data] = [:]
     /// Scoped to one decode alongside the pool — a key is content-addressed, so an entry is only

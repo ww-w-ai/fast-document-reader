@@ -4,11 +4,10 @@ import XCTest
 /// P1 — a document the app opens is PARSED once.
 ///
 /// Reading a document and opening a handle to it were two calls that each performed the same
-/// `read_office`, and the app made both on every open: `read(from:)` asked
-/// `fastdoc_read_office_json` for the content, then `setOfficeContent` opened a handle for the
-/// engine's queries. Measured on `2025_행정업무운영편람_최종.hwp` (release): 565 ms of the second
-/// read, thrown away — 47% of the 1,212 ms the whole pre-cutover build spent on that document's
-/// `--extract`.
+/// `read_office`, and the app made both on every open: `read(from:)` asked the engine for the
+/// content, then `setOfficeContent` opened a handle for the engine's queries. Measured on
+/// `2025_행정업무운영편람_최종.hwp` (release): 565 ms of the second read, thrown away — 47% of the
+/// 1,212 ms the whole pre-cutover build spent on that document's `--extract`.
 ///
 /// Nothing caught it, and nothing could have: the two parses read the same bytes with the same
 /// parser, so they always agreed. This is invariant 103's shape one layer down — asking twice and

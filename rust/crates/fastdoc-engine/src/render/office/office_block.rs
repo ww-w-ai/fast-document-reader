@@ -2106,21 +2106,21 @@ pub struct OfficeReadResult {
     /// signal yet, and for every HWP picture that DOES have bytes — so a document with no such
     /// picture is byte-identical to before this field existed.
     pub pictures_declared_without_bytes: std::collections::HashSet<SwiftString>,
-    /// Picture bytes the WIRE carries once, keyed by content — see `picture_pool`.
+    /// Picture bytes a WIRE format may carry once, keyed by content, rather than once per use.
     ///
     /// Deliberately NOT `images`: that map's key is the exact `.image(id:)` string a block carries,
     /// and a pooled picture has no such id (a table cell's background is not an image block). Two
-    /// meanings in one map would make "is this key drawable by id" unanswerable. This one is empty
-    /// in memory and empty again after `office_export::from_json`, so a result that round-trips is
-    /// equal to the one that was read — which is what makes the round-trip check worth running.
+    /// meanings in one map would make "is this key drawable by id" unanswerable. This field is
+    /// empty in every reader's own output — a reader never pools — so it is `derived` for the
+    /// accounting ledger, filled only by a wire encoder that chooses to pool.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub picture_pool: std::collections::HashMap<SwiftString, Data>,
-    /// Per-edge border declarations the WIRE carries once — see `edge_border_pool`. Empty in
-    /// memory and empty again after `office_export::from_json`, exactly like `picture_pool`.
+    /// Per-edge border declarations a WIRE format may carry once. Empty in every reader's own
+    /// output, for the same reason `picture_pool` is.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edge_border_pool: Vec<EdgeBorders>,
-    /// Paragraph formats the WIRE carries once — see `paragraph_format_pool`. Empty in memory
-    /// and empty again after `office_export::from_json`, exactly like `edge_border_pool`.
+    /// Paragraph formats a WIRE format may carry once. Empty in every reader's own output, for
+    /// the same reason `edge_border_pool` is.
     ///
     /// Measured on the same manual that justified that one: `format` appears **10,864 times for
     /// 1,635 distinct values**, 1,655,374 bytes — twice the occurrences of `edge_borders`, and

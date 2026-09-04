@@ -589,9 +589,10 @@ pub struct NSImage {
     ///
     /// A real document uses the same picture in many places — 610 of one government manual's table
     /// cells share 44 background images — and `data` writes a fresh base64 copy at every one of
-    /// them. `office_export` therefore moves the bytes into the result's own `images` map before
-    /// serializing and leaves this key pointing at them, which is the map the host already resolves
-    /// pictures through. In memory `data` stays exactly as it was; this is a property of the WIRE.
+    /// them. A wire encoder that pools may move the bytes into the result's own `images` map
+    /// before serializing and leave this key pointing at them instead, which is the map the host
+    /// already resolves pictures through. In memory `data` stays exactly as it was; this is a
+    /// property of the WIRE.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_key: Option<crate::nsstring::SwiftString>,
 }

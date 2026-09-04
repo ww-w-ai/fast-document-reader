@@ -95,8 +95,9 @@ fn read_result(path: &Path) -> Option<OfficeReadResult> {
 }
 
 /// True if `blocks` (or anything it recursively contains, through table cells) holds at least one
-/// `OfficeBlock::UnsupportedGraphic` — the exact shape `office_project.rs::map_single_block`
-/// refuses on (`wire::NodePayload::Unsupported(_) => Err(Field("unsupportedGraphic.size"))`).
+/// `OfficeBlock::UnsupportedGraphic` — the shape that used to send a document back to the
+/// `Field("unsupportedGraphic.size")` refusal this probe's own module doc measures the "before"
+/// rate for.
 fn contains_unsupported_graphic(blocks: &[OfficeBlock]) -> bool {
     blocks.iter().any(block_contains_unsupported_graphic)
 }

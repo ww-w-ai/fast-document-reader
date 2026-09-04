@@ -74,7 +74,7 @@ impl Default for VerticalPosition {
 
 /// Only for `#[serde(default)]` on a field added to an EXISTING struct after documents already
 /// carrying it shipped (`Unsupported.alignment`) — `Natural` is already this schema's spelling of
-/// "the source stated no alignment of its own" (`alignment_back`, `office_project.rs`), so a
+/// "the source stated no alignment of its own" (`RenderTreeOfficeAdapter.alignmentBack`), so a
 /// fixture written before this field existed decodes exactly as if the source had said nothing,
 /// never a guessed `Left`/`Center`/etc.
 impl Default for Alignment {
@@ -134,7 +134,7 @@ pub struct Document {
     /// `section_count = result.sections.len().max(1)` always builds at least one `Section` node,
     /// so a tree with exactly one cannot otherwise tell "the source declared none" (the synthetic
     /// document-wide case docx/odt always build) from "declared exactly one" apart, and
-    /// `office_project::project` needs that distinction to know whether `sections` should
+    /// the tree -> `OfficeReadResult` projection needs that distinction to know whether `sections` should
     /// reconstruct to `[]` or to a one-element array (invariant 108: an empty collection standing
     /// in for "we were not told" is the failure, not a fact). `0` here means the source declared
     /// none. `#[serde(default)]`: fixtures written before this field existed predate multi-section
@@ -862,7 +862,7 @@ pub struct Image {
     pub alignment: Alignment,
     pub alt_text: Option<String>,
     /// The id the document itself used for this picture (`"hwpimg:3"`) — same field, same reason
-    /// as `Vector.source_key` above, and the only way `office_project::project` can honestly
+    /// as `Vector.source_key` above, and the only way the tree -> `OfficeReadResult` projection can honestly
     /// reconstruct an `OfficeBlock::Image.id` when `resource_id` is `None`: there is no `Resource`
     /// row to recover a key from in that case. Always set by `office_adapter::Ctx::map_image`
     /// (both when a resource resolves and when it does not), so a `Resource`-backed image and a
@@ -1066,8 +1066,8 @@ pub struct Unsupported {
     pub intrinsic_size: Size,
     /// `OfficeBlock::UnsupportedGraphic.alignment` is `Option<NSTextAlignment>` — `None` means the
     /// source stated no alignment of its own, not that the placeholder has no alignment. Spelled
-    /// the same way `Image.alignment` already spells that (`alignment_back`'s own
-    /// `wire::Alignment::Natural => None` arm, `office_project.rs`): a non-optional `Alignment`
+    /// the same way `Image.alignment` already spells that (`RenderTreeOfficeAdapter.alignmentBack`'s
+    /// own `wire::Alignment::Natural => None` arm): a non-optional `Alignment`
     /// whose `Natural` variant IS "not stated", rather than a second `Option<Alignment>` wrapper
     /// around a type that already has a way to say so. `#[serde(default)]` for the same
     /// backward-compat reason as `intrinsic_size` immediately above — `Alignment::default()` is
@@ -1133,6 +1133,13 @@ pub struct Comment {
     pub author: String,
     pub text: String,
     pub date_iso: Option<String>,
+    /// The comment's 1-based DISPLAY order — `office_block::OfficeComment.number`, unchanged:
+    /// by first appearance of its anchor in the body when it has one, or (for a comment the body
+    /// never anchors at all) continuing that same sequence in the source's own file order, so a
+    /// reader can show "Comment 1", "Comment 2", … the way a native office app's review pane
+    /// would. `#[serde(default)]`: golden fixtures predate this field.
+    #[serde(default)]
+    pub number: i64,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

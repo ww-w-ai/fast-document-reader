@@ -1,9 +1,10 @@
 //! S6-6 measurement probe — NOT a gate, NOT wired into CI.
 //!
-//! Answers, over real documents, which of `OfficeSectionDeclaration`'s six fields with no home in
-//! `wire::Section` (`office_project.rs`'s own module doc: `footnote_separator`, `page_border`,
-//! `hides_header`, `hides_footer`, `hides_master_page`, `is_vertical`) real documents actually
-//! declare a non-default value for — the number `Field("sections")`'s cost is measured against.
+//! Answers, over real documents, which of `OfficeSectionDeclaration`'s six fields that USED TO
+//! have no home in `wire::Section` (`footnote_separator`, `page_border`, `hides_header`,
+//! `hides_footer`, `hides_master_page`, `is_vertical` — now all six carried, `wire.rs`'s own field
+//! list) real documents actually declare a non-default value for — the number the historical
+//! `Field("sections")` refusal's cost was measured against.
 //!
 //! Reads each corpus document through its own reader directly (`DocxReader::read`/
 //! `OdtReader::read`/`HwpReader::read`), never through `from_office`/`project` — this is a
@@ -89,8 +90,9 @@ fn read_result(path: &Path) -> Option<OfficeReadResult> {
 }
 
 /// Whether `decl` differs from `OfficeSectionDeclaration::default()` on exactly the six fields
-/// `office_project.rs` names as having no home in `wire::Section`. Returns one flag per field so
-/// the caller can tabulate them independently rather than as one combined yes/no.
+/// that used to have no home in `wire::Section` (now all six carried — see this file's own module
+/// doc). Returns one flag per field so the caller can tabulate them independently rather than as
+/// one combined yes/no.
 fn declares(decl: &OfficeSectionDeclaration) -> [bool; 6] {
     let d = OfficeSectionDeclaration::default();
     [

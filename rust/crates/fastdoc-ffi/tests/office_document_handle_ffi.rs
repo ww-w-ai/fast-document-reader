@@ -273,3 +273,96 @@ fn band_sides_refuses_a_null_handle() {
     assert!(!answered);
     assert_eq!(last_error_kind().as_deref(), Some("invalidArgument"));
 }
+
+// -------------------------------------------------------------------------------------------
+// U3: `fastdoc_office_tree_json` — the canonical-tree export re-expressed over the handle.
+// -------------------------------------------------------------------------------------------
+
+/// Calls the real `extern "C"` export and returns the envelope as an owned Rust `String`, after
+/// freeing the FFI-owned pointer through `fastdoc_string_free` the same way a real host must —
+/// same shape as `office_tree_ffi.rs::call_read_office_tree`, but this export never returns NULL
+/// for a document-level failure (only for an unencodable envelope, which none of this file's
+/// cases trigger), so unlike that helper this one does not need an `Option`.
+fn call_office_tree_json(
+    handle: *const fastdoc_engine_ffi::FastdocOfficeDocument,
+    bytes: *const u8,
+    len: usize,
+) -> String {
+    // SAFETY: caller-supplied `handle`/`bytes`/`len` describe a call this file's own tests make
+    // with either a live handle and its own bytes, or a deliberately NULL argument the export
+    // documents as a defined, checked case.
+    let ptr = unsafe { fastdoc_engine_ffi::fastdoc_office_tree_json(handle, bytes, len) };
+    assert!(!ptr.is_null(), "this export must return an envelope, never NULL, for these inputs");
+    // SAFETY: `ptr` came from this library, is NUL-terminated, and is freed exactly once below.
+    let text = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
+    unsafe { fastdoc_engine_ffi::fastdoc_string_free(ptr) };
+    text
+}
+
+/// Success: an open handle's tree projects to the SAME "ok" envelope shape
+/// `fastdoc_read_office_tree` returns for the identical bytes — this export is a second
+/// projection of the handle's already-parsed model, not a different tree.
+#[test]
+fn tree_json_returns_an_ok_envelope_matching_read_office_tree_for_the_same_bytes() {
+    let data = docx_zip_bytes();
+    let extension = CString::new("docx").unwrap();
+    // SAFETY: valid, NUL-terminated where required, outlives the call.
+    let handle = unsafe {
+        fastdoc_engine_ffi::fastdoc_office_open(data.as_ptr(), data.len(), extension.as_ptr())
+    };
+    assert!(!handle.is_null());
+
+    let via_handle = call_office_tree_json(handle, data.as_ptr(), data.len());
+    // SAFETY: `data`/`extension` outlive this call.
+    let via_fresh_read = unsafe {
+        let ptr = fastdoc_engine_ffi::fastdoc_read_office_tree(data.as_ptr(), data.len(), extension.as_ptr());
+        assert!(!ptr.is_null());
+        let text = std::ffi::CStr::from_ptr(ptr).to_str().unwrap().to_owned();
+        fastdoc_engine_ffi::fastdoc_string_free(ptr);
+        text
+    };
+
+    let via_handle_json: serde_json::Value = serde_json::from_str(&via_handle).expect("envelope is JSON");
+    let via_fresh_json: serde_json::Value = serde_json::from_str(&via_fresh_read).expect("envelope is JSON");
+    assert!(via_handle_json.get("ok").is_some(), "{via_handle}");
+    assert!(via_handle_json.get("error").is_none(), "{via_handle}");
+    assert_eq!(via_handle_json, via_fresh_json, "the handle's second projection must match a fresh read byte for byte");
+
+    // SAFETY: closed exactly once.
+    unsafe { fastdoc_engine_ffi::fastdoc_office_close(handle) };
+}
+
+/// A NULL handle refuses with the same `{"ffiVersion":1,"error":{"kind":"invalidArgument",...}}`
+/// envelope `fastdoc_read_office_tree` uses for its own NULL-argument cases — never NULL, and
+/// never `fastdoc_take_last_error`, matching this export's documented ownership rule.
+#[test]
+fn tree_json_refuses_a_null_handle_with_an_error_envelope() {
+    let data = docx_zip_bytes();
+    let envelope = call_office_tree_json(std::ptr::null(), data.as_ptr(), data.len());
+    let parsed: serde_json::Value = serde_json::from_str(&envelope).expect("envelope is JSON");
+    assert_eq!(parsed["ffiVersion"], 1);
+    assert!(parsed.get("ok").is_none(), "an error envelope must not also carry \"ok\": {envelope}");
+    assert_eq!(parsed["error"]["kind"], "invalidArgument", "{envelope}");
+}
+
+/// A closed handle is documented as undefined behaviour to query — this proves the OTHER
+/// documented invalid-argument case instead: a live handle with NULL `bytes`, which this export
+/// must refuse.
+#[test]
+fn tree_json_refuses_null_bytes_on_an_otherwise_live_handle_with_an_error_envelope() {
+    let data = docx_zip_bytes();
+    let extension = CString::new("docx").unwrap();
+    // SAFETY: valid, NUL-terminated where required, outlives the call.
+    let handle = unsafe {
+        fastdoc_engine_ffi::fastdoc_office_open(data.as_ptr(), data.len(), extension.as_ptr())
+    };
+    assert!(!handle.is_null());
+
+    let envelope = call_office_tree_json(handle, std::ptr::null(), 0);
+    let parsed: serde_json::Value = serde_json::from_str(&envelope).expect("envelope is JSON");
+    assert!(parsed.get("ok").is_none(), "an error envelope must not also carry \"ok\": {envelope}");
+    assert_eq!(parsed["error"]["kind"], "invalidArgument", "{envelope}");
+
+    // SAFETY: closed exactly once.
+    unsafe { fastdoc_engine_ffi::fastdoc_office_close(handle) };
+}

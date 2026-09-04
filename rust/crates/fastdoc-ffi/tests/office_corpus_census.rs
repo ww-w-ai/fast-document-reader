@@ -82,7 +82,7 @@ fn office_tree_census_after_s6_5a() {
     // `CLAUDE.md` cites this census as the authority on how many documents the canonical tree
     // accepts, and that is a live judgement, not a re-measurement. The 269 documents past the cut
     // are also where the interesting answers are — every document whose projection falls back to
-    // the reader path sorts past it (`office_project_corpus_census.rs` says which).
+    // the reader path sorts past it.
     //
     // To reproduce the historical baseline, ask for the cap: FMD_OFFICE_TREE_CENSUS_LIMIT=400.
     // What a cap dropped is printed with the result, so no run can read as complete when it wasn't.

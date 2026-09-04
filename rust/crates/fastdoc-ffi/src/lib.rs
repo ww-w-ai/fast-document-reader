@@ -12,7 +12,7 @@
 //! ## Ownership (S2B-05) — the single statement of the rule; every export above follows it
 //!
 //! 1. **Rust allocates every returned buffer.** Every `*mut c_char` this crate hands back —
-//!    `fastdoc_extract_markdown`, `fastdoc_read_office_json`, `fastdoc_read_office_tree`,
+//!    `fastdoc_extract_markdown`, `fastdoc_read_office_tree`,
 //!    `fastdoc_take_last_error` — is a `CString::into_raw()` this library produced. The caller
 //!    frees it with `fastdoc_string_free`, never with `free()` or its own allocator; the two
 //!    allocators are not required to be interchangeable and are not assumed to be.
@@ -22,7 +22,7 @@
 //!    that both shapes go through one ownership rule instead of two.
 //! 3. **NULL means nothing was allocated.** The only NULL a caller can receive is "the envelope
 //!    itself could not be built" (`fastdoc_read_office_tree`) or "there is nothing to report"
-//!    (`fastdoc_extract_markdown`, `fastdoc_read_office_json`, `fastdoc_take_last_error`). In
+//!    (`fastdoc_extract_markdown`, `fastdoc_take_last_error`). In
 //!    every such case the caller owns nothing and must not call `fastdoc_string_free` on it —
 //!    though doing so is harmless, see 4.
 //! 4. **`fastdoc_string_free(NULL)` is a no-op.** Never undefined behaviour. A caller that frees
@@ -41,7 +41,7 @@ use fastdoc_engine::render::office::{
     docx_reader::DocxReader, odt_reader::OdtReader, office_block::HeaderFooterApplicability,
     office_block::OfficeReadResult, office_markdown_serializer::OfficeMarkdownSerializer,
     master_page_selection::{select_master_templates, MasterPageQuery, MasterTemplateDescriptor},
-    office_project, projection_ledger, zip_archive::ZipArchive,
+    zip_archive::ZipArchive,
 };
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
 use ffi_guard::{guard_envelope, guard_json, guard_scalar, FfiErrorKind, FfiFailure};
@@ -69,7 +69,6 @@ enum ReadOfficeError {
     UnsupportedExtension(String),
     Hwp(fastdoc_engine::render::office::hwp_reader::mapping::MapError),
     Reader(String),
-    Export(String),
 }
 
 impl fmt::Display for ReadOfficeError {
@@ -81,7 +80,6 @@ impl fmt::Display for ReadOfficeError {
             }
             Self::Hwp(error) => write!(f, "HWP reader failed: {error}"),
             Self::Reader(error) => write!(f, "office reader failed: {error}"),
-            Self::Export(error) => write!(f, "office JSON export failed: {error}"),
         }
     }
 }
@@ -93,7 +91,6 @@ impl ReadOfficeError {
             Self::UnsupportedExtension(_) => FfiErrorKind::UnsupportedExtension,
             Self::Hwp(_) => FfiErrorKind::HwpReadFailed,
             Self::Reader(_) => FfiErrorKind::ReaderFailed,
-            Self::Export(_) => FfiErrorKind::ExportFailed,
         }
     }
 }
@@ -147,9 +144,9 @@ fn clear_last_error() {
 /// NULL means the document could not be read. The return shape does NOT distinguish why: the
 /// caller that needs a reason is the CLI, which does its own reading, and a reason string
 /// crossing here would have to be freed on a path the caller takes only on failure — the shape
-/// most likely to leak. A failure IS recorded for `fastdoc_take_last_error` now (S2B parity with
-/// `fastdoc_read_office_json`), so a caller that wants a diagnostic for its own logs may still
-/// take one; nothing about the NULL contract changes.
+/// most likely to leak. A failure IS recorded for `fastdoc_take_last_error` now, so a caller
+/// that wants a diagnostic for its own logs may still take one; nothing about the NULL contract
+/// changes.
 ///
 /// # Safety
 /// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
@@ -190,111 +187,9 @@ pub unsafe extern "C" fn fastdoc_extract_markdown(
     })
 }
 
-/// Reads an office document and returns it as the JSON envelope a host decodes, or NULL.
-///
-/// Same ownership and same NULL-means-no as `fastdoc_extract_markdown`. On NULL, the caller may
-/// immediately call `fastdoc_take_last_error` on the same thread to distinguish parse, mapping,
-/// export, and panic failures. NULL also covers a document the engine READ but cannot hand over
-/// intact — one carrying decoded pictures or a resolved face — because a host that received it
-/// silently short those things would render a plausible, wrong document.
-///
-/// S4-07: the bytes this export returns now come from `ValidatedRenderTree::from_office` →
-/// `office_project::project` FIRST — the tree path, proven equal to the reader path over the
-/// registered fixtures by S4-02's oracle. Only when a document cannot cross the tree (a refusal
-/// at either stage) does this fall back to the reader's own
-/// `office_export::to_json(&OfficeReadResult)`, exactly as it returned before this sprint. The
-/// fallback is never silent: `projection_ledger::record` names the document and the refusal kind
-/// before the reader path runs, so S4-05's ledger and S4-03's census can be cross-checked against
-/// each other. The return SHAPE — a bare JSON string, NULL on genuine failure — is unchanged: a
-/// host reading this export cannot tell which branch produced its bytes, by design (that is what
-/// "one door" means for S4-07).
-///
-/// # Safety
-/// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn fastdoc_read_office_json(
-    bytes: *const u8,
-    len: usize,
-    extension_: *const c_char,
-) -> *mut c_char {
-    clear_last_error();
-    if bytes.is_null() || extension_.is_null() {
-        set_last_error(&FfiFailure::new(
-            FfiErrorKind::InvalidArgument,
-            "invalid NULL argument",
-        ));
-        return std::ptr::null_mut();
-    }
-    let data = std::slice::from_raw_parts(bytes, len);
-    let Ok(extension) = CStr::from_ptr(extension_).to_str() else {
-        set_last_error(&FfiFailure::new(
-            FfiErrorKind::InvalidArgument,
-            "extension is not valid UTF-8",
-        ));
-        return std::ptr::null_mut();
-    };
-    // `guard_json` owns turning an interior NUL in `json` into `FfiErrorKind::InteriorNul` —
-    // this closure just has to produce the string.
-    guard_json(move || {
-        let result = read_office(data, extension).map_err(FfiFailure::from)?;
-        let source_name = format!("document.{extension}");
-        project_or_fall_back(extension, &source_name, data, &result)
-    })
-}
-
-/// The pipeline S4-07's design names: `from_office` → `project` on success, a recorded fallback to
-/// `to_json(&result)` on either stage's refusal. Split out of `fastdoc_read_office_json` so the
-/// two failure directions this sprint must not change — "already worked, still works" and
-/// "already failed, still fails the same way" — are each one `match` arm, not entangled in the
-/// unsafe FFI wrapper.
-fn project_or_fall_back(
-    extension: &str,
-    source_name: &str,
-    source_bytes: &[u8],
-    result: &OfficeReadResult,
-) -> Result<String, FfiFailure> {
-    let format = document_format(extension).map_err(FfiFailure::from)?;
-    let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
-        format,
-        source_name,
-        source_bytes,
-        result,
-        resources: BTreeMap::new(),
-    });
-    match tree {
-        Ok(tree) => match office_project::project(&tree) {
-            Ok(projected) => Ok(projected),
-            Err(error) => {
-                projection_ledger::record(
-                    source_name,
-                    projection_ledger::projection_error_kind(&error),
-                    error.description(),
-                );
-                fall_back_to_reader(result)
-            }
-        },
-        Err(error) => {
-            projection_ledger::record(
-                source_name,
-                projection_ledger::adapter_error_kind(&error),
-                format!("{error:?}"),
-            );
-            fall_back_to_reader(result)
-        }
-    }
-}
-
-/// The unchanged path: `office_export::to_json(&OfficeReadResult)`, exactly as
-/// `fastdoc_read_office_json` called it before S4-07 — this function exists only so the fallback
-/// is spelled once, from both refusal sites above.
-fn fall_back_to_reader(result: &OfficeReadResult) -> Result<String, FfiFailure> {
-    fastdoc_engine::render::office::office_export::to_json(result)
-        .map_err(|error| FfiFailure::from(ReadOfficeError::Export(format!("{error:?}"))))
-}
-
 /// Reads an office document into the canonical `ValidatedRenderTree` wire form (S2B-03) and
 /// returns it as a self-describing envelope — never NULL for a document-level failure, unlike
-/// `fastdoc_extract_markdown`/`fastdoc_read_office_json` above:
+/// `fastdoc_extract_markdown` above:
 ///
 /// - success: `{"ffiVersion":1,"ok":<the tree's own `encode_json()` bytes, spliced in verbatim>}`
 /// - failure: `{"ffiVersion":1,"error":{"kind":"...","message":"...","location":"file:line:col"}}`
@@ -708,16 +603,14 @@ pub unsafe extern "C" fn fastdoc_office_header_band_height(
 /// in a `defer` at a call site, so a reload (close-then-reopen) can never strand or double-free it.
 pub struct FastdocOfficeDocument {
     result: OfficeReadResult,
-    /// What this document was opened AS. Kept so `fastdoc_office_content_json` can package the
-    /// result the same way `fastdoc_read_office_json` does without being told again — the caller
-    /// cannot get it wrong on the second call, because there is no second call to get wrong.
+    /// What this document was opened AS. Kept so `fastdoc_office_tree_json` can package the
+    /// result without being told again — the caller cannot get it wrong on the second call,
+    /// because there is no second call to get wrong.
     extension_: String,
     /// Whatever this document's pictures can only be fetched from, kept alive for as long as the
     /// host holds the document (P2b). `None` for docx/odt, which have a zip the host holds itself.
     retained: Option<RetainedParse>,
-    /// The name the adapter and the refusal ledger record this document under. Derived at open
-    /// from the extension, exactly as `fastdoc_read_office_json` derives it, so a document that
-    /// falls back leaves the same line in the ledger whichever door it came through.
+    /// The name the adapter records this document under. Derived at open from the extension.
     source_name: String,
 }
 
@@ -854,53 +747,52 @@ pub unsafe extern "C" fn fastdoc_office_image_base64(
     })
 }
 
-
-/// The schema-v4 export of a document this handle ALREADY read — `fastdoc_read_office_json`
+/// The canonical-tree export of a document this handle ALREADY read — `fastdoc_read_office_tree`
 /// without its read.
 ///
-/// P1: the app was reading every office document twice. `MarkdownDocument.read(from:)` called
-/// `fastdoc_read_office_json` (read + tree + projection + base64 + JSON), and then
-/// `setOfficeContent` opened a handle, which called `read_office` on the same bytes AGAIN. On a
-/// 10.7 MB HWP that second read is 565 ms — 47% of what the whole pre-cutover build spent on
-/// `--extract` for the same file — and nothing consumed it. The handle exists precisely so a cost
-/// is paid once at open; this export lets the CONTENT be one of the things that borrows it.
+/// U3 (`docs/06-research/2026-09-04-rendertree-gap-audit.md` §2): this is a SECOND projection of
+/// the same parsed model the handle already holds — `document.result`, never re-read from bytes —
+/// so it pays none of the 565 ms `fastdoc_read_office_tree` would spend re-parsing the document
+/// from scratch. `bytes`/`len` are taken because the adapter records the source's sha256 and
+/// length from them, not a second copy of the document kept alive in the handle.
 ///
-/// `bytes`/`len` are the document's own source bytes, which the caller already holds. They are
-/// taken rather than stored because the adapter needs them only to record the source's sha256 and
-/// length (`office_adapter.rs:300`), and keeping a second copy of a 10.7 MB document alive inside
-/// the handle would buy that record with memory the host is already paying for.
-///
-/// Returns NULL on a genuine failure, with the reason retrievable through
-/// `fastdoc_take_last_error` — the same shape, and the same silent-fallback behaviour on a tree
-/// refusal, as `fastdoc_read_office_json`. A host cannot tell the two exports' bytes apart, which
-/// is the point: this is the same door, entered from a document that is already open.
+/// Returns the SAME self-describing envelope `fastdoc_read_office_tree` returns — never NULL for
+/// a document-level failure (including a NULL handle/bytes, unlike this file's `guard_json`-based
+/// exports), owned by this library in both shapes, and freed with `fastdoc_string_free` either
+/// way. NULL comes back only when the envelope itself could not be built, exactly as documented on
+/// `fastdoc_read_office_tree`.
 ///
 /// # Safety
 /// `handle` must be a live pointer `fastdoc_office_open` returned that has not been closed, and
 /// `bytes` must point to `len` readable bytes for the duration of this call.
 #[no_mangle]
-pub unsafe extern "C" fn fastdoc_office_content_json(
+pub unsafe extern "C" fn fastdoc_office_tree_json(
     handle: *const FastdocOfficeDocument,
     bytes: *const u8,
     len: usize,
 ) -> *mut c_char {
-    clear_last_error();
     if handle.is_null() || bytes.is_null() {
-        set_last_error(&FfiFailure::new(
-            FfiErrorKind::InvalidArgument,
-            "invalid NULL argument",
-        ));
-        return std::ptr::null_mut();
+        return guard_envelope(|| {
+            Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "invalid NULL argument",
+            ))
+        });
     }
     let document = &*handle;
     let data = std::slice::from_raw_parts(bytes, len);
-    guard_json(move || {
-        project_or_fall_back(
-            &document.extension_,
-            &document.source_name,
-            data,
-            &document.result,
-        )
+    guard_envelope(move || {
+        let format = document_format(&document.extension_).map_err(FfiFailure::from)?;
+        let tree = ValidatedRenderTree::from_office(OfficeAdapterInput {
+            format,
+            source_name: &document.source_name,
+            source_bytes: data,
+            result: &document.result,
+            resources: BTreeMap::new(),
+        })
+        .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))?;
+        tree.encode_json()
+            .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))
     })
 }
 
@@ -2176,7 +2068,7 @@ mod tests {
         // SAFETY: Both pointers remain valid for the duration of the call. `extension` is
         // NUL-terminated and `data` is readable for exactly `data.len()` bytes.
         let result =
-            unsafe { fastdoc_read_office_json(data.as_ptr(), data.len(), extension.as_ptr()) };
+            unsafe { fastdoc_office_open(data.as_ptr(), data.len(), extension.as_ptr()) };
         assert!(result.is_null());
 
         let diagnostic = fastdoc_take_last_error();
