@@ -91,6 +91,41 @@ fn indented_code_block_is_unfenced_with_no_language() {
     assert!(code_blocks[0]["data"]["language"].is_null());
 }
 
+/// S8-B3: a fence with a language the highlighter's scanner recognises carries `runs` — one entry
+/// per `CodeHighlighter::tokenize` span, `role` serialized camelCase (`wire::CodeRole`).
+#[test]
+fn fenced_code_block_with_known_language_carries_runs() {
+    let nodes = nodes_of("```rust\nfn main() {}\n```\n");
+    let code_blocks = nodes_by_tag(&nodes, "codeBlock");
+    let runs = code_blocks[0]["data"]["runs"].as_array().expect("runs must be present and an array");
+    assert!(!runs.is_empty(), "\"fn\"/\"main\" tokens are expected to produce at least one run");
+    let fn_run = runs
+        .iter()
+        .find(|r| r["role"] == "keyword")
+        .expect("the `fn` keyword must produce a keyword run");
+    assert_eq!(fn_run["start"], 0);
+    assert_eq!(fn_run["end"], 2);
+}
+
+/// A fence whose info string the scanner does not recognise gets `runs: null` (`None`), never an
+/// empty array — that distinction is how the producer tells "nothing to colour" (known language,
+/// empty `Vec`) apart from "unknown language" (`CodeHighlighter::is_known` false).
+#[test]
+fn fenced_code_block_with_unknown_language_has_no_runs() {
+    let nodes = nodes_of("```not-a-real-language\nsome text\n```\n");
+    let code_blocks = nodes_by_tag(&nodes, "codeBlock");
+    assert!(code_blocks[0]["data"]["runs"].is_null());
+}
+
+/// A fence with no info string at all (unfenced/indented code, or a bare ``` fence) is also an
+/// unknown language, so `runs` stays absent.
+#[test]
+fn indented_code_block_has_no_runs() {
+    let nodes = nodes_of("    indented code\n");
+    let code_blocks = nodes_by_tag(&nodes, "codeBlock");
+    assert!(code_blocks[0]["data"]["runs"].is_null());
+}
+
 #[test]
 fn thematic_break_reaches_a_validated_tree() {
     let nodes = nodes_of("above\n\n---\n\nbelow\n");

@@ -1,0 +1,16 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FastDoc.Avalonia.Panels.FirstRunWindow"
+        Title="Welcome to FastDoc"
+        Width="420" SizeToContent="Height"
+        CanResize="False"
+        WindowStartupLocation="CenterOwner">
+    <StackPanel Margin="20" Spacing="12">
+        <TextBlock Text="FastDoc opens Markdown, Word, OpenDocument, Hangul (HWP) and plain text files."
+                   TextWrapping="Wrap" />
+        <TextBlock Text="To make it your default reader, use File ▸ Set as Default App… any time."
+                   TextWrapping="Wrap" />
+        <CheckBox x:Name="DontShowAgainCheckBox" Content="Don't show this again" />
+        <Button x:Name="CloseButton" Content="Got it" HorizontalAlignment="Right" Click="OnCloseClicked" />
+    </StackPanel>
+</Window>

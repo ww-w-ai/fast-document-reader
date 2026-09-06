@@ -3,6 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
+use crate::render::render_tree::{CodeRole, CodeRun};
+
 // swift: CodeHighlighter
 /// Native, dependency-free tokenizer for a curated language set. This keeps the "no JavaScriptCore
 /// for code-only documents" guarantee (spec §2, §10.1). Unknown languages fall back to plain
@@ -58,6 +60,24 @@ impl Default for Palette {
             comment: swiftshim::system_colors::secondaryLabelColor(),
             added: swiftshim::system_colors::systemGreen(),
             removed: swiftshim::system_colors::systemRed(),
+        }
+    }
+}
+
+impl Palette {
+    /// The ONE place a `CodeRole` becomes a colour — `highlight()`'s single paint loop reads this
+    /// instead of a call site per role, and the wire's `CodeRole` (`render_tree::wire`) is defined
+    /// 1:1 with these seven fields so an Avalonia/Swift host can do the same mapping in its own
+    /// theme colours without re-deriving which field means what.
+    fn color_for(&self, role: CodeRole) -> swiftshim::NSColor {
+        match role {
+            CodeRole::Keyword => self.keyword,
+            CodeRole::Type => self.r#type,
+            CodeRole::String => self.string,
+            CodeRole::Number => self.number,
+            CodeRole::Comment => self.comment,
+            CodeRole::Added => self.added,
+            CodeRole::Removed => self.removed,
         }
     }
 }
@@ -560,42 +580,42 @@ impl CodeHighlighter {
         EXTRAS.get_or_init(|| HashSet::from([95u16, 36u16])) // _ $
     }
 
+    /// Whether `language` resolves to a known scanner (after alias lookup) — the markdown
+    /// producer (`render::markdown::blocks::map_block`) calls this to decide `runs: None` (unknown
+    /// fence language) versus `runs: Some(tokenize(..))` (possibly empty) for a known one.
+    pub(crate) fn is_known(language: Option<&str>) -> bool {
+        Self::lang(language).is_some()
+    }
+
+    /// One `CodeRun` per emitted span — never merges adjacent same-role spans, so it is
+    /// byte-for-byte (span-for-span) what `highlight()`'s seven old paint call sites used to
+    /// produce, now as data instead of side effects on an `NSMutableAttributedString`.
+    fn push_run(runs: &mut Vec<CodeRun>, from: usize, to: usize, role: CodeRole) {
+        if to <= from {
+            return;
+        }
+        runs.push(CodeRun { start: from as u32, end: to as u32, role });
+    }
+
     // swift: CodeHighlighter.highlight
-    pub fn highlight(
-        code: &str,
-        language: Option<&str>,
-        theme: &crate::render::render_theme::RenderTheme,
-    ) -> swiftshim::NSAttributedString {
-        let base: HashMap<swiftshim::NSAttributedStringKey, swiftshim::AttrValue> = HashMap::from([
-            (
-                swiftshim::NSAttributedStringKey::Font,
-                swiftshim::AttrValue::Font(theme.code_font()),
-            ),
-            (
-                swiftshim::NSAttributedStringKey::ForegroundColor,
-                swiftshim::AttrValue::Color(theme.text_color()),
-            ),
-        ]);
-        let mut result = swiftshim::NSMutableAttributedString::with_attributes(code, base);
-        let lang = match Self::lang(language) {
+    /// Scans `code` once and returns every coloured span, in the SAME UTF-16 code-unit offsets
+    /// `TextRun` spans use (invariants 122/123). Returns an empty `Vec` for an unrecognised
+    /// `language` — callers that need to tell that apart from "recognised, nothing to colour"
+    /// use `is_known` first.
+    pub fn tokenize(code: &str, language: &str) -> Vec<CodeRun> {
+        let mut runs = Vec::new();
+        let lang = match Self::lang(Some(language)) {
             Some(l) => l,
-            None => return result.asAttributedString().clone(), // plain fallback
+            None => return runs,
         };
-        let p = Palette::default();
         let ns = swiftshim::SwiftString::new(code);
         let n = ns.length();
 
-        // swift: CodeHighlighter.paint
-        let paint = |result: &mut swiftshim::NSMutableAttributedString, from: usize, to: usize, c: swiftshim::NSColor| {
-            if to <= from {
-                return;
-            }
-            result.addAttribute(
-                swiftshim::NSAttributedStringKey::ForegroundColor,
-                swiftshim::AttrValue::Color(c),
-                swiftshim::NSRange::new(from, to - from),
-            );
-        };
+        if lang.line_shaped {
+            Self::diff_tokenize(&ns, &mut runs);
+            return runs;
+        }
+
         // swift: CodeHighlighter.matches
         let matches = |token: &str, k: usize| -> bool {
             let t = swiftshim::SwiftString::new(token);
@@ -623,10 +643,6 @@ impl CodeHighlighter {
         // swift: CodeHighlighter.isWord
         let is_word = |c: u16| -> bool { is_word_start(c) || is_digit(c) };
 
-        if lang.line_shaped {
-            return Self::diff_highlight(result, &ns, &p).asAttributedString().clone();
-        }
-
         let mut i = 0usize;
         while i < n {
             let c = ns.characterAt(i);
@@ -636,7 +652,7 @@ impl CodeHighlighter {
                 while j < n && ns.characterAt(j) != 10 {
                     j += 1;
                 }
-                paint(&mut result, i, j, p.comment);
+                Self::push_run(&mut runs, i, j, CodeRole::Comment);
                 i = j;
                 continue;
             }
@@ -646,7 +662,7 @@ impl CodeHighlighter {
                     j += 1;
                 }
                 j = n.min(j + swiftshim::SwiftString::new(&b.1).length());
-                paint(&mut result, i, j, p.comment);
+                Self::push_run(&mut runs, i, j, CodeRole::Comment);
                 i = j;
                 continue;
             }
@@ -656,7 +672,7 @@ impl CodeHighlighter {
                     j += 1;
                 }
                 j = n.min(j + swiftshim::SwiftString::new(&r.1).length());
-                paint(&mut result, i, j, p.string);
+                Self::push_run(&mut runs, i, j, CodeRole::String);
                 i = j;
                 continue;
             }
@@ -680,7 +696,7 @@ impl CodeHighlighter {
                     }
                     j += 1;
                 }
-                paint(&mut result, i, j.min(n), p.string);
+                Self::push_run(&mut runs, i, j.min(n), CodeRole::String);
                 i = j.min(n);
                 continue;
             }
@@ -689,7 +705,7 @@ impl CodeHighlighter {
                 while j < n && (is_word(ns.characterAt(j)) || ns.characterAt(j) == 46) {
                     j += 1;
                 }
-                paint(&mut result, i, j, p.number);
+                Self::push_run(&mut runs, i, j, CodeRole::Number);
                 i = j;
                 continue;
             }
@@ -700,11 +716,11 @@ impl CodeHighlighter {
                 }
                 let word = ns.substring(swiftshim::NSRange::new(i, j - i));
                 if lang.kw.contains(&word) {
-                    paint(&mut result, i, j, p.keyword);
+                    Self::push_run(&mut runs, i, j, CodeRole::Keyword);
                 } else if lang.caps {
                     if let Some(f) = word.chars().next() {
                         if f.is_uppercase() {
-                            paint(&mut result, i, j, p.r#type);
+                            Self::push_run(&mut runs, i, j, CodeRole::Type);
                         }
                     }
                 }
@@ -713,40 +729,173 @@ impl CodeHighlighter {
             }
             i += 1;
         }
+        runs
+    }
+
+    pub fn highlight(
+        code: &str,
+        language: Option<&str>,
+        theme: &crate::render::render_theme::RenderTheme,
+    ) -> swiftshim::NSAttributedString {
+        let base: HashMap<swiftshim::NSAttributedStringKey, swiftshim::AttrValue> = HashMap::from([
+            (
+                swiftshim::NSAttributedStringKey::Font,
+                swiftshim::AttrValue::Font(theme.code_font()),
+            ),
+            (
+                swiftshim::NSAttributedStringKey::ForegroundColor,
+                swiftshim::AttrValue::Color(theme.text_color()),
+            ),
+        ]);
+        let mut result = swiftshim::NSMutableAttributedString::with_attributes(code, base);
+        let lang = match language {
+            Some(l) => l,
+            None => return result.asAttributedString().clone(), // plain fallback
+        };
+        if !Self::is_known(Some(lang)) {
+            return result.asAttributedString().clone(); // plain fallback
+        }
+        let p = Palette::default();
+        let runs = Self::tokenize(code, lang);
+        // swift: CodeHighlighter.paint — the single paint call site every run (token or diff
+        // line) now goes through, in place of the seven scattered ones this replaced.
+        for run in &runs {
+            result.addAttribute(
+                swiftshim::NSAttributedStringKey::ForegroundColor,
+                swiftshim::AttrValue::Color(p.color_for(run.role)),
+                swiftshim::NSRange::new(run.start as usize, (run.end - run.start) as usize),
+            );
+        }
         result.asAttributedString().clone()
     }
 
     // swift: CodeHighlighter.diffHighlight
     /// Diffs are line-shaped, not token-shaped: what matters is which side a line is on.
-    fn diff_highlight(
-        mut result: swiftshim::NSMutableAttributedString,
-        ns: &swiftshim::SwiftString,
-        p: &Palette,
-    ) -> swiftshim::NSMutableAttributedString {
-        enumerate_substrings_by_lines(
-            ns,
-            swiftshim::NSRange::new(0, ns.length()),
-            |range, _stop| {
-                if range.length == 0 {
-                    return;
-                }
-                let head = ns.characterAt(range.location);
-                let substring = ns.substring(range);
-                let color: Option<swiftshim::NSColor> = match head {
-                    43 => Some(if substring.starts_with("+++") { p.comment } else { p.added }), // +
-                    45 => Some(if substring.starts_with("---") { p.comment } else { p.removed }), // -
-                    64 => Some(p.keyword), // @@ hunk
-                    _ => None,
-                };
-                if let Some(color) = color {
-                    result.addAttribute(
-                        swiftshim::NSAttributedStringKey::ForegroundColor,
-                        swiftshim::AttrValue::Color(color),
-                        range,
-                    );
-                }
-            },
+    fn diff_tokenize(ns: &swiftshim::SwiftString, runs: &mut Vec<CodeRun>) {
+        enumerate_substrings_by_lines(ns, swiftshim::NSRange::new(0, ns.length()), |range, _stop| {
+            if range.length == 0 {
+                return;
+            }
+            let head = ns.characterAt(range.location);
+            let substring = ns.substring(range);
+            let role: Option<CodeRole> = match head {
+                43 => Some(if substring.starts_with("+++") { CodeRole::Comment } else { CodeRole::Added }), // +
+                45 => Some(if substring.starts_with("---") { CodeRole::Comment } else { CodeRole::Removed }), // -
+                64 => Some(CodeRole::Keyword), // @@ hunk
+                _ => None,
+            };
+            if let Some(role) = role {
+                CodeHighlighter::push_run(runs, range.location, range.maxRange(), role);
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `RenderTheme::code_font()`/`text_color()` need a `FontProvider` installed
+    /// (`swiftshim::font_provider::provider()` panics otherwise) and this lib's unit-test binary
+    /// has no AppKit to install the real one from — the smallest blind stub that lets `highlight()`
+    /// finish, same shape as `tests/markdown_renderer_port.rs`'s `SingleFaceWorld`. `install` is a
+    /// `OnceLock` set, so a second call from another test in this binary is a harmless no-op.
+    struct SingleFaceWorld;
+
+    impl swiftshim::font_provider::FontProvider for SingleFaceWorld {
+        fn face_named(&self, _name: &str) -> Option<swiftshim::font_provider::FaceId> {
+            Some(swiftshim::font_provider::FaceId(1))
+        }
+        fn resolve(
+            &self,
+            _descriptor: &swiftshim::NSFontDescriptor,
+        ) -> Option<swiftshim::font_provider::FaceId> {
+            Some(swiftshim::font_provider::FaceId(1))
+        }
+        fn system_face(
+            &self,
+            _weight: swiftshim::NSFontWeight,
+            _monospaced: bool,
+        ) -> swiftshim::font_provider::FaceId {
+            swiftshim::font_provider::FaceId(1)
+        }
+        fn describe(&self, _face: swiftshim::font_provider::FaceId) -> swiftshim::font_provider::FaceInfo {
+            swiftshim::font_provider::FaceInfo {
+                name: "TestFace-Regular".to_string(),
+                family: Some("TestFace".to_string()),
+                traits: swiftshim::NSFontDescriptorSymbolicTraits::default(),
+            }
+        }
+        fn covers(&self, _face: swiftshim::font_provider::FaceId, _scalar: u32) -> bool {
+            true
+        }
+        fn substitute(
+            &self,
+            _declared: swiftshim::font_provider::FaceId,
+            _scalar: u32,
+        ) -> Option<swiftshim::font_provider::FaceId> {
+            None
+        }
+    }
+
+    fn install_font_world() {
+        let _ = swiftshim::font_provider::install(Box::new(SingleFaceWorld));
+    }
+
+    /// The single paint loop in `highlight()` addresses one `NSRange` per `tokenize()` entry, in
+    /// the SAME order, and `NSMutableAttributedString::addAttribute` records each call as its own
+    /// overlay run (`attributed_string.rs`, no merging) — so this equality is not incidental, it
+    /// is what "collapse seven paint call sites into one loop over tokenize's output" MEANS: the
+    /// base run (index 0, the `Font`+`ForegroundColor` pair from `with_attributes`) is skipped,
+    /// and every run after it must be exactly the range `tokenize` produced at that position.
+    fn assert_tokenize_matches_paint(code: &str, language: &str) {
+        install_font_world();
+        let theme = crate::render::render_theme::RenderTheme::current(16.0);
+        let attributed = CodeHighlighter::highlight(code, Some(language), &theme);
+        let painted: Vec<(usize, usize)> = attributed
+            .runs()
+            .iter()
+            .skip(1) // the base Font+ForegroundColor run `with_attributes` seeds
+            .map(|(r, _)| (r.location, r.maxRange()))
+            .collect();
+        let tokens: Vec<(usize, usize)> = CodeHighlighter::tokenize(code, language)
+            .into_iter()
+            .map(|r| (r.start as usize, r.end as usize))
+            .collect();
+        assert_eq!(
+            painted, tokens,
+            "highlight()'s painted ranges must equal tokenize()'s ranges, in order, for {language:?}"
         );
-        result
+    }
+
+    #[test]
+    fn tokenize_ranges_equal_highlight_painted_ranges_golden() {
+        // Exercises every branch of the token-shaped walk: line comment, block comment, a raw
+        // triple-quoted string, a plain quoted string, a number, a keyword, and (Haskell) a
+        // capitalised type name.
+        assert_tokenize_matches_paint(
+            "fn main() { // a comment\n    let x = 42; /* block */ let s = \"hi\";\n}",
+            "rust",
+        );
+        assert_tokenize_matches_paint(
+            "def f():\n    \"\"\"doc\"\"\"\n    return 1  # trailing\n",
+            "python",
+        );
+        assert_tokenize_matches_paint("data Foo = Bar | Baz -- comment\n", "haskell");
+        // The line-shaped diff path, which used to be a separate function (`diff_highlight`) with
+        // its own `addAttribute` call site — now routed through the same single loop.
+        assert_tokenize_matches_paint(
+            "@@ -1,2 +1,2 @@\n-old line\n+new line\n unchanged\n--- a/file\n+++ b/file\n",
+            "diff",
+        );
+    }
+
+    #[test]
+    fn tokenize_of_unknown_language_is_empty_and_highlight_stays_plain() {
+        assert_eq!(CodeHighlighter::tokenize("let x = 1;", "not-a-real-language"), Vec::new());
+        assert!(!CodeHighlighter::is_known(Some("not-a-real-language")));
+        assert!(!CodeHighlighter::is_known(None));
+        assert!(CodeHighlighter::is_known(Some("RUST"))); // case-insensitive, matches `lang()`
+        assert!(CodeHighlighter::is_known(Some("py"))); // alias resolves too
     }
 }

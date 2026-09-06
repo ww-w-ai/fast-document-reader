@@ -256,13 +256,49 @@ difference](#two-builds-one-difference)). The same grant is what the two headles
 there — a path handed in on the command line carries no permission of its own, so `--extract` and
 `--pdf` work on **folders you have granted** and say so plainly when they meet one you haven't.
 
-Or download the notarized zip, unzip it, drag `FastDocReader.app` to `/Applications`, double-click.
-No Gatekeeper prompt and no `xattr` step — the app is signed with a Developer ID and stapled, and it
-is **not** sandboxed, so sibling images just load.
+Or download the notarized zip from the [GitHub Releases
+page](https://github.com/ww-w-ai/fast-document-reader/releases), unzip it, drag `FastDocReader.app`
+to `/Applications`, double-click. No Gatekeeper prompt and no `xattr` step — the app is signed with
+a Developer ID and stapled, and it is **not** sandboxed, so sibling images just load.
+
+### Download
+
+Every build of release `v1.4.2` is on the [Releases
+page](https://github.com/ww-w-ai/fast-document-reader/releases), with a `SHA256SUMS` file covering
+all five archives:
+
+| Platform | File |
+|---|---|
+| macOS (Apple Silicon) | `FastDoc-1.4.2-macos-arm64.zip` — notarized Developer ID build, not sandboxed — or the [Mac App Store](https://apps.apple.com/app/id6791603562) build, sandboxed |
+| Windows x64 | `FastDoc-1.4.2-win-x64.zip` |
+| Windows ARM64 | `FastDoc-1.4.2-win-arm64.zip` |
+| Linux x64 | `FastDoc-1.4.2-linux-x64.tar.gz` |
+| Linux ARM64 | `FastDoc-1.4.2-linux-arm64.tar.gz` |
 
 To open files here by default: **FastDoc → Set as Default App…**, which lists the kinds it
 can claim with a checkbox each — Markdown ticked, text formats yours to choose. Per file, the Finder
 route still works: right-click → **Get Info** → **Open with** → **Change All…**.
+
+## Windows and Linux
+
+The macOS app is native AppKit. Windows and Linux get the same Rust engine through a .NET 9 +
+Avalonia host, version **1.4.2** (one version number with the Mac app), read-only, in
+`hosts/avalonia/`. It opens the same 9 file families (`.md`, `.txt`, `.docx`, `.docm`, `.dotx`,
+`.dotm`, `.odt`, `.hwp`, `.hwpx`), bundles a Noto Sans KR subset (11,172 Hangul + 8,138 Hanja
+glyphs) so Korean text renders with no system font, exports vector-text PDF, and scrolls from the
+keyboard. Self-contained builds for four targets: win-x64 239 MB, win-arm64 228 MB, linux-x64
+119 MB, linux-arm64 122 MB. The Windows ARM64 build is native; Windows on ARM can also run the x64
+build through emulation, 4–6× slower on the same documents.
+
+Two things to know before relying on it. Both Windows builds were run on Windows 11 ARM64 in a
+virtual machine (the native ARM64 build opened a 20 MB HWPX report in 884 ms), and the Linux build on
+Ubuntu 24.04 in a virtual machine — neither on bare-metal hardware. Page mode measures and draws
+cell images and nested tables, keeps the reading position when toggled, and moves a table taller than
+a page to a fresh page, but its page counts still differ from Word and from the macOS app.
+
+- [`hosts/avalonia/README.md`](hosts/avalonia/README.md) — build, gate, command line, layout.
+- [`hosts/avalonia/RELEASE-NOTES.md`](hosts/avalonia/RELEASE-NOTES.md) — what works, known
+  limits, system requirements, install and uninstall.
 
 ## Build from source
 

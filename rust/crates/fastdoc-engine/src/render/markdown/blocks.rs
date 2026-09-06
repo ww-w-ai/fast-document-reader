@@ -155,7 +155,14 @@ pub(super) fn map_block<'a>(
                 rendered_resource_id: None,
             })
         } else {
-            NodePayload::CodeBlock(WireCodeBlock { language, fenced, text })
+            // S8-B3: `runs` is `None` for a fence language the highlighter's scanner does not
+            // recognise (`is_known`), `Some` (possibly empty) once it does — the same distinction
+            // `CodeHighlighter::highlight` makes between "plain fallback" and "nothing to colour".
+            let runs = language
+                .as_deref()
+                .filter(|l| crate::render::code_highlighter::CodeHighlighter::is_known(Some(l)))
+                .map(|l| crate::render::code_highlighter::CodeHighlighter::tokenize(&text, l));
+            NodePayload::CodeBlock(WireCodeBlock { language, fenced, text, runs })
         };
         ctx.push(RenderNodeDraft {
             id,

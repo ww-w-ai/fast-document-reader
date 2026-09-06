@@ -37,5 +37,18 @@ __pycache__/
 # artefact that can silently disagree with the code next to it. Rebuild with Scripts/build-engine.sh.
 rust/target/
 rust/dist/
+# Cross-platform shared-library build (Scripts/build-engine-xplat.sh) uses its own target dir so it
+# never touches rust/target/, which the macOS engine gate depends on staying untouched by other work.
+rust/target-xplat/
 /Vendor/FastdocEngine.xcframework/
 .cowork/
+
+# .NET host build output
+hosts/**/bin/
+hosts/**/obj/
+hosts/**/publish/
+hosts/**/publish-gate/
+hosts/**/dist/
+
+# Third-party skill repositories cloned for evaluation only (their own licences apply; nothing here ships).
+plugin-refs/

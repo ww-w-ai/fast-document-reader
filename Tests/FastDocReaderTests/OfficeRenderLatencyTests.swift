@@ -567,6 +567,80 @@ extension OfficeRenderLatencyTests {
                          block.width(for: .border, edge: .minX), block.width(for: .border, edge: .maxX),
                          String(cellText)))
         }
+
+        // VERTICAL axis, S5-A: the horizontal dump above never touches a row's height. Walk every
+        // laid-out LINE FRAGMENT (the real TextKit measurement, not an estimate) in the target
+        // table, tag each with the row/column its paragraphStyle's NSTextTableBlock claims, and
+        // roll them up per row (minY/maxY/height/lineCount) and per cell (lineCount, so a
+        // multi-line cell's per-line contribution is visible — invariant 161(b) charged exactly
+        // this to "a cell's last line is a line, not a line plus its spacing").
+        guard let lm = wc.textView.layoutManager, let tc = wc.textView.textContainer else {
+            return
+        }
+        lm.ensureLayout(for: tc)
+        struct Frag { let row: Int; let col: Int; let minY: CGFloat; let maxY: CGFloat; let block: NSTextTableBlock }
+        var frags: [Frag] = []
+        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, glyphRange, _ in
+            let charIndex = lm.characterIndexForGlyph(at: glyphRange.location)
+            guard charIndex < storage.length,
+                  let ps = storage.attribute(.paragraphStyle, at: charIndex, effectiveRange: nil) as? NSParagraphStyle,
+                  let block = ps.textBlocks.first as? NSTextTableBlock,
+                  ObjectIdentifier(block.table) == target else { return }
+            frags.append(Frag(row: block.startingRow, col: block.startingColumn,
+                               minY: rect.minY, maxY: rect.maxY, block: block))
+        }
+        // TEXT bounds = the line fragments themselves (what S5-A first reported). BLOCK bounds =
+        // the actual NSTextTableBlock reservation: text bounds widened by that cell's own
+        // top/bottom padding AND border (`.padding`/`.border`, edge `.minY`/`.maxY` — the SAME
+        // `NSTextBlock.Layer` the horizontal dump above already reads for `.minX`/`.maxX`). A row
+        // with zero vertical padding/border makes the two identical; a row that does not is
+        // reported as two DIFFERENT numbers below rather than silently picking one, because the
+        // vertical gap BETWEEN rows only shows up in block bounds, never in text bounds.
+        let byCell = Dictionary(grouping: frags, by: { "\($0.row),\($0.col)" })
+        struct CellBounds { let row: Int; let col: Int; let textMinY: CGFloat; let textMaxY: CGFloat
+            let blockMinY: CGFloat; let blockMaxY: CGFloat; let lines: Int }
+        var cellBounds: [CellBounds] = []
+        for key in byCell.keys.sorted() {
+            let cellFrags = byCell[key] ?? []
+            guard let first = cellFrags.first else { continue }
+            let textMinY = cellFrags.map(\.minY).min() ?? 0
+            let textMaxY = cellFrags.map(\.maxY).max() ?? 0
+            let block = first.block
+            let padTop = block.width(for: .padding, edge: .minY)
+            let padBottom = block.width(for: .padding, edge: .maxY)
+            let borderTop = block.width(for: .border, edge: .minY)
+            let borderBottom = block.width(for: .border, edge: .maxY)
+            cellBounds.append(CellBounds(row: first.row, col: first.col,
+                                          textMinY: textMinY, textMaxY: textMaxY,
+                                          blockMinY: textMinY - padTop - borderTop,
+                                          blockMaxY: textMaxY + padBottom + borderBottom,
+                                          lines: cellFrags.count))
+        }
+        let byRow = Dictionary(grouping: cellBounds, by: \.row)
+        print("  VERTICAL row geometry — TEXT bounds (line fragments) vs BLOCK bounds (+pad/border):")
+        for row in byRow.keys.sorted() {
+            let cells = byRow[row] ?? []
+            let textMinY = cells.map(\.textMinY).min() ?? 0
+            let textMaxY = cells.map(\.textMaxY).max() ?? 0
+            let blockMinY = cells.map(\.blockMinY).min() ?? 0
+            let blockMaxY = cells.map(\.blockMaxY).max() ?? 0
+            let lines = cells.reduce(0) { $0 + $1.lines }
+            let same = abs(textMinY - blockMinY) < 0.05 && abs(textMaxY - blockMaxY) < 0.05
+            print(String(format: "    row%d: TEXT minY=%9.2f maxY=%9.2f h=%7.2f | BLOCK minY=%9.2f maxY=%9.2f h=%7.2f  %@ lines=%d",
+                         row, textMinY, textMaxY, textMaxY - textMinY,
+                         blockMinY, blockMaxY, blockMaxY - blockMinY,
+                         same ? "(identical — pad/border 0)" : "(DIFFERS — see pad/border above)", lines))
+        }
+        print("  VERTICAL multi-line cells (lines > 1):")
+        for key in byCell.keys.sorted() {
+            let cellFrags = byCell[key] ?? []
+            guard cellFrags.count > 1 else { continue }
+            let sorted = cellFrags.sorted { $0.minY < $1.minY }
+            let lineDump = sorted.enumerated().map { i, f in
+                String(format: "line%d[%.2f,%.2f]", i, f.minY, f.maxY)
+            }.joined(separator: " ")
+            print("    cell(row\(sorted[0].row),col\(sorted[0].col)) lines=\(cellFrags.count) \(lineDump)")
+        }
     }
 }
 

@@ -1,0 +1,38 @@
+
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FastDoc.Avalonia\FastDoc.Avalonia.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Forces xunit to run every test COLLECTION sequentially (see the file's own comment) —
+         AccessibilityFixTests, PagingTests, PdfExporterTests, PageModePainterSinglePageExportTests
+         and RenderTreeEnvelopeTests each construct real headless Avalonia Windows/Compositor
+         objects against the SAME process-wide Application.Current/Dispatcher singleton; xunit's
+         default (one collection per class, run in parallel) raced them across threads and threw
+         "the calling thread cannot access this object because a different thread owns it" from
+         Window/Compositor construction — reproduced: 9 failures in one run, 0 in the next, same
+         commit, same machine. Must be copied next to the test DLL or the runner never finds it. -->
+    <None Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

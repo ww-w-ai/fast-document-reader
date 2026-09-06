@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FastDoc
+Comment=Document reader
+Exec=/opt/fastdoc/FastDoc.Avalonia %f
+Icon=ai.ww-w.fastdoc
+Terminal=false
+Categories=Office;Viewer;
+MimeType=text/markdown;text/plain;text/csv;text/tab-separated-values;application/json;application/toml;application/x-yaml;text/x-yaml;application/xml;text/xml;application/sql;text/x-sql;text/x-diff;text/x-patch;application/x-troff-man;text/x-rst;text/x-tex;text/vtt;application/x-subrip;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.ms-word.document.macroEnabled.12;application/vnd.openxmlformats-officedocument.wordprocessingml.template;application/vnd.ms-word.template.macroEnabled.12;application/vnd.oasis.opendocument.text;application/x-hwp;application/hwp+zip;

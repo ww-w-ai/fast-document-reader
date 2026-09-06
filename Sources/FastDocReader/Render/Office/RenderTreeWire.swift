@@ -416,6 +416,29 @@ struct WireTextRun: Decodable {
     let columnFlow: WireColumnFlowDeclaration?
 }
 
+/// `wire::CodeRole` — S8-B3, 1:1 with `code_highlighter::Palette`'s seven fields.
+enum WireCodeRole: String, Decodable {
+    case keyword, type, string, number, comment, added, removed
+}
+
+/// `wire::CodeRun` — S8-B3. `start`/`end` are UTF-16 code-unit offsets into the owning
+/// `WireCodeBlock.text`, `end` exclusive (same unit as `WireTextRun`'s spans — invariants 122/123).
+struct WireCodeRun: Decodable {
+    let start: UInt32
+    let end: UInt32
+    let role: WireCodeRole
+}
+
+/// `wire::CodeBlock` — S8-B3 adds `runs` (`Option<Vec<CodeRun>>`, additive). No office reader
+/// emits a `codeBlock` node (`WireNodePayload`'s own doc comment), so this mirror exists to keep
+/// the Swift wire in sync with `wire.rs`'s shape and is not yet wired into `WireNode`'s decode.
+struct WireCodeBlock: Decodable {
+    let language: String?
+    let fenced: Bool
+    let text: String
+    let runs: [WireCodeRun]?
+}
+
 /// `wire::Table`.
 struct WireTable: Decodable {
     let alignment: WireAlignment

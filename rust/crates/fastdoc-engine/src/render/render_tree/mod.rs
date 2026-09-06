@@ -18,6 +18,7 @@ pub(crate) mod wire;
 pub use wire::{
     Affinity, Alignment, Annotations as RenderAnnotationsDraft, Bookmark, BorderDeclaration,
     BorderLineStyle, BorderSet, CellDiagonal, CellDiagonalDirection, CharacterStyle, CodeBlock,
+    CodeRole, CodeRun,
     Color, ColorSpace, ColumnFlowDeclaration, ColumnFlowDirection, ColumnFlowType, ColumnSeparator,
     ColumnSeparatorStyle, ColumnWidthMode, Comment, Diagram, DiagramLanguage, Direction,
     Document as RenderDocumentDraft, DocumentFormat, DrawnBorder, EditMetadata, EditOperation,
@@ -115,6 +116,44 @@ mod tests {
     #[test]
     fn every_macro_authoritative_enum_value_round_trips() {
         wire::assert_all_enum_round_trips();
+    }
+
+    /// S8-B3: `CodeBlock.runs` is additive (`#[serde(default, skip_serializing_if =
+    /// "Option::is_none")]`) — an old fixture with no `runs` key still decodes (`None`, not an
+    /// error), and a block that HAS runs round-trips every `CodeRun` field, `role` included.
+    #[test]
+    fn code_block_runs_field_is_additive_and_round_trips() {
+        let without_runs = wire::CodeBlock {
+            language: Some("rust".to_string()),
+            fenced: true,
+            text: "fn main() {}".to_string(),
+            runs: None,
+        };
+        let encoded = serde_json::to_string(&without_runs).unwrap();
+        assert!(!encoded.contains("\"runs\""), "runs: None must not serialize a key: {encoded}");
+        let decoded: wire::CodeBlock = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.runs, None);
+
+        // An EnvelopeV1 written before this field existed has no "runs" key at all — decoding it
+        // must still succeed (`#[serde(default)]`), not fail closed on a missing field.
+        let pre_existing_json =
+            r#"{"language":"rust","fenced":true,"text":"fn main() {}"}"#;
+        let decoded_old: wire::CodeBlock = serde_json::from_str(pre_existing_json).unwrap();
+        assert_eq!(decoded_old.runs, None);
+
+        let with_runs = wire::CodeBlock {
+            language: Some("rust".to_string()),
+            fenced: true,
+            text: "fn main() {}".to_string(),
+            runs: Some(vec![
+                wire::CodeRun { start: 0, end: 2, role: wire::CodeRole::Keyword },
+                wire::CodeRun { start: 3, end: 7, role: wire::CodeRole::Type },
+            ]),
+        };
+        let encoded = serde_json::to_string(&with_runs).unwrap();
+        assert!(encoded.contains("\"role\":\"keyword\""), "role serializes camelCase: {encoded}");
+        let decoded: wire::CodeBlock = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.runs, with_runs.runs);
     }
 
     fn fixture() -> wire::EnvelopeV1 {

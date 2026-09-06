@@ -63,6 +63,9 @@ all_string_enums! {
     ColumnFlowDirection { LeftToRight => "leftToRight", RightToLeft => "rightToLeft" },
     ColumnWidthMode { Equal => "equal", Absolute => "absolute", Proportional => "proportional", Unspecified => "unspecified" },
     ColumnSeparatorStyle { None => "none", Solid => "solid", Dash => "dash", Dot => "dot", DashDot => "dashDot", DashDotDot => "dashDotDot", LongDash => "longDash", Circle => "circle" },
+    // S8-B3: 1:1 with `code_highlighter::Palette`'s seven fields — a role this reader's own
+    // scanner already paints, not a general syntax-highlighting taxonomy.
+    CodeRole { Keyword => "keyword", Type => "type", String => "string", Number => "number", Comment => "comment", Added => "added", Removed => "removed" },
 }
 
 #[allow(clippy::derivable_impls)]
@@ -720,12 +723,29 @@ pub struct TextRun {
 pub struct LineBreak {
     pub kind: LineBreakKind,
 }
+/// S8-B3: one token-coloured span, UTF-16 code-unit offsets into `CodeBlock.text` (same unit as
+/// `TextRun`'s spans — invariants 122/123), `end` exclusive. `code_highlighter::tokenize` is the
+/// only producer; `highlight()` paints from the identical runs (golden-tested equal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodeRun {
+    pub start: u32,
+    pub end: u32,
+    pub role: CodeRole,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeBlock {
     pub language: Option<String>,
     pub fenced: bool,
     pub text: String,
+    /// EnvelopeV1 additive (schema_version unchanged): `None` for a fence whose language the
+    /// highlighter does not recognise, `Some` (possibly empty) once it does. Filled by the
+    /// markdown producer (`render::markdown::blocks::map_block`) only — no office reader ever
+    /// emits a `codeBlock` node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runs: Option<Vec<CodeRun>>,
 }
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

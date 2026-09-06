@@ -396,7 +396,10 @@
    "data": {
     "language": "rust",
     "fenced": true,
-    "text": "fn main() {}"
+    "text": "fn main() {}",
+    "runs": [
+     {"start": 0, "end": 2, "role": "keyword"}
+    ]
    }
   },
   {

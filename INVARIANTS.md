@@ -2218,3 +2218,869 @@ this file tells you why, and why the obvious alternative does not work.
     `--pdf` 391; d1–d6 2/19/11/132/32/59. **The rule: one boundary, and the host reads it from the
     handle.** A second projection "for compatibility" is how the crate came to have two, and the
     reason it took a harness to remove one.
+
+173. **THE AVALONIA HOST'S FIRST CALL PAYS FOR THE DYLIB LOAD AND THE JIT, NOT FOR THE DOCUMENT.**
+    The first cold-start measurement (S3 D3, `hosts/avalonia`) read as an inversion: `moby-dick.md`
+    (1.24 MB) took 1,033 ms where a 19.24 MB HWPX took 358 ms, so markdown looked "heavier". It was
+    not. Re-measured with a `--noop` baseline (the process boots the .NET runtime and exits without
+    loading the engine): 51–54 ms for either document. Reopening the SAME document in one process
+    (`FMD_AVALONIA_REPEAT=N`) gave md cold 130 / warm 90 ms and hwpx cold 347 / warm 252 ms — the
+    warm figures put hwpx at 2.7× md (15× the bytes, 2× the nodes), which is the ordering the
+    document sizes predict. Everything above the baseline on the first call is dylib load + engine
+    call + JIT warm-up, and it lands on whichever document happens to be opened first. The same
+    signature recurs in every later probe: the S3 first-frame paint's first repetition was 1,111 ms
+    against 226–310 ms for repetitions two to five, and S4's `--paint-probe` first repetition was
+    134 ms where the median was 8 ms (invariant 174). **Rule: a host timing is the median of
+    repetitions two onward, and a "cold" number is only comparable to another cold number.** The
+    numbers are not comparable to `docs/CROSS-PLATFORM.md` §4 either — that table measured a
+    different pipeline.
+
+174. **A STRUCTURE-ONLY TREE STILL PAINTS IN SINGLE-DIGIT MILLISECONDS IF ONLY THE VISIBLE RANGE IS
+    BUILT — AND A TABLE IS ONE BLOCK, SO IT NEEDS ITS OWN ROW CACHE.** The RenderTree the Avalonia
+    host receives carries no bounding boxes (ADR 0002: the host lays out), so the first painter
+    (`NodeTreeCanvas`, S3 D4) built a `TextLayout` for every one of a 19 MB HWPX's 12,820 nodes and
+    drew one row each: first frame 271–310 ms. `FlowDocumentView` (S4 E2a) fills every paragraph's
+    height with a character-count estimate, builds a real `TextLayout` only for the blocks inside
+    the viewport plus a buffer, and corrects the estimate to the measured height as blocks come
+    into view (`EnsureEstimates`/`RebuildOffsets`): first frame 8 ms median on the same HWPX (2–8
+    ms on a 27-table docx, 12–20 ms on `moby-dick.md`), five scroll stops 0/14/3/3/1 ms. The
+    virtualisation sees a TABLE as one block, though, and `giant-table.odt` — a document that is
+    one table — still cost 459 ms median at first frame and 247–457 ms per scroll stop, because
+    `TableGridRenderer.Draw` rebuilt a `TextLayout` for every cell of every row whenever any part of
+    the table was on screen. Handing the previous call's row-height array back in (trusted while
+    column widths and zoom are unchanged) and building layouts only for cells that intersect the
+    visible rectangle took it to 12 ms median and 10/114/43/14 ms per stop (E3); the one remaining
+    spike is the first time a table becomes visible, reproduced at the same stop and the same size
+    on a second run, which is the design (a table is measured whole once). **Then E2c-2b replaced
+    the flow-mode height ESTIMATE for tables with the real cell measurement so page mode, table
+    settle and drawing share one function, and `giant-table.odt` went back to 108 ms median at first
+    frame** — accepted deliberately, accuracy first; the candidate fix is a cheap estimate for the
+    virtualisation pass and the real measurement only for tables that reach the screen. Pure prose
+    is the case this did NOT improve: `moby-dick.md` scrolls at 65–74 ms per stop before and after,
+    because every stop reveals long paragraphs never laid out before.
+
+175. **A LINUX GATE THAT ONLY BUILDS PROVES NOTHING — THE GATE RUNS THE PUBLISHED BINARY IN A
+    CONTAINER WITH NO DISPLAY AND NO FONTCONFIG.** `Scripts/host-gate.sh` step 5 mounts the
+    self-contained linux-x64 publish read-only into `mcr.microsoft.com/dotnet/runtime-deps:9.0`
+    (no X11, no `fc-list` — the image has no fontconfig at all) and runs `./FastDoc.Avalonia
+    --extract` on a real document, requiring `opened: N nodes` on stdout; it is skipped with a WARN
+    only when Docker itself is unavailable, never silently. What that step found that a build could
+    not: (a) the bundled-library fallback — `Native/FastdocEngine.cs` looks under
+    `AppContext.BaseDirectory/runtimes/<rid>/native/` when `FASTDOC_ENGINE_LIB` is unset — was
+    designed in E1 and first PROVEN in E7, when the container opened `moby-dick.md` in 893 ms with
+    the variable unset; (b) the bundled Noto Sans KR is what resolves Hangul on such a machine
+    (invariant 177's mutation was run there). The publish itself: win-x64 236.0 MB, linux-x64 115.7
+    MB, linux-arm64 119.1 MB, with the engine library stripped `--strip-all` (win-x64 42.78 → 31.96
+    MB, −25.3%; linux-x64 −21.9%; linux-arm64 −27.4%). `--strip-debug` changed nothing on any of the
+    three — Windows debug info was already in an external PDB and the Linux bulk was `.symtab`, not
+    `.debug*`; `--strip-all` leaves `.dynsym` alone, which is why P/Invoke still finds every export
+    by name. **What the container does NOT prove**: a window. The Windows scripts
+    (`installers/windows/register.ps1`, HKCU only) and the Linux `.desktop`/MIME files were written
+    and never executed on a real Windows machine or a real X11 session.
+
+176. **THE CELL-PADDING CASCADE IS TWO DIFFERENT FORMULAS, AND MERGING THEM MOVED THE SHEET COUNT
+    BY MORE THAN TWENTY.** `OfficeTextBuilder.swift:1533-1538` resolves a table cell's padding on
+    two branches that both mention 7 pt and mean different things by it. Non-paged:
+    `max(cell.padding ?? floor, floor)` — a single `uniformPaddingPoints`, and 7 pt is a FLOOR.
+    Paged (`TableBlockBuilder.resolvedPagedPadding`, the branch a paginating host is on):
+    `cell.edgePadding?[edge] ?? table.defaultPadding?[edge] ?? 7pt` — a declared value is used as
+    declared, and 7 pt is the LAST RESORT when nothing was declared. The Avalonia host's first port
+    (E2c-2c) wrote `Math.Max(declared ?? 7, 7)` for both, pushing every cell of the manual
+    (`2025_행정업무운영편람_최종.hwp`) to 7 pt where the document declares 0 — and only the oracle
+    showed it: `FMD_TABLE_PROBE`/`testDumpOneRealTableGeometry` on the same file printed `pad
+    0.0/ 0.0` on every cell of the first table. With the paged formula restored the manual went 582
+    → 545 sheets, the docx 25 → 21, the hwpx 204 → 193 (macOS `--pdf`: 391 / 19 / 139). **Rule:
+    port a cascade from the branch the host is actually on, and run the oracle BEFORE tuning a
+    constant** — three units of constant-tuning (E2c-2, E2c-2b, first E2c-2c) each moved the count
+    the wrong way, and one 8 pt cascade mistake moved it by 37. Page mode's sheet count is still
+    short of the target (545 against 391 ±5); the remaining cause on record is the HWP line model
+    invariant 161 (b)/(e) describes — `line = size + lineSpacing`, no spacing after the last line,
+    spacing below the glyphs — which `TableGridRenderer.BuildCellLayout` does not have (it uses
+    Avalonia `TextLayout`'s generic font metrics), amplified across the manual's 388 tables. A
+    vertical-axis oracle (row minY/maxY from the same probe) has to exist before that is attempted.
+
+177. **IN HEADLESS AVALONIA, `TextLayout.Width` AND `GlyphRun.InkBounds` SAY NOTHING ABOUT WHETHER
+    A FONT RESOLVED — ONLY `GlyphTypeface.FamilyName` DOES.** The E4 gate for the bundled Noto Sans
+    KR (`Fonts/FontSetup.cs`, `WithBundledKoreanFallback()`, registered for U+AC00–D7A3, U+3130–318F
+    and U+2500–25FF) first tried "width is non-zero, so the glyph rendered": false on both sides,
+    because Skia's `.notdef` box advances the font's default em width, so "가" measured 30–32 with
+    and without the fallback. `InkBounds` was `Rect(0,0,0,0)` in both states too — and also on a
+    macOS machine with real Korean system fonts — because the headless shaping path never
+    rasterises, so ink extents are never computed. The signal that flips is the resolved typeface's
+    family: `BareMinimum` (Avalonia's built-in placeholder, the source of the boxes) without the
+    fallback, `Noto Sans KR` with it, measured in the fontconfig-less container of invariant 175 by
+    removing the one `.WithBundledKoreanFallback()` call, republishing, and reading the family
+    printed for U+AC00. Two rules fell out. The fallback must be registered on EVERY `AppBuilder`
+    the process constructs — the interactive GUI's and the headless `--paint-probe`/`--pdf` one —
+    or Hangul renders on one path and boxes on the other. And every later probe (E3, E6) judged
+    rendering by measured block heights and forced `CaptureRenderedFrame` pixels, never by width.
+    CJK ideographs (U+4E00–9FFF) are not in the bundled subset and not in the engine's metric table
+    either (same root); a document that mixes them still shows boxes, and that trade against app
+    size is an open owner decision, not a defect this entry closes.
+
+178. **A BARE PATH ARGUMENT IS THE GUI; HEADLESS IS ONLY EVER AN EXPLICIT FLAG — AND THE GUI GATE
+    IS A WARN BECAUSE AN AUTOMATION SESSION CANNOT CREATE A WINDOW.** The Avalonia host mirrors the
+    macOS rule (`--pdf`/`--extract` are the only headless doors): `--noop`, `--paint-probe <path>`,
+    `--extract <path>`, `--sheets <path>` and `--pdf <in> <out>` are headless; no arguments or a
+    single bare document path is the GUI, and the bare path is opened in the main window once it is
+    up. That is the file-association / double-click case on Windows and Linux, and it is what S3 D5
+    found broken: the scaffold had used a bare path as the headless smoke, so a double-clicked
+    document would have printed `opened: N nodes` and exited. Every branch prints one line to
+    stderr before doing anything — `mode: headless --extract` / `mode: gui` — so a gate can tell
+    which door was taken without a display, and `FMD_AVALONIA_GUI_EXIT_IMMEDIATELY=1` shuts the GUI
+    down about 500 ms after start so the no-args case can be asserted rather than hung on.
+    `Scripts/host-gate.sh` step 4 requires `mode: gui` and treats an abnormal exit AFTER that line
+    as a WARN, not a FAIL: in this repository's automation sessions macOS refuses the window
+    (exit 134, native error −6661 — no WindowServer/Aqua connection), while the E7 re-run of the
+    same gate on the same code exited 0. The WARN is therefore a statement about the session, not
+    the code, and it is restored to a hard FAIL once a single run from a logged-in Terminal exits 0
+    (S4 owner action 1). What the WARN hides is real and listed: zoom, find, drag-and-drop and
+    window creation were verified by code path and unit test only, never by a key press or a
+    dropped file, and the GUI's Export PDF capture branch (a real platform has no synchronous
+    "render now") is implemented and unexercised.
+
+179. **A `TextLayout` BUILT OFF THE UI THREAD MAY REFERENCE ONLY IMMUTABLE OBJECTS — AND AN
+    `AvaloniaObject`'S THREAD AFFINITY IS DECIDED BY WHOEVER TOUCHES IT FIRST, NOT BY WHO
+    CONSTRUCTED IT; AND THE FINISHED LAYOUT NEEDS A GENERATION TOKEN BEFORE IT IS ALLOWED INTO A
+    CACHE.** The Avalonia host's scroll cost was 100% `TextLayout` construction (S5-D: per frame
+    build 22–32 blocks / 87–177 ms, draw 0 ms), so `FlowDocumentView` builds the visible range on
+    a `Parallel.For` (`PrewarmVisibleRange`) and the next 24 blocks in the scroll direction on
+    `Task.Run` (`SchedulePrefetch`). `TextLayout` itself is safe to construct off-thread — a
+    16-task probe building 80 layouts threw nothing — but the probe used the static
+    `Brushes.Black`, and the real code threw on the first paint: `new SolidColorBrush(...)` is an
+    `AvaloniaObject`, so `Dispatcher.VerifyAccess()` fires the moment the compositor references a
+    brush a worker created (`Brush.get_Transform` → `OnReferencedFromCompositor`). Fix:
+    `ImmutableSolidColorBrush`, a plain class with no Dispatcher. That was not the end of it. The
+    S6-B corpus gate crashed `s9-picture-crop.hwp` on the SECOND scroll frame, 8/8 runs, from
+    `TextDecoration.get_StrokeThickness()` inside `TextDecoration.Draw` — on the UI thread. The
+    decorated run only REFERENCES the static `TextDecorations.Underline`/`.Strikethrough`
+    singletons (`TextDecorationCollection` is not an `AvaloniaObject`; the `TextDecoration`
+    inside it IS, and Avalonia 12.1.2 ships no immutable twin). Its owner is whichever thread
+    first reads any styled property: a reflection probe read `StrokeThickness` on a background
+    thread (OK), then on the main thread (`InvalidOperationException` — permanently
+    worker-owned). Building a decorated layout reads no styled property; only `Draw()` does. So a
+    prewarm worker that built an underlined block before the UI thread had ever painted one
+    became the singleton's owner. Fix (S6-I): the view's constructor, always UI-thread, reads
+    `TextDecorations.Underline[0].StrokeThickness` and `Strikethrough[0].StrokeThickness` once per
+    process before any worker can run → 0/8 crashes, corpus 31/32 twice (the one failure is the
+    S6-B `InvalidUtf8` `.txt` case, unrelated). The judgment table that came out of it: `string`,
+    `Typeface` (struct), `GenericTextRunProperties` (plain class), `ImmutableSolidColorBrush` —
+    safe; `SolidColorBrush`, `TextDecoration` — `AvaloniaObject`; `_foregroundBrush`/`_zoomFactor`
+    — UI-written fields, snapshotted into the closure, never read from a worker. Then the
+    second half of the rule, the S6-A2 BLOCKER: a safely built layout was written into
+    `_prefetchStaging[index]` with nothing saying which document the index belonged to, so a
+    prefetch task in flight across `SetTree` landed document A's text in document B's staging
+    map, and `GetOrBuildTextLayout` drew it. `_documentGeneration` (`Interlocked`/`Volatile`) is
+    bumped inside `ClearCaches()` — the one point `SetTree`, `SetZoom`, a width change and a
+    theme change all route through — and a task compares its captured generation immediately
+    before the write and discards a stale result. The regression test only became one at 400
+    words per paragraph: at ~12 words the background build finished before the next C# statement
+    returned, and the test caught a reintroduced bug 0/5 (a thread-pool saturation gate was worse
+    — `ThreadPool.GetAvailableThreads` reports headroom against the configured maximum, not live
+    threads). At 400 words: 8/8. Two probes in a row said "safe" and were wrong; **the question is
+    never "is `TextLayout` thread-safe" but "is every object it references, and where does the
+    result land".**
+
+180. **THE VERTICAL TABLE ORACLE READS `NSTextTableBlock` BLOCK BOUNDS, NOT LINE FRAGMENTS — THE
+    FRAGMENTS OMIT THE CELL'S PADDING AND INVENT A GAP BETWEEN ROWS THAT IS NOT THERE.** S5-A
+    extended `testDumpOneRealTableGeometry` (`FMD_TABLE_PROBE`, `FMD_TABLE_MATCH`) to the vertical
+    axis for `2025_행정업무운영편람_최종.hwp`, and it prints two numbers per row: TEXT bounds
+    (`NSLayoutManager.enumerateLineFragments`, the line boxes) and BLOCK bounds (TEXT widened by
+    `NSTextTableBlock.width(for: .padding/.border, edge: .minY/.maxY)` — the same API the
+    horizontal dump already used for `.minX/.maxX`). On a table whose cells declare no vertical
+    padding the two agree to the second decimal (table 1: rows 2.82 / 13.00 / 2.82 pt, and the
+    2.82 pt rows are real — four empty cells forming the top and bottom band of a quote box, an
+    empty paragraph in a very small font, not a measuring artefact). On the table
+    `FMD_TABLE_MATCH="기관장과 부기관장의 직무대리"` selects, whose middle cell carries `pad
+    7.0/8.0`, TEXT bounds show a 4.9 pt gap between row 0's maxY (80565.90) and row 1's minY
+    (80570.90) and a row height of 452.00; BLOCK bounds put row 1 at 80565.90–81027.90 (462.00 pt)
+    and every row boundary touches exactly (`row0.maxY == row1.minY`, `row1.maxY == row2.minY` =
+    81027.90). The gap was the padding, unaccounted. The 27-line cell inside confirms the HWP line
+    model invariant 161(b) describes: 26 lines at a 17.00 pt pitch and the LAST line 10.0 pt —
+    line plus spacing for every line but the final one. **Rule: a row's edge is the block's edge.
+    Any host that ports row heights from this oracle compares against BLOCK bounds**, or it will
+    "fix" a 4.9 pt gap that the document never had. Full suite 1931 tests / 96 skipped / 0
+    failures, 87.5 s.
+
+181. **SKIA'S PDF BACKEND EMBEDS A CFF/OTTO TYPEFACE AS Type3 (ONE OUTLINE PER GLYPH) ON macOS AND
+    LINUX ALIKE; ONLY TrueType `glyf` OUTLINES BECOME `CIDFontType2`/`FontFile2` — SO THE BUNDLED
+    NOTO SANS KR IS SHIPPED AS A CONVERTED TTF. AND A TYPEFACE LOADED FROM A `using`-DISPOSED
+    STREAM PRODUCES A SILENTLY EMPTY PDF ON LINUX.** S5-C's vector `SkiaPageCanvas` cut
+    `moby-dick.md` from 87.9 MB (the S4 raster) to 5.4 MB, but every font object was `/Type3` +
+    `/CharProcs` — 4 faces for moby-dick, 40 for the OpenAPI docx, 53 for the hwpx, which GREW
+    from 16.9 to 39.2 MB because a CJK document repeats an outline for every distinct glyph. It
+    is not a platform or a "not registered with the OS" effect, as first suspected: the same
+    `SKTypeface.FromData` → `SKDocument.CreatePdf` path given a system TTF (`Andale Mono.ttf`,
+    `glyf`) emitted 1 `/CIDFontType2` + `/FontFile2` and 0 `/Type3` for the same three lines that
+    the bundled OTF turned into 5 Type3 faces (S5-C2). So `Assets/Fonts/NotoSansKR-Regular.otf`
+    (4,644,748 B) became `NotoSansKR-Regular.ttf` (5,621,264 B) through fontTools `cu2qu`
+    (`Cu2QuPen` + `TTGlyphPen`, max error 1.0 em unit, `maxp` limits computed from the converted
+    glyphs, never guessed), with GSUB/GPOS/cmap/post preserved and the counts unchanged: 24,964
+    glyphs, 11,172 Hangul syllables (U+AC00–D7A3), 8,138 Hanja (U+4E00–9FFF); the paint-probe
+    still reports `family=Noto Sans KR` on macOS and in the Linux container. The PDF now carries
+    ONE `/FontFile2` of 2,891,940 B (Flate) whatever the document uses — a fixed cost that made
+    small documents LARGER (moby-dick 5.4 → 9.8 MB, docx 1.9 → 5.3 MB) and is noise on the hwpx,
+    whose real weight was images (invariant 182). The second finding is the dangerous one: the
+    first `LoadBundledTypeface()` was `using var stream = AssetLoader.Open(uri); return
+    SKTypeface.FromStream(stream);`. On macOS CoreText copies the bytes at load, so every PDF had
+    text. The linux-arm64 publish, run in the `runtime-deps:9.0` container, produced PDFs with the
+    right page count, 0 font objects and 0 `BT`/`Tj` operators — FreeType reads glyph outlines
+    lazily at draw time from a stream the `using` had already closed, and fails without an
+    exception. Fix: `stream.CopyTo(MemoryStream)` → `SKData.CreateCopy` → `SKTypeface.FromData`,
+    so the bytes are owned. Two things that container run also established: `--extract` runs on
+    the bare image but `--pdf` needs `libfontconfig1` (Avalonia.Skia initialisation), and a PDF
+    smoke that checks page count alone cannot see an empty page — count `/Font` objects too.
+
+182. **PDF IMAGES: JPEG BYTES PASS THROUGH AS `DCTDecode` UNLESS THE SOURCE IS MORE THAN 2× THE
+    DRAWN SIZE; EVERYTHING ELSE IS DOWNSAMPLED TO 2× AND ENCODED AS WHICHEVER OF JPEG q85 / PNG IS
+    SMALLER; XObjects ARE DEDUPLICATED BY SHA-256 ACROSS THE WHOLE EXPORT — A PER-PAGE CANVAS
+    DEFEATS THE DEDUP.** The S5-C2 hwpx PDF was 42.3 MB, of which 36.66 MB was 126 `/Image`
+    objects (summed `/Length`), the largest five 1.5–2.2 MB each and one 4961×7015 px: the S5
+    canvas re-encoded every bitmap as lossless PNG at source resolution, and the old raster path
+    had only been small (16.9 MB) because a 72 dpi page bitmap downsampled everything by accident.
+    A one-run census (`FMD_IMAGE_FORMAT_PROBE=1`) showed the 126 draws were 50 distinct
+    resources, 28,196,007 B of source bytes — 36 JPEG (18.1 MB), 7 BMP (6.0 MB), 4 PNG, 3 with an
+    unrecognised magic number — and that the engine's declared `mimeType` is sometimes
+    `application/octet-stream`, so the JPEG branch is chosen by sniffing the bytes
+    (`ImageBlockRenderer.SniffMimeType`), never by the declaration. `IPageCanvas.DrawImage` grew to
+    `(Bitmap, byte[]? sourceBytes, string? sourceMimeType, Rect)`; the screen canvas ignores the
+    new arguments (pixels unchanged, 36 unit tests green). Three rules in `SkiaPageCanvas`: (1)
+    a JPEG is handed to Skia as its own bytes, which the PDF backend stores as `DCTDecode`
+    without re-encoding — UNLESS `SKBitmap.DecodeBounds` (header only) says the source exceeds
+    twice the drawn size, because that 4961×7015 scan is drawn at the size of a stamp and would
+    otherwise ship whole; (2) anything else is decoded, resized to at most 2× the drawn points,
+    and, if opaque, encoded BOTH ways and the smaller kept — the dispatch said "opaque = JPEG"
+    and that regressed: the OpenAPI docx's five screenshots were 161,547 B as PNG and 184,088 B
+    as JPEG q85 (flat colour and hard edges favour PNG), so all five stay PNG; alpha is always
+    PNG; (3) the cache key is the SHA-256 of the source bytes, and `PdfExporter.WritePdf` keeps
+    ONE `SkiaPageCanvas` for the export and swaps the page canvas into it (`SetCanvas`) — the
+    earlier one-instance-per-page design emptied the cache at every page boundary, so a
+    background picture repeated on 126 pages was encoded 126 times. Result: hwpx 42,314,353 →
+    10,743,389 B (−74.6%), 43 XObjects for the 43 resources actually drawn, 30 of them
+    `DCTDecode`, 0 `/Type3`; docx −11,205 B; moby-dick unchanged; page counts 306/19/186
+    unchanged. The floor is the 28.2 MB of original bytes before any downsampling, so 10.7 MB is
+    below the sources, not a lossless result. Not done: the eight pages rasterised for a visual
+    check (1, 4, 5, 138, 140, 150, 180, 183) were all text and tables; no page carrying one of the
+    big scans was looked at.
+
+183. **A PLAIN `dotnet publish` INTO `publish/<rid>` DOES NOT PUT THE ENGINE LIBRARY UNDER
+    `runtimes/<rid>/native/` — ONLY `Scripts/publish-host.sh` DOES — AND `host-gate.sh` MOUNTS
+    THE ENGINE INTO THE CONTAINER SEPARATELY, SO A FOLDER CAN PASS THE GATE AND STILL SHIP WITHOUT
+    AN ENGINE.** The E4b Hanja-font measurement read as a size DECREASE: linux-x64 116 → 104.8 MB,
+    win-x64 236 → 208.0 MB, after adding 2 MiB of font. Both "after" folders had been rewritten by
+    `host-gate.sh`'s own `dotnet publish` (step 5 re-publishes `publish/linux-x64`), which copies
+    no engine; the gate had passed anyway because it hands the engine to Docker with `-v`.
+    `find publish -name '*fastdoc_engine*'` found it in linux-arm64 only. With the engine added
+    back — 11.4 MiB `.so`, 30.5 MiB `.dll` — the folders come to ≈116.2 MB and ≈238.5 MB, which is
+    the S4 baseline plus the font, so the real cost of the Hanja font is about +2 MB per RID.
+    `publish-host.sh` now refuses on both sides: before publishing, every RID's engine must exist
+    under `Vendor/xplat` (`FAIL: engine library for <rid> not found`), and after, `verify_rid`
+    (`--verify-only <rid>` runs it alone) fails unless `runtimes/<rid>/native/<lib>` exists at
+    ≥ 1 MiB (`MIN_ENGINE_BYTES`; real builds run 12–32 MB) AND the font's resource path string is
+    present in `FastDoc.Avalonia.dll` — Avalonia resources are compiled into the assembly, so the
+    resource-name string is the only thing that survives to be grepped. **Rule: the size of a
+    publish folder is not evidence of what is in it, and a gate that supplies a dependency
+    itself cannot prove the artefact carries it.** The script (`Scripts/publish-host.sh`) is the
+    evidence of the 3-RID republish, not any folder listing.
+    The trap has a third face: the same gate step DESTROYS a verified release folder. The final
+    gate (S7-F) ran `host-gate.sh` after `publish-host.sh` had verified all three RIDs, and
+    `--verify-only linux-x64` then FAILED — step 5 had rewritten `publish/linux-x64` with its
+    engine-less publish, so an artefact verified minutes earlier would have shipped without an
+    engine. `host-gate.sh` now publishes into its own `hosts/avalonia/publish-gate/linux-x64`
+    (gitignored) and never writes under `publish/<rid>`. **Rule: a gate never writes into a
+    release folder; verify the release folder LAST, after every gate has run.**
+
+184. **`TryFindResource(key, out value)` RETURNS THE LIGHT VALUE INSIDE A DARK WINDOW —
+    `TryFindResource(key, ActualThemeVariant, out value)` IS THE OVERLOAD THAT TRACKS THE
+    TEMPLATED CONTROLS.** S6-D found `FlowDocumentView`'s "auto" text colour was a fixed
+    `Brushes.Black` on a background that followed the system theme, so a dark theme risked
+    black-on-near-black. The fix resolves `SystemControlForegroundBaseHighBrush` (foreground) and
+    `SystemRegionBrush` (background) from FluentTheme on attach and on every
+    `ActualThemeVariantChanged`, caches the result as `ImmutableSolidColorBrush` (invariant 179 —
+    it cannot be swapped in place, so a theme flip also drops every cached layout), and it took
+    two attempts: the single-argument overload resolved BOTH keys to their Light values inside a
+    `Window` whose `RequestedThemeVariant` was Dark, while a plain `TextBlock` in that same
+    window correctly showed white on black. Passing `this.ActualThemeVariant` explicitly gives
+    the values the templates use. Measured by `AccessibilityFixTests` (re-run for this entry, 9/9):
+    Light → foreground `Black` / background `White`; Dark → foreground `White` / background
+    `Black`. The assertions are deliberately luma-ordered ("foreground brighter than background
+    in Dark, background above 128"), not hex-equal, so a FluentTheme palette change does not
+    turn a legibility test into a palette test. Two test-harness facts belong with it: resources
+    resolve by walking UP the visual tree, so the view must be attached to a `Window` before
+    `RefreshThemeBrushes()` means anything, and every test that constructs a headless `Window`
+    shares one `Application`/`Dispatcher`, so xunit's default collection parallelism produced
+    9 failures of "different thread owns it" from `Window` construction until
+    `xunit.runner.json` (`parallelizeTestCollections: false`, copied next to the test DLL or the
+    runner never sees it) — 69/69 seven runs in a row afterwards.
+
+185. **`PageModePainter`'S VIEWPORT CULLING BUFFER (`Math.Max(200, viewportHeightPx)`) MUST BE
+    ZERO FOR A SINGLE-PAGE PDF EXPORT — OTHERWISE THE NEXT PAGE IS DRAWN OFF-CANVAS AND THE IMAGE
+    TRACE LANDS ONE PAGE EARLY.** S5-C3 left a defect on record: `FMD_AVALONIA_PDF_TRACE` reported
+    every image exactly one page before `pdfimages -list` placed it, and it read like a 0/1-based
+    indexing slip. S6-A found it was not: `PdfExporter.WritePdf` arranges the view to exactly one
+    page height and calls `RenderCore` once per page, so `viewportHeightPx == pageHeightPx`, the
+    screen-scrolling buffer becomes a whole page, and the culling window opens to `2 ×
+    pageHeightPx` — wider than the page pitch (`pageHeightPx + 24`). Page N's `SKCanvas` therefore
+    received page N+1's blocks too, positioned below the paper rectangle where nothing shows;
+    `SkiaPageCanvas.ResolveImage` caches by source hash and traces only the first decode, so the
+    trace fired on page N while the visible draw happened on N+1. Fix (S6-G): `Draw` recognises an
+    export by its `surface` being a `SkiaPageCanvas`, takes `CurrentPageNumber − 1` as the one
+    page to paint, sets the buffer to 0 and skips every other page index outright rather than
+    clipping it; `AvaloniaPageCanvas` (the screen) never enters that branch, so on-screen
+    pre-paint is unchanged. Proof: `PageModePainterSinglePageExportTests` exports page 1 of a
+    two-page document onto a raster `SKBitmap` and asserts the pixels where page 2's paper would
+    be are still fully transparent — mutated back (buffer restored, skip disabled) it goes red;
+    and the hwpx re-export's trace pages 14/15/20/25/34/76/84/93/94 match `pdfimages -list` 9/9
+    (e.g. `page=76 … 866x1224` is the 866×1224 image on PDF page 76). Page counts 306/19/186 and
+    sizes unchanged (hwpx 10,741,012 B). The README's "check page N+1" workaround was deleted.
+    **Rule: a virtualisation buffer is a screen concept; a path whose contract is "exactly one
+    page per call" must opt out of it, and a trace that disagrees with the artefact is evidence
+    about the trace's caller, not about the numbering.**
+
+186. **A named `Mutex` without `Global\` is per-SESSION on Linux, so the single-instance check
+    never fired from the desktop; and three more things only a real desktop shows.** Measured on
+    Ubuntu 24.04 arm64 under UTM 4.7.5 (S7-H, the first run of the Linux build on a real GNOME
+    session rather than a Docker `--extract`). (1) Two launches from the SAME terminal forwarded
+    correctly (one process); two launches through `setsid` — which is what `xdg-open`, the launcher
+    and a file double-click all do — each got `createdNew == true` and two windows appeared. .NET's
+    Unix PAL keys an unprefixed name under `$TMPDIR/.dotnet/shm/session<sid>/`; `Global\` moves it
+    to `shm/global/`. The name is now `Global\ai.ww-w.fastdoc.avalonia.mutex.<user>` (the user
+    suffix keeps two Windows users from sharing one primary); re-measured: two `setsid` launches,
+    one process, the second document opened in the first window. The earlier comment claiming
+    `Global\` throws on Unix was wrong and is gone. (2) The `.desktop` declared
+    `Icon=ai.ww-w.fastdoc` but nothing shipped an icon, and the Windows PE had no icon resource
+    either, so `register.ps1`'s `DefaultIcon "<exe>,0"` pointed at nothing — a 512-px PNG now
+    installs into `~/.local/share/icons/hicolor/512x512/apps/` and `Assets/fastdoc.ico` is the
+    `ApplicationIcon` (RT_ICON + RT_GROUP_ICON present in the published exe). (3) macOS `bsdtar`
+    wrote `LIBARCHIVE.xattr.com.apple.provenance` pax headers for every file; GNU tar printed
+    ~200 "Ignoring unknown extended header keyword" lines on extraction. `package-host.sh` now tars
+    with `COPYFILE_DISABLE=1 --no-xattrs --no-mac-metadata`; re-extracted on the guest: 0 warnings,
+    executable bits intact. (4) Under QEMU's `virtio-gpu-gl-pci` the guest Xorg wedged on the first
+    `XGetImage` (`scrot`, then `xwd`, then even `xdpyinfo` hung) and a `gdm3` restart did not
+    recover it; plain `virtio-gpu-pci` had no such problem — a VM-harness note, not an app defect.
+    **Rule: "works when launched twice from my shell" is not a single-instance test; the second
+    launch must come from a NEW session (`setsid`), because that is how every desktop launches
+    anything.**
+
+    Two more session-level traps found while verifying the Linux GUI in the UTM VM (S8-D1, 2026-09-06),
+    both of which read exactly like app defects and are neither: (a) under a WAYLAND session xdotool
+    input (XTEST → libei) never reached the Avalonia window — clicks and hover alike were silent while
+    the same click under an XORG session opened the file dialog; the VM is now pinned to Xorg
+    (`/etc/gdm3/custom.conf WaylandEnable=false`, AccountsService `Session=ubuntu-xorg`). (b) after
+    `xdotool windowclose` on a dialog FRAME, mutter mapped every subsequent new window — ours and a
+    plain `xmessage` alike — as Iconic (`xprop WM_STATE` = Iconic, IsUnMapped), so a launch showed no
+    window at all; `sudo systemctl restart gdm` cleared it. Rule: quit the app with `kill <pid>`, never
+    close its windows through the window manager, and when a VM-driven check misbehaves, suspect the
+    driving tool before the app.
+
+187. **A PAGE-COUNT GATE MEASURED ON A macOS-BUILT AVALONIA BINARY IS NOT THE SAME MEASUREMENT AS
+    THE LINUX VM'S, BECAUSE FONT METRICS DIFFER BY PLATFORM.** S8-A2 fixed C1-C5 and reported the
+    편람 hwp at 523 pages and the hwpx at 189 (both "unchanged"), measured with a locally-built
+    macOS Avalonia binary run headless. S8-A3 installed the SAME fixed source, rebuilt as an actual
+    Linux tarball, on a real Ubuntu 24.04 arm64 VM and re-measured with `--pdf`/`pdfinfo` (which
+    agreed exactly): 편람 545 pages, hwpx 192 — not 523/189, and the hwpx number moved in the
+    OPPOSITE direction from what A2 believed ("no change" against a 189-page prior). `Rule: only a
+    real Linux VM's page count is the gate's number; a macOS-built binary of the same C# source is
+    a DIFFERENT measurement, not a faster proxy for the same one` — the two runs share source code
+    but not glyph metrics, and a paginator that repaginates per line accumulates that difference
+    over hundreds of pages. Diagnosing the hwpx 139(mac oracle)/192(Linux VM) gap by matching
+    `pdftotext -layout` page text mac-to-linux page by page (89 of 139 body pages matched
+    uniquely) found the per-page offset climbing linearly and smoothly across the whole body
+    (roughly +0.33 to +0.39 page of drift per mac page, never jumping), which rules out a single
+    localized defect and points instead to a uniform line-height/leading POLICY difference between
+    Avalonia's general-purpose `TextLayout` and HWP's own "line = size + leading, last line in a
+    paragraph gets no leading" rule (`TableGridRenderer.BuildCellLayout`, tracked as a remaining
+    gap in S8-A2). A trailing scanned-image appendix section drifted slightly faster (+0.48/page)
+    than the body, treated as a secondary contributing factor rather than the cause. Whether this
+    same explanation accounts for the 편람 hwp's 391→545 gap was not page-mapped in this unit
+    (noted as an assumption, not verified) — both documents share the same rhwp parser and the same
+    `TableGridRenderer` path, so the root cause is presumed identical but the mapping to prove it
+    was not built here.
+
+188. **THE PDF EXPORT PATH RE-SHAPES RAW STRINGS WHILE THE SCREEN PATH DRAWS ALREADY-SHAPED GLYPH
+    RUNS, SO A CONTROL OR SEPARATOR CHARACTER BECOMES A TOFU BOX ONLY IN `--pdf`.** S8-A3 found
+    that a docx's XML example block and the 편람 hwp's table-of-contents leader column rendered
+    clean on screen (GUI flow view) but showed tofu in the same spot in a headless `--pdf`
+    export, even after S8-A2's `FlowDocumentBuilder` fix (which only changes the TEXT MODEL —
+    substituting tabs/newlines/leader characters — and does not touch how either path draws the
+    result). The screen path (`Rendering/AvaloniaPageCanvas`) draws Avalonia's own already-shaped
+    `ShapedTextRun.GlyphRun`; a real shaper (including Linux's HarfBuzz backend) conventionally
+    treats a control character (Unicode category Cc) or a non-space separator (Zs) as a
+    layout-only signal and emits no visible glyph for it. `Printing/SkiaPageCanvas.DrawTextLine`
+    re-shapes the raw string via `SKCanvas.DrawText`, which looks up a glyph per character in the
+    font's cmap and draws WHATEVER IT FINDS — including `.notdef` (tofu) — with no such
+    "never draw this category" rule at that layer. S8-A2's A4 fix found the actual codepoints by
+    dumping HWP textRun nodes directly: U+000A LINE FEED (the docx newline-substitution marker)
+    and U+2007 FIGURE SPACE (the 편람's real TOC separator — the originally suspected U+2024 ONE
+    DOT LEADER was a misread of a form-field sample line, not an actual TOC entry), and confirmed
+    that glyph-coverage alone cannot catch both: on this machine `SKFont.ContainsGlyph(0x000A)`
+    returns TRUE (glyph id 1, not notdef) while `ContainsGlyph(0x2007)` returns false, so a
+    coverage-only rule would miss U+000A on this platform's font backend. Fix
+    (`Printing/SkiaPageCanvas.cs`, `SanitizeForBundledFont`): category first, unconditionally —
+    `char.GetUnicodeCategory` in {Control, SpaceSeparator-but-not-U+0020} is replaced with a plain
+    space regardless of what the font's cmap says; everything else falls through to a
+    glyph-coverage check (`SKFont.ContainsGlyph`) for characters the bundled font genuinely lacks.
+    Neither substitution changes character count, so downstream text does not reflow. Proof:
+    `SkiaPageCanvasFontSanitizeTests` (4 tests) plus a re-run on the actual Linux VM confirming
+    both spots now render clean, same page counts (19, 545) as invariant 187's corrected numbers.
+
+189. **CONCATENATING EVERY HEADER/FOOTER NODE IN THE TREE ONTO EVERY PAGE IS THE SAME BUG AS
+    IGNORING FIRST-PAGE SCOPING AND DOUBLE-STAMPING A FOOTER — BOTH ARE ONE MISSING FIELD.**
+    S8-A2's `PageModePainter.cs` `HeaderFooterText.Extract` found every `type=="header"` (or
+    `"footer"`) node anywhere in the tree, concatenated their text into ONE string, and drew that
+    same string on every page — reading neither `appliesTo` (docx's `firstPage`/`defaultPages`,
+    from `w:titlePg`) nor `section` (the wire's `HeaderFooter { applies_to, section }`,
+    `rust/crates/fastdoc-engine/src/render/render_tree/wire.rs:938-950`). A diagnostic probe on
+    the docx sample found exactly two footer nodes — one `defaultPages`, one empty `firstPage` —
+    and the old code drew both concatenated on the cover page too. The 편람 hwp has 14 sections
+    with a footer that applies to only one appendix section; the old code concatenated that
+    section-scoped footer with the document-wide one onto every page, producing "two different
+    numbers stamped on one page." Fix: `PageLayout.cs` adds `PageLayoutResult.PageSectionIndex`
+    (page → 0-based section, computed once at `Build()` by recording section-boundary pages and
+    forward-filling); `PageModePainter.cs`'s rewritten `HeaderFooterText` reads `appliesTo`/
+    `section` directly off the raw `RenderNode.Data` `JsonElement` (no new field was added to
+    `Model/RenderTreeEnvelope.cs` — the envelope already exposes every node's `Data` as
+    `JsonElement`, so parsing it there was sufficient and avoided a file another S8 worker was
+    editing concurrently), discards candidates scoped to a different section, and prefers
+    `firstPage` on a section's first page (falling back to `defaultPages`, or drawing NOTHING if
+    `firstPage` exists but is empty — an explicit "cover has none" declaration, not a fallback
+    signal). A `pageNumberField` ("page"/"numPages") textRun is now substituted with the actual
+    page number/total per page instead of being extracted as literal text — the prior code's
+    other defect (the same number on every page). Not covered: a section that declares
+    `hidesHeader`/`hidesFooter` outright (no sample exercised it; `SectionPayload.HidesHeader`/
+    `HidesFooter` still needs wiring against `PageSectionIndex` in a follow-up unit).
+
+190. **A PICTURE'S RESERVED PAGINATION HEIGHT AND ITS DRAWN HEIGHT MUST COME FROM THE SAME
+    FUNCTION, OR THEY DRIFT AND THE NEXT BLOCK OVERLAPS THE IMAGE.** S8-A2 found three call sites
+    computing a picture's size three different ways: `PageLayout.NonTextBlockHeightPoints`
+    (pagination, reserving space) used `block.ImageHeightPoints ?? 120` with NO clamp;
+    `FlowDocumentView.EstimateHeight` (flow-mode reservation) did the same, unclamped;
+    `ImageBlockRenderer.Draw` (actual drawing) clamped to the column AND, once a bitmap decoded,
+    recomputed using the DECODED PIXEL aspect ratio — exactly what invariant 46 forbids ("reflow
+    never depends on a decoded pixel"). When a picture was declared wider than the column, the
+    reserved height (unshrunk) and the drawn height (shrunk) diverged and the next block overlapped
+    the bottom of the image. Fix: one new file, `Rendering/PictureGeometry.cs`, exposes
+    `Measure(FlowBlock, columnWidthPoints) -> (WidthPoints, HeightPoints)` — shrinks the declared
+    size to fit the column (never enlarges), preserves aspect ratio, and works entirely in points
+    off the DECLARED size (invariant 46, unchanged). All three call sites now call this one
+    function; the bitmap-aspect-ratio recomputation in `ImageBlockRenderer.Draw` was deleted.
+
+191. **FLOW-MODE TEXT SELECTION AND HIT-TESTING MUST REUSE THE SAME CACHED `TextLayout` THE VIEW
+    PAINTS WITH — WHICH IS WHY PAGE MODE, AND A TABLE CELL'S INTERIOR, ARE OUT OF SCOPE BY
+    DESIGN, NOT BY OVERSIGHT.** S8-D2's `FlowDocumentView.HitTestPosition` is the single hit-test
+    entry point required by ADR 0002: it calls `.HitTestPoint` on the exact cached `TextLayout`
+    (`GetOrBuildTextLayout`) already used to draw, with no second layout or coordinate
+    recomputation. `PageModePainter` cannot honor that contract because it does not use this
+    view's per-block cache at all — it keeps its own `_textLayoutCache` (block index → (zoom,
+    TextLayout)) and rebuilds text PER PAGE PER LINE via `PageLayout.BuildTextLayout`, a
+    fundamentally different geometry where one paragraph can be split across a page boundary.
+    Making page-mode selection honor the same contract would require exposing that painter's
+    internal cache and its page/line split map, plus a new screen-coordinate → (page, line,
+    block, offset) inverse mapping — declared out of scope for this dispatch, not silently
+    dropped. The same reasoning excludes pointer-driven partial selection INSIDE a table cell:
+    `TableGridRenderer` keeps each cell's own separate `TextLayout`, absent from this view's
+    per-block cache, so a click/drag on a table clamps to the nearest Text block via
+    `NearestTextBlockIndex` rather than entering the cell — `SelectedText`'s tab/newline
+    serialization of a table (row-major, `\t` between cells, recursing into nested grids per
+    invariant 168) still works when a table falls INSIDE a larger range (e.g. Ctrl+A), just not
+    as the sole target of a drag. Bitmap interpolation
+    (`RenderOptions.SetBitmapInterpolationMode(this, HighQuality)`, set once in the view's
+    constructor) reaches page mode "for free" because `PageModePainter.Draw` shares the same
+    control's `DrawingContext`; the PDF export path (`SkiaPageCanvas`) calls SkiaSharp directly,
+    bypassing `DrawingContext` entirely, so this setting never reaches it and does not need to.
+
+192. **A MARKDOWN `![alt](url)` IS A `text/uri-list` RESOURCE CARRYING THE URL STRING, NOT IMAGE
+    BYTES — AND THE HEADLESS xunit `Bitmap` DECODER ALWAYS RETURNS A 1×1 STUB, SO A TEST MUST
+    ASSERT BRANCH ENTRY, NOT DECODE SUCCESS.** The Rust markdown producer registers a
+    `![alt](url)` image as a resource whose mime type is `text/uri-list` and whose bytes ARE the
+    URL string, with intrinsic size `{0,0}`. S8-D2's `ImageBlockRenderer.Resolve` detects that
+    mime type, reinterprets the "bytes" as the document's declared `src` (UTF-8), and hands it to
+    new `ResolveUriListBytes`: an `http(s)` URL is never fetched and returns null (placeholder); a
+    `file:` absolute URL reads that local path; anything else (a relative path) is percent-decoded
+    and resolved against `_documentDirectory` (the same directory value every existing zip-opening
+    call site already threads through, so no new wiring was needed) and read as a local file,
+    sharing the existing 200MB resource cap; a missing or unreadable file returns null, never
+    throws. New `EffectiveDeclaredSize(FlowBlock)` uses the block's declared size when both
+    dimensions are > 0, and otherwise (markdown's ever-present `{0,0}`) falls back to the decoded
+    bitmap's pixel size at 96dpi — shared by BOTH `ImageBlockRenderer.Draw` and
+    `FlowDocumentView.EstimateHeight` so reserved and drawn height can never diverge (the same
+    class of bug as invariant 190). The headless test harness's
+    `new Avalonia.Media.Imaging.Bitmap(stream)` decodes ANY input — even a fully valid PNG — as a
+    1×1 stub (confirmed: the identical bytes decoded via SkiaSharp directly yield the correct
+    40×20); this made the FIRST version of the relative-URL test pass even when a lead's mutation
+    disabled the `"text/uri-list"` branch entirely, because the stub decodes "success" regardless
+    of what bytes it is fed. Fix: two new evidence properties, `LastResolvedUriListPath` and
+    `LastResolvedUriListByteLength`, are set only inside the real local-file-read branch; the test
+    now asserts these equal the actual temp file's path and on-disk byte count, which is null
+    whenever the branch is not entered (mutated, an http URL, or a missing file) — re-verified by
+    disabling the literal and confirming the test now fails, then restoring it and confirming it
+    passes again. A real `--pdf`/`--extract` run against `demo/images.md` (12 photos, ~3.3MB)
+    produced a 3.5MB two-page PDF, confirming the 1×1 stub is a property of the xunit headless
+    platform options only, with no effect on the real CLI/GUI paths (exact cause [unverified] —
+    out of scope for this dispatch).
+
+193. **A MARKDOWN `#fragment` LINK IS RESOLVED BY BOOKMARK NAME FIRST, THEN BY MIRRORING
+    `AnchorResolver.swift`'S GFM HEADING-SLUG RULE EXACTLY — INCLUDING ITS ABSENCE OF ANY
+    DUPLICATE-HEADING SUFFIXING — AND AN UNRESOLVED FRAGMENT IS NEVER HANDED TO THE EXTERNAL
+    LAUNCHER.** The markdown producer emits no bookmarks at all (`rust/.../render/markdown/
+    inline.rs`'s `bookmark_ids: vec![]`), so a TOC link like `[..](#chapter-1-loomings)` fell
+    through S8-B4's bookmark-only `NavigateLink` straight to `ExternalLinkLauncher.Open`, handing
+    a bare fragment string to the OS. S8-B4's B5 addendum ports the second resolution step macOS
+    already has in `Sources/FastDocReader/Navigation/AnchorResolver.swift`: new
+    `Rendering/HeadingAnchorResolver.cs` transliterates `slugify` character-for-character
+    (lowercase; space/tab → `-`; only letters/digits/`-`/`_` survive, everything else is dropped;
+    non-ASCII letters pass through via `char.IsLetter`) and `Resolve(fragment)` returns the FIRST
+    heading in document order whose slug matches — the dispatch instructions had asked for a
+    `-1`/`-2` duplicate-heading suffix scheme, but that logic does not exist anywhere in the
+    Swift source (confirmed by grep), so the port follows the actual source over the written
+    instructions: "mirror this file exactly" outranks a parenthetical in the dispatch prompt that
+    would have invented behavior the oracle does not have. `FlowDocumentView.NavigateLink` was
+    restructured so a target NOT starting with `#` goes straight to
+    `ExternalLinkLauncher.Open` (no internal resolution attempted), while a `#` target tries
+    bookmark exact-match, then `HeadingAnchorResolver.Resolve`, and on a double miss DOES NOTHING
+    — it never falls through to the launcher, which is the actual bug fix. Heading collection
+    (`CollectHeadingsInDocumentOrder`) is a small dedicated recursion inside
+    `Rendering/FlowDocumentView.cs` rather than a reuse of `Panels/TableOfContentsModel.Build`,
+    for the same Rendering-must-not-depend-on-Panels reason `CommentsModel` already accepted in
+    invariant-tracked S8-B4 work. Link color is set to the EXACT macOS `Palette.link` hex (Light
+    `#2E7AB8` / Dark `#6CB0F5`, not an approximation) in `App.axaml`'s theme dictionaries, applied
+    once at build time in `FlowDocumentBuilder.AppendTextRunSplitOnControlChars` (same
+    paint-once, no-live-retheme limitation as the existing `CodeRole*Color` pattern) — 10 new
+    tests (`S8B5HeadingAnchorTests.cs`) cover the slug port, the first-occurrence-wins duplicate
+    case, the real TOC-link scroll scenario, and an unresolvable fragment provably never reaching
+    the launcher.
+
+194. **`CodeBlock.runs` IS AN ADDITIVE WIRE FIELD (UTF-16 OFFSETS, END EXCLUSIVE, CAMELCASE
+    `CodeRole`) THAT SWIFT DECODES BUT DOES NOT YET CONSUME, WHILE AVALONIA PAINTS IT FROM THEME
+    RESOURCES.** S8-B3 extracted the existing `code_highlighter.rs` scanner's paint calls into a
+    new `tokenize(code, language) -> Vec<CodeRun>` without touching a single line of the
+    scanner or language tables (confirmed by diff); `highlight()` now calls `tokenize()` and
+    paints every resulting `CodeRun { start, end, role }` in ONE loop, replacing the prior seven
+    separate `addAttribute` call sites — a golden test
+    (`tokenize_ranges_equal_highlight_painted_ranges_golden`) confirms the two produce identical
+    ranges across four languages. The wire gained `CodeRole` (7 camelCase values: keyword, type,
+    string, number, comment, added, removed) and `CodeRun{start, end, role}` (UTF-16 code units,
+    `end` exclusive), and `CodeBlock.runs: Option<Vec<CodeRun>>` stayed on `schema_version` 1 by
+    being optional and round-tripping absent-key JSON as `None` (proof:
+    `code_block_runs_field_is_additive_and_round_trips`). `RenderTreeWire.swift` mirrors
+    `WireCodeRole`/`WireCodeRun`/`WireCodeBlock` but was deliberately NOT wired into
+    `WireNodePayload`'s switch — the office adapter never produces a `codeBlock` node in the
+    first place, so macOS's markdown code highlighting still runs entirely through the existing
+    `MarkdownRenderer`/`CodeHighlighter::highlight()` path, unaffected by this wire addition; only
+    Avalonia consumes `runs` today (`FlowDocumentBuilder.BuildCodeRuns` splits one `FlowRun` per
+    run boundary and resolves each role to a color via `Application.Current.TryGetResource(key,
+    ActualThemeVariant)` against seven new `App.axaml` theme-dictionary colors per Light/Dark, an
+    unrecognized role string falling through to the existing default gray rather than throwing —
+    forward-compatible with a role the engine might add before this host does). Test counts moved
+    in exact lockstep with what was added on each side — Rust workspace 348→354 (6 new), Avalonia
+    136→139 (3 new), Swift 1931→1933 (2 new) — evidence that no other unit's tests were disturbed
+    or skipped to make this land.
+
+195. **A NODE-ID SCROLL TARGET MUST RECURSE INTO A TABLE'S CELLS, BECAUSE A KOREAN REPORT'S CHAPTER
+    TITLE OFTEN LIVES INSIDE A ONE-CELL TABLE, NOT AS A TOP-LEVEL HEADING.** S9-A found that clicking
+    a table-of-contents entry never scrolled for `1790387_prep_final_report.hwpx` — 13 of 13
+    chapter headings failed, while a second real document whose headings sit in ordinary body flow
+    (`2025_행정업무운영편람_최종.hwp`, 12 of 12) always worked, on the identical `ScrollToNodeId` code.
+    The cause was a mismatch between two workers' scope, not a data bug: `FlowDocumentBuilder.BuildTable`
+    walks each cell's children into `TableGridCell.Content` — a `List<FlowBlock>` never merged into
+    `FlowDocumentView._blocks` (the top-level list carrying `_offsets`), so a heading `FlowBlock`
+    nested in a cell keeps its own correct `NodeId` but has no scroll offset of its own. S8-B4's
+    `ScrollToNodeId` checked only `_blocks[i].NodeId == nodeId`, so a cell-nested heading's id was
+    never found; `Panels/TableOfContentsModel.Walk`, by contrast, never excluded table/row/cell
+    from its recursion, so the TOC panel had already found and reported the correct id for a target
+    the scroller could not resolve. The Rust engine and the TOC panel were both already correct —
+    only the scroll resolver was too shallow. Fix: `Rendering/FlowDocumentView.cs`'s `ScrollToNodeId`
+    gained a `BlockOrItsCellsCarryNodeId` helper that recurses into a table block's cells (and
+    nested tables, bounded by `FlowDocumentBuilder.MaxTableNestingDepth`) and, on a match inside a
+    cell, scrolls to the ENCLOSING TABLE BLOCK's own offset — a cell's content has no independent
+    scroll position of its own, so the nearest nameable target is the table that contains it (an
+    explicit residual gap when a long table's heading cell is not near the table's own top: not
+    fixed, disclosed). 8 new tests (`S9AHwpTocTests.cs`) pin the exact defect
+    (`FlowDocumentBuilder_never_promotes_a_table_cells_heading_to_a_top_level_block`), the fix
+    (`ScrollToNodeId_resolves_a_table_cell_headings_NodeId_to_the_enclosing_table_block`), the
+    correct-value assertion (not just `true` — the actual non-zero offset), the ordinary-heading
+    regression guard, nested-table recursion, an absent-id still returning `false`, and page mode's
+    existing `_pageMode` guard staying un-bypassed. 170→178 tests, `host-gate.sh` 6/6 PASS.
+
+196. **A COMPUTED SUM AND A STORED PER-ITEM VALUE MUST COME FROM ONE WRITE, NOT TWO INDEPENDENT
+    ASSIGNMENTS OF THE SAME LOCAL — A MUTATION THAT ZEROES ONLY THE STORED VALUE PASSED EVERY
+    EXISTING TEST.** S9-C's `TableGridRenderer.BuildCellContent` (building a table cell's mixed
+    text/image/nested-table content) computed a segment's height into a local `segmentHeight`, then
+    wrote that SAME value into two places separately: `totalHeight += segmentHeight` (what
+    `EstimateHeight` reports upward) and `new CellSegment(null, segmentHeight, block)` (the value
+    `Draw` later reads back off the segment to advance its paint cursor). The lead's own mutation
+    review set the segment's stored height to `0.0` while leaving `segmentHeight` itself untouched,
+    and all 8 existing S9-C tests stayed green — none of them observed the segment's OWN height
+    field, only the aggregate `EstimateHeight` sum, which the mutation never touched. Fix: an
+    `AddSegment(CellSegment segment)` local function is the ONLY way a segment enters the list, and
+    it re-reads the segment's own `Height` field to increment `totalHeight` — a mutation that zeroes
+    a segment's stored height now necessarily also breaks the aggregate `EstimateHeight` result,
+    closing the class of bug rather than patching the one instance. A new test,
+    `Text_segment_after_an_image_segment_in_a_cell_starts_below_the_images_true_height`, additionally
+    observes the DRAW path directly (a `RecordingCanvas` capturing `DrawTextLayout`'s `origin`) so a
+    future two-writes-of-one-value regression is caught even if some other refactor reintroduces
+    it without touching this exact local variable. **Rule: when an estimate and a paint cursor both
+    need the same per-item number, store it once and have both readers read that one field — never
+    let two call sites separately assign "the same" computed value.**
+
+197. **`FlowDocumentView.RenderCore` MIXED SURFACE-SPACE AND DOCUMENT-SPACE COORDINATES IN ONE
+    SUBTRACTION, WHICH IS INVISIBLE AT SCROLL OFFSET ZERO AND CULLS EVERY TABLE ROW ONCE SCROLLED —
+    FOUND ONLY BY READING A DIAGNOSTIC LOG FROM THE ACTUAL VM, AFTER TWO HEADLESS macOS
+    INVESTIGATIONS FAILED TO REPRODUCE IT.** The owner reported a docx losing content in flow mode
+    (page mode off); S9-C's first two investigation rounds (structural block-geometry sweep, then a
+    direct isolated `TableGridRenderer.Draw` pixel count with `viewportTop=-∞`/`viewportBottom=+∞`)
+    both found the suspect tables measuring and painting correctly in isolation — because neither
+    replay exercised the real, scrolled `RenderCore` call path. Only `FASTDOC_DRAW_LOG` (invariant
+    198), read back from a real Ubuntu VM, caught the actual defect: at `scrollOffset=1484`, a table
+    block sitting well inside the viewport (`y=738, height=1330`) drew `verdict=drawn` for the block
+    itself but `rowsDrawn=0 cellsSeen=0` — every row inside it was individually `verdict=culled`.
+    Root cause: `RenderCore`'s draw loop called
+    `DrawBlock(surface, block, i, top, columnWidth, visibleTop - top, visibleBottom - top, ...)`
+    where `top = _offsets[i] - _scrollOffset` is SURFACE-space (already scroll-subtracted) but
+    `visibleTop`/`visibleBottom = _scrollOffset ± buffer` are DOCUMENT-space (absolute, not
+    scroll-subtracted) — `visibleTop - top` therefore computes
+    `(scrollOffset - buffer) - (offsets[i] - scrollOffset) = 2·scrollOffset - buffer - offsets[i]`,
+    exactly `+scrollOffset` larger than the correct block-local value
+    `(scrollOffset - buffer) - offsets[i]`. At `scrollOffset=0` the error term is zero (the bug's
+    author never saw it — the cover-page table always drew fine), and it grows linearly with every
+    scroll, eventually pushing every row of an in-viewport table past the "below the fold" cull
+    threshold. `TableGridRenderer.Draw`'s own internal `tableTop + localViewTop` / `viewportTop - top`
+    pair is a self-cancelling round trip and was never the bug; the sole defect was the ONE line in
+    `RenderCore` computing `visibleTop - top`. Fix: subtract `_offsets[i]` (document-space) instead
+    of `top` (surface-space) so both operands share a coordinate frame, and rename the parameters
+    `blockLocalViewTop`/`blockLocalViewBottom` with a documented invariant: values passed into
+    `DrawBlock`/`TableGridRenderer.Draw` are always BLOCK-LOCAL (0 = that block's own top edge),
+    never surface pixels, never absolute document coordinates — a future block kind that culls
+    sub-content by position must derive its bounds against `_offsets[i]`, never re-derive from
+    `top`. Page mode's `PageModePainter` was checked and is unaffected — it passes
+    `viewportTop=-1e9, viewportBottom=1e9` (effectively "always visible") because its culling is
+    already resolved by an explicit `rowsToDraw` range, leaving no coordinate frame to confuse.
+    Confirmed with `S9DrawLogDiagnosticTests.A_table_inside_a_scrolled_viewport_still_draws_its_rows_not_zero`,
+    which drives a real `--paint-probe` child process through five scroll stops and asserts every
+    `verdict=drawn` table's `rowsDrawn` is non-zero once `scrollOffset>0`; full suite 277/277 after
+    the fix. **Rule: two values entering one subtraction must be independently labeled with which
+    coordinate space they are in (surface / document / block-local) — "both are pixels" is not
+    enough, and the bug is invisible at the one scroll position (zero) every developer tests first.**
+
+198. **`FASTDOC_DRAW_LOG` IS A PERMANENT, ENV-GATED PER-FRAME DIAGNOSTIC — A STATIC READONLY FIELD
+    READ ONCE AT TYPE LOAD SO IT COSTS ONE NULL CHECK PER FRAME WHEN UNSET, AND ONLY A CHILD PROCESS
+    CAN OBSERVE IT.** Written for invariant 197's bug, which the lead's own headless macOS replay
+    could not reproduce no matter how the sweep was constructed — the defect only shows up inside a
+    real, scrolled `RenderCore` paint call, which a structural or isolated-draw test never invokes
+    end-to-end. `FlowDocumentView.cs`'s `DrawLogPath` is `Environment.GetEnvironmentVariable
+    ("FASTDOC_DRAW_LOG")`, read once into a `static readonly string?` — an unset variable costs
+    exactly one field read plus a null check per frame thereafter (no file handle, no lock, no
+    string built), matching this repo's existing `FMD_*` corpus-probe convention (CLAUDE.md) of a
+    real-environment diagnostic gated by an env var rather than a permanent UI feature. When set, it
+    appends one frame's worth of lines per real paint: a header
+    (`FRAME <n> scrollOffset=.. localViewTop=.. localViewBottom=.. viewportHeight=.. docTotalHeight=..
+    startIndex=.. endIndex=.. blockCount=..`), one `BLOCK i=.. nodeId=.. kind=.. y=.. height=..
+    verdict=drawn|culled-above|culled-below` line per top-level block, and — only for a `drawn`
+    table block — one indented `row=.. col=.. y=.. h=.. verdict=drawn|culled` line per cell
+    `TableGridRenderer.Draw` actually visited, so a table can show "the block drew" while every one
+    of its rows individually culled (exactly invariant 197's shape). `S9DrawLogDiagnosticTests.cs`
+    drives this by launching `--paint-probe` as a CHILD PROCESS (the log is genuinely per-process
+    static state, so an in-process test cannot exercise the real code path the same way) and reading
+    the resulting file back. Documented in `hosts/avalonia/README.md`'s environment-variable list.
+    **Rule: when a bug reproduces on a real machine but not in the fastest available headless
+    replay, add a permanent, env-gated diagnostic that lets the real machine record its OWN
+    decisions to a file, rather than continuing to guess from a machine that cannot reproduce it.**
+
+199. **A BLANK SCREEN IS A CLAIM ABOUT PIXELS, NOT ABOUT STRUCTURE — "THE TALL BLOCK HAS CONTENT" AND
+    "THE TABLE DID NOT EARLY-RETURN" WERE BOTH TRUE WHILE THE VIEWPORT WAS ACTUALLY WHITE.** S9-V's
+    first two rounds investigating the VM's reported blank scroll region each cleared the code they
+    checked by a STRUCTURAL argument — round 1 confirmed every large block's declared height was
+    backed by real paragraph/table content (no block was "big but empty"), round 2 confirmed
+    `TableGridRenderer.Draw`, called in isolation with an unbounded viewport, painted a non-zero
+    alpha-channel pixel count for the exact suspect tables. Both conclusions were correct AND
+    insufficient — the actual defect (invariant 197) lived in the VIEWPORT CULLING that wraps the
+    draw call in a real, scrolled frame, which neither a static geometry sweep nor an isolated
+    unbounded-viewport draw call ever exercises. Only round 3, reading `FASTDOC_DRAW_LOG` off a real
+    scrolled frame and counting `verdict=drawn` vs `verdict=culled` per ROW (not per block), showed
+    the actual mechanism: a table block marked `drawn` with `rowsDrawn=0`. **Rule: a "does it render
+    blank" investigation must eventually assert on painted pixels or per-row draw verdicts from a
+    REAL scrolled/interactive frame — a passing structural check (heights add up, an isolated draw
+    call paints something) rules out one class of bug but not the one that only appears inside the
+    live viewport-culling path.**
+
+200. **A KEYBOARD PREDICATE THAT ONLY EXISTS INLINE INSIDE A WINDOW HANDLER CANNOT BE MUTATION-TESTED
+    HEADLESSLY, SO EXTRACT IT TO A PURE MODEL METHOD BEFORE TRUSTING ANY TEST OF IT.** S9-B2's `?`/F1
+    "open the shortcut guide" check originally lived as an inline `e.Key == Key.OemQuestion ||
+    e.Key == Key.F1` condition inside `MainWindow.OnWindowKeyDown`, an instance method this test
+    project cannot construct headlessly (`MainWindow`'s constructor needs `Program.PendingDocumentPath`
+    and a real `StorageProvider`). The lead's mutation review replaced `Key.OemQuestion` with a
+    second `Key.F1` in that inline condition and all 6 existing tests stayed green — none of them
+    could drive the real handler to observe the `?` branch at all, so a test suite believed to cover
+    "press `?` or F1" in fact only exercised whatever assertions read the STATIC LIST of documented
+    shortcuts, never the live key-matching logic. Fix: the predicate moved to a pure static method,
+    `Panels/ShortcutGuideModel.ShouldOpenFromKey(Key key, bool findTextBoxFocused)` (the find-box
+    guard matters — this handler runs as a Tunnel event, ahead of the find box's own `KeyDown`, so
+    without it opening the guide would swallow a literal `?` or `/` typed into Find), with
+    `MainWindow.OnWindowKeyDown` reduced to a passthrough call. A `[Theory]` with 6 cases
+    (`OemQuestion`/`F1` × focused/unfocused × two unrelated keys) now fails immediately if
+    `OemQuestion` is swapped for `F1` again, and a source-text assertion confirms the handler
+    actually calls the extracted method rather than keeping a parallel inline copy. **Rule: a
+    condition inside a constructor-heavy window class that a mutation can silently defeat is not
+    covered by "the tests are green" — extract it to a pure function the test can call directly, the
+    same discipline invariant 191 already applies to hit-testing.** The same sprint's `GoToLineModel`
+    and `SelectionOpenTarget.Resolve` (invariant 201) follow the identical pattern for the same
+    reason: any input-validation or key-matching logic reachable only through a window instance
+    method gets a pure counterpart before it is trusted.
+
+201. **`Uri.TryCreate` PARSES ANY ABSOLUTE UNIX PATH AS A VALID `file:` URI REGARDLESS OF WHETHER
+    ANYTHING EXISTS THERE, SO AN "IS THIS OPENABLE" CHECK MUST RE-VERIFY EXISTENCE VIA `LocalPath`.**
+    S9-B3 batch 5's `Rendering/SelectionOpenTarget.Resolve(text)` — the function backing Ctrl/Cmd-click
+    on a text selection — initially trusted `Uri.TryCreate(text, UriKind.Absolute, out var uri)` to
+    mean "this selection names something that can be opened." On Unix, `/tmp/does-not-exist` (or any
+    absolute-looking path a user happened to select) parses successfully as `Scheme == "file"`,
+    `IsAbsoluteUri == true` — the parse succeeds on syntax alone and says nothing about whether the
+    path exists. This was caught by the batch's own test suite, not shipped and found later: the fix
+    re-checks existence through `uri.LocalPath` (`File.Exists`/`Directory.Exists`) before treating a
+    `file:` URI as openable, alongside the two schemes that need no such check (`http`/`https`/
+    `mailto` — a URI, not a promise the target answers). **Rule: `Uri.TryCreate` succeeding for a
+    `file:` scheme is a syntax check only; treat it as evidence of intent, not of existence, and
+    re-verify with the filesystem before calling something "openable."**
+
+202. **A NON-MODAL WINDOW SIZED FOR A DESKTOP MONITOR CAN EXCEED A SMALLER REAL SCREEN'S WORKING
+    AREA — A FIXED PIXEL HEIGHT MUST INSTEAD BE `SizeToContent` PLUS AN EXPLICIT CAP COMPUTED FROM
+    THE REAL SCREEN, BECAUSE THE HEADLESS TEST PLATFORM HAS NO SCREEN TO CATCH THE MISTAKE.** S9-B2's
+    `ShortcutGuideWindow` shipped with a fixed `Height="480"` and no scrollbar visibility declared;
+    every unit test passed (the headless test platform's `Screens.Primary` is `null`, so nothing
+    ever exercised the window's actual on-screen size). Only a real Ubuntu 24.04 Xorg/GNOME VM
+    session showed the actual failure: the window's last two shortcut groups (Find, Help) were
+    cut off below the visible screen with no way to scroll to them, and the window drew with no
+    title bar or close button. Fix: `SizeToContent="Height"` (matching the existing
+    `FirstRunWindow.axaml` pattern) plus `ScrollViewer.VerticalScrollBarVisibility="Auto"`,
+    `WindowDecorations="Full"`, and a new pure function `ShortcutGuideModel.ComputeMaxHeight` — fed
+    the REAL screen's `WorkingArea.Height` and `Scaling` when `Screens.Primary` is available,
+    caps the window at 90% of the screen's working-area height in device-independent pixels, and
+    treats a non-positive scaling value as `1.0` rather than dividing by zero. On the headless test
+    platform where `Screens.Primary` is null, this is a deliberate no-op (the constructor's
+    `MaxHeight` is simply never set) — the pure calculation itself is still tested directly against
+    three real-world screen/scaling combinations (1080p @ 100%, the same panel at 200% scaling
+    producing the SAME DIP result, and a 768px-tall low-resolution laptop screen) so the 90% cap is
+    verified without needing a display. **Rule: a fixed-pixel window height is untestable by a
+    headless suite and unsafe on a real screen smaller than the developer's own monitor — compute
+    the cap from `Screens.Primary.WorkingArea` at runtime and verify the pure math with synthetic
+    screen dimensions, since the headless platform can only skip the code path, never wrongly pass
+    it.**
+
+203. **FLOW MODE AND PAGE MODE MUST THREAD THE SAME `ImageBlockRenderer` TO BOTH MEASUREMENT AND
+    PAINT, OR A CELL'S OWN IMAGE OR NESTED TABLE IS NEITHER RESERVED NOR DRAWN.** S9-C threaded
+    `imageRenderer` through flow mode's `TableGridRenderer.EstimateHeight`/`Draw` and its shared
+    `BuildCellContent`, but left page mode's own path to that same builder unwired. Two gaps, both
+    silent: `Paging/PageModePainter.cs`'s draw call into `Rendering/TableGridRenderer.cs`'s `Draw`
+    never passed `imageRenderer` even though the painter already held it as a constructor-injected
+    field, and `TableGridRenderer.cs`'s `MeasureRowHeightsPoints` — the only entry point
+    `Paging/TableSettle.cs`'s `EstimateRowHeights`/`BuildLaidOutTables` call, in turn called by
+    `Paging/PageLayout.cs`'s `NonTextBlockHeightPoints`/`PlaceTableRows`/`Build`/
+    `BuildWithTableSettle` — had no `imageRenderer` parameter at all, so there was nowhere to pass
+    one even if the painter had tried. Measured: a 2×3 picture table in
+    `testdocs/everything/GnBS_IM_20260401.docx` drew as two ~10px empty rows in page mode while flow
+    mode drew all six photos; a second 2×2 picture table on the same page vanished outright. A
+    `Program.cs --sheets` headless CLI path bypasses `Rendering/FlowDocumentView.cs` entirely and
+    calls `PageLayout.BuildWithTableSettle` directly — it carried the identical gap and was wired at
+    the same time, so page count would not have differed between the GUI/`--pdf` path and `--sheets`
+    for the same document. Fix: `ImageBlockRenderer? imageRenderer = null` threaded through the
+    whole measurement chain (`MeasureRowHeightsPoints` → `EstimateRowHeights`/`BuildLaidOutTables` →
+    `NonTextBlockHeightPoints`/`PlaceTableRows`/`Build`/`BuildWithTableSettle`) plus the one missing
+    `imageRenderer:` argument on `PageModePainter`'s `Draw` call, plus `FlowDocumentView.cs`'s
+    `EnsurePageLayout()` and `Program.cs`'s `RunSheets` both now build and pass a real
+    `ImageBlockRenderer`. Result: `testdocs/everything/GnBS_IM_20260401.docx` 33→34 pages,
+    `testdocs/small/인감_개인신고서_김태형.docx` 1→2 pages (five nested tables in one cell), VM
+    `--pdf` GnBS docx 34→35 pages. **This wiring was invisible to the test suite until tests
+    asserted the exact before/after page-count PAIR, not just "pagination completes": a first
+    mutation review caught only 2 of 4 seeded breaks (a test asserting only that after ≥ before, or
+    only that pagination succeeds, cannot tell a broken wire — where after silently equals before —
+    from a working one); adding tests that pin the specific before/after numbers for named real
+    documents raised the catch rate to 4/4.** Rule: when a shared builder (`BuildCellContent`) is
+    reachable through two independent chains (measure, paint) for two independent modes (flow,
+    page), a parameter added to fix one combination must be traced to literally every caller of
+    every chain × mode, including headless CLI entry points that bypass the normal view — and the
+    regression test must assert the exact numeric pair a broken wire would collapse to the same
+    value, not a direction or a non-crash.
+
+204. **AN UNSPLITTABLE BLOCK TALLER THAN ONE PAGE'S CONTENT HEIGHT MUST STILL BE PUSHED TO A FRESH
+    PAGE — NOT LEFT AT THE CURRENT CURSOR — BECAUSE A PER-PAGE CANVAS SILENTLY DROPS ANYTHING PAST
+    ITS OWN BOTTOM EDGE.** `Paging/PageLayout.cs`'s page-break test read
+    `cursor > 0 && cursor + height > contentHeight + 0.01 && height <= contentHeight` — the third
+    clause meant "if it would not fit on a fresh page either, do not bother moving it," which reads
+    as harmless but is not: it ignores that NOT moving it means the item starts mid-page, where less
+    room is left, so MORE of it gets clipped, not less. Measured on
+    `testdocs/everything/1790387_prep_final_report.hwpx`: a one-row/one-cell survey table (35
+    paragraphs plus a nested table crammed into a single HWP cell, so `TableSettle.CanBreakAbove`
+    is always false for row 0 — this block can never be split) measured 695.9pt against a 694.5pt
+    page content height. Before this fix it started at cursor 574.8pt (119.7pt of room left) and the
+    real `--pdf` export's `SkiaSharp` `SKDocument.BeginPage` canvas — which records nothing past its
+    own physical page boundary, unlike the on-screen viewport culling this reader also has, which
+    only skips drawing, never truncates content that is still logically present — silently dropped
+    everything past that 119.7pt, roughly 83% of the block: `pdftotext` on the exported PDF went
+    from finding the phrase "귀하는" 3 times to 0, and survey items A6 through A9 vanished entirely.
+    The page COUNT even dropped (194→193), which read as ordinary reflow and was not: it was content
+    loss disguised as a smaller document. Fix: a shared helper,
+    `ShouldPushToFreshPage(cursor, itemHeight, contentHeight) = cursor > 0 && cursor + itemHeight >
+    contentHeight + 0.01` — dropping the third clause. This can never lose more: pushing clips
+    `itemHeight - contentHeight`; not pushing clips `itemHeight - (contentHeight - cursor)`; the
+    difference between the two is exactly `cursor`, which is never negative. Applied at 3 of the 4
+    call sites that made this comparison (`Build`'s default non-text-block branch, and both branches
+    of `PlaceTextLines`). Deliberate exception: `PlaceTableRows` (table-fragment placement) keeps
+    the OLD condition — applying the helper there broke
+    `PagingTests.A_table_taller_than_one_page_splits_at_a_row_boundary`, because that path is
+    entangled with `TableSettle.Resolve`'s multi-round convergence loop (a documented, separate
+    convergence limit already on that class, "host fallback's grouping is coarser than Swift's
+    own"), and forcing the new rule there defeats that convergence rather than improving it. The
+    residual after this fix: the surveyed table's own 1.4pt excess over one page is still clipped
+    even after moving to a fresh page (this reader does not split a single cell's content across a
+    page boundary); a residual under one body line height (~12pt) costs only trailing whitespace,
+    not visible content. **Measurement discipline this exposed: a page-count DROP after any layout
+    change must be checked against `pdftotext` word/phrase counts before being accepted as harmless
+    reflow — page count alone cannot distinguish reflow from loss.** (Final counts on this document
+    after both this fix and invariant 203: 23,539→23,644 words when content is fully recovered,
+    versus 23,539→23,488 when the fix was only partially applied and content was still being
+    dropped.)
+
+205. **THE PAGE-MODE TOGGLE MUST PRESERVE READING POSITION AS A BLOCK INDEX, NEVER A PIXEL SCROLL
+    OFFSET, BECAUSE FLOW MODE'S AND PAGE MODE'S SCROLL COORDINATES ARE UNRELATED NUMBER LINES — AND
+    A LOOKUP THAT SEARCHES ONLY `PageLayoutResult.Placements` MISSES EVERY PARAGRAPH-ONLY DOCUMENT.**
+    `Rendering/FlowDocumentView.cs`'s `PageMode` setter unconditionally reset `_scrollOffset = 0` on
+    every toggle, in either direction — flow mode's `_scrollOffset` is cumulative block-height
+    pixels from the document top, page mode's is stacked-sheet pixels, and the two are not
+    convertible by carrying the raw number across. Fix: before switching modes, capture the
+    currently-visible BLOCK as an anchor in the outgoing mode's terms (leaving flow:
+    `LowerBound(_offsets, _scrollOffset)`, the same lookup `GetCurrentPositionForSave()`/`SetZoom`
+    already used; leaving page: `PageModePainter.PageIndexAt` to find the visible page, then a new
+    `FirstBlockOnPage` to find the topmost block placed on it), then scroll the incoming mode to
+    that same block (`RestorePosition` for flow; a new `PageForBlock` plus
+    `PageModePainter.PageTopPx` for page). Trap found during implementation: `PageLayoutResult
+    .Placements` holds ONLY non-text blocks (table/image/rule) — a paragraph is placed into `.Lines`
+    instead, as one or more `PagedLine`s, because `PlaceTextLines` allows a paragraph to be split
+    line-by-line across a page boundary while `Placements` is reserved for blocks treated as one
+    atomic unit. A `FirstBlockOnPage`/`PageForBlock` written to search `Placements` alone passes on
+    any document that happens to contain a table or image and silently returns block 0 — the same
+    failure the reset bug produced — on the far more common case of a paragraph-only document; both
+    helpers were written to search `Placements` and `Lines` together. Mutation review: 3/3 seeded
+    breaks caught.
+
+206. **THE WIN-ARM64 ENGINE DLL MUST LINK THE UNWINDER STATICALLY, AND THE BUILD MUST FAIL WHEN IT
+    DOES NOT — A DLL THAT IMPORTS `libunwind.dll` LOADS ON NO WINDOWS MACHINE.** The
+    `aarch64-pc-windows-gnullvm` target is cross-compiled with llvm-mingw (`$LLVM_MINGW_DIR`, default
+    `~/.local/opt/llvm-mingw`; the GNU mingw-w64 toolchain has no aarch64 port), and rustc's target
+    spec links the unwinder with a plain `-lunwind` under `-Bdynamic`. The toolchain's lib directory
+    holds BOTH `libunwind.a` and `libunwind.dll.a`, so the linker picks the import library, the
+    finished `fastdoc_engine_ffi.dll` imports `libunwind.dll` — a runtime file that ships with no
+    Windows installation — and the host's `LoadLibrary` fails with `0x8007007E` (measured on Windows
+    11 Pro ARM64, build 26200). Tried and rejected: the plain gnullvm link (imports it);
+    `-C link-arg=-static-libgcc` (still imports it); `-C link-arg=-static` (still imports it) —
+    neither flag changes which of the two archives `-lunwind` resolves to. What works:
+    `Scripts/build-engine-xplat.sh`'s `build_windows_arm64` copies `libunwind.a` ALONE into
+    `rust/target-xplat/<triple>/static-unwind/` and passes `-L native=<that dir>` through
+    `CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_RUSTFLAGS`, so the static archive is found before the
+    toolchain's directory and the import library is never considered. The same toolchain's clang is
+    handed over as linker, `CC_aarch64_pc_windows_gnullvm` and `AR_aarch64_pc_windows_gnullvm`,
+    because blake3 compiles C through the `cc` crate. The check, run by the script after every build
+    and to be re-run by hand after every toolchain bump: `llvm-objdump -p <dll> | grep "DLL Name"`
+    must not list `libunwind.dll`; the script exits 1 on that line instead of shipping a DLL that
+    only fails at the customer's first launch. Stripped, the ARM64 engine DLL is 10.1 MB against the
+    x64 build's 30.4 MB, and on the same Windows 11 ARM64 VM the native build's `--pdf` is 4–6×
+    faster than the x64 build under emulation (31.2 s vs 197 s on a 20 MB HWPX, identical page
+    counts).

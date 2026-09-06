@@ -441,6 +441,9 @@ fn every_macro_enum_value_is_exercised_by_a_checked_fixture_variant() {
                     fixture["nodes"][5]["data"]["columnFlow"]["separator"]["style"] =
                         (*value).into()
                 }
+                "CodeRole" => {
+                    fixture["nodes"][8]["data"]["runs"][0]["role"] = (*value).into()
+                }
                 other => panic!("enum catalog has no checked fixture route: {other}"),
             }
             decode_value(&fixture).unwrap_or_else(|error| panic!("{name}::{value}: {error:?}"));

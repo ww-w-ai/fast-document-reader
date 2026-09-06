@@ -111,4 +111,44 @@ final class RenderTreeAdapterParityTests: XCTestCase {
         XCTAssertGreaterThan(totalBlocksVisited, 0,
                              "hollow-normalizer guard: the checked fixtures together must produce real blocks")
     }
+
+    // MARK: - S8-B3: WireCodeBlock/WireCodeRun/WireCodeRole decode
+
+    /// This mirror is not wired into `WireNode`'s decode yet (no office reader emits `codeBlock`),
+    /// so it is exercised directly against a JSON snippet shaped like `wire::CodeBlock`'s own
+    /// serialization — `runs` present, additive, `role` camelCase.
+    func testWireCodeBlockDecodesRunsFromWireJSON() throws {
+        let json = """
+        {
+          "language": "rust",
+          "fenced": true,
+          "text": "fn main() {}",
+          "runs": [
+            {"start": 0, "end": 2, "role": "keyword"},
+            {"start": 3, "end": 7, "role": "type"}
+          ]
+        }
+        """
+        let block = try JSONDecoder().decode(WireCodeBlock.self, from: Data(json.utf8))
+        XCTAssertEqual(block.language, "rust")
+        XCTAssertTrue(block.fenced)
+        XCTAssertEqual(block.text, "fn main() {}")
+        let runs = try XCTUnwrap(block.runs)
+        XCTAssertEqual(runs.count, 2)
+        XCTAssertEqual(runs[0].start, 0)
+        XCTAssertEqual(runs[0].end, 2)
+        XCTAssertEqual(runs[0].role, .keyword)
+        XCTAssertEqual(runs[1].role, .type)
+    }
+
+    /// `runs` is additive (`#[serde(default, skip_serializing_if = "Option::is_none")]` on the
+    /// Rust side) — a `codeBlock` JSON payload written before this field existed has no `runs`
+    /// key at all, and must still decode to `nil` rather than failing.
+    func testWireCodeBlockDecodesWithNoRunsKeyPresent() throws {
+        let json = """
+        {"language": "rust", "fenced": true, "text": "fn main() {}"}
+        """
+        let block = try JSONDecoder().decode(WireCodeBlock.self, from: Data(json.utf8))
+        XCTAssertNil(block.runs)
+    }
 }

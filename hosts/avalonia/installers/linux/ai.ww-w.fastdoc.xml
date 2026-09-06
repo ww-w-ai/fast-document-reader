@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Custom MIME types for the two extensions shared-mime-info does not declare on any measured
+  distro (docs/studio/sprints/S3/d5-file-assoc-print-dnd.md §3 — 미확인, so this file exists
+  defensively; `xdg-mime query filetype` on the target distro tells you if it is even needed).
+  Without this, .hwp/.hwpx are typed application/octet-stream and never reach the "open with"
+  list at all — glob wins over the DB's absence, so this only matters when the DB has neither.
+-->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-hwp">
+    <comment>Hangul Word Processor document</comment>
+    <glob pattern="*.hwp"/>
+    <magic priority="50">
+      <match type="string" offset="0" value="\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"/>
+    </magic>
+  </mime-type>
+  <mime-type type="application/hwp+zip">
+    <comment>Hangul Word Processor document (OWPML)</comment>
+    <glob pattern="*.hwpx"/>
+    <sub-class-of type="application/zip"/>
+  </mime-type>
+</mime-info>

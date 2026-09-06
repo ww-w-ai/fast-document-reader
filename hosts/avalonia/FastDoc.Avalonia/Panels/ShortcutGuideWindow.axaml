@@ -1,0 +1,39 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FastDoc.Avalonia.Panels.ShortcutGuideWindow"
+        Title="Keyboard Shortcuts"
+        Width="420" SizeToContent="Height"
+        WindowDecorations="Full"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource PanelBackgroundColor}"
+        KeyDown="OnWindowKeyDown">
+    <!-- S9-B2 VM follow-up: SizeToContent="Height" (not a fixed Height) mirrors FirstRunWindow.axaml,
+         so the window grows to fit every group; MaxHeight (set in code-behind, from the screen's
+         own working area) caps growth on a short display so the ScrollViewer below takes over
+         instead of the content clipping silently past the window's bottom edge, which is what a
+         fixed pixel height of 480 did on the Ubuntu/GNOME VM (the Home/End row and both Find and Help
+         groups were cut off with no way to reach them). -->
+    <ScrollViewer Padding="16" VerticalScrollBarVisibility="Auto">
+        <ItemsControl x:Name="GroupsList">
+            <ItemsControl.ItemTemplate>
+                <DataTemplate x:CompileBindings="False">
+                    <StackPanel Margin="0,0,0,14">
+                        <TextBlock Text="{Binding Title}" FontWeight="Bold" FontSize="14" Margin="0,0,0,6" />
+                        <ItemsControl ItemsSource="{Binding Entries}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:CompileBindings="False">
+                                    <Grid ColumnDefinitions="140,*" Margin="0,2">
+                                        <TextBlock Grid.Column="0" Text="{Binding Keys}"
+                                                   FontFamily="Consolas,Menlo,monospace"
+                                                   Foreground="{DynamicResource PanelBorderColor}" FontWeight="SemiBold" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Description}" TextWrapping="Wrap" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+    </ScrollViewer>
+</Window>

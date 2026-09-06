@@ -10,7 +10,10 @@ publish.workspace = true
 # packaging deliberately copies. `rlib` is additive, for `tests/` (S2B-03) to link the crate's
 # real `extern "C"` symbols the normal Rust way; Xcode's build never sees or uses it, only the
 # staticlib output.
-crate-type = ["staticlib", "rlib"]
+#
+# `cdylib` is additive too: the Avalonia P/Invoke host needs a dynamic library to load, and Cargo
+# happily builds all three crate-types from the same source with no code change on this side.
+crate-type = ["staticlib", "cdylib", "rlib"]
 name = "fastdoc_engine_ffi"
 
 [dependencies]

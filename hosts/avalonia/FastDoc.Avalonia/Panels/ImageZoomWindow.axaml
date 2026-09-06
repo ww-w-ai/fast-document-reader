@@ -1,0 +1,13 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FastDoc.Avalonia.Panels.ImageZoomWindow"
+        Title="Image"
+        Width="640" Height="480"
+        WindowDecorations="Full"
+        WindowStartupLocation="CenterOwner"
+        Background="Black"
+        KeyDown="OnWindowKeyDown">
+    <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+        <Image x:Name="ZoomedImage" Stretch="Uniform" RenderOptions.BitmapInterpolationMode="HighQuality" />
+    </ScrollViewer>
+</Window>

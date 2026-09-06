@@ -1,0 +1,20 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FastDoc.Avalonia.Panels.GoToLineWindow"
+        Title="Go to Line"
+        Width="320" SizeToContent="Height"
+        WindowDecorations="Full"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="{DynamicResource PanelBackgroundColor}"
+        KeyDown="OnWindowKeyDown">
+    <StackPanel Margin="16" Spacing="10">
+        <TextBlock x:Name="PromptText" Text="Line number (1-0):" />
+        <TextBox x:Name="LineNumberBox" PlaceholderText="1" />
+        <TextBlock x:Name="ErrorText" Foreground="Red" IsVisible="False" TextWrapping="Wrap" />
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+            <Button x:Name="CancelButton" Content="Cancel" Click="OnCancelClicked" />
+            <Button x:Name="GoButton" Content="Go" Click="OnGoClicked" IsDefault="True" />
+        </StackPanel>
+    </StackPanel>
+</Window>

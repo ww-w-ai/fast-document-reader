@@ -1,0 +1,19 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="FastDoc.Avalonia.Panels.AboutWindow"
+        Title="About FastDoc"
+        Width="360" SizeToContent="Height"
+        WindowDecorations="Full"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False"
+        Background="{DynamicResource PanelBackgroundColor}"
+        KeyDown="OnWindowKeyDown">
+    <StackPanel Margin="20" Spacing="6">
+        <TextBlock x:Name="AppNameText" FontSize="18" FontWeight="Bold" />
+        <TextBlock x:Name="VersionText" />
+        <TextBlock x:Name="EngineVersionText" Opacity="0.7" TextWrapping="Wrap" />
+        <TextBlock x:Name="LicenceText" Margin="0,10,0,0" TextWrapping="Wrap" Opacity="0.8" />
+        <Button x:Name="CloseButton" Content="Close" Click="OnCloseClicked"
+                HorizontalAlignment="Right" Margin="0,10,0,0" IsDefault="True" />
+    </StackPanel>
+</Window>
