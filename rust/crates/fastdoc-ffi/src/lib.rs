@@ -259,9 +259,8 @@ pub unsafe extern "C" fn fastdoc_read_office_tree(
 ///
 /// Which producer runs is decided by EXTENSION, the same fork `DocumentTypes.kind(forExtension:)`
 /// makes on the host: `md`/`markdown` parse as markdown, everything else this accepts is read
-/// verbatim as plain text. An extension neither producer claims is `unsupportedExtension`, not a
-/// silent fall-through to the other one — reading a `.docx` as plain text would "succeed" and
-/// hand back a page of zip bytes.
+/// verbatim as decoded plain text, including unknown or empty extensions. Office extensions
+/// are explicitly refused: their structured readers must handle the document.
 ///
 /// # Safety
 /// `bytes` must point to `len` readable bytes and `extension_` must be a NUL-terminated C string.
@@ -297,19 +296,14 @@ pub unsafe extern "C" fn fastdoc_read_text_tree(
                 .map_err(|error| {
                     FfiFailure::new(FfiErrorKind::ReaderFailed, format!("{error:?}"))
                 })?,
-            "txt" | "text" | "csv" | "tsv" | "log" | "json" | "yaml" | "yml" | "toml" | "ini"
-            | "conf" | "cfg" | "sh" | "bash" | "zsh" | "py" | "rb" | "js" | "ts" | "swift" | "rs"
-            | "go" | "c" | "h" | "cpp" | "hpp" | "java" | "kt" | "sql" | "xml" | "html" | "css" => {
-                fastdoc_engine::render::plaintext::produce(data, &source_name).map_err(|error| {
-                    FfiFailure::new(FfiErrorKind::ReaderFailed, format!("{error:?}"))
-                })?
-            }
-            other => {
+            "docx" | "docm" | "dotx" | "dotm" | "odt" | "hwp" | "hwpx" => {
                 return Err(FfiFailure::new(
                     FfiErrorKind::UnsupportedExtension,
-                    format!("unsupported text extension: {other}"),
+                    format!("unsupported text extension: {lowered}"),
                 ))
             }
+            _ => fastdoc_engine::render::plaintext::produce_decoded(data, &source_name)
+                .map_err(|error| FfiFailure::new(FfiErrorKind::ReaderFailed, format!("{error:?}")))?,
         };
         tree.encode_json()
             .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error:?}")))
@@ -1992,10 +1986,7 @@ fn document_format(extension: &str) -> Result<DocumentFormat, ReadOfficeError> {
 
 fn extract(data: &[u8], extension: &str) -> Option<String> {
     let result = read_office(data, extension).ok()?;
-    Some(OfficeMarkdownSerializer::serialize(
-        &result.blocks,
-        &result.footnotes,
-    ))
+    Some(OfficeMarkdownSerializer::serialize_result(&result))
 }
 
 /// Declares the font world this process runs in, answered by the HOST.

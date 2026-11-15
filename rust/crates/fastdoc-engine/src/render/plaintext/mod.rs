@@ -22,14 +22,12 @@
 //! its terminator stripped — never a `lineBreak` node merging several lines into one paragraph,
 //! because the Swift renderer never merges lines either.
 //!
-//! **Encoding**: this pass draws the line the SPRINT ASKED for, no further. `TextEncodingDetector.swift`
-//! sniffs a file's real encoding (BOM, legacy code pages, heuristics); porting that logic is
-//! explicitly out of scope here. This producer only tells UTF-8 apart from not-UTF-8: valid
-//! UTF-8 is accepted, anything else is a typed [`PlainTextError::InvalidUtf8`] naming the first
-//! bad byte's offset — never a silent lossy conversion, which would substitute characters the
-//! source never contained.
+//! **Encoding**: `produce` remains a strict UTF-8 contract. `produce_decoded` is the file-open
+//! boundary: it applies the existing Swift detector's reversible best-effort policy and builds
+//! provenance over normalized UTF-8, so source content, lengths, hash and spans stay coherent.
 
 mod source_position;
+mod text_encoding;
 
 use sha2::{Digest, Sha256};
 
@@ -46,9 +44,8 @@ use source_position::Utf16Cursor;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlainTextError {
     /// The source bytes are not valid UTF-8. `valid_up_to` is the byte offset of the first byte
-    /// that could not be decoded (`std::str::Utf8Error::valid_up_to`) — encoding detection
-    /// (`TextEncodingDetector.swift`) is the host's job (module doc, "Encoding"); this producer
-    /// only reports where UTF-8 decoding broke rather than guessing an encoding to recover with.
+    /// that could not be decoded (`std::str::Utf8Error::valid_up_to`). File-open callers use
+    /// `produce_decoded` for best-effort decoding; this strict entry reports decoding failures.
     InvalidUtf8 { valid_up_to: usize },
     /// The tree this producer built failed canonical validation — should never happen for a
     /// correctly implemented producer, but never swallowed.
@@ -95,6 +92,14 @@ fn split_lines(text: &str) -> Vec<LineSpan> {
         line_start = line_end;
     }
     out
+}
+
+/// Decode arbitrary file bytes before producing literal text. Source metadata describes the
+/// normalized UTF-8 text, including its hash and span offsets, rather than the original bytes.
+/// The strict `produce` entry remains available for callers that require UTF-8 validation.
+pub fn produce_decoded(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, PlainTextError> {
+    let text = text_encoding::decode(bytes);
+    produce(text.as_bytes(), source_name)
 }
 
 /// Bytes and a source name to a validated plain-text `RenderTree`.

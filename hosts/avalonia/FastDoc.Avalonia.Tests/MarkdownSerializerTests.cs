@@ -176,7 +176,7 @@ public class MarkdownSerializerTests
     }
 
     [Fact]
-    public void Unsupported_graphic_placeholder_uses_only_the_reason_field()
+    public void Unsupported_graphic_placeholder_preserves_text_and_reason()
     {
         // RenderTreeOfficeAdapter.swift's `.unsupported(let u): return .unsupportedGraphic(label:
         // u.reason, ...)` reads ONLY `reason` -- neither `sourceFormatTag` nor `preservedText`
@@ -196,7 +196,7 @@ public class MarkdownSerializerTests
         }
         """);
 
-        Assert.Equal("*[ole]*", MarkdownSerializer.Serialize(tree));
+        Assert.Equal("*[ole]* should not appear", MarkdownSerializer.Serialize(tree));
     }
 
     [Fact]

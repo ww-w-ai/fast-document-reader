@@ -6,7 +6,7 @@ using Avalonia.Platform.Storage;
 namespace FastDoc.Avalonia.Open;
 
 /// <summary>
-/// The single list of extensions this host offers to open, mirrored from
+/// The known extensions used for filters and associations, mirrored from
 /// <c>Sources/FastDocReader/App/DocumentTypes.swift</c> (the macOS app's own single source for the
 /// same list — its own doc comment there names Info.plist as the mirror it must stay in sync with;
 /// this file is now a second one). Kept in one place here too so the open-panel filter, the
@@ -36,7 +36,7 @@ public static class DocumentExtensions
         "vtt", "srt", "smi", "ass", "ssa", "sub", "lrc",
     };
 
-    /// Every extension this host opens, lower-case, no leading dot.
+    /// Known extensions, lower-case, no leading dot. Explicit opens can use any extension.
     public static readonly IReadOnlyList<string> All =
         Markdown.Concat(Office).Concat(PlainText).ToArray();
 
@@ -66,9 +66,9 @@ public static class OpenService
 
     private static IReadOnlyList<FilePickerFileType> BuildFileTypeFilter()
     {
-        var all = new FilePickerFileType("All supported documents")
+        var all = new FilePickerFileType("All files")
         {
-            Patterns = DocumentExtensions.All.Select(ext => $"*.{ext}").ToArray(),
+            Patterns = new[] { "*" },
         };
         var markdown = new FilePickerFileType("Markdown")
         {

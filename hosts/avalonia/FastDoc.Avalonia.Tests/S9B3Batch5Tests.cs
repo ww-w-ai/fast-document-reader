@@ -163,6 +163,100 @@ public class S9B3Batch5Tests
         return (T)field.GetValue(obj)!;
     }
 
+    /// <summary>S12-K item 41 regression-verify (gap.md #41, "⌘/Ctrl-click opens a selected URL or
+    /// path"): the fixture above (<see cref="CtrlClick_on_a_selected_path_opens_it_and_leaves_the_selection_untouched"/>)
+    /// only exercises ONE of <see cref="SelectionOpenTarget.Resolve"/>'s three branches through the
+    /// REAL pointer pipeline — an existing local file path. <c>Resolve_accepts_absolute_http_https_and_mailto_uris</c>
+    /// and <c>Resolve_returns_null_for_blank_prose_and_disallowed_schemes</c> above only prove the
+    /// pure function's own logic; neither drives a real Ctrl-click through <c>OnPointerPressed</c>
+    /// to prove the WIRING (the `if (isAccelClick && !_selection.IsEmpty)` branch at
+    /// FlowDocumentView.cs:1090) actually reaches the launcher for a URL, or correctly stays silent
+    /// for plain prose. This closes exactly those two missing branches at the wiring level — no
+    /// production code changed, `SelectionOpenTarget`/`FlowDocumentView` are unmodified.</summary>
+    [Fact]
+    public void CtrlClick_on_a_selected_URL_opens_it_through_the_real_pointer_pipeline()
+    {
+        var view = new FlowDocumentView();
+        var launcher = new RecordingLauncher();
+        view.ExternalLinkLauncher = launcher;
+        const string url = "https://example.com/opened";
+        view.SetTree(TwoParagraphTree(url, "second line"));
+        var window = new global::Avalonia.Controls.Window { Width = 400, Height = 200, Content = view };
+        window.Show();
+        window.CaptureRenderedFrame();
+
+        var selection = GetPrivateField<SelectionModel>(view, "_selection");
+        selection.Begin(new TextPosition(0, 0));
+        selection.ExtendTo(new TextPosition(0, url.Length));
+        var blocks = GetPrivateField<List<FlowBlock>>(view, "_blocks");
+        Assert.Equal(url, view.Selection.SelectedText(blocks));
+
+        window.MouseDown(new global::Avalonia.Point(50, 5), MouseButton.Left, RawInputModifiers.Control);
+        window.MouseUp(new global::Avalonia.Point(50, 5), MouseButton.Left, RawInputModifiers.Control);
+
+        Assert.Single(launcher.Opened);
+        Assert.Equal(url, launcher.Opened[0]);
+    }
+
+    /// <summary>REVISE (team-lead, mut-k.log MK3): the two tests above both hold Ctrl down, so
+    /// neither one can tell "the launcher fired because a URL was selected" apart from "the launcher
+    /// fires on ANY click while a URL happens to be selected". A lead mutation confirmed this —
+    /// widening `isAccelClick && !_selection.IsEmpty` (FlowDocumentView.cs:1090) to
+    /// `true && !_selection.IsEmpty` left every S9B3Batch5Tests test green, because nothing in this
+    /// file ever clicked a selected URL WITHOUT the modifier. This closes exactly that gap: an
+    /// ordinary, unmodified click on a selected URL must never reach the launcher — only Ctrl/Cmd
+    /// does. If `isAccelClick`'s check is ever widened again (to `true`, or to drop the modifier
+    /// check entirely), this test's assertion of zero launcher calls fails immediately.</summary>
+    [Fact]
+    public void PlainClick_with_no_modifier_on_a_selected_URL_never_reaches_the_launcher()
+    {
+        var view = new FlowDocumentView();
+        var launcher = new RecordingLauncher();
+        view.ExternalLinkLauncher = launcher;
+        const string url = "https://example.com/not-opened";
+        view.SetTree(TwoParagraphTree(url, "second line"));
+        var window = new global::Avalonia.Controls.Window { Width = 400, Height = 200, Content = view };
+        window.Show();
+        window.CaptureRenderedFrame();
+
+        var selection = GetPrivateField<SelectionModel>(view, "_selection");
+        selection.Begin(new TextPosition(0, 0));
+        selection.ExtendTo(new TextPosition(0, url.Length));
+        var blocks = GetPrivateField<List<FlowBlock>>(view, "_blocks");
+        Assert.Equal(url, view.Selection.SelectedText(blocks));
+
+        // No RawInputModifiers.Control/Meta here — an ordinary click, same as a reader clicking to
+        // start a fresh selection or reposition the caret.
+        window.MouseDown(new global::Avalonia.Point(50, 5), MouseButton.Left);
+        window.MouseUp(new global::Avalonia.Point(50, 5), MouseButton.Left);
+
+        Assert.Empty(launcher.Opened);
+    }
+
+    [Fact]
+    public void CtrlClick_on_selected_ordinary_prose_never_reaches_the_launcher()
+    {
+        var view = new FlowDocumentView();
+        var launcher = new RecordingLauncher();
+        view.ExternalLinkLauncher = launcher;
+        const string prose = "just ordinary prose text";
+        view.SetTree(TwoParagraphTree(prose, "second line"));
+        var window = new global::Avalonia.Controls.Window { Width = 400, Height = 200, Content = view };
+        window.Show();
+        window.CaptureRenderedFrame();
+
+        var selection = GetPrivateField<SelectionModel>(view, "_selection");
+        selection.Begin(new TextPosition(0, 0));
+        selection.ExtendTo(new TextPosition(0, prose.Length));
+        var blocks = GetPrivateField<List<FlowBlock>>(view, "_blocks");
+        Assert.Equal(prose, view.Selection.SelectedText(blocks));
+
+        window.MouseDown(new global::Avalonia.Point(50, 5), MouseButton.Left, RawInputModifiers.Control);
+        window.MouseUp(new global::Avalonia.Point(50, 5), MouseButton.Left, RawInputModifiers.Control);
+
+        Assert.Empty(launcher.Opened);
+    }
+
     [Fact]
     public void LeftGutterClick_copies_the_whole_line_at_that_y_without_starting_a_selection()
     {

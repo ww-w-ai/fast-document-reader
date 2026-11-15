@@ -9,6 +9,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using FastDoc.Avalonia.Extract;
@@ -16,6 +17,8 @@ using FastDoc.Avalonia.Fonts;
 using FastDoc.Avalonia.Native;
 using FastDoc.Avalonia.Printing;
 using FastDoc.Avalonia.Rendering;
+using FastDoc.Avalonia.WebRender;
+using FastDoc.Avalonia.WebRender.Renderers;
 
 namespace FastDoc.Avalonia;
 
@@ -133,6 +136,20 @@ class Program
             Console.Error.WriteLine("mode: headless --pdf");
             if (!TryEnsureEngineLoadable(gui: false, out var engineExitCode)) { return engineExitCode; }
             return RunPdf(args[1], args[2]);
+        }
+
+        // S12-F2: the DISPOSABLE CHILD process ProcessIsolatedWebKitGtkRenderer spawns (this same
+        // executable, re-invoked) — reads one WebRenderWorkerRequest, runs the real
+        // WebKitGtkBlockRenderer (a real NativeWebView, a real GTK/EGL context) exactly the way
+        // this host would have run it in-process before S12-F2, and writes one
+        // WebRenderWorkerResponse on success. This process's ENTIRE reason to exist is to be the
+        // thing that dies if WebKitGTK/Mesa aborts natively (see that renderer's own doc comment)
+        // — no engine-loadable check, no single-instance claim, nothing this process does should
+        // ever be mistaken for a real user-facing GUI launch.
+        if (args.Length > 2 && args[0] == "--webrender-worker")
+        {
+            Console.Error.WriteLine("mode: headless --webrender-worker");
+            return RunWebRenderWorker(args[1], args[2]);
         }
 
         if (args.Length > 0 && args[0].StartsWith("--", StringComparison.Ordinal))
@@ -295,6 +312,93 @@ class Program
         }
     }
 
+    /// <summary>S12-F2: a bare <see cref="Application"/> with no <c>MainWindow</c> at all — the
+    /// worker's whole job is one WebKitGTK render, not a document viewer, so it must not construct
+    /// the real <c>App</c>/<c>MainWindow</c> (menus, single-instance plumbing, a document-open
+    /// attempt) just to get a real windowing platform initialized. <c>ShutdownMode.
+    /// OnExplicitShutdown</c> is required BECAUSE there is no MainWindow — the default
+    /// (OnMainWindowClose) would otherwise see "no window" and exit before
+    /// <see cref="RunWebRenderWorker"/>'s own <c>desktop.Shutdown()</c> ever runs.</summary>
+    private sealed class WebRenderWorkerApp : Application
+    {
+        public override void OnFrameworkInitializationCompleted()
+        {
+            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            {
+                desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            }
+            base.OnFrameworkInitializationCompleted();
+        }
+    }
+
+    /// <summary>The disposable child process's whole body: read one <see cref="WebRenderWorkerRequest"/>,
+    /// run the SAME <c>WebKitGtkBlockRenderer</c> S12-F originally ran in-process (a real off-screen
+    /// <c>Window</c> hosting a real <c>NativeWebView</c> — see that class's own doc comment), and
+    /// write one <see cref="WebRenderWorkerResponse"/> on success. Any exception this catches — and
+    /// a native abort this CANNOT catch, since it takes the whole process down before this method
+    /// could ever return — both leave <paramref name="outputPath"/> unwritten, which
+    /// <see cref="ProcessIsolatedWebKitGtkRenderer"/> (the PARENT process) already treats
+    /// identically to a non-zero exit code: this candidate failed, try the next one.</summary>
+    private static int RunWebRenderWorker(string requestPath, string outputPath)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Console.Error.WriteLine("error: --webrender-worker only runs on Linux");
+            return 1;
+        }
+
+        WebBlockImage? result = null;
+        Exception? failure = null;
+        try
+        {
+            var wire = JsonSerializer.Deserialize<WebRenderWorkerRequest>(File.ReadAllText(requestPath))
+                ?? throw new InvalidOperationException("empty --webrender-worker request");
+            var request = new WebBlockRequest(Enum.Parse<WebBlockEngine>(wire.Engine), wire.Code);
+
+            var appBuilder = AppBuilder.Configure<WebRenderWorkerApp>().UsePlatformDetect().LogToTrace();
+            appBuilder = appBuilder.AfterSetup(_ => RunOneRenderAndShutdown());
+            appBuilder.StartWithClassicDesktopLifetime(Array.Empty<string>());
+
+            async void RunOneRenderAndShutdown()
+            {
+                try
+                {
+                    var renderer = new WebKitGtkBlockRenderer(
+                        WebRenderAssets.MermaidJsPath, WebRenderAssets.KatexJsPath, WebRenderAssets.KatexCssPath);
+                    result = await renderer.RenderAsync(request, CancellationToken.None).ConfigureAwait(true);
+                }
+                catch (Exception ex)
+                {
+                    failure = ex;
+                }
+                finally
+                {
+                    if (Application.Current?.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+                    {
+                        desktop.Shutdown();
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"exception: {ex.Message}");
+            return 3;
+        }
+
+        if (result is null)
+        {
+            Console.Error.WriteLine($"exception: {failure?.Message ?? "no result"}");
+            return 3;
+        }
+        File.WriteAllText(outputPath, JsonSerializer.Serialize(new WebRenderWorkerResponse
+        {
+            Format = result.Format.ToString(),
+            BytesBase64 = Convert.ToBase64String(result.Bytes),
+        }));
+        return 0;
+    }
+
     private static int RunSheets(string path)
     {
         // TextLayout (PageLayout's own line-breaking) needs Avalonia's font manager/platform
@@ -373,7 +477,11 @@ class Program
                 // trust stdout to be only the document" -- this is the success line that used to
                 // share stdout with nothing, and now would share it with real content.
                 Console.Error.WriteLine($"opened: {result.Tree!.Nodes.Count} nodes, {result.ElapsedMs} ms");
-                Console.WriteLine(BuildExtractedMarkdown(path, result.Tree!));
+                var extracted = BuildExtractedMarkdown(path, result.Tree!);
+                if (RenderTreeLoader.IsOfficeExtension(System.IO.Path.GetExtension(path).TrimStart('.')))
+                    Console.WriteLine(extracted);
+                else
+                    Console.Write(extracted);
                 return 0;
             }
             var errExtension = System.IO.Path.GetExtension(path).TrimStart('.');
@@ -403,9 +511,19 @@ class Program
             var body = MarkdownSerializer.Serialize(tree);
             return ExtractHeader(path, body) + body;
         }
-        // Already Markdown/plain text: printed verbatim, the SAME choice HeadlessExtract.swift
-        // makes for .markdown/.plainText (invariant 40).
-        return System.IO.File.ReadAllText(path);
+        // Use the decoded source from the same tree, preserving line endings and trailing newline.
+        string? text = null;
+        var count = 0;
+        foreach (var source in tree.Sources)
+        {
+            if (source.Kind != "decodedText" || tree.Document?.SourceIds.Contains(source.Id) != true)
+                continue;
+            count++;
+            text = source.TextContent;
+        }
+        if (count != 1 || text is null)
+            throw new InvalidOperationException("Document does not contain one decoded text source.");
+        return text;
     }
 
     /// <summary>S7-G: a short HTML-comment legend at the very top -- invisible to a Markdown

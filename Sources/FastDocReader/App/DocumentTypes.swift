@@ -20,46 +20,11 @@ protocol OfficeDocumentReader {
 /// read this type; Info.plist can't, so any change here must be mirrored there in the same commit.
 enum DocumentTypes {
     /// Markdown, rendered.
-    /// `.mdown`/`.mkd`/`.mdtext` are deliberately absent: nobody declares those extensions, so macOS
-    /// types them as a throwaway `dyn.…` and could never route one here anyway (invariant 69), and
-    /// inventing a type of our own to claim three aliases almost nothing writes is not worth the
-    /// declaration it would cost.
+    /// Unlisted Markdown aliases open as plain text through the general fallback.
     static let markdownExtensions = ["md", "markdown"]
 
-    /// Text we display verbatim (see PlainTextRenderer). Deliberately a fixed list rather than
-    /// "anything that decodes as UTF-8": offering to open a .swift or .json is a promise this app
-    /// doesn't keep — it has no syntax view for them, and the file's real editor is a better answer.
-    /// The configuration-file group at the end is what `UTExportedTypeDeclarations` in Info.plist
-    /// declares as `ai.ww-w.fast-md-reader.config-text`: nobody else registers those extensions, so
-    /// without OUR declaration macOS types them `dyn.…` and refuses to bind the app to them at all
-    /// (a `duti -s` fails with -50). Note a file named exactly `.env` has no EXTENSION — it is a
-    /// dotfile whose whole name is that — so it stays outside this list's reach; `foo.env` and
-    /// `.dev.vars` are what these entries answer.
-    /// The serialisation group (`.yaml`/`.yml`/`.json`/`.xml`, alongside `.toml`) is the same promise
-    /// as the configuration one: these are files a developer READS all day, and verbatim is what
-    /// reading them looks like. Source CODE is still deliberately out — this app has no syntax view
-    /// for a `.swift`, and its real editor is the better answer.
-    /// The subtitle group is what a transcription tool or a subtitle download hands you; a cue is a
-    /// timestamp line and its text, which is exactly what verbatim already shows. `.vtt` alone is
-    /// declared by macOS (`org.w3.webvtt`); `.srt`/`.smi`/`.ass`/`.ssa`/`.sub`/`.lrc` are typed
-    /// `dyn.…` by every Mac measured, so they need the exported declaration of ours that
-    /// `UTExportedTypeDeclarations` carries as `ai.ww-w.fast-md-reader.subtitle-text` — same reason
-    /// the configuration group needed one (invariant 69).
-    /// The developer and markup groups are typed `dyn.…` by every Mac measured, so they carry two
-    /// more exported declarations of ours — `ai.ww-w.fast-md-reader.dev-text` (infrastructure,
-    /// schema and request files: `.tf`/`.tfvars`/`.hcl` is HashiCorp's configuration language, which
-    /// is what a Terraform file is written in) and `ai.ww-w.fast-md-reader.markup-text` (prose
-    /// formats that are not Markdown). The rest lean on a system type, named in Info.plist beside
-    /// them: `.sql` is `org.iso.sql`, `.diff`/`.patch` are `public.patch-file`, `.proto` is
-    /// `public.protobuf-source`, `.crash`/`.ips` are Apple's own report types.
-    ///
-    /// Deliberately absent, both measured rather than assumed:
-    /// `.gitignore`/`.gitattributes`/`.dockerignore`/`.npmrc`/`.nvmrc`/`.editorconfig` have no
-    /// EXTENSION at all — the dot is the start of the NAME — so macOS types them `public.data` and a
-    /// filename-extension tag can never reach them; claiming `public.data` to catch them would put
-    /// this app in the Open With list of every binary on the disk. And `.plist` conforms to neither
-    /// `public.text` nor `public.plain-text` because a property list is as often binary as XML —
-    /// opening one verbatim would show mojibake, so it is a promise this app should not make.
+    /// Extensions included in automatic claims and internal link handling. Explicit opens
+    /// also accept other filenames through the public.data fallback.
     static let plainTextExtensions = ["txt", "text", "csv", "tsv", "log", "crash", "ips",
                                       "conf", "cfg", "ini", "env", "vars", "toml", "cnf",
                                       "yaml", "yml", "json", "xml", "jsonl", "ndjson",
@@ -186,7 +151,7 @@ enum DocumentTypes {
 
     /// Content types for the Open panel's filter.
     static var openPanelTypes: [UTType] {
-        var types: [UTType] = []
+        var types: [UTType] = [.data]
         if let pub = UTType("public.markdown") { types.append(pub) }
         if let md = UTType("net.daringfireball.markdown") { types.append(md) }
         types.append(contentsOf: [.plainText, .commaSeparatedText, .tabSeparatedText, .log, .text])

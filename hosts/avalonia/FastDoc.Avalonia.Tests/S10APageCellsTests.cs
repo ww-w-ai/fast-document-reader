@@ -71,7 +71,7 @@ public class S10APageCellsTests
     };
 
     private static BlockPageMarkers.Markers EmptyMarkers() =>
-        new(Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<bool>());
+        new(Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<ulong>());
 
     private static PageGeometry SimpleGeometry(double widthPt = 400, double heightPt = 700, double marginPt = 20) => new()
     {

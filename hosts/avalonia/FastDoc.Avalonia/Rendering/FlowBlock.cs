@@ -96,6 +96,25 @@ public sealed class FlowBlock
     /// a block this builder could not trace to one node (there are none today — every block-adding
     /// switch arm below sets it from the node it is handling).</summary>
     public ulong? NodeId { get; init; }
+    /// <summary>S12-K (item 46 preflight): true ONLY for a block built from a real "codeBlock"
+    /// wire node — never for a "formula"/"diagram" block, even though both borrow the same
+    /// monospace <see cref="FlowDocumentBuilder.CodeFontFamily"/> styling today. Exists so a
+    /// caller that needs to find "the actual fenced code blocks" (a Copy/Wrap chip overlay) does
+    /// not have to sniff <c>Runs[0].FontFamily</c> the way the pre-existing <c>CodeBlockTextAt</c>
+    /// hit-test did — that sniff also matches a formula/diagram block, which is a different
+    /// feature with a different future (S12-F's web-render upgrade path), not a bug this flag
+    /// needs to preserve compatibility with (nothing reads <c>FontFamily</c> for this purpose
+    /// today; this field is additive).</summary>
+    public bool IsCodeBlock { get; init; }
+    /// <summary>S12-K (item 47, REVISE): the code block's own wrap INTENT — never mutates
+    /// <see cref="Runs"/>' text (lead's ruling: substituting NBSP for a code block's real spaces
+    /// corrupted a Copy chip's clipboard output, plain-selection copy, find, `--extract`, and
+    /// `pdftotext` diffs — a document's literal bytes must stay literal). Only <c>true</c> means
+    /// anything on a non-code block (default, unread there). `FlowDocumentView` — the sole owner
+    /// of `TextWrapping` (this file's own header note: pixel line-breaking is its job, not this
+    /// builder's) — reads this flag when constructing that block's `TextLayout` and chooses
+    /// `TextWrapping.Wrap` vs `NoWrap` from it; this builder decides INTENT only, never pixels.</summary>
+    public bool WrapCode { get; init; } = true;
     public List<FlowRun> Runs { get; init; } = new();
     /// <summary>Text alignment for Text blocks; doubles as the picture's paragraph alignment
     /// (left/center/right) for Image blocks — the same field, because both are "how this block

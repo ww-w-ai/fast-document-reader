@@ -226,6 +226,36 @@ public sealed class ImageBlockRenderer
     /// bytes.</summary>
     public Bitmap? ResolveBitmap(ulong resourceId) => Resolve(resourceId).Bitmap;
 
+    /// <summary>S12-F: seats a PNG this renderer never got from the document's own resource table
+    /// (a mermaid/KaTeX block <see cref="WebRender.WebRenderCoordinator"/> rendered) directly into
+    /// the SAME decode cache <see cref="Resolve"/> already checks first — deliberately not a
+    /// parallel image path. <paramref name="resourceId"/> must not collide with a real
+    /// <c>RenderNode</c>-derived resource id; callers pass <see cref="SyntheticResourceId"/>'s
+    /// result, which sets the top bit no real engine-assigned id uses. A decode failure (corrupt
+    /// PNG bytes) leaves the cache untouched rather than seating a null bitmap, so the caller's
+    /// block stays whatever it already was — the raw-text fallback, per S12-F's own design.</summary>
+    public bool TryInjectPng(ulong resourceId, byte[] pngBytes)
+    {
+        try
+        {
+            using var stream = new MemoryStream(pngBytes);
+            var bitmap = new Bitmap(stream);
+            _cache[resourceId] = (bitmap, pngBytes, "image/png");
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>A resource id for <see cref="TryInjectPng"/> that cannot collide with a real
+    /// engine-assigned resource id (small sequential integers, per the wire's own numbering) —
+    /// derived from the source RenderNode's own id so the SAME formula/mermaid node always maps to
+    /// the same synthetic id within one document, which matters only for cache reuse across a
+    /// reflow that rebuilds FlowDocumentBuilder's block list without a document swap.</summary>
+    public static ulong SyntheticResourceId(ulong nodeId) => 0x8000_0000_0000_0000UL | nodeId;
+
     /// <summary>S8-D2 (D2-d): the declared width/height (in points) a block's picture should be
     /// MEASURED at — the block's own declared size when it stated one (&gt; 0 on both axes), or
     /// else the DECODED bitmap's own pixel size converted to points at 96dpi. The markdown producer

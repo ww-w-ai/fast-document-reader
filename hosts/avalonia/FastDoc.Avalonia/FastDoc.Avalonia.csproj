@@ -4,10 +4,10 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>1.4.2</Version>
-    <AssemblyVersion>1.4.2.0</AssemblyVersion>
-    <FileVersion>1.4.2.0</FileVersion>
-    <InformationalVersion>1.4.2</InformationalVersion>
+    <Version>1.4.3</Version>
+    <AssemblyVersion>1.4.3.0</AssemblyVersion>
+    <FileVersion>1.4.3.0</FileVersion>
+    <InformationalVersion>1.4.3</InformationalVersion>
     <!-- Embedded in the Windows PE so register.ps1's DefaultIcon "<exe>,0" resolves to a real icon. -->
     <ApplicationIcon>Assets/fastdoc.ico</ApplicationIcon>
   </PropertyGroup>
@@ -15,6 +15,18 @@
   <ItemGroup>
     <AvaloniaResource Include="Assets/Fonts/**" />
     <AvaloniaResource Include="Assets/fastdoc.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- S12-F: plain output files (not AvaloniaResource — WebRenderHtml.cs reads them with
+         File.ReadAllText via AppContext.BaseDirectory, a real filesystem path, not an avares:// URI)
+         so a browser renderer can load them exactly as macOS's WebBlock.swift loads
+         Resources/mermaid.min.js / Resources/katex.min.js — same bytes, same behaviour, one asset
+         to maintain instead of two. Text/JS, not a bundled engine: ~4MB total, unrelated to the
+         opt-in Chromium download's size (see WebRenderCandidateFactory's own doc comment). -->
+    <None Include="Assets/WebRender/mermaid.min.js" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Assets/WebRender/katex.min.js" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Assets/WebRender/katex-inlined.min.css" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -28,5 +40,15 @@
       <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
     </PackageReference>
+    <!-- S12-F opt-in web render (docs/studio/sprints/S12/s12f-scope-v2.md). None of these three
+         are part of the base install's weight in practice: WebView2 (Windows) is a thin SDK
+         binding over the OS-provided runtime; Avalonia.Controls.WebView (Linux WebKitGTK) is
+         likewise a binding, not a bundled engine; PuppeteerSharp's own NuGet package is a few MB
+         and only downloads its ~100MB+ headless Chromium when the user opts in AND no native
+         engine is available (Renderers/OnDemandChromiumRenderer.cs) — see that decision doc's
+         "배포 크기 영향" section for why none of these three grows the DEFAULT install. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3405.78" />
+    <PackageReference Include="Avalonia.Controls.WebView" Version="12.1.0" />
+    <PackageReference Include="PuppeteerSharp" Version="25.8.0" />
   </ItemGroup>
 </Project>

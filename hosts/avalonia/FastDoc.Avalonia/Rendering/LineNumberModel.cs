@@ -4,28 +4,32 @@ namespace FastDoc.Avalonia.Rendering;
 
 /// <summary>
 /// S9-B3 batch 3 (docs/studio/sprints/S9/s9b1-full-parity.md #23/#24): the FLOW-mode line-number
-/// gutter's pure numbering rule, mirroring the intent of macOS's MarginNumbers.swift — "where am I"
-/// answered by the document's own unit. macOS numbers every WRAPPED visual line (one number per
-/// TextLine inside a paragraph); this host numbers every TOP-LEVEL <see cref="FlowBlock"/> instead
-/// (one number per paragraph/table/image/rule) — disclosed here rather than silently claimed as the
-/// same thing, because giving each wrapped line its own number safely would mean reading INTO
-/// <c>FlowDocumentView.DrawTextBlock</c>'s per-TextLine loop, which belongs to that file's
-/// table/measure/draw code; this model stays a pure function of the block list. Page mode is
-/// deliberately NOT covered by this model — see FlowDocumentView.ShowLineNumbers' own doc for why.
+/// gutter's pure numbering rule — parity with macOS's `MarginNumbers.swift`/`ReaderTextView.
+/// drawLineNumbers` (`Sources/FastDocReader/Navigation/ReaderTextView.swift:372`; INVARIANTS.md 71):
+/// ONE number per top-level <see cref="FlowBlock"/> (a document's own paragraph/heading/list-item/
+/// image/rule), never per wrapped screen line — narrowing the window must not renumber the file
+/// underneath the reader. A block inside a TABLE carries no number at all (a cell is a grid
+/// position, not a line of prose; see <see cref="IsNumbered"/>). The visible sequence is
+/// consecutive (1, 2, 3…) with no gap for an unnumbered block in between — this host's own choice,
+/// since macOS's underlying line numbers can skip. Page mode is deliberately NOT covered by this
+/// model — see FlowDocumentView.ShowLineNumbers' own doc for why.
 /// </summary>
 public static class LineNumberModel
 {
     /// <summary>Which top-level blocks get a number at all — every block except a bare
-    /// <see cref="FlowBlockKind.Rule"/> (a horizontal rule has no "line" a reader would count) and a
-    /// wholly-empty text block that draws nothing (an intentional visual gap, not a line).</summary>
+    /// <see cref="FlowBlockKind.Rule"/> (a horizontal rule has no "line" a reader would count), a
+    /// wholly-empty text block that draws nothing (an intentional visual gap, not a line), and a
+    /// <see cref="FlowBlockKind.Table"/> (a cell is a grid position, not a line of prose — macOS
+    /// draws no number for table content either).</summary>
     public static bool IsNumbered(FlowBlock block)
     {
         if (block.Kind == FlowBlockKind.Rule) { return false; }
+        if (block.Kind == FlowBlockKind.Table) { return false; }
         if (block.Kind == FlowBlockKind.Text)
         {
             return block.Runs.Exists(r => r.Text.Length > 0);
         }
-        return true; // Image / Table: a real block the reader can point at
+        return true; // Image: a real block the reader can point at
     }
 
     /// <summary>The label to draw beside block <paramref name="blockIndex"/>, or null when that

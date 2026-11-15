@@ -362,7 +362,7 @@ public class PagingTests
     };
 
     private static BlockPageMarkers.Markers FlatMarkers(int blockCount) => new(
-        new bool[blockCount], new bool[blockCount], new bool[blockCount], new bool[blockCount]);
+        new bool[blockCount], new bool[blockCount], new bool[blockCount], new bool[blockCount], new ulong[blockCount]);
 
     [Fact]
     public void A_table_that_does_not_fit_the_end_of_a_page_moves_whole_to_the_next_page()

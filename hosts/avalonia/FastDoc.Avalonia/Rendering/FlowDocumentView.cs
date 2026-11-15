@@ -97,6 +97,20 @@ public sealed class FlowDocumentView : Control
     // own doc — never a second layout or a re-derived coordinate space.
     private readonly SelectionModel _selection = new();
     private bool _isSelecting;
+
+    /// <summary>S12-D: this frame's reading-line band anchor (see the field's own set-site in
+    /// <see cref="RenderCore"/> for what it names), or null when the band should not be drawn at
+    /// all this frame. A field rather than a local because it is computed once in RenderCore and
+    /// consumed later, per-block, in <see cref="DrawTextBlock"/> — same lifetime pattern as
+    /// <see cref="_selection"/> itself.</summary>
+    private TextPosition? _readingLineAnchor;
+
+    // Palette.readingLine's own two dynamic-appearance values (Render/RenderTheme.swift:38-39) —
+    // a faint tint of the SAME blue in both themes, not resource-driven on macOS either (it is a
+    // literal NSColor.dynamic, not a named asset), so no App.axaml resource lookup is added here.
+    private static readonly Color ReadingLineColorLight = Color.FromArgb(0x12, 0x2E, 0x7A, 0xB8); // alpha 0.07 of #2E7AB8
+    private static readonly Color ReadingLineColorDark = Color.FromArgb(0x1A, 0x6C, 0xB0, 0xF5);  // alpha 0.10 of #6CB0F5
+    private Color _readingLineColor = ReadingLineColorLight;
     private const double EdgeAutoScrollThresholdPx = 24;
     private const double EdgeAutoScrollStepPx = 20;
 
@@ -126,6 +140,27 @@ public sealed class FlowDocumentView : Control
     /// null — see <see cref="CodeBlockTextAt"/> and <see cref="RebuildContextMenu"/>'s own doc.</summary>
     private string? _lastRightClickCodeBlockText;
 
+    /// <summary>S12-K item 46: the block index the pointer is currently hovering that is a real
+    /// fenced code block (<see cref="FlowBlock.IsCodeBlock"/>, not a formula/diagram that merely
+    /// borrows the same monospace font), or null — drives whether <see cref="DrawCodeBlockChips"/>
+    /// paints this frame. Set from <see cref="OnPointerMoved"/>/cleared on pointer exit, never
+    /// during an active drag-select (mirrors the hover-cursor guard right above it) — a chip
+    /// appearing mid-selection would be a distraction, not an affordance.</summary>
+    private int? _hoverCodeBlockIndex;
+
+    /// <summary>S12-K item 47: this DOCUMENT's current code-block wrap intent, toggled by the
+    /// Wrap chip (whole-document, not per-block — per-block wrap state is out of this item's
+    /// scope). Read only to label the chip and to pass into <see cref="FlowDocumentBuilder.Build"/>
+    /// on <see cref="ToggleCodeWrap"/>; SetTree always resets it to the default (true) for a newly
+    /// opened document, matching <see cref="FlowBlock.WrapCode"/>'s own documented default.</summary>
+    private bool _wrapCodeBlocks = true;
+
+    private const double CodeChipWidth = 52;
+    private const double CodeChipHeight = 20;
+    private const double CodeChipMargin = 6;
+    private static readonly Color CodeChipBackground = Color.FromArgb(0xE0, 0x33, 0x33, 0x33);
+    private static readonly IBrush CodeChipTextBrush = new SolidColorBrush(Colors.White);
+
     // S8-B5: the current tree's heading-slug map (see HeadingAnchorResolver's own doc) — rebuilt
     // once per SetTree, alongside the bookmark map NavigateLink already reads straight off _tree.
     private HeadingAnchorResolver _headingAnchorResolver = HeadingAnchorResolver.Empty;
@@ -138,6 +173,15 @@ public sealed class FlowDocumentView : Control
     private double _scrollOffset;
     private double _zoomFactor = 1.0;
     private readonly ImageBlockRenderer _imageRenderer = new();
+
+    // S12-F2: which SetTree call is "current" — a background web-render pass captures this at
+    // schedule time and checks it again just before touching _blocks, so a document the user has
+    // since replaced (or reloaded) can never have its stale result win a race against the newer
+    // one. Plain int, not Guid/object: SetTree always runs on the UI thread, so incrementing and
+    // reading it is never itself a race, only the BACKGROUND pass's later read of it is a check
+    // against a value that might have moved on.
+    private int _treeGeneration;
+    private readonly WebRender.IWebRenderScheduler _webRenderScheduler;
 
     // S9-V diagnostic: per-frame draw/cull log, gated ENTIRELY by an env var checked ONCE at type
     // load (a static field initializer runs once per process, never per frame) so an unset
@@ -295,8 +339,20 @@ public sealed class FlowDocumentView : Control
         }
     }
 
-    public FlowDocumentView()
+    public FlowDocumentView() : this(new WebRender.TaskWebRenderScheduler())
     {
+    }
+
+    /// <summary>Test seam (S12-F2) — lets a test substitute
+    /// <see cref="WebRender.ImmediateWebRenderScheduler"/> so <see cref="SetTree"/>'s background
+    /// web-render pass runs inline instead of on a real background thread. Not public: Avalonia's
+    /// XAML loader instantiates this control via the parameterless constructor above (see
+    /// MainWindow.axaml's <c>&lt;local:FlowDocumentView x:Name="Canvas" /&gt;</c>), so that one
+    /// constructor must keep working with zero arguments — this one exists only for
+    /// <c>FastDoc.Avalonia.Tests</c> (see AssemblyInfo.cs's <c>InternalsVisibleTo</c>).</summary>
+    internal FlowDocumentView(WebRender.IWebRenderScheduler webRenderScheduler)
+    {
+        _webRenderScheduler = webRenderScheduler;
         ClipToBounds = true;
         Focusable = true;
         _pageModePainter = new PageModePainter(_imageRenderer);
@@ -394,6 +450,9 @@ public sealed class FlowDocumentView : Control
         _findCurrentMatchHighlightColor = this.TryFindResource(FindCurrentMatchResourceKey, variant, out var findCurrentColor) && findCurrentColor is Color findCurrentMatchColor
             ? Color.FromArgb(0xB0, findCurrentMatchColor.R, findCurrentMatchColor.G, findCurrentMatchColor.B)
             : Color.FromArgb(0xB0, 0xFF, 0x98, 0x00);
+        // S12-D: mac's Palette.readingLine is a literal NSColor.dynamic, not a resource lookup —
+        // matched the same way here, picked by variant rather than by a resource key.
+        _readingLineColor = variant == ThemeVariant.Dark ? ReadingLineColorDark : ReadingLineColorLight;
         ClearCaches();
         InvalidateVisual();
     }
@@ -635,12 +694,36 @@ public sealed class FlowDocumentView : Control
 
     public void SetTree(RenderTree? tree)
     {
+        var generation = ++_treeGeneration;
         _tree = tree;
-        _blocks = tree is null ? new List<FlowBlock>() : FlowDocumentBuilder.Build(tree);
+        // S12-K item 47: a newly opened document always starts wrapped (FlowBlock.WrapCode's own
+        // documented default) — ToggleCodeWrap is the only thing that ever changes this, and its
+        // own doc explains why it never calls SetTree.
+        _wrapCodeBlocks = true;
+        _blocks = tree is null ? new List<FlowBlock>() : FlowDocumentBuilder.Build(tree, _wrapCodeBlocks);
         _headingAnchorResolver = tree is null ? HeadingAnchorResolver.Empty : HeadingAnchorResolver.Build(CollectHeadingsInDocumentOrder(tree));
         _imageRenderer.Reset(tree); // drop cached bitmaps — resource ids are only unique WITHIN one tree.
                                      // Reset() also clears any handle bound by a previous SetHandle call, so
                                      // a caller MUST call SetHandle again (or not at all) for this tree.
+        // S12-F2 (PM 2026-09-07): the switch's OFF state — every existing document, and every
+        // existing test — takes the EXACT same synchronous path S12-F originally shipped: raw
+        // blocks stay raw, FlowWebRenderPass.Apply returns near-instantly (WebRenderCoordinator
+        // hits its own "!RenderingEnabled" check before ever touching a candidate), zero behaviour
+        // change. Only when the switch is genuinely ON does this move to the background — that is
+        // also the ONLY state qa's VM measured the freeze in (opt-in off was always fine), so this
+        // is the narrowest fix that closes the gap without touching the tested-and-shipped default
+        // path at all.
+        if (tree is not null)
+        {
+            if (WebRender.WebRenderSettings.Load().RenderingEnabled)
+            {
+                ScheduleWebRenderPass(tree, generation);
+            }
+            else
+            {
+                FlowWebRenderPass.Apply(_blocks, tree, _imageRenderer, WebRender.WebRenderCoordinatorFactory.CreateDefault());
+            }
+        }
         _layoutWidth = -1; // force EnsureEstimates to rebuild on next measure/render
         _scrollOffset = 0;
         _officeHandle = null;
@@ -653,6 +736,42 @@ public sealed class FlowDocumentView : Control
         ClearSearch();
         InvalidateMeasure();
         InvalidateVisual();
+    }
+
+    /// <summary>S12-F2: runs <see cref="FlowWebRenderPass.Apply"/> off the UI thread against a
+    /// PRIVATE COPY of <see cref="_blocks"/>, never the live field — the copy is a shallow
+    /// <see cref="List{T}"/> clone, which is enough because <c>Apply</c> only ever REPLACES an
+    /// element (<c>blocks[i] = upgraded</c>), never mutates a <see cref="FlowBlock"/> instance in
+    /// place, so nothing the background thread touches is shared with whatever the UI thread is
+    /// concurrently reading off the live <c>_blocks</c> to paint the current (raw) document. Once
+    /// the whole pass finishes, the swap itself happens back on the UI thread, and only if
+    /// <paramref name="generation"/> still matches — a SECOND <see cref="SetTree"/> call (the user
+    /// opened another document, or reloaded) increments <see cref="_treeGeneration"/> BEFORE this
+    /// callback could naturally observe it, so a stale result is silently discarded instead of
+    /// splicing rendered images from one document into a completely different one.
+    ///
+    /// Swaps the WHOLE list at once rather than block-by-block: simpler, and race-free without any
+    /// additional locking, at the cost of the user seeing every diagram/formula in a document
+    /// appear together once the slowest candidate in the chain resolves, rather than progressively
+    /// as each one finishes. Acceptable because this sprint's PASS criterion is "time-to-window
+    /// matches the switch-off state", not progressive reveal — a follow-up could restructure
+    /// <c>Apply</c> to expose a per-block callback if progressive reveal is ever wanted.</summary>
+    private void ScheduleWebRenderPass(RenderTree tree, int generation)
+    {
+        var snapshot = new List<FlowBlock>(_blocks);
+        var imageRenderer = _imageRenderer; // same instance this generation's blocks/resource ids belong to
+        _webRenderScheduler.RunInBackground(() =>
+        {
+            FlowWebRenderPass.Apply(snapshot, tree, imageRenderer, WebRender.WebRenderCoordinatorFactory.CreateDefault());
+            _webRenderScheduler.PostToUiThread(() =>
+            {
+                if (generation != _treeGeneration) { return; } // superseded by a newer SetTree — discard
+                _blocks = snapshot;
+                _pageLayoutDirty = true; // a swapped-in image can change a block's height, and so a page break
+                InvalidateMeasure();
+                InvalidateVisual();
+            });
+        });
     }
 
     /// <summary>Rebuilds the page layout (block placement + band via the S5C1-02 engine
@@ -735,15 +854,52 @@ public sealed class FlowDocumentView : Control
         if (Math.Abs(clamped - _zoomFactor) < 0.0001) { return; }
 
         var width = _layoutWidth > 0 ? _layoutWidth : (Bounds.Width > 0 ? Bounds.Width : 800);
+        var (anchorBlock, anchorFraction) = CaptureScrollAnchor();
+
+        _zoomFactor = clamped;
+        _layoutWidth = -1; // font sizes changed -> every estimate/measurement is stale
+        ClearCaches();
+        EnsureEstimates(width);
+        RestorePosition(anchorBlock, anchorFraction);
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    /// <summary>Which block is at the top of the viewport right now, and how far into it (0..1) —
+    /// pulled out of <see cref="SetZoom"/> so <see cref="ToggleCodeWrap"/> (S12-K item 47) can
+    /// re-anchor the scroll position the SAME way after a re-paginate, rather than duplicating this
+    /// math a second time (software-architecture rule 3: two identical blocks differing in nothing
+    /// become one function).</summary>
+    private (int Block, double Fraction) CaptureScrollAnchor()
+    {
         var anchorBlock = _blocks.Count == 0 ? 0 : LowerBound(_offsets, _scrollOffset);
         var anchorFraction = 0.0;
         if (_blocks.Count > 0 && anchorBlock < _blockHeights.Length && _blockHeights[anchorBlock] > 0)
         {
             anchorFraction = Math.Clamp((_scrollOffset - _offsets[anchorBlock]) / _blockHeights[anchorBlock], 0, 1);
         }
+        return (anchorBlock, anchorFraction);
+    }
 
-        _zoomFactor = clamped;
-        _layoutWidth = -1; // font sizes changed -> every estimate/measurement is stale
+    /// <summary>S12-K item 47: flips this document's whole-document code-wrap intent (per-block
+    /// toggling is out of this item's scope — pl-plan.md's own "문서 단위 토글이면 충분" ruling) and
+    /// rebuilds <see cref="_blocks"/> from the SAME <see cref="_tree"/> <see cref="SetTree"/>
+    /// already parsed, with the flipped flag threaded through
+    /// <see cref="FlowDocumentBuilder.Build(RenderTree, bool)"/> — deliberately NOT a call to
+    /// <see cref="SetTree"/> itself, which resets scroll to zero, drops page geometry, and clears
+    /// every cache as though a brand new document had just opened. Re-anchors the scroll position
+    /// exactly like <see cref="SetZoom"/> does after its own re-paginate, so toggling wrap mid-read
+    /// does not silently jump the reader back to the top.</summary>
+    public void ToggleCodeWrap()
+    {
+        if (_tree is null) { return; }
+        _wrapCodeBlocks = !_wrapCodeBlocks;
+
+        var width = _layoutWidth > 0 ? _layoutWidth : (Bounds.Width > 0 ? Bounds.Width : 800);
+        var (anchorBlock, anchorFraction) = CaptureScrollAnchor();
+
+        _blocks = FlowDocumentBuilder.Build(_tree, _wrapCodeBlocks);
+        _layoutWidth = -1; // wrap intent changed -> every code-block estimate/measurement is stale
         ClearCaches();
         EnsureEstimates(width);
         RestorePosition(anchorBlock, anchorFraction);
@@ -1006,9 +1162,26 @@ public sealed class FlowDocumentView : Control
         return new Size(width, height);
     }
 
+    /// <summary>S12-K item 18 (gap.md — trackpad pinch has no direct Avalonia 12 gesture event on
+    /// this platform, so Ctrl+wheel is the substitute every mainstream reader/browser also accepts
+    /// as pinch's keyboard-modifier equivalent): Ctrl (or Cmd, matching every other zoom shortcut in
+    /// this file's dual-modifier convention) held while the wheel moves zooms ONE step per notch
+    /// instead of scrolling, reusing <see cref="ZoomIn"/>/<see cref="ZoomOut"/> exactly — the same
+    /// clamp, the same scroll re-anchor, the same step size as Ctrl+=/Ctrl+-. No second zoom
+    /// mechanism is introduced; this is purely an alternate INPUT path into the existing one. A
+    /// positive `Delta.Y` (wheel/pinch pushed "up"/"out") zooms in, matching Ctrl+= and every OS's
+    /// own pinch-out-to-enlarge convention; negative zooms out.</summary>
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         base.OnPointerWheelChanged(e);
+        var isZoomModifier = e.KeyModifiers.HasFlag(KeyModifiers.Control) || e.KeyModifiers.HasFlag(KeyModifiers.Meta);
+        if (isZoomModifier && e.Delta.Y != 0)
+        {
+            if (e.Delta.Y > 0) { ZoomIn(); }
+            else { ZoomOut(); }
+            e.Handled = true;
+            return;
+        }
         ScrollByPixels(-e.Delta.Y * 48);
         e.Handled = true;
     }
@@ -1038,6 +1211,29 @@ public sealed class FlowDocumentView : Control
         }
 
         if (!point.Properties.IsLeftButtonPressed) { return; }
+
+        // S12-K item 46/47: the Copy and Wrap-toggle chips' clicks win over everything below them
+        // (gutter copy, accel-click-opens-selection, image click, ordinary selection) —
+        // re-resolves the code block at THIS press point rather than trusting the last hover, so a
+        // press with no preceding move (a synthetic/test click, or the very first click after the
+        // pointer enters the view) still works. Copy reuses the SAME "Copy Code" clipboard path the
+        // existing right-click context-menu item already calls (S9-B3 batch 6) — no second copy
+        // mechanism; the Wrap toggle reuses ToggleCodeWrap — no second rebuild path.
+        if (!_pageMode && CodeBlockIndexAt(point.Position) is { } codeChipBlockIndex)
+        {
+            if (CodeBlockChipRect(codeChipBlockIndex).Contains(point.Position))
+            {
+                _ = CopyTextToClipboard(SelectionModel.PlainText(_blocks[codeChipBlockIndex]));
+                e.Handled = true;
+                return;
+            }
+            if (CodeBlockWrapChipRect(codeChipBlockIndex).Contains(point.Position))
+            {
+                ToggleCodeWrap();
+                e.Handled = true;
+                return;
+            }
+        }
 
         // S9-B3 batch 5 (#44, mirrors ReaderTextView.swift's left-gutter click): a click landing
         // in the LEFT MARGIN (the same reserved band DrawLineNumberGutter paints into, whether or
@@ -1125,6 +1321,16 @@ public sealed class FlowDocumentView : Control
             // S8-B4 (D2-c): hover-only cursor feedback — a live drag keeps whatever cursor it
             // already has rather than flickering to a Hand mid-selection.
             Cursor = LinkAtPoint(position) is not null ? new Cursor(StandardCursorType.Hand) : Cursor.Default;
+
+            // S12-K item 46: same "hover-only, never mid-drag" posture as the cursor above — only
+            // repaints (InvalidateVisual) when the hovered code block actually CHANGES, so an
+            // ordinary mouse move over plain text costs one comparison, not a redraw.
+            var hoverCode = CodeBlockIndexAt(position);
+            if (hoverCode != _hoverCodeBlockIndex)
+            {
+                _hoverCodeBlockIndex = hoverCode;
+                InvalidateVisual();
+            }
             return;
         }
 
@@ -1136,6 +1342,19 @@ public sealed class FlowDocumentView : Control
             InvalidateVisual();
         }
         e.Handled = true;
+    }
+
+    /// <summary>S12-K item 46: the pointer leaving this view entirely is not a "move to a
+    /// non-code-block position" — OnPointerMoved simply stops firing, so without this override a
+    /// chip painted just before the cursor left the window would stay stuck on screen.</summary>
+    protected override void OnPointerExited(PointerEventArgs e)
+    {
+        base.OnPointerExited(e);
+        if (_hoverCodeBlockIndex is not null)
+        {
+            _hoverCodeBlockIndex = null;
+            InvalidateVisual();
+        }
     }
 
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
@@ -1440,6 +1659,79 @@ public sealed class FlowDocumentView : Control
         return SelectionModel.PlainText(block);
     }
 
+    /// <summary>The reading column's own width in pixels — the SAME expression <see
+    /// cref="RenderCore"/> computes inline for the draw loop, pulled out here so the chip's hover
+    /// hit-test (called from <see cref="OnPointerMoved"/>/<see cref="OnPointerPressed"/>, both
+    /// OUTSIDE a render pass) and the paint itself agree on where the column's right edge is
+    /// without duplicating the clamp.</summary>
+    private double ColumnWidth() => Math.Max(40, Bounds.Width - LeftMargin - RightMargin);
+
+    /// <summary>S12-K item 46: which REAL fenced code block (<see cref="FlowBlock.IsCodeBlock"/>,
+    /// not a formula/diagram merely sharing the monospace font — see that flag's own doc for why
+    /// this is a block-level flag now rather than <see cref="CodeBlockTextAt"/>'s older
+    /// font-family sniff) the pointer sits over, or null. Deliberately block-level (any y inside
+    /// the block's own vertical span counts, not just a line with real text on it) rather than
+    /// <see cref="HitTestPosition"/>'s per-character resolution — a persistent corner chip should
+    /// stay visible while hovering the block's trailing blank margin too, the same as a code
+    /// block's own background/border would in a syntax-highlighted reader.</summary>
+    private int? CodeBlockIndexAt(Point point)
+    {
+        if (_pageMode || _blocks.Count == 0 || Bounds.Width <= 0) { return null; }
+        if (point.X < LeftMargin || point.X > LeftMargin + ColumnWidth()) { return null; }
+        EnsureEstimates(Bounds.Width);
+        var docY = point.Y + _scrollOffset;
+        if (_offsets.Length == 0 || docY < 0 || docY >= _offsets[^1]) { return null; }
+        var idx = LowerBound(_offsets, docY);
+        if (idx < 0 || idx >= _blocks.Count) { return null; }
+        var block = _blocks[idx];
+        if (block.Kind != FlowBlockKind.Text || !block.IsCodeBlock) { return null; }
+        var top = _offsets[idx];
+        var bottom = idx < _blockHeights.Length ? top + _blockHeights[idx] : top;
+        return docY >= top && docY < bottom ? idx : null;
+    }
+
+    /// <summary>Where the Copy chip paints for code block <paramref name="blockIndex"/> — pinned to
+    /// its own top-right corner (SURFACE space, i.e. already minus <see cref="_scrollOffset"/>),
+    /// so it scrolls with the block exactly like the block's own text does. Deliberately NOT scaled
+    /// by <see cref="_zoomFactor"/> — a fixed-size UI affordance, the same posture the line-number
+    /// gutter's own digits take (they use a flat "10 * zoom" only because they sit INSIDE the
+    /// reading flow; this chip overlays it, more like a browser's own floating copy button).</summary>
+    private Rect CodeBlockChipRect(int blockIndex)
+    {
+        var top = _offsets[blockIndex] - _scrollOffset;
+        var right = LeftMargin + ColumnWidth();
+        return new Rect(right - CodeChipWidth - CodeChipMargin, top + CodeChipMargin, CodeChipWidth, CodeChipHeight);
+    }
+
+    /// <summary>S12-K item 47: the Wrap toggle chip's rect — sits immediately LEFT of the Copy
+    /// chip (<see cref="CodeBlockChipRect"/>), same row, same size. A separate rect rather than a
+    /// wider single chip so the two clicks (copy vs. toggle) never need a second dimension of
+    /// hit-testing inside one rectangle.</summary>
+    private Rect CodeBlockWrapChipRect(int blockIndex)
+    {
+        var copyRect = CodeBlockChipRect(blockIndex);
+        return new Rect(copyRect.X - CodeChipWidth - CodeChipMargin, copyRect.Y, CodeChipWidth, CodeChipHeight);
+    }
+
+    /// <summary>Paints the Copy and Wrap-toggle pills for the currently hovered code block — called
+    /// once per frame, after the ordinary block draw loop (so both always paint ON TOP of the code
+    /// block's own text), only when <see cref="_hoverCodeBlockIndex"/> names a block this frame
+    /// actually drew. Clicking either is handled in <see cref="OnPointerPressed"/>, which
+    /// hit-tests the SAME two rects this paints — one rect per chip, read by both sides.</summary>
+    private void DrawCodeBlockChips(IPageCanvas surface, int blockIndex)
+    {
+        DrawChipPill(surface, CodeBlockChipRect(blockIndex), "Copy");
+        DrawChipPill(surface, CodeBlockWrapChipRect(blockIndex), _wrapCodeBlocks ? "Wrap" : "NoWrap");
+    }
+
+    private void DrawChipPill(IPageCanvas surface, Rect rect, string label)
+    {
+        surface.DrawRect(rect, CodeChipBackground, null, 0);
+        var layout = new TextLayout(label, LineNumberTypeface, 11, CodeChipTextBrush,
+            TextAlignment.Center, TextWrapping.NoWrap, maxWidth: rect.Width);
+        surface.DrawTextLayout(layout, new Point(rect.X, rect.Y + (rect.Height - layout.Height) / 2));
+    }
+
     /// <summary>S8-B4/B5 (D2-c): follows one link. A FRAGMENT ('#…') is resolved entirely
     /// in-document, mirroring `AnchorResolver.swift.resolve`'s own two-step order exactly: (1) an
     /// EXACT bookmark-name match (<see cref="Model.BookmarkWire.Name"/> — office documents' opaque
@@ -1585,8 +1877,34 @@ public sealed class FlowDocumentView : Control
         var lineStep = DefaultLineHeightPx * 3;
         var pageStep = Math.Max(lineStep, Math.Max(0, Bounds.Height) - DefaultLineHeightPx);
 
+        // S12-I (gap.md #37 — mac's fn+arrows/⌘+arrows/⌥+arrows already had Up/Down/PageUp/
+        // PageDown/Home/End covered by the plain cases below; ⌥↑/⌥↓ — paragraph-unit movement —
+        // and ⌘↑/⌘↓/fn⌘↑/fn⌘↓ — document-start/end, already reachable via bare Home/End above —
+        // were the gap). This host has no real text caret to move a "paragraph" boundary against
+        // (ReaderTextView.swift's TextNavigator walks a flattened NSString; scroll is this view's
+        // only position), so "paragraph" here means the nearest top-level FlowBlock boundary —
+        // the same "current block" concept S12-D's reading-line anchor already treats as this
+        // view's stand-in for a caret. Ctrl is this host's own primary modifier for every OTHER
+        // menu shortcut already in MainWindow.axaml (Ctrl+Shift+P, Ctrl+L, …), so these follow
+        // suit rather than reusing `isCommandModifier` (Control OR Meta — that dual binding exists
+        // specifically for Copy/Select-All parity when this build is run on macOS for testing, not
+        // for a Windows/Linux-only editing convention like Ctrl+Up/Down paragraph nav).
+        var ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
+
         switch (e.Key)
         {
+            case Key.Up when ctrl:
+                JumpToPreviousBlockBoundary();
+                break;
+            case Key.Down when ctrl:
+                JumpToNextBlockBoundary();
+                break;
+            case Key.Home when ctrl:
+                ScrollOffset = 0;
+                break;
+            case Key.End when ctrl:
+                ScrollOffset = ContentHeight;
+                break;
             case Key.Down:
                 ScrollByPixels(lineStep);
                 break;
@@ -1616,6 +1934,51 @@ public sealed class FlowDocumentView : Control
         }
 
         e.Handled = true;
+    }
+
+    /// <summary>Ctrl+Up (S12-I): jumps to the START of the current top-level block — or, if
+    /// already sitting exactly at a block's start, to the START of the PREVIOUS one — the same
+    /// "already at the boundary → go one further" idiom <c>TextNavigator.previousLineBoundary</c>
+    /// uses on mac (Navigation/TextNavigator.swift:28-32), just at block granularity instead of
+    /// line granularity (this view's offset table has no per-line boundaries to walk).</summary>
+    private void JumpToPreviousBlockBoundary()
+    {
+        if (_blocks.Count == 0 || Bounds.Width <= 0) { return; }
+        EnsureEstimates(Bounds.Width);
+        var current = CurrentBlockIndexForScroll(_scrollOffset);
+        if (current > 0 && Math.Abs(_offsets[current] - _scrollOffset) < 1.0) { current -= 1; }
+        ScrollOffset = _offsets[current];
+    }
+
+    /// <summary>"Which block is the scroll offset currently in" — <see cref="LowerBound"/> itself
+    /// (see its own doc) attributes a value sitting EXACTLY at block i's start to block i-1
+    /// instead, which every other caller (culling, hit-testing) tolerates as "one extra/fewer
+    /// block at a float boundary" but S12-I's jump pair cannot: <see
+    /// cref="JumpToNextBlockBoundary"/> lands EXACTLY on a block's start every time it fires, so
+    /// the very next press would otherwise see that same biased-by-one index and silently fail to
+    /// advance (measured: a second Ctrl+Down from block 1's start re-resolved to block 0 and
+    /// re-computed the SAME target, which <see cref="ScrollOffset"/>'s own no-op-below-0.01 guard
+    /// then swallowed entirely). Correcting it HERE, rather than in the shared helper every other
+    /// caller already depends on, keeps this fix scoped to the one place it is needed.</summary>
+    private int CurrentBlockIndexForScroll(double scrollOffset)
+    {
+        var idx = LowerBound(_offsets, scrollOffset);
+        if (idx + 1 < _blocks.Count && Math.Abs(_offsets[idx + 1] - scrollOffset) < 0.5) { idx += 1; }
+        return idx;
+    }
+
+    /// <summary>Ctrl+Down (S12-I): jumps to the start of the NEXT top-level block — the mirror of
+    /// <see cref="JumpToPreviousBlockBoundary"/>. Unlike that method this never needs the
+    /// "already there" check: the next block's start is always strictly greater than the current
+    /// scroll position (or, at the last block, <see cref="ScrollOffset"/>'s own clamp simply holds
+    /// the view at the end — same as every other jump in this method).</summary>
+    private void JumpToNextBlockBoundary()
+    {
+        if (_blocks.Count == 0 || Bounds.Width <= 0) { return; }
+        EnsureEstimates(Bounds.Width);
+        var current = CurrentBlockIndexForScroll(_scrollOffset);
+        var next = Math.Min(current + 1, _blocks.Count - 1);
+        ScrollOffset = _offsets[next];
     }
 
     /// <summary>Builds the cumulative-offset table from character-count ESTIMATES the first time a
@@ -1757,6 +2120,76 @@ public sealed class FlowDocumentView : Control
         var columnWidth = Math.Max(40, width - LeftMargin - RightMargin);
         var offsetsDirty = false;
 
+        // A scroll jump (large document, keyboard PageDown, or the --paint-probe sweep itself) can
+        // reveal many never-before-drawn text blocks in one frame, each paying its own TextLayout
+        // construction — measured as ~90-100% of a moby-dick.md scroll frame's cost. Building them
+        // one at a time on the UI thread serializes work that has no dependency between blocks, so
+        // build every MISSING
+        // block for this frame's range in parallel first (verified safe: a 16-task concurrent
+        // TextLayout-construction probe produced zero exceptions and the results drew correctly),
+        // then run the ordinary draw loop below where every one of them is now a cache hit.
+        PrewarmVisibleRange(startIndex, endIndex, columnWidth);
+
+        // S12 item-17 fix: settle every visible TEXT block's REAL height (and rebuild _offsets
+        // from it) BEFORE this frame draws anything, instead of only after. Root cause: right
+        // after a width/zoom change, EnsureEstimates' character-count guess (used while
+        // `_measured` is all-false) badly underestimates any block whose text carries explicit
+        // "\n" line breaks — a code block's own FlowRun("\n", ...) separators, see
+        // FlowDocumentBuilder.BuildCodeRuns — because dividing total character count by an assumed
+        // chars-per-line never sees a forced break. The OLD code only corrected
+        // _blockHeights/_offsets from inside the draw loop below, AFTER already using the stale
+        // offsets to position every block for THIS frame, so a heading drawn right after an
+        // under-estimated code block landed inside the code block's (too-small) reserved space and
+        // the two overlapped. Nothing in this view re-invalidates itself once a frame is painted —
+        // Ctrl+=/Ctrl+0 fire exactly one InvalidateVisual (see SetZoom) — so that wrong frame was
+        // also the LAST one: no scroll, no further zoom, no self-heal. Measuring text height and
+        // rebuilding the offset table before a single pixel is drawn means the very first frame
+        // after a zoom change is already correct — this fix does not depend on a second repaint
+        // ever happening. Table/Image blocks are left to the existing post-draw correction below
+        // (their own EstimateHeight functions don't share the code-block newline blind spot, and a
+        // real pre-draw measurement without drawing for those is a larger, separate change).
+        var preMeasureDirty = false;
+        for (var i = startIndex; i < endIndex; i++)
+        {
+            var preBlock = _blocks[i];
+            if (preBlock.Kind != FlowBlockKind.Text) { continue; }
+            var indentPxPre = preBlock.IndentPoints * PointsToPixels;
+            var spacingBeforePxPre = preBlock.SpacingBeforePoints * PointsToPixels;
+            var spacingAfterPxPre = preBlock.SpacingAfterPoints * PointsToPixels;
+            var realHeight = MeasureTextBlockHeight(preBlock, i, columnWidth, indentPxPre, spacingBeforePxPre, spacingAfterPxPre);
+            if (!_measured[i] || Math.Abs(realHeight - _blockHeights[i]) > 0.5)
+            {
+                _blockHeights[i] = realHeight;
+                _measured[i] = true;
+                preMeasureDirty = true;
+            }
+        }
+        if (preMeasureDirty)
+        {
+            RebuildOffsets();
+            // The rebuilt offsets can shift which blocks fall inside the viewport (an
+            // under-estimated block growing can push later blocks below the fold, or shrinking
+            // can pull more into view) — re-cull against the corrected table so the draw loop and
+            // the diagnostic log below see the SAME frame's real geometry, not the stale one this
+            // pass just replaced.
+            startIndex = LowerBound(_offsets, visibleTop);
+            endIndex = LowerBound(_offsets, visibleBottom);
+            endIndex = Math.Min(endIndex + 1, _blocks.Count);
+            PrewarmVisibleRange(startIndex, endIndex, columnWidth);
+        }
+
+        // S12-D: the reading-line band's anchor for THIS frame — the character at the very top
+        // edge of the viewport (Point(0,0) in surface space; HitTestPosition converts it to
+        // document space by adding _scrollOffset), so it moves with every scroll (mirrors
+        // ReaderTextView.swift's own "band on the line the reading cursor sits on" — that view has
+        // a real caret this one does not, so the top-of-viewport line stands in for it). Computed
+        // once per frame and consumed by DrawTextBlock, not recomputed per block. Null (band
+        // hidden) whenever a selection is active — matching drawReadingLine's own
+        // `selectedRange().length == 0` guard, since a stronger highlight already exists there and
+        // a second band would muddy it — or in page mode / an empty document, where the ordinary
+        // flow offset table this hit-test walks does not apply.
+        _readingLineAnchor = (!_pageMode && _blocks.Count > 0 && _selection.IsEmpty) ? HitTestPosition(new Point(0, 0)) : null;
+
         // S9-V diagnostic (FASTDOC_DRAW_LOG): null on every real user machine unless the env var
         // is set, so this whole block is a single field read + null check per frame. See the
         // DrawLogPath field doc for why this exists.
@@ -1786,16 +2219,6 @@ public sealed class FlowDocumentView : Control
                 drawLog.Add($"BLOCK i={i} nodeId={b.NodeId} kind={b.Kind} y={_offsets[i]:F1} height={_blockHeights[i]:F1} verdict=culled-below");
             }
         }
-
-        // A scroll jump (large document, keyboard PageDown, or the --paint-probe sweep itself) can
-        // reveal many never-before-drawn text blocks in one frame, each paying its own TextLayout
-        // construction — measured as ~90-100% of a moby-dick.md scroll frame's cost. Building them
-        // one at a time on the UI thread serializes work that has no dependency between blocks, so
-        // build every MISSING
-        // block for this frame's range in parallel first (verified safe: a 16-task concurrent
-        // TextLayout-construction probe produced zero exceptions and the results drew correctly),
-        // then run the ordinary draw loop below where every one of them is now a cache hit.
-        PrewarmVisibleRange(startIndex, endIndex, columnWidth);
 
         for (var i = startIndex; i < endIndex; i++)
         {
@@ -1863,6 +2286,15 @@ public sealed class FlowDocumentView : Control
         if (_showLineNumbers)
         {
             DrawLineNumberGutter(surface, startIndex, endIndex);
+        }
+
+        // S12-K item 46/47: same additive-overlay posture as the line-number gutter just above —
+        // only paints when a code block is actually hovered AND that block is one this frame drew
+        // (a hover captured just before a scroll could otherwise point past the current
+        // [startIndex, endIndex) window).
+        if (_hoverCodeBlockIndex is { } hoverBlockIndex && hoverBlockIndex >= startIndex && hoverBlockIndex < endIndex)
+        {
+            DrawCodeBlockChips(surface, hoverBlockIndex);
         }
 
         UpdateScrollDirection();
@@ -2092,6 +2524,27 @@ public sealed class FlowDocumentView : Control
         }
     }
 
+    /// <summary>The RESERVED height (spacing + real <see cref="TextLayout.Height"/>) a text block
+    /// will occupy, with no drawing — the pre-measure pass in <see cref="RenderCore"/> uses this
+    /// to correct <see cref="_blockHeights"/>/<see cref="_offsets"/> before anything is drawn (S12
+    /// item-17 fix). Deliberately mirrors <see cref="DrawTextBlock"/>'s own height computation
+    /// (same empty-run early return, same <see cref="GetOrBuildTextLayout"/> call — so calling
+    /// this first and then DrawTextBlock is a cache hit, not double work) rather than DrawTextBlock
+    /// calling this and then drawing separately, because DrawTextBlock also owns painting the
+    /// selection/find highlights in between building the layout and drawing the text, which a
+    /// measure-only path must not do.</summary>
+    private double MeasureTextBlockHeight(FlowBlock block, int blockIndex, double columnWidth,
+        double indentPx, double spacingBeforePx, double spacingAfterPx)
+    {
+        if (block.Runs.Count == 0 || block.Runs.TrueForAll(r => r.Text.Length == 0))
+        {
+            return spacingBeforePx + 14 + spacingAfterPx;
+        }
+        var maxWidth = Math.Max(20, columnWidth - indentPx);
+        var layout = GetOrBuildTextLayout(blockIndex, () => BuildTextLayout(block, maxWidth, _zoomFactor, _foregroundBrush));
+        return spacingBeforePx + layout.Height + spacingAfterPx;
+    }
+
     private double DrawTextBlock(IPageCanvas surface, FlowBlock block, int blockIndex, double top, double columnWidth,
         double indentPx, double spacingBeforePx, double spacingAfterPx, Action<string>? diagLog = null)
     {
@@ -2108,6 +2561,15 @@ public sealed class FlowDocumentView : Control
         // Range/SchedulePrefetch) need the snapshot-and-pass pattern; see their own comments.
         var layout = GetOrBuildTextLayout(blockIndex, () => BuildTextLayout(block, maxWidth, _zoomFactor, _foregroundBrush));
         diagLog?.Invoke($"text textLayoutNull=false height={layout.Height:F1}");
+
+        // S12-D: "under the decorations and glyphs — ambient, not a highlight" (ReaderTextView.
+        // swift:83's own comment on drawReadingLine) — painted before even the selection
+        // highlight, which is the stronger, more deliberate one of the two.
+        if (_readingLineAnchor is { } readingAnchor && readingAnchor.BlockIndex == blockIndex)
+        {
+            var clampedOffset = Math.Clamp(readingAnchor.Offset, 0, Math.Max(0, SelectionModel.PlainText(block).Length - 1));
+            DrawReadingLineBand(surface, layout, clampedOffset, top + spacingBeforePx, columnWidth);
+        }
 
         // Highlights paint BEFORE the text (S8-D2 contract) — selection first, find on top of it,
         // both through the SAME PaintHighlightRange primitive so D2-b's find-visibility fix reuses
@@ -2183,13 +2645,21 @@ public sealed class FlowDocumentView : Control
         // regression if that ratio's meaning changed.
         var naturalGuessPx = maxFontSizePx * 1.25;
         var lineHeightPx = block.LineHeight.ScaledBy(PointsToPixels).Apply(naturalGuessPx);
+        // S12-K item 47: `FlowBlock.WrapCode` is the document's own wrap INTENT for a real code
+        // block (impl-pagination's flag, defaulting true — never read for a non-code block, which
+        // stays TextWrapping.Wrap exactly as before this change). NoWrap here means exactly what it
+        // says at the TextLayout level: no forced line breaks at the column edge; a code block's own
+        // embedded "\n" characters (FlowDocumentBuilder.BuildCodeRuns) still break lines normally —
+        // this flag only controls whether an over-long SOURCE line gets an extra, document-uninvited
+        // break inserted into it.
+        var wrapping = block.IsCodeBlock && !block.WrapCode ? TextWrapping.NoWrap : TextWrapping.Wrap;
         return new TextLayout(
             text,
             DefaultTypeface,
             maxFontSizePx,
             foregroundBrush,
             block.Alignment,
-            TextWrapping.Wrap,
+            wrapping,
             maxWidth: maxWidth,
             lineHeight: lineHeightPx,
             textStyleOverrides: overrides);
@@ -2232,6 +2702,26 @@ public sealed class FlowDocumentView : Control
     /// this rather than adding a third rectangle painter). <c>HitTestTextRange</c> returns rects in
     /// the layout's own local space, so the caller's (originX, originY) must be the SAME point the
     /// text itself is about to be drawn at, or the highlight drifts from the glyphs under it.</summary>
+    /// <summary>S12-D: one full-width band across the single LINE containing character
+    /// <paramref name="charOffset"/> (already clamped to this block's real text length by the
+    /// caller) — mirrors <c>drawReadingLine</c>'s own "span the full text column, not just the
+    /// glyphs, so the band is a clean stripe" (ReaderTextView.swift:337-340). Reuses <see
+    /// cref="TextLayout.HitTestTextRange"/> (the SAME primitive <see cref="PaintHighlightRange"/>
+    /// uses for selection/find) for a single character purely to recover that character's LINE's
+    /// vertical span (Y, Height) — the X/Width it returns are discarded in favour of the full
+    /// column, exactly as <paramref name="blockTopY"/> (already <c>top + spacingBeforePx</c>, the
+    /// same origin <see cref="DrawTextBlock"/> draws the layout at) anchors the vertical
+    /// placement.</summary>
+    private void DrawReadingLineBand(IPageCanvas surface, TextLayout layout, int charOffset, double blockTopY, double columnWidth)
+    {
+        foreach (var rect in layout.HitTestTextRange(charOffset, 1)) // one rect per line touched — a single char is one line
+        {
+            var band = new Rect(LeftMargin, blockTopY + rect.Y, columnWidth, rect.Height);
+            surface.DrawRect(band, _readingLineColor, null, 0);
+            break; // a 1-character range never spans two lines; the first rect IS the line
+        }
+    }
+
     private static void PaintHighlightRange(IPageCanvas surface, TextLayout layout, int start, int length, double originX, double originY, Color color)
     {
         if (length <= 0) { return; }

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using FastDoc.Avalonia.Model;
 
 namespace FastDoc.Avalonia.Extract;
@@ -42,7 +43,61 @@ public static class MarkdownSerializer
         Walk(root, byId, pieces);
         var body = JoinPieces(pieces);
 
-        return AppendFootnotes(body, tree, byId);
+        body = AppendFootnotes(body, tree, byId);
+        return AppendOffFlow(body, tree, byId);
+    }
+
+    private static string AppendOffFlow(string body, RenderTree tree, Dictionary<ulong, RenderNode> byId)
+    {
+        var visited = new HashSet<ulong>();
+        var sections = new Dictionary<string, List<string>>();
+        void Add(string label, string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            if (!sections.TryGetValue(label, out var list)) sections[label] = list = new();
+            list.Add(text);
+        }
+        void Visit(RenderNode node, List<(string Text, bool IsList)> pieces)
+        {
+            if (!visited.Add(node.Id)) return;
+            if (node.Type is "anchoredObject" or "masterPageObject" or "masterPage" or "header" or "footer" or "flow" or "section" or "document")
+            {
+                foreach (var id in node.Children)
+                    if (byId.TryGetValue(id, out var child)) Visit(child, pieces);
+                if (node.Data.ValueKind == JsonValueKind.Object)
+                {
+                    if (node.Data.TryGetProperty("contentId", out var content) && content.TryGetUInt64(out var id) && byId.TryGetValue(id, out var child)) Visit(child, pieces);
+                    if (node.Data.TryGetProperty("objectIds", out var objects) && objects.ValueKind == JsonValueKind.Array)
+                        foreach (var item in objects.EnumerateArray())
+                            if (item.TryGetUInt64(out var objectId) && byId.TryGetValue(objectId, out var obj)) Visit(obj, pieces);
+                }
+                return;
+            }
+            if (node.Type == "formControl") { RenderFormControl(node, pieces); return; }
+            Walk(node, byId, pieces);
+        }
+        foreach (var node in tree.Nodes)
+        {
+            var label = node.Type switch { "header" => "Headers", "footer" => "Footers", "masterPage" => "Master pages", "masterPageObject" => "Master pages", "anchoredObject" => "Anchored content", "formControl" => "Form controls", _ => null };
+            if (label is null || visited.Contains(node.Id)) continue;
+            var pieces = new List<(string Text, bool IsList)>();
+            Visit(node, pieces);
+            Add(label, JoinPieces(pieces));
+        }
+        foreach (var comment in tree.Annotations?.Comments ?? new List<CommentWire>())
+        {
+            var metadata = string.Join(", ", new[] { comment.Author, comment.DateIso }.Where(x => !string.IsNullOrWhiteSpace(x)));
+            var label = "Comment" + (comment.Number > 0 ? $" {comment.Number}" : "") +
+                (metadata.Length > 0 ? $" ({metadata})" : "");
+            Add("Comments", $"**{label}**\n\n{comment.Text}");
+        }
+        var sb = new StringBuilder(body);
+        foreach (var section in sections)
+        {
+            if (sb.Length > 0) sb.Append("\n\n");
+            sb.Append("## ").Append(section.Key).Append("\n\n").Append(string.Join("\n\n", section.Value));
+        }
+        return sb.ToString();
     }
 
     // MARK: - Footnotes
@@ -211,15 +266,11 @@ public static class MarkdownSerializer
                 return;
             }
 
-            // `OfficeMarkdownSerializer.render`'s `.unsupportedGraphic(label, _, _)` case wraps
-            // ONLY `wire::Unsupported.reason` (`RenderTreeOfficeAdapter.swift`'s
-            // `.unsupported(let u): return .unsupportedGraphic(label: u.reason, ...)`) -- neither
-            // `sourceFormatTag` nor `preservedText` reaches this case on the macOS side, so this
-            // does not fall back to either.
+            // Preserve any text the source parser retained beside the placeholder reason.
             case "unsupported":
             {
                 var u = node.AsUnsupported;
-                pieces.Add(($"*[{u?.Reason ?? "unsupported"}]*", false));
+                pieces.Add(($"*[{u?.Reason ?? "unsupported"}]*{(string.IsNullOrEmpty(u?.PreservedText) ? "" : " " + u.PreservedText)}", false));
                 return;
             }
 
@@ -235,12 +286,7 @@ public static class MarkdownSerializer
                 pieces.Add(("---", false));
                 return;
 
-            // Footnotes/headers/footers/master pages/anchored objects/standalone form controls are
-            // laid out OFF the main flow by every real reader (macOS included — its own serializer
-            // takes `footnotes` as a SEPARATE parameter for the same reason, invariant 98). Skipping
-            // rather than recursing is deliberate: their children belong to a different coordinate
-            // space (a page's foot band, a margin), so drawing them inline would misrepresent the
-            // document, not merely omit a feature. Mirrors `FlowDocumentBuilder.Walk`'s own list.
+            // Off-flow content is emitted separately after the body and footnotes.
             case "footnote":
             case "header":
             case "footer":
@@ -248,6 +294,7 @@ public static class MarkdownSerializer
             case "masterPageObject":
             case "anchoredObject":
             case "formControl":
+                return;
             case "textRun":
             case "lineBreak":
                 return;
@@ -256,6 +303,14 @@ public static class MarkdownSerializer
                 WalkChildren(node, byId, pieces);
                 return;
         }
+    }
+
+    private static void RenderFormControl(RenderNode node, List<(string Text, bool IsList)> pieces)
+    {
+        if (node.Data.ValueKind != JsonValueKind.Object) return;
+        string Field(string name) => node.Data.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
+        var value = node.Data.TryGetProperty("value", out var v) ? v.ToString() : "";
+        pieces.Add(($"[{Field("kind")}] {Field("caption")} {Field("text")} {value}".Trim(), false));
     }
 
     private static void WalkChildren(RenderNode node, Dictionary<ulong, RenderNode> byId, List<(string Text, bool IsList)> pieces)
@@ -415,7 +470,7 @@ public static class MarkdownSerializer
             // only.
             case "image": return $"[image {node.AsImage?.SourceKey ?? node.AsImage?.ResourceId?.ToString()}]";
             case "vector": return $"[image {node.AsVector?.SourceKey ?? node.AsVector?.ResourceId?.ToString()}]";
-            case "unsupported": return $"[{node.AsUnsupported?.Reason ?? "unsupported"}]";
+            case "unsupported": return $"[{node.AsUnsupported?.Reason ?? "unsupported"}] {node.AsUnsupported?.PreservedText}".TrimEnd();
             case "formula": return node.AsFormula?.Source ?? "";
             case "thematicBreak": return "---";
             case "blockQuote":
@@ -442,6 +497,8 @@ public static class MarkdownSerializer
             if (!byId.TryGetValue(id, out var child)) { continue; }
             if (child.Type == "textRun") { sb.Append(child.AsTextRun?.Text ?? ""); }
             else if (child.Type == "lineBreak") { sb.Append(' '); }
+            else if (child.Type == "unsupported" && !string.IsNullOrEmpty(child.AsUnsupported?.PreservedText))
+                sb.Append($"[{child.AsUnsupported!.Reason}] {child.AsUnsupported.PreservedText}");
         }
         return sb.ToString();
     }
@@ -477,6 +534,8 @@ public static class MarkdownSerializer
             {
                 runs.Add(new SpanX("\n", false, false, false, false, null, null));
             }
+            else if (child.Type == "unsupported" && !string.IsNullOrEmpty(child.AsUnsupported?.PreservedText))
+                runs.Add(new SpanX($"[{child.AsUnsupported!.Reason}] {child.AsUnsupported.PreservedText}", false, false, false, false, null, null));
         }
         return runs;
     }

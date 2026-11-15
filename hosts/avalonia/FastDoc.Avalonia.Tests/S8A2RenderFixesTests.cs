@@ -293,6 +293,101 @@ public class S8A2RenderFixesTests
         Assert.NotEqual(page1, page10); // catalog F6: this used to be the SAME literal text on every page
     }
 
+    // ---- S12-J: HeaderFooterText.ResolveStyled carries the document's own font/size/alignment ----
+    // (gap.md "헤더/푸터(러닝 헤더)": "텍스트는 나오되 스타일 없음" — PageModePainter.DrawBandText
+    // used to paint every header/footer at a fixed 9pt Inter, always centered, regardless of what
+    // the document declared. Resolve() itself is untouched — these tests are additive.)
+
+    [Fact]
+    public void ResolveStyled_carries_the_paragraphs_own_alignment_and_the_runs_own_font_and_size()
+    {
+        var byId = new Dictionary<ulong, RenderNode>
+        {
+            [60] = NodeWithRawData(60, "header", new ulong[] { 61 }, """{"appliesTo":"defaultPages"}"""),
+            [61] = NodeWithRawData(61, "paragraph", new ulong[] { 62 }, """{"style":{"alignment":"right"}}"""),
+            [62] = NodeWithRawData(62, "textRun", System.Array.Empty<ulong>(),
+                """{"text":"Confidential","style":{"bold":true,"fontFamilies":["Georgia"],"fontSizePoints":14.0}}"""),
+        };
+        var candidates = new List<HeaderFooterText.Candidate> { new(byId[60], "defaultPages", null) };
+
+        var band = HeaderFooterText.ResolveStyled(candidates, byId, sectionIndex: 0, isFirstPageOfSection: true,
+            pageNumber: 1, totalPages: 5, defaultFontSize: 12.0);
+
+        Assert.NotNull(band);
+        Assert.Equal(TextAlignment.Right, band!.Value.Alignment);
+        var run = Assert.Single(band.Value.Runs);
+        Assert.Equal("Confidential", run.Text);
+        Assert.Equal("Georgia", run.FontFamily);
+        Assert.Equal(14.0, run.FontSizePoints);
+        Assert.True(run.Bold);
+        Assert.False(run.Italic);
+    }
+
+    [Fact]
+    public void ResolveStyled_falls_back_to_center_and_the_documents_default_size_when_undeclared()
+    {
+        // No "paragraph" node at all (a header whose textRun is a DIRECT child, the same shape the
+        // pre-S12-J fixtures above use) and no fontSizePoints on the run — both must fall back to
+        // the band's prior fixed defaults rather than throwing or resolving to zero/garbage.
+        var byId = new Dictionary<ulong, RenderNode>
+        {
+            [70] = NodeWithRawData(70, "header", new ulong[] { 71 }, """{"appliesTo":"defaultPages"}"""),
+            [71] = NodeWithRawData(71, "textRun", System.Array.Empty<ulong>(), """{"text":"Plain Header","style":{}}"""),
+        };
+        var candidates = new List<HeaderFooterText.Candidate> { new(byId[70], "defaultPages", null) };
+
+        var band = HeaderFooterText.ResolveStyled(candidates, byId, sectionIndex: 0, isFirstPageOfSection: true,
+            pageNumber: 1, totalPages: 5, defaultFontSize: 11.5);
+
+        Assert.NotNull(band);
+        Assert.Equal(TextAlignment.Center, band!.Value.Alignment);
+        var run = Assert.Single(band.Value.Runs);
+        Assert.Equal("Plain Header", run.Text);
+        Assert.Null(run.FontFamily);
+        Assert.Equal(11.5, run.FontSizePoints);
+        Assert.False(run.Bold);
+    }
+
+    [Fact]
+    public void ResolveStyled_keeps_a_page_number_fields_own_declared_style_when_substituting_its_text()
+    {
+        var byId = new Dictionary<ulong, RenderNode>
+        {
+            [80] = NodeWithRawData(80, "footer", new ulong[] { 81, 82 }, """{"appliesTo":"defaultPages"}"""),
+            [81] = NodeWithRawData(81, "textRun", System.Array.Empty<ulong>(), """{"text":"Page ","style":{}}"""),
+            [82] = NodeWithRawData(82, "textRun", System.Array.Empty<ulong>(),
+                """{"text":"","style":{"bold":true,"fontSizePoints":10.0},"pageNumberField":"page"}"""),
+        };
+        var candidates = new List<HeaderFooterText.Candidate> { new(byId[80], "defaultPages", null) };
+
+        var band = HeaderFooterText.ResolveStyled(candidates, byId, sectionIndex: 0, isFirstPageOfSection: false,
+            pageNumber: 7, totalPages: 42, defaultFontSize: 12.0);
+
+        Assert.NotNull(band);
+        Assert.Equal(2, band!.Value.Runs.Count);
+        var pageRun = band.Value.Runs[1];
+        Assert.Equal("7", pageRun.Text); // substituted, not the empty declared literal
+        Assert.True(pageRun.Bold); // the field run's OWN style survives the substitution
+        Assert.Equal(10.0, pageRun.FontSizePoints);
+    }
+
+    [Fact]
+    public void ResolveStyled_returns_null_under_the_same_conditions_Resolve_does()
+    {
+        // Mirrors First_page_header_overrides_default_and_an_empty_one_suppresses_the_band's cover
+        // case, through the styled path instead of the plain-string one.
+        var byId = new Dictionary<ulong, RenderNode>
+        {
+            [90] = NodeWithRawData(90, "header", System.Array.Empty<ulong>(), """{"appliesTo":"firstPage"}"""),
+        };
+        var candidates = new List<HeaderFooterText.Candidate> { new(byId[90], "firstPage", null) };
+
+        var band = HeaderFooterText.ResolveStyled(candidates, byId, sectionIndex: 0, isFirstPageOfSection: true,
+            pageNumber: 1, totalPages: 5, defaultFontSize: 12.0);
+
+        Assert.Null(band);
+    }
+
     [Fact]
     public void PageLayout_assigns_the_correct_section_index_per_page()
     {

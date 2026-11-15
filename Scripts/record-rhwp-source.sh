@@ -15,6 +15,7 @@ set -euo pipefail
 # The other working checkout (~/Documents/DEV/refs/rhwp) is the same repository and may be at a
 # different commit — defaulting to it is how a build from the submodule got attributed to the wrong
 # one, silently, because the guard below rejected the submodule and the default took over.
+cd "$(dirname "$0")/.."
 RHWP="${1:-Vendor/rhwp-src}"
 LIB="Vendor/RhwpNative.xcframework/macos-arm64/librhwp_native_ffi.a"
 OUT="Vendor/RHWP-SOURCE.txt"

@@ -31,6 +31,33 @@ enum OfficeMarkdownSerializer {
     /// spending fewer tokens on a document than its own XML would.
     static let rawNote = "[table — not a grid; rows below are literal text]"
 
+    /// Extracts every content channel represented by the office reader once per source entry.
+    static func serialize(_ result: OfficeReadResult) -> String {
+        var sections = [serialize(result.blocks, footnotes: result.footnotes,
+                                  anchoredObjects: result.anchoredObjects)]
+        func appendSection(_ title: String, _ entries: [String]) {
+            let content = entries.filter { !$0.isEmpty }.joined(separator: "\n\n")
+            if !content.isEmpty { sections.append("## \(title)\n\n" + content) }
+        }
+        appendSection("Headers", result.headers.map { serialize($0.blocks) })
+        appendSection("Footers", result.footers.map { serialize($0.blocks) })
+        appendSection("Master pages", result.masterPages.flatMap { $0.objects.map { serializeObject($0) } })
+        appendSection("Comments", result.comments.map { comment in
+            let details = [comment.author, comment.dateISO].compactMap { $0 }.joined(separator: ", ")
+            let label = details.isEmpty ? "Comment \(comment.number)" : "Comment \(comment.number) (\(details))"
+            return "**\(label)**\n\n\(comment.text)"
+        })
+        return sections.filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
+    private static func serializeObject(_ object: OfficeMasterObject) -> String {
+        switch object.content {
+        case .text(let blocks): return serialize(blocks)
+        case .image: return "[image]"
+        case .drawing, .vector: return "[drawing]"
+        }
+    }
+
     /// `footnotes` are appended as a trailing section, because they are no longer IN `blocks`.
     ///
     /// This is a data-loss guard, not a formatting choice. S14 lifted footnote bodies out of the
@@ -44,20 +71,28 @@ enum OfficeMarkdownSerializer {
         // Text pinned to a page through a block — a chapter divider's numeral and title, drawn
         // where their shape is rather than flowed — is emitted right after the block it hangs on,
         // so `--extract` still carries it (invariant 161).
-        var pinnedText: [Int: [OfficeBlock]] = [:]
+        var pinned: [Int: [(text: String, isList: Bool)]] = [:]
+        var unplaced: [(text: String, isList: Bool)] = []
         for object in anchoredObjects {
-            if case .text(let pinned) = object.object.content {
-                pinnedText[object.blockIndex, default: []].append(contentsOf: pinned)
+            let content: [(text: String, isList: Bool)]
+            if case .text(let blocks) = object.object.content {
+                content = blocks.map { render($0) }.filter { !$0.text.isEmpty }
+            } else {
+                content = [(text: serializeObject(object.object), isList: false)]
+            }
+            if blocks.indices.contains(object.blockIndex) {
+                pinned[object.blockIndex, default: []].append(contentsOf: content)
+            } else {
+                unplaced.append(contentsOf: content)
             }
         }
         var pieces: [(text: String, isList: Bool)] = []
         for (index, block) in blocks.enumerated() {
-            for candidate in [block] + (pinnedText[index] ?? []) {
-                let rendered = render(candidate)
-                guard !rendered.text.isEmpty else { continue }
-                pieces.append(rendered)
-            }
+            let rendered = render(block)
+            if !rendered.text.isEmpty { pieces.append(rendered) }
+            pieces.append(contentsOf: pinned[index] ?? [])
         }
+        pieces.append(contentsOf: unplaced)
         var out = ""
         for (i, p) in pieces.enumerated() {
             if i > 0 {

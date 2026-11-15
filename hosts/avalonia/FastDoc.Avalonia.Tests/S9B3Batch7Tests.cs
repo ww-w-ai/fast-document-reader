@@ -154,7 +154,13 @@ public class S9B3Batch7Tests
         var source = File.ReadAllText(Path.Combine(repoRoot, "hosts", "avalonia", "FastDoc.Avalonia", "MainWindow.axaml.cs"));
         Assert.Contains("Open.ExternalEditorResolver.IsOfficeExtension(extension)", source);
         Assert.Contains("EditInAppMenuItem.IsEnabled = isOffice;", source);
-        Assert.Contains("EditInAppMenuItem.Header = appName is null ? \"Edit in Default App…\" : $\"Edit in {appName}…\";", source);
+        // S12-C (docs/studio/sprints/S12/s12c-titlebar-badge-edit-affordance.md) factored the
+        // label into a `fullLabel` local shared with the titlebar-area accessory bar's Edit
+        // button tooltip — the exact ternary this test pins now assigns to that local first, then
+        // both EditInAppMenuItem.Header and the bar's tooltip read it (see
+        // S12CTitlebarBadgeEditAffordanceTests for the accessory-bar side of this contract).
+        Assert.Contains("var fullLabel = appName is null ? \"Edit in Default App…\" : $\"Edit in {appName}…\";", source);
+        Assert.Contains("EditInAppMenuItem.Header = fullLabel;", source);
     }
 
     [Fact]

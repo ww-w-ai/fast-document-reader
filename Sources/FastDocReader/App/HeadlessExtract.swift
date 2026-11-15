@@ -83,8 +83,7 @@ enum HeadlessExtract {
                 // Font discovery belongs to this AppKit host. The engine deliberately sends HWP
                 // over before substitution because an opaque NSFontDescriptor cannot cross JSON.
                 let result = unresolved.resolvingFontSubstitution()
-                let body = OfficeMarkdownSerializer.serialize(result.blocks, footnotes: result.footnotes,
-                                                              anchoredObjects: result.anchoredObjects)
+                let body = OfficeMarkdownSerializer.serialize(result)
                 out(header(for: url.lastPathComponent, body: body) + body)
                 return 0
             } catch {

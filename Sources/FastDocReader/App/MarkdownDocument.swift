@@ -409,7 +409,52 @@ final class MarkdownDocument: NSDocument {
     /// every read; the default only matters for a document that was never read from disk.
     private(set) var file = TextFile(text: "", encoding: .utf8, hasBOM: false)
 
+    private static let plainTextLimit = 16 * 1024 * 1024
+    private var openingExtension: String?
+
+    private static func plainTextError(_ description: String) -> NSError {
+        NSError(domain: "FastDocReader.PlainTextRead", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: description])
+    }
+
+    private static func boundedPlainTextData(from url: URL) throws -> Data {
+        let descriptor = open(url.path, O_RDONLY | O_NONBLOCK)
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw plainTextError("Only regular files can be opened as text.")
+        }
+        var data = Data()
+        while data.count <= plainTextLimit {
+            let chunk = try handle.read(upToCount: min(64 * 1024, plainTextLimit + 1 - data.count)) ?? Data()
+            if chunk.isEmpty { break }
+            data.append(chunk)
+        }
+        guard data.count <= plainTextLimit else {
+            throw plainTextError("This text file exceeds the 16 MiB limit.")
+        }
+        return data
+    }
+
+    override func read(from url: URL, ofType typeName: String) throws {
+        guard DocumentTypes.kind(forExtension: url.pathExtension) == .plainText else {
+            try super.read(from: url, ofType: typeName)
+            return
+        }
+        openingExtension = url.pathExtension
+        defer { openingExtension = nil }
+        try read(from: Self.boundedPlainTextData(from: url), ofType: typeName)
+    }
+
     override func read(from data: Data, ofType typeName: String) throws {
+        if kind == .plainText && data.count > Self.plainTextLimit {
+            throw Self.plainTextError("This text file exceeds the 16 MiB limit.")
+        }
         // An office document is a binary ZIP container, not text — `TextEncodingDetector` is a
         // text-encoding detector, and running it over these bytes would be nonsense (best case,
         // garbage; worst case a false "valid encoding" match). Parse the archive instead, and
@@ -649,7 +694,7 @@ final class MarkdownDocument: NSDocument {
     static func reloadOutcome(url: URL, kind: DocumentKind, extension ext: String) -> ReloadOutcome {
         let data: Data
         do {
-            data = try Data(contentsOf: url)
+            data = try kind == .plainText ? boundedPlainTextData(from: url) : Data(contentsOf: url)
         } catch {
             return .failure(error.localizedDescription)
         }
@@ -1426,7 +1471,7 @@ final class MarkdownDocument: NSDocument {
     /// page, and guessing otherwise would rewrite what they see) — `untitledExtension` answers the
     /// question for a document that has no file yet.
     var kind: DocumentKind {
-        DocumentTypes.kind(forExtension: fileURL?.pathExtension ?? untitledExtension ?? "md")
+        DocumentTypes.kind(forExtension: openingExtension ?? fileURL?.pathExtension ?? untitledExtension ?? "md")
     }
 
     /// True for a file this app opens as TEXT rather than markdown or a rendered office document

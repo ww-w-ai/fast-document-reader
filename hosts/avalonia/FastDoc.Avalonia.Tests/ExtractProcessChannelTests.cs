@@ -64,8 +64,8 @@ public class ExtractProcessChannelTests
 
         Assert.Equal(0, exitCode);
         // Verbatim passthrough carries no "Extracted from ..." legend (macOS doesn't add one for
-        // .markdown/.plainText either) -- and Console.WriteLine adds exactly one trailing newline.
-        Assert.Equal(sourceText + Environment.NewLine, stdout);
+        // .markdown/.plainText either), preserving the source's exact trailing newline.
+        Assert.Equal(sourceText, stdout);
         Assert.Matches(@"opened: \d+ nodes, \d+ ms", stderr);
     }
 

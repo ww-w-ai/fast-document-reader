@@ -97,3 +97,34 @@ fn a_null_argument_is_an_envelope_too() {
     };
     assert!(envelope.contains("invalidArgument"), "{envelope}");
 }
+
+#[test]
+fn arbitrary_and_empty_extensions_open_as_literal_text() {
+    for extension in ["", "custom", "BIN", "rtf"] {
+        let envelope = read(b"# literal text\n", extension);
+        assert!(envelope.contains("\"ok\""), "{extension}: {envelope}");
+        assert!(!envelope.contains("\"heading\""), "{extension}: {envelope}");
+        assert!(envelope.contains("# literal text"));
+    }
+}
+
+#[test]
+fn legacy_utf16_and_binary_inputs_open_through_real_text_symbol() {
+    for (bytes, expected) in [
+        (vec![0xc7, 0xd1, 0xb1, 0xdb], "한글"),
+        (vec![0xff, 0xfe, 0x41, 0, 0x00, 0xac], "A가"),
+        (vec![0xff, 0x00, 0xfe, 0x80, 0x81], "ÿ"),
+    ] {
+        let envelope = read(&bytes, "arbitrary");
+        assert!(envelope.contains("\"ok\""), "{envelope}");
+        assert!(envelope.contains(expected), "{envelope}");
+    }
+}
+
+#[test]
+fn every_office_extension_uses_its_structured_door() {
+    for extension in ["docx", "docm", "dotx", "dotm", "odt", "hwp", "HWPX"] {
+        let envelope = read(b"body", extension);
+        assert!(envelope.contains("unsupportedExtension"), "{extension}: {envelope}");
+    }
+}

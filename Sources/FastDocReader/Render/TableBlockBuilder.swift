@@ -14,7 +14,7 @@ final class GridTextTable: NSTextTable {
     /// behind a table whose cells declare nothing at all.
     var backgroundImage: NSImage?
 
-    override func drawBackground(withFrame frameRect: NSRect, in controlView: NSView,
+    override func drawBackground(withFrame frameRect: NSRect, in controlView: NSView?,
                                  characterRange charRange: NSRange, layoutManager: NSLayoutManager) {
         super.drawBackground(withFrame: frameRect, in: controlView,
                              characterRange: charRange, layoutManager: layoutManager)

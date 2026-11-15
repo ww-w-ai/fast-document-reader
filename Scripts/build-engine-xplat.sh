@@ -23,6 +23,11 @@ MANIFEST="$REPO/rust/Cargo.toml"
 OUT_ROOT="$REPO/rust/dist/xplat"
 mkdir -p "$OUT_ROOT"
 
+# Keeps the build machine's home directory, user name and cargo cache paths out of the shipped
+# libraries. Every cargo call below passes FMD_RUSTFLAGS through RUSTFLAGS.
+# shellcheck source=remap-paths.sh
+source "$REPO/Scripts/remap-paths.sh"
+
 # ---------------------------------------------------------------------------
 # macOS (arm64) — built directly on this machine.
 # ---------------------------------------------------------------------------
@@ -30,7 +35,8 @@ build_macos() {
   local triple=aarch64-apple-darwin
   local out_dir="$OUT_ROOT/macos-arm64"
   echo "==> [macos-arm64] cargo build --release ($triple)"
-  cargo build --release \
+  RUSTFLAGS="$FMD_RUSTFLAGS" CFLAGS_aarch64_apple_darwin="$FMD_CFLAGS" \
+    cargo build --release \
     --manifest-path "$MANIFEST" \
     -p fastdoc-ffi \
     --target "$triple" \
@@ -54,6 +60,7 @@ build_windows() {
   fi
 
   echo "==> [windows-x64] cargo build --release ($triple)"
+  RUSTFLAGS="$FMD_RUSTFLAGS" CFLAGS_x86_64_pc_windows_gnu="$FMD_CFLAGS" \
   CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$linker" \
     cargo build --release \
     --manifest-path "$MANIFEST" \
@@ -96,7 +103,8 @@ build_windows_arm64() {
   cp "$tc/../aarch64-w64-mingw32/lib/libunwind.a" "$static_unwind/"
 
   echo "==> [windows-arm64] cargo build --release ($triple)"
-  CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_RUSTFLAGS="-L native=$static_unwind" \
+  RUSTFLAGS="$FMD_RUSTFLAGS -L native=$static_unwind" \
+  CFLAGS_aarch64_pc_windows_gnullvm="$FMD_CFLAGS" \
   CARGO_TARGET_AARCH64_PC_WINDOWS_GNULLVM_LINKER="$linker" \
   CC_aarch64_pc_windows_gnullvm="$linker" \
   AR_aarch64_pc_windows_gnullvm="$tc/aarch64-w64-mingw32-ar" \
@@ -162,6 +170,7 @@ build_linux() {
   # host's mingw-w64 strip only understands PE, not ELF — there is no macOS cross-strip for Linux.
   if ! docker run --rm \
     --platform "$platform" \
+    -e RUSTFLAGS="--remap-path-prefix=/usr/local/rustup=/rustup --remap-path-prefix=/usr/local/cargo=/cargo --remap-path-prefix=/work=/src" \
     -v "$REPO:/work" \
     -v "$HOME/.cargo/registry:/usr/local/cargo/registry" \
     -v "$HOME/.cargo/git:/usr/local/cargo/git" \

@@ -7,14 +7,13 @@
 //! it. Its output therefore mirrors Swift's exactly, header comment and all — a prettier format
 //! here would make every diff unreadable.
 //!
-//! Scope is deliberately the zip-backed office readers. `.hwp` goes through rhwp's live parse
-//! handle and markdown/plain-text go through the encoding detector; neither is on this path yet,
-//! so both are refused by name instead of half-answered.
+//! Office formats use the same readers as FFI, including HWP/HWPX. Markdown and plain text
+//! remain outside this office extraction CLI.
 
 use fastdoc_engine::render::office::{
     docx_reader::DocxReader, office_block::OfficeReadResult,
     office_markdown_serializer::OfficeMarkdownSerializer, odt_reader::OdtReader,
-    zip_archive::ZipArchive,
+    zip_archive::ZipArchive, hwp_reader::mapping::HwpReader,
 };
 
 fn main() -> std::process::ExitCode {
@@ -22,7 +21,7 @@ fn main() -> std::process::ExitCode {
     let path = match args.get(1) {
         Some(p) => p.clone(),
         None => {
-            eprintln!("usage: fastdoc-extract <file.docx|file.odt>");
+            eprintln!("usage: fastdoc-extract <file.docx|file.odt|file.hwp|file.hwpx>");
             return std::process::ExitCode::from(2);
         }
     };
@@ -43,43 +42,55 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let archive = match ZipArchive::new(data) {
-        Ok(archive) => archive,
-        Err(e) => {
-            eprintln!("cannot extract {}: {}", filename(&path), e.error_description());
-            return std::process::ExitCode::FAILURE;
+    let result = if matches!(extension.as_str(), "hwp" | "hwpx") {
+        match HwpReader::read_before_host_font_substitution(&data) {
+            Ok(result) => result,
+            Err(error) => {
+                eprintln!("cannot extract {}: {:?}", filename(&path), error);
+                return std::process::ExitCode::FAILURE;
+            }
         }
-    };
-
-    // swift: `DocumentTypes.readOffice(_:extension:)` — that dispatcher lives in the host app and is
-    // not ported, so the two arms it has for a zip-backed document are spelled out here.
-    let result: OfficeReadResult = match extension.as_str() {
-        "docx" | "docm" | "dotx" | "dotm" => match DocxReader::read(&archive) {
-            Ok(r) => r,
+    } else {
+        let archive = match ZipArchive::new(data) {
+            Ok(archive) => archive,
             Err(e) => {
                 eprintln!("cannot extract {}: {}", filename(&path), e.error_description());
                 return std::process::ExitCode::FAILURE;
             }
-        },
-        "odt" => match OdtReader::read(&archive) {
-            Ok(r) => r,
-            Err(e) => {
-                // `OdtReadError.error_description` is `Option<String>`, mirroring Swift's
-                // `LocalizedError.errorDescription`, which is nil for a case that never carries a
-                // message. `localizedDescription` falls back to the type's own name there; the
-                // nearest honest thing here is the debug form rather than an empty line.
-                let reason = e.error_description().unwrap_or_else(|| format!("{:?}", e));
-                eprintln!("cannot extract {}: {}", filename(&path), reason);
-                return std::process::ExitCode::FAILURE;
+        };
+
+        // swift: `DocumentTypes.readOffice(_:extension:)` — that dispatcher lives in the host app and is
+        // not ported, so the two arms it has for a zip-backed document are spelled out here.
+        let result: OfficeReadResult = match extension.as_str() {
+            "docx" | "docm" | "dotx" | "dotm" => match DocxReader::read(&archive) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("cannot extract {}: {}", filename(&path), e.error_description());
+                    return std::process::ExitCode::FAILURE;
+                }
+            },
+            "odt" => match OdtReader::read(&archive) {
+                Ok(r) => r,
+                Err(e) => {
+                    // `OdtReadError.error_description` is `Option<String>`, mirroring Swift's
+                    // `LocalizedError.errorDescription`, which is nil for a case that never carries a
+                    // message. `localizedDescription` falls back to the type's own name there; the
+                    // nearest honest thing here is the debug form rather than an empty line.
+                    let reason = e.error_description().unwrap_or_else(|| format!("{:?}", e));
+                    eprintln!("cannot extract {}: {}", filename(&path), reason);
+                    return std::process::ExitCode::FAILURE;
+                }
+            },
+            other => {
+                eprintln!("fastdoc-extract does not read .{} yet", other);
+                return std::process::ExitCode::from(2);
             }
-        },
-        other => {
-            eprintln!("fastdoc-extract does not read .{} yet", other);
-            return std::process::ExitCode::from(2);
-        }
+        };
+
+        result
     };
 
-    let body = OfficeMarkdownSerializer::serialize(&result.blocks, &result.footnotes);
+    let body = OfficeMarkdownSerializer::serialize_result(&result);
     print!("{}{}\n", header(&filename(&path), &body), body);
     std::process::ExitCode::SUCCESS
 }

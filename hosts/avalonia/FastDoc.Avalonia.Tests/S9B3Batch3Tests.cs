@@ -45,8 +45,13 @@ public class S9B3Batch3Tests
     // ---- 1. LineNumberModel (pure) ----------------------------------------------------------------
 
     [Fact]
-    public void IsNumbered_excludes_rules_and_empty_text_but_includes_images_and_tables()
+    public void IsNumbered_excludes_rules_and_empty_text_but_includes_images()
     {
+        // S12-J: this fixture's own comment ("...and table") named a table block that was never
+        // actually in the JSON below — no table was ever exercised by this test at all. A real
+        // table fixture is added separately (Table_blocks_are_never_numbered_matching_macOS)
+        // rather than patched in here, since this method's SHAPE (5 blocks, none a table) is
+        // still a valid, useful fixture in its own right.
         var tree = MixedBlockTree();
         var blocks = FlowDocumentBuilder.Build(tree);
         // Block order per FlowDocumentBuilder: paragraph(first line), blank paragraph, rule, image, paragraph(second line)
@@ -56,6 +61,47 @@ public class S9B3Batch3Tests
         Assert.False(LineNumberModel.IsNumbered(blocks[2])); // rule
         Assert.True(LineNumberModel.IsNumbered(blocks[3]));  // image
         Assert.True(LineNumberModel.IsNumbered(blocks[4]));  // "second line"
+    }
+
+    /// <summary>S12-J: macOS's `MarginNumbers.swift`/`ReaderTextView.drawLineNumbers` explicitly
+    /// skips a line "inside a table" — invariant 71's own words, "a line inside a table gets
+    /// none" — because a cell is a grid position, not a line of prose. This host previously
+    /// numbered a whole table as ONE block ("a real block the reader can point at"), which is not
+    /// parity, it is an invented behaviour macOS does not have. Fixed in <see
+    /// cref="LineNumberModel.IsNumbered"/>.</summary>
+    [Fact]
+    public void Table_blocks_are_never_numbered_matching_macOS()
+    {
+        const string json = """
+        {
+          "schemaVersion": 1,
+          "document": { "rootNodeId": 0, "defaultBodyFontSize": 12.0 },
+          "nodes": [
+            { "id": 0, "parentId": null, "type": "document", "children": [1, 2, 5], "data": {} },
+            { "id": 1, "parentId": 0, "type": "paragraph", "children": [10], "data": { "style": {} } },
+            { "id": 10, "parentId": 1, "type": "textRun", "children": [], "data": { "text": "before table", "style": {} } },
+            { "id": 2, "parentId": 0, "type": "table", "children": [20], "data": { "gridWidths": [1], "style": {} } },
+            { "id": 20, "parentId": 2, "type": "tableRow", "children": [21], "data": { "row": 0, "header": false } },
+            { "id": 21, "parentId": 20, "type": "tableCell", "children": [22], "data": { "row": 0, "column": 0 } },
+            { "id": 22, "parentId": 21, "type": "paragraph", "children": [23], "data": { "style": {} } },
+            { "id": 23, "parentId": 22, "type": "textRun", "children": [], "data": { "text": "cell text", "style": {} } },
+            { "id": 5, "parentId": 0, "type": "paragraph", "children": [50], "data": { "style": {} } },
+            { "id": 50, "parentId": 5, "type": "textRun", "children": [], "data": { "text": "after table", "style": {} } }
+          ]
+        }
+        """;
+        var tree = JsonSerializer.Deserialize<RenderTree>(json)!;
+        var blocks = FlowDocumentBuilder.Build(tree);
+
+        Assert.Equal(3, blocks.Count); // paragraph, table (one block, folded cell content), paragraph
+        Assert.Equal(FlowBlockKind.Table, blocks[1].Kind);
+        Assert.False(LineNumberModel.IsNumbered(blocks[1]));
+
+        // And the visible sequence has no gap for it: the two real paragraphs are 1 and 2, not 1 and 3.
+        Assert.Equal("1", LineNumberModel.LabelFor(blocks, 0));
+        Assert.Null(LineNumberModel.LabelFor(blocks, 1));
+        Assert.Equal("2", LineNumberModel.LabelFor(blocks, 2));
+        Assert.Equal(2, LineNumberModel.NumberedCount(blocks));
     }
 
     [Fact]

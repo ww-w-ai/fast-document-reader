@@ -31,7 +31,18 @@ public static class FlowDocumentBuilder
     /// just not as ruled cells).</summary>
     private const int MaxTableNestingDepth = 3;
 
-    public static List<FlowBlock> Build(RenderTree tree)
+    /// <summary>S12-K (46/47 preflight, 47 REVISE): <paramref name="wrapCodeBlocks"/> sets EVERY
+    /// "codeBlock" node's own <see cref="FlowBlock.WrapCode"/> flag — an INTENT flag only. It never
+    /// touches <see cref="BuildCodeRuns"/>'s output; the run text is byte-identical either way (a
+    /// text mutation was tried and rejected — see <see cref="FlowBlock.WrapCode"/>'s own doc for
+    /// why). The default (<c>true</c>) matches every existing block's default, so every existing
+    /// call site needs no change. A caller wanting the opt-out (a code-block Wrap-toggle chip,
+    /// S12-K item 47) rebuilds the WHOLE tree with <c>wrapCodeBlocks: false</c> — this builder has
+    /// no per-block rebuild path, so the chip's toggle is expected to re-invoke <see cref="Build"/>
+    /// in full, the same re-render cost a document reflow already pays. Reading the flag to choose
+    /// <c>TextWrapping.Wrap</c> vs <c>NoWrap</c> when constructing that block's <c>TextLayout</c>
+    /// is <see cref="FlowDocumentView"/>'s job, not this builder's.</summary>
+    public static List<FlowBlock> Build(RenderTree tree, bool wrapCodeBlocks = true)
     {
         var blocks = new List<FlowBlock>();
         if (tree.Document is null)
@@ -50,12 +61,78 @@ public static class FlowDocumentBuilder
         }
 
         var defaultFontSize = tree.Document.DefaultBodyFontSize > 0 ? tree.Document.DefaultBodyFontSize : 12.0;
-        Walk(root, byId, blocks, indent: 0, defaultFontSize, tableDepth: 0);
+        Walk(root, byId, blocks, indent: 0, defaultFontSize, tableDepth: 0, wrapCodeBlocks);
+        // S12-A: a footnote's content used to be dropped entirely — the "footnote" case below
+        // returns without recursing (its body lives in a page's foot band, a different coordinate
+        // space than the in-flow column), and nothing else ever visited that body. This host has
+        // no foot-band layout yet, so the minimum honest fix is macOS's own document-end fallback
+        // shape (see OfficeMarkdownSerializer's AppendFootnotes / invariant 98's own note on that):
+        // every footnote's body is appended after the main flow rather than lost. BlockPageMarkers
+        // MUST mirror this exact append (same node types, same order) or PageLayout's per-block
+        // index space drifts from this list.
+        AppendFootnotes(tree, byId, blocks, defaultFontSize, wrapCodeBlocks);
         return blocks;
     }
 
+    /// <summary>S12-A: appends every footnote's body at the end of the flow, sorted by citation
+    /// number, each preceded by a "[n]" label block so the reader can tell which in-body marker it
+    /// answers. A footnote whose <see cref="FootnotePayload.BodyFlowId"/> does not resolve (a
+    /// malformed tree) contributes only its label, never a crash.</summary>
+    private static void AppendFootnotes(RenderTree tree, Dictionary<ulong, RenderNode> byId,
+        List<FlowBlock> blocks, double defaultFontSize, bool wrapCodeBlocks)
+    {
+        var footnotes = CollectFootnotes(tree);
+        if (footnotes.Count == 0) { return; }
+
+        blocks.Add(new FlowBlock
+        {
+            Kind = FlowBlockKind.Rule,
+            SpacingBeforePoints = 12,
+            SpacingAfterPoints = 8,
+            NodeId = tree.Document!.RootNodeId,
+        });
+
+        foreach (var (node, note) in footnotes)
+        {
+            blocks.Add(FootnoteLabelBlock(node.Id, note.Number, defaultFontSize));
+            if (byId.TryGetValue(note.BodyFlowId, out var flow))
+            {
+                WalkChildren(flow, byId, blocks, indent: CellIndentPoints, defaultFontSize, tableDepth: 0, wrapCodeBlocks);
+            }
+        }
+    }
+
+    private static FlowBlock FootnoteLabelBlock(ulong footnoteNodeId, ulong number, double defaultFontSize)
+    {
+        return new FlowBlock
+        {
+            Kind = FlowBlockKind.Text,
+            Runs = new List<FlowRun> { new($"[{number}]", null, defaultFontSize, true, false, false, false, Colors.Black) },
+            Alignment = TextAlignment.Left,
+            IndentPoints = 0,
+            SpacingBeforePoints = defaultFontSize * 0.3,
+            SpacingAfterPoints = 2,
+            NodeId = footnoteNodeId,
+        };
+    }
+
+    /// <summary>Every "footnote" node in the tree, sorted by citation number — mirrored exactly
+    /// (same selection, same sort) by <see cref="Paging.BlockPageMarkers"/>'s own copy so the two
+    /// per-block lists stay index-aligned.</summary>
+    private static List<(RenderNode Node, FootnotePayload Note)> CollectFootnotes(RenderTree tree)
+    {
+        var result = new List<(RenderNode, FootnotePayload)>();
+        foreach (var node in tree.Nodes)
+        {
+            var note = node.AsFootnote;
+            if (note is not null) { result.Add((node, note)); }
+        }
+        result.Sort((a, b) => a.Item2.Number.CompareTo(b.Item2.Number));
+        return result;
+    }
+
     private static void Walk(RenderNode node, Dictionary<ulong, RenderNode> byId, List<FlowBlock> blocks,
-        double indent, double defaultFontSize, int tableDepth = 0)
+        double indent, double defaultFontSize, int tableDepth = 0, bool wrapCodeBlocks = true)
     {
         switch (node.Type)
         {
@@ -63,11 +140,11 @@ public static class FlowDocumentBuilder
             case "section":
             case "flow":
             case "list":
-                WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth);
+                WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks);
                 return;
 
             case "blockQuote":
-                WalkChildren(node, byId, blocks, indent + BlockQuoteIndentPoints, defaultFontSize, tableDepth);
+                WalkChildren(node, byId, blocks, indent + BlockQuoteIndentPoints, defaultFontSize, tableDepth, wrapCodeBlocks);
                 return;
 
             case "heading":
@@ -83,8 +160,8 @@ public static class FlowDocumentBuilder
             {
                 var p = node.AsParagraph;
                 if (p is null) { return; }
-                var runs = CollectRuns(node.Children, byId, defaultFontSize, boldDefault: false);
-                blocks.Add(TextBlock(runs, p.Style, indent, defaultFontSize, node.Id));
+                AppendInlineContentBlocks(node.Children, byId, blocks, indent, defaultFontSize, boldDefault: false,
+                    runs => TextBlock(runs, p.Style, indent, defaultFontSize, node.Id), leadingMarkerRuns: null);
                 return;
             }
 
@@ -92,27 +169,29 @@ public static class FlowDocumentBuilder
             {
                 var li = node.AsListItem;
                 if (li is null) { return; }
-                var runs = CollectRuns(node.Children, byId, defaultFontSize, boldDefault: false);
                 var marker = li.Marker ?? (li.Ordered ? "-" : "•");
-                runs.Insert(0, new FlowRun($"{marker} ", null, defaultFontSize, false, false, false, false, Colors.Black));
-                blocks.Add(TextBlock(runs, li.Style, indent + ListIndentPoints * Math.Max(1, li.Level + 1), defaultFontSize, node.Id));
+                var markerRuns = new List<FlowRun> { new FlowRun($"{marker} ", null, defaultFontSize, false, false, false, false, Colors.Black) };
+                var itemIndent = indent + ListIndentPoints * Math.Max(1, li.Level + 1);
+                AppendInlineContentBlocks(node.Children, byId, blocks, itemIndent, defaultFontSize, boldDefault: false,
+                    runs => TextBlock(runs, li.Style, itemIndent, defaultFontSize, node.Id), markerRuns);
                 return;
             }
 
             case "taskListItem":
             {
-                var runs = CollectRuns(node.Children, byId, defaultFontSize, boldDefault: false);
                 var t = node.AsTaskListItem;
                 var box = t?.Checked == true ? "[x] " : "[ ] ";
-                runs.Insert(0, new FlowRun(box, "monospace", defaultFontSize, false, false, false, false, Colors.Black));
-                blocks.Add(new FlowBlock
-                {
-                    Kind = FlowBlockKind.Text,
-                    Runs = runs,
-                    IndentPoints = indent + ListIndentPoints,
-                    SpacingAfterPoints = 2,
-                    NodeId = node.Id,
-                });
+                var markerRuns = new List<FlowRun> { new FlowRun(box, "monospace", defaultFontSize, false, false, false, false, Colors.Black) };
+                var itemIndent = indent + ListIndentPoints;
+                AppendInlineContentBlocks(node.Children, byId, blocks, itemIndent, defaultFontSize, boldDefault: false,
+                    runs => new FlowBlock
+                    {
+                        Kind = FlowBlockKind.Text,
+                        Runs = runs,
+                        IndentPoints = itemIndent,
+                        SpacingAfterPoints = 2,
+                        NodeId = node.Id,
+                    }, markerRuns);
                 return;
             }
 
@@ -128,6 +207,58 @@ public static class FlowDocumentBuilder
                     SpacingBeforePoints = 4,
                     SpacingAfterPoints = 8,
                     NodeId = node.Id,
+                    IsCodeBlock = true,
+                    WrapCode = wrapCodeBlocks,
+                });
+                return;
+            }
+
+            case "formula":
+            {
+                // S12-F: wire::Formula carries only Source (raw LaTeX/tex text) -- no children, so
+                // before this case existed the default branch's WalkChildren descended into an
+                // empty child list and the equation vanished with no visible trace (a real
+                // content-loss bug, not a rendering-quality gap). This host does not render TeX
+                // to a typeset image (that needs a real browser engine -- see
+                // docs/studio/sprints/S12/s12e-web-render-decision.md); until the opt-in renderer
+                // (WebRender/) is wired into this builder, EVERY formula shows as its raw source
+                // text, styled like a code block so it reads as "this is markup, not prose".
+                // Block vs inline (`fp.Block`) is not distinguished yet -- both render as their own
+                // block-level line; inline placement inside the surrounding paragraph is future work.
+                var fp = node.AsFormula;
+                if (fp is null) { return; }
+                blocks.Add(new FlowBlock
+                {
+                    Kind = FlowBlockKind.Text,
+                    Runs = new List<FlowRun> { new FlowRun(fp.Source, CodeFontFamily, defaultFontSize * 0.92,
+                        false, false, false, false, DefaultCodeColor) },
+                    IndentPoints = indent + 8,
+                    SpacingBeforePoints = 4,
+                    SpacingAfterPoints = 8,
+                    NodeId = node.Id,
+                });
+                return;
+            }
+
+            case "diagram":
+            {
+                // S12-F: wire::Diagram (a fenced ```mermaid block) is its OWN node type, distinct
+                // from "codeBlock" -- see DiagramPayload's own doc comment in RenderTreeEnvelope.cs
+                // for why the content vanished entirely (both raw and web-rendered) before this
+                // case existed. Same raw-source-as-code styling as the "formula" case above, since
+                // this is likewise "markup, not prose" until the opt-in web renderer upgrades it
+                // (FlowWebRenderPass, keyed by NodeId).
+                var dp = node.AsDiagram;
+                if (dp is null) { return; }
+                blocks.Add(new FlowBlock
+                {
+                    Kind = FlowBlockKind.Text,
+                    Runs = new List<FlowRun> { new FlowRun(dp.Source, CodeFontFamily, defaultFontSize * 0.92,
+                        false, false, false, false, DefaultCodeColor) },
+                    IndentPoints = indent + 8,
+                    SpacingBeforePoints = 4,
+                    SpacingAfterPoints = 8,
+                    NodeId = node.Id,
                 });
                 return;
             }
@@ -137,7 +268,7 @@ public static class FlowDocumentBuilder
                 var t = node.AsTable;
                 if (t is null)
                 {
-                    WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth);
+                    WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks);
                     return;
                 }
                 if (tableDepth >= MaxTableNestingDepth)
@@ -145,10 +276,10 @@ public static class FlowDocumentBuilder
                     // Deeper than this reader draws as a grid — degrade to its cells' own text
                     // flow rather than crash or silently drop the content (same honest-degrade
                     // policy this builder already applies to a payload it does not recognize).
-                    WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth);
+                    WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks);
                     return;
                 }
-                var model = BuildTable(node, byId, t, defaultFontSize, tableDepth);
+                var model = BuildTable(node, byId, t, defaultFontSize, tableDepth, wrapCodeBlocks);
                 blocks.Add(new FlowBlock
                 {
                     Kind = FlowBlockKind.Table,
@@ -162,30 +293,18 @@ public static class FlowDocumentBuilder
             }
 
             case "tableRow":
-                WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth);
+                WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks);
                 return;
 
             case "tableCell":
-                WalkChildren(node, byId, blocks, indent + CellIndentPoints, defaultFontSize, tableDepth);
+                WalkChildren(node, byId, blocks, indent + CellIndentPoints, defaultFontSize, tableDepth, wrapCodeBlocks);
                 return;
 
             case "image":
             {
                 var img = node.AsImage;
                 if (img is null) { return; }
-                var size = img.DisplaySize ?? img.IntrinsicSize;
-                blocks.Add(new FlowBlock
-                {
-                    Kind = FlowBlockKind.Image,
-                    IndentPoints = indent,
-                    Alignment = AlignmentFrom(img.Alignment),
-                    ImageResourceId = img.ResourceId,
-                    ImageWidthPoints = size.Width,
-                    ImageHeightPoints = size.Height,
-                    SpacingBeforePoints = 4,
-                    SpacingAfterPoints = 4,
-                    NodeId = node.Id,
-                });
+                blocks.Add(ImageBlockFrom(node.Id, img, indent));
                 return;
             }
 
@@ -245,12 +364,18 @@ public static class FlowDocumentBuilder
                 });
                 return;
 
-            // Footnotes/headers/footers/master pages/anchored objects/standalone form controls are
-            // laid out OFF the main flow by every real reader (this one included, on macOS) — E2a's
-            // scope is the in-flow column, so these are skipped rather than guessed at. Skipping,
-            // not recursing into their children, is deliberate: those children belong to a
-            // different coordinate space (a footnote band, a page margin) and drawing them inline
-            // would misrepresent the document, not merely omit a feature.
+            // Headers/footers/master pages/anchored objects/standalone form controls are laid out
+            // OFF the main flow by every real reader (this one included, on macOS) — E2a's scope
+            // is the in-flow column, so these are skipped rather than guessed at. Skipping, not
+            // recursing into their children, is deliberate: those children belong to a different
+            // coordinate space (a page margin) and drawing them inline would misrepresent the
+            // document, not merely omit a feature.
+            //
+            // "footnote" skips here too (its body lives in a page's foot band, also a different
+            // coordinate space) but is NOT lost — S12-A's AppendFootnotes (called once, after this
+            // whole walk finishes, from Build) recurses into every footnote's body and appends it
+            // at the end of the flow instead. This host has no foot-band layout yet; that is the
+            // acknowledged gap, not a silent drop.
             case "footnote":
             case "header":
             case "footer":
@@ -266,19 +391,19 @@ public static class FlowDocumentBuilder
                 // Unknown/future node kinds recurse into children at the same indent, so a payload
                 // this host has not been taught yet still surfaces its descendants' text instead of
                 // silently dropping a whole subtree.
-                WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth);
+                WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks);
                 return;
         }
     }
 
     private static void WalkChildren(RenderNode node, Dictionary<ulong, RenderNode> byId, List<FlowBlock> blocks,
-        double indent, double defaultFontSize, int tableDepth = 0)
+        double indent, double defaultFontSize, int tableDepth = 0, bool wrapCodeBlocks = true)
     {
         foreach (var childId in node.Children)
         {
             if (byId.TryGetValue(childId, out var child))
             {
-                Walk(child, byId, blocks, indent, defaultFontSize, tableDepth);
+                Walk(child, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks);
             }
         }
     }
@@ -316,6 +441,99 @@ public static class FlowDocumentBuilder
         4 => defaultFontSize * 1.15,
         _ => defaultFontSize * 1.05,
     };
+
+    /// <summary>S12-img: a markdown `![alt](src)` on its own line (or embedded mid-sentence)
+    /// parses as an "image" NODE inside its containing paragraph/listItem/taskListItem's own
+    /// children (rust/crates/fastdoc-engine/src/render/markdown/blocks.rs's `map_inline_children`
+    /// -> `inline.rs`'s `build_image`) — never as a standalone top-level "image" block the way an
+    /// anchored docx/hwp/odt picture is. <see cref="CollectRuns"/> only recognizes "textRun" and
+    /// "lineBreak" children, so every markdown image was silently skipped: the paragraph became an
+    /// empty <see cref="FlowBlockKind.Text"/> block and the picture never reached
+    /// <see cref="ImageBlockRenderer"/> at all (100% content loss, no crash, no diagnostic —
+    /// docs/studio/sprints/S12/s12-markdown-image-loss.md). This walks the SAME children
+    /// "paragraph"/"listItem"/"taskListItem" already had, splitting into a
+    /// <see cref="FlowBlockKind.Image"/> block at each image child and flushing whatever text
+    /// accumulated on either side of it into its own <paramref name="makeTextBlock"/> block —
+    /// producing 1..N sibling <see cref="FlowBlock"/>s from the one owning node instead of one.
+    /// When the node has NO image child at all (the overwhelming common case), this takes the
+    /// EXACT old single-block path byte for byte (same <see cref="CollectRuns"/> call, one
+    /// <paramref name="makeTextBlock"/> call, marker prepended the same way) — zero behavior change
+    /// for every non-image paragraph/list item. <paramref name="leadingMarkerRuns"/> is a list
+    /// item's own bullet/checkbox run(s), prepended to whichever block ends up first (a leading
+    /// text block, or — when the item's own content starts with an image — a dedicated one-run
+    /// text block carrying just the marker, so an image-only list item still shows its bullet
+    /// rather than losing it into a kind it cannot draw text runs on).</summary>
+    private static void AppendInlineContentBlocks(List<ulong> childIds, Dictionary<ulong, RenderNode> byId,
+        List<FlowBlock> blocks, double indent, double defaultFontSize, bool boldDefault,
+        Func<List<FlowRun>, FlowBlock> makeTextBlock, List<FlowRun>? leadingMarkerRuns)
+    {
+        var hasImageChild = false;
+        foreach (var id in childIds)
+        {
+            if (byId.TryGetValue(id, out var c) && c.Type == "image") { hasImageChild = true; break; }
+        }
+        if (!hasImageChild)
+        {
+            var runs = CollectRuns(childIds, byId, defaultFontSize, boldDefault);
+            if (leadingMarkerRuns is not null) { runs.InsertRange(0, leadingMarkerRuns); }
+            blocks.Add(makeTextBlock(runs));
+            return;
+        }
+
+        var current = leadingMarkerRuns is not null ? new List<FlowRun>(leadingMarkerRuns) : new List<FlowRun>();
+        foreach (var id in childIds)
+        {
+            if (!byId.TryGetValue(id, out var child)) { continue; }
+            if (child.Type == "textRun")
+            {
+                var tr = child.AsTextRun;
+                if (tr is null) { continue; }
+                var style = tr.Style;
+                var family = style.FontFamilies.Count > 0 ? style.FontFamilies[0] : style.DeclaredFontName;
+                AppendTextRunSplitOnControlChars(current, tr.Text, family,
+                    style.FontSizePoints ?? defaultFontSize, style.Bold || boldDefault, style.Italic,
+                    style.Underline is not null, style.Strike, ColorFrom(style.Foreground), tr.Link);
+            }
+            else if (child.Type == "lineBreak")
+            {
+                current.Add(new FlowRun("\n", null, defaultFontSize, false, false, false, false, Colors.Black));
+            }
+            else if (child.Type == "image" && child.AsImage is { } img)
+            {
+                if (current.Count > 0)
+                {
+                    blocks.Add(makeTextBlock(current));
+                    current = new List<FlowRun>();
+                }
+                blocks.Add(ImageBlockFrom(child.Id, img, indent));
+            }
+        }
+        if (current.Count > 0)
+        {
+            blocks.Add(makeTextBlock(current));
+        }
+    }
+
+    /// <summary>One decoded image/vector wire payload -> its <see cref="FlowBlockKind.Image"/>
+    /// block — shared by the top-level "image"/"vector" cases (an anchored office picture, its own
+    /// node directly under a flow/section) and <see cref="AppendInlineContentBlocks"/> (a markdown
+    /// image nested inside its paragraph's own children).</summary>
+    private static FlowBlock ImageBlockFrom(ulong nodeId, ImagePayload img, double indent)
+    {
+        var size = img.DisplaySize ?? img.IntrinsicSize;
+        return new FlowBlock
+        {
+            Kind = FlowBlockKind.Image,
+            IndentPoints = indent,
+            Alignment = AlignmentFrom(img.Alignment),
+            ImageResourceId = img.ResourceId,
+            ImageWidthPoints = size.Width,
+            ImageHeightPoints = size.Height,
+            SpacingBeforePoints = 4,
+            SpacingAfterPoints = 4,
+            NodeId = nodeId,
+        };
+    }
 
     private static List<FlowRun> CollectRuns(List<ulong> childIds, Dictionary<ulong, RenderNode> byId,
         double defaultFontSize, bool boldDefault)
@@ -422,7 +640,7 @@ public static class FlowDocumentBuilder
     /// collapsed HERE (direct ?? style), once, so <see cref="TableGridRenderer"/> only ever
     /// resolves cell -&gt; table at draw time, never re-walks three wire levels per frame.</summary>
     private static TableGridModel BuildTable(RenderNode tableNode, Dictionary<ulong, RenderNode> byId,
-        TablePayload t, double defaultFontSize, int tableDepth)
+        TablePayload t, double defaultFontSize, int tableDepth, bool wrapCodeBlocks)
     {
         var rows = new List<TableGridRow>();
         var columnCount = t.GridWidths.Count;
@@ -444,7 +662,7 @@ public static class FlowDocumentBuilder
                 {
                     if (byId.TryGetValue(childId, out var child))
                     {
-                        Walk(child, byId, content, indent: 0, defaultFontSize, tableDepth + 1);
+                        Walk(child, byId, content, indent: 0, defaultFontSize, tableDepth + 1, wrapCodeBlocks);
                     }
                 }
 
@@ -550,11 +768,17 @@ public static class FlowDocumentBuilder
         ["removed"] = "CodeRoleRemovedColor",
     };
 
+
     /// <summary>Splits a code block's text into one <see cref="FlowRun"/> per token boundary
     /// `cb.Runs` declares, colouring each from the theme; text the highlighter did not cover (gaps
     /// between runs, or the whole block when `cb.Runs` is null/empty) stays <see
     /// cref="DefaultCodeColor"/>. `CodeRun.Start`/`End` are UTF-16 code-unit offsets — the SAME
-    /// unit a C# `string`'s indexer already uses, so no conversion is needed before slicing.</summary>
+    /// unit a C# `string`'s indexer already uses, so no conversion is needed before slicing.
+    /// S12-K (item 47, REVISE): this NEVER varies by wrap intent — the document's own bytes stay
+    /// literal regardless (a Copy chip, plain-selection copy, find, `--extract`, and `pdftotext`
+    /// all read this same text; see <see cref="FlowBlock.WrapCode"/>'s own doc for why a text
+    /// mutation was rejected). The wrap toggle lives entirely on the built <see cref="FlowBlock"/>,
+    /// set by its caller (the "codeBlock" case in <see cref="Walk"/>), never here.</summary>
     private static List<FlowRun> BuildCodeRuns(CodeBlockPayload cb, double fontSizePoints)
     {
         var text = cb.Text;

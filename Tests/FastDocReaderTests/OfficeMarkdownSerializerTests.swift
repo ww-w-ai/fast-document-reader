@@ -10,6 +10,43 @@ final class OfficeMarkdownSerializerTests: XCTestCase {
     private func md(_ blocks: [OfficeBlock]) -> String { OfficeMarkdownSerializer.serialize(blocks) }
     private func cell(_ text: String) -> Cell { Cell(blocks: [.paragraph(spans: [Span(text: text)])]) }
 
+    func testFullResultPreservesSideChannelsAndOrphanAnchors() {
+        func paragraph(_ value: String) -> OfficeBlock { .paragraph(spans: [Span(text: value)]) }
+        func object(_ value: String) -> OfficeMasterObject {
+            OfficeMasterObject(frame: .zero, content: .text([paragraph(value)]))
+        }
+        var result = OfficeReadResult(blocks: [paragraph("BODY")])
+        result.footnotes = [OfficeFootnote(number: 1, blocks: [paragraph("FOOTNOTE")])]
+        result.headers = [OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [paragraph("HEADER")])]
+        result.footers = [OfficeHeaderFooter(appliesTo: .evenPages, blocks: [paragraph("FOOTER")])]
+        result.masterPages = [OfficeMasterPage(section: 0, appliesTo: .defaultPages,
+            objects: [object("MASTER"), object("MASTER"), OfficeMasterObject(frame: .zero, content: .image(NSImage(size: .init(width: 1, height: 1))))])]
+        result.comments = [OfficeComment(id: "c", author: "Author", dateISO: nil, text: "COMMENT", number: 1)]
+        result.anchoredObjects = [
+            OfficeAnchoredObject(blockIndex: 0, object: object("PINNED"), paragraphAnchor: nil),
+            OfficeAnchoredObject(blockIndex: 999, object: object("ORPHAN"), paragraphAnchor: nil),
+            OfficeAnchoredObject(blockIndex: -1, object: object("NEGATIVE"), paragraphAnchor: nil),
+        ]
+        let output = OfficeMarkdownSerializer.serialize(result)
+        for token in ["BODY", "FOOTNOTE", "HEADER", "FOOTER", "MASTER", "COMMENT", "PINNED", "ORPHAN", "NEGATIVE", "[image]"] {
+            XCTAssertTrue(output.contains(token), token)
+        }
+        XCTAssertEqual(output.components(separatedBy: "MASTER").count - 1, 2)
+        XCTAssertTrue(output.contains("## Comments"))
+        XCTAssertTrue(output.contains("Comment 1 (Author)"))
+    }
+
+    func testFullResultRetainsLongTailAndNestedTable() {
+        let nested: OfficeBlock = .table(rows: [[cell("INNER_SENTINEL")]], headerRows: 0)
+        let outer: OfficeBlock = .table(rows: [[Cell(blocks: [nested])]], headerRows: 0)
+        var blocks = (0..<1000).map { OfficeBlock.paragraph(spans: [Span(text: "paragraph \($0)")]) }
+        blocks.append(outer)
+        blocks.append(.paragraph(spans: [Span(text: "LAST_SENTINEL")]))
+        let output = OfficeMarkdownSerializer.serialize(OfficeReadResult(blocks: blocks))
+        XCTAssertTrue(output.contains("INNER_SENTINEL"))
+        XCTAssertTrue(output.hasSuffix("LAST_SENTINEL"))
+    }
+
     // MARK: - Block mapping
 
     func testHeadingLevels() {

@@ -109,7 +109,7 @@ fn extract(path: &std::path::Path) -> Result<String, String> {
     } else {
         DocxReader::read(&archive).map_err(|e| e.error_description())?
     };
-    let body = OfficeMarkdownSerializer::serialize(&result.blocks, &result.footnotes);
+    let body = OfficeMarkdownSerializer::serialize_result(&result);
     let filename = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     Ok(format!("{}{}\n", header(&filename, &body), body))
 }

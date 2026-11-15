@@ -13,6 +13,9 @@ Source of each version: `hosts/avalonia/FastDoc.Avalonia/FastDoc.Avalonia.csproj
 | Avalonia.Headless | 12.1.2 | MIT | `~/.nuget/packages/avalonia.headless/12.1.2/avalonia.headless.nuspec` |
 | SkiaSharp | 3.119.4 | MIT (Copyright 2015-2016 Xamarin, Inc.; 2017-2018 Microsoft Corporation) | `~/.nuget/packages/skiasharp/3.119.4/LICENSE.txt`, `skiasharp.nuspec` |
 | AvaloniaUI.DiagnosticsSupport | 2.2.3 | Unverified — the `.nuspec` carries no `<license>` or `<licenseUrl>` element; copyright "2019-2026 AvaloniaUI OÜ". Not in the distributed build: the `PackageReference` sets `IncludeAssets=None` and `PrivateAssets=All` for every configuration other than Debug (`FastDoc.Avalonia.csproj` lines 20-23), so Release builds do not reference it. | `~/.nuget/packages/avaloniaui.diagnosticssupport/2.2.3/avaloniaui.diagnosticssupport.nuspec` — https://avaloniaui.net/ |
+| Microsoft.Web.WebView2 (S12-F opt-in web render, Windows) | 1.0.3405.78 | BSD-3-Clause (Copyright (C) Microsoft Corporation — `<license type="file">LICENSE.txt</license>` in the nuspec; the package's `licenseUrl` is a deprecated legacy field and does not override the file license) | `~/.nuget/packages/microsoft.web.webview2/1.0.3405.78/LICENSE.txt`, `NOTICE.txt` (third-party attributions for code the WebView2 SDK itself incorporates), `microsoft.web.webview2.nuspec` — https://aka.ms/webview |
+| Avalonia.Controls.WebView (S12-F opt-in web render, Linux) | 12.1.0 | MIT | `~/.nuget/packages/avalonia.controls.webview/12.1.0/avalonia.controls.webview.nuspec` — https://avaloniaui.net/ |
+| PuppeteerSharp (S12-F opt-in web render, on-demand headless Chromium fallback) | 25.8.0 | MIT | `~/.nuget/packages/puppeteersharp/25.8.0/puppeteersharp.nuspec` — https://github.com/hardkoded/puppeteer-sharp |
 
 ## 2. Test-only packages (not included in the distributed build)
 
@@ -220,3 +223,27 @@ Package list: every `[[package]]` in `rust/Cargo.lock` (172 entries). Four are t
 | Component | Version | License | Source |
 |---|---|---|---|
 | .NET runtime (Microsoft) | net9.0 (`TargetFramework` in `FastDoc.Avalonia.csproj`) | MIT | https://github.com/dotnet/runtime |
+
+### .NET runtime System.Native PAL
+
+The FileStatus interop layout and SystemNative_FStat declarations in
+FastDoc.Avalonia/Rendering/RenderTreeLoader.cs follow the .NET runtime's pal_io.h
+(https://github.com/dotnet/runtime/blob/v9.0.19/src/native/libs/System.Native/pal_io.h).
+The .NET runtime is licensed under the MIT License:
+
+Copyright (c) .NET Foundation and Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial
+portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT
+NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

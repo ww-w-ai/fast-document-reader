@@ -31,7 +31,16 @@
          default (one collection per class, run in parallel) raced them across threads and threw
          "the calling thread cannot access this object because a different thread owns it" from
          Window/Compositor construction — reproduced: 9 failures in one run, 0 in the next, same
-         commit, same machine. Must be copied next to the test DLL or the runner never finds it. -->
+         commit, same machine. Must be copied next to the test DLL or the runner never finds it.
+
+         This setting alone is NOT sufficient: it only stops xunit from scheduling different test
+         COLLECTIONS concurrently, it does nothing about a single async test method genuinely
+         suspending (a real Task.Delay, a real wall-clock timeout, cancellation delivered from a
+         timer thread) and resuming its continuation on a different threadpool thread than the one
+         AvaloniaHeadlessSetup's static constructor bound the UI thread to. Root-caused 2026-09-07
+         in WebRenderCoordinatorTests.cs — see that file's own doc comment: no test in this whole
+         suite may complete via a genuine (thread-hopping) await; every fake task must already be
+         completed or cancelled by the time it is awaited. -->
     <None Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

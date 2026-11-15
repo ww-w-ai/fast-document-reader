@@ -44,6 +44,9 @@
                           Click="OnTocToggleClicked" InputGesture="Ctrl+Shift+O" HotKey="Ctrl+Shift+O" />
                 <MenuItem x:Name="CommentsMenuItem" Header="_Comments" ToggleType="CheckBox"
                           Click="OnCommentsToggleClicked" InputGesture="Ctrl+Shift+C" HotKey="Ctrl+Shift+C" />
+                <Separator />
+                <MenuItem x:Name="WebRenderMenuItem" Header="_Diagram/Formula Rendering (mermaid, KaTeX)"
+                          ToggleType="CheckBox" Click="OnWebRenderToggleClicked" />
             </MenuItem>
             <MenuItem Header="_Help">
                 <MenuItem Header="_Keyboard Shortcuts…" Click="OnShowShortcutGuideClicked"
@@ -53,6 +56,15 @@
                 <MenuItem x:Name="AboutMenuItem" Header="_About FastDoc" Click="OnShowAboutClicked" />
             </MenuItem>
         </Menu>
+        <Border x:Name="OfficeAccessoryBar" DockPanel.Dock="Top" Padding="8,4" IsVisible="False"
+                Background="{DynamicResource PanelBackgroundColor}" BorderBrush="{DynamicResource PanelBorderColor}" BorderThickness="0,0,0,1">
+            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <Border Background="#D32F2F" CornerRadius="8.5" Padding="8,2" VerticalAlignment="Center">
+                    <TextBlock Text="read only" FontSize="10" FontWeight="SemiBold" Foreground="White" />
+                </Border>
+                <Button x:Name="EditInAppButton" Content="Edit" Click="OnEditInAppClicked" />
+            </StackPanel>
+        </Border>
         <Border x:Name="FindBar" DockPanel.Dock="Top" Padding="6,4" Background="{DynamicResource FindBarBackgroundColor}"
                 BorderBrush="{DynamicResource FindBarBorderColor}" BorderThickness="0,0,0,1" IsVisible="False">
             <StackPanel Orientation="Horizontal" Spacing="6">

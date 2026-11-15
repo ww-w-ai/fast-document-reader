@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using System.Text.Json;
 using FastDoc.Avalonia.Model;
 using FastDoc.Avalonia.Native;
@@ -116,13 +118,6 @@ public static class RenderTreeLoader
         }
     }
 
-    private static readonly HashSet<string> TextExtensions = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "md", "markdown", "txt", "text", "csv", "tsv", "log", "json", "yaml", "yml", "toml",
-        "ini", "conf", "cfg", "sh", "bash", "zsh", "py", "rb", "js", "ts", "swift", "rs", "go",
-        "c", "h", "cpp", "hpp", "java", "kt", "sql", "xml", "html", "css",
-    };
-
     private static readonly HashSet<string> OfficeExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         "docx", "docm", "dotx", "dotm", "odt", "hwp", "hwpx",
@@ -137,26 +132,15 @@ public static class RenderTreeLoader
     public static LoadResult Load(string path)
     {
         var extension = Path.GetExtension(path).TrimStart('.');
-        var bytes = File.ReadAllBytes(path);
+        var bytes = ReadFile(path, extension);
 
         var stopwatch = Stopwatch.StartNew();
         string? json;
         OfficeDocumentHandle? handle = null;
-        if (TextExtensions.Contains(extension))
-        {
-            json = ReadTextTree(bytes, extension);
-        }
-        else if (OfficeExtensions.Contains(extension))
-        {
+        if (OfficeExtensions.Contains(extension))
             (json, handle) = ReadOfficeTree(bytes, extension);
-        }
         else
-        {
-            stopwatch.Stop();
-            return new LoadResult(null,
-                new RenderTreeError { Kind = "unsupportedExtension", Message = $"no reader for .{extension}" },
-                stopwatch.ElapsedMilliseconds);
-        }
+            json = ReadTextTree(bytes, extension);
 
         if (json is null)
         {
@@ -201,26 +185,15 @@ public static class RenderTreeLoader
     public static LoadBreakdown LoadWithBreakdown(string path)
     {
         var extension = Path.GetExtension(path).TrimStart('.');
-        var bytes = File.ReadAllBytes(path);
+        var bytes = ReadFile(path, extension);
 
         var ffiWatch = Stopwatch.StartNew();
         string? json;
         OfficeDocumentHandle? handle = null;
-        if (TextExtensions.Contains(extension))
-        {
-            json = ReadTextTree(bytes, extension);
-        }
-        else if (OfficeExtensions.Contains(extension))
-        {
+        if (OfficeExtensions.Contains(extension))
             (json, handle) = ReadOfficeTree(bytes, extension);
-        }
         else
-        {
-            ffiWatch.Stop();
-            return new LoadBreakdown(null,
-                new RenderTreeError { Kind = "unsupportedExtension", Message = $"no reader for .{extension}" },
-                ffiWatch.ElapsedMilliseconds, 0);
-        }
+            json = ReadTextTree(bytes, extension);
         ffiWatch.Stop();
 
         if (json is null)
@@ -253,6 +226,80 @@ public static class RenderTreeLoader
         var successHandle = handle;
         handle = null;
         return new LoadBreakdown(tree, null, ffiWatch.ElapsedMilliseconds, deserializeWatch.ElapsedMilliseconds, successHandle, path);
+    }
+
+    private const int MaxPlainTextBytes = 16 * 1024 * 1024;
+
+    // .NET runtime System.Native PAL FileStatus and flags, from its MIT-licensed pal_io.h.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileStatus
+    {
+        public int Flags, Mode;
+        public uint Uid, Gid;
+        public long Size, ATime, ATimeNsec, MTime, MTimeNsec, CTime, CTimeNsec,
+            BirthTime, BirthTimeNsec, Dev, RDev, Ino;
+        public uint UserFlags;
+    }
+
+    [DllImport("libc", EntryPoint = "open", SetLastError = true)]
+    private static extern int OpenUnix([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags, int mode);
+    [DllImport("System.Native", EntryPoint = "SystemNative_FStat", SetLastError = true)]
+    private static extern int FStatUnix(IntPtr fd, out FileStatus status);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint GetFileType(SafeFileHandle handle);
+
+    private static FileStream OpenRegularFile(string path)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            if (GetFileType(handle) != 1) { handle.Dispose(); throw new IOException("Only regular files can be opened."); }
+            return new FileStream(handle, FileAccess.Read);
+        }
+        // O_NONBLOCK differs between Darwin and Linux. FStat inspects the opened object,
+        // avoiding path replacement between a file-type check and the actual read.
+        var fd = OpenUnix(path, OperatingSystem.IsMacOS() ? 0x4 : 0x800, 0);
+        if (fd == -1)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            throw error switch
+            {
+                2 => new FileNotFoundException("File not found.", path),
+                20 => new DirectoryNotFoundException($"A component of the path is not a directory: {path}"),
+                1 or 13 => new UnauthorizedAccessException($"Access to the path is denied: {path}"),
+                _ => new IOException($"Unable to open file (error {error})."),
+            };
+        }
+        var safe = new SafeFileHandle(new IntPtr(fd), ownsHandle: true);
+        if (FStatUnix(new IntPtr(fd), out var status) != 0 || (status.Mode & 0xF000) != 0x8000)
+        {
+            safe.Dispose();
+            throw new IOException("Only regular files can be opened.");
+        }
+        return new FileStream(safe, FileAccess.Read);
+    }
+
+    private static byte[] ReadFile(string path, string extension)
+    {
+        using var stream = OpenRegularFile(path);
+        if (OfficeExtensions.Contains(extension) || extension.Equals("md", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals("markdown", StringComparison.OrdinalIgnoreCase))
+        {
+            using var full = new MemoryStream();
+            stream.CopyTo(full);
+            return full.ToArray();
+        }
+
+        using var buffer = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = stream.Read(chunk, 0, Math.Min(chunk.Length, MaxPlainTextBytes + 1 - (int)buffer.Length))) > 0)
+        {
+            buffer.Write(chunk, 0, read);
+            if (buffer.Length > MaxPlainTextBytes)
+                throw new IOException("Plain text file exceeds the 16 MiB limit.");
+        }
+        return buffer.ToArray();
     }
 
     private static string? ReadTextTree(byte[] bytes, string extension)

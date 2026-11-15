@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+cd "$(dirname "$0")/.."
 
 # Toolchain: this machine's standalone CommandLineTools has a mismatched SwiftPM
 # ManifestAPI (PackageDescription .swiftmodule newer than its .dylib), which breaks
@@ -39,8 +40,18 @@ fi
 # when someone remembers is the thing that failed here.
 ./Scripts/check-freshness.sh
 
-swift build -c "$CONFIG"
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/FastDocReader"
+# A release build must not carry this machine's paths: map the checkout away from #file/#filePath
+# strings and debug info, and drop the linker's debug map (it records every object and static-library
+# member path, e.g. `…/.build/…/librhwp_native_ffi.a(…)`). Debug builds keep both for the debugger.
+SWIFT_BUILD_FLAGS=()
+if [[ "$CONFIG" == "release" ]]; then
+  # shellcheck source=remap-paths.sh
+  source Scripts/remap-paths.sh
+  SWIFT_BUILD_FLAGS=(--build-system native "${FMD_SWIFT_PREFIX_FLAGS[@]}" -Xlinker -S -Xlinker -dead_strip)
+fi
+
+swift build -c "$CONFIG" ${SWIFT_BUILD_FLAGS[@]+"${SWIFT_BUILD_FLAGS[@]}"}
+BIN="$(swift build -c "$CONFIG" ${SWIFT_BUILD_FLAGS[@]+"${SWIFT_BUILD_FLAGS[@]}"} --show-bin-path)/FastDocReader"
 APP="FastDocReader.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

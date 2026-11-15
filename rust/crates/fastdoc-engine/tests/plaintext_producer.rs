@@ -216,3 +216,24 @@ fn round_trip_is_stable() {
     let second_json = decoded.encode_json().unwrap();
     assert_eq!(first_json, second_json);
 }
+
+#[test]
+fn decoded_source_metadata_and_spans_describe_normalized_utf8() {
+    use fastdoc_engine::render::plaintext::produce_decoded;
+    use sha2::{Digest, Sha256};
+    let source = "한글\n😀tail";
+    let mut bytes = vec![0xff, 0xfe];
+    for unit in source.encode_utf16() { bytes.extend(unit.to_le_bytes()); }
+    let tree = produce_decoded(&bytes, "unknown.bin").unwrap();
+    let value: Value = serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+    let normalized = &value["sources"][0];
+    assert_eq!(normalized["textContent"], source);
+    assert_eq!(normalized["byteLength"], source.len());
+    assert_eq!(normalized["utf8Length"], source.len());
+    assert_eq!(normalized["utf16Length"], source.encode_utf16().count());
+    assert_eq!(normalized["sha256"], format!("{:x}", Sha256::digest(source.as_bytes())));
+    let paragraphs = nodes_by_tag(value["nodes"].as_array().unwrap(), "paragraph");
+    let segment = &paragraphs[1]["sourceSpans"][0]["segments"][0];
+    assert_eq!(segment["utf8Start"], "한글\n".len());
+    assert_eq!(segment["utf16Start"], 3);
+}

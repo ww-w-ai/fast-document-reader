@@ -8,5 +8,5 @@ rhwp branch   : fastdocreader/charshape-export
 rhwp subject  : Take the empty-paragraph height back out — it says nothing new
 rhwp origin   : https://github.com/ww-w-ai/rhwp.git
 uncommitted   : 0 file(s) in the rhwp checkout at build time
-library bytes : 59292408
-library sha256: 8ea6a0d16876ac81547957926bef6da4ebd2fe9d0e706e5f8429df689ebfd1e1
+library bytes : 59323904
+library sha256: 8bbf979ee1bc952c9333db5c3d6e3c3d8901a6185ee1df86c8f71c0b755be7a7

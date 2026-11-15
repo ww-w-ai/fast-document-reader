@@ -66,6 +66,9 @@ public partial class MainWindow : Window
         Canvas.ImageClicked += OnCanvasImageClicked; // S9-B3 batch 6: click-to-enlarge
         SetDefaultAppMenuItem.IsEnabled = !OperatingSystem.IsMacOS(); // S8-B2 ②: this host does not
         // run there, but the item stays visibly disabled rather than silently doing nothing if it ever did.
+        // S12-F: reflects the persisted opt-in switch — default OFF on a fresh install (see
+        // docs/studio/sprints/S12/s12f-scope-v2.md), so a first launch never shows this checked.
+        WebRenderMenuItem.IsChecked = WebRender.WebRenderSettings.Load().RenderingEnabled;
         if (Program.PendingDocumentPath is { } path) { LoadPath(path); }
         // Deferred to Opened rather than called here: Window.Show(owner) throws
         // InvalidOperationException("Cannot show window with non-visible owner") when the owner
@@ -159,21 +162,32 @@ public partial class MainWindow : Window
         if (_currentPath is { } path) { _externalEditorLauncher.Open(path); }
     }
 
-    /// <summary>Relabels/(en/dis)ables EditInAppMenuItem for the document CURRENTLY loaded —
-    /// called from the same places <see cref="UpdateFlowOnlyMenuEnablement"/> is (end of
-    /// <see cref="LoadPath"/>), since both depend on "what document is open now".</summary>
+    /// <summary>Relabels/(en/dis)ables EditInAppMenuItem AND the S12-C titlebar-area accessory bar
+    /// (the read-only badge + Edit button, mirroring macOS's <c>officeAccessoryView</c> —
+    /// DocumentWindowController.swift:1489-1552 — which shows a "read only" chip and an Edit
+    /// button only for office documents, hidden for markdown/plain text) for the document
+    /// CURRENTLY loaded — called from the same places <see cref="UpdateFlowOnlyMenuEnablement"/>
+    /// is (end of <see cref="LoadPath"/>), since both depend on "what document is open now". Both
+    /// surfaces share the SAME "is this an office document" resolver and the SAME default-app
+    /// lookup — no second interpretation of "office" is introduced here.</summary>
     private void UpdateEditInAppMenuItem()
     {
         var extension = _currentPath is null ? null : System.IO.Path.GetExtension(_currentPath);
         var isOffice = extension is not null && Open.ExternalEditorResolver.IsOfficeExtension(extension);
         EditInAppMenuItem.IsEnabled = isOffice;
+        OfficeAccessoryBar.IsVisible = isOffice;
         if (!isOffice)
         {
             EditInAppMenuItem.Header = "Edit in Default App…";
             return;
         }
         var appName = _externalEditorProbe.DefaultAppName(extension!);
-        EditInAppMenuItem.Header = appName is null ? "Edit in Default App…" : $"Edit in {appName}…";
+        var fullLabel = appName is null ? "Edit in Default App…" : $"Edit in {appName}…";
+        EditInAppMenuItem.Header = fullLabel;
+        // Mirrors the mac button's own split: a short "Edit" title so the bar stays compact, with
+        // the full "Edit in <App>…" label riding in the tooltip (officeAccessoryView's own
+        // applyEditButton comment: "the full 'Edit in <App>' rides in the tooltip").
+        ToolTip.SetTip(EditInAppButton, fullLabel);
     }
 
     // ---- S9-B3 batch 4: Reload --------------------------------------------------------------
@@ -475,7 +489,7 @@ public partial class MainWindow : Window
         var items = e.DataTransfer.TryGetFiles();
         var path = items?
             .Select(item => item.TryGetLocalPath())
-            .FirstOrDefault(p => p is not null && DocumentExtensions.IsSupported(System.IO.Path.GetExtension(p)));
+            .FirstOrDefault(p => p is not null && System.IO.File.Exists(p));
         if (path is null) { return; }
         LoadPath(path);
     }
@@ -677,6 +691,21 @@ public partial class MainWindow : Window
     // ---- S8-B2 ④: Comments -----------------------------------------------------------------
 
     private const double CommentsPanelWidth = 260;
+
+    /// <summary>View > Diagram/Formula Rendering — the S12-F opt-in switch's only UI surface.
+    /// Persists immediately (so the choice survives a relaunch, unlike the other View toggles on
+    /// this menu, which are deliberately per-session — see s12f-scope-v2.md for why this ONE is
+    /// durable: turning it on can trigger an OS install prompt or a Chromium download, which the
+    /// user should not have to repeat every launch) and reloads the current document so
+    /// FlowWebRenderPass runs again under the new setting — there is no live re-render of an
+    /// already-open document otherwise.</summary>
+    private void OnWebRenderToggleClicked(object? sender, RoutedEventArgs e)
+    {
+        var enabled = !WebRender.WebRenderSettings.Load().RenderingEnabled;
+        WebRender.WebRenderSettings.Save(new WebRender.WebRenderSettingsData { RenderingEnabled = enabled });
+        WebRenderMenuItem.IsChecked = enabled;
+        if (_currentPath is { } path) { LoadPath(path); }
+    }
 
     private void OnCommentsToggleClicked(object? sender, RoutedEventArgs e)
     {

@@ -58,6 +58,11 @@ public static class ShortcutGuideModel
             new ShortcutEntry("Up / Down", "Scroll one line"),
             new ShortcutEntry("Page Up / Page Down", "Scroll one page"),
             new ShortcutEntry("Home / End", "Jump to document start / end"),
+            // S12-I (gap.md #37): the paragraph/document-unit movement mac reaches with fn/⌘/⌥ +
+            // arrows — see FlowDocumentView.OnKeyDown's own S12-I comment for why Ctrl (not the
+            // dual Control-or-Meta "isCommandModifier") is this host's modifier for these.
+            new ShortcutEntry("Ctrl+Up / Ctrl+Down", "Jump to previous / next paragraph"),
+            new ShortcutEntry("Ctrl+Home / Ctrl+End", "Jump to document start / end"),
         }),
         new ShortcutGroup("Find", new[]
         {

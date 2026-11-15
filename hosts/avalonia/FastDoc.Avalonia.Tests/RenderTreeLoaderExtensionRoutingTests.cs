@@ -1,81 +1,50 @@
 using System.IO;
+using System.Diagnostics;
+using System.Reflection;
 using FastDoc.Avalonia.Rendering;
 
 namespace FastDoc.Avalonia.Tests;
 
-/// <summary>
-/// RenderTreeLoader (Rendering/RenderTreeLoader.cs) picks one of three doors by file extension:
-/// text tree (md/txt/...), office tree (docx/odt/hwp/...), or an immediate "unsupportedExtension"
-/// error for anything else. The text and office doors both end in a native P/Invoke call
-/// (fastdoc_read_text_tree / fastdoc_office_open), so exercising THEM here would make this a
-/// FASTDOC_ENGINE_LIB integration test rather than a unit test — that coverage belongs to
-/// Scripts/host-gate.sh's headless --extract smoke runs (moby-dick.md / the docx / the hwpx),
-/// which already prove both doors end-to-end against the real engine.
-///
-/// What IS a pure unit here: the "no reader for this extension" branch returns its error WITHOUT
-/// ever reaching FastdocEngine, so it needs no native library loaded — it fails on classification
-/// alone. Asserting on it is what proves the classification runs before the native call, not
-/// after a caught exception from one.
-/// </summary>
 public class RenderTreeLoaderExtensionRoutingTests
 {
-    [Fact]
-    public void Unsupported_extension_returns_unsupportedExtension_error_without_touching_the_engine()
+    [Theory]
+    [InlineData("unknown")]
+    [InlineData("")]
+    public void Oversized_plain_file_is_rejected_before_engine(string extension)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"fastdoc-loader-test-{Path.GetRandomFileName()}.zzzz");
-        File.WriteAllBytes(path, new byte[] { 1, 2, 3 });
+        var path = Path.Combine(Path.GetTempPath(), $"fastdoc-{Path.GetRandomFileName()}.{extension}");
         try
         {
-            var result = RenderTreeLoader.Load(path);
-
-            Assert.False(result.IsOk);
-            Assert.NotNull(result.Error);
-            Assert.Equal("unsupportedExtension", result.Error!.Kind);
-            Assert.Contains(".zzzz", result.Error.Message);
+            using (var stream = File.Create(path)) stream.SetLength(16 * 1024 * 1024 + 1);
+            Assert.Contains("16 MiB", Assert.Throws<IOException>(() => RenderTreeLoader.Load(path)).Message);
+            Assert.Contains("16 MiB", Assert.Throws<IOException>(() => RenderTreeLoader.LoadWithBreakdown(path)).Message);
         }
-        finally
-        {
-            File.Delete(path);
-        }
+        finally { File.Delete(path); }
     }
 
     [Fact]
-    public void Unsupported_extension_is_case_insensitive_like_the_supported_sets()
+    public void Unix_regular_file_opens_and_fifo_directory_and_device_are_rejected()
     {
-        // TextExtensions/OfficeExtensions both use OrdinalIgnoreCase; the fallback branch should
-        // reject an unknown extension the same way regardless of case, not just lower-case.
-        var path = Path.Combine(Path.GetTempPath(), $"fastdoc-loader-test-{Path.GetRandomFileName()}.ZZZZ");
-        File.WriteAllBytes(path, new byte[] { 1 });
+        if (OperatingSystem.IsWindows()) return;
+        var directory = Path.Combine(Path.GetTempPath(), "fastdoc-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(directory);
+        var file = Path.Combine(directory, "regular");
+        var fifo = Path.Combine(directory, "fifo");
+        File.WriteAllText(file, "regular-sentinel");
+        var open = typeof(RenderTreeLoader).GetMethod("OpenRegularFile", BindingFlags.NonPublic | BindingFlags.Static)!;
         try
         {
-            var result = RenderTreeLoader.Load(path);
-            Assert.False(result.IsOk);
-            Assert.Equal("unsupportedExtension", result.Error!.Kind);
+            using (var regular = (FileStream)open.Invoke(null, new object[] { file })!)
+            using (var reader = new StreamReader(regular))
+                Assert.Equal("regular-sentinel", reader.ReadToEnd());
+            using var process = Process.Start(new ProcessStartInfo("mkfifo", fifo) { UseShellExecute = false })!;
+            process.WaitForExit();
+            Assert.Equal(0, process.ExitCode);
+            foreach (var path in new[] { directory, fifo, "/dev/null" })
+                Assert.IsType<IOException>(Assert.Throws<TargetInvocationException>(() => open.Invoke(null, new object[] { path })).InnerException);
+            Assert.IsType<FileNotFoundException>(Assert.Throws<TargetInvocationException>(() =>
+                open.Invoke(null, new object[] { Path.Combine(directory, "missing") })).InnerException);
         }
-        finally
-        {
-            File.Delete(path);
-        }
-    }
-
-    [Fact]
-    public void LoadWithBreakdown_reports_the_same_unsupportedExtension_error_as_Load()
-    {
-        // LoadWithBreakdown duplicates Load's classification (see the file's own comment on why
-        // it is a second copy, not a shared helper) — this pins that the two stay in agreement
-        // for the one branch this test can reach without the engine.
-        var path = Path.Combine(Path.GetTempPath(), $"fastdoc-loader-test-{Path.GetRandomFileName()}.unknown");
-        File.WriteAllBytes(path, new byte[] { 1 });
-        try
-        {
-            var breakdown = RenderTreeLoader.LoadWithBreakdown(path);
-            Assert.False(breakdown.IsOk);
-            Assert.Equal("unsupportedExtension", breakdown.Error!.Kind);
-            Assert.Equal(0, breakdown.DeserializeMs);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
+        finally { Directory.Delete(directory, recursive: true); }
     }
 }

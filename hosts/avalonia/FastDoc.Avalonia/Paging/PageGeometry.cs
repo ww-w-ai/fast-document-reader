@@ -89,25 +89,34 @@ public static class BlockPageMarkers
     /// cref="Rendering.TableGridModel"/> (which carries neither — that type lives in
     /// TableGridRenderer.cs, unowned by this unit, see the dispatch note above) so the table
     /// settle loop and PageModePainter can ask these questions without touching that file.</summary>
+    /// <summary>S12-A: <see cref="NodeId"/> is the RenderNode each entry was emitted FOR —
+    /// FlowDocumentBuilder already carries the same value on every <c>FlowBlock.NodeId</c>, so a
+    /// test (or a future consumer) can assert POSITIONAL correspondence between the two lists
+    /// directly, rather than trusting that matching COUNTS implies matching order. Added when a
+    /// mutation that reversed only <see cref="AppendFootnoteMarkers"/>'s footnote sort order
+    /// passed every existing test here — they compared lengths, never identities.</summary>
     public readonly record struct Markers(
-        bool[] SectionStart, bool[] PageBreakBefore, bool[] TableKeepsWhole, bool[] TableRepeatsHeader);
+        bool[] SectionStart, bool[] PageBreakBefore, bool[] TableKeepsWhole, bool[] TableRepeatsHeader, ulong[] NodeId);
 
-    /// <summary>The four parallel per-block lists <see cref="Walk"/> fills, bundled so adding a
-    /// fifth marker later does not mean widening every method's parameter list again.</summary>
+    /// <summary>The five parallel per-block lists <see cref="Walk"/> fills, bundled so adding a
+    /// sixth marker later does not mean widening every method's parameter list again.</summary>
     private sealed class MarkerLists
     {
         public readonly List<bool> SectionStart = new();
         public readonly List<bool> PageBreakBefore = new();
         public readonly List<bool> TableKeepsWhole = new();
         public readonly List<bool> TableRepeatsHeader = new();
+        public readonly List<ulong> NodeId = new();
 
         public Markers ToMarkers() => new(
-            SectionStart.ToArray(), PageBreakBefore.ToArray(), TableKeepsWhole.ToArray(), TableRepeatsHeader.ToArray());
+            SectionStart.ToArray(), PageBreakBefore.ToArray(), TableKeepsWhole.ToArray(), TableRepeatsHeader.ToArray(),
+            NodeId.ToArray());
     }
 
     public static Markers Compute(RenderTree tree)
     {
-        var empty = new Markers(Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<bool>());
+        var empty = new Markers(
+            Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<bool>(), Array.Empty<ulong>());
         if (tree.Document is null) { return empty; }
 
         var byId = new Dictionary<ulong, RenderNode>(tree.Nodes.Count);
@@ -127,7 +136,50 @@ public static class BlockPageMarkers
         // siblings is still walked both times — only an actual ancestor cycle is cut.
         var visiting = new HashSet<ulong>();
         Walk(root, byId, acc, ref pendingSectionStart, tableDepth: 0, visiting);
+        // S12-A: FlowDocumentBuilder.Build appends every footnote's body at the end of its block
+        // list (AppendFootnotes) instead of dropping it — mirrored here with the exact same
+        // selection, sort, and per-node emit count, or PageLayout's index space drifts from that
+        // list (this file's own top-level doc).
+        AppendFootnoteMarkers(tree, byId, acc, ref pendingSectionStart, visiting);
         return acc.ToMarkers();
+    }
+
+    private static void AppendFootnoteMarkers(RenderTree tree, Dictionary<ulong, RenderNode> byId,
+        MarkerLists acc, ref bool pendingSectionStart, HashSet<ulong> visiting)
+    {
+        var footnotes = CollectFootnotes(tree);
+        if (footnotes.Count == 0) { return; }
+
+        // NodeId mirrors FlowDocumentBuilder.AppendFootnotes exactly: the separator Rule is
+        // stamped with the document's own root id, and each label is stamped with ITS OWN
+        // footnote node's id — so a test (or a future consumer) can zip FlowDocumentBuilder's
+        // block list against these markers and assert positional identity, not just count.
+        Emit(tree.Document!.RootNodeId, null, false, false, acc, ref pendingSectionStart);
+
+        foreach (var (nodeId, note) in footnotes)
+        {
+            Emit(nodeId, null, false, false, acc, ref pendingSectionStart); // the "[n]" label block
+            if (byId.TryGetValue(note.BodyFlowId, out var flow))
+            {
+                WalkChildren(flow, byId, acc, ref pendingSectionStart, tableDepth: 0, visiting);
+            }
+        }
+    }
+
+    /// <summary>Every "footnote" node in the tree (with its own node id), sorted by citation
+    /// number — MUST select and sort identically to FlowDocumentBuilder.CollectFootnotes, the two
+    /// files' own copy of the same rule (dispatch note above: this file cannot call into that
+    /// builder's private method).</summary>
+    private static List<(ulong NodeId, FootnotePayload Note)> CollectFootnotes(RenderTree tree)
+    {
+        var result = new List<(ulong, FootnotePayload)>();
+        foreach (var node in tree.Nodes)
+        {
+            var note = node.AsFootnote;
+            if (note is not null) { result.Add((node.Id, note)); }
+        }
+        result.Sort((a, b) => a.Item2.Number.CompareTo(b.Item2.Number));
+        return result;
     }
 
     private static void Walk(RenderNode node, Dictionary<ulong, RenderNode> byId,
@@ -167,21 +219,24 @@ public static class BlockPageMarkers
                 return;
 
             case "heading":
-                Emit(node.AsHeading?.Pagination, false, false, acc, ref pendingSectionStart);
+                Emit(node.Id, node.AsHeading?.Pagination, false, false, acc, ref pendingSectionStart);
                 return;
 
             case "paragraph":
-                Emit(node.AsParagraph?.Pagination, false, false, acc, ref pendingSectionStart);
+                EmitInlineContentMarkers(node, byId, node.AsParagraph?.Pagination, hasLeadingMarker: false, acc, ref pendingSectionStart);
                 return;
 
             case "listItem":
             case "taskListItem":
+                EmitInlineContentMarkers(node, byId, null, hasLeadingMarker: true, acc, ref pendingSectionStart);
+                return;
+
             case "codeBlock":
             case "image":
             case "vector":
             case "unsupported":
             case "thematicBreak":
-                Emit(null, false, false, acc, ref pendingSectionStart);
+                Emit(node.Id, null, false, false, acc, ref pendingSectionStart);
                 return;
 
             case "table":
@@ -192,7 +247,7 @@ public static class BlockPageMarkers
                     WalkChildren(node, byId, acc, ref pendingSectionStart, tableDepth, visiting);
                     return;
                 }
-                Emit(null, t.Style.PageBreakPolicy == "never", t.Style.RepeatHeaderRows == true,
+                Emit(node.Id, null, t.Style.PageBreakPolicy == "never", t.Style.RepeatHeaderRows == true,
                     acc, ref pendingSectionStart);
                 // A table's rows/cells are NOT walked at the top level when it builds a grid model
                 // (BuildTable in FlowDocumentBuilder walks them into the TABLE's OWN cell content
@@ -201,6 +256,8 @@ public static class BlockPageMarkers
                 return;
             }
 
+            // "footnote" skips here too — its body is walked separately by
+            // AppendFootnoteMarkers, mirroring FlowDocumentBuilder's own AppendFootnotes (S12-A).
             case "footnote":
             case "header":
             case "footer":
@@ -230,13 +287,66 @@ public static class BlockPageMarkers
         }
     }
 
-    private static void Emit(PaginationWire? pagination, bool keepsWhole, bool repeatsHeader,
+    /// <summary>S12-img: mirrors <see cref="Rendering.FlowDocumentBuilder"/>'s
+    /// <c>AppendInlineContentBlocks</c> marker-for-marker — a markdown image parses as a NODE
+    /// inside its own paragraph/listItem/taskListItem's children (never as a standalone top-level
+    /// "image" block), so that builder now emits 1..N sibling <c>FlowBlock</c>s from ONE such node
+    /// (a text block, an image block, a text block...) instead of one. This walker must emit the
+    /// exact same COUNT and ORDER of markers or <c>BlockPageMarkers</c> drifts out of positional
+    /// alignment with the block list it is meant to describe (the same failure class S12-A's REVISE
+    /// round caught for footnotes — see FootnoteContentLossTests' positional-alignment test). No
+    /// marker content (font/text) is needed here, only the split POINTS, so this tracks "has any
+    /// non-image inline content accumulated since the last flush" without materializing runs.</summary>
+    private static void EmitInlineContentMarkers(RenderNode node, Dictionary<ulong, RenderNode> byId,
+        PaginationWire? pagination, bool hasLeadingMarker, MarkerLists acc, ref bool pendingSectionStart)
+    {
+        var hasImageChild = false;
+        foreach (var childId in node.Children)
+        {
+            if (byId.TryGetValue(childId, out var c) && c.Type == "image") { hasImageChild = true; break; }
+        }
+        if (!hasImageChild)
+        {
+            Emit(node.Id, pagination, false, false, acc, ref pendingSectionStart);
+            return;
+        }
+
+        // A list item's own marker run (bullet/checkbox) counts as pending content from the start
+        // (mirrors AppendInlineContentBlocks seeding `current` with leadingMarkerRuns), so an item
+        // that OPENS with an image still gets a marker-only text block ahead of it, same as the
+        // builder. A plain paragraph carries no such marker.
+        var pendingContent = hasLeadingMarker;
+        foreach (var childId in node.Children)
+        {
+            if (!byId.TryGetValue(childId, out var child)) { continue; }
+            if (child.Type == "textRun" || child.Type == "lineBreak")
+            {
+                pendingContent = true;
+            }
+            else if (child.Type == "image")
+            {
+                if (pendingContent)
+                {
+                    Emit(node.Id, pagination, false, false, acc, ref pendingSectionStart);
+                    pendingContent = false;
+                }
+                Emit(child.Id, null, false, false, acc, ref pendingSectionStart);
+            }
+        }
+        if (pendingContent)
+        {
+            Emit(node.Id, pagination, false, false, acc, ref pendingSectionStart);
+        }
+    }
+
+    private static void Emit(ulong nodeId, PaginationWire? pagination, bool keepsWhole, bool repeatsHeader,
         MarkerLists acc, ref bool pendingSectionStart)
     {
         acc.SectionStart.Add(pendingSectionStart);
         acc.PageBreakBefore.Add(pagination?.PageBreakBefore ?? false);
         acc.TableKeepsWhole.Add(keepsWhole);
         acc.TableRepeatsHeader.Add(repeatsHeader);
+        acc.NodeId.Add(nodeId);
         pendingSectionStart = false;
     }
 }

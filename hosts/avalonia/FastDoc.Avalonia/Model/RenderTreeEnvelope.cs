@@ -55,6 +55,9 @@ public sealed class RenderTree
     [JsonPropertyName("document")]
     public RenderDocument? Document { get; set; }
 
+    [JsonPropertyName("sources")]
+    public List<SourceDescriptorWire> Sources { get; set; } = new();
+
     [JsonPropertyName("nodes")]
     public List<RenderNode> Nodes { get; set; } = new();
 
@@ -115,8 +118,17 @@ public sealed class ResourceWire
     [JsonPropertyName("sourceKey")] public string? SourceKey { get; set; }
 }
 
+public sealed class SourceDescriptorWire
+{
+    [JsonPropertyName("id")] public ulong Id { get; set; }
+    [JsonPropertyName("kind")] public string Kind { get; set; } = "";
+    [JsonPropertyName("textContent")] public string? TextContent { get; set; }
+}
+
 public sealed class RenderDocument
 {
+    [JsonPropertyName("sourceIds")] public List<ulong> SourceIds { get; set; } = new();
+
     [JsonPropertyName("format")]
     public string? Format { get; set; }
 
@@ -258,6 +270,17 @@ public sealed class RenderNode
     /// <see cref="FootnotePayload.BodyFlowId"/> rather than this node's `Children`.</summary>
     public FootnotePayload? AsFootnote => Decode<FootnotePayload>("footnote");
     public FormulaPayload? AsFormula => Decode<FormulaPayload>("formula");
+    /// <summary>S12-F: `wire::Diagram` (rust/crates/fastdoc-engine/src/render/render_tree/wire.rs:
+    /// 940-944) — a fenced diagram (currently only mermaid) as its OWN node type, distinct from
+    /// "codeBlock". A markdown ```mermaid fence decodes to THIS type, not `AsCodeBlock` — a real
+    /// content-loss bug existed here until this accessor was added: with no "diagram" case in
+    /// <see cref="Rendering.FlowDocumentBuilder"/>'s Walk() switch, the node fell into the
+    /// `default:` branch's WalkChildren, which finds no children (this node has none) and the
+    /// diagram vanishes with no visible trace, in BOTH the raw-fallback and web-render paths — the
+    /// exact same shape as the formula content-loss bug this same sprint already fixed once. Found
+    /// visually on 2026-09-07 confirming the switch-off raw fallback on a real Linux VM (see
+    /// docs/studio/sprints/S12/s12f-web-render-optin.md).</summary>
+    public DiagramPayload? AsDiagram => Decode<DiagramPayload>("diagram");
     /// <summary>S8-A2 (C3): a "header" or "footer" node's own payload — the ONE
     /// `wire::HeaderFooter` struct backs both node types (`node_payloads!` in wire.rs maps
     /// `Header => "header" (HeaderFooter), Footer => "footer" (HeaderFooter)`), so this getter
@@ -552,6 +575,19 @@ public sealed class FormulaPayload
 {
     [JsonPropertyName("block")] public bool Block { get; set; }
     [JsonPropertyName("source")] public string Source { get; set; } = "";
+}
+
+/// <summary>S12-F: `wire::Diagram` — `Language` is the wire spelling of `DiagramLanguage`
+/// ("mermaid" | "other"), decoded as a plain string like <see cref="HeaderFooterPayload.AppliesTo"/>
+/// rather than a C# enum, matching this file's own established pattern for wire string-enums.
+/// `RenderedResourceId` is reserved on the wire for a pre-rendered picture (unused by this host —
+/// S12-F's own opt-in renderer seats its output through <c>ImageBlockRenderer.SyntheticResourceId</c>
+/// instead, keyed by node id, not by this field).</summary>
+public sealed class DiagramPayload
+{
+    [JsonPropertyName("language")] public string Language { get; set; } = "other";
+    [JsonPropertyName("source")] public string Source { get; set; } = "";
+    [JsonPropertyName("renderedResourceId")] public ulong? RenderedResourceId { get; set; }
 }
 
 /// <summary>S8-A2 (C3): `wire::HeaderFooter` (rust/crates/fastdoc-engine/src/render/render_tree/

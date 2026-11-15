@@ -138,6 +138,10 @@ public sealed class PageModePainter
         var footerCandidates = HeaderFooterText.CollectCandidates(tree, "footer");
         var byId = new Dictionary<ulong, RenderNode>(tree.Nodes.Count);
         foreach (var n in tree.Nodes) { byId[n.Id] = n; }
+        // S12-J: the fallback size for a header/footer run that declared no size of its own —
+        // the document's own default body size (mirrors FlowDocumentBuilder.Build's identical
+        // fallback), never a bare literal.
+        var defaultFontSize = tree.Document is { DefaultBodyFontSize: > 0 } doc ? doc.DefaultBodyFontSize : 12.0;
 
         for (var pageIndex = 0; pageIndex < layout.PageCount; pageIndex++)
         {
@@ -166,23 +170,32 @@ public sealed class PageModePainter
             // S9-B3 batch 2: View > Master Page Furniture off suppresses the running header/footer
             // band entirely — mirrors PageViewOptions.header/footer deriving from `outline` on
             // macOS (turning the furniture off leaves the content flowing with nothing drawn in
-            // the margin it would otherwise have reserved). Resolve() is skipped outright rather
-            // than resolved-then-hidden, since it walks the tree per page.
-            var headerText = masterPageFurniture
-                ? HeaderFooterText.Resolve(headerCandidates, byId, sectionIndex, isFirstPageOfSection, pageNumber, layout.PageCount)
+            // the margin it would otherwise have reserved). ResolveStyled() is skipped outright
+            // rather than resolved-then-hidden, since it walks the tree per page.
+            //
+            // S12-J: ResolveStyled replaces the plain-string Resolve() on this draw path — it
+            // carries the header/footer paragraph's own declared alignment and each run's own
+            // font/size/bold/italic, so DrawBandText paints the document's actual typography
+            // instead of a fixed 9pt Inter, always centered (gap.md row "헤더/푸터(러닝 헤더)").
+            // Resolve() itself is untouched (S8A2RenderFixesTests/RecursionGuardTests pin its
+            // plain-string contract).
+            var headerBand = masterPageFurniture
+                ? HeaderFooterText.ResolveStyled(headerCandidates, byId, sectionIndex, isFirstPageOfSection,
+                    pageNumber, layout.PageCount, defaultFontSize)
                 : null;
-            var footerText = masterPageFurniture
-                ? HeaderFooterText.Resolve(footerCandidates, byId, sectionIndex, isFirstPageOfSection, pageNumber, layout.PageCount)
+            var footerBand = masterPageFurniture
+                ? HeaderFooterText.ResolveStyled(footerCandidates, byId, sectionIndex, isFirstPageOfSection,
+                    pageNumber, layout.PageCount, defaultFontSize)
                 : null;
 
-            if (!string.IsNullOrWhiteSpace(headerText))
+            if (headerBand is not null)
             {
-                DrawBandText(surface, headerText!, deskX + marginLeftPx, localTop + marginTopPx * 0.35, contentWidthPx, zoomFactor);
+                DrawBandText(surface, headerBand.Value, deskX + marginLeftPx, localTop + marginTopPx * 0.35, contentWidthPx, zoomFactor);
             }
-            if (!string.IsNullOrWhiteSpace(footerText))
+            if (footerBand is not null)
             {
                 var footerY = localTop + pageHeightPx - marginBottomPx * 0.65;
-                DrawBandText(surface, footerText!, deskX + marginLeftPx, footerY, contentWidthPx, zoomFactor);
+                DrawBandText(surface, footerBand.Value, deskX + marginLeftPx, footerY, contentWidthPx, zoomFactor);
             }
 
             var left = deskX + marginLeftPx;
@@ -313,11 +326,45 @@ public sealed class PageModePainter
         return built;
     }
 
-    private static void DrawBandText(IPageCanvas surface, string text, double left, double top, double width, double zoomFactor)
+    /// <summary>S12-J: paints a header/footer band using the DOCUMENT's own declared alignment and
+    /// per-run font/size/bold/italic/underline/strike — the same styled-run pattern
+    /// <c>TableGridRenderer</c>'s cell-text builder already uses (<c>GenericTextRunProperties</c> +
+    /// <c>ValueSpan&lt;TextRunProperties&gt;</c> overrides), so a header/footer with more than one
+    /// styled run (e.g. a bold label followed by a plain page number) draws correctly rather than
+    /// collapsing to one uniform style. Colour is deliberately NOT taken from the document — kept
+    /// at the band's own muted <see cref="BandTextBrush"/>, matching gap.md's item 50 scope
+    /// (font/size/alignment only) and keeping the band visually distinct from body text furniture.
+    /// A band with no runs (a malformed tree, or every run was empty) draws nothing — callers
+    /// already guard on <see cref="HeaderFooterText.ResolveStyled"/> returning null for that case,
+    /// this is the defence for an empty-but-non-null band.</summary>
+    private static void DrawBandText(IPageCanvas surface, HeaderFooterText.StyledBand band,
+        double left, double top, double width, double zoomFactor)
     {
-        var fontSizePx = 9.0 * zoomFactor * PointsToPixels;
-        var layout = new TextLayout(text, DefaultTypeface, fontSizePx, BandTextBrush, TextAlignment.Center,
-            TextWrapping.NoWrap, maxWidth: width);
+        var sb = new System.Text.StringBuilder();
+        var overrides = new List<ValueSpan<TextRunProperties>>();
+        var cursor = 0;
+        var maxFontSizePx = 9.0 * zoomFactor * PointsToPixels; // bootstrap only — every run below overwrites it
+        foreach (var run in band.Runs)
+        {
+            if (run.Text.Length == 0) { continue; }
+            sb.Append(run.Text);
+            var fontSizePx = run.FontSizePoints * PointsToPixels * zoomFactor;
+            if (fontSizePx > maxFontSizePx) { maxFontSizePx = fontSizePx; }
+            var typeface = new Typeface(run.FontFamily ?? "Inter",
+                run.Italic ? FontStyle.Italic : FontStyle.Normal,
+                run.Bold ? FontWeight.Bold : FontWeight.Normal);
+            TextDecorationCollection? decorations = null;
+            if (run.Underline) { decorations = TextDecorations.Underline; }
+            else if (run.Strike) { decorations = TextDecorations.Strikethrough; }
+            var props = new GenericTextRunProperties(typeface, fontSizePx,
+                textDecorations: decorations, foregroundBrush: BandTextBrush);
+            overrides.Add(new ValueSpan<TextRunProperties>(cursor, run.Text.Length, props));
+            cursor += run.Text.Length;
+        }
+        var text = sb.ToString();
+        if (text.Length == 0) { return; }
+        var layout = new TextLayout(text, DefaultTypeface, maxFontSizePx, BandTextBrush, band.Alignment,
+            TextWrapping.NoWrap, maxWidth: width, textStyleOverrides: overrides);
         surface.DrawTextLayout(layout, new Point(left, top));
     }
 }
@@ -382,6 +429,25 @@ public static class HeaderFooterText
     public static string? Resolve(List<Candidate> candidates, Dictionary<ulong, RenderNode> byId,
         int sectionIndex, bool isFirstPageOfSection, int pageNumber, int totalPages)
     {
+        var chosen = SelectChosen(candidates, sectionIndex, isFirstPageOfSection);
+        if (chosen is null) { return null; }
+
+        var texts = new List<string>();
+        foreach (var candidate in chosen)
+        {
+            CollectText(candidate.Node, byId, texts, new HashSet<ulong>(), pageNumber, totalPages);
+        }
+        var joined = string.Join(" ", texts.Where(t => !string.IsNullOrWhiteSpace(t)));
+        return string.IsNullOrWhiteSpace(joined) ? null : joined;
+    }
+
+    /// <summary>The section/first-page selection rule <see cref="Resolve"/>'s own doc describes,
+    /// factored out so <see cref="ResolveStyled"/> (S12-J) picks the identical node(s) rather than
+    /// a second copy of the rule drifting from this one. Returns null for "draw nothing on this
+    /// page" (no candidate in this section, or an explicit empty first-page declaration) — the
+    /// same case both callers already treat as null.</summary>
+    private static List<Candidate>? SelectChosen(List<Candidate> candidates, int sectionIndex, bool isFirstPageOfSection)
+    {
         var inSection = candidates.Where(c => c.Section is null || c.Section == sectionIndex).ToList();
         if (inSection.Count == 0) { return null; }
 
@@ -398,15 +464,7 @@ public static class HeaderFooterText
         }
         // An explicit first-page match with no visible text (docx's blank w:titlePg header) is a
         // deliberate "draw nothing on this page" — not a signal to fall back to the default band.
-        if (chosen.Count == 0) { return null; }
-
-        var texts = new List<string>();
-        foreach (var candidate in chosen)
-        {
-            CollectText(candidate.Node, byId, texts, new HashSet<ulong>(), pageNumber, totalPages);
-        }
-        var joined = string.Join(" ", texts.Where(t => !string.IsNullOrWhiteSpace(t)));
-        return string.IsNullOrWhiteSpace(joined) ? null : joined;
+        return chosen.Count == 0 ? null : chosen;
     }
 
     private static void CollectText(RenderNode node, Dictionary<ulong, RenderNode> byId, List<string> texts,
@@ -436,4 +494,118 @@ public static class HeaderFooterText
         }
         visiting.Remove(node.Id);
     }
+
+    // -----------------------------------------------------------------------------------------
+    // S12-J: styled resolution — the SAME node selection as Resolve()/CollectText above, but
+    // carrying each run's own font/size/bold/italic/underline/strike and the header/footer
+    // paragraph's own declared alignment, instead of collapsing everything to a bare string.
+    // Kept as a SEPARATE path (not a Resolve() overload) so the plain-string contract
+    // S8A2RenderFixesTests/RecursionGuardTests already pin stays untouched.
+    // -----------------------------------------------------------------------------------------
+
+    /// <summary>One styled run inside a resolved header/footer band — the wire style fields
+    /// <see cref="Model.CharacterStyleWire"/> carries, already resolved to a font family and a
+    /// points-valued size (never null; falls back to the document's own default body size the same
+    /// way <c>FlowDocumentBuilder.CollectRuns</c> does) so the painter never re-derives a
+    /// fallback.</summary>
+    public readonly record struct BandRun(
+        string Text, string? FontFamily, double FontSizePoints, bool Bold, bool Italic, bool Underline, bool Strike);
+
+    /// <summary>A resolved header/footer band: the paragraph's own alignment (falling back to
+    /// Center — the band's prior fixed default — only when the document declared none) plus every
+    /// styled run in citation order.</summary>
+    public readonly record struct StyledBand(TextAlignment Alignment, List<BandRun> Runs);
+
+    /// <summary>The styled counterpart of <see cref="Resolve"/> — same page/section selection
+    /// (<see cref="SelectChosen"/>), but returns typography instead of a bare string. Null under
+    /// the identical conditions <see cref="Resolve"/> returns null for (nothing selected for this
+    /// page, or every selected run's text is empty/whitespace).</summary>
+    public static StyledBand? ResolveStyled(List<Candidate> candidates, Dictionary<ulong, RenderNode> byId,
+        int sectionIndex, bool isFirstPageOfSection, int pageNumber, int totalPages, double defaultFontSize)
+    {
+        var chosen = SelectChosen(candidates, sectionIndex, isFirstPageOfSection);
+        if (chosen is null) { return null; }
+
+        var runs = new List<BandRun>();
+        var alignment = TextAlignment.Center; // the band's own prior fixed default, kept when undeclared
+        var alignmentSet = false;
+        foreach (var candidate in chosen)
+        {
+            CollectStyledRuns(candidate.Node, byId, runs, new HashSet<ulong>(), pageNumber, totalPages,
+                defaultFontSize, ref alignment, ref alignmentSet);
+        }
+        return runs.Exists(r => !string.IsNullOrWhiteSpace(r.Text)) ? new StyledBand(alignment, runs) : null;
+    }
+
+    private static void CollectStyledRuns(RenderNode node, Dictionary<ulong, RenderNode> byId, List<BandRun> runs,
+        HashSet<ulong> visiting, int pageNumber, int totalPages, double defaultFontSize,
+        ref TextAlignment alignment, ref bool alignmentSet)
+    {
+        if (!visiting.Add(node.Id)) { return; } // cycle: node.Id is already an ancestor on this path
+
+        // The FIRST paragraph/heading's own alignment wins — a header/footer is overwhelmingly one
+        // paragraph, and this mirrors CollectText's own "first thing found governs" shape.
+        if (!alignmentSet)
+        {
+            var style = node.Type switch
+            {
+                "paragraph" => node.AsParagraph?.Style,
+                "heading" => node.AsHeading?.Style,
+                _ => null,
+            };
+            if (style is not null)
+            {
+                alignment = AlignmentFrom(style.Alignment);
+                alignmentSet = true;
+            }
+        }
+
+        if (node.Type == "textRun")
+        {
+            string? text = null;
+            Model.CharacterStyleWire? charStyle = null;
+            if (node.Data.ValueKind == JsonValueKind.Object
+                && node.Data.TryGetProperty("pageNumberField", out var field) && field.ValueKind == JsonValueKind.String)
+            {
+                // Same live-field substitution as CollectText — a page-number run keeps ITS OWN
+                // declared style (a bold page number stays bold), only the text is substituted.
+                text = field.GetString() == "numPages" ? totalPages.ToString() : pageNumber.ToString();
+                charStyle = node.AsTextRun?.Style;
+            }
+            else
+            {
+                var tr = node.AsTextRun;
+                if (tr is not null && tr.Text.Length > 0) { text = tr.Text; charStyle = tr.Style; }
+            }
+            if (text is not null)
+            {
+                var family = charStyle is { FontFamilies.Count: > 0 } ? charStyle.FontFamilies[0] : charStyle?.DeclaredFontName;
+                runs.Add(new BandRun(text, family, charStyle?.FontSizePoints ?? defaultFontSize,
+                    charStyle?.Bold ?? false, charStyle?.Italic ?? false,
+                    charStyle?.Underline is not null, charStyle?.Strike ?? false));
+            }
+        }
+
+        foreach (var childId in node.Children)
+        {
+            if (byId.TryGetValue(childId, out var child))
+            {
+                CollectStyledRuns(child, byId, runs, visiting, pageNumber, totalPages, defaultFontSize,
+                    ref alignment, ref alignmentSet);
+            }
+        }
+        visiting.Remove(node.Id);
+    }
+
+    private static TextAlignment AlignmentFrom(string? wire) => wire switch
+    {
+        "left" => TextAlignment.Left,
+        "right" => TextAlignment.Right,
+        "center" => TextAlignment.Center,
+        "justified" => TextAlignment.Justify,
+        // "natural"/null: the document declared no alignment for this header/footer paragraph —
+        // keep the band's PRIOR fixed default (Center) rather than guessing Left, so a document
+        // that never touches this contract renders identically to before S12-J.
+        _ => TextAlignment.Center,
+    };
 }

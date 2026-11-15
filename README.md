@@ -263,17 +263,17 @@ a Developer ID and stapled, and it is **not** sandboxed, so sibling images just 
 
 ### Download
 
-Every build of release `v1.4.2` is on the [Releases
+Every build of release `v1.4.3` is on the [Releases
 page](https://github.com/ww-w-ai/fast-document-reader/releases), with a `SHA256SUMS` file covering
 all five archives:
 
 | Platform | File |
 |---|---|
-| macOS (Apple Silicon) | `FastDoc-1.4.2-macos-arm64.zip` — notarized Developer ID build, not sandboxed — or the [Mac App Store](https://apps.apple.com/app/id6791603562) build, sandboxed |
-| Windows x64 | `FastDoc-1.4.2-win-x64.zip` |
-| Windows ARM64 | `FastDoc-1.4.2-win-arm64.zip` |
-| Linux x64 | `FastDoc-1.4.2-linux-x64.tar.gz` |
-| Linux ARM64 | `FastDoc-1.4.2-linux-arm64.tar.gz` |
+| macOS (Apple Silicon) | `FastDoc-1.4.3-macos-arm64.zip` — notarized Developer ID build, not sandboxed — or the [Mac App Store](https://apps.apple.com/app/id6791603562) build, sandboxed |
+| Windows x64 | `FastDoc-1.4.3-win-x64.zip` |
+| Windows ARM64 | `FastDoc-1.4.3-win-arm64.zip` |
+| Linux x64 | `FastDoc-1.4.3-linux-x64.tar.gz` |
+| Linux ARM64 | `FastDoc-1.4.3-linux-arm64.tar.gz` |
 
 To open files here by default: **FastDoc → Set as Default App…**, which lists the kinds it
 can claim with a checkbox each — Markdown ticked, text formats yours to choose. Per file, the Finder
@@ -282,7 +282,7 @@ route still works: right-click → **Get Info** → **Open with** → **Change A
 ## Windows and Linux
 
 The macOS app is native AppKit. Windows and Linux get the same Rust engine through a .NET 9 +
-Avalonia host, version **1.4.2** (one version number with the Mac app), read-only, in
+Avalonia host, version **1.4.3** (one version number with the Mac app), read-only, in
 `hosts/avalonia/`. It opens the same 9 file families (`.md`, `.txt`, `.docx`, `.docm`, `.dotx`,
 `.dotm`, `.odt`, `.hwp`, `.hwpx`), bundles a Noto Sans KR subset (11,172 Hangul + 8,138 Hanja
 glyphs) so Korean text renders with no system font, exports vector-text PDF, and scrolls from the

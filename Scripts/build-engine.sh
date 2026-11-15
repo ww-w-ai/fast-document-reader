@@ -18,8 +18,12 @@ export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develope
 TARGET=aarch64-apple-darwin
 OUT=Vendor/FastdocEngine.xcframework
 
+# shellcheck source=remap-paths.sh
+source Scripts/remap-paths.sh
+
 echo "==> cargo build --release ($TARGET)"
-cargo build --release --manifest-path rust/Cargo.toml -p fastdoc-ffi --target "$TARGET"
+RUSTFLAGS="$FMD_RUSTFLAGS" CFLAGS_aarch64_apple_darwin="$FMD_CFLAGS" \
+  cargo build --release --manifest-path rust/Cargo.toml -p fastdoc-ffi --target "$TARGET"
 
 echo "==> packaging $OUT"
 rm -rf "$OUT" rust/dist/swift

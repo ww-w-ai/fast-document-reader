@@ -30,6 +30,88 @@ impl OfficeMarkdownSerializer {
     /// document, 162 blocks: 7,938 characters against the 13,932 the older sentence cost.
     pub const RAW_NOTE: &'static str = "[table — not a grid; rows below are literal text]";
 
+    /// Serialize every semantic channel from the same parse result the viewer consumes.
+    /// Positioned objects appear once at their source anchor; page furniture is emitted once
+    /// per source declaration, never expanded once per rendered page.
+    pub fn serialize_result(result: &crate::render::office::office_block::OfficeReadResult) -> String {
+        use std::collections::HashMap;
+        let mut anchored = HashMap::<usize, Vec<(String, bool)>>::new();
+        let mut tail = Vec::new();
+        for object in &result.anchored_objects {
+            let content = match &object.object.content {
+                crate::render::office::office_block::OfficeMasterObjectContent::Text(blocks) =>
+                    blocks.iter().map(Self::render).collect::<Vec<_>>(),
+                other => vec![(Self::object_text(other), false)],
+            };
+            if let Ok(index) = usize::try_from(object.block_index) {
+                if index < result.blocks.len() {
+                    anchored.entry(index).or_default().extend(content);
+                    continue;
+                }
+            }
+            tail.extend(content);
+        }
+        let mut pieces = Vec::new();
+        for (index, block) in result.blocks.iter().enumerate() {
+            pieces.push(Self::render(block));
+            if let Some(objects) = anchored.remove(&index) {
+                pieces.extend(objects);
+            }
+        }
+        pieces.extend(tail);
+        let mut out = Self::join_pieces(pieces);
+        let notes = Self::serialize(&[], &result.footnotes);
+        Self::append_section(&mut out, "", &notes);
+        for (label, entries) in [("Headers", &result.headers), ("Footers", &result.footers)] {
+            let body = entries.iter().map(|entry| Self::serialize(&entry.blocks, &[]))
+                .filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n\n");
+            Self::append_section(&mut out, label, &body);
+        }
+        let masters = result.master_pages.iter().flat_map(|page| &page.objects)
+            .map(|object| Self::object_text(&object.content)).filter(|text| !text.is_empty())
+            .collect::<Vec<_>>().join("\n\n");
+        Self::append_section(&mut out, "Master pages", &masters);
+        let comments = result.comments.iter().map(|comment| {
+            let metadata = [&comment.author, &comment.date_iso].into_iter().flatten()
+                .map(|value| value.to_string()).collect::<Vec<_>>().join(", ");
+            let label = if metadata.is_empty() { format!("Comment {}", comment.number) }
+                else { format!("Comment {} ({metadata})", comment.number) };
+            format!("**{label}**\n\n{}", comment.text)
+        }).collect::<Vec<_>>().join("\n\n");
+        Self::append_section(&mut out, "Comments", &comments);
+        out
+    }
+
+    fn object_text(content: &crate::render::office::office_block::OfficeMasterObjectContent) -> String {
+        use crate::render::office::office_block::OfficeMasterObjectContent;
+        match content {
+            OfficeMasterObjectContent::Text(blocks) => Self::serialize(blocks, &[]),
+            OfficeMasterObjectContent::Image(_) => "[image]".to_string(),
+            OfficeMasterObjectContent::Drawing(_) | OfficeMasterObjectContent::Vector(_) =>
+                "[drawing]".to_string(),
+        }
+    }
+
+    fn append_section(out: &mut String, label: &str, body: &str) {
+        if body.is_empty() { return; }
+        if !out.is_empty() { out.push_str("\n\n"); }
+        if !label.is_empty() { out.push_str(&format!("## {label}\n\n")); }
+        out.push_str(body);
+    }
+
+    fn join_pieces(pieces: Vec<(String, bool)>) -> String {
+        let mut out = String::new();
+        let mut previous_list = false;
+        for (text, is_list) in pieces.into_iter().filter(|p| !p.0.is_empty()) {
+            if !out.is_empty() {
+                out.push_str(if is_list && previous_list { "\n" } else { "\n\n" });
+            }
+            out.push_str(&text);
+            previous_list = is_list;
+        }
+        out
+    }
+
     // swift: OfficeMarkdownSerializer.serialize
     /// `footnotes` are appended as a trailing section, because they are no longer IN `blocks`.
     ///
@@ -43,27 +125,7 @@ impl OfficeMarkdownSerializer {
         blocks: &[crate::render::office::office_block::OfficeBlock],
         footnotes: &[crate::render::office::office_block::OfficeFootnote],
     ) -> String {
-        let mut pieces: Vec<(String, bool)> = Vec::new();
-        for block in blocks {
-            let rendered = Self::render(block);
-            if rendered.0.is_empty() {
-                continue;
-            }
-            pieces.push(rendered);
-        }
-        let mut out = String::new();
-        for (i, p) in pieces.iter().enumerate() {
-            if i > 0 {
-                // Consecutive list items stay in one list (single newline); everything else is
-                // separated by a blank line so paragraphs/headings/tables don't run together.
-                if p.1 && pieces[i - 1].1 {
-                    out.push('\n');
-                } else {
-                    out.push_str("\n\n");
-                }
-            }
-            out.push_str(&p.0);
-        }
+        let mut out = Self::join_pieces(blocks.iter().map(Self::render).collect());
         if footnotes.is_empty() {
             return out;
         }

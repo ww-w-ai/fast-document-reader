@@ -17,7 +17,7 @@ import AppKit
 /// the gaps in the first place (`PageBandLayoutDelegate.openedBands`), so there is no second source
 /// of truth about where a page ends.
 final class GridTextTableBlock: NSTextTableBlock {
-    override func drawBackground(withFrame frameRect: NSRect, in controlView: NSView,
+    override func drawBackground(withFrame frameRect: NSRect, in controlView: NSView?,
                                  characterRange charRange: NSRange, layoutManager: NSLayoutManager) {
         // THE TWO COORDINATE SYSTEMS. `frameRect` arrives in the VIEW's coordinates, while
         // `openedBands` is recorded from line fragment rects, which are the TEXT CONTAINER's — the

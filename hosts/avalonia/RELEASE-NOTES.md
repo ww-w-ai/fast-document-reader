@@ -1,4 +1,12 @@
-# FastDoc for Windows and Linux 1.4.2
+# FastDoc for Windows and Linux 1.4.3
+
+## What's new in 1.4.3
+
+- Open plain-text files with custom extensions or no extension from the file picker, by dropping
+  them onto the window, or through their file association.
+- Markdown conversion preserves document headers, footers, anchored text and comments.
+- Headless text extraction consistently decodes legacy CP949 and UTF-16 files.
+- Files too large to open as plain text report an error without partial output.
 
 ## What it is
 
