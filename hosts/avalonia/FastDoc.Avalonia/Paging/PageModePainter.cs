@@ -62,7 +62,6 @@ public sealed class PageModePainter
     private sealed class PageFacts
     {
         public required PinnedObjectSet Pinned { get; init; }
-        public required PageNumberFacts Numbers { get; init; }
         public required Dictionary<int, List<(PinnedObject Object, double TopPoints)>> AnchoredByPage { get; init; }
     }
 
@@ -115,43 +114,18 @@ public sealed class PageModePainter
         var facts = new PageFacts
         {
             Pinned = pinned,
-            Numbers = PageNumberFacts.From(layout, markers),
             AnchoredByPage = anchored,
         };
         _factsCache = (layout, markers, facts);
         return facts;
     }
 
-    /// <summary>Which master template covers each page this pass draws — ONE batched engine call
-    /// for the whole visible range (never one per page), over exactly the pages the draw loop will
-    /// visit. Pages with no covering template are absent from the result.</summary>
-    private Dictionary<int, int> SelectMasters(PinnedObjectSet pinned, PageLayoutResult layout, int singlePageIndex,
-        PageGeometry geometry, double zoomFactor, double viewportHeightPx, double scrollOffsetPx, double buffer)
-    {
-        var pageHeightPx = PageHeightPx(geometry, zoomFactor);
-        var pages = new List<(int PageIndex, int? Section)>();
-        for (var p = 0; p < layout.PageCount; p++)
-        {
-            if (singlePageIndex >= 0)
-            {
-                if (p != singlePageIndex) { continue; }
-            }
-            else
-            {
-                var localTop = PageTopPx(geometry, p, zoomFactor) - scrollOffsetPx;
-                if (localTop + pageHeightPx < -buffer) { continue; }
-                if (localTop > viewportHeightPx + buffer) { break; }
-            }
-            pages.Add((p, p < layout.PageSectionIndex.Count ? layout.PageSectionIndex[p] : 0));
-        }
-        var answers = MasterPageSelector.Select(pinned.Masters, pinned.SectionsHidingMasterPage, pages);
-        var result = new Dictionary<int, int>();
-        for (var i = 0; i < pages.Count; i++)
-        {
-            if (answers[i] >= 0 && answers[i] < pinned.Masters.Count) { result[pages[i].PageIndex] = answers[i]; }
-        }
-        return result;
-    }
+    /// <summary>The master template covering a page, the running head and foot that apply to it and the
+    /// number it prints are the engine's answer (the page plan, S5 of docs/plans/pagination-to-engine.md),
+    /// read here from <see cref="PageLayoutResult.Sheets"/>; a layout built without the document's
+    /// entries carries none, and a page then draws no furniture and prints its own ordinal.</summary>
+    private static PageSheet SheetOf(PageLayoutResult layout, int pageIndex) =>
+        pageIndex < layout.Sheets.Count ? layout.Sheets[pageIndex] : new PageSheet(pageIndex + 1, false, null, null, null);
 
     /// <summary>Drops every cached pixel-scale TextLayout — call whenever the tree/PageLayoutResult
     /// this painter draws is replaced (a new document, or a re-paginate), so a stale block index
@@ -242,10 +216,6 @@ public sealed class PageModePainter
         // What the document pins to its sheets: master-page templates (every page they cover) and
         // anchored objects (the page their carrier paragraph lands on). Resolved once per layout.
         var facts = FactsFor(tree, blocks, layout, geometry, markers);
-        var masterByPage = masterPageFurniture && facts.Pinned.Masters.Count > 0
-            ? SelectMasters(facts.Pinned, layout, isSinglePageExport ? singlePageIndex : -1,
-                geometry, zoomFactor, viewportHeightPx, scrollOffsetPx, buffer)
-            : null;
         // S12-J: the fallback size for a header/footer run that declared no size of its own —
         // the document's own default body size (mirrors FlowDocumentBuilder.Build's identical
         // fallback), never a bare literal.
@@ -271,23 +241,22 @@ public sealed class PageModePainter
             var contentWidthPx = layout.PageContentWidthPoints * PointsToPixels * zoomFactor;
             var contentTop = localTop + marginTopPx;
 
-            var sectionIndex = pageIndex < layout.PageSectionIndex.Count ? layout.PageSectionIndex[pageIndex] : 0;
-            var isFirstPageOfSection = pageIndex == 0
-                || (pageIndex - 1 < layout.PageSectionIndex.Count && layout.PageSectionIndex[pageIndex - 1] != sectionIndex);
-            // The number the sheet PRINTS: the document's own counter (a 새 번호 restart renumbers
-            // from that page on; macOS's displayedPageNumber), not the sheet's ordinal.
-            var pageNumber = facts.Numbers.Displayed(pageIndex);
+            // What the page carries besides its body — which head, foot and master page apply and the
+            // number it prints (the document's own counter: a 새 번호 restart renumbers from that page
+            // on) — is the plan's answer, not this host's.
+            var sheet = SheetOf(layout, pageIndex);
+            var pageNumber = sheet.Number;
 
             // 바탕쪽 first (behind everything): the artwork, the ruled title and the page number a
             // Korean document draws on the sheet itself. View > Master Page Furniture governs it
             // like the running header/footer — off means nothing pinned, nothing reserved.
-            if (masterByPage is not null && masterByPage.TryGetValue(pageIndex, out var templateIndex))
+            if (masterPageFurniture && sheet.Master is { } templateIndex && templateIndex < facts.Pinned.Masters.Count)
             {
                 var template = facts.Pinned.Masters[templateIndex];
                 foreach (var obj in template.Objects)
                 {
                     _pinnedPainter.Draw(surface, obj, obj.Y, paperRect, zoomFactor, pageNumber, layout.PageCount,
-                        facts.Numbers.Hides(pageIndex));
+                        sheet.NumberHidden);
                 }
             }
             // S9-B3 batch 2: View > Master Page Furniture off suppresses the running header/footer
@@ -302,13 +271,11 @@ public sealed class PageModePainter
             // instead of a fixed 9pt Inter, always centered (gap.md row "헤더/푸터(러닝 헤더)").
             // Resolve() itself is untouched (S8A2RenderFixesTests/RecursionGuardTests pin its
             // plain-string contract).
-            var headerBand = masterPageFurniture
-                ? HeaderFooterText.ResolveStyled(headerCandidates, byId, sectionIndex, isFirstPageOfSection,
-                    pageNumber, layout.PageCount, defaultFontSize)
+            var headerBand = masterPageFurniture && sheet.Header is { } headerAt && headerAt < headerCandidates.Count
+                ? HeaderFooterText.ResolveStyled(headerCandidates[headerAt], byId, pageNumber, layout.PageCount, defaultFontSize)
                 : null;
-            var footerBand = masterPageFurniture
-                ? HeaderFooterText.ResolveStyled(footerCandidates, byId, sectionIndex, isFirstPageOfSection,
-                    pageNumber, layout.PageCount, defaultFontSize)
+            var footerBand = masterPageFurniture && sheet.Footer is { } footerAt && footerAt < footerCandidates.Count
+                ? HeaderFooterText.ResolveStyled(footerCandidates[footerAt], byId, pageNumber, layout.PageCount, defaultFontSize)
                 : null;
 
             if (headerBand is not null)
@@ -330,7 +297,7 @@ public sealed class PageModePainter
                 {
                     if (obj.Content is not PinnedImage) { continue; }
                     _pinnedPainter.Draw(surface, obj, topPoints, paperRect, zoomFactor, pageNumber, layout.PageCount,
-                        facts.Numbers.Hides(pageIndex));
+                        sheet.NumberHidden);
                 }
             }
 
@@ -375,7 +342,7 @@ public sealed class PageModePainter
                 {
                     if (obj.Content is PinnedImage) { continue; }
                     _pinnedPainter.Draw(surface, obj, topPoints, paperRect, zoomFactor, pageNumber, layout.PageCount,
-                        facts.Numbers.Hides(pageIndex));
+                        sheet.NumberHidden);
                 }
             }
         }
@@ -740,8 +707,19 @@ public static class HeaderFooterText
     /// page, or every selected run's text is empty/whitespace).</summary>
     public static StyledBand? ResolveStyled(List<Candidate> candidates, Dictionary<ulong, RenderNode> byId,
         int sectionIndex, bool isFirstPageOfSection, int pageNumber, int totalPages, double defaultFontSize)
+        => StyleChosen(SelectChosen(candidates, sectionIndex, isFirstPageOfSection), byId, pageNumber, totalPages,
+            defaultFontSize);
+
+    /// <summary>The styled band of the ONE entry the page plan chose for a page (S5 of
+    /// docs/plans/pagination-to-engine.md): which entry applies is the engine's decision, this only
+    /// reads its text and typography. Null when the entry has no visible text.</summary>
+    public static StyledBand? ResolveStyled(Candidate chosen, Dictionary<ulong, RenderNode> byId, int pageNumber,
+        int totalPages, double defaultFontSize)
+        => StyleChosen(new List<Candidate> { chosen }, byId, pageNumber, totalPages, defaultFontSize);
+
+    private static StyledBand? StyleChosen(List<Candidate>? chosen, Dictionary<ulong, RenderNode> byId, int pageNumber,
+        int totalPages, double defaultFontSize)
     {
-        var chosen = SelectChosen(candidates, sectionIndex, isFirstPageOfSection);
         if (chosen is null) { return null; }
 
         var runs = new List<BandRun>();

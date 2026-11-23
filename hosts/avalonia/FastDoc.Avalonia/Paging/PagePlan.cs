@@ -27,6 +27,14 @@ internal sealed class PlanBlockInput
     /// page may let hang past its foot — decided by the engine's line model (S3).</summary>
     public double Trailing { get; set; }
     public double Height { get; init; }
+    /// <summary>The page this block's first line lands on restarts the counter at this number (HWP's
+    /// 새 번호), and the one it lands on prints none (쪽 번호 감추기). Facts the document states; the
+    /// engine answers which page shows which number.</summary>
+    public long? PageNumberRestart { get; init; }
+    public bool HidesPageNumber { get; init; }
+    /// <summary>The notes this block cites: the note number and, for a text block, the line holding
+    /// its marker.</summary>
+    public IReadOnlyList<PlanCiteInput>? Cites { get; init; }
     public double[]? RowHeights { get; init; }
     public bool[]? RowCanBreakAbove { get; init; }
     /// <summary>Per row, the cells that begin in it with the line boxes inside them — what lets the
@@ -47,7 +55,40 @@ internal sealed class PlanCellInput
     public required PlanLineInput[] Lines { get; init; }
 }
 
-internal readonly record struct PlannedPage(int Section, long? FirstKey);
+internal readonly record struct PlanCiteInput(long Note, int? Line);
+
+/// <summary>One running head, foot or master page the host holds, as the plan selects among them:
+/// when it applies (the wire's "defaultPages"/"firstPage"/"evenPages"/"oddPages") and the one section
+/// it belongs to (null: every section).</summary>
+public readonly record struct PlanEntryInput(string AppliesTo, long? Section);
+
+/// <summary>One note's height in points, at the width it is drawn at.</summary>
+public readonly record struct PlanNoteInput(long Number, double Height);
+
+/// <summary>What a section declared about the rule above its notes; absent sections get the reader's
+/// own minimum.</summary>
+public readonly record struct PlanSeparatorInput(int Section, long LineType, double LineWidth, double MarginTop,
+    double MarginBottom, double NoteSpacing);
+
+/// <summary>What the plan needs to answer for the SHEET rather than the flow: the entries to choose
+/// among and the sections that veto them (S5 of docs/plans/pagination-to-engine.md), and the notes
+/// whose band the plan settles itself.</summary>
+public sealed class PlanFurnitureInput
+{
+    public IReadOnlyList<PlanEntryInput> Headers { get; init; } = Array.Empty<PlanEntryInput>();
+    public IReadOnlyList<PlanEntryInput> Footers { get; init; } = Array.Empty<PlanEntryInput>();
+    public IReadOnlyList<PlanEntryInput> Masters { get; init; } = Array.Empty<PlanEntryInput>();
+    public IReadOnlyCollection<int> SectionsHidingHeader { get; init; } = Array.Empty<int>();
+    public IReadOnlyCollection<int> SectionsHidingFooter { get; init; } = Array.Empty<int>();
+    public IReadOnlyCollection<int> SectionsHidingMaster { get; init; } = Array.Empty<int>();
+    public IReadOnlyList<PlanNoteInput> Notes { get; init; } = Array.Empty<PlanNoteInput>();
+    public IReadOnlyList<PlanSeparatorInput> Separators { get; init; } = Array.Empty<PlanSeparatorInput>();
+}
+
+/// <summary>One page of the plan: its section, the entries that apply to it (positions in the lists
+/// the host passed, null for none) and the number it prints.</summary>
+internal readonly record struct PlannedPage(int Section, long? FirstKey, int Number = 0, bool NumberHidden = false,
+    int? Header = null, int? Footer = null, int? Master = null);
 
 /// <summary>One row's extent on one page of a flowed table: page-local points.</summary>
 internal readonly record struct PlannedRowSegment(int Block, int Row, int Page, double Top, double Bottom);
@@ -71,6 +112,9 @@ internal sealed class PagePlanResult
     public required int SplitTableCount { get; init; }
     public required int CarriedTableCount { get; init; }
     public required int DroppedBreakCount { get; init; }
+    /// <summary>The footnote bands the plan settled on and the notes each page cites, both by page.</summary>
+    public required IReadOnlyDictionary<int, double> NoteBands { get; init; }
+    public required IReadOnlyDictionary<int, List<long>> NotesByPage { get; init; }
 }
 
 /// <summary>S2 of docs/plans/pagination-to-engine.md: the one call that decides where every whole
@@ -81,9 +125,10 @@ internal static class PagePlanClient
     private const int PlanVersion = 1;
 
     public static PagePlanResult Plan(IntPtr handle, double contentHeightPoints, bool splitTables,
-        IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks, double bandPoints = 0)
+        IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks, double bandPoints = 0,
+        PlanFurnitureInput? furniture = null)
     {
-        var input = Encode(contentHeightPoints, splitTables, noteBands, blocks, bandPoints);
+        var input = Encode(contentHeightPoints, splitTables, noteBands, blocks, bandPoints, furniture);
         var reply = FastdocEngine.TakeOwnedString(FastdocEngine.fastdoc_office_page_plan_json(handle, input));
         if (reply is null)
         {
@@ -93,7 +138,8 @@ internal static class PagePlanClient
     }
 
     internal static byte[] Encode(double contentHeightPoints, bool splitTables,
-        IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks, double bandPoints = 0)
+        IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks, double bandPoints = 0,
+        PlanFurnitureInput? furniture = null)
     {
         var buffer = new ArrayBufferWriter<byte>(Math.Max(4096, blocks.Count * 96));
         using (var w = new Utf8JsonWriter(buffer))
@@ -115,6 +161,7 @@ internal static class PagePlanClient
                 }
             }
             w.WriteEndArray();
+            if (furniture is not null) { WriteFurniture(w, furniture); }
             w.WriteStartArray("blocks");
             foreach (var b in blocks) { WriteBlock(w, b); }
             w.WriteEndArray();
@@ -125,11 +172,85 @@ internal static class PagePlanClient
         return bytes;
     }
 
+    private static void WriteEntries(Utf8JsonWriter w, string name, IReadOnlyList<PlanEntryInput> entries)
+    {
+        if (entries.Count == 0) { return; }
+        w.WriteStartArray(name);
+        foreach (var e in entries)
+        {
+            w.WriteStartObject();
+            w.WriteString("appliesTo", e.AppliesTo);
+            if (e.Section is { } section) { w.WriteNumber("section", section); }
+            w.WriteEndObject();
+        }
+        w.WriteEndArray();
+    }
+
+    private static void WriteSections(Utf8JsonWriter w, string name, IReadOnlyCollection<int> sections)
+    {
+        if (sections.Count == 0) { return; }
+        w.WriteStartArray(name);
+        foreach (var s in sections) { w.WriteNumberValue(s); }
+        w.WriteEndArray();
+    }
+
+    private static void WriteFurniture(Utf8JsonWriter w, PlanFurnitureInput f)
+    {
+        WriteEntries(w, "headers", f.Headers);
+        WriteEntries(w, "footers", f.Footers);
+        WriteEntries(w, "masters", f.Masters);
+        WriteSections(w, "sectionsHidingHeader", f.SectionsHidingHeader);
+        WriteSections(w, "sectionsHidingFooter", f.SectionsHidingFooter);
+        WriteSections(w, "sectionsHidingMaster", f.SectionsHidingMaster);
+        if (f.Notes.Count > 0)
+        {
+            w.WriteStartArray("notes");
+            foreach (var n in f.Notes)
+            {
+                w.WriteStartObject();
+                w.WriteNumber("number", n.Number);
+                w.WriteNumber("height", n.Height);
+                w.WriteEndObject();
+            }
+            w.WriteEndArray();
+        }
+        if (f.Separators.Count > 0)
+        {
+            w.WriteStartArray("separators");
+            foreach (var s in f.Separators)
+            {
+                w.WriteStartObject();
+                w.WriteNumber("section", s.Section);
+                w.WriteNumber("lineType", s.LineType);
+                w.WriteNumber("lineWidth", s.LineWidth);
+                w.WriteNumber("marginTop", s.MarginTop);
+                w.WriteNumber("marginBottom", s.MarginBottom);
+                w.WriteNumber("noteSpacing", s.NoteSpacing);
+                w.WriteEndObject();
+            }
+            w.WriteEndArray();
+        }
+    }
+
     private static void WriteBlock(Utf8JsonWriter w, PlanBlockInput b)
     {
         w.WriteStartObject();
         w.WriteNumber("key", b.Key);
         w.WriteString("kind", b.Kind);
+        if (b.PageNumberRestart is { } restart) { w.WriteNumber("pageNumberRestart", restart); }
+        if (b.HidesPageNumber) { w.WriteBoolean("hidesPageNumber", true); }
+        if (b.Cites is { Count: > 0 } cites)
+        {
+            w.WriteStartArray("cites");
+            foreach (var cite in cites)
+            {
+                w.WriteStartObject();
+                w.WriteNumber("note", cite.Note);
+                if (cite.Line is { } line) { w.WriteNumber("line", line); }
+                w.WriteEndObject();
+            }
+            w.WriteEndArray();
+        }
         if (b.SectionStart) { w.WriteBoolean("sectionStart", true); }
         if (b.PageBreakBefore) { w.WriteBoolean("pageBreakBefore", true); }
         if (b.KeepWithNext) { w.WriteBoolean("keepWithNext", true); }
@@ -211,8 +332,27 @@ internal static class PagePlanClient
         var pages = new List<PlannedPage>();
         foreach (var p in plan.GetProperty("pages").EnumerateArray())
         {
+            int? Index(string name) => p.TryGetProperty(name, out var v) ? v.GetInt32() : null;
             pages.Add(new PlannedPage(p.GetProperty("section").GetInt32(),
-                p.TryGetProperty("firstKey", out var key) ? key.GetInt64() : null));
+                p.TryGetProperty("firstKey", out var key) ? key.GetInt64() : null,
+                p.TryGetProperty("number", out var number) ? (int)number.GetInt64() : 0,
+                p.TryGetProperty("numberHidden", out var hidden) && hidden.GetBoolean(),
+                Index("header"), Index("footer"), Index("master")));
+        }
+        var noteBands = new Dictionary<int, double>();
+        if (plan.TryGetProperty("noteBands", out var bandArray))
+        {
+            foreach (var b in bandArray.EnumerateArray()) { noteBands[b[0].GetInt32()] = b[1].GetDouble(); }
+        }
+        var notesByPage = new Dictionary<int, List<long>>();
+        if (plan.TryGetProperty("notesByPage", out var notesArray))
+        {
+            foreach (var entry in notesArray.EnumerateArray())
+            {
+                var list = new List<long>();
+                foreach (var n in entry[1].EnumerateArray()) { list.Add(n.GetInt64()); }
+                notesByPage[entry[0].GetInt32()] = list;
+            }
         }
         var placements = new List<PlannedPlacement>();
         foreach (var p in plan.GetProperty("placements").EnumerateArray())
@@ -250,6 +390,8 @@ internal static class PagePlanClient
             SplitTableCount = plan.GetProperty("splitTableCount").GetInt32(),
             CarriedTableCount = plan.GetProperty("carriedTableCount").GetInt32(),
             DroppedBreakCount = plan.GetProperty("droppedBreakCount").GetInt32(),
+            NoteBands = noteBands,
+            NotesByPage = notesByPage,
         };
     }
 }

@@ -195,7 +195,7 @@ impl Runner<'_> {
     /// One line, placed by the delegate's rule; returns the position below it.
     fn line(&mut self, path: &[u32], at: (u32, f64), height: f64, trailing: f64) -> (u32, f64) {
         let (mut p, mut ly) = at;
-        let forced = self.shift && self.pulled.contains(path);
+        let forced = self.pulled.contains(path);
         if self.shift && (forced || !fits(self.geometry, p, ly, height, trailing)) && (forced || ly > 0.0) {
             // A line already at the page's top has nowhere better to go; a forced one is moved
             // whatever it would have done (the delegate's `pullToNextPage`).
@@ -296,22 +296,7 @@ mod tests {
     }
 
     fn table(rows: Vec<PlanRow>) -> PlanBlock {
-        PlanBlock {
-            key: 1,
-            kind: PlanKind::Table,
-            section_start: false,
-            page_break_before: false,
-            keep_with_next: false,
-            skip: false,
-            empty: false,
-            spacing_before: 0.0,
-            spacing_after: 0.0,
-            lines: Vec::new(),
-            trailing: 0.0,
-            height: 0.0,
-            rows,
-            keeps_whole: false,
-        }
+        PlanBlock { key: 1, kind: PlanKind::Table, rows, ..PlanBlock::default() }
     }
 
     fn geometry(body: f64, band: f64) -> (HashMap<u32, f64>, f64, f64) {
@@ -490,6 +475,20 @@ mod tests {
         let flow = run(100.0, 0.0, (0, 0.0), rows);
         assert_eq!(flow.end, (0, 80.0));
         assert!(!has_cells(&[row(1.0, false, vec![])]));
+    }
+
+    #[test]
+    fn the_first_layout_leaves_every_line_where_it_falls_whatever_pulls_are_known() {
+        // `shift: false` is the reader's first layout: nothing moves, not even a line an earlier
+        // layout pulled. Ten 20pt lines from y=60 of a 100pt body: the first stays on page 0.
+        let (notes, body, band) = geometry(100.0, 0.0);
+        let g = FlowGeometry { content_height: body, band, note_bands: &notes };
+        let block = table(vec![row(200.0, false, vec![cell(&[20.0; 10], 0.0, 0.0)])]);
+        let pulled: BTreeSet<LinePath> = [vec![0, 0, 0]].into_iter().collect();
+        let (first, _) = flow_table(&g, 0, &block, (0, 60.0), &pulled, false);
+        assert_eq!((first.lines[0].4, first.lines[0].5), (0, 60.0));
+        let (later, _) = flow_table(&g, 0, &block, (0, 60.0), &pulled, true);
+        assert_eq!((later.lines[0].4, later.lines[0].5), (1, 0.0), "a later layout applies the pull");
     }
 
     #[test]

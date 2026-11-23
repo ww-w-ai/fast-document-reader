@@ -9,6 +9,14 @@ import AppKit
 /// plan and TextKit disagree on the page of a block or a line. `FMD_PLAN_SHADOW_OUT=<path>` also
 /// writes the report. Nothing in the reader calls this, so it costs a document nothing at open
 /// (invariants 55/65/101/113); cutting macOS over to the plan is S6.
+///
+/// The document is laid out as `--pdf` prints it (`PagePlanShadow.layOutForPrint`), so the page
+/// count the probe reports is the count `--pdf` gives. The report also compares, page by page, the
+/// sheet itself (section, running head and foot, master page, printed number), the footnote bands and
+/// which page cites which note, and — for a columned document — every line of every columned run
+/// against the reader's column map. `FMD_PLAN_SHADOW_COLUMNS=1` lists each such line and the first
+/// differences in the stack the columns are dealt from. Run one document alone: a long multi-document
+/// run under load can leave a document unsettled (invariants 102, 151).
 final class PagePlanShadowProbeTests: XCTestCase {
 
     /// The Swift side of the FFI: a plan comes back in the envelope, keyed by the caller's keys.
@@ -49,15 +57,16 @@ final class PagePlanShadowProbeTests: XCTestCase {
             try doc.read(from: try Data(contentsOf: url), ofType: "public.data")
             doc.makeWindowControllers()
             let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
-            wc.window?.setFrame(NSRect(x: 0, y: 0, width: 1098, height: 640), display: false)
+            wc.window?.setFrame(NSRect(x: 0, y: 0, width: 820, height: 640), display: false)
             let settled = HeadlessPDF.waitForRenderToSettle(doc: doc, wc: wc)
             report.append("SHADOW settled: \(settled)")
             wc.textView.layoutManager?.ensureLayout(for: wc.textView.textContainer!)
+            PagePlanShadow.layOutForPrint(wc)
             let started = Date()
             let result = PagePlanShadow.run(controller: wc)
             let elapsed = Date().timeIntervalSince(started)
             report.append("SHADOW \(url.lastPathComponent)")
-            if let reason = result.skippedReason { report.append("SHADOW   skipped: \(reason)") }
+            if let reason = result.skippedReason { report.append("SHADOW   skipped: \(reason)"); report.append("SHADOW print pages: \(result.macPages)") }
             else { report.append(result.text); report.append(String(format: "SHADOW run %.2fs", elapsed)) }
             // FMD_PLAN_SHADOW_TABLES=<directory>: one "<ordinal>\t<height>\t<crossed>" line per table,
             // for the table-by-table comparison with the host that has no TextKit (S3).

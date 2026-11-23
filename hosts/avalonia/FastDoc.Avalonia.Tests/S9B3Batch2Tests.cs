@@ -76,8 +76,12 @@ public class S9B3Batch2Tests
         var blocks = FlowDocumentBuilder.Build(tree);
         var geometry = PageGeometry.FromDocument(tree)!;
         var markers = BlockPageMarkers.Compute(tree);
+        // The running head and foot a page shows are the plan's answer, so the layout is built with
+        // the entries the document holds to choose among.
+        var entries = PageFurniture.Read(tree, new System.Collections.Generic.Dictionary<long, double>(),
+            Array.Empty<FootnoteSeparatorSpec?>());
         var (layout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry,
-            IntPtr.Zero, headersOn: furniture, footersOn: furniture, splitTablesDefault: true);
+            IntPtr.Zero, headersOn: furniture, footersOn: furniture, splitTablesDefault: true, furniture: entries);
         return (blocks, geometry, markers, layout);
     }
 

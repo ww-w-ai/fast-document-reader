@@ -196,7 +196,19 @@ public sealed class PageLayoutResult
     public int DroppedBreakCount { get; init; }
     /// <summary>The tables the plan cut through the middle of their rows; null when there are none.</summary>
     public FlowedTables? Flowed { get; init; }
+    /// <summary>What each page carries besides its body, as the plan decided it (S5): the running head
+    /// and foot, the master page and the printed number. Empty when the layout was built without the
+    /// document's entries to choose among.</summary>
+    public IReadOnlyList<PageSheet> Sheets { get; init; } = Array.Empty<PageSheet>();
+    /// <summary>The footnote bands the plan settled on, by page, and the notes each page cites in
+    /// citation order. Empty for a document with no notes.</summary>
+    public IReadOnlyDictionary<int, double> NoteBands { get; init; } = new Dictionary<int, double>();
+    public IReadOnlyDictionary<int, List<long>> NotesByPage { get; init; } = new Dictionary<int, List<long>>();
 }
+
+/// <summary>One page's furniture as the plan answered it. <see cref="Header"/>, <see cref="Footer"/>
+/// and <see cref="Master"/> are positions in the entry lists the host passed (null: none applies).</summary>
+public readonly record struct PageSheet(int Number, bool NumberHidden, int? Header, int? Footer, int? Master);
 
 /// <summary>
 /// Assigns every FlowBlock to a page. This host MEASURES — a paragraph's line boxes, a picture's
@@ -267,8 +279,9 @@ public static class PageLayout
     public static PageLayoutResult Build(IReadOnlyList<FlowBlock> blocks, BlockPageMarkers.Markers markers,
         PageGeometry geometry, IntPtr engineHandle, bool headersOn, bool footersOn,
         bool splitTables = false, ImageBlockRenderer? imageRenderer = null,
-        IReadOnlyDictionary<int, double>? noteBands = null)
+        IReadOnlyDictionary<int, double>? noteBands = null, PlanFurnitureInput? furniture = null)
     {
+        var settlesNotes = furniture is { Notes.Count: > 0 };
         var contentWidth = geometry.ContentWidthPoints;
         var contentHeight = geometry.ContentHeightPoints;
         var band = PageBandResolver.Resolve(engineHandle, geometry, contentWidth, headersOn, footersOn,
@@ -288,12 +301,16 @@ public static class PageLayout
             var pageBreakBefore = i < markers.PageBreakBefore.Length && markers.PageBreakBefore[i];
             // The footnote tail flow mode shows after the body is NOT part of a sheet's flow: each
             // note is drawn at the foot of the page that cites it (FootnoteLayout).
-            if (block.FootnoteOf is not null && noteBands is not null)
+            if (block.FootnoteOf is not null && (noteBands is not null || settlesNotes))
             {
                 inputs.Add(new PlanBlockInput { Key = key, Kind = "atomic", Skip = true });
                 continue;
             }
             var keepWithNext = markers.KeepWithNext is { } keeps && i < keeps.Length && keeps[i];
+            // The page-number facts the document states on this block; the engine answers which page
+            // shows which number.
+            var hidesNumber = markers.HidesPageNumber is { } hides && i < hides.Length && hides[i];
+            var numberRestart = markers.PageNumberRestart is { } restarts && i < restarts.Length ? restarts[i] : null;
             var widthForBlock = Math.Max(1, contentWidth - block.IndentPoints);
 
             if (block.Kind == FlowBlockKind.Text)
@@ -311,6 +328,7 @@ public static class PageLayout
                     {
                         Key = key, Kind = "text", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
                         KeepWithNext = keepWithNext, Empty = true,
+                        PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
                     });
                     continue;
                 }
@@ -334,6 +352,8 @@ public static class PageLayout
                     Key = key, Kind = "text", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
                     KeepWithNext = keepWithNext, Empty = empty, SpacingBefore = block.SpacingBeforePoints,
                     SpacingAfter = block.SpacingAfterPoints,
+                    PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
+                    Cites = settlesNotes ? TextCites(block, shape) : null,
                 });
                 continue;
             }
@@ -353,6 +373,8 @@ public static class PageLayout
                     RowCanBreakAbove = canBreak,
                     RowCells = flowable ? TableGridRenderer.FlowFacts(table, widthForBlock, imageRenderer, splitTables) : null,
                     KeepsWhole = i < markers.TableKeepsWhole.Length && markers.TableKeepsWhole[i],
+                    PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
+                    Cites = settlesNotes ? BlockCites(block) : null,
                 });
                 continue;
             }
@@ -361,6 +383,7 @@ public static class PageLayout
             {
                 Key = key, Kind = "atomic", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
                 Height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer, splitTables),
+                PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
             });
         }
 
@@ -382,7 +405,7 @@ public static class PageLayout
             inputs[inputIndex].Trailing = answer.Trailing;
         }
 
-        var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs, band.BandPoints);
+        var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs, band.BandPoints, furniture);
 
         var blockPlacements = new List<PagedBlock>(plan.Placements.Count);
         foreach (var placed in plan.Placements)
@@ -424,7 +447,40 @@ public static class PageLayout
             SplitTableCount = plan.SplitTableCount,
             CarriedTableCount = plan.CarriedTableCount,
             DroppedBreakCount = plan.DroppedBreakCount,
+            Sheets = plan.Pages.Select(p => new PageSheet(p.Number, p.NumberHidden, p.Header, p.Footer, p.Master)).ToList(),
+            NoteBands = plan.NoteBands,
+            NotesByPage = plan.NotesByPage,
         };
+    }
+
+    /// <summary>The notes a text block cites, each with the line holding its marker.</summary>
+    private static List<PlanCiteInput>? TextCites(FlowBlock block, TextShape shape)
+    {
+        List<PlanCiteInput>? cites = null;
+        var offset = 0;
+        foreach (var run in block.Runs)
+        {
+            if (run.FootnoteRef > 0)
+            {
+                var line = 0;
+                for (var l = 0; l < shape.FirstChars.Length; l++)
+                {
+                    if (shape.Lengths[l] > 0 && offset >= shape.FirstChars[l] && offset < shape.FirstChars[l] + shape.Lengths[l]) { line = l; break; }
+                    line = l;
+                }
+                (cites ??= new()).Add(new PlanCiteInput(run.FootnoteRef, line));
+            }
+            offset += run.Text.Length;
+        }
+        return cites;
+    }
+
+    /// <summary>The notes a table or picture cites; they are cited from where the block starts.</summary>
+    private static List<PlanCiteInput>? BlockCites(FlowBlock block)
+    {
+        List<PlanCiteInput>? cites = null;
+        foreach (var number in FootnoteLayout.NumbersIn(block)) { (cites ??= new()).Add(new PlanCiteInput(number, null)); }
+        return cites;
     }
 
     private static double[] PadRows(double[] heights, int rowCount)
@@ -441,10 +497,11 @@ public static class PageLayout
     public static (PageLayoutResult Layout, int Rounds, int Pushed, int Oversized) BuildWithTableSettle(
         IReadOnlyList<FlowBlock> blocks, BlockPageMarkers.Markers markers, PageGeometry geometry,
         IntPtr engineHandle, bool headersOn, bool footersOn, bool splitTablesDefault,
-        ImageBlockRenderer? imageRenderer = null, IReadOnlyDictionary<int, double>? noteBands = null)
+        ImageBlockRenderer? imageRenderer = null, IReadOnlyDictionary<int, double>? noteBands = null,
+        PlanFurnitureInput? furniture = null)
     {
         var layout = Build(blocks, markers, geometry, engineHandle, headersOn, footersOn, splitTablesDefault,
-            imageRenderer, noteBands);
+            imageRenderer, noteBands, furniture);
         return (layout, 1, layout.CarriedTableCount, layout.SplitTableCount);
     }
 

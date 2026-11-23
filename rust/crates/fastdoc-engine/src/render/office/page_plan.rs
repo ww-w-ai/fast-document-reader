@@ -33,15 +33,26 @@
 //!   taken back); `plan_pages` replays those passes. A line taller than the page is placed at a
 //!   page top and overruns it.
 //!
-//! Out of scope here (a later slice): header/footer bands, the footnote fixpoint, columns and master
-//! pages (S5). A per-page footnote reservation is accepted as an INPUT so a host that runs its own
-//! footnote loop can still use the plan.
+//! S5 adds what a sheet carries and how it is shared out:
+//! - the footnote band fixpoint runs INSIDE the call (`plan_footnotes.rs`): the host reports each
+//!   note's height and the notes each block cites, the plan re-plans against the bands it proposes
+//!   until the stopping rule (`FootnoteBandSettle`) says stop, and answers the bands and which page
+//!   cites which note. A host that runs its own loop can still hand the plan its final bands as
+//!   `noteBands` instead;
+//! - a run of blocks under a multi-column declaration is laid out as one stack and dealt into
+//!   columns (`plan_columns.rs`, invariants 100, 143-145, 150);
+//! - for every page: the section, the running head and foot and the master page that apply, and the
+//!   number it prints (`plan_furniture.rs`; invariants 62, 77, 78, 189).
 
 use super::page_pagination::{LaidOutRow, PagePagination};
+use super::plan_columns::{place_run, ColumnedLine, PlanColumnRun, RunGrid};
+use super::plan_footnotes::{self as notes, Bands, NotesByPage, PlanCite, PlanNote, PlanSeparator};
+use super::plan_furniture::{applicable_entry, displayed_numbers, master_pages, PlanEntry};
+use super::footnote_band_settle::{FootnoteBandSettle, Outcome};
 pub use super::table_flow::{CellLinePlacement, RowSegment};
 use super::table_flow::{flow_table, has_cells, orphan_runs, FlowGeometry, LinePath, PlacedLines, MAX_ROUNDS};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// `PagePlanV1.plan_version` / `PlanInput.plan_version`. A host that sends another value is refused
 /// rather than guessed at.
@@ -110,10 +121,11 @@ fn one() -> u32 {
 }
 
 /// What a block IS, as far as placement goes.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum PlanKind {
     /// Placed line by line: `lines` carries each line box's height.
+    #[default]
     Text,
     /// Placed as one unit of `height` (a picture, a rule): spacing included by the host.
     Atomic,
@@ -121,7 +133,7 @@ pub enum PlanKind {
     Table,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanBlock {
     /// The host's identity for this block (RenderTree node id on Avalonia). Echoed back, never read.
@@ -129,6 +141,11 @@ pub struct PlanBlock {
     pub kind: PlanKind,
     #[serde(default)]
     pub section_start: bool,
+    /// A section begins here without opening a sheet (the host's layout continued on the page it
+    /// began on). The section names the pages from the next one on — a page belongs to the section
+    /// in force at its first line — and no page opens.
+    #[serde(default)]
+    pub section_marker: bool,
     #[serde(default)]
     pub page_break_before: bool,
     #[serde(default)]
@@ -159,9 +176,23 @@ pub struct PlanBlock {
     /// Table: the document forbids cutting it at a page boundary.
     #[serde(default)]
     pub keeps_whole: bool,
+    /// The page this block's first line lands on restarts the page counter at this number (HWP's
+    /// 새 번호); the first restart on a page wins.
+    #[serde(default)]
+    pub page_number_restart: Option<i64>,
+    /// The page this block's first line lands on prints no page number (HWP's 쪽 번호 감추기).
+    #[serde(default)]
+    pub hides_page_number: bool,
+    /// The notes this block cites, in citation order.
+    #[serde(default)]
+    pub cites: Vec<PlanCite>,
+    /// The multi-column declaration (`PlanInput.column_runs`) this block sits under. Consecutive
+    /// blocks naming the same one are laid out as one run.
+    #[serde(default)]
+    pub column_run: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanInput {
     pub plan_version: u32,
@@ -176,6 +207,35 @@ pub struct PlanInput {
     /// across pages reads it (a row that runs past a whole page lands on a later one).
     #[serde(default)]
     pub band: f64,
+    /// What stands above page 0's first line (its running head, or the top margin). Only a columned
+    /// run reads it: its absolute positions are measured from here.
+    #[serde(default)]
+    pub leading_band: f64,
+    /// The width of the page body the columns are dealt across.
+    #[serde(default)]
+    pub body_width: f64,
+    #[serde(default)]
+    pub column_runs: Vec<PlanColumnRun>,
+    /// The running heads, feet and master pages the host holds, in its own order; the answer names
+    /// positions in these lists.
+    #[serde(default)]
+    pub headers: Vec<PlanEntry>,
+    #[serde(default)]
+    pub footers: Vec<PlanEntry>,
+    #[serde(default)]
+    pub masters: Vec<PlanEntry>,
+    #[serde(default)]
+    pub sections_hiding_header: Vec<i64>,
+    #[serde(default)]
+    pub sections_hiding_footer: Vec<i64>,
+    #[serde(default)]
+    pub sections_hiding_master: Vec<i64>,
+    /// The notes of the document and what each section declared about the rule above them. With
+    /// notes the plan runs the band fixpoint itself and `note_bands` is ignored.
+    #[serde(default)]
+    pub notes: Vec<PlanNote>,
+    #[serde(default)]
+    pub separators: Vec<PlanSeparator>,
     pub blocks: Vec<PlanBlock>,
 }
 
@@ -200,6 +260,9 @@ pub struct BlockPlacement {
     /// `rowSegments` and `cellLines`, not as whole rows.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub flowed: bool,
+    /// The column a block under a multi-column run was dealt into.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -210,6 +273,18 @@ pub struct PlanPage {
     /// The key of the first block placed on this page; `None` for a page nothing landed on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_key: Option<i64>,
+    /// The number the page prints: its own ordinal, or counted from the last restart (HWP 새 번호).
+    pub number: i64,
+    /// The document vetoes the page number on this page (HWP 쪽 번호 감추기).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub number_hidden: bool,
+    /// The position, in the host's `headers`/`footers`/`masters`, of the entry this page shows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub footer: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub master: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -232,6 +307,19 @@ pub struct PagePlan {
     pub carried_table_count: u32,
     /// Hard breaks dropped by invariant 147.
     pub dropped_break_count: u32,
+    /// The footnote bands the plan settled on, as `[page, height]`; the input's own when the host
+    /// ran the loop itself.
+    pub note_bands: Vec<(u32, f64)>,
+    /// Which page cites which notes, as `[page, [number...]]`, in citation order.
+    pub notes_by_page: Vec<(u32, Vec<i64>)>,
+    /// Layouts the footnote fixpoint ran (1 when there are no notes).
+    pub footnote_rounds: u32,
+    /// The column of every text line of a columned run: `[block, line, column]`.
+    pub column_lines: Vec<[u32; 3]>,
+    /// The column of every cell line of a table in a columned run: `[block, row, cell, line, column]`.
+    pub column_cell_lines: Vec<[u32; 5]>,
+    /// The lines of tables nested in cells of a columned run's tables, each with its column.
+    pub nested_lines: Vec<NestedLine>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,6 +354,132 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
         .enumerate()
         .filter(|(i, b)| b.page_break_before && !honoured[*i])
         .count() as u32;
+
+    // The footnote band fixpoint (invariant 98). With notes, the first layout reserves nothing and
+    // each round re-plans against the bands the last one proposed; a host that ran the loop itself
+    // hands its final bands in `note_bands` and the plan takes them as they are.
+    let has_notes = !input.notes.is_empty();
+    let mut bands: HashMap<u32, f64> = if has_notes {
+        HashMap::new()
+    } else {
+        input.note_bands.iter().map(|n| (n.page, n.height)).collect()
+    };
+    let (mut core, mut pulled) = plan_core(input, &honoured, &bands);
+    let mut footnote_rounds = 1u32;
+    let mut assignment = NotesByPage::new();
+    if has_notes {
+        let heights: HashMap<i64, f64> = input.notes.iter().map(|n| (n.number, n.height)).collect();
+        let section_known = input.blocks.iter().any(|b| !b.skip && (b.section_start || b.section_marker));
+        let mut history: Vec<Bands> = Vec::new();
+        assignment = assign_notes(input, &core);
+        for _ in 0..FootnoteBandSettle::MAX_ROUNDS {
+            let sections = page_sections(&core);
+            let section_of = |page: u32| section_known.then(|| i64::from(sections.get(page as usize).copied().unwrap_or(0)));
+            let proposal = notes::propose(&assignment, &heights, &input.separators, &section_of, input.content_height);
+            match FootnoteBandSettle::step(&proposal, &history, FootnoteBandSettle::MAX_ROUNDS) {
+                Outcome::Retry(next) => {
+                    history.push(next.clone());
+                    bands = next.iter().map(|(p, h)| (*p as u32, *h)).collect();
+                    (core, pulled) = plan_core(input, &honoured, &bands);
+                    footnote_rounds += 1;
+                    assignment = assign_notes(input, &core);
+                }
+                Outcome::Stop(stopped, _) => {
+                    let current: Bands = bands.iter().map(|(p, h)| (i64::from(*p), *h)).collect();
+                    if !notes::same_bands(&current, &stopped) {
+                        // The bands are final and this layout has never seen them: lay out against
+                        // them, and take the assignment from the layout that exists, but only when
+                        // the final bands already cover it (`refreshFootnoteAssignment`).
+                        bands = stopped.iter().map(|(p, h)| (*p as u32, *h)).collect();
+                        (core, pulled) = plan_core(input, &honoured, &bands);
+                        footnote_rounds += 1;
+                        let refreshed = assign_notes(input, &core);
+                        let sections = page_sections(&core);
+                        let section_of = |page: u32| section_known.then(|| i64::from(sections.get(page as usize).copied().unwrap_or(0)));
+                        let need = notes::propose(&refreshed, &heights, &input.separators, &section_of, input.content_height);
+                        if notes::covers(&stopped, &need) {
+                            assignment = refreshed;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    let page_count = core.reached.max(core.page) + 1;
+    let sections = page_sections(&core);
+    let section_known = input.blocks.iter().any(|b| !b.skip && (b.section_start || b.section_marker));
+    let first_page = first_pages(&core);
+    let mut restarts: BTreeMap<u32, i64> = BTreeMap::new();
+    let mut hidden: BTreeSet<u32> = BTreeSet::new();
+    for (index, block) in input.blocks.iter().enumerate() {
+        if block.skip {
+            continue;
+        }
+        let Some(&page) = first_page.get(&(index as u32)) else { continue };
+        if let Some(first) = block.page_number_restart {
+            // The first restart on a page wins: two markers on one sheet must not depend on order.
+            restarts.entry(page).or_insert(first);
+        }
+        if block.hides_page_number {
+            hidden.insert(page);
+        }
+    }
+    let numbers = displayed_numbers(page_count, &restarts);
+    let hiding_header: HashSet<i64> = input.sections_hiding_header.iter().copied().collect();
+    let hiding_footer: HashSet<i64> = input.sections_hiding_footer.iter().copied().collect();
+    let hiding_master: HashSet<i64> = input.sections_hiding_master.iter().copied().collect();
+    let section_of_index = |page: u32| section_known.then(|| i64::from(sections.get(page as usize).copied().unwrap_or(0)));
+    let master_queries: Vec<(u32, Option<i64>)> = (0..page_count).map(|p| (p, section_of_index(p))).collect();
+    let masters = master_pages(&input.masters, &hiding_master, &master_queries);
+    let pages: Vec<PlanPage> = (0..page_count)
+        .map(|page| {
+            let section = section_of_index(page);
+            let pick = |entries: &[PlanEntry], hiding: &HashSet<i64>| {
+                applicable_entry(entries, i64::from(page), section, hiding).map(|i| i as u32)
+            };
+            PlanPage {
+                section: sections.get(page as usize).copied().unwrap_or(0),
+                first_key: core.first_key.get(page as usize).copied().flatten(),
+                number: numbers[page as usize],
+                number_hidden: hidden.contains(&page),
+                header: pick(&input.headers, &hiding_header),
+                footer: pick(&input.footers, &hiding_footer),
+                master: masters[page as usize].map(|i| i as u32),
+            }
+        })
+        .collect();
+
+    let mut note_bands: Vec<(u32, f64)> = bands.iter().filter(|(_, h)| **h > 0.0).map(|(p, h)| (*p, *h)).collect();
+    note_bands.sort_by_key(|(page, _)| *page);
+    Ok(PagePlan {
+        plan_version: PAGE_PLAN_VERSION,
+        page_count,
+        pages,
+        placements: core.placements,
+        lines: core.lines,
+        row_segments: core.row_segments,
+        cell_lines: core.cell_lines,
+        pulled_lines: pulled
+            .iter()
+            .map(|(block, path)| std::iter::once(*block).chain(path.iter().copied()).collect())
+            .collect(),
+        split_table_count: core.split_table_count,
+        carried_table_count: core.carried_table_count,
+        dropped_break_count: dropped,
+        note_bands,
+        notes_by_page: assignment.into_iter().collect(),
+        footnote_rounds,
+        column_lines: core.column_lines,
+        column_cell_lines: core.column_cell_lines,
+        nested_lines: core.nested_lines,
+    })
+}
+
+/// One complete layout against a given set of note bands: the reader's passes replayed (see below),
+/// then the final one. Returns that final layout and the pulls it kept.
+fn plan_core(input: &PlanInput, honoured: &[bool], bands: &HashMap<u32, f64>) -> (State, BTreeSet<(u32, LinePath)>) {
     // A table that fits no page flows line by line, and the reader reaches that layout over several
     // passes: its first layout has no record that any table is over-tall, so every table lies where
     // it falls; each later one applies what the last measured, and the 1-3 line pulls it records
@@ -273,12 +487,12 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
     let flowable = input
         .blocks
         .iter()
-        .any(|b| !b.skip && b.kind == PlanKind::Table && has_cells(&b.rows));
+        .any(|b| !b.skip && b.kind == PlanKind::Table && b.column_run.is_none() && has_cells(&b.rows));
     let mut pulled: BTreeSet<(u32, LinePath)> = BTreeSet::new();
     if flowable {
         for round in 1..=MAX_ROUNDS {
             let mode = if round == 1 { Mode::Natural } else { Mode::Settled };
-            let pass = run_pass(input, &honoured, mode, &pulled);
+            let pass = run_pass(input, honoured, mode, &pulled, bands);
             let mut added = false;
             for table in &pass.flowed {
                 for path in orphan_runs(&input.blocks[table.block as usize].rows, &table.lines) {
@@ -290,35 +504,81 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
             }
         }
     }
-    let state = run_pass(input, &honoured, Mode::Settled, &pulled);
+    let state = run_pass(input, honoured, Mode::Settled, &pulled, bands);
+    (state, pulled)
+}
 
-    let page_count = state.page + 1;
+/// The section of every page: `section_boundaries` names the pages a section start opened.
+fn page_sections(state: &State) -> Vec<u32> {
+    let page_count = state.reached.max(state.page) + 1;
     let mut section = 0u32;
     let mut cursor = 0usize;
-    let mut pages = Vec::with_capacity(page_count as usize);
-    for page in 0..page_count {
-        while cursor < state.section_boundaries.len() && state.section_boundaries[cursor] == page {
-            section += 1;
-            cursor += 1;
-        }
-        pages.push(PlanPage { section, first_key: state.first_key.get(page as usize).copied().flatten() });
+    (0..page_count)
+        .map(|page| {
+            while cursor < state.section_boundaries.len() && state.section_boundaries[cursor] == page {
+                section += 1;
+                cursor += 1;
+            }
+            section
+        })
+        .collect()
+}
+
+/// The page each block's first line (or its first piece) landed on, by block index.
+fn first_pages(state: &State) -> HashMap<u32, u32> {
+    let mut out: HashMap<u32, u32> = HashMap::new();
+    for line in &state.lines {
+        out.entry(line.0).or_insert(line.2);
     }
-    Ok(PagePlan {
-        plan_version: PAGE_PLAN_VERSION,
-        page_count,
-        pages,
-        placements: state.placements,
-        lines: state.lines,
-        row_segments: state.row_segments,
-        cell_lines: state.cell_lines,
-        pulled_lines: pulled
-            .iter()
-            .map(|(block, path)| std::iter::once(*block).chain(path.iter().copied()).collect())
-            .collect(),
-        split_table_count: state.split_table_count,
-        carried_table_count: state.carried_table_count,
-        dropped_break_count: dropped,
-    })
+    for placement in &state.placements {
+        out.entry(placement.block).or_insert(placement.page);
+    }
+    for line in &state.cell_lines {
+        out.entry(line.0).or_insert(line.4);
+    }
+    out
+}
+
+/// Page → the notes it cites. A note is drawn once, on the first page that cites it; a marker in a
+/// text block is found by the line holding it, one in a table or a picture by the page the block
+/// starts on (`FootnoteLayout.Assign`, `DocumentWindowController.footnotePages`).
+fn assign_notes(input: &PlanInput, state: &State) -> NotesByPage {
+    let known: HashSet<i64> = input.notes.iter().map(|n| n.number).collect();
+    let mut line_pages: HashMap<u32, Vec<u32>> = HashMap::new();
+    for line in &state.lines {
+        line_pages.entry(line.0).or_default().push(line.2);
+    }
+    let first = first_pages(state);
+    let mut citations: Vec<(u32, usize, usize, i64)> = Vec::new();
+    for (index, block) in input.blocks.iter().enumerate() {
+        if block.skip {
+            continue;
+        }
+        for (order, cite) in block.cites.iter().enumerate() {
+            if !known.contains(&cite.note) {
+                continue;
+            }
+            let page = match block.kind {
+                PlanKind::Text => line_pages.get(&(index as u32)).and_then(|pages| {
+                    let at = cite.line.map_or(0, |l| l as usize).min(pages.len().saturating_sub(1));
+                    pages.get(at).copied()
+                }),
+                _ => first.get(&(index as u32)).copied(),
+            };
+            if let Some(page) = page {
+                citations.push((page, index, order, cite.note));
+            }
+        }
+    }
+    citations.sort();
+    let mut placed: HashSet<i64> = HashSet::new();
+    let mut out = NotesByPage::new();
+    for (page, _, _, note) in citations {
+        if placed.insert(note) {
+            out.entry(page).or_default().push(note);
+        }
+    }
+    out
 }
 
 /// Which layout of the reader a pass stands for.
@@ -337,50 +597,65 @@ struct FlowedTable {
     lines: PlacedLines,
 }
 
-fn run_pass<'a>(
-    input: &'a PlanInput,
+fn run_pass(
+    input: &PlanInput,
     honoured: &[bool],
     mode: Mode,
-    pulled: &'a BTreeSet<(u32, LinePath)>,
-) -> State<'a> {
-    let note_bands: HashMap<u32, f64> = input.note_bands.iter().map(|n| (n.page, n.height)).collect();
+    pulled: &BTreeSet<(u32, LinePath)>,
+    bands: &HashMap<u32, f64>,
+) -> State {
     let mut state = State {
         content_height: input.content_height,
         band: input.band.max(0.0),
-        note_bands,
+        note_bands: bands.clone(),
         mode,
-        pulled,
+        pulled: pulled.clone(),
         flowed: Vec::new(),
         page: 0,
+        reached: 0,
         cursor: 0.0,
         placements: Vec::new(),
         lines: Vec::new(),
         row_segments: Vec::new(),
         cell_lines: Vec::new(),
+        column_lines: Vec::new(),
+        column_cell_lines: Vec::new(),
+        nested_lines: Vec::new(),
         first_key: vec![None],
         section_boundaries: Vec::new(),
         split_table_count: 0,
         carried_table_count: 0,
     };
-    for (index, block) in input.blocks.iter().enumerate() {
+    let mut index = 0usize;
+    while index < input.blocks.len() {
+        let block = &input.blocks[index];
         if block.skip {
+            index += 1;
             continue;
         }
-        let index = index as u32;
-        if block.section_start || (block.page_break_before && honoured[index as usize]) {
-            // A break at the top of an empty page is a no-op: the page it would open is this one.
-            if state.cursor > 0.0 {
-                state.next_page();
+        if let Some(run_id) = block.column_run {
+            // The blocks of one columned run are laid out together.
+            let mut end = index + 1;
+            while end < input.blocks.len()
+                && (input.blocks[end].skip || input.blocks[end].column_run == Some(run_id))
+            {
+                end += 1;
             }
-            if block.section_start && state.page > 0 {
-                state.section_boundaries.push(state.page);
+            if let Some(run) = input.column_runs.get(run_id as usize) {
+                if state.place_column_run(input, honoured, index, end, run) {
+                    index = end;
+                    continue;
+                }
             }
         }
+        state.open_block(block, honoured[index]);
+        let idx = index as u32;
         match block.kind {
-            PlanKind::Text => state.place_text(index, block),
-            PlanKind::Atomic => state.place_atomic(index, block),
-            PlanKind::Table => state.place_table(index, block, input.split_tables),
+            PlanKind::Text => state.place_text(idx, block),
+            PlanKind::Atomic => state.place_atomic(idx, block),
+            PlanKind::Table => state.place_table(idx, block, input.split_tables),
         }
+        index += 1;
     }
     state
 }
@@ -426,35 +701,262 @@ fn honoured_breaks(blocks: &[PlanBlock]) -> Vec<bool> {
     honoured
 }
 
-struct State<'a> {
+struct State {
     content_height: f64,
     band: f64,
     note_bands: HashMap<u32, f64>,
     mode: Mode,
-    pulled: &'a BTreeSet<(u32, LinePath)>,
+    pulled: BTreeSet<(u32, LinePath)>,
     flowed: Vec<FlowedTable>,
     page: u32,
+    /// The furthest page anything reached. A columned run ends on the page its last line was dealt
+    /// to, which is not always the furthest.
+    reached: u32,
     cursor: f64,
     placements: Vec<BlockPlacement>,
     lines: Vec<LinePlacement>,
     row_segments: Vec<RowSegment>,
     cell_lines: Vec<CellLinePlacement>,
+    column_lines: Vec<[u32; 3]>,
+    column_cell_lines: Vec<[u32; 5]>,
+    nested_lines: Vec<NestedLine>,
     first_key: Vec<Option<i64>>,
     section_boundaries: Vec<u32>,
     split_table_count: u32,
     carried_table_count: u32,
 }
 
-impl State<'_> {
+/// One thing a columned run's stack holds, by where the layout recorded it.
+#[derive(Clone, Copy)]
+enum StackSlot {
+    Line(usize),
+    Placement(usize),
+    CellLine(usize),
+    Nested(usize),
+}
+
+/// A line inside a table nested in a cell of a table in a columned run: it is dealt like any other
+/// line, and its place is reported by its path (row, cell, line, then the same again per level).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NestedLine {
+    pub block: u32,
+    pub path: Vec<u32>,
+    pub page: u32,
+    pub top: f64,
+    pub column: u32,
+}
+
+struct StackItem {
+    slot: StackSlot,
+    block: u32,
+    height: f64,
+}
+
+impl State {
     fn body(&self, page: u32) -> f64 {
         self.content_height - self.note_bands.get(&page).copied().unwrap_or(0.0)
     }
 
     fn next_page(&mut self) {
         self.page += 1;
+        self.reached = self.reached.max(self.page);
         self.cursor = 0.0;
         if self.first_key.len() <= self.page as usize {
             self.first_key.resize(self.page as usize + 1, None);
+        }
+    }
+
+    /// A section start or an honoured hard break opens a page — unless the page is still empty.
+    fn open_block(&mut self, block: &PlanBlock, honoured_break: bool) {
+        if block.section_start || (block.page_break_before && honoured_break) {
+            // A break at the top of an empty page is a no-op: the page it would open is this one.
+            if self.cursor > 0.0 {
+                self.next_page();
+            }
+            if block.section_start && self.page > 0 {
+                self.section_boundaries.push(self.page);
+            }
+        }
+        if block.section_marker && !block.section_start {
+            // In force from the next sheet on, unless the marker is the first thing on this one.
+            let from = if self.cursor > 0.0 { self.page + 1 } else { self.page };
+            if from > 0 {
+                self.section_boundaries.push(from);
+            }
+        }
+    }
+
+    /// Lays the blocks `from..to` — one run under a multi-column declaration — out as ONE stack at
+    /// the column's width, as the reader's first measurement does, then deals the stack into columns
+    /// (invariants 100, 143-145, 150). Returns `false` when the declaration does not split the text,
+    /// in which case nothing was placed and the blocks are laid out as ordinary ones.
+    fn place_column_run(&mut self, input: &PlanInput, honoured: &[bool], from: usize, to: usize, run: &PlanColumnRun) -> bool {
+        let columns = run.columns(input.body_width);
+        if columns.len() < 2 {
+            return false;
+        }
+        let page_before = self.page as usize;
+        let reached_before = self.reached;
+        let mut stack: Vec<StackItem> = Vec::new();
+        let mut spacing_after = 0.0;
+        for index in from..to {
+            let block = &input.blocks[index];
+            if block.skip {
+                continue;
+            }
+            let idx = index as u32;
+            self.open_block(block, honoured[index]);
+            match block.kind {
+                PlanKind::Text => {
+                    let start = self.lines.len();
+                    self.place_text(idx, block);
+                    for (at, line) in self.lines[start..].iter().enumerate() {
+                        let height = block.lines.get(line.1 as usize).copied().unwrap_or(0.0);
+                        stack.push(StackItem { slot: StackSlot::Line(start + at), block: idx, height });
+                    }
+                    spacing_after = block.spacing_after;
+                }
+                PlanKind::Atomic => {
+                    self.place_atomic(idx, block);
+                    stack.push(StackItem { slot: StackSlot::Placement(self.placements.len() - 1), block: idx, height: block.height });
+                    spacing_after = 0.0;
+                }
+                PlanKind::Table => {
+                    self.place_table_in_stack(input.split_tables, idx, block, &mut stack);
+                    spacing_after = block.spacing_after;
+                }
+            }
+        }
+        // Absolute positions on the plan's page grid, in document order.
+        let grid = RunGrid {
+            content_height: self.content_height,
+            band: self.band,
+            leading: input.leading_band,
+            note_bands: &self.note_bands,
+        };
+        let stacked: Vec<(i64, f64, f64)> = stack
+            .iter()
+            .enumerate()
+            .map(|(id, item)| {
+                let (page, top) = self.position_of(item.slot);
+                (id as i64, grid.absolute(page, top), item.height)
+            })
+            .collect();
+        let Some(dealt) = place_run(&stacked, &columns, &grid) else { return true };
+        // The stack's own page breaks were a measurement; the pages the run really reaches are the
+        // ones its columns were dealt to.
+        self.reached = reached_before;
+        self.first_key.truncate(page_before + 1);
+        let mut last: Option<(u32, f64, f64)> = None;
+        for (id, item) in stack.iter().enumerate() {
+            let Some(&ColumnedLine { column, page, top }) = dealt.get(&(id as i64)) else {
+                let (page, top) = self.position_of(item.slot);
+                last = Some((page, top, item.height));
+                continue;
+            };
+            self.dealt_to(item, column, page, top);
+            last = Some((page, top, item.height));
+            if self.first_key.len() <= page as usize {
+                self.first_key.resize(page as usize + 1, None);
+            }
+            if self.first_key[page as usize].is_none() {
+                self.first_key[page as usize] = Some(input.blocks[item.block as usize].key);
+            }
+            self.reached = self.reached.max(page);
+        }
+        if let Some((page, top, height)) = last {
+            self.page = page;
+            self.cursor = top + height + spacing_after;
+        }
+        true
+    }
+
+    fn position_of(&self, slot: StackSlot) -> (u32, f64) {
+        match slot {
+            StackSlot::Line(i) => (self.lines[i].2, self.lines[i].3),
+            StackSlot::Placement(i) => (self.placements[i].page, self.placements[i].top),
+            StackSlot::CellLine(i) => (self.cell_lines[i].4, self.cell_lines[i].5),
+            StackSlot::Nested(i) => (self.nested_lines[i].page, self.nested_lines[i].top),
+        }
+    }
+
+    /// Moves a stack item to where its column put it, and says which column that is.
+    fn dealt_to(&mut self, item: &StackItem, column: u32, page: u32, top: f64) {
+        match item.slot {
+            StackSlot::Line(i) => {
+                let line = self.lines[i];
+                self.lines[i] = LinePlacement(line.0, line.1, page, top);
+                self.column_lines.push([line.0, line.1, column]);
+            }
+            StackSlot::Placement(i) => {
+                self.placements[i].page = page;
+                self.placements[i].top = top;
+                self.placements[i].column = Some(column);
+            }
+            StackSlot::CellLine(i) => {
+                let line = self.cell_lines[i];
+                self.cell_lines[i] = CellLinePlacement(line.0, line.1, line.2, line.3, page, top);
+                self.column_cell_lines.push([line.0, line.1, line.2, line.3, column]);
+            }
+            StackSlot::Nested(i) => {
+                let line = &mut self.nested_lines[i];
+                line.page = page;
+                line.top = top;
+                line.column = column;
+            }
+        }
+    }
+
+    /// A table inside a columned run falls where the page rule puts it in the reader's stack — carried
+    /// whole, cut at its rows, or flowed line by line — and its lines, those of a table nested in a
+    /// cell included, are what the columns deal. One with no cell data is dealt piece by piece.
+    fn place_table_in_stack(&mut self, split_tables: bool, index: u32, block: &PlanBlock, stack: &mut Vec<StackItem>) {
+        // The stack is a later layout, never the reader's first one.
+        let mode = std::mem::replace(&mut self.mode, Mode::Settled);
+        let (placements_from, cells_from, segments_from) =
+            (self.placements.len(), self.cell_lines.len(), self.row_segments.len());
+        self.place_table(index, block, split_tables);
+        self.mode = mode;
+        let mut leaves: Vec<(Vec<u32>, u32, f64, f64)> = Vec::new(); // (path, page, top, height)
+        if self.placements[placements_from..].iter().any(|p| p.flowed) {
+            // Flowed: the flow already placed every line, nested ones included. What it said about
+            // the table's pieces and rows was only where the stack stood.
+            if let Some(flowed) = self.flowed.last().filter(|f| f.block == index) {
+                for (path, page, top) in &flowed.lines {
+                    leaves.push((path.clone(), *page, *top, leaf_height(&block.rows, path)));
+                }
+            }
+            self.cell_lines.truncate(cells_from);
+            self.row_segments.truncate(segments_from);
+            self.placements.truncate(placements_from);
+        } else {
+            let pieces: Vec<BlockPlacement> = self.placements[placements_from..].to_vec();
+            if !has_cells(&block.rows) {
+                for (offset, piece) in pieces.into_iter().enumerate() {
+                    stack.push(StackItem { slot: StackSlot::Placement(placements_from + offset), block: index, height: piece.height });
+                }
+                return;
+            }
+            // The leaf lines describe the table from here on; the pieces were only where it stood.
+            self.placements.truncate(placements_from);
+            for piece in pieces {
+                let start = piece.row_start.unwrap_or(0) as usize;
+                let end = (start + piece.row_count.unwrap_or(block.rows.len() as u32) as usize).min(block.rows.len());
+                let rows_height: f64 = block.rows[start..end].iter().map(|r| r.height).sum();
+                // A whole table's placement carries its spacing; the rows begin below the spacing before.
+                let top = piece.top + if (piece.height - rows_height).abs() > 1e-9 { block.spacing_before } else { 0.0 };
+                synth_leaves(&block.rows[start..end], start as u32, top, piece.page, &[], &mut leaves);
+            }
+        }
+        for (path, page, top, height) in leaves {
+            if path.len() == 3 {
+                stack.push(StackItem { slot: StackSlot::CellLine(self.cell_lines.len()), block: index, height });
+                self.cell_lines.push(CellLinePlacement(index, path[0], path[1], path[2], page, top));
+            } else {
+                stack.push(StackItem { slot: StackSlot::Nested(self.nested_lines.len()), block: index, height });
+                self.nested_lines.push(NestedLine { block: index, path, page, top, column: 0 });
+            }
         }
     }
 
@@ -509,6 +1011,7 @@ impl State<'_> {
             row_start: None,
             row_count: None,
             flowed: false,
+            column: None,
         });
         self.cursor += block.height;
     }
@@ -550,6 +1053,7 @@ impl State<'_> {
                 row_start: Some(first),
                 row_count: Some(last - first + 1),
                 flowed: true,
+                column: None,
             });
         }
         self.row_segments.extend(flow.segments);
@@ -618,6 +1122,7 @@ impl State<'_> {
                 row_start: Some(0),
                 row_count: Some(rows.len() as u32),
                 flowed: false,
+                column: None,
             });
             self.cursor += whole;
             return;
@@ -646,10 +1151,52 @@ impl State<'_> {
                 row_start: Some(start as u32),
                 row_count: Some(count as u32),
                 flowed: false,
+                column: None,
             });
             self.cursor += piece;
         }
         self.cursor += block.spacing_after;
+    }
+}
+
+/// The height of the line a path names: row, cell, line, then the same again inside a table nested
+/// at that line.
+fn leaf_height(rows: &[PlanRow], path: &[u32]) -> f64 {
+    let mut rows = rows;
+    let mut chunks = path.chunks(3).peekable();
+    while let Some(step) = chunks.next() {
+        let [r, c, l] = step else { return 0.0 };
+        let Some(line) = rows.get(*r as usize).and_then(|row| row.cells.get(*c as usize)).and_then(|cell| cell.lines.get(*l as usize)) else {
+            return 0.0;
+        };
+        if chunks.peek().is_none() {
+            return line.height;
+        }
+        rows = &line.rows;
+    }
+    0.0
+}
+
+/// Every leaf line of `rows` — a table nested in a cell contributes its own lines, not itself — as
+/// `(path, page, top, height)`, the rows standing from `top` on `page`. `first_row` is the row index
+/// of `rows[0]` in the table's own numbering (a piece starts partway down), `prefix` the path of the
+/// line holding a nested table.
+fn synth_leaves(rows: &[PlanRow], first_row: u32, top: f64, page: u32, prefix: &[u32], out: &mut Vec<(Vec<u32>, u32, f64, f64)>) {
+    let mut row_top = top;
+    for (offset, row) in rows.iter().enumerate() {
+        for (c, cell) in row.cells.iter().enumerate() {
+            for (l, line) in cell.lines.iter().enumerate() {
+                let line_top = row_top + cell.pad_top + line.top;
+                let mut path = prefix.to_vec();
+                path.extend([first_row + offset as u32, c as u32, l as u32]);
+                if line.rows.is_empty() {
+                    out.push((path, page, line_top, line.height));
+                } else {
+                    synth_leaves(&line.rows, 0, line_top, page, &path, out);
+                }
+            }
+        }
+        row_top += row.height;
     }
 }
 
@@ -673,22 +1220,7 @@ mod tests {
     use super::*;
 
     fn text(key: i64, lines: &[f64]) -> PlanBlock {
-        PlanBlock {
-            key,
-            kind: PlanKind::Text,
-            section_start: false,
-            page_break_before: false,
-            keep_with_next: false,
-            skip: false,
-            empty: false,
-            spacing_before: 0.0,
-            spacing_after: 0.0,
-            lines: lines.to_vec(),
-            trailing: 0.0,
-            height: 0.0,
-            rows: Vec::new(),
-            keeps_whole: false,
-        }
+        PlanBlock { key, lines: lines.to_vec(), ..PlanBlock::default() }
     }
 
     fn blank(key: i64, height: f64) -> PlanBlock {
@@ -709,7 +1241,7 @@ mod tests {
     }
 
     fn input(content_height: f64, blocks: Vec<PlanBlock>) -> PlanInput {
-        PlanInput { plan_version: 1, content_height, split_tables: true, note_bands: Vec::new(), band: 0.0, blocks }
+        PlanInput { plan_version: 1, content_height, split_tables: true, blocks, ..PlanInput::default() }
     }
 
     fn pages_of_lines(plan: &PagePlan) -> Vec<u32> {
@@ -998,6 +1530,331 @@ mod tests {
         let plan = plan_pages(&input(100.0, vec![text(1, &[60.0]), table])).unwrap();
         assert_eq!(plan.pulled_lines, vec![vec![1, 0, 0, 0]]);
         assert_eq!(plan.cell_lines[0].4, 1);
+    }
+
+    #[test]
+    fn a_run_only_the_settled_layout_strands_is_still_pulled() {
+        // Band 200: the first layout lets all six lines lie on page 0 (nothing to pull). The settled
+        // layout starts page 1 at the third line, stranding two lines at the foot — found in round 2.
+        let table = flow_table_block(2, vec![(120.0, vec![flow_cell(&[20.0; 6])])]);
+        let mut plan_input = input(100.0, vec![text(1, &[60.0]), table]);
+        plan_input.band = 200.0;
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.pulled_lines, vec![vec![1, 0, 0, 0]]);
+    }
+
+    #[test]
+    fn a_pull_the_first_layout_made_stays_even_when_the_settled_layout_would_not_make_it() {
+        // The first layout leaves the first line at y=95 with one more on the page and the rest on
+        // the next: a stranded run, pulled. A settled layout alone moves that line anyway (it does
+        // not fit), so nothing would be recorded — the record exists only because the first layout
+        // made it, and the reader never takes a pull back.
+        let table = flow_table_block(2, vec![(200.0, vec![flow_cell(&[20.0; 10])])]);
+        let mut plan_input = input(100.0, vec![text(1, &[95.0]), table]);
+        plan_input.band = 20.0;
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.pulled_lines, vec![vec![1, 0, 0, 0]]);
+        assert_eq!(plan.cell_lines[0].4, 1);
+    }
+
+    #[test]
+    fn a_pull_belongs_to_the_table_that_made_it() {
+        // Table 1 pulls its first line; table 2 has a line on the same path that fits where it
+        // stands (a single line: nothing of it is ever stranded) and must stay there.
+        let first = flow_table_block(1, vec![(120.0, vec![flow_cell(&[20.0; 6])])]);
+        let second = flow_table_block(2, vec![(120.0, vec![flow_cell(&[20.0])])]);
+        let plan = plan_pages(&input(100.0, vec![text(0, &[60.0]), first, second])).unwrap();
+        assert_eq!(plan.pulled_lines, vec![vec![1, 0, 0, 0]]);
+        let second_first_line = plan.cell_lines.iter().find(|l| l.0 == 2 && l.3 == 0).unwrap();
+        assert_eq!(second_first_line.4, 2, "table 2's first line is on the page the first table ended on");
+    }
+
+    fn entry(applies_to: PlanApplies, section: Option<i64>) -> PlanEntry {
+        PlanEntry { applies_to, section }
+    }
+
+    use super::super::plan_furniture::PlanApplies;
+
+    #[test]
+    fn every_page_names_the_head_foot_and_master_that_apply_and_the_number_it_prints() {
+        // Three pages, the second opening section 1; entries: a catch-all head, a first-page head,
+        // a foot only section 1 has, a master for each section.
+        let mut s1 = text(2, &[60.0]);
+        s1.section_start = true;
+        let mut plan_input = input(100.0, vec![text(1, &[60.0]), s1, text(3, &[60.0])]);
+        plan_input.headers = vec![entry(PlanApplies::DefaultPages, None), entry(PlanApplies::FirstPage, None)];
+        plan_input.footers = vec![entry(PlanApplies::DefaultPages, Some(1))];
+        plan_input.masters = vec![entry(PlanApplies::DefaultPages, Some(0)), entry(PlanApplies::DefaultPages, Some(1))];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.page_count, 3);
+        let heads: Vec<Option<u32>> = plan.pages.iter().map(|p| p.header).collect();
+        assert_eq!(heads, vec![Some(1), Some(0), Some(0)], "the first-page head belongs to page 0 only");
+        let foots: Vec<Option<u32>> = plan.pages.iter().map(|p| p.footer).collect();
+        assert_eq!(foots, vec![None, Some(0), Some(0)], "a section's foot shows on its own pages");
+        let masters: Vec<Option<u32>> = plan.pages.iter().map(|p| p.master).collect();
+        assert_eq!(masters, vec![Some(0), Some(1), Some(1)]);
+        assert_eq!(plan.pages.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn a_section_that_continues_on_its_page_names_the_pages_from_the_next_one_on() {
+        // The marker sits on page 0 beside text already there: page 0 stays section 0 and no page
+        // opens; the page the text then overflows onto belongs to section 1.
+        let mut marker = text(2, &[30.0]);
+        marker.section_marker = true;
+        let plan = plan_pages(&input(100.0, vec![text(1, &[30.0]), marker, text(3, &[60.0])])).unwrap();
+        assert_eq!(plan.page_count, 2);
+        assert_eq!(plan.pages.iter().map(|p| p.section).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(pages_of_lines(&plan), vec![0, 0, 1]);
+
+        // A marker that is the first thing on its sheet names that sheet.
+        let mut top = text(2, &[60.0]);
+        top.section_marker = true;
+        let plan = plan_pages(&input(100.0, vec![text(1, &[100.0]), top])).unwrap();
+        assert_eq!(plan.pages.iter().map(|p| p.section).collect::<Vec<_>>(), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_restart_renumbers_from_its_page_and_a_veto_hides_only_its_page() {
+        let mut restart = text(2, &[60.0]);
+        restart.page_number_restart = Some(1);
+        let mut hide = text(3, &[60.0]);
+        hide.hides_page_number = true;
+        let plan = plan_pages(&input(100.0, vec![text(1, &[60.0]), restart, hide, text(4, &[60.0])])).unwrap();
+        assert_eq!(plan.pages.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1, 1, 2, 3]);
+        assert_eq!(plan.pages.iter().map(|p| p.number_hidden).collect::<Vec<_>>(), vec![false, false, true, false]);
+    }
+
+    #[test]
+    fn of_two_restarts_on_one_page_the_first_wins() {
+        let mut a = text(1, &[40.0]);
+        a.page_number_restart = Some(5);
+        let mut b = text(2, &[40.0]);
+        b.page_number_restart = Some(9);
+        let plan = plan_pages(&input(100.0, vec![a, b, text(3, &[60.0])])).unwrap();
+        assert_eq!(plan.pages.iter().map(|p| p.number).collect::<Vec<_>>(), vec![5, 6]);
+    }
+
+    fn cited(mut block: PlanBlock, notes: &[(i64, u32)]) -> PlanBlock {
+        block.cites = notes.iter().map(|&(note, line)| PlanCite { note, line: Some(line) }).collect();
+        block
+    }
+
+    #[test]
+    fn the_footnote_band_is_settled_inside_the_plan() {
+        // A 100pt body, four 30pt lines; the first cites a 40pt note, so page 0 reserves 8 + 40 = 48
+        // and keeps 52: one line fits, the other three go to page 1. The marker stays on page 0, the
+        // second round proposes the same band, and the plan stops.
+        let mut plan_input = input(100.0, vec![cited(text(1, &[30.0, 30.0, 30.0, 30.0]), &[(1, 0)])]);
+        plan_input.notes = vec![PlanNote { number: 1, height: 40.0 }];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.notes_by_page, vec![(0, vec![1])]);
+        assert_eq!(plan.note_bands, vec![(0, 48.0)]);
+        assert_eq!(pages_of_lines(&plan), vec![0, 1, 1, 1]);
+        assert_eq!(plan.footnote_rounds, 2);
+    }
+
+    #[test]
+    fn a_marker_the_band_keeps_moving_settles_on_the_loose_half_of_its_oscillation() {
+        // The marker on the third line cites a 40pt note. Reserved on page 0 it pushes the marker to
+        // page 1; reserved on page 1 it lets the marker back. The rule stops on the cycle and takes
+        // the pointwise maximum: both pages reserve the band.
+        let mut plan_input = input(100.0, vec![cited(text(1, &[30.0, 30.0, 30.0, 30.0]), &[(1, 2)])]);
+        plan_input.notes = vec![PlanNote { number: 1, height: 40.0 }];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.note_bands, vec![(0, 48.0), (1, 48.0)]);
+        // The final bands move the marker to a page they do not reserve for it (page 2), and a
+        // re-taken assignment is adopted only when its bands are already covered: it is not, so the
+        // note stays on the page the stopping round saw it on.
+        assert_eq!(plan.notes_by_page, vec![(0, vec![1])]);
+    }
+
+    #[test]
+    fn a_note_cited_twice_is_drawn_once_on_the_first_page_that_cites_it() {
+        let blocks = vec![cited(text(1, &[60.0]), &[(1, 0)]), cited(text(2, &[60.0]), &[(1, 0)])];
+        let mut plan_input = input(100.0, blocks);
+        plan_input.notes = vec![PlanNote { number: 1, height: 10.0 }];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.notes_by_page, vec![(0, vec![1])]);
+        assert_eq!(plan.note_bands.len(), 1);
+    }
+
+    #[test]
+    fn the_lines_of_a_table_nested_in_a_cell_are_dealt_with_the_rest() {
+        // A cell whose one line holds a nested table of two rows of two 20pt lines: four leaf lines,
+        // on a 60pt body that holds three a column.
+        let nested_cell = || flow_cell(&[20.0, 20.0]);
+        let nested = vec![
+            PlanRow { height: 40.0, can_break_above: false, cells: vec![nested_cell()] },
+            PlanRow { height: 40.0, can_break_above: true, cells: vec![nested_cell()] },
+        ];
+        let outer = PlanCell {
+            row_span: 1,
+            pad_top: 0.0,
+            pad_bottom: 0.0,
+            content_height: 80.0,
+            lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested }],
+        };
+        let table = columned(flow_table_block(1, vec![(80.0, vec![outer])]), 0);
+        let mut plan_input = input(60.0, vec![table]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.nested_lines.len(), 4);
+        assert_eq!(plan.nested_lines[0].path, vec![0, 0, 0, 0, 0, 0]);
+        assert_eq!(plan.nested_lines.iter().map(|l| l.column).collect::<Vec<_>>(), vec![0, 0, 0, 1]);
+        assert!(plan.cell_lines.is_empty(), "the cell line that held the nested table is not itself a line");
+    }
+
+    #[test]
+    fn a_carried_table_with_a_nested_table_is_dealt_by_its_leaf_lines() {
+        // 40pt of text, then a table 80pt tall that does not fit what is left of the 100pt sheet: it
+        // is carried whole to the stack's next sheet, which the columns read as their second column.
+        let nested = vec![PlanRow { height: 80.0, can_break_above: false, cells: vec![flow_cell(&[20.0; 4])] }];
+        let outer = PlanCell {
+            row_span: 1,
+            pad_top: 0.0,
+            pad_bottom: 0.0,
+            content_height: 80.0,
+            lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested }],
+        };
+        let table = columned(flow_table_block(2, vec![(80.0, vec![outer])]), 0);
+        let mut plan_input = input(100.0, vec![columned(text(1, &[40.0]), 0), table]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.nested_lines.len(), 4);
+        assert!(plan.nested_lines.iter().all(|l| l.column == 1 && l.page == 0));
+        assert_eq!(plan.nested_lines.iter().map(|l| l.top).collect::<Vec<_>>(), vec![0.0, 20.0, 40.0, 60.0]);
+    }
+
+    #[test]
+    fn a_band_that_pushes_its_own_marker_forward_settles_on_the_page_the_marker_ends_on() {
+        // The marker sits on the last line that fits page 0 with no band; with its band reserved it
+        // no longer fits, moves to page 1, and page 1 reserves the band instead.
+        let mut plan_input = input(100.0, vec![cited(text(1, &[45.0, 45.0, 45.0]), &[(1, 1)])]);
+        plan_input.notes = vec![PlanNote { number: 1, height: 30.0 }];
+        let plan = plan_pages(&plan_input).unwrap();
+        let (page, numbers) = &plan.notes_by_page[0];
+        assert_eq!(numbers, &vec![1]);
+        let band = plan.note_bands.iter().find(|(p, _)| p == page).map(|(_, h)| *h).unwrap();
+        assert!(band > 0.0, "the page that cites the note reserves room for it");
+        let marker_page = plan.lines.iter().find(|l| l.0 == 0 && l.1 == 1).unwrap().2;
+        assert_eq!(marker_page, *page, "the note is on the page its marker landed on");
+    }
+
+    #[test]
+    fn a_host_that_ran_the_loop_itself_hands_in_its_final_bands() {
+        let mut plan_input = input(100.0, vec![text(1, &[40.0, 40.0, 40.0])]);
+        plan_input.note_bands = vec![PlanNoteBand { page: 0, height: 30.0 }];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(pages_of_lines(&plan), vec![0, 1, 1], "70pt of body holds one 40pt line");
+        assert_eq!(plan.note_bands, vec![(0, 30.0)]);
+        assert_eq!(plan.footnote_rounds, 1);
+    }
+
+    fn columned(mut block: PlanBlock, run: u32) -> PlanBlock {
+        block.column_run = Some(run);
+        block
+    }
+
+    fn two_columns() -> PlanColumnRun {
+        PlanColumnRun { count: 2, spacing: 10.0, widths: Vec::new(), gaps: Vec::new(), proportional: false }
+    }
+
+    #[test]
+    fn a_columned_run_is_dealt_into_columns_and_the_text_after_it_follows_the_last_line() {
+        // 30pt of text, then ten 10pt lines in two columns on a 100pt page, then more text.
+        // The run starts at y=30, so its first column offers 70: seven lines; column two begins
+        // where the run did and takes the other three; the next block follows the last of them.
+        let blocks = vec![
+            text(1, &[30.0]),
+            columned(text(2, &[10.0; 10]), 0),
+            text(3, &[10.0]),
+        ];
+        let mut plan_input = input(100.0, blocks);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        let line = |b: u32, l: u32| plan.lines.iter().find(|p| p.0 == b && p.1 == l).copied().unwrap();
+        assert_eq!((line(1, 0).2, line(1, 0).3), (0, 30.0));
+        assert_eq!((line(1, 6).2, line(1, 6).3), (0, 90.0));
+        assert_eq!((line(1, 7).2, line(1, 7).3), (0, 30.0), "the eighth line begins column two where the run began");
+        assert!(plan.column_lines.contains(&[1, 7, 1]));
+        assert!(plan.column_lines.contains(&[1, 0, 0]));
+        // Text after the run continues below the last line of the last column.
+        assert_eq!((line(2, 0).2, line(2, 0).3), (0, 60.0));
+        assert_eq!(plan.page_count, 1);
+    }
+
+    #[test]
+    fn the_text_after_a_columned_run_follows_its_last_line_and_the_spacing_the_run_left() {
+        let mut run = columned(text(1, &[10.0; 4]), 0);
+        run.spacing_after = 7.0;
+        let mut plan_input = input(100.0, vec![text(0, &[20.0]), run, text(2, &[10.0])]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        // Four lines in the 80pt left of the sheet: one column. The last ends at 60; 7 of spacing.
+        let after = plan.lines.iter().find(|l| l.0 == 2).unwrap();
+        assert_eq!((after.2, after.3), (0, 67.0));
+        assert_eq!(plan.pages[0].first_key, Some(0), "the page's first block is the one before the run");
+        assert_eq!(plan.page_count, 1);
+    }
+
+    #[test]
+    fn a_columned_run_that_overflows_its_sheet_opens_the_next_one() {
+        let blocks = vec![columned(text(1, &[10.0; 25]), 0)];
+        let mut plan_input = input(100.0, blocks);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        // Ten lines a column, twenty a sheet: the last five are on page 1, in its first column.
+        assert_eq!(plan.page_count, 2);
+        assert_eq!(plan.lines.iter().filter(|l| l.2 == 1).count(), 5);
+        assert_eq!(plan.pages[1].first_key, Some(1));
+        assert!(plan.column_lines.contains(&[0, 24, 0]));
+    }
+
+    #[test]
+    fn a_declaration_of_one_column_is_laid_out_as_ordinary_text() {
+        let blocks = vec![columned(text(1, &[30.0, 30.0, 30.0, 30.0]), 0)];
+        let mut plan_input = input(100.0, blocks);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![PlanColumnRun { count: 1, spacing: 0.0, widths: Vec::new(), gaps: Vec::new(), proportional: false }];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(pages_of_lines(&plan), vec![0, 0, 0, 1]);
+        assert!(plan.column_lines.is_empty());
+    }
+
+    #[test]
+    fn a_table_inside_a_columned_run_is_dealt_cell_line_by_cell_line() {
+        // One row, two cells of three 20pt lines, on a 100pt page whose columns hold 50: the first
+        // column takes two lines of each cell's stack, the second column the rest.
+        let table = columned(flow_table_block(1, vec![(60.0, vec![flow_cell(&[20.0; 3])])]), 0);
+        let mut plan_input = input(100.0, vec![columned(text(0, &[10.0; 4]), 0), table]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        // The stack: four 10pt lines (0..40) then 20pt cell lines at 40, 60, 80; the columns are 100
+        // tall, so everything fits column one.
+        assert_eq!(plan.cell_lines.iter().map(|l| (l.4, l.5)).collect::<Vec<_>>(), vec![(0, 40.0), (0, 60.0), (0, 80.0)]);
+        assert_eq!(plan.column_cell_lines.len(), 3);
+    }
+
+    #[test]
+    fn a_table_with_no_cell_data_in_a_columned_run_is_dealt_row_by_row() {
+        let rows: Vec<PlanRow> = (0..6).map(|i| PlanRow { height: 30.0, can_break_above: i > 0, cells: Vec::new() }).collect();
+        let table = columned(PlanBlock { kind: PlanKind::Table, rows, ..text(1, &[]) }, 0);
+        let mut plan_input = input(100.0, vec![table]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        // Three rows a column (90 of 100), so rows 3..5 are in column two from the top.
+        let rows_in: Vec<(Option<u32>, Option<u32>)> = plan.placements.iter().map(|p| (p.column, p.row_start)).collect();
+        assert_eq!(rows_in[0], (Some(0), Some(0)));
+        assert_eq!(rows_in[3], (Some(1), Some(3)));
+        assert_eq!(plan.placements[3].top, 0.0);
     }
 
     #[test]

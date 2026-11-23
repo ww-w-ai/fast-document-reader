@@ -322,6 +322,13 @@ bool fastdoc_office_table_placement(
  * height, table row heights). The answer is keyed by the same keys and by block index and carries no
  * text: geometry over node ids, not a second projection of the document.
  *
+ * S5 adds, all optional: the footnote band fixpoint run inside the call (notes with their heights,
+ * what each block cites, each section's separator; the answer carries the bands and which page
+ * cites which note), multi-column runs (column declarations, the body width and the leading band;
+ * blocks name their run, the answer carries each line's column), and per-page furniture (the head,
+ * foot and master entries the host holds and the sections that veto them; each page of the answer
+ * names the entry that applies, its section and the number it prints).
+ *
  * Returns {"ffiVersion":1,"ok":<PagePlanV1>} or {"ffiVersion":1,"error":{...}}, owned by this
  * library and freed with fastdoc_string_free — the envelope fastdoc_office_tree_json uses. NULL
  * only when the envelope itself could not be built. handle is never dereferenced — the arithmetic

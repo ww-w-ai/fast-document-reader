@@ -4,7 +4,6 @@ using System.Linq;
 using Avalonia;
 using Avalonia.Media;
 using FastDoc.Avalonia.Model;
-using FastDoc.Avalonia.Native;
 using FastDoc.Avalonia.Printing;
 using FastDoc.Avalonia.Rendering;
 
@@ -49,24 +48,18 @@ public sealed class FootnotePlan
 /// <summary>
 /// Page-mode footnotes: a band reserved at the foot of each page that cites notes, found as a
 /// FIXPOINT — the band a page reserves depends on which markers land on it, and which markers land
-/// on it depends on how much room the band left the body (invariant 98). The stopping rule and the
-/// band arithmetic are the engine's (`fastdoc_office_footnote_band_settle`); the managed copy below
-/// is the same rule for an engine library that predates the export. Note heights are measured with
-/// the SAME text layout that draws them, so what is reserved is what is painted.
+/// on it depends on how much room the band left the body (invariant 98). The whole loop is the
+/// engine's, run inside the one page-plan call (`fastdoc_office_page_plan_json`, S5 of
+/// docs/plans/pagination-to-engine.md): this host measures each note at the width it is drawn at,
+/// says which notes every block cites, and takes back the bands and the page each note is on. Note
+/// heights are measured with the SAME text layout that draws them, so what is reserved is what is
+/// painted.
 ///
 /// Flow mode keeps the notes at the end of the document (macOS's continuous view has no sheets and so
 /// no band; ending the flow with them loses nothing).
 /// </summary>
 public static class FootnoteLayout
 {
-    /// <summary>The settle's round budget — the same one the table settle shares
-    /// (`FootnoteBandSettle.maxRounds`).</summary>
-    public const int MaxRounds = 8;
-
-    /// <summary>The most of a page's body a band may take (`FootnoteBandSettle.maxBandFraction`) — a
-    /// termination guard that keeps the body's height positive.</summary>
-    public const double MaxBandFraction = 0.75;
-
     /// <summary>The separator allowance of a section that declared none
     /// (`FootnotePainter.defaultSeparatorAllowance`).</summary>
     public const double DefaultSeparatorAllowance = 8;
@@ -77,64 +70,21 @@ public static class FootnoteLayout
         BlockPageMarkers.Markers markers, PageGeometry geometry, IntPtr engineHandle, bool headersOn, bool footersOn,
         bool splitTablesDefault, ImageBlockRenderer? imageRenderer = null)
     {
-        var (first, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry, engineHandle, headersOn,
-            footersOn, splitTablesDefault, imageRenderer);
         var notes = ReadNotes(tree);
-        if (notes.Count == 0) { return (first, FootnotePlan.Empty); }
-
         var separators = ReadSeparators(tree);
-        var contentWidth = geometry.ContentWidthPoints;
-        var heights = notes.ToDictionary(n => n.Key, n => MeasureNote(n.Value, contentWidth, geometry.LineGridPitchPoints, imageRenderer));
-
-        var layout = first;
-        var bands = new Dictionary<int, double>();
-        var history = new List<Dictionary<int, double>>();
-        Dictionary<int, List<long>> assignment = Assign(layout, blocks, notes.Keys);
-
-        for (var round = 0; round < MaxRounds; round++)
-        {
-            var plan = new FootnotePlan { SeparatorBySection = separators };
-            var proposal = Propose(assignment, heights, layout, plan, geometry.ContentHeightPoints);
-            var (outcomeStops, outcomeBands) = Step(proposal, history, MaxRounds, assignment, heights, plan, layout, geometry.ContentHeightPoints);
-            if (!outcomeStops)
-            {
-                history.Add(Normalise(proposal));
-                bands = outcomeBands;
-                layout = Rebuild(blocks, markers, geometry, engineHandle, headersOn, footersOn, splitTablesDefault, imageRenderer, bands);
-                assignment = Assign(layout, blocks, notes.Keys);
-                continue;
-            }
-            // STOPPED. The assignment the ruling stopped ON is frozen with it; the layout is rebuilt
-            // against the final bands, and the assignment refreshed from it only when the frozen
-            // bands already cover that assignment (a band grown after the fact would shorten pages no
-            // rule re-checks).
-            var changed = !SameBands(bands, outcomeBands);
-            bands = outcomeBands;
-            if (changed)
-            {
-                layout = Rebuild(blocks, markers, geometry, engineHandle, headersOn, footersOn, splitTablesDefault, imageRenderer, bands);
-                var refreshed = Assign(layout, blocks, notes.Keys);
-                if (Covers(bands, refreshed, heights, separators, layout, geometry.ContentHeightPoints)) { assignment = refreshed; }
-            }
-            break;
-        }
-
+        var heights = notes.ToDictionary(n => n.Key,
+            n => MeasureNote(n.Value, geometry.ContentWidthPoints, geometry.LineGridPitchPoints, imageRenderer));
+        var furniture = PageFurniture.Read(tree, heights, separators);
+        var (layout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry, engineHandle, headersOn,
+            footersOn, splitTablesDefault, imageRenderer, noteBands: null, furniture: furniture);
+        if (notes.Count == 0) { return (layout, FootnotePlan.Empty); }
         return (layout, new FootnotePlan
         {
-            NoteBands = bands,
-            NotesByPage = assignment,
+            NoteBands = layout.NoteBands,
+            NotesByPage = layout.NotesByPage,
             Notes = notes,
             SeparatorBySection = separators,
         });
-    }
-
-    private static PageLayoutResult Rebuild(IReadOnlyList<FlowBlock> blocks, BlockPageMarkers.Markers markers,
-        PageGeometry geometry, IntPtr engineHandle, bool headersOn, bool footersOn, bool splitTablesDefault,
-        ImageBlockRenderer? imageRenderer, Dictionary<int, double> bands)
-    {
-        var (layout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry, engineHandle, headersOn,
-            footersOn, splitTablesDefault, imageRenderer, bands);
-        return layout;
     }
 
     // ---- reading the tree ---------------------------------------------------------------------
@@ -177,67 +127,8 @@ public static class FootnoteLayout
         return Color.FromArgb(Channel(c.Alpha), Channel(c.Red), Channel(c.Green), Channel(c.Blue));
     }
 
-    // ---- which page cites which note ----------------------------------------------------------
-
-    /// <summary>Note number -> the page its marker landed on, grouped per page in citation order. A
-    /// note is drawn once, on the first page that cites it. A marker in a text block is found by the
-    /// line holding its character; one inside a table cell, or any other non-text block, by the page
-    /// the block starts on.</summary>
-    internal static Dictionary<int, List<long>> Assign(PageLayoutResult layout, IReadOnlyList<FlowBlock> blocks,
-        IEnumerable<long> knownNotes)
-    {
-        var known = new HashSet<long>(knownNotes);
-        var linesOfBlock = new Dictionary<int, List<PagedLine>>();
-        foreach (var line in layout.Lines)
-        {
-            if (!linesOfBlock.TryGetValue(line.BlockIndex, out var list)) { linesOfBlock[line.BlockIndex] = list = new(); }
-            list.Add(line);
-        }
-        var firstPlacement = new Dictionary<int, PagedBlock>();
-        foreach (var placement in layout.Placements) { firstPlacement.TryAdd(placement.BlockIndex, placement); }
-
-        var citations = new List<(int Page, int Block, int Offset, long Number)>();
-        for (var i = 0; i < blocks.Count; i++)
-        {
-            var block = blocks[i];
-            if (block.FootnoteOf is not null) { continue; }
-            if (block.Kind == FlowBlockKind.Text)
-            {
-                if (!linesOfBlock.TryGetValue(i, out var lines)) { continue; }
-                var offset = 0;
-                foreach (var run in block.Runs)
-                {
-                    if (run.FootnoteRef > 0 && known.Contains(run.FootnoteRef))
-                    {
-                        var line = lines.FirstOrDefault(l => l.Length > 0 && offset >= l.FirstChar && offset < l.FirstChar + l.Length);
-                        if (line == default) { line = lines[^1]; }
-                        citations.Add((line.PageIndex, i, offset, run.FootnoteRef));
-                    }
-                    offset += run.Text.Length;
-                }
-            }
-            else if (firstPlacement.TryGetValue(i, out var placed))
-            {
-                foreach (var number in NumbersIn(block))
-                {
-                    if (known.Contains(number)) { citations.Add((placed.PageIndex, i, 0, number)); }
-                }
-            }
-        }
-
-        var result = new Dictionary<int, List<long>>();
-        var placedNumbers = new HashSet<long>();
-        foreach (var citation in citations.OrderBy(c => c.Page).ThenBy(c => c.Block).ThenBy(c => c.Offset))
-        {
-            // A note cited twice is drawn once, on the first page that cites it.
-            if (!placedNumbers.Add(citation.Number)) { continue; }
-            if (!result.TryGetValue(citation.Page, out var list)) { result[citation.Page] = list = new(); }
-            list.Add(citation.Number);
-        }
-        return result;
-    }
-
-    private static IEnumerable<long> NumbersIn(FlowBlock block)
+    /// <summary>The notes a block cites, in the order it cites them — a table's, through its cells.</summary>
+    internal static IEnumerable<long> NumbersIn(FlowBlock block)
     {
         if (block.Kind == FlowBlockKind.Text)
         {
@@ -258,7 +149,7 @@ public static class FootnoteLayout
         }
     }
 
-    // ---- heights and the proposal -------------------------------------------------------------
+    // ---- heights ------------------------------------------------------------------------------
 
     /// <summary>A note's height in points at the page's content width — the sum of its blocks, each
     /// laid out the way <see cref="PageLayout"/> lays a body block out.</summary>
@@ -285,154 +176,73 @@ public static class FootnoteLayout
         return height;
     }
 
-    /// <summary>The allowance a page's rule and its margins claim above the notes — the one function
-    /// the reservation and the painter share (`FootnotePainter.separatorAllowance`).</summary>
+    /// <summary>The allowance a page's rule and its margins claim above the notes — what the painter
+    /// draws (`FootnotePainter.separatorAllowance`); the engine reserves the same figure.</summary>
     public static double SeparatorAllowance(FootnoteSeparatorSpec? separator)
     {
         if (separator is not { IsDeclared: true }) { return DefaultSeparatorAllowance; }
         var rule = separator.LineType == 0 ? 0 : Math.Max(separator.LineWidthPoints, 0.5);
         return separator.MarginTopPoints + rule + separator.MarginBottomPoints;
     }
+}
 
-    /// <summary>This round's band per page: the allowance, the heights of the notes it cites and the
-    /// spacing between them, clamped (`PageBandGeometry.footnoteBandHeight` + `clamped`).</summary>
-    private static Dictionary<int, double> Propose(Dictionary<int, List<long>> assignment,
-        Dictionary<long, double> heights, PageLayoutResult layout, FootnotePlan plan, double pageContentHeight)
+/// <summary>What the page plan chooses among for each sheet — the document's running heads and feet
+/// and its master pages, and the sections that veto them — read off the tree, plus the notes whose
+/// band the plan settles (S5). The host holds the entries; the engine says which one applies to which
+/// page.</summary>
+internal static class PageFurniture
+{
+    public static PlanFurnitureInput Read(RenderTree tree, IReadOnlyDictionary<long, double> noteHeights,
+        IReadOnlyList<FootnoteSeparatorSpec?> separators)
     {
-        var proposed = new Dictionary<int, double>();
-        foreach (var (page, numbers) in assignment)
+        var headers = HeaderFooterText.CollectCandidates(tree, "header").Select(c => new PlanEntryInput(c.AppliesTo, c.Section)).ToList();
+        var footers = HeaderFooterText.CollectCandidates(tree, "footer").Select(c => new PlanEntryInput(c.AppliesTo, c.Section)).ToList();
+        var masters = new List<PlanEntryInput>();
+        var hidingHeader = new List<int>();
+        var hidingFooter = new List<int>();
+        var hidingMaster = new List<int>();
+        if (tree.Document is not null)
         {
-            var drawn = numbers.Select(n => heights.GetValueOrDefault(n)).Where(h => h > 0).ToList();
-            if (drawn.Count == 0) { continue; }
-            var separator = plan.SeparatorForPage(layout, page);
-            var spacing = separator?.NoteSpacingPoints ?? 0;
-            var raw = SeparatorAllowance(separator) + drawn.Sum() + Math.Max(0, spacing * (drawn.Count - 1));
-            var clamped = Clamp(raw, pageContentHeight);
-            if (clamped > 0) { proposed[page] = clamped; }
-        }
-        return proposed;
-    }
-
-    internal static double Clamp(double raw, double pageContentHeight)
-    {
-        if (pageContentHeight <= 0 || double.IsNaN(raw) || raw <= 0) { return 0; }
-        return Math.Min(raw, pageContentHeight * MaxBandFraction);
-    }
-
-    private static bool Covers(Dictionary<int, double> bands, Dictionary<int, List<long>> assignment,
-        Dictionary<long, double> heights, IReadOnlyList<FootnoteSeparatorSpec?> separators, PageLayoutResult layout,
-        double pageContentHeight)
-    {
-        var plan = new FootnotePlan { SeparatorBySection = separators };
-        var need = Propose(assignment, heights, layout, plan, pageContentHeight);
-        return need.All(kv => bands.TryGetValue(kv.Key, out var have) && have + 0.01 >= kv.Value);
-    }
-
-    // ---- the stopping rule --------------------------------------------------------------------
-
-    /// <summary>Whether to retry with these bands or stop on them. Engine first
-    /// (`fastdoc_office_footnote_band_settle`: proposal arithmetic AND the rule), the managed copy
-    /// when the export is missing.</summary>
-    private static (bool Stop, Dictionary<int, double> Bands) Step(Dictionary<int, double> proposed,
-        List<Dictionary<int, double>> history, int cap, Dictionary<int, List<long>> assignment,
-        Dictionary<long, double> heights, FootnotePlan plan, PageLayoutResult layout, double pageContentHeight)
-    {
-        if (TryEngineStep(assignment, heights, plan, layout, history, pageContentHeight, cap) is { } engine) { return engine; }
-        return ManagedStep(proposed, history, cap);
-    }
-
-    /// <summary>`FootnoteBandSettle.step`: stillness (the proposal equals the last), a repeat (a cycle
-    /// — resolved to the pointwise MAXIMUM, the loose half of the oscillation), or the round cap.</summary>
-    internal static (bool Stop, Dictionary<int, double> Bands) ManagedStep(Dictionary<int, double> proposed,
-        List<Dictionary<int, double>> history, int cap)
-    {
-        var now = Normalise(proposed);
-        var seen = history.Select(Normalise).ToList();
-        if (seen.Count > 0 && SameBands(seen[^1], now)) { return (true, now); }
-        var repeat = seen.FindIndex(s => SameBands(s, now));
-        if (repeat >= 0) { return (true, PointwiseMax(seen.Skip(repeat).Append(now))); }
-        if (seen.Count + 1 >= cap) { return (true, PointwiseMax(seen.Append(now))); }
-        return (false, now);
-    }
-
-    private static Dictionary<int, double> Normalise(Dictionary<int, double> state) =>
-        state.Where(kv => kv.Value > 0).ToDictionary(kv => kv.Key, kv => kv.Value);
-
-    private static Dictionary<int, double> PointwiseMax(IEnumerable<Dictionary<int, double>> states)
-    {
-        var result = new Dictionary<int, double>();
-        foreach (var state in states)
-        {
-            foreach (var (page, band) in state)
+            var byId = new Dictionary<ulong, RenderNode>(tree.Nodes.Count);
+            foreach (var node in tree.Nodes) { byId[node.Id] = node; }
+            if (byId.TryGetValue(tree.Document.RootNodeId, out var root))
             {
-                if (band > 0) { result[page] = Math.Max(result.GetValueOrDefault(page), band); }
-            }
-        }
-        return result;
-    }
-
-    private static bool SameBands(Dictionary<int, double> a, Dictionary<int, double> b)
-    {
-        var x = Normalise(a);
-        var y = Normalise(b);
-        return x.Count == y.Count && x.All(kv => y.TryGetValue(kv.Key, out var v) && Math.Abs(v - kv.Value) < 1e-9);
-    }
-
-    private static (bool Stop, Dictionary<int, double> Bands)? TryEngineStep(Dictionary<int, List<long>> assignment,
-        Dictionary<long, double> heights, FootnotePlan plan, PageLayoutResult layout,
-        List<Dictionary<int, double>> history, double pageContentHeight, int cap)
-    {
-        try
-        {
-            var noteHeights = new List<double>();
-            var pages = new List<FastdocEngine.FastdocFootnotePageDesc>();
-            foreach (var (page, numbers) in assignment.OrderBy(kv => kv.Key))
-            {
-                var separator = plan.SeparatorForPage(layout, page);
-                pages.Add(new FastdocEngine.FastdocFootnotePageDesc
+                var sectionIndex = -1;
+                foreach (var sectionId in root.Children)
                 {
-                    PageIndex = page,
-                    NoteOffset = (nuint)noteHeights.Count,
-                    NoteCount = (nuint)numbers.Count,
-                    HasSeparator = separator is not null,
-                    SeparatorIsDeclared = separator?.IsDeclared ?? false,
-                    SeparatorLineType = separator?.LineType ?? 0,
-                    SeparatorLineWidthPt = separator?.LineWidthPoints ?? 0,
-                    SeparatorMarginTopPt = separator?.MarginTopPoints ?? 0,
-                    SeparatorMarginBottomPt = separator?.MarginBottomPoints ?? 0,
-                    SeparatorNoteSpacingPt = separator?.NoteSpacingPoints ?? 0,
-                });
-                foreach (var number in numbers) { noteHeights.Add(heights.GetValueOrDefault(number)); }
-            }
-            var rounds = new List<FastdocEngine.FastdocFootnoteHistoryRoundDesc>();
-            var entries = new List<FastdocEngine.FastdocNoteBandEntry>();
-            foreach (var round in history)
-            {
-                rounds.Add(new FastdocEngine.FastdocFootnoteHistoryRoundDesc
-                {
-                    EntryOffset = (nuint)entries.Count,
-                    EntryCount = (nuint)round.Count,
-                });
-                foreach (var (page, band) in round.OrderBy(kv => kv.Key))
-                {
-                    entries.Add(new FastdocEngine.FastdocNoteBandEntry { Page = page, Value = band });
+                    if (!byId.TryGetValue(sectionId, out var section) || section.Type != "section") { continue; }
+                    sectionIndex++;
+                    if (section.AsSection is { } declared)
+                    {
+                        if (declared.HidesHeader) { hidingHeader.Add(sectionIndex); }
+                        if (declared.HidesFooter) { hidingFooter.Add(sectionIndex); }
+                        if (declared.HidesMasterPage) { hidingMaster.Add(sectionIndex); }
+                    }
+                    foreach (var childId in section.Children)
+                    {
+                        if (byId.TryGetValue(childId, out var child) && child.Type == "masterPage" && child.AsMasterPage is { } master)
+                        {
+                            masters.Add(new PlanEntryInput(master.AppliesTo, sectionIndex));
+                        }
+                    }
                 }
             }
-            var capacity = Math.Max(1, pages.Count);
-            var outBands = new FastdocEngine.FastdocNoteBandEntry[capacity];
-            var ok = FastdocEngine.fastdoc_office_footnote_band_settle(
-                pages.ToArray(), (nuint)pages.Count, noteHeights.ToArray(), (nuint)noteHeights.Count,
-                rounds.ToArray(), (nuint)rounds.Count, entries.ToArray(), (nuint)entries.Count,
-                pageContentHeight, cap, outBands, (nuint)capacity, out var count, out var outcome, out _);
-            if (!ok || outcome < 0) { return null; }
-            var bands = new Dictionary<int, double>();
-            for (var i = 0; i < (int)count; i++) { bands[(int)outBands[i].Page] = outBands[i].Value; }
-            return (outcome == 1, bands);
         }
-        catch (Exception e) when (e is EntryPointNotFoundException or DllNotFoundException or BadImageFormatException
-            or InvalidOperationException)
+        return new PlanFurnitureInput
         {
-            return null;
-        }
+            Headers = headers,
+            Footers = footers,
+            Masters = masters,
+            SectionsHidingHeader = hidingHeader,
+            SectionsHidingFooter = hidingFooter,
+            SectionsHidingMaster = hidingMaster,
+            Notes = noteHeights.Select(n => new PlanNoteInput(n.Key, n.Value)).OrderBy(n => n.Number).ToList(),
+            Separators = separators
+                .Select((s, section) => (s, section))
+                .Where(p => p.s is { IsDeclared: true })
+                .Select(p => new PlanSeparatorInput(p.section, p.s!.LineType, p.s.LineWidthPoints, p.s.MarginTopPoints,
+                    p.s.MarginBottomPoints, p.s.NoteSpacingPoints))
+                .ToList(),
+        };
     }
 }

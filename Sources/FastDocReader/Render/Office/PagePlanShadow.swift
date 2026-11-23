@@ -29,7 +29,10 @@ enum PagePlanShadow {
     struct Report {
         var summary: [String] = []
         var planPages = 0
+        /// The pages the reader prints. A columned document is then laid out again as the stack the
+        /// plan models; `stackPages` is that stack's own page count.
         var macPages = 0
+        var stackPages = 0
         var blocks = 0
         var tables = 0
         var blocksOnADifferentPage = 0
@@ -44,6 +47,20 @@ enum PagePlanShadow {
         var droppedByPlan = 0
         var droppedByTextKit = 0
         var skippedReason: String?
+        /// What the plan decided about the sheet itself, against what the reader settled on: pages
+        /// compared, and how many differ in their section, running head, foot, master page, printed
+        /// number or number veto.
+        var furniturePages = 0
+        var furnitureDifferences: [String: Int] = [:]
+        var furnitureFirstDifference: String?
+        /// Footnotes: the plan's bands against the reader's, and the pages that cite notes.
+        var noteBandsTextKit: [Int: CGFloat] = [:]
+        var noteBandsPlan: [Int: Double] = [:]
+        var noteAssignmentDifferences = 0
+        /// Lines inside columned runs, and how many the plan dealt to another page, top or column.
+        var columnLines = 0
+        var columnLinesDifferent = 0
+        var columnFirstDifference: String?
         /// The sum of every table's laid-out height — what the engine's row model is compared with
         /// on a host that has no TextKit (S3: Avalonia's `--sheets` prints the same sum).
         var tableHeightTotal: CGFloat = 0
@@ -84,7 +101,7 @@ enum PagePlanShadow {
     /// nested tables as items of their own, and a row's height from its cells whenever a page
     /// boundary fell in or beside it (the observed distance to the next row then carries the gap).
     private static func flowRows(_ frags: [Fragment], depth: Int, blockIndex: Int, page: (CGFloat) -> Int,
-                                 leading: CGFloat, pitch: CGFloat,
+                                 leading: CGFloat, pitch: CGFloat, aligned: Bool = false,
                                  refs: inout [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)])
         -> (rows: [[String: Any]], height: CGFloat) {
         var order: [ObjectIdentifier] = []
@@ -101,6 +118,7 @@ enum PagePlanShadow {
         var shiftedRows: Set<Int> = []
         var observedTop: [Int: CGFloat] = [:]
         var observedPage: [Int: Int] = [:]
+        var cellTopsOfRow: [Int: [CGFloat]] = [:]
         for id in order {
             let fs = byCell[id]!
             let block = fs[0].chain[depth]
@@ -125,7 +143,7 @@ enum PagePlanShadow {
                           ObjectIdentifier(fs[j].chain[depth + 1].table) == nestedTable { j += 1 }
                     let run = Array(fs[i..<j])
                     let sub = flowRows(run, depth: depth + 1, blockIndex: blockIndex, page: page, leading: leading,
-                                       pitch: pitch, refs: &refs)
+                                       pitch: pitch, aligned: aligned, refs: &refs)
                     itemTop = run.map { $0.rect.minY - inset($0.chain[depth + 1], .minY) }.min()!
                     itemBottom = run.map { $0.rect.maxY + inset($0.chain[depth + 1], .maxY) }.max()!
                     itemHeight = sub.height
@@ -159,8 +177,24 @@ enum PagePlanShadow {
             var cell: [String: Any] = ["padTop": Double(padTop), "padBottom": Double(padBottom),
                                        "contentHeight": Double(natural), "lines": items]
             if block.rowSpan > 1 { cell["rowSpan"] = block.rowSpan }
+            cellTopsOfRow[at, default: []].append(top)
             cellsOfRow[at, default: []].append(cell)
             if block.rowSpan <= 1 { extentOfRow[at] = max(extentOfRow[at] ?? 0, padTop + natural + padBottom) }
+        }
+        // A table the columns deal is dealt from where its lines STAND: a cell whose content the
+        // document centres or bottoms starts lower than its row, and the stack the columns divide
+        // has those lines where they are, not where a top-aligned cell would put them.
+        if aligned {
+            for r in rowKeys.indices {
+                guard let rowTop = observedTop[r], var cells = cellsOfRow[r] else { continue }
+                for (index, cellTop) in (cellTopsOfRow[r] ?? []).enumerated() where index < cells.count {
+                    let shift = Double(cellTop - rowTop)
+                    guard shift > 0.01, var lines = cells[index]["lines"] as? [[String: Any]] else { continue }
+                    for l in lines.indices { lines[l]["top"] = ((lines[l]["top"] as? Double) ?? 0) + shift }
+                    cells[index]["lines"] = lines
+                }
+                cellsOfRow[r] = cells
+            }
         }
         var rows: [[String: Any]] = []
         var total: CGFloat = 0
@@ -178,6 +212,115 @@ enum PagePlanShadow {
         return (rows, total)
     }
 
+    // MARK: - What the reader decided, read before the probe touches the layout
+
+    /// Everything TextKit's reader settled on for each page — the section, the head, foot and master
+    /// page that apply, the printed number, the footnote bands and the column map — taken from the
+    /// FINISHED layout. A column document is then laid out again as the stack the plan models, so
+    /// these are read first.
+    struct MacFacts {
+        var pageCount = 0
+        var sections: [Int?] = []
+        var headers: [Int?] = []
+        var footers: [Int?] = []
+        var masters: [Int?] = []
+        var numbers: [Int] = []
+        var hidden: Set<Int> = []
+        var footnotePages: [Int: [Int]] = [:]
+        var noteBands: [Int: CGFloat] = [:]
+        var columnPlacements: [Int: (x: CGFloat, y: CGFloat)] = [:]
+    }
+
+    static func macFacts(_ wc: DocumentWindowController) -> MacFacts {
+        var facts = MacFacts()
+        facts.pageCount = wc.printPageCount
+        facts.columnPlacements = wc.pageBandDelegate.columnPlacements
+        facts.noteBands = wc.pageBandDelegate.noteBands
+        facts.footnotePages = wc.footnotePages
+        facts.hidden = wc.hiddenPageNumberPages
+        let content = wc.pageBandContent
+        let master = wc.masterPageContent
+        for page in 0..<facts.pageCount {
+            let section = wc.sectionOfPage(page)
+            facts.sections.append(section)
+            facts.numbers.append(wc.displayedPageNumber(page))
+            func pick(_ entries: [OfficeHeaderFooter], _ hiding: Set<Int>) -> Int? {
+                PageBandPainter.applicableEntry(entries, pageIndex: page, section: section, hiddenSections: hiding)
+                    .flatMap { entry in entries.firstIndex(of: entry) }
+            }
+            facts.headers.append(content.flatMap { pick($0.headers, $0.sectionsHidingHeader) })
+            facts.footers.append(content.flatMap { pick($0.footers, $0.sectionsHidingFooter) })
+            var chosen: Int?
+            if let master, !(section.map { master.sectionsHidingMasterPage.contains($0) } ?? false),
+               let found = MasterPagePainter.applicablePage(master.pages, pageIndex: page, section: section) {
+                chosen = master.pages.firstIndex(of: found)
+            }
+            facts.masters.append(chosen)
+        }
+        return facts
+    }
+
+    private static func appliesName(_ a: HeaderFooterApplicability) -> String {
+        switch a {
+        case .defaultPages: return "defaultPages"
+        case .firstPage: return "firstPage"
+        case .evenPages: return "evenPages"
+        case .oddPages: return "oddPages"
+        }
+    }
+
+    private static func entries(_ list: [OfficeHeaderFooter]) -> [[String: Any]] {
+        list.map { var e: [String: Any] = ["appliesTo": appliesName($0.appliesTo)]; if let s = $0.section { e["section"] = s }; return e }
+    }
+
+    /// The part of the plan input that is about the sheet rather than the flow.
+    private static func furnitureInput(_ wc: DocumentWindowController) -> [String: Any] {
+        guard let doc = wc.mdDocument else { return [:] }
+        var out: [String: Any] = [:]
+        if let content = wc.pageBandContent {
+            out["headers"] = entries(content.headers)
+            out["footers"] = entries(content.footers)
+            out["sectionsHidingHeader"] = content.sectionsHidingHeader.sorted()
+            out["sectionsHidingFooter"] = content.sectionsHidingFooter.sorted()
+        }
+        if let master = wc.masterPageContent {
+            out["masters"] = master.pages.map { ["appliesTo": appliesName($0.appliesTo), "section": $0.section] as [String: Any] }
+            out["sectionsHidingMaster"] = master.sectionsHidingMasterPage.sorted()
+        }
+        if !wc.footnotes.isEmpty {
+            out["notes"] = wc.footnotes.map { ["number": $0.number, "height": Double(wc.footnoteHeights[$0.number] ?? 0)] as [String: Any] }
+            out["separators"] = doc.officeSections.enumerated().compactMap { index, section -> [String: Any]? in
+                guard let s = section.footnoteSeparator, s.isDeclared else { return nil }
+                return ["section": index, "lineType": s.lineType, "lineWidth": Double(s.lineWidthPt),
+                        "marginTop": Double(s.marginTopPt), "marginBottom": Double(s.marginBottomPt),
+                        "noteSpacing": Double(s.noteSpacingPt)]
+            }
+        }
+        return out
+    }
+
+    private static func columnRunsInput(_ runs: [(range: NSRange, layout: OfficeColumnLayout)]) -> [[String: Any]] {
+        runs.map { run in
+            let l = run.layout
+            return ["count": l.count, "spacing": Double(l.spacing), "widths": l.widths.map(Double.init),
+                    "gaps": l.gaps.map(Double.init), "proportional": l.proportional]
+        }
+    }
+
+    /// Puts `wc` in the state `--pdf` and ⌘P print from: the print grid (band without the desk gap,
+    /// invariant 161c), tables settled for paper, and the trailing footer reserved — the same three
+    /// calls `makePrintOperation` makes before it builds the operation. A shadow taken on the SCREEN
+    /// grid lays the 편람 out at 403 pages where `--pdf` gives 391, so the probe measures this layout.
+    static func layOutForPrint(_ wc: DocumentWindowController) {
+        if let tc = wc.textView.textContainer { wc.textView.layoutManager?.ensureLayout(for: tc) }
+        wc.applyTrailingFooterBand()
+        // `HeadlessPDF.run` stops here and runs the operation; building it is what lays the document
+        // out for paper (print layout, tables settled, every picture loaded), so the probe builds
+        // it too and measures the layout `--pdf` prints.
+        _ = wc.makePrintOperation()
+        if let tc = wc.textView.textContainer { wc.textView.layoutManager?.ensureLayout(for: tc) }
+    }
+
     /// Runs the plan over `wc`'s finished layout. `nil` when the document is not paged or the engine
     /// answered no plan; the reason is in `Report.skippedReason`.
     static func run(controller wc: DocumentWindowController) -> Report {
@@ -189,13 +332,21 @@ enum PagePlanShadow {
             report.skippedReason = "not paged"
             return report
         }
-        guard delegate.columnPlacements.isEmpty else {
-            report.skippedReason = "multi-column runs (S5: columns are placed by character, not by the page rule)"
-            return report
-        }
+        report.macPages = wc.printPageCount
         let pitch = delegate.pageContentHeight + delegate.band
         guard pitch > 0 else { report.skippedReason = "no page pitch"; return report }
         let leading = delegate.leadingBand
+        // What the reader settled on, read before the layout is touched. A columned document is then
+        // laid out again WITHOUT its column map: the plan models the run as one stack dealt into
+        // columns afterwards, so the stack is what the host observes (invariant 100).
+        let facts = macFacts(wc)
+        let columnRuns = wc.columnRunRanges()
+        if !delegate.columnPlacements.isEmpty {
+            delegate.columnPlacements = [:]
+            delegate.columnOpenedBoundaries = []
+            lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
+            lm.ensureLayout(for: tc)
+        }
         func page(of y: CGFloat) -> Int {
             Int(PageBandLayoutDelegate.page(of: y, leadingBand: leading, pitch: pitch))
         }
@@ -245,17 +396,42 @@ enum PagePlanShadow {
 
         var planBlocks: [[String: Any]] = []
         var cellLineRefs: [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)] = []
+        var columnCellRefs: [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)] = []
         var observed: [ObservedBlock] = []
         var lineMacPages: [[Int]] = []          // per block, the page TextKit put each line on
         var previousBottom: CGFloat?
         var previousPage = -1
-        for group in groups {
+        for (groupIndex, group) in groups.enumerated() {
             let frags = Array(fragments[group.range])
             let first = frags[0]
             let isTable = first.table != nil
             let location = first.location
             var block: [String: Any] = ["key": group.id]
-            if storage.attribute(MDAttr.startsPage, at: location, effectiveRange: nil) != nil { block["pageBreakBefore"] = true }
+            // Where the block ends in the text, for the markers it carries.
+            let endLocation = groupIndex + 1 < groups.count ? fragments[groups[groupIndex + 1].range.lowerBound].location : storage.length
+            let extentRange = NSRange(location: location, length: max(0, endLocation - location))
+            if let run = columnRuns.firstIndex(where: { NSLocationInRange(location, $0.range) }) { block["columnRun"] = run }
+            var restart: Int?
+            var hides = false
+            storage.enumerateAttribute(MDAttr.pageNumberRestart, in: extentRange) { value, _, stop in
+                if let n = (value as? NSNumber)?.intValue { restart = n; stop.pointee = true }
+            }
+            storage.enumerateAttribute(MDAttr.hidesPageNumber, in: extentRange) { value, _, stop in
+                if value as? Bool == true { hides = true; stop.pointee = true }
+            }
+            if let restart { block["pageNumberRestart"] = restart }
+            if hides { block["hidesPageNumber"] = true }
+            var cites: [[String: Any]] = []
+            storage.enumerateAttribute(MDAttr.footnoteRef, in: extentRange) { value, range, _ in
+                guard let number = (value as? NSNumber)?.intValue else { return }
+                var cite: [String: Any] = ["note": number]
+                if !isTable, let line = frags.lastIndex(where: { $0.location <= range.location }) { cite["line"] = line }
+                cites.append(cite)
+            }
+            if !cites.isEmpty { block["cites"] = cites }
+            if storage.attribute(MDAttr.startsPage, at: location, effectiveRange: nil) != nil {
+                block["pageBreakBefore"] = true
+            }
             if storage.attribute(MDAttr.keepWithNext, at: location, effectiveRange: nil) != nil { block["keepWithNext"] = true }
             let lastEnd = frags.map { $0.location }.max() ?? location
             let extent = NSRange(location: location, length: max(1, min(storage.length, lastEnd + 1) - location))
@@ -272,6 +448,12 @@ enum PagePlanShadow {
             var gap: CGFloat = 0
             if let previousBottom, previousPage == topPage { gap = max(0, top - previousBottom) }
             if gap > 0.001 { block["spacingBefore"] = gap }
+            // A section that really opened its own sheet in the reader's layout names its section to
+            // the plan. One whose break the reader dropped (invariant 147) or that continued on the
+            // page it began on opened nothing, and the plan is not told it did.
+            if storage.attribute(MDAttr.sectionIndex, at: location, effectiveRange: nil) != nil {
+                block[block["pageBreakBefore"] != nil && topPage > previousPage ? "sectionStart" : "sectionMarker"] = true
+            }
 
             var macPages: [Int] = []
             if isTable {
@@ -315,9 +497,14 @@ enum PagePlanShadow {
                 // cell's padding.
                 let firstLocation = first.location, lastLocation = frags.last!.location
                 let breaksWhereItStands = delegate.oversizedPieces.keys.contains { $0 >= firstLocation && $0 <= lastLocation }
-                if breaksWhereItStands {
+                // A table in a columned run is dealt line by line too, from where its lines fall.
+                let inColumnRun = block["columnRun"] != nil
+                if breaksWhereItStands || inColumnRun {
+                    var measured: [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)] = []
                     let built = flowRows(frags.filter { $0.table == first.table }, depth: 0, blockIndex: planBlocks.count,
-                                         page: page, leading: leading, pitch: pitch, refs: &cellLineRefs)
+                                         page: page, leading: leading, pitch: pitch, aligned: inColumnRun, refs: &measured)
+                    // Positions in the stack of a columned run are not the plan's final ones.
+                    if inColumnRun { columnCellRefs.append(contentsOf: measured) } else { cellLineRefs.append(contentsOf: measured) }
                     if built.rows.count == rowEntries.count {
                         for position in rowEntries.indices {
                             rowEntries[position]["cells"] = built.rows[position]["cells"]
@@ -355,14 +542,22 @@ enum PagePlanShadow {
         }
 
         // ---- 3. ask the engine ----
-        let input: [String: Any] = [
+        // With notes the plan runs the band fixpoint itself, so the reader's bands are NOT handed in:
+        // they are what the plan's own answer is compared with.
+        var input: [String: Any] = [
             "planVersion": 1,
             "contentHeight": Double(delegate.pageContentHeight),
             "splitTables": wc.mdDocument?.pageOptions.splitTables ?? false,
             "band": Double(delegate.band),
-            "noteBands": delegate.noteBands.sorted { $0.key < $1.key }.map { ["page": $0.key, "height": Double($0.value)] },
+            "leadingBand": Double(leading),
+            "bodyWidth": Double(delegate.columnBodyWidth),
+            "columnRuns": columnRunsInput(columnRuns),
+            "noteBands": wc.footnotes.isEmpty
+                ? facts.noteBands.sorted { $0.key < $1.key }.map { ["page": $0.key, "height": Double($0.value)] }
+                : [],
             "blocks": planBlocks,
         ]
+        input.merge(furnitureInput(wc)) { a, _ in a }
         guard let json = try? JSONSerialization.data(withJSONObject: input),
               let reply = plan(json: json),
               let envelope = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any],
@@ -415,7 +610,10 @@ enum PagePlanShadow {
             let planPage = block.isTable ? planBlockPage[index] : planLinePage[index]?[0]
             if let planPage, planFirstOnPage[planPage] == nil { planFirstOnPage[planPage] = block.blockId }
             if macFirstOnPage[block.macPage] == nil { macFirstOnPage[block.macPage] = block.blockId }
-            if planPage != block.macPage {
+            // A block under a column run is dealt into columns by the plan; it is compared against
+            // the reader's column map below, not against the stack it was measured in.
+            let inRun = planBlocks[index]["columnRun"] != nil
+            if !inRun, planPage != block.macPage {
                 report.blocksOnADifferentPage += 1
                 if report.firstDifference == nil {
                     report.firstDifference = "block \(block.blockId) \(block.isTable ? "table" : "text") \"\(block.preview)\": TextKit page \(block.macPage + 1), plan page \(planPage.map { String($0 + 1) } ?? "none")"
@@ -434,7 +632,7 @@ enum PagePlanShadow {
                     report.context = context
                 }
             }
-            if !block.isTable {
+            if !block.isTable, !inRun {
                 for (l, macPage) in lineMacPages[index].enumerated() where planLinePage[index]?[l] != macPage {
                     report.linesOnADifferentPage += 1
                 }
@@ -443,20 +641,139 @@ enum PagePlanShadow {
         }
         report.pagesWithADifferentFirstBlock = Set(planFirstOnPage.keys).union(macFirstOnPage.keys)
             .filter { planFirstOnPage[$0] != macFirstOnPage[$0] }.count
+        // ---- 5. the sheet itself: section, head, foot, master, number, notes, columns ----
+        let planSheets = (plan["pages"] as? [[String: Any]]) ?? []
+        report.furniturePages = min(planSheets.count, facts.pageCount)
+        func note(_ kind: String, page: Int, _ mac: Any?, _ planned: Any?) {
+            report.furnitureDifferences[kind, default: 0] += 1
+            if report.furnitureFirstDifference == nil {
+                report.furnitureFirstDifference = "\(kind) on page \(page + 1): TextKit \(mac.map { "\($0)" } ?? "none"), plan \(planned.map { "\($0)" } ?? "none")"
+            }
+        }
+        for page in 0..<report.furniturePages {
+            let sheet = planSheets[page]
+            let planSection = (sheet["section"] as? Int)
+            if let macSection = facts.sections[page], macSection != planSection { note("section", page: page, macSection, planSection) }
+            if facts.headers[page] != (sheet["header"] as? Int) { note("header", page: page, facts.headers[page], sheet["header"]) }
+            if facts.footers[page] != (sheet["footer"] as? Int) { note("footer", page: page, facts.footers[page], sheet["footer"]) }
+            if facts.masters[page] != (sheet["master"] as? Int) { note("master", page: page, facts.masters[page], sheet["master"]) }
+            if facts.numbers[page] != (sheet["number"] as? Int) { note("number", page: page, facts.numbers[page], sheet["number"]) }
+            if facts.hidden.contains(page) != ((sheet["numberHidden"] as? Bool) ?? false) {
+                note("numberHidden", page: page, facts.hidden.contains(page), sheet["numberHidden"])
+            }
+        }
+        if !wc.footnotes.isEmpty {
+            report.noteBandsTextKit = facts.noteBands
+            for pair in (plan["noteBands"] as? [[Any]]) ?? [] where pair.count == 2 {
+                if let page = (pair[0] as? NSNumber)?.intValue, let height = (pair[1] as? NSNumber)?.doubleValue { report.noteBandsPlan[page] = height }
+            }
+            var planned: [Int: [Int]] = [:]
+            for pair in (plan["notesByPage"] as? [[Any]]) ?? [] where pair.count == 2 {
+                if let page = (pair[0] as? NSNumber)?.intValue, let list = pair[1] as? [NSNumber] { planned[page] = list.map(\.intValue) }
+            }
+            let pagesNamed = Set(planned.keys).union(facts.footnotePages.keys)
+            report.noteAssignmentDifferences = pagesNamed.filter { planned[$0] != facts.footnotePages[$0] }.count
+        }
+        if !facts.columnPlacements.isEmpty {
+            // The stack itself — the same blocks planned with the column runs left out — against the
+            // stack TextKit measured, line by line: a difference here is the stack's, not the deal's.
+            if ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_COLUMNS"] != nil {
+                var flat = input
+                flat["blocks"] = planBlocks.map { var b = $0; b.removeValue(forKey: "columnRun"); return b }
+                if let data = try? JSONSerialization.data(withJSONObject: flat), let reply = Self.plan(json: data),
+                   let envelope = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any],
+                   let flatPlan = envelope["ok"] as? [String: Any] {
+                    var stackTop: [String: (Int, Double)] = [:]
+                    for line in (flatPlan["lines"] as? [[Any]]) ?? [] where line.count == 4 {
+                        if let b = (line[0] as? NSNumber)?.intValue, let l = (line[1] as? NSNumber)?.intValue,
+                           let p = (line[2] as? NSNumber)?.intValue, let t = (line[3] as? NSNumber)?.doubleValue { stackTop["\(b),\(l)"] = (p, t) }
+                    }
+                    var shown = 0
+                    for (blockIndex, group) in groups.enumerated() where planBlocks[blockIndex]["columnRun"] != nil && !observed[blockIndex].isTable {
+                        for (line, frag) in fragments[group.range].enumerated() {
+                            let macPage = page(of: frag.rect.minY)
+                            let macTop = Double(frag.rect.minY - leading - CGFloat(macPage) * pitch)
+                            guard let planned = stackTop["\(blockIndex),\(line)"], planned.0 != macPage || abs(planned.1 - macTop) > 0.6, shown < 6 else { continue }
+                            shown += 1
+                            report.context.append("SHADOW   stack [\(blockIndex)] line \(line): TextKit p\(macPage + 1) top \(String(format: "%.1f", macTop)); plan p\(planned.0 + 1) top \(String(format: "%.1f", planned.1)); pitch \(pitch) content \(delegate.pageContentHeight) band \(delegate.band) leading \(leading)")
+                        }
+                    }
+                }
+            }
+            var columnOf: [String: Int] = [:]
+            for entry in (plan["columnLines"] as? [[Any]]) ?? [] where entry.count == 3 {
+                let n = entry.compactMap { ($0 as? NSNumber)?.intValue }
+                if n.count == 3 { columnOf["\(n[0]),\(n[1])"] = n[2] }
+            }
+            // Cell lines of the tables in the runs: each against where the reader's column map put it.
+            var planCellColumn: [String: Int] = [:]
+            for entry in (plan["columnCellLines"] as? [[Any]]) ?? [] where entry.count == 5 {
+                let n = entry.compactMap { ($0 as? NSNumber)?.intValue }
+                if n.count == 5 { planCellColumn["\(n[0]),\(n[1]),\(n[2]),\(n[3])"] = n[4] }
+            }
+            var cellsShown = 0
+            for ref in columnCellRefs {
+                guard let target = facts.columnPlacements[ref.loc] else { continue }
+                report.columnLines += 1
+                let macPage = page(of: target.y)
+                let macTop = Double(target.y - leading - CGFloat(macPage) * pitch)
+                let key = "\(ref.block),\(ref.row),\(ref.cell),\(ref.line)"
+                let planned = plannedCellLines[key]
+                if planned?.page != macPage || abs((planned?.top ?? .infinity) - macTop) > 0.6 {
+                    report.columnLinesDifferent += 1
+                    if cellsShown < 4 {
+                        cellsShown += 1
+                        report.context.append("SHADOW   cell [\(ref.block)] row \(ref.row) cell \(ref.cell) line \(ref.line): TextKit p\(macPage + 1) top \(String(format: "%.1f", macTop)) (stack p\(ref.page + 1) top \(String(format: "%.1f", Double(ref.top)))); plan p\(planned.map { String($0.page + 1) } ?? "-") top \(planned.map { String(format: "%.1f", $0.top) } ?? "-")")
+                    }
+                }
+            }
+            var planLineTop: [String: Double] = [:]
+            for line in planLines where line.count == 4 {
+                if let b = (line[0] as? NSNumber)?.intValue, let l = (line[1] as? NSNumber)?.intValue, let t = (line[3] as? NSNumber)?.doubleValue {
+                    planLineTop["\(b),\(l)"] = t
+                }
+            }
+            for (blockIndex, group) in groups.enumerated() where planBlocks[blockIndex]["columnRun"] != nil && !observed[blockIndex].isTable {
+                let frags = Array(fragments[group.range])
+                guard let run = columnRuns.firstIndex(where: { NSLocationInRange(frags[0].location, $0.range) }) else { continue }
+                let columns = ColumnGeometry.columns(inWidth: delegate.columnBodyWidth, layout: columnRuns[run].layout)
+                for (line, frag) in frags.enumerated() {
+                    guard let target = facts.columnPlacements[frag.location] else { continue }
+                    report.columnLines += 1
+                    let macPage = page(of: target.y)
+                    let macTop = Double(target.y - leading - CGFloat(macPage) * pitch)
+                    let macColumn = columns.firstIndex { abs($0.x - target.x) < 0.5 } ?? 0
+                    let planPage = planLinePage[blockIndex]?[line]
+                    let planTop = planLineTop["\(blockIndex),\(line)"]
+                    if ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_COLUMNS"] != nil {
+                        report.context.append("SHADOW   col [\(blockIndex)] line \(line) \(observed[blockIndex].preview.prefix(10)): TextKit p\(macPage + 1) top \(String(format: "%.1f", macTop)) col \(macColumn) (stack top \(String(format: "%.1f", frag.rect.minY - leading)) h \(String(format: "%.1f", frag.rect.height))); plan p\(planPage.map { String($0 + 1) } ?? "-") top \(planTop.map { String(format: "%.1f", $0) } ?? "-") col \(columnOf["\(blockIndex),\(line)"].map(String.init) ?? "-")")
+                    }
+                    if planPage != macPage || abs((planTop ?? .infinity) - macTop) > 0.6 || columnOf["\(blockIndex),\(line)"] != macColumn {
+                        report.columnLinesDifferent += 1
+                        if report.columnFirstDifference == nil {
+                            report.columnFirstDifference = "block \(group.id) line \(line): TextKit page \(macPage + 1) top \(String(format: "%.1f", macTop)) column \(macColumn), plan page \(planPage.map { String($0 + 1) } ?? "none") top \(planTop.map { String(format: "%.1f", $0) } ?? "none") column \(columnOf["\(blockIndex),\(line)"].map(String.init) ?? "none")"
+                        }
+                    }
+                }
+            }
+        }
         let lastMacPage = (observed.map { $0.macPage }.max() ?? 0)
-        report.macPages = lastMacPage + 1
+        report.stackPages = lastMacPage + 1
         report.planPages = planPages
         report.blocks = observed.count
         let rawBreaks = PageBandLayoutDelegate.markedParagraphs(MDAttr.startsPage, in: storage).count
         report.droppedByPlan = plan["droppedBreakCount"] as? Int ?? 0
         report.droppedByTextKit = max(0, rawBreaks - delegate.documentPageBreaks.count)
         report.summary = [
-            "SHADOW pages: TextKit \(report.macPages), plan \(report.planPages) (reader reports \(wc.printPageCount))",
+            "SHADOW pages: TextKit \(report.macPages), plan \(report.planPages) (reader reports \(facts.pageCount); observed stack \(report.stackPages))",
             "SHADOW blocks: \(report.blocks) (\(report.tables) tables); on a different page: \(report.blocksOnADifferentPage); lines on a different page: \(report.linesOnADifferentPage); flowed cell lines: \(report.cellLines), differing: \(report.cellLinesOnADifferentPage)",
             String(format: "SHADOW table height total: %.1f", Double(report.tableHeightTotal)),
             "SHADOW pages whose first block differs: \(report.pagesWithADifferentFirstBlock)",
             "SHADOW hard breaks dropped by 147: plan \(report.droppedByPlan), TextKit \(report.droppedByTextKit)",
             "SHADOW first difference: \(report.firstDifference ?? "none")",
+            "SHADOW sheets: \(report.furniturePages) pages compared; differences \(report.furnitureDifferences.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ").nonEmpty ?? "none"); first: \(report.furnitureFirstDifference ?? "none")",
+            "SHADOW footnotes: TextKit bands \(report.noteBandsTextKit.sorted { $0.key < $1.key }.map { "\($0.key + 1):\(String(format: "%.1f", Double($0.value)))" }.joined(separator: " ")); plan bands \(report.noteBandsPlan.sorted { $0.key < $1.key }.map { "\($0.key + 1):\(String(format: "%.1f", $0.value))" }.joined(separator: " ")); pages whose cited notes differ: \(report.noteAssignmentDifferences)",
+            "SHADOW columns: \(report.columnLines) lines in columned runs, different: \(report.columnLinesDifferent); first: \(report.columnFirstDifference ?? "none")",
         ] + report.context
         return report
     }
@@ -473,4 +790,8 @@ enum PagePlanShadow {
         defer { fastdoc_string_free(out) }
         return String(cString: out).data(using: .utf8)
     }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

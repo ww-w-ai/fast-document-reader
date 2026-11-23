@@ -151,6 +151,28 @@ fn a_table_that_fits_no_page_comes_back_flowed_with_its_cell_lines_and_segments(
 }
 
 #[test]
+fn the_sheet_the_notes_and_the_columns_come_back_in_one_answer() {
+    // Three 60pt lines in a 100pt body: the first line cites a note (band 8 + 20), a first-page and
+    // a default head are held, and a second block sits in a two-column run.
+    let reply = call(
+        std::ptr::null(),
+        r#"{"planVersion":1,"contentHeight":100,"bodyWidth":300,
+            "columnRuns":[{"count":2,"spacing":10}],
+            "headers":[{"appliesTo":"defaultPages"},{"appliesTo":"firstPage"}],
+            "notes":[{"number":1,"height":20}],
+            "blocks":[{"key":1,"kind":"text","lines":[60,60],"cites":[{"note":1,"line":0}],"hidesPageNumber":true},
+                      {"key":2,"kind":"text","lines":[30,30,30,30],"columnRun":0}]}"#,
+    );
+    let plan = &reply["ok"];
+    assert_eq!(plan["pages"][0]["header"], 1, "{reply}");
+    assert_eq!(plan["pages"][0]["numberHidden"], true);
+    assert_eq!(plan["pages"][0]["number"], 1);
+    assert_eq!(plan["noteBands"], serde_json::json!([[0, 28.0]]));
+    assert_eq!(plan["notesByPage"], serde_json::json!([[0, [1]]]));
+    assert!(plan["columnLines"].as_array().unwrap().len() == 4, "every line of the run is dealt: {reply}");
+}
+
+#[test]
 fn a_null_handle_plans_and_a_null_input_is_refused() {
     let reply = call(std::ptr::null(), r#"{"planVersion":1,"contentHeight":100,"blocks":[]}"#);
     assert_eq!(reply["ok"]["pageCount"], 1, "{reply}");
