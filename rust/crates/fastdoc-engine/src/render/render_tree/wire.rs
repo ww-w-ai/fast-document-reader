@@ -212,7 +212,7 @@ macro_rules! node_payloads {
 node_payloads! {
     Document => "document" (Empty), Section => "section" (Section), Flow => "flow" (Empty),
     Heading => "heading" (Heading), Paragraph => "paragraph" (Paragraph), TextRun => "textRun" (TextRun),
-    LineBreak => "lineBreak" (LineBreak), BlockQuote => "blockQuote" (Empty), CodeBlock => "codeBlock" (CodeBlock),
+    LineBreak => "lineBreak" (LineBreak), BlockQuote => "blockQuote" (BlockQuote), CodeBlock => "codeBlock" (CodeBlock),
     ThematicBreak => "thematicBreak" (Empty), List => "list" (List), ListItem => "listItem" (ListItem),
     TaskListItem => "taskListItem" (TaskListItem), Table => "table" (Table), TableRow => "tableRow" (TableRow),
     TableCell => "tableCell" (TableCell), Image => "image" (Image), Vector => "vector" (Vector),
@@ -225,6 +225,15 @@ node_payloads! {
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Empty {}
+
+/// A quotation. `alert` is set when the quote is a GitHub-style alert and names its kind
+/// (`note`, `tip`, `important`, `warning`, `caution`); the alert's title is the quote's first
+/// paragraph. Absent for an ordinary quote, so such a node still serializes as `{}`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct BlockQuote {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alert: Option<String>,
+}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

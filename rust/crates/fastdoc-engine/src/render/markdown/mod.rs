@@ -79,6 +79,9 @@ pub(crate) struct Ctx<'a> {
     resources: Vec<RenderResourceDraft>,
     resource_by_key: std::collections::BTreeMap<String, u64>,
     resource_by_hash: std::collections::BTreeMap<String, u64>,
+    bookmarks: std::collections::BTreeMap<String, u64>,
+    /// Head indent given to every paragraph built while a description list's details are mapped.
+    pub(crate) paragraph_head_indent: Option<f64>,
 }
 
 impl<'a> Ctx<'a> {
@@ -94,7 +97,21 @@ impl<'a> Ctx<'a> {
             resources: Vec::new(),
             resource_by_key: std::collections::BTreeMap::new(),
             resource_by_hash: std::collections::BTreeMap::new(),
+            bookmarks: std::collections::BTreeMap::new(),
+            paragraph_head_indent: None,
         }
+    }
+
+    /// Names a node a `#name` link can jump to (a footnote, its first reference, a heading's
+    /// `{#id}`). The first node to claim a name keeps it.
+    pub(crate) fn add_bookmark(&mut self, name: String, node_id: u64) {
+        if !name.is_empty() {
+            self.bookmarks.entry(name).or_insert(node_id);
+        }
+    }
+
+    pub(crate) fn has_bookmark(&self, name: &str) -> bool {
+        self.bookmarks.contains_key(name)
     }
 
     fn new_node_id(&mut self) -> u64 {
@@ -197,6 +214,26 @@ pub fn produce(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, M
     options.extension.tasklist = true;
     options.extension.strikethrough = true;
     options.extension.autolink = true;
+    // The same extensions `markdown_package.rs` enables for the macOS renderer, so both hosts read
+    // one dialect. See that file for why `underline`, `subscript`, `greentext`, `tagfilter`,
+    // `math_*`, `link_attributes` and `shortcodes` stay off.
+    if crate::render::markdown_package::starts_with_front_matter(text) {
+        options.extension.front_matter_delimiter = Some("---".to_string());
+    }
+    options.extension.footnotes = true;
+    options.extension.inline_footnotes = true;
+    options.extension.alerts = true;
+    options.extension.description_lists = true;
+    options.extension.superscript = true;
+    options.extension.highlight = true;
+    options.extension.insert = true;
+    options.extension.spoiler = true;
+    options.extension.multiline_block_quotes = true;
+    options.extension.cjk_friendly_emphasis = true;
+    options.extension.wikilinks_title_after_pipe = true;
+    options.extension.header_attributes = true;
+    options.parse.relaxed_tasklist_matching = true;
+    options.parse.tasklist_in_table = true;
     // swift-markdown parses through cmark-gfm with smart punctuation ON, so the reader has always
     // shown curly quotes, en/em dashes and ellipses for the ASCII the author typed. Off here, the
     // engine produced `'` where this app produces `’` on every one of the five documents it ships
@@ -208,9 +245,17 @@ pub fn produce(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, M
     let mut ctx = Ctx::new(text, &line_index, &math_spans);
     let doc_id = ctx.new_node_id();
     let mut top_children = Vec::new();
+    // comrak moves every footnote definition to the end; consecutive ones form one notes section.
+    let mut notes = Vec::new();
     for child in root.children() {
+        if blocks::is_footnote_definition(child) {
+            notes.push(child);
+            continue;
+        }
+        blocks::map_footnote_section(&mut notes, doc_id, &mut ctx, &mut top_children);
         blocks::map_block(child, doc_id, &mut ctx, &mut top_children);
     }
+    blocks::map_footnote_section(&mut notes, doc_id, &mut ctx, &mut top_children);
     ctx.push(crate::render::render_tree::RenderNodeDraft {
         id: doc_id,
         parent_id: None,
@@ -261,6 +306,13 @@ pub fn produce(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, M
     }
     for resource in ctx.resources {
         builder.add_resource(resource);
+    }
+    for (index, (name, target_node_id)) in ctx.bookmarks.into_iter().enumerate() {
+        builder.add_bookmark(crate::render::render_tree::Bookmark {
+            id: index as u64 + 1,
+            name,
+            target_node_id,
+        });
     }
     builder.build().map_err(MarkdownError::Canonicalization)
 }

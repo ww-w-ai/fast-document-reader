@@ -1,5 +1,7 @@
 using System.Collections.Generic;
 using Avalonia.Media;
+using Avalonia.Media.Immutable;
+using Avalonia.Media.TextFormatting;
 using FastDoc.Avalonia.Model;
 
 namespace FastDoc.Avalonia.Rendering;
@@ -57,6 +59,9 @@ public readonly record struct LineHeightRule(LineHeightMode Mode, double Value)
 /// this record stays a plain wire mirror, per this file's own top-level doc). Null for a run no
 /// link covers, the overwhelming majority. Trailing/optional so every pre-S8-B4 positional
 /// constructor call keeps compiling unchanged.</summary>
+/// <remarks>`Background` is a highlight/spoiler wash behind the run (null for none); `Script` is 1 for
+/// a superscript, -1 for a subscript (the run's own <see cref="FontSizePoints"/> is already the
+/// reduced size) and 0 otherwise.</remarks>
 public sealed record FlowRun(
     string Text,
     string? FontFamily,
@@ -66,7 +71,31 @@ public sealed record FlowRun(
     bool Underline,
     bool Strike,
     Color Foreground,
-    string? LinkTarget = null);
+    string? LinkTarget = null,
+    Color? Background = null,
+    int Script = 0)
+{
+    /// <summary>The ONE place a run becomes Avalonia text properties, for the flow view, pagination,
+    /// and table cells alike. <paramref name="fontSizePx"/> is the run's size at the caller's scale.
+    /// Immutable brushes, so this is safe on a background layout thread.</summary>
+    internal static GenericTextRunProperties PropertiesFor(FlowRun run, double fontSizePx, IBrush foreground)
+    {
+        var typeface = new Typeface(
+            run.FontFamily ?? "Inter",
+            run.Italic ? FontStyle.Italic : FontStyle.Normal,
+            run.Bold ? FontWeight.Bold : FontWeight.Normal);
+        TextDecorationCollection? decorations = null;
+        if (run.Underline) { decorations = TextDecorations.Underline; }
+        else if (run.Strike) { decorations = TextDecorations.Strikethrough; }
+        IBrush? background = run.Background is { } wash ? new ImmutableSolidColorBrush(wash) : null;
+        var baseline = run.Script > 0 ? BaselineAlignment.Superscript
+            : run.Script < 0 ? BaselineAlignment.Subscript
+            : BaselineAlignment.Baseline;
+        return new GenericTextRunProperties(typeface, fontSizePx, textDecorations: decorations,
+            foregroundBrush: run.Italic ? SyntheticItalic.Mark(foreground) : foreground,
+            backgroundBrush: background, baselineAlignment: baseline);
+    }
+}
 
 /// <summary>What kind of thing a FlowBlock draws. List items stay indented-paragraph text; tables
 /// (E2b) get real grid geometry via <see cref="TableGridRenderer"/>, and pictures (E2b) decode to
@@ -121,6 +150,11 @@ public sealed class FlowBlock
     /// sits in the column", never two spellings of one concept.</summary>
     public TextAlignment Alignment { get; init; } = TextAlignment.Left;
     public double IndentPoints { get; init; }
+    /// <summary>The bar drawn down this block's left edge when it sits inside a quote or alert (null
+    /// outside one); <see cref="QuoteBarXPoints"/> is its x offset from the column's left edge.
+    /// An alert's bar carries the alert kind's colour.</summary>
+    public Color? QuoteBarColor { get; set; }
+    public double QuoteBarXPoints { get; set; }
     public double SpacingBeforePoints { get; init; }
     public double SpacingAfterPoints { get; init; }
     /// <summary>E2c-2b: the paragraph's WHOLE line-height rule (mode + value), not just a ratio —

@@ -306,7 +306,13 @@ public sealed class PageModePainter
             {
                 if (line.LineIndex < 0 || line.LineIndex >= pixelLayout.TextLines.Count) { continue; }
                 var top = contentTop + line.LocalTopPoints * PointsToPixels * zoomFactor;
-                surface.DrawTextLine(pixelLayout.TextLines[line.LineIndex], new Point(left + indentPx, top));
+                var textLine = pixelLayout.TextLines[line.LineIndex];
+                if (block.QuoteBarColor is { } barColor)
+                {
+                    var barX = left + block.QuoteBarXPoints * PointsToPixels * zoomFactor;
+                    surface.DrawRect(new Rect(barX, top, 3, textLine.Height), barColor, null, 0);
+                }
+                surface.DrawTextLine(textLine, new Point(left + indentPx, top));
             }
         }
     }

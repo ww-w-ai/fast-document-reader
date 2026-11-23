@@ -16,7 +16,7 @@ mod validate;
 pub(crate) mod wire;
 
 pub use wire::{
-    Affinity, Alignment, Annotations as RenderAnnotationsDraft, Bookmark, BorderDeclaration,
+    Affinity, Alignment, Annotations as RenderAnnotationsDraft, BlockQuote, Bookmark, BorderDeclaration,
     BorderLineStyle, BorderSet, CellDiagonal, CellDiagonalDirection, CharacterStyle, CodeBlock,
     CodeRole, CodeRun,
     Color, ColorSpace, ColumnFlowDeclaration, ColumnFlowDirection, ColumnFlowType, ColumnSeparator,

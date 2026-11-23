@@ -485,16 +485,8 @@ public static class PageLayout
             {
                 var fontSize = run.FontSizePoints * fontScale;
                 if (fontSize > maxFontSize) { maxFontSize = fontSize; }
-                var typeface = new Typeface(
-                    run.FontFamily ?? "Inter",
-                    run.Italic ? FontStyle.Italic : FontStyle.Normal,
-                    run.Bold ? FontWeight.Bold : FontWeight.Normal);
-                TextDecorationCollection? decorations = null;
-                if (run.Underline) { decorations = TextDecorations.Underline; }
-                else if (run.Strike) { decorations = TextDecorations.Strikethrough; }
                 overrides.Add(new ValueSpan<TextRunProperties>(cursor, length,
-                    new GenericTextRunProperties(typeface, fontSize, textDecorations: decorations,
-                        foregroundBrush: new SolidColorBrush(run.Foreground))));
+                    FlowRun.PropertiesFor(run, fontSize, new SolidColorBrush(run.Foreground))));
             }
             cursor += length;
         }

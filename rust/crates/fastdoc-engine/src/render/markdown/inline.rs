@@ -40,10 +40,11 @@
 //! (`build_image`), and the image's own children are never walked as text — matching the
 //! shipping renderer, which never renders alt text as visible content either.
 //!
-//! Footnote references are NOT mapped to their own nodes here (out of scope for this sprint —
-//! `s3.md`'s "Out of scope") — anything comrak nests under an unhandled inline kind still
-//! contributes its own literal text through the catch-all recursion below, unstyled, so a
-//! paragraph containing one is not silently emptied.
+//! A footnote reference is a superscript run linking to `#fn:<name>`; the note is a bookmarked list
+//! item (`blocks::map_footnote_section`), and the first reference is bookmarked `fnref:<name>` for
+//! the note's way back. Raw inline HTML (`<u>`, `<mark>`, `<sub>`, `<br>`, …) and the comrak-only
+//! spans (`==x==`, `++x++`, `^x^`, `||x||`) become run styles; anything comrak nests under a kind
+//! not listed in `Kind` still contributes its literal text through the catch-all recursion.
 //!
 //! ## No source spans on inline nodes
 //!
@@ -53,23 +54,106 @@
 
 use comrak::nodes::{AstNode, NodeValue};
 
+use crate::render::markdown_renderer::{parse_html_tag, HtmlTag};
 use crate::render::render_tree::{
-    Alignment, CharacterStyle, Formula as WireFormula, Image as WireImage,
+    Alignment, CharacterStyle, Color, ColorSpace, Formula as WireFormula, Image as WireImage,
     LineBreak as WireLineBreak, LineBreakKind, NodePayload, RawHtml as WireRawHtml,
-    RenderNodeDraft, Size as WireSize, TextRun as WireTextRun,
+    RenderNodeDraft, Size as WireSize, TextRun as WireTextRun, UnderlineStyle, VerticalPosition,
 };
 
 use super::{Ctx, MathHit};
 
+/// `==x==` / `<mark>` fill — the same translucent yellow `markdown_renderer::highlight_color` paints.
+pub(super) const HIGHLIGHT_FILL: (f64, f64, f64, f64) = (1.0, 0.85, 0.2, 0.4);
+/// `||x||` — the same grey wash `markdown_renderer::spoiler_fill` paints.
+const SPOILER_FILL: (f64, f64, f64, f64) = (0.5, 0.5, 0.5, 0.3);
+
+pub(super) fn color((red, green, blue, alpha): (f64, f64, f64, f64)) -> Color {
+    Color { red, green, blue, alpha, space: ColorSpace::Srgb }
+}
+
+/// The marker fill behind a run.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Fill {
+    #[default]
+    None,
+    Highlight,
+    Spoiler,
+}
+
+/// Superscript / subscript position of a run.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Script {
+    #[default]
+    Normal,
+    Sup,
+    Sub,
+}
+
 /// The resolved style+link state at one point in the inline tree — accumulated top-down, never
 /// read back out of a comrak node. Two positions with an equal `RunState` merge into one run.
 #[derive(Clone, PartialEq, Eq, Default)]
-struct RunState {
-    bold: bool,
+pub(super) struct RunState {
+    pub(super) bold: bool,
     italic: bool,
     strike: bool,
     inline_code: bool,
+    underline: bool,
+    fill: Fill,
+    script: Script,
     link: Option<String>,
+}
+
+/// Raw inline HTML tags opened and not yet closed, as counts per tag: a tag styles the text
+/// between it and its close tag (or the end of the container, as a browser would).
+#[derive(Default)]
+struct HtmlOpen {
+    underline: u32,
+    strike: u32,
+    mark: u32,
+    sub: u32,
+    sup: u32,
+    code: u32,
+    bold: u32,
+    italic: u32,
+    hrefs: Vec<String>,
+}
+
+impl HtmlOpen {
+    fn counter(&mut self, name: &str) -> Option<&mut u32> {
+        Some(match name {
+            "u" | "ins" => &mut self.underline,
+            "s" | "strike" | "del" => &mut self.strike,
+            "mark" => &mut self.mark,
+            "sub" => &mut self.sub,
+            "sup" => &mut self.sup,
+            "kbd" | "code" => &mut self.code,
+            "b" | "strong" => &mut self.bold,
+            "i" | "em" => &mut self.italic,
+            _ => return None,
+        })
+    }
+
+    fn apply(&self, state: &RunState) -> RunState {
+        let mut s = state.clone();
+        s.underline |= self.underline > 0;
+        s.strike |= self.strike > 0;
+        s.inline_code |= self.code > 0;
+        s.bold |= self.bold > 0;
+        s.italic |= self.italic > 0;
+        if self.mark > 0 && s.fill == Fill::None {
+            s.fill = Fill::Highlight;
+        }
+        if self.sup > 0 {
+            s.script = Script::Sup;
+        } else if self.sub > 0 {
+            s.script = Script::Sub;
+        }
+        if s.link.is_none() {
+            s.link = self.hrefs.last().cloned();
+        }
+        s
+    }
 }
 
 /// What one comrak inline node means to THIS pass, extracted through a single short-lived borrow
@@ -89,7 +173,19 @@ enum Kind {
     /// bare-URL autolinks all parse as `NodeValue::Link` — comrak gives autolinks no distinct
     /// node kind, so no separate case is needed here).
     Link(String),
-    /// Everything this pass does not special-case (images, math, footnote refs, wikilinks, …):
+    /// `==x==`.
+    Highlight,
+    /// `++x++`.
+    Insert,
+    /// `^x^`.
+    Superscript,
+    /// `||x||`.
+    Spoiler,
+    /// `[^name]`: the name, the note's number and whether this is its first reference.
+    FootnoteRef(String, u32, bool),
+    /// A `[x]` / `[ ]` that is a whole table cell (`tasklist_in_table`); true when checked.
+    Task(bool),
+    /// Everything this pass does not special-case (images, math, wikilinks, …):
     /// its own children are still walked so any literal text inside survives.
     Other,
 }
@@ -105,6 +201,12 @@ fn kind_of<'a>(node: &'a AstNode<'a>) -> Kind {
         NodeValue::Strong => Kind::Strong,
         NodeValue::Strikethrough => Kind::Strike,
         NodeValue::Link(link) => Kind::Link(link.url.clone()),
+        NodeValue::Highlight => Kind::Highlight,
+        NodeValue::Insert => Kind::Insert,
+        NodeValue::Superscript => Kind::Superscript,
+        NodeValue::SpoileredText => Kind::Spoiler,
+        NodeValue::FootnoteReference(r) => Kind::FootnoteRef(r.name.clone(), r.ix, r.ref_num <= 1),
+        NodeValue::TaskItem(t) => Kind::Task(t.symbol.is_some()),
         _ => Kind::Other,
     }
 }
@@ -117,6 +219,65 @@ struct Builder<'ctx, 'a> {
     parent_id: u64,
     pending: Option<(String, RunState)>,
     out: Vec<u64>,
+    html: HtmlOpen,
+}
+
+fn style_of(state: &RunState) -> CharacterStyle {
+    CharacterStyle {
+        bold: state.bold,
+        italic: state.italic,
+        strike: state.strike,
+        inline_code: state.inline_code,
+        underline: state.underline.then_some(UnderlineStyle::Single),
+        background: match state.fill {
+            Fill::None => None,
+            Fill::Highlight => Some(color(HIGHLIGHT_FILL)),
+            Fill::Spoiler => Some(color(SPOILER_FILL)),
+        },
+        foreground: (state.fill == Fill::Spoiler).then(|| color((0.4, 0.4, 0.4, 1.0))),
+        vertical_position: match state.script {
+            Script::Normal => VerticalPosition::Normal,
+            Script::Sup => VerticalPosition::Superscript,
+            Script::Sub => VerticalPosition::Subscript,
+        },
+        ..CharacterStyle::default()
+    }
+}
+
+fn run_payload(text: String, style: CharacterStyle, link: Option<String>) -> NodePayload {
+    NodePayload::TextRun(WireTextRun {
+        text,
+        style,
+        direction: None,
+        link,
+        bookmark_ids: vec![],
+        comment_ids: vec![],
+        field: None,
+        footnote_reference_number: None,
+        form_control: None,
+        page_number_field: None,
+        column_flow: None,
+    })
+}
+
+/// One free-standing text run under `parent_id` (alert titles, footnote back-arrows).
+pub(super) fn push_text_run(
+    ctx: &mut Ctx,
+    parent_id: u64,
+    text: &str,
+    style: CharacterStyle,
+    link: Option<String>,
+) -> u64 {
+    let id = ctx.new_node_id();
+    ctx.push(RenderNodeDraft {
+        id,
+        parent_id: Some(parent_id),
+        children: vec![],
+        source_spans: vec![],
+        edit: None,
+        payload: run_payload(text.to_string(), style, link),
+    });
+    id
 }
 
 impl<'ctx, 'a> Builder<'ctx, 'a> {
@@ -142,25 +303,7 @@ impl<'ctx, 'a> Builder<'ctx, 'a> {
                 children: vec![],
                 source_spans: vec![],
                 edit: None,
-                payload: NodePayload::TextRun(WireTextRun {
-                    text,
-                    style: CharacterStyle {
-                        bold: state.bold,
-                        italic: state.italic,
-                        strike: state.strike,
-                        inline_code: state.inline_code,
-                        ..CharacterStyle::default()
-                    },
-                    direction: None,
-                    link: state.link,
-                    bookmark_ids: vec![],
-                    comment_ids: vec![],
-                    field: None,
-                    footnote_reference_number: None,
-                    form_control: None,
-                    page_number_field: None,
-                    column_flow: None,
-                }),
+                payload: run_payload(text, style_of(&state), state.link),
             });
             self.out.push(id);
         }
@@ -196,6 +339,34 @@ impl<'ctx, 'a> Builder<'ctx, 'a> {
         self.out.push(id);
     }
 
+    /// A raw inline HTML tag opens or closes a style on the text that follows it; `<br>` is a line
+    /// break. The tag itself still reaches the tree as a `rawHtml` node (see `walk`).
+    fn apply_html_tag(&mut self, source: &str) {
+        match parse_html_tag(source) {
+            HtmlTag::Hidden => {}
+            HtmlTag::Open { name, href } => match name.as_str() {
+                "br" => self.push_leaf(NodePayload::LineBreak(WireLineBreak { kind: LineBreakKind::Hard })),
+                "a" => {
+                    if let Some(href) = href {
+                        self.html.hrefs.push(href);
+                    }
+                }
+                other => {
+                    if let Some(count) = self.html.counter(other) {
+                        *count += 1;
+                    }
+                }
+            },
+            HtmlTag::Close(name) => {
+                if name == "a" {
+                    self.html.hrefs.pop();
+                } else if let Some(count) = self.html.counter(&name) {
+                    *count = count.saturating_sub(1);
+                }
+            }
+        }
+    }
+
     fn walk_children<'b>(&mut self, node: &'b AstNode<'b>, state: &RunState) {
         for child in node.children() {
             self.walk(child, state);
@@ -227,10 +398,16 @@ impl<'ctx, 'a> Builder<'ctx, 'a> {
             return;
         }
         match kind_of(node) {
-            Kind::Text(text) => self.push_text(state, &text),
-            Kind::SoftBreak => self.push_text(state, " "),
+            Kind::Text(text) => {
+                let s = self.html.apply(state);
+                self.push_text(&s, &text)
+            }
+            Kind::SoftBreak => {
+                let s = self.html.apply(state);
+                self.push_text(&s, " ")
+            }
             Kind::Code(literal) => {
-                let mut s = state.clone();
+                let mut s = self.html.apply(state);
                 s.inline_code = true;
                 self.push_text(&s, &literal);
             }
@@ -238,7 +415,42 @@ impl<'ctx, 'a> Builder<'ctx, 'a> {
                 self.push_leaf(NodePayload::LineBreak(WireLineBreak { kind: LineBreakKind::Hard }))
             }
             Kind::Html(source) => {
+                self.apply_html_tag(&source);
                 self.push_leaf(NodePayload::RawHtml(WireRawHtml { block: false, source }))
+            }
+            Kind::Highlight => {
+                let mut s = state.clone();
+                s.fill = Fill::Highlight;
+                self.walk_children(node, &s);
+            }
+            Kind::Insert => {
+                let mut s = state.clone();
+                s.underline = true;
+                self.walk_children(node, &s);
+            }
+            Kind::Superscript => {
+                let mut s = state.clone();
+                s.script = Script::Sup;
+                self.walk_children(node, &s);
+            }
+            Kind::Spoiler => {
+                let mut s = state.clone();
+                s.fill = Fill::Spoiler;
+                self.walk_children(node, &s);
+            }
+            Kind::FootnoteRef(name, number, first) => {
+                if first {
+                    self.ctx.add_bookmark(format!("fnref:{name}"), self.parent_id);
+                }
+                let style = CharacterStyle {
+                    vertical_position: VerticalPosition::Superscript,
+                    ..CharacterStyle::default()
+                };
+                self.push_leaf(run_payload(number.to_string(), style, Some(format!("#fn:{name}"))));
+            }
+            Kind::Task(checked) => {
+                let s = self.html.apply(state);
+                self.push_text(&s, if checked { "\u{2611}" } else { "\u{2610}" });
             }
             Kind::Emph => {
                 let mut s = state.clone();
@@ -275,8 +487,22 @@ impl<'ctx, 'a> Builder<'ctx, 'a> {
 /// text-bearing child (`markdown_block_producer.rs`'s existing assertions read `children[0]`
 /// unconditionally).
 pub(super) fn map_inline_children<'a>(node: &'a AstNode<'a>, parent_id: u64, ctx: &mut Ctx) -> Vec<u64> {
-    let mut builder = Builder { ctx, parent_id, pending: None, out: Vec::new() };
-    builder.walk_children(node, &RunState::default());
+    map_inline_children_with(node, parent_id, ctx, RunState::default())
+}
+
+/// A description-list term: its inline content in bold.
+pub(super) fn map_bold_inline_children<'a>(node: &'a AstNode<'a>, parent_id: u64, ctx: &mut Ctx) -> Vec<u64> {
+    map_inline_children_with(node, parent_id, ctx, RunState { bold: true, ..RunState::default() })
+}
+
+fn map_inline_children_with<'a>(
+    node: &'a AstNode<'a>,
+    parent_id: u64,
+    ctx: &mut Ctx,
+    initial: RunState,
+) -> Vec<u64> {
+    let mut builder = Builder { ctx, parent_id, pending: None, out: Vec::new(), html: HtmlOpen::default() };
+    builder.walk_children(node, &initial);
     builder.flush();
     if builder.out.is_empty() {
         // `push_text`'s empty-string guard means an inline sequence with no text at all leaves
@@ -306,7 +532,7 @@ fn collect_alt_text<'b>(node: &'b AstNode<'b>) -> String {
 /// One `![alt](url)` -> the wire `Image` payload. Resource registration and the size-declared
 /// vs. size-unknown honesty tradeoff are `Ctx::resolve_image_resource`'s doc comment; this
 /// function owns only the Obsidian `![alt|size]` syntax the alt text may carry.
-fn build_image(ctx: &mut Ctx, url: &str, alt: &str) -> WireImage {
+pub(super) fn build_image(ctx: &mut Ctx, url: &str, alt: &str) -> WireImage {
     let (alt_clean, display_size, display_width_fraction) = parse_sized_alt(alt);
     let resource_id = ctx.resolve_image_resource(url);
     WireImage {

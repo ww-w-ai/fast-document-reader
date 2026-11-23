@@ -139,13 +139,46 @@ public static class FlowDocumentBuilder
             case "document":
             case "section":
             case "flow":
-            case "list":
                 WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks);
                 return;
 
-            case "blockQuote":
-                WalkChildren(node, byId, blocks, indent + BlockQuoteIndentPoints, defaultFontSize, tableDepth, wrapCodeBlocks);
+            case "list":
+            {
+                // An ordered item carries no marker on the wire; its number is the list's start plus
+                // its place among the items.
+                long ordinal = node.AsList?.Numbering?.StartNumber ?? 1;
+                foreach (var childId in node.Children)
+                {
+                    if (!byId.TryGetValue(childId, out var child)) { continue; }
+                    if (child.Type == "listItem")
+                    {
+                        WalkListItem(child, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks, $"{ordinal}.");
+                        ordinal++;
+                    }
+                    else
+                    {
+                        Walk(child, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks);
+                    }
+                }
                 return;
+            }
+
+            case "blockQuote":
+            {
+                var start = blocks.Count;
+                WalkChildren(node, byId, blocks, indent + BlockQuoteIndentPoints, defaultFontSize, tableDepth, wrapCodeBlocks);
+                // The bar runs down the left of every block inside; an inner quote's bar (set first) wins.
+                var bar = QuoteBarColorFor(node.AsBlockQuote?.Alert);
+                for (var i = start; i < blocks.Count; i++)
+                {
+                    if (blocks[i].QuoteBarColor is null)
+                    {
+                        blocks[i].QuoteBarColor = bar;
+                        blocks[i].QuoteBarXPoints = indent + 3;
+                    }
+                }
+                return;
+            }
 
             case "heading":
             {
@@ -166,24 +199,16 @@ public static class FlowDocumentBuilder
             }
 
             case "listItem":
-            {
-                var li = node.AsListItem;
-                if (li is null) { return; }
-                var marker = li.Marker ?? (li.Ordered ? "-" : "•");
-                var markerRuns = new List<FlowRun> { new FlowRun($"{marker} ", null, defaultFontSize, false, false, false, false, Colors.Black) };
-                var itemIndent = indent + ListIndentPoints * Math.Max(1, li.Level + 1);
-                AppendInlineContentBlocks(node.Children, byId, blocks, itemIndent, defaultFontSize, boldDefault: false,
-                    runs => TextBlock(runs, li.Style, itemIndent, defaultFontSize, node.Id), markerRuns);
+                WalkListItem(node, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks, null);
                 return;
-            }
 
             case "taskListItem":
             {
                 var t = node.AsTaskListItem;
                 var box = t?.Checked == true ? "[x] " : "[ ] ";
                 var markerRuns = new List<FlowRun> { new FlowRun(box, "monospace", defaultFontSize, false, false, false, false, Colors.Black) };
-                var itemIndent = indent + ListIndentPoints;
-                AppendInlineContentBlocks(node.Children, byId, blocks, itemIndent, defaultFontSize, boldDefault: false,
+                var itemIndent = indent + ListIndentPoints * Math.Max(1, (int)(t?.Level ?? 1));
+                AppendItemContent(node, byId, blocks, indent, itemIndent, defaultFontSize, tableDepth, wrapCodeBlocks,
                     runs => new FlowBlock
                     {
                         Kind = FlowBlockKind.Text,
@@ -408,6 +433,102 @@ public static class FlowDocumentBuilder
         }
     }
 
+    /// <summary>A bulleted/numbered item: its marker and inline content on one line, then every
+    /// block child (a second paragraph, a code block, a quote, a table, a nested list) in source
+    /// order under it — the shape the markdown producer gives a list item.
+    /// <paramref name="orderedMarker"/> is the item's number from its list when the wire gives none.</summary>
+    private static void WalkListItem(RenderNode node, Dictionary<ulong, RenderNode> byId, List<FlowBlock> blocks,
+        double indent, double defaultFontSize, int tableDepth, bool wrapCodeBlocks, string? orderedMarker)
+    {
+        var li = node.AsListItem;
+        if (li is null) { return; }
+        var marker = li.Marker ?? (li.Ordered ? orderedMarker ?? "-" : "•");
+        var markerRuns = new List<FlowRun> { new FlowRun($"{marker} ", null, defaultFontSize, false, false, false, false, Colors.Black) };
+        var itemIndent = indent + ListIndentPoints * Math.Max(1, li.Level + 1);
+        AppendItemContent(node, byId, blocks, indent, itemIndent, defaultFontSize, tableDepth, wrapCodeBlocks,
+            runs => TextBlock(runs, li.Style, itemIndent, defaultFontSize, node.Id), markerRuns);
+    }
+
+    /// <summary>One list item's children. Inline children (and a leading paragraph's, in a loose
+    /// item) join the marker's line; a picture splits it; any other child is a block of its own.
+    /// A nested list keeps the list's own <paramref name="indent"/> (its items' levels carry the
+    /// depth); other blocks sit at <paramref name="itemIndent"/>. <c>Paging.BlockPageMarkers</c>
+    /// mirrors this state machine — change both together.</summary>
+    private static void AppendItemContent(RenderNode node, Dictionary<ulong, RenderNode> byId, List<FlowBlock> blocks,
+        double indent, double itemIndent, double defaultFontSize, int tableDepth, bool wrapCodeBlocks,
+        Func<List<FlowRun>, FlowBlock> makeTextBlock, List<FlowRun> markerRuns)
+    {
+        var current = new List<FlowRun>(markerRuns);
+        var emitted = false;
+
+        void FlushLine()
+        {
+            if (current.Count > 0) { blocks.Add(makeTextBlock(current)); emitted = true; }
+            current = new List<FlowRun>();
+        }
+
+        void Inline(RenderNode child)
+        {
+            if (child.Type == "textRun")
+            {
+                if (child.AsTextRun is { } tr) { AddTextRun(current, tr, defaultFontSize, boldDefault: false); }
+            }
+            else if (child.Type == "lineBreak")
+            {
+                current.Add(new FlowRun("\n", null, defaultFontSize, false, false, false, false, Colors.Black));
+            }
+            else if (child.Type == "image" && child.AsImage is { } img)
+            {
+                FlushLine();
+                blocks.Add(ImageBlockFrom(child.Id, img, itemIndent));
+                emitted = true;
+            }
+        }
+
+        foreach (var childId in node.Children)
+        {
+            if (!byId.TryGetValue(childId, out var child)) { continue; }
+            switch (child.Type)
+            {
+                case "textRun":
+                case "lineBreak":
+                case "image":
+                    Inline(child);
+                    break;
+                case "paragraph" when !emitted:
+                    // A loose item's first paragraph is the marker's own line.
+                    foreach (var grandId in child.Children)
+                    {
+                        if (byId.TryGetValue(grandId, out var grand)) { Inline(grand); }
+                    }
+                    FlushLine();
+                    break;
+                default:
+                    FlushLine();
+                    Walk(child, byId, blocks, child.Type == "list" ? indent : itemIndent, defaultFontSize,
+                        tableDepth, wrapCodeBlocks);
+                    emitted = true;
+                    break;
+            }
+        }
+        FlushLine();
+    }
+
+    private static readonly Dictionary<string, Color> AlertBarColors = new()
+    {
+        ["note"] = Color.FromRgb(0x30, 0x82, 0xF7),
+        ["tip"] = Color.FromRgb(0x33, 0xA6, 0x59),
+        ["important"] = Color.FromRgb(0x99, 0x66, 0xD9),
+        ["warning"] = Color.FromRgb(0xD9, 0x99, 0x1A),
+        ["caution"] = Color.FromRgb(0xE0, 0x45, 0x45),
+    };
+
+    private static readonly Color PlainQuoteBarColor = Color.FromRgb(0x9A, 0xA0, 0xA6);
+
+    /// <summary>The quote bar's colour: the alert kind's, or a neutral grey for an ordinary quote.</summary>
+    private static Color QuoteBarColorFor(string? alert) =>
+        alert is not null && AlertBarColors.TryGetValue(alert, out var c) ? c : PlainQuoteBarColor;
+
     private static FlowBlock TextBlock(List<FlowRun> runs, ParagraphStyleWire style, double indent, double defaultFontSize, ulong nodeId)
     {
         return new FlowBlock
@@ -488,11 +609,7 @@ public static class FlowDocumentBuilder
             {
                 var tr = child.AsTextRun;
                 if (tr is null) { continue; }
-                var style = tr.Style;
-                var family = style.FontFamilies.Count > 0 ? style.FontFamilies[0] : style.DeclaredFontName;
-                AppendTextRunSplitOnControlChars(current, tr.Text, family,
-                    style.FontSizePoints ?? defaultFontSize, style.Bold || boldDefault, style.Italic,
-                    style.Underline is not null, style.Strike, ColorFrom(style.Foreground), tr.Link);
+                AddTextRun(current, tr, defaultFontSize, boldDefault);
             }
             else if (child.Type == "lineBreak")
             {
@@ -535,6 +652,26 @@ public static class FlowDocumentBuilder
         };
     }
 
+    /// <summary>Superscript, subscript and footnote-reference text, as a share of the surrounding size.</summary>
+    private const double ScriptScale = 0.75;
+
+    /// <summary>One wire text run -> its flow runs: underline, strike, highlight wash, super/subscript
+    /// (smaller, shifted at draw time) and code face (`&lt;kbd&gt;`, inline code) all resolve here.</summary>
+    private static void AddTextRun(List<FlowRun> runs, TextRunPayload tr, double defaultFontSize, bool boldDefault)
+    {
+        var style = tr.Style;
+        // Glyphs the bundled face lacks: a checked/unchecked box and the footnote "back" arrow.
+        var text = tr.Text.Replace("☑", "[x]").Replace("☐", "[ ]").Replace("↩", "↑");
+        var family = style.InlineCode
+            ? CodeFontFamily
+            : style.FontFamilies.Count > 0 ? style.FontFamilies[0] : style.DeclaredFontName;
+        var script = style.VerticalPosition switch { "superscript" => 1, "subscript" => -1, _ => 0 };
+        var size = (style.FontSizePoints ?? defaultFontSize) * (script != 0 ? ScriptScale : 1.0);
+        Color? background = style.Background is { } wash ? ColorFrom(wash) : null;
+        AppendTextRunSplitOnControlChars(runs, text, family, size, style.Bold || boldDefault, style.Italic,
+            style.Underline is not null, style.Strike, ColorFrom(style.Foreground), tr.Link, background, script);
+    }
+
     private static List<FlowRun> CollectRuns(List<ulong> childIds, Dictionary<ulong, RenderNode> byId,
         double defaultFontSize, bool boldDefault)
     {
@@ -546,11 +683,7 @@ public static class FlowDocumentBuilder
             {
                 var tr = child.AsTextRun;
                 if (tr is null) { continue; }
-                var style = tr.Style;
-                var family = style.FontFamilies.Count > 0 ? style.FontFamilies[0] : style.DeclaredFontName;
-                AppendTextRunSplitOnControlChars(runs, tr.Text, family,
-                    style.FontSizePoints ?? defaultFontSize, style.Bold || boldDefault, style.Italic,
-                    style.Underline is not null, style.Strike, ColorFrom(style.Foreground), tr.Link);
+                AddTextRun(runs, tr, defaultFontSize, boldDefault);
             }
             else if (child.Type == "lineBreak")
             {
@@ -586,7 +719,8 @@ public static class FlowDocumentBuilder
     /// LEADER becomes an ordinary FULL STOP (U+002E) in the SAME style — visually the closest
     /// glyph this reader is guaranteed to have, until a real tab-leader layout exists.</summary>
     private static void AppendTextRunSplitOnControlChars(List<FlowRun> runs, string text, string? family,
-        double fontSize, bool bold, bool italic, bool underline, bool strike, Color foreground, string? link = null)
+        double fontSize, bool bold, bool italic, bool underline, bool strike, Color foreground, string? link = null,
+        Color? background = null, int script = 0)
     {
         // S8-B5: a run carrying a link draws underlined in the theme's link colour — otherwise a
         // link was visually indistinguishable from body text (the bug this unit was dispatched
@@ -607,17 +741,17 @@ public static class FlowDocumentBuilder
             if (c != '\t' && c != '\n' && c != '․') { continue; }
             if (i > start)
             {
-                runs.Add(new FlowRun(text[start..i], family, fontSize, bold, italic, underline, strike, foreground, link));
+                runs.Add(new FlowRun(text[start..i], family, fontSize, bold, italic, underline, strike, foreground, link, background, script));
             }
             if (c == '\t')
             {
                 // A synthetic run standing in for whitespace — not part of the document's own run
                 // text, so it never carries the surrounding run's link (S8-B4).
-                runs.Add(new FlowRun("    ", family, fontSize, bold, italic, underline, strike, foreground));
+                runs.Add(new FlowRun("    ", family, fontSize, bold, italic, underline, strike, foreground, null, background, script));
             }
             else if (c == '․')
             {
-                runs.Add(new FlowRun(".", family, fontSize, bold, italic, underline, strike, foreground));
+                runs.Add(new FlowRun(".", family, fontSize, bold, italic, underline, strike, foreground, null, background, script));
             }
             else
             {
@@ -627,11 +761,11 @@ public static class FlowDocumentBuilder
         }
         if (start < text.Length)
         {
-            runs.Add(new FlowRun(text[start..], family, fontSize, bold, italic, underline, strike, foreground, link));
+            runs.Add(new FlowRun(text[start..], family, fontSize, bold, italic, underline, strike, foreground, link, background, script));
         }
         else if (text.Length == 0)
         {
-            runs.Add(new FlowRun(text, family, fontSize, bold, italic, underline, strike, foreground, link));
+            runs.Add(new FlowRun(text, family, fontSize, bold, italic, underline, strike, foreground, link, background, script));
         }
     }
 

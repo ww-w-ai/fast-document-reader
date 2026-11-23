@@ -131,11 +131,17 @@ class Program
         // on success, matching the macOS app's `--pdf` contract (INVARIANTS.md 66: GUI print and
         // the headless door share one function) even though this host's PDF path is raster today,
         // not the print pipeline itself (see Printing/PdfExporter.cs's own doc).
-        if (args.Length > 2 && args[0] == "--pdf")
+        if (args.Length > 0 && args[0] == "--pdf")
         {
             Console.Error.WriteLine("mode: headless --pdf");
+            var pdfArgs = Printing.HeadlessPdfArgs.Parse(args[1..]);
+            if (pdfArgs is null)
+            {
+                Console.Error.WriteLine(Printing.HeadlessPdfArgs.Usage);
+                return 2;
+            }
             if (!TryEnsureEngineLoadable(gui: false, out var engineExitCode)) { return engineExitCode; }
-            return RunPdf(args[1], args[2]);
+            return RunPdf(pdfArgs.Input, pdfArgs.Output, pdfArgs.Zoom);
         }
 
         // S12-F2: the DISPOSABLE CHILD process ProcessIsolatedWebKitGtkRenderer spawns (this same
@@ -284,7 +290,7 @@ class Program
         return oneLine;
     }
 
-    private static int RunPdf(string inputPath, string outputPath)
+    private static int RunPdf(string inputPath, string outputPath, double zoom = 1.0)
     {
         // TextLayout (this export's raster pass) needs Avalonia's font manager/platform set up --
         // the same headless bootstrap --sheets/--paint-probe perform, with no window, PLUS the
@@ -301,7 +307,7 @@ class Program
             .SetupWithoutStarting();
         try
         {
-            var result = PdfExporter.ExportPdf(inputPath, outputPath);
+            var result = PdfExporter.ExportPdf(inputPath, outputPath, zoom);
             Console.WriteLine($"pages: {result.PageCount}");
             return 0;
         }

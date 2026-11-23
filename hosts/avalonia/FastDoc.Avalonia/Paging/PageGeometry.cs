@@ -228,7 +228,7 @@ public static class BlockPageMarkers
 
             case "listItem":
             case "taskListItem":
-                EmitInlineContentMarkers(node, byId, null, hasLeadingMarker: true, acc, ref pendingSectionStart);
+                EmitItemMarkers(node, byId, acc, ref pendingSectionStart, tableDepth, visiting);
                 return;
 
             case "codeBlock":
@@ -337,6 +337,52 @@ public static class BlockPageMarkers
         {
             Emit(node.Id, pagination, false, false, acc, ref pendingSectionStart);
         }
+    }
+
+    /// <summary>Mirrors <c>FlowDocumentBuilder.AppendItemContent</c> marker-for-marker: the item's
+    /// marker line (its own inline children, and a loose item's first paragraph) is one block, a
+    /// picture splits it, and every other child is walked as a block of its own.</summary>
+    private static void EmitItemMarkers(RenderNode node, Dictionary<ulong, RenderNode> byId,
+        MarkerLists acc, ref bool pendingSectionStart, int tableDepth, HashSet<ulong> visiting)
+    {
+        var pending = true; // the marker alone is already content
+        var emitted = false;
+        foreach (var childId in node.Children)
+        {
+            if (!byId.TryGetValue(childId, out var child)) { continue; }
+            switch (child.Type)
+            {
+                case "textRun":
+                case "lineBreak":
+                    pending = true;
+                    break;
+                case "image":
+                    if (pending) { Emit(node.Id, null, false, false, acc, ref pendingSectionStart); pending = false; }
+                    Emit(child.Id, null, false, false, acc, ref pendingSectionStart);
+                    emitted = true;
+                    break;
+                case "paragraph" when !emitted:
+                    foreach (var grandId in child.Children)
+                    {
+                        if (!byId.TryGetValue(grandId, out var grand)) { continue; }
+                        if (grand.Type is "textRun" or "lineBreak") { pending = true; }
+                        else if (grand.Type == "image")
+                        {
+                            if (pending) { Emit(node.Id, null, false, false, acc, ref pendingSectionStart); pending = false; }
+                            Emit(grand.Id, null, false, false, acc, ref pendingSectionStart);
+                        }
+                    }
+                    if (pending) { Emit(node.Id, null, false, false, acc, ref pendingSectionStart); pending = false; }
+                    emitted = true;
+                    break;
+                default:
+                    if (pending) { Emit(node.Id, null, false, false, acc, ref pendingSectionStart); pending = false; }
+                    Walk(child, byId, acc, ref pendingSectionStart, tableDepth, visiting);
+                    emitted = true;
+                    break;
+            }
+        }
+        if (pending) { Emit(node.Id, null, false, false, acc, ref pendingSectionStart); }
     }
 
     private static void Emit(ulong nodeId, PaginationWire? pagination, bool keepsWhole, bool repeatsHeader,

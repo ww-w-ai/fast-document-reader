@@ -29,15 +29,19 @@
 
 use comrak::nodes::{AstNode, ListType, NodeValue, TableAlignment as ComrakAlignment};
 
+use comrak::nodes::AlertType;
+
+use crate::render::markdown_renderer::{html_attribute, html_block_lines, ALERT_COLORS};
 use crate::render::render_tree::{
-    Alignment, CodeBlock as WireCodeBlock, Diagram as WireDiagram, DiagramLanguage, Empty,
+    Alignment, BlockQuote as WireBlockQuote, CharacterStyle, CodeBlock as WireCodeBlock,
+    Diagram as WireDiagram, DiagramLanguage, Empty,
     Formula as WireFormula, Heading as WireHeading, List as WireList, ListItem as WireListItem,
     ListNumberingGlyphs, NodePayload, Numbering, Paragraph as WireParagraph, ParagraphStyle,
     RawHtml as WireRawHtml, RenderNodeDraft, Table as WireTable, TableCell as WireTableCell,
     TableRow as WireTableRow, TableStyle, TaskListItem as WireTaskListItem,
 };
 
-use super::inline::map_inline_children;
+use super::inline::{build_image, color, map_bold_inline_children, map_inline_children, push_text_run};
 use super::{Ctx, MathHit};
 
 /// One block-level comrak node -> zero or one wire node, appended to `out`. Node kinds outside
@@ -87,7 +91,10 @@ pub(super) fn map_block<'a>(
             source_spans: ctx.span_for(sourcepos),
             edit: None,
             payload: NodePayload::Paragraph(WireParagraph {
-                style: ParagraphStyle::default(),
+                style: ParagraphStyle {
+                    head_indent: ctx.paragraph_head_indent,
+                    ..ParagraphStyle::default()
+                },
                 tab_stops: vec![],
                 pagination: Default::default(),
             }),
@@ -101,6 +108,17 @@ pub(super) fn map_block<'a>(
     };
     if let Some(level) = heading_level {
         let id = ctx.new_node_id();
+        // `## Title {#id}`: comrak hides the attribute text; the id is the heading's jump target.
+        let anchor = node
+            .data
+            .borrow()
+            .attrs
+            .as_ref()
+            .and_then(|attrs| attrs.id.clone())
+            .filter(|id| !id.is_empty());
+        if let Some(anchor) = anchor {
+            ctx.add_bookmark(anchor, id);
+        }
         let children = map_inline_children(node, id, ctx);
         ctx.push(RenderNodeDraft {
             id,
@@ -118,21 +136,24 @@ pub(super) fn map_block<'a>(
         out.push(id);
         return;
     }
-    if matches!(node.data.borrow().value, NodeValue::BlockQuote) {
-        let id = ctx.new_node_id();
-        let mut children = Vec::new();
-        for child in node.children() {
-            map_block(child, id, ctx, &mut children);
-        }
-        ctx.push(RenderNodeDraft {
-            id,
-            parent_id: Some(parent_id),
-            children,
-            source_spans: ctx.span_for(sourcepos),
-            edit: None,
-            payload: NodePayload::BlockQuote(Empty {}),
-        });
-        out.push(id);
+    // `>>> … <<<` is the same quote as `> …`; an alert is a quote that names its kind and opens
+    // with a title paragraph.
+    let quote = match &node.data.borrow().value {
+        NodeValue::BlockQuote | NodeValue::MultilineBlockQuote(_) => Some(None),
+        NodeValue::Alert(alert) => Some(Some((alert.alert_type, alert.title.clone()))),
+        _ => None,
+    };
+    if let Some(alert) = quote {
+        map_quote(node, parent_id, alert, ctx, out);
+        return;
+    }
+    if matches!(node.data.borrow().value, NodeValue::DescriptionList) {
+        map_description_list(node, parent_id, ctx, out);
+        return;
+    }
+    if matches!(node.data.borrow().value, NodeValue::FootnoteDefinition(_)) {
+        // A definition outside the document's own trailing run of them is still shown.
+        map_footnote_section(&mut vec![node], parent_id, ctx, out);
         return;
     }
     let code_block = match &node.data.borrow().value {
@@ -248,15 +269,245 @@ fn map_html_block(
     out: &mut Vec<u64>,
 ) {
     let id = ctx.new_node_id();
+    // The verbatim source stays on the node; what a reader shows is its children: a lone `<img>`
+    // as the picture, anything else as its text (tags dropped, `<summary>` bold, comments hidden).
+    let mut children = Vec::new();
+    if let Some((src, alt)) = lone_img(&source) {
+        let image_id = ctx.new_node_id();
+        let image = build_image(ctx, &src, &alt);
+        ctx.push(RenderNodeDraft {
+            id: image_id,
+            parent_id: Some(id),
+            children: vec![],
+            source_spans: vec![],
+            edit: None,
+            payload: NodePayload::Image(image),
+        });
+        children.push(image_id);
+    } else {
+        for line in html_block_lines(&source) {
+            let style = CharacterStyle { bold: line.bold, ..CharacterStyle::default() };
+            push_paragraph(ctx, id, &line.text, style, &mut children);
+        }
+    }
     ctx.push(RenderNodeDraft {
         id,
         parent_id: Some(parent_id),
-        children: vec![],
+        children,
         source_spans: ctx.span_for(sourcepos),
         edit: None,
         payload: NodePayload::RawHtml(WireRawHtml { block: true, source }),
     });
     out.push(id);
+}
+
+/// `<img src="x" alt="y">` and nothing else: its `src` and `alt`.
+fn lone_img(source: &str) -> Option<(String, String)> {
+    let trimmed = source.trim();
+    if !trimmed.to_ascii_lowercase().starts_with("<img") {
+        return None;
+    }
+    let end = trimmed.find('>')?;
+    if !trimmed[end + 1..].trim().is_empty() {
+        return None;
+    }
+    let tag = &trimmed[..=end];
+    let src = html_attribute(tag, "src").filter(|s| !s.is_empty())?;
+    Some((src, html_attribute(tag, "alt").unwrap_or_default()))
+}
+
+/// One paragraph holding one text run, appended to `out`.
+fn push_paragraph(ctx: &mut Ctx, parent_id: u64, text: &str, style: CharacterStyle, out: &mut Vec<u64>) {
+    let id = ctx.new_node_id();
+    let run = push_text_run(ctx, id, text, style, None);
+    ctx.push(RenderNodeDraft {
+        id,
+        parent_id: Some(parent_id),
+        children: vec![run],
+        source_spans: vec![],
+        edit: None,
+        payload: NodePayload::Paragraph(WireParagraph {
+            style: ParagraphStyle { head_indent: ctx.paragraph_head_indent, ..ParagraphStyle::default() },
+            tab_stops: vec![],
+            pagination: Default::default(),
+        }),
+    });
+    out.push(id);
+}
+
+/// A quote, or an alert (`alert` = comrak's kind and the author's title, if any).
+fn map_quote<'a>(
+    node: &'a AstNode<'a>,
+    parent_id: u64,
+    alert: Option<(AlertType, Option<String>)>,
+    ctx: &mut Ctx,
+    out: &mut Vec<u64>,
+) {
+    let sourcepos = node.data.borrow().sourcepos;
+    let id = ctx.new_node_id();
+    let mut children = Vec::new();
+    let mut kind_name = None;
+    if let Some((kind, title)) = alert {
+        let (name, title_default) = match kind {
+            AlertType::Note => ("note", "Note"),
+            AlertType::Tip => ("tip", "Tip"),
+            AlertType::Important => ("important", "Important"),
+            AlertType::Warning => ("warning", "Warning"),
+            AlertType::Caution => ("caution", "Caution"),
+        };
+        let &(_, _, r, g, b) = ALERT_COLORS.iter().find(|(_, n, ..)| *n == name).expect("alert colour");
+        let style = CharacterStyle {
+            bold: true,
+            foreground: Some(color((r, g, b, 1.0))),
+            ..CharacterStyle::default()
+        };
+        let text = title.filter(|t| !t.is_empty()).unwrap_or_else(|| title_default.to_string());
+        push_paragraph(ctx, id, &text, style, &mut children);
+        kind_name = Some(name.to_string());
+    }
+    for child in node.children() {
+        map_block(child, id, ctx, &mut children);
+    }
+    ctx.push(RenderNodeDraft {
+        id,
+        parent_id: Some(parent_id),
+        children,
+        source_spans: ctx.span_for(sourcepos),
+        edit: None,
+        payload: NodePayload::BlockQuote(WireBlockQuote { alert: kind_name }),
+    });
+    out.push(id);
+}
+
+/// `Term` / `: details`: the term as a bold paragraph, each details' blocks hung under it.
+fn map_description_list<'a>(node: &'a AstNode<'a>, parent_id: u64, ctx: &mut Ctx, out: &mut Vec<u64>) {
+    const DETAILS_INDENT_POINTS: f64 = 18.0;
+    for item in node.children() {
+        for part in item.children() {
+            let value = part.data.borrow().value.clone();
+            match value {
+                NodeValue::DescriptionTerm => {
+                    let id = ctx.new_node_id();
+                    let paragraphs: Vec<_> = part
+                        .children()
+                        .filter(|c| matches!(c.data.borrow().value, NodeValue::Paragraph))
+                        .collect();
+                    let mut children = Vec::new();
+                    if paragraphs.is_empty() {
+                        children.extend(map_bold_inline_children(part, id, ctx));
+                    }
+                    for paragraph in paragraphs {
+                        children.extend(map_bold_inline_children(paragraph, id, ctx));
+                    }
+                    ctx.push(RenderNodeDraft {
+                        id,
+                        parent_id: Some(parent_id),
+                        children,
+                        source_spans: ctx.span_for(part.data.borrow().sourcepos),
+                        edit: None,
+                        payload: NodePayload::Paragraph(WireParagraph {
+                            style: ParagraphStyle::default(),
+                            tab_stops: vec![],
+                            pagination: Default::default(),
+                        }),
+                    });
+                    out.push(id);
+                }
+                NodeValue::DescriptionDetails => {
+                    let outer = ctx.paragraph_head_indent.replace(DETAILS_INDENT_POINTS);
+                    for child in part.children() {
+                        map_block(child, parent_id, ctx, out);
+                    }
+                    ctx.paragraph_head_indent = outer;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+pub(super) fn is_footnote_definition<'a>(node: &'a AstNode<'a>) -> bool {
+    matches!(node.data.borrow().value, NodeValue::FootnoteDefinition(_))
+}
+
+/// The notes section: a rule, then one numbered item per note (`n.` marker, the note's blocks, and
+/// an arrow back to the note's first reference). Each note is a `fn:<name>` jump target, which its
+/// references link to. Drains `notes`.
+pub(super) fn map_footnote_section<'a>(
+    notes: &mut Vec<&'a AstNode<'a>>,
+    parent_id: u64,
+    ctx: &mut Ctx,
+    out: &mut Vec<u64>,
+) {
+    if notes.is_empty() {
+        return;
+    }
+    let rule_id = ctx.new_node_id();
+    ctx.push(RenderNodeDraft {
+        id: rule_id,
+        parent_id: Some(parent_id),
+        children: vec![],
+        source_spans: vec![],
+        edit: None,
+        payload: NodePayload::ThematicBreak(Empty {}),
+    });
+    out.push(rule_id);
+
+    let list_id = ctx.new_node_id();
+    let mut items = Vec::new();
+    for (index, note) in notes.drain(..).enumerate() {
+        let name = match &note.data.borrow().value {
+            NodeValue::FootnoteDefinition(definition) => definition.name.clone(),
+            _ => continue,
+        };
+        let item_id = ctx.new_node_id();
+        ctx.add_bookmark(format!("fn:{name}"), item_id);
+        let referenced = ctx.has_bookmark(&format!("fnref:{name}"));
+        let mut children = Vec::new();
+        let mut arrow_pending = referenced;
+        for child in note.children() {
+            let is_paragraph = matches!(child.data.borrow().value, NodeValue::Paragraph);
+            if is_paragraph && children.is_empty() {
+                children.extend(map_inline_children(child, item_id, ctx));
+                if arrow_pending {
+                    arrow_pending = false;
+                    let style = CharacterStyle::default();
+                    children.push(push_text_run(ctx, item_id, " \u{21A9}", style, Some(format!("#fnref:{name}"))));
+                }
+            } else {
+                map_block(child, item_id, ctx, &mut children);
+            }
+        }
+        ctx.push(RenderNodeDraft {
+            id: item_id,
+            parent_id: Some(list_id),
+            children,
+            // An inline note (`^[…]`) has no block of its own in the source to point at.
+            source_spans: vec![],
+            edit: None,
+            payload: NodePayload::ListItem(WireListItem {
+                level: 1,
+                ordered: true,
+                marker: Some(format!("{}.", index + 1)),
+                numbering: None,
+                style: ParagraphStyle::default(),
+                tab_stops: vec![],
+                pagination: Default::default(),
+            }),
+        });
+        items.push(item_id);
+    }
+    ctx.push(RenderNodeDraft {
+        id: list_id,
+        parent_id: Some(parent_id),
+        children: items,
+        source_spans: vec![],
+        edit: None,
+        payload: NodePayload::List(WireList {
+            numbering: Numbering { glyphs: ListNumberingGlyphs::Decimal, start_number: Some(1) },
+        }),
+    });
+    out.push(list_id);
 }
 
 /// A list (ordered or unordered) at nesting `depth` (1-based, matching the office adapter's own

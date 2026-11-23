@@ -6,6 +6,7 @@ using Avalonia;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Media.TextFormatting;
+using FastDoc.Avalonia.Rendering;
 using SkiaSharp;
 
 namespace FastDoc.Avalonia.Printing;
@@ -191,7 +192,7 @@ public sealed class SkiaPageCanvas : IPageCanvas
 
     public void DrawTextLine(TextLine line, Point origin)
     {
-        var x = origin.X;
+        var x = origin.X + line.Start; // Start is the line's alignment offset (centre / right)
         var baselineY = origin.Y + line.Baseline;
         foreach (var run in line.TextRuns)
         {
@@ -202,12 +203,27 @@ public sealed class SkiaPageCanvas : IPageCanvas
             var props = shaped.Properties;
             var sizePx = (float)(props?.FontRenderingEmSize ?? 12.0);
             var isBold = props?.Typeface.Weight is { } w && w >= FontWeight.Bold;
-            var isItalic = props?.Typeface.Style is FontStyle.Italic or FontStyle.Oblique;
+            // A fallback (Hangul/Hanja) run's own style is reset to Normal by Avalonia; the italic
+            // intent rides on the brush (see SyntheticItalic).
+            var isItalic = SyntheticItalic.Intended(props);
             var color = (props?.ForegroundBrush as ISolidColorBrush)?.Color ?? Colors.Black;
 
             var font = GetOrBuildFont(isBold, isItalic, sizePx);
             using var paint = new SKPaint { Color = ToSk(color), IsAntialias = true };
-            _canvas.DrawText(SanitizeForBundledFont(text, font), (float)x, (float)baselineY, SKTextAlign.Left, font, paint);
+            // A highlight / spoiler wash sits behind the glyphs, across the whole line height.
+            if (props?.BackgroundBrush is ISolidColorBrush wash && wash.Color.A > 0)
+            {
+                using var washPaint = new SKPaint { Color = ToSk(wash.Color), IsAntialias = false };
+                _canvas.DrawRect((float)x, (float)origin.Y, (float)shaped.Size.Width, (float)line.Height, washPaint);
+            }
+            // The run's own size is already the reduced script size; raise / drop it off the line's baseline.
+            var runBaselineY = props?.BaselineAlignment switch
+            {
+                BaselineAlignment.Superscript => baselineY - sizePx * 0.55,
+                BaselineAlignment.Subscript => baselineY + sizePx * 0.2,
+                _ => baselineY,
+            };
+            _canvas.DrawText(SanitizeForBundledFont(text, font), (float)x, (float)runBaselineY, SKTextAlign.Left, font, paint);
 
             if (props?.TextDecorations is { Count: > 0 } decorations)
             {
@@ -215,8 +231,8 @@ public sealed class SkiaPageCanvas : IPageCanvas
                 foreach (var decoration in decorations)
                 {
                     var lineY = decoration.Location == TextDecorationLocation.Strikethrough
-                        ? baselineY - sizePx * 0.3
-                        : baselineY + sizePx * 0.08;
+                        ? runBaselineY - sizePx * 0.3
+                        : runBaselineY + sizePx * 0.08;
                     _canvas.DrawLine((float)x, (float)lineY, (float)x + width, (float)lineY, paint);
                 }
             }
@@ -307,7 +323,7 @@ public sealed class SkiaPageCanvas : IPageCanvas
         var font = new SKFont(_typeface, sizePx)
         {
             Embolden = bold,
-            SkewX = italic ? -0.25f : 0f,
+            SkewX = italic ? -(float)SyntheticItalic.Slant : 0f,
             Edging = SKFontEdging.SubpixelAntialias,
         };
         _fontCache[key] = font;

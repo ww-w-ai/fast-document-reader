@@ -257,6 +257,8 @@ public sealed class RenderNode
     public SectionPayload? AsSection => Decode<SectionPayload>("section");
     public TextRunPayload? AsTextRun => Decode<TextRunPayload>("textRun");
     public ListItemPayload? AsListItem => Decode<ListItemPayload>("listItem");
+    public ListPayload? AsList => Decode<ListPayload>("list");
+    public BlockQuotePayload? AsBlockQuote => Decode<BlockQuotePayload>("blockQuote");
     public TaskListItemPayload? AsTaskListItem => Decode<TaskListItemPayload>("taskListItem");
     public CodeBlockPayload? AsCodeBlock => Decode<CodeBlockPayload>("codeBlock");
     public ImagePayload? AsImage => Decode<ImagePayload>("image");
@@ -342,6 +344,29 @@ public sealed class CharacterStyleWire
     [JsonPropertyName("fontFamilies")] public List<string> FontFamilies { get; set; } = new();
     [JsonPropertyName("fontSizePoints")] public double? FontSizePoints { get; set; }
     [JsonPropertyName("foreground")] public ColorWire? Foreground { get; set; }
+    /// <summary>`wire::CharacterStyle.background` — a highlight (`==x==`, `&lt;mark&gt;`) or spoiler wash.</summary>
+    [JsonPropertyName("background")] public ColorWire? Background { get; set; }
+    /// <summary>"normal" | "superscript" | "subscript" — `wire::VerticalPosition`.</summary>
+    [JsonPropertyName("verticalPosition")] public string? VerticalPosition { get; set; }
+}
+
+/// <summary>`wire::BlockQuote`: `Alert` names a GitHub alert's kind (note, tip, important, warning,
+/// caution) and is null for an ordinary quote.</summary>
+public sealed class BlockQuotePayload
+{
+    [JsonPropertyName("alert")] public string? Alert { get; set; }
+}
+
+/// <summary>`wire::List`: only the numbering's start is read (an ordered item's marker is its place
+/// from there).</summary>
+public sealed class ListPayload
+{
+    [JsonPropertyName("numbering")] public ListNumberingWire? Numbering { get; set; }
+}
+
+public sealed class ListNumberingWire
+{
+    [JsonPropertyName("startNumber")] public long? StartNumber { get; set; }
 }
 
 public sealed class HeadingPayload

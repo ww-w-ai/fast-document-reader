@@ -339,6 +339,14 @@ public sealed class FlowDocumentView : Control
         }
     }
 
+    /// <summary>Export only: positions the flow view at a page's top WITHOUT the viewport clamp of
+    /// <see cref="ScrollOffset"/> — that clamp stops the last, partly filled page short of its own
+    /// start, so the PDF's final page would repeat the one before it.</summary>
+    public void SetScrollOffsetForExport(double offsetPx)
+    {
+        _scrollOffset = Math.Max(0, offsetPx);
+    }
+
     public FlowDocumentView() : this(new WebRender.TaskWebRenderScheduler())
     {
     }
@@ -2238,6 +2246,12 @@ public sealed class FlowDocumentView : Control
             List<string>? subLines = null;
             Action<string>? cellDiag = drawLog is null ? null : line => (subLines ??= new List<string>()).Add(line);
             var actualHeight = DrawBlock(surface, block, i, top, columnWidth, blockLocalViewTop, blockLocalViewBottom, cellDiag);
+            if (block.QuoteBarColor is { } barColor)
+            {
+                // The bar of a quote/alert the block sits in: full block height, so neighbours join.
+                var barX = LeftMargin + block.QuoteBarXPoints * PointsToPixels * _zoomFactor;
+                surface.DrawRect(new Rect(barX, top, 3, Math.Max(1, actualHeight)), barColor, null, 0);
+            }
             if (!_measured[i] || Math.Abs(actualHeight - _blockHeights[i]) > 0.5)
             {
                 _blockHeights[i] = actualHeight;
@@ -2604,17 +2618,9 @@ public sealed class FlowDocumentView : Control
             {
                 var fontSizePx = run.FontSizePoints * zoomFactor * PointsToPixels;
                 if (fontSizePx > maxFontSizePx) { maxFontSizePx = fontSizePx; }
-                var typeface = new Typeface(
-                    run.FontFamily ?? "Inter",
-                    run.Italic ? FontStyle.Italic : FontStyle.Normal,
-                    run.Bold ? FontWeight.Bold : FontWeight.Normal);
-                TextDecorationCollection? decorations = null;
-                if (run.Underline) { decorations = TextDecorations.Underline; }
-                else if (run.Strike) { decorations = TextDecorations.Strikethrough; }
-                var props = new GenericTextRunProperties(
-                    typeface,
+                var props = FlowRun.PropertiesFor(
+                    run,
                     fontSizePx,
-                    textDecorations: decorations,
                     // ImmutableSolidColorBrush, NOT SolidColorBrush — SolidColorBrush is an
                     // AvaloniaObject (styled properties, Dispatcher-thread-affine). Building one on
                     // a background thread (PrewarmVisibleRange/SchedulePrefetch) throws
@@ -2633,7 +2639,7 @@ public sealed class FlowDocumentView : Control
                     // "follow the theme" and remapped to the (snapshotted) foreground brush parameter
                     // (near-white in dark mode); any OTHER declared colour is a genuine authorial
                     // choice and is left exactly as the document stated it, in either theme.
-                    foregroundBrush: IsAutoForeground(run.Foreground) ? foregroundBrush : new ImmutableSolidColorBrush(run.Foreground));
+                    IsAutoForeground(run.Foreground) ? foregroundBrush : new ImmutableSolidColorBrush(run.Foreground));
                 overrides.Add(new ValueSpan<TextRunProperties>(cursor, length, props));
             }
             cursor += length;

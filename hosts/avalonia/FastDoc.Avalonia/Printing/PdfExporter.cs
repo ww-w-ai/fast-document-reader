@@ -58,7 +58,7 @@ public static class PdfExporter
     /// an open failure (the caller's headless/GUI entry decides how to report that) rather than
     /// returning a sentinel pageCount, matching RenderTreeLoader's own "IsOk" contract instead of
     /// inventing a second one here.</summary>
-    public static Result ExportPdf(string documentPath, string outPath)
+    public static Result ExportPdf(string documentPath, string outPath, double zoom = 1.0)
     {
         var loaded = RenderTreeLoader.Load(documentPath);
         using var handle = loaded.Handle;
@@ -71,6 +71,8 @@ public static class PdfExporter
         view.SetTree(loaded.Tree);
         if (handle is not null) { view.SetHandle(handle); }
         view.SetZipSource(loaded.DocumentPath, System.IO.Path.GetExtension(documentPath));
+        // A fresh view starts at zoom 1.0; no stored GUI zoom is ever read on this path.
+        view.SetZoom(zoom);
         return WritePdf(view, outPath);
     }
 
@@ -103,6 +105,24 @@ public static class PdfExporter
             view.Measure(new Size(pageWidthPx, pageHeightPx));
             view.Arrange(new Rect(0, 0, pageWidthPx, pageHeightPx));
             pageCount = Math.Max(1, (int)Math.Ceiling(view.ContentHeight / pageHeightPx));
+            // The flow view corrects its block-height estimates only as blocks are drawn, so the
+            // count above can fall short and clip the document's tail. Draw every page once into a
+            // scratch bitmap, then recount, until the count settles (bounded).
+            using var scratchTypeface = SkiaPageCanvas.LoadBundledTypeface();
+            for (var round = 0; round < 4; round++)
+            {
+                using var bitmap = new SKBitmap(Math.Max(1, (int)pageWidthPx), Math.Max(1, (int)pageHeightPx));
+                using var scratchCanvas = new SKCanvas(bitmap);
+                var scratch = new SkiaPageCanvas(scratchCanvas, scratchTypeface);
+                for (var p = 0; p < pageCount; p++)
+                {
+                    view.SetScrollOffsetForExport(p * pageHeightPx);
+                    view.RenderCore(scratch);
+                }
+                var settled = Math.Max(1, (int)Math.Ceiling(view.ContentHeight / pageHeightPx));
+                if (settled == pageCount) { break; }
+                pageCount = settled;
+            }
         }
 
         var pageWidthPt = pageWidthPx * PixelsToPoints;
@@ -125,7 +145,8 @@ public static class PdfExporter
             // fallback's virtualization window (EnsureEstimates) reads Bounds, so this keeps both
             // paths on the identical call sequence the screen uses every frame.
             view.Arrange(new Rect(0, 0, pageWidthPx, pageHeightPx));
-            view.ScrollOffset = view.HasPageGeometry ? view.ExportPageTopPx(pageIndex) : pageIndex * pageHeightPx;
+            if (view.HasPageGeometry) { view.ScrollOffset = view.ExportPageTopPx(pageIndex); }
+            else { view.SetScrollOffsetForExport(pageIndex * pageHeightPx); }
 
             var canvas = document.BeginPage((float)pageWidthPt, (float)pageHeightPt);
             if (surface is null) { surface = new SkiaPageCanvas(canvas, typeface); }

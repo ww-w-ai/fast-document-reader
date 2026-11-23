@@ -623,14 +623,7 @@ public static class TableGridRenderer
                     text.Append(run.Text);
                     var fontSizePx = run.FontSizePoints * fontScale * PointsToPixels;
                     if (fontSizePx > maxFontSizePx) { maxFontSizePx = fontSizePx; }
-                    var typeface = new Typeface(run.FontFamily ?? "Inter",
-                        run.Italic ? FontStyle.Italic : FontStyle.Normal,
-                        run.Bold ? FontWeight.Bold : FontWeight.Normal);
-                    TextDecorationCollection? decorations = null;
-                    if (run.Underline) { decorations = TextDecorations.Underline; }
-                    else if (run.Strike) { decorations = TextDecorations.Strikethrough; }
-                    var props = new GenericTextRunProperties(typeface, fontSizePx,
-                        textDecorations: decorations, foregroundBrush: new SolidColorBrush(run.Foreground));
+                    var props = FlowRun.PropertiesFor(run, fontSizePx, new SolidColorBrush(run.Foreground));
                     overrides.Add(new ValueSpan<TextRunProperties>(cursor, run.Text.Length, props));
                     cursor += run.Text.Length;
                 }
