@@ -45,4 +45,4 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # CLI binary, none of which this crate builds or ships (`cargo tree -p fastdoc-engine` confirms no
 # CLI-only crate is present). GFM extensions (tables, task lists, strikethrough) are enabled at
 # call time via `ComrakExtensionOptions`, not through a Cargo feature.
-comrak = { version = "0.54.0", default-features = false }
+comrak = { version = "0.54.0", default-features = false, features = ["attributes"] }

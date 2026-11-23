@@ -36,6 +36,12 @@ struct MarkdownWire: Decodable {
     var layerParagraph: [Int32] = []
     var layerAttachment: [Int32] = []
     var layerUnderline: [Int32] = []
+    /// GFM `~~` — same raw `NSUnderlineStyle` encoding as `layerUnderline`; absent when unused.
+    var layerStrikethrough: [Int32] = []
+    /// Index into `colors` of the background fill (`<mark>`, `==x==`), `-1` for none; absent when unused.
+    var layerBackground: [Int32] = []
+    /// `NSBaselineOffsetAttributeName` in points (`<sup>`, `<sub>`); absent when unused.
+    var layerBaseline: [Double] = []
     var layerLink: [Int32] = []
     var linkTargets: [String] = []
     var extras: [Extra] = []
@@ -56,6 +62,9 @@ struct MarkdownWire: Decodable {
         case layerParagraph = "layer_paragraph"
         case layerAttachment = "layer_attachment"
         case layerUnderline = "layer_underline"
+        case layerStrikethrough = "layer_strikethrough"
+        case layerBackground = "layer_background"
+        case layerBaseline = "layer_baseline"
         case layerLink = "layer_link"
         case linkTargets = "link_targets"
         case extras
@@ -81,6 +90,9 @@ struct MarkdownWire: Decodable {
         layerParagraph = try c.decodeIfPresent([Int32].self, forKey: .layerParagraph) ?? []
         layerAttachment = try c.decodeIfPresent([Int32].self, forKey: .layerAttachment) ?? []
         layerUnderline = try c.decodeIfPresent([Int32].self, forKey: .layerUnderline) ?? []
+        layerStrikethrough = try c.decodeIfPresent([Int32].self, forKey: .layerStrikethrough) ?? []
+        layerBackground = try c.decodeIfPresent([Int32].self, forKey: .layerBackground) ?? []
+        layerBaseline = try c.decodeIfPresent([Double].self, forKey: .layerBaseline) ?? []
         layerLink = try c.decodeIfPresent([Int32].self, forKey: .layerLink) ?? []
         linkTargets = try c.decodeIfPresent([String].self, forKey: .linkTargets) ?? []
         extras = try c.decodeIfPresent([Extra].self, forKey: .extras) ?? []

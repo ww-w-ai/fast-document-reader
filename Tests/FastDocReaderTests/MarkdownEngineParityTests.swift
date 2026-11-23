@@ -261,8 +261,19 @@ final class MarkdownEngineParityTests: XCTestCase {
         compare("defaultTabInterval", host.defaultTabInterval, engine.defaultTabInterval)
         compare("lineHeightMultiple", host.lineHeightMultiple, engine.lineHeightMultiple)
         compare("minimumLineHeight", host.minimumLineHeight, engine.minimumLineHeight)
-        compare("maximumLineHeight", host.maximumLineHeight, engine.maximumLineHeight)
-        if host.alignment != engine.alignment {
+        // INTENTIONAL DIFFERENCE 1 — a paragraph inside a quote. `MarkdownRenderer.swift` overwrites it
+        // with the quote's own style (a fixed line height); the engine keeps the paragraph's style and
+        // ADDS the quote indent, so a table, list or code card inside a quote stays one. The body style
+        // is a floor (`maximumLineHeight` 0), the quote style a cap. Everything else must still match.
+        let additiveQuote = engine.maximumLineHeight == 0 && host.maximumLineHeight > 0
+            && abs(host.minimumLineHeight - engine.minimumLineHeight) < 0.001
+        if !additiveQuote {
+            compare("maximumLineHeight", host.maximumLineHeight, engine.maximumLineHeight)
+        }
+        // INTENTIONAL DIFFERENCE 2 — GFM column alignment (`:--:`, `--:`). The engine honours it; the
+        // host oracle never did. Only a table cell, and only centre/right, is allowed to differ.
+        let engineAligned = !engine.textBlocks.isEmpty && (engine.alignment == .center || engine.alignment == .right)
+        if host.alignment != engine.alignment && !engineAligned {
             found.append("\(at) alignment: \(engine.alignment.rawValue) against \(host.alignment.rawValue)")
         }
         if host.lineBreakMode != engine.lineBreakMode {

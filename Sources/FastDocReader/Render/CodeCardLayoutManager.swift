@@ -172,12 +172,12 @@ func drawMDDecorations(_ lm: NSLayoutManager, _ storage: NSTextStorage,
     // the first line to glyph bottom of the last line). With a padded line height the glyphs sit
     // low in each line box, so a line-box-centered bar floats above the text — anchor to the
     // baselines instead (same fix as the inline-code chip).
-    storage.enumerateAttribute(MDAttr.blockQuote, in: charRange) { value, r0, _ in
-        guard value != nil else { return }
-        // Recover the quote's FULL range (the visible slice is clipped) so the bar spans it all.
-        var range = r0
-        _ = storage.attribute(MDAttr.blockQuote, at: r0.location, longestEffectiveRange: &range, in: whole)
+    // One bar per quote. Adjacent quotes share the `blockQuote` run, so a run is split again wherever
+    // the alert value (kind + number) changes: two alerts in a row keep one bar each, in their colours.
+    func drawQuoteBar(_ range: NSRange) {
         guard range.length > 0 else { return }
+        let barInset = (storage.attribute(MDAttr.quoteInset, at: range.location, effectiveRange: nil) as? NSNumber)
+            .map { CGFloat(truncating: $0) } ?? 0
         // TOP = first glyph's top.
         let firstFont = (storage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont) ?? .systemFont(ofSize: 16)
         let firstGlyph = lm.glyphRange(forCharacterRange: NSRange(location: range.location, length: 1), actualCharacterRange: nil).location
@@ -199,10 +199,28 @@ func drawMDDecorations(_ lm: NSLayoutManager, _ storage: NSTextStorage,
         if storage.attribute(MDAttr.codeBlock, at: lastChar, effectiveRange: nil) != nil {
             botY += m.verticalPadding
         }
-        let bar = NSRect(x: origin.x + m.horizontalMargin, y: topY + origin.y,
+        let bar = NSRect(x: origin.x + m.horizontalMargin + barInset, y: topY + origin.y,
                          width: 3, height: max(0, botY - topY))
-        Palette.quoteBar.setFill()
+        if let kind = storage.attribute(MDAttr.alert, at: range.location, effectiveRange: nil) as? String {
+            AlertKind.barColor(kind).setFill()
+        } else {
+            Palette.quoteBar.setFill()
+        }
         NSBezierPath(roundedRect: bar, xRadius: 1.5, yRadius: 1.5).fill()
+    }
+    storage.enumerateAttribute(MDAttr.blockQuote, in: charRange) { value, r0, _ in
+        guard value != nil else { return }
+        // Recover the quote run's FULL range (the visible slice is clipped) so the bar spans it all.
+        var quote = r0
+        _ = storage.attribute(MDAttr.blockQuote, at: r0.location, longestEffectiveRange: &quote, in: whole)
+        var cursor = quote.location
+        while cursor < NSMaxRange(quote) {
+            var segment = NSRange(location: cursor, length: 0)
+            _ = storage.attribute(MDAttr.alert, at: cursor, longestEffectiveRange: &segment, in: quote)
+            guard segment.length > 0 else { break }
+            cursor = NSMaxRange(segment)
+            if NSIntersectionRange(segment, charRange).length > 0 { drawQuoteBar(segment) }
+        }
     }
 }
 

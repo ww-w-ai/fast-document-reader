@@ -99,6 +99,88 @@ pub mod markdown {
         pub level: i32,
         pub children: Vec<Markup>,
         pub range: Option<SourceRange>,
+        /// The `{#id}` of a heading attribute block — the attribute text is hidden and the id is the
+        /// heading's own jump target. (Not in swift-markdown; carried by the comrak stand-in.)
+        pub anchor: Option<String>,
+    }
+
+    /// GFM column alignment (`:---`, `:---:`, `---:`). Not in the transliterated Swift, which never
+    /// honoured it; carried by the comrak stand-in.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum ColumnAlignment {
+        #[default]
+        None,
+        Left,
+        Center,
+        Right,
+    }
+
+    /// Inline spans comrak parses that swift-markdown has no shape for: `==x==`, `++x++`, `^x^`,
+    /// `||x||` and `[[wikilink]]` text.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum InlineKind {
+        Highlight,
+        Insert,
+        Superscript,
+        Spoiler,
+        /// A wikilink: its text, with no styling and no target.
+        Plain,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct InlineStyle {
+        pub kind: InlineKind,
+        pub children: Vec<Markup>,
+    }
+
+    /// `[^name]` — `number` is its 1-based place among the document's notes, `first` marks the first
+    /// reference to that note (the one a note's back-link returns to).
+    #[derive(Debug, Clone)]
+    pub struct FootnoteReference {
+        pub name: String,
+        pub number: u32,
+        pub first: bool,
+    }
+
+    /// `[^name]: text` — comrak moves every definition to the end of the document.
+    #[derive(Debug, Clone)]
+    pub struct FootnoteDefinition {
+        pub name: String,
+        pub number: u32,
+        pub children: Vec<Markup>,
+        pub range: Option<SourceRange>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AlertKind {
+        Note,
+        Tip,
+        Important,
+        Warning,
+        Caution,
+    }
+
+    /// GitHub `> [!NOTE]` and its four siblings.
+    #[derive(Debug, Clone)]
+    pub struct Alert {
+        pub kind: AlertKind,
+        /// The author's own title, else the kind's default.
+        pub title: Option<String>,
+        pub children: Vec<Markup>,
+        pub range: Option<SourceRange>,
+    }
+
+    /// One term and the blocks of each of its details.
+    #[derive(Debug, Clone, Default)]
+    pub struct DescriptionItem {
+        pub term: Vec<Markup>,
+        pub details: Vec<Vec<Markup>>,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct DescriptionList {
+        pub items: Vec<DescriptionItem>,
+        pub range: Option<SourceRange>,
     }
 
     /// swift: Markdown.Paragraph
@@ -141,6 +223,8 @@ pub mod markdown {
     pub struct OrderedList {
         pub list_items: Vec<ListItem>,
         pub range: Option<SourceRange>,
+        /// The number the first item carries (`3.` starts at 3); `0` is read as "not stated" → 1.
+        pub start: usize,
     }
 
     /// swift: Markdown.CodeBlock
@@ -187,6 +271,8 @@ pub mod markdown {
         pub head: TableHead,
         pub body: TableBody,
         pub range: Option<SourceRange>,
+        /// One per column, from the delimiter row.
+        pub alignments: Vec<ColumnAlignment>,
     }
 
     /// swift: Markdown.Markup — an existential protocol every node conforms to; call sites
@@ -216,6 +302,11 @@ pub mod markdown {
         Table(Table),
         TableCell(TableCell),
         Document(Document),
+        InlineStyle(InlineStyle),
+        FootnoteReference(FootnoteReference),
+        FootnoteDefinition(FootnoteDefinition),
+        Alert(Alert),
+        DescriptionList(DescriptionList),
     }
 
     impl Markup {
@@ -238,10 +329,211 @@ pub mod markdown {
 }
 
 use markdown::{
-    BlockQuote, Checkbox, CodeBlock, Document, Emphasis, Heading, HTMLBlock, InlineCode,
-    InlineHTML, Link, ListItem, Markup, OrderedList, Paragraph, SourceRange, Strikethrough,
-    Strong, Table, TableCell, Text, ThematicBreak, UnorderedList,
+    Alert, AlertKind, BlockQuote, Checkbox, CodeBlock, ColumnAlignment, DescriptionList, Document,
+    Emphasis, FootnoteDefinition, FootnoteReference, Heading, HTMLBlock, InlineCode, InlineHTML,
+    InlineKind, InlineStyle, Link, ListItem, Markup, OrderedList, Paragraph, SourceRange,
+    Strikethrough, Strong, Table, TableCell, Text, ThematicBreak, UnorderedList,
 };
+
+/// Point size of `<sup>`, `<sub>` and footnote references, as a share of the surrounding text.
+/// `markdown_wire` enumerates the same scale per role so the wire can name these faces.
+pub const SCRIPT_SCALE: f64 = 0.75;
+/// Baseline raise of a superscript / drop of a subscript, as a share of the surrounding font size.
+const SUPERSCRIPT_RAISE: f64 = 0.35;
+const SUBSCRIPT_DROP: f64 = 0.15;
+
+/// The colour a GitHub alert's title carries. The host paints the quote's bar with the same values
+/// (`AlertKind.barColor` in `MDAttr.swift`); both are mid-saturation so they read in light and dark.
+pub(crate) const ALERT_COLORS: [(AlertKind, &str, f64, f64, f64); 5] = [
+    (AlertKind::Note, "note", 0.19, 0.51, 0.97),
+    (AlertKind::Tip, "tip", 0.20, 0.65, 0.35),
+    (AlertKind::Important, "important", 0.60, 0.40, 0.85),
+    (AlertKind::Warning, "warning", 0.85, 0.60, 0.10),
+    (AlertKind::Caution, "caution", 0.88, 0.27, 0.27),
+];
+
+fn alert_style(kind: AlertKind) -> (&'static str, swiftshim::NSColor) {
+    let (_, name, r, g, b) = *ALERT_COLORS.iter().find(|(k, ..)| *k == kind).unwrap();
+    (name, swiftshim::NSColor::srgb(r, g, b, 1.0))
+}
+
+fn alert_default_title(kind: AlertKind) -> &'static str {
+    match kind {
+        AlertKind::Note => "Note",
+        AlertKind::Tip => "Tip",
+        AlertKind::Important => "Important",
+        AlertKind::Warning => "Warning",
+        AlertKind::Caution => "Caution",
+    }
+}
+
+/// `==x==` / `<mark>` fill. Translucent, so the text keeps its own colour in both appearances.
+fn highlight_color() -> swiftshim::NSColor {
+    swiftshim::NSColor::srgb(1.0, 0.85, 0.2, 0.4)
+}
+
+/// A `||spoiler||` — dimmed text on a grey wash rather than hidden, because a reader that cannot
+/// click to reveal must not make the words unreadable.
+fn spoiler_fill() -> swiftshim::NSColor {
+    swiftshim::NSColor::srgb(0.5, 0.5, 0.5, 0.3)
+}
+
+/// What a raw inline HTML string is, for the tags this renderer understands.
+pub(crate) enum HtmlTag {
+    Open { name: String, href: Option<String> },
+    Close(String),
+    /// A comment, declaration or processing instruction — never shown.
+    Hidden,
+}
+
+/// The bookmark a footnote's NOTE answers to, and the one its first reference answers to.
+fn footnote_target(name: &str) -> String {
+    format!("fn:{name}")
+}
+
+fn footnote_return_target(name: &str) -> String {
+    format!("fnref:{name}")
+}
+
+/// An inline HTML tag opened and not yet closed.
+struct OpenTag {
+    name: String,
+    /// Where in the container's string its content begins.
+    start: usize,
+    /// The font in force before the tag, restored when it closes.
+    saved_font: swiftshim::NSFont,
+    href: Option<String>,
+}
+
+/// Parse one inline HTML token (`<u>`, `</u>`, `<a href="x">`, `<br/>`, `<!-- c -->`).
+pub(crate) fn parse_html_tag(raw: &str) -> HtmlTag {
+    let inner = raw.trim().trim_start_matches('<').trim_end_matches('>');
+    if inner.starts_with('!') || inner.starts_with('?') {
+        return HtmlTag::Hidden;
+    }
+    if let Some(rest) = inner.strip_prefix('/') {
+        let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+        return HtmlTag::Close(name.to_ascii_lowercase());
+    }
+    let name: String = inner.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    let href = html_attribute(inner, "href");
+    // `<br/>` and `<hr />` carry no content; callers treat them by name, so the slash needs no flag.
+    HtmlTag::Open { name: name.to_ascii_lowercase(), href }
+}
+
+/// The value of `name="…"` / `name='…'` / `name=x` in a tag body.
+pub(crate) fn html_attribute(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(found) = lower[from..].find(name) {
+        let at = from + found;
+        let before_ok = at == 0 || !lower.as_bytes()[at - 1].is_ascii_alphanumeric();
+        let rest = tag[at + name.len()..].trim_start();
+        if before_ok && rest.starts_with('=') {
+            let value = rest[1..].trim_start();
+            let (quote, body) = match value.chars().next() {
+                Some(q @ ('"' | '\'')) => (Some(q), &value[1..]),
+                _ => (None, value),
+            };
+            let end = match quote {
+                Some(q) => body.find(q).unwrap_or(body.len()),
+                None => body.find(|c: char| c.is_whitespace() || c == '>' || c == '/').unwrap_or(body.len()),
+            };
+            return Some(body[..end].to_string());
+        }
+        from = at + name.len();
+    }
+    None
+}
+
+/// The few entities a hand-written HTML fragment uses.
+fn decode_entities(text: &str) -> String {
+    text.replace("&nbsp;", "\u{a0}")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+/// One line of a stripped HTML block: its text and whether a `<summary>` made it a heading line.
+pub(crate) struct HtmlLine {
+    pub(crate) text: String,
+    pub(crate) bold: bool,
+}
+
+/// Reduce an HTML block to the lines of text a reader should see: tags dropped, `<br>` and block
+/// closers as line breaks, `<summary>` lines bold, comments hidden, entities decoded.
+pub(crate) fn html_block_lines(raw: &str) -> Vec<HtmlLine> {
+    let mut lines: Vec<HtmlLine> = Vec::new();
+    let mut current = String::new();
+    let mut bold_depth = 0i32;
+    let mut current_bold = false;
+    let flush = |current: &mut String, bold: &mut bool, lines: &mut Vec<HtmlLine>| {
+        let text = decode_entities(current.trim());
+        if !text.is_empty() {
+            lines.push(HtmlLine { text, bold: *bold });
+        }
+        current.clear();
+        *bold = false;
+    };
+    let mut rest = raw;
+    while let Some(open) = rest.find('<') {
+        current.push_str(&rest[..open]);
+        let after = &rest[open..];
+        // `<` that does not begin a tag (a bare "a < b") is text.
+        let Some(close) = after.find('>') else {
+            current.push_str(after);
+            rest = "";
+            break;
+        };
+        let token = &after[..=close];
+        if token.starts_with("<!--") {
+            // A comment may contain `>`; skip to its real end.
+            let end = after.find("-->").map(|i| i + 3).unwrap_or(after.len());
+            rest = &after[end..];
+            continue;
+        }
+        match parse_html_tag(token) {
+            HtmlTag::Open { name, .. } => match name.as_str() {
+                "br" | "hr" => flush(&mut current, &mut current_bold, &mut lines),
+                "summary" => {
+                    flush(&mut current, &mut current_bold, &mut lines);
+                    bold_depth += 1;
+                }
+                "td" | "th" => {
+                    if !current.trim().is_empty() {
+                        current.push_str("   ");
+                    }
+                }
+                "p" | "div" | "li" | "tr" | "ul" | "ol" | "table" | "details" | "blockquote"
+                | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "pre" => {
+                    flush(&mut current, &mut current_bold, &mut lines)
+                }
+                _ => {}
+            },
+            HtmlTag::Close(name) => match name.as_str() {
+                "summary" => {
+                    current_bold = true;
+                    flush(&mut current, &mut current_bold, &mut lines);
+                    bold_depth -= 1;
+                }
+                "td" | "th" => {}
+                "p" | "div" | "li" | "tr" | "ul" | "ol" | "table" | "details" | "blockquote"
+                | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "pre" => {
+                    flush(&mut current, &mut current_bold, &mut lines)
+                }
+                _ => {}
+            },
+            HtmlTag::Hidden => {}
+        }
+        rest = &after[close + 1..];
+    }
+    current.push_str(rest);
+    let _ = bold_depth;
+    flush(&mut current, &mut current_bold, &mut lines);
+    lines
+}
 
 // swift: MarkdownRenderer
 
@@ -514,6 +806,8 @@ struct AttributedBuilder {
     math_spans: Vec<(swiftshim::NSRange, String)>,
     /// span starts already turned into a formula
     emitted_math: std::collections::HashSet<usize>,
+    /// The footnote section's rule has been drawn (it opens before the first note, once).
+    notes_started: bool,
 }
 
 impl AttributedBuilder {
@@ -562,6 +856,7 @@ impl AttributedBuilder {
             line_starts: ls,
             math_spans: math_spans,
             emitted_math: std::collections::HashSet::new(),
+            notes_started: false,
         }
     }
 
@@ -658,7 +953,20 @@ impl AttributedBuilder {
         let mut out = swiftshim::NSMutableAttributedString::new();
         let children = markup.children();
         let mut i = 0usize;
+        // Raw inline HTML (`<u>`, `<sup>`, `<mark>`…) arrives as one node per TAG with the styled
+        // text between them as siblings, so the open tags are tracked here and applied to the
+        // range their close tag (or the end of this container) ends.
+        let base_font = font.clone();
+        let mut font = font;
+        let mut open: Vec<OpenTag> = Vec::new();
         while i < children.len() {
+            if let Markup::InlineHTML(html) = &children[i] {
+                if self.parse_img_tag(&html.raw_html).is_none() {
+                    self.apply_inline_html(&html.raw_html, &mut out, &mut open, &mut font, color);
+                    i += 1;
+                    continue;
+                }
+            }
             if let Markup::Image(img) = &children[i] {
                 let (alt, pts0, pct0) = self.parse_sized_alt(&img.plain_text); // Obsidian ![alt|N]
                 let (mut pts, mut pct) = (pts0, pct0);
@@ -700,7 +1008,124 @@ impl AttributedBuilder {
             out.append(&self.inline_fragment(&children[i], font.clone(), color));
             i += 1;
         }
+        // A tag never closed styles to the end of its container, as a browser would.
+        self.close_html_tags(&mut out, &mut open, 0, &mut font, &base_font);
         out.asAttributedString().clone()
+    }
+
+    /// Handle one raw inline HTML token. See `inline_string`.
+    ///
+    /// Known tags: `<br>` → a line break inside the paragraph (U+2028, so a table cell keeps one
+    /// paragraph); `<u>`/`<ins>` underline; `<s>`/`<strike>`/`<del>` strikethrough; `<mark>`
+    /// highlight; `<sub>`/`<sup>` smaller and shifted; `<kbd>`/`<code>` the inline-code chip;
+    /// `<b>`/`<strong>`, `<i>`/`<em>`; `<a href>` a link. Every other tag is dropped and its inner
+    /// text kept, so literal tag text is never shown.
+    fn apply_inline_html(
+        &self,
+        raw: &str,
+        out: &mut swiftshim::NSMutableAttributedString,
+        open: &mut Vec<OpenTag>,
+        font: &mut swiftshim::NSFont,
+        color: swiftshim::NSColor,
+    ) {
+        match parse_html_tag(raw) {
+            HtmlTag::Hidden => {}
+            HtmlTag::Open { name, href } => {
+                let tracked = matches!(
+                    name.as_str(),
+                    "u" | "ins" | "s" | "strike" | "del" | "mark" | "sub" | "sup" | "kbd" | "code"
+                        | "b" | "strong" | "i" | "em" | "a"
+                );
+                if name == "br" {
+                    let attrs = std::collections::HashMap::from([
+                        (swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(font.clone())),
+                        (swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(color)),
+                    ]);
+                    out.append(&swiftshim::NSAttributedString::with_attributes("\u{2028}", attrs));
+                } else if tracked {
+                    open.push(OpenTag {
+                        name: name.clone(),
+                        start: out.length(),
+                        saved_font: font.clone(),
+                        href,
+                    });
+                    match name.as_str() {
+                        "b" | "strong" => *font = self.font_adding(swiftshim::NSFontDescriptorSymbolicTraits::bold, font),
+                        "i" | "em" => *font = self.font_adding(swiftshim::NSFontDescriptorSymbolicTraits::italic, font),
+                        "sub" | "sup" => *font = self.scaled_font(font),
+                        "kbd" | "code" => *font = self.theme.code_font(),
+                        _ => {}
+                    }
+                }
+            }
+            HtmlTag::Close(name) => {
+                if let Some(depth) = open.iter().rposition(|t| t.name == name) {
+                    let base = open[depth].saved_font.clone();
+                    self.close_html_tags(out, open, depth, font, &base);
+                }
+            }
+        }
+    }
+
+    /// Close every open tag from `depth` up, innermost first, and restore the font the outermost of
+    /// them replaced.
+    fn close_html_tags(
+        &self,
+        out: &mut swiftshim::NSMutableAttributedString,
+        open: &mut Vec<OpenTag>,
+        depth: usize,
+        font: &mut swiftshim::NSFont,
+        restore: &swiftshim::NSFont,
+    ) {
+        while open.len() > depth {
+            let tag = open.pop().unwrap();
+            let range = swiftshim::NSRange::new(tag.start, out.length() - tag.start);
+            if range.length == 0 {
+                continue;
+            }
+            use swiftshim::NSAttributedStringKey as Key;
+            let single = swiftshim::AttrValue::UnderlineStyle(swiftshim::NSUnderlineStyle::single);
+            match tag.name.as_str() {
+                "u" | "ins" => out.addAttribute(Key::UnderlineStyle, single, range),
+                "s" | "strike" | "del" => out.addAttribute(Key::StrikethroughStyle, single, range),
+                "mark" => out.addAttribute(Key::BackgroundColor, swiftshim::AttrValue::Color(highlight_color()), range),
+                "sup" => out.addAttribute(
+                    Key::BaselineOffset,
+                    swiftshim::AttrValue::Double(tag.saved_font.pointSize() * SUPERSCRIPT_RAISE),
+                    range,
+                ),
+                "sub" => out.addAttribute(
+                    Key::BaselineOffset,
+                    swiftshim::AttrValue::Double(-tag.saved_font.pointSize() * SUBSCRIPT_DROP),
+                    range,
+                ),
+                "kbd" | "code" => {
+                    out.addAttribute(Key::ForegroundColor, swiftshim::AttrValue::Color(self.theme.inline_code_color()), range);
+                    out.addAttribute(crate::render::md_attr::MDAttr::inline_code(), swiftshim::AttrValue::Bool(true), range);
+                }
+                "a" => {
+                    if let Some(href) = tag.href {
+                        out.addAttribute(Key::ForegroundColor, swiftshim::AttrValue::Color(self.theme.link_color()), range);
+                        out.addAttribute(Key::UnderlineStyle, single, range);
+                        if let Some(fragment) = href.strip_prefix('#') {
+                            out.addAttribute(crate::render::md_attr::MDAttr::anchor(), swiftshim::AttrValue::Text(fragment.to_string()), range);
+                            out.addAttribute(Key::Link, swiftshim::AttrValue::Text("fmdanchor:jump".to_string()), range);
+                        } else {
+                            out.addAttribute(Key::Link, swiftshim::AttrValue::Text(href), range);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            *font = tag.saved_font.clone();
+        }
+        *font = restore.clone();
+    }
+
+    /// The same face at script size (`<sup>`, `<sub>`, footnote references).
+    fn scaled_font(&self, font: &swiftshim::NSFont) -> swiftshim::NSFont {
+        swiftshim::NSFont::with_descriptor(&font.fontDescriptor(), font.pointSize() * SCRIPT_SCALE)
+            .unwrap_or_else(|| font.clone())
     }
 
     // swift: AttributedBuilder.imageString
@@ -944,6 +1369,58 @@ impl AttributedBuilder {
                 );
                 m.asAttributedString().clone()
             }
+            Markup::InlineStyle(style) => {
+                // The comrak-only spans. Each renders its children first so nested emphasis, code
+                // and links keep their own styling, then lays its one attribute over the run.
+                use swiftshim::NSAttributedStringKey as Key;
+                let (inner_font, inner_color) = match style.kind {
+                    InlineKind::Superscript => (self.scaled_font(&font), color),
+                    InlineKind::Spoiler => (font.clone(), self.theme.secondary_color()),
+                    _ => (font.clone(), color),
+                };
+                let inner = self.inline_string(&Markup::InlineStyle(style.clone()), inner_font, inner_color);
+                let mut m = swiftshim::NSMutableAttributedString::from_attributed_string(&inner);
+                let full = swiftshim::NSRange::new(0, m.length());
+                match style.kind {
+                    InlineKind::Highlight => m.addAttribute(Key::BackgroundColor, swiftshim::AttrValue::Color(highlight_color()), full),
+                    InlineKind::Insert => m.addAttribute(
+                        Key::UnderlineStyle,
+                        swiftshim::AttrValue::UnderlineStyle(swiftshim::NSUnderlineStyle::single),
+                        full,
+                    ),
+                    InlineKind::Superscript => m.addAttribute(
+                        Key::BaselineOffset,
+                        swiftshim::AttrValue::Double(font.pointSize() * SUPERSCRIPT_RAISE),
+                        full,
+                    ),
+                    InlineKind::Spoiler => m.addAttribute(Key::BackgroundColor, swiftshim::AttrValue::Color(spoiler_fill()), full),
+                    InlineKind::Plain => {}
+                }
+                m.asAttributedString().clone()
+            }
+            Markup::FootnoteReference(reference) => {
+                // A superscript number that jumps to its note; the FIRST reference to a note is
+                // also where the note's back-arrow returns to.
+                use swiftshim::NSAttributedStringKey as Key;
+                let attrs = std::collections::HashMap::from([
+                    (Key::Font, swiftshim::AttrValue::Font(self.scaled_font(&font))),
+                    (Key::ForegroundColor, swiftshim::AttrValue::Color(self.theme.link_color())),
+                    (Key::BaselineOffset, swiftshim::AttrValue::Double(font.pointSize() * SUPERSCRIPT_RAISE)),
+                    (Key::Link, swiftshim::AttrValue::Text("fmdanchor:jump".to_string())),
+                    (crate::render::md_attr::MDAttr::anchor(), swiftshim::AttrValue::Text(footnote_target(&reference.name))),
+                ]);
+                let mut m = swiftshim::NSMutableAttributedString::from_attributed_string(
+                    &swiftshim::NSAttributedString::with_attributes(&reference.number.to_string(), attrs),
+                );
+                if reference.first {
+                    m.addAttribute(
+                        crate::render::md_attr::MDAttr::bookmark_target(),
+                        swiftshim::AttrValue::Text(footnote_return_target(&reference.name)),
+                        swiftshim::NSRange::new(0, m.length()),
+                    );
+                }
+                m.asAttributedString().clone()
+            }
             _ => self.inline_string(markup, font, color),
         }
     }
@@ -966,6 +1443,14 @@ impl AttributedBuilder {
             swiftshim::AttrValue::Int(heading.level as i64),
             swiftshim::NSRange::new(start, self.result.length() - start),
         );
+        // `## Title {#id}`: the attribute text never reaches the string, and the id is a jump target.
+        if let Some(id) = &heading.anchor {
+            self.result.addAttribute(
+                crate::render::md_attr::MDAttr::bookmark_target(),
+                swiftshim::AttrValue::Text(id.clone()),
+                swiftshim::NSRange::new(start, self.result.length() - start),
+            );
+        }
         self.newline(1);
         // Tight heading leading (1.25×) with a roomy space-before and small space-after so the
         // heading bonds to the text below it. All scaled to the font size.
@@ -1145,8 +1630,13 @@ impl AttributedBuilder {
 
     // swift: AttributedBuilder.visitHTMLBlock
     fn visit_html_block(&mut self, html: &HTMLBlock) {
-        // Only a block-level <img> is rendered (as an image); other raw HTML blocks are skipped.
-        let Some(tag) = self.parse_img_tag(&html.raw_html) else { return; };
+        // A block-level <img> is an image. Any other raw HTML block is shown as its TEXT: tags
+        // dropped, `<br>` a line break, a `<summary>` line bold (the `<details>` body follows as
+        // ordinary markdown), comments hidden. Dropping the block outright made content vanish.
+        let Some(tag) = self.parse_img_tag(&html.raw_html) else {
+            self.visit_html_text(html);
+            return;
+        };
         let start = self.result.length();
         let mut s = self.image_string(tag.0, tag.1, tag.2, tag.3);
         s.addAttribute(
@@ -1159,10 +1649,144 @@ impl AttributedBuilder {
         self.tag_block(start, html.range);
     }
 
+    /// The text of a non-image HTML block, one paragraph with a line break between its lines.
+    fn visit_html_text(&mut self, html: &HTMLBlock) {
+        let lines = html_block_lines(&html.raw_html);
+        if lines.is_empty() {
+            return;
+        }
+        let start = self.result.length();
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 {
+                self.result.append(&swiftshim::NSAttributedString::with_attributes(
+                    "\u{2028}",
+                    std::collections::HashMap::from([
+                        (swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(self.theme.body_font())),
+                        (swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(self.theme.text_color())),
+                    ]),
+                ));
+            }
+            let body = self.theme.body_font();
+            let font = if line.bold {
+                self.font_adding(swiftshim::NSFontDescriptorSymbolicTraits::bold, &body)
+            } else {
+                body
+            };
+            let attrs = std::collections::HashMap::from([
+                (swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(font)),
+                (swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(self.theme.text_color())),
+            ]);
+            self.result.append(&swiftshim::NSAttributedString::with_attributes(&line.text, attrs));
+        }
+        self.newline(1);
+        self.result.addAttribute(
+            swiftshim::NSAttributedStringKey::ParagraphStyle,
+            swiftshim::AttrValue::ParagraphStyle(self.body_ps.clone()),
+            swiftshim::NSRange::new(start, self.result.length() - start),
+        );
+        self.tag_block(start, html.range);
+    }
+
+    /// The code cards inside `range`, as sorted, non-overlapping ranges.
+    ///
+    /// The string is a LOG of attribute layers, not a coalesced run list: a card's `mdCodeBlock`
+    /// layer sits beside font, colour and paragraph layers over the same characters, so "is this
+    /// layer code" is a question about the characters, answered here once.
+    fn code_ranges(&self, range: swiftshim::NSRange) -> Vec<swiftshim::NSRange> {
+        let mut found: Vec<swiftshim::NSRange> = Vec::new();
+        self.result.asAttributedString().enumerateAttribute(
+            &crate::render::md_attr::MDAttr::code_block(),
+            range,
+            |code, sub, _stop| {
+                if code.is_some() {
+                    let start = sub.location.max(range.location);
+                    let end = sub.maxRange().min(range.maxRange());
+                    if end > start {
+                        found.push(swiftshim::NSRange::new(start, end - start));
+                    }
+                }
+            },
+        );
+        found.sort_by_key(|r| r.location);
+        let mut merged: Vec<swiftshim::NSRange> = Vec::new();
+        for r in found {
+            match merged.last_mut() {
+                Some(last) if r.location <= last.maxRange() => {
+                    let end = last.maxRange().max(r.maxRange());
+                    last.length = end - last.location;
+                }
+                _ => merged.push(r),
+            }
+        }
+        merged
+    }
+
+    /// Shift every paragraph in `range` right: by `prose` for text and by `code` for a code card,
+    /// KEEPING each paragraph's own style (spacing, tab stops, table blocks, card padding). A code
+    /// card's own left edge is drawn by the layout manager, not by indents, so it also moves
+    /// through `MDAttr.codeInset`.
+    ///
+    /// Only paragraph-style LAYERS are touched, each clipped to `range`, and re-appended in their
+    /// original order — so whichever layer won before still wins, `delta` higher.
+    fn indent_range(&mut self, range: swiftshim::NSRange, prose: swiftshim::CGFloat, code: swiftshim::CGFloat) {
+        if range.length == 0 || (prose == 0.0 && code == 0.0) {
+            return;
+        }
+        let cards = self.code_ranges(range);
+        let in_card = |at: usize| cards.iter().any(|c| c.location <= at && at < c.maxRange());
+        let snapshot = self.result.asAttributedString().clone();
+        let mut edits: Vec<(swiftshim::NSRange, swiftshim::AttrValue)> = Vec::new();
+        snapshot.enumerateAttribute(&swiftshim::NSAttributedStringKey::ParagraphStyle, range, |value, sub, _stop| {
+            let Some(swiftshim::AttrValue::ParagraphStyle(existing)) = value else { return };
+            // A table cell is a paragraph of its own grid: its indent is the grid's margin.
+            if !existing.textBlocks.is_empty() {
+                return;
+            }
+            let start = sub.location.max(range.location);
+            let end = sub.maxRange().min(range.maxRange());
+            if end <= start {
+                return;
+            }
+            let delta = if in_card(start) { code } else { prose };
+            let mut style = existing.clone();
+            style.headIndent += delta;
+            style.firstLineHeadIndent += delta;
+            for stop in style.tabStops.iter_mut() {
+                stop.location += delta;
+            }
+            edits.push((swiftshim::NSRange::new(start, end - start), swiftshim::AttrValue::ParagraphStyle(style)));
+        });
+        for (r, value) in edits {
+            self.result.addAttribute(swiftshim::NSAttributedStringKey::ParagraphStyle, value, r);
+        }
+        for card in cards {
+            let existing = match snapshot.attribute(&crate::render::md_attr::MDAttr::code_inset(), card.location) {
+                Some((swiftshim::AttrValue::Double(d), _)) => *d,
+                _ => 0.0,
+            };
+            self.result.addAttribute(
+                crate::render::md_attr::MDAttr::code_inset(),
+                swiftshim::AttrValue::Double(existing + code),
+                card,
+            );
+        }
+    }
+
     // swift: AttributedBuilder.visitBlockQuote
     fn visit_block_quote(&mut self, blockQuote: &BlockQuote) {
         let start = self.result.length();
         self.descend_into(&Markup::BlockQuote(blockQuote.clone()));
+        self.finish_quote(start, blockQuote.range, None);
+    }
+
+    /// Close a quote that began at `start`: collapse trailing blank lines, indent what is inside it
+    /// ADDITIVELY, tint its prose, mark it for the bar and tag it as one block.
+    ///
+    /// Additive, because a table, a list or a code card inside a quote already carries the paragraph
+    /// style that makes it a table, a list or a card — overwriting those with the quote's own style
+    /// flattened them. `alert` is set for a GitHub alert: the same quote, with its bar tinted by kind
+    /// and its prose left in the normal text colour.
+    fn finish_quote(&mut self, start: usize, src: Option<SourceRange>, alert: Option<&'static str>) {
         // A nested code block ends with newline(2), leaving an empty QUOTED line below it (the
         // quote bar would extend past the content). Collapse trailing blank lines to a single \n.
         // The original reads the last two positions through `ns.substring(with: NSRange(...))`,
@@ -1177,50 +1801,145 @@ impl AttributedBuilder {
         }
         let range = swiftshim::NSRange::new(start, self.result.length() - start);
         if range.length > 0 {
-            // Apply the quote paragraph style + muted color ONLY to the quote's own prose —
-            // a nested code block keeps its own card paragraph style and syntax colors instead
-            // of being flattened to grey indented text.
-            let code_indent = self.theme.base_font_size; // shift nested code right to sit inside the quote
-            let quote_ps = self.quote_ps.clone();
+            let style = crate::render::render_theme::MarkdownStyle { theme: self.theme.clone() };
+            let prose_indent = self.theme.base_font_size * style.quote_indent_ratio();
+            // A nested code card keeps its own style and syntax colours; it is shifted to sit
+            // inside the quote rather than flattened to grey indented text.
+            let code_indent = self.theme.base_font_size;
             let secondary = self.theme.secondary_color();
-            // Collected first, applied after: `NSMutableAttributedString` has no `enumerateAttribute`
-            // of its own (only the immutable `NSAttributedString` it wraps does), and mutating the
-            // string being enumerated is undefined even where it did exist — the same "collect first"
-            // discipline `FontSubstitutionResolver::apply_substitutions` uses for the identical reason.
-            enum QuoteEdit {
-                Attrs(swiftshim::NSRange, std::collections::HashMap<swiftshim::NSAttributedStringKey, swiftshim::AttrValue>),
-                Attr(swiftshim::NSRange, swiftshim::NSAttributedStringKey, swiftshim::AttrValue),
-            }
-            let mut edits: Vec<QuoteEdit> = Vec::new();
-            let snapshot = self.result.asAttributedString().clone();
-            snapshot.enumerateAttribute(&crate::render::md_attr::MDAttr::code_block(), range, |code, sub, _stop| {
-                if code.is_none() {
-                    let attrs = std::collections::HashMap::from([
-                        (swiftshim::NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(quote_ps.clone())),
-                        (swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(secondary)),
-                    ]);
-                    edits.push(QuoteEdit::Attrs(sub, attrs));
-                } else {
-                    // Nested code keeps its card style but is indented to align with the quote.
-                    edits.push(QuoteEdit::Attr(sub, crate::render::md_attr::MDAttr::code_inset(), swiftshim::AttrValue::Double(code_indent)));
-                    snapshot.enumerateAttribute(&swiftshim::NSAttributedStringKey::ParagraphStyle, sub, |psv, s2, _stop2| {
-                        let Some(swiftshim::AttrValue::ParagraphStyle(psv)) = psv else { return; };
-                        let mut mm = psv.clone();
-                        mm.headIndent += code_indent;
-                        mm.firstLineHeadIndent += code_indent;
-                        edits.push(QuoteEdit::Attr(s2, swiftshim::NSAttributedStringKey::ParagraphStyle, swiftshim::AttrValue::ParagraphStyle(mm)));
-                    });
-                }
-            });
-            for edit in edits {
-                match edit {
-                    QuoteEdit::Attrs(r, attrs) => self.result.addAttributes(attrs, r),
-                    QuoteEdit::Attr(r, k, v) => self.result.addAttribute(k, v, r),
+            let cards = self.code_ranges(range);
+            self.indent_range(range, prose_indent, code_indent);
+            if alert.is_none() {
+                // Prose only: the gaps between the code cards.
+                let mut from = range.location;
+                for card in cards.iter().chain(std::iter::once(&swiftshim::NSRange::new(range.maxRange(), 0))) {
+                    if card.location > from {
+                        self.result.addAttribute(
+                            swiftshim::NSAttributedStringKey::ForegroundColor,
+                            swiftshim::AttrValue::Color(secondary),
+                            swiftshim::NSRange::new(from, card.location - from),
+                        );
+                    }
+                    from = from.max(card.maxRange());
                 }
             }
             self.result.addAttribute(crate::render::md_attr::MDAttr::block_quote(), swiftshim::AttrValue::Bool(true), range); // bar spans the whole quote
+            if let Some(kind) = alert {
+                self.result.addAttribute(
+                    crate::render::md_attr::MDAttr::alert(),
+                    // `kind:n` — the `n` keeps two ADJACENT alerts two bars (the layout manager reads the
+                    // quote's extent as "same value", and a bare kind would merge them into one).
+                    swiftshim::AttrValue::Text(format!("{kind}:{}", self.block_seq)),
+                    range,
+                );
+            }
         }
-        self.tag_block(start, blockQuote.range); // overwrites inner ids: the quote is one block
+        self.tag_block(start, src); // overwrites inner ids: the quote is one block
+    }
+
+    /// `> [!NOTE]` and its siblings: a bold title in the kind's colour, then the quote's blocks.
+    fn visit_alert(&mut self, alert: &Alert) {
+        let start = self.result.length();
+        let (kind_name, kind_color) = alert_style(alert.kind);
+        let title = alert.title.clone().unwrap_or_else(|| alert_default_title(alert.kind).to_string());
+        let title_font = self.font_adding(swiftshim::NSFontDescriptorSymbolicTraits::bold, &self.theme.body_font());
+        let attrs = std::collections::HashMap::from([
+            (swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(title_font)),
+            (swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(kind_color)),
+        ]);
+        self.result.append(&swiftshim::NSAttributedString::with_attributes(&title, attrs));
+        self.newline(1);
+        self.result.addAttribute(
+            swiftshim::NSAttributedStringKey::ParagraphStyle,
+            swiftshim::AttrValue::ParagraphStyle(self.body_ps.clone()),
+            swiftshim::NSRange::new(start, self.result.length() - start),
+        );
+        self.descend_into(&Markup::Alert(alert.clone()));
+        self.finish_quote(start, alert.range, Some(kind_name));
+    }
+
+    /// A footnote definition. The first one opens the notes section with a rule; each note is a
+    /// numbered hanging paragraph that answers to `fn:<name>`, ends in a back-arrow to its first
+    /// reference, and keeps any further blocks indented under its text.
+    fn visit_footnote_definition(&mut self, note: &FootnoteDefinition) {
+        if !self.notes_started {
+            self.notes_started = true;
+            self.visit_thematic_break(&ThematicBreak { range: None });
+        }
+        let start = self.result.length();
+        let hang = self.theme.base_font_size * self.theme.list_hang_ratio();
+        let ps = self.list_para(0.0, hang);
+        let marker_attrs = std::collections::HashMap::from([
+            (swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(self.theme.body_font())),
+            (swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(self.theme.secondary_color())),
+        ]);
+        self.result.append(&swiftshim::NSAttributedString::with_attributes(&format!("{}.\t", note.number), marker_attrs));
+        let mut rest = note.children.iter().peekable();
+        if let Some(first @ Markup::Paragraph(_)) = rest.peek().copied() {
+            self.render_block_inline(first);
+            rest.next();
+        }
+        // The way back, after the last word of the first paragraph.
+        let back_attrs = std::collections::HashMap::from([
+            (swiftshim::NSAttributedStringKey::Font, swiftshim::AttrValue::Font(self.theme.body_font())),
+            (swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(self.theme.link_color())),
+            (swiftshim::NSAttributedStringKey::Link, swiftshim::AttrValue::Text("fmdanchor:jump".to_string())),
+            (crate::render::md_attr::MDAttr::anchor(), swiftshim::AttrValue::Text(footnote_return_target(&note.name))),
+        ]);
+        self.result.append(&swiftshim::NSAttributedString::with_attributes(" \u{21A9}", back_attrs));
+        self.newline(1);
+        let first_len = self.result.length() - start;
+        self.result.addAttribute(
+            swiftshim::NSAttributedStringKey::ParagraphStyle,
+            swiftshim::AttrValue::ParagraphStyle(ps),
+            swiftshim::NSRange::new(start, first_len),
+        );
+        self.result.addAttribute(
+            crate::render::md_attr::MDAttr::bookmark_target(),
+            swiftshim::AttrValue::Text(footnote_target(&note.name)),
+            swiftshim::NSRange::new(start, 1),
+        );
+        for child in rest {
+            let block_start = self.result.length();
+            self.visit(child);
+            self.indent_range(swiftshim::NSRange::new(block_start, self.result.length() - block_start), hang, hang);
+        }
+        self.tag_block(start, note.range);
+    }
+
+    /// `Term` / `: details`: the term in bold, each details hanging under it.
+    fn visit_description_list(&mut self, list: &DescriptionList) {
+        let start = self.result.length();
+        let hang = self.theme.base_font_size * self.theme.list_hang_ratio();
+        for item in &list.items {
+            // A second `: details` under the same term is its own item with NO term; it adds no line.
+            if !item.term.is_empty() {
+                let term_start = self.result.length();
+                let bold = self.font_adding(swiftshim::NSFontDescriptorSymbolicTraits::bold, &self.theme.body_font());
+                let term = self.inline_string(
+                    &Markup::Paragraph(Paragraph { children: item.term.clone(), range: None }),
+                    bold,
+                    self.theme.text_color(),
+                );
+                self.result.append(&term);
+                self.newline(1);
+                let mut term_ps = self.body_ps.clone();
+                term_ps.paragraphSpacing = self.theme.base_font_size * self.theme.tight_spacing_ratio();
+                self.result.addAttribute(
+                    swiftshim::NSAttributedStringKey::ParagraphStyle,
+                    swiftshim::AttrValue::ParagraphStyle(term_ps),
+                    swiftshim::NSRange::new(term_start, self.result.length() - term_start),
+                );
+            }
+            for details in &item.details {
+                let details_start = self.result.length();
+                for block in details {
+                    self.visit(block);
+                }
+                self.indent_range(swiftshim::NSRange::new(details_start, self.result.length() - details_start), hang, hang);
+            }
+        }
+        self.tag_block(start, list.range);
     }
 
     // swift: markup.accept(&self)'s default dispatch descending into a container's children —
@@ -1235,7 +1954,7 @@ impl AttributedBuilder {
     // swift: AttributedBuilder.visitUnorderedList
     fn visit_unordered_list(&mut self, list: &UnorderedList) {
         let start = self.result.length();
-        self.render_list(list.list_items.clone(), false, 0);
+        self.render_list(list.list_items.clone(), false, 0, 1);
         self.newline(1);
         self.tag_block(start, list.range);
     }
@@ -1243,7 +1962,7 @@ impl AttributedBuilder {
     // swift: AttributedBuilder.visitOrderedList
     fn visit_ordered_list(&mut self, list: &OrderedList) {
         let start = self.result.length();
-        self.render_list(list.list_items.clone(), true, 0);
+        self.render_list(list.list_items.clone(), true, 0, list.start.max(1) as i32);
         self.newline(1);
         self.tag_block(start, list.range);
     }
@@ -1254,12 +1973,12 @@ impl AttributedBuilder {
     /// the parent's paragraph style is applied ONLY to the item's own line — not over the nested
     /// range, which would flatten it).
     // swift: AttributedBuilder.renderList
-    fn render_list(&mut self, items: Vec<ListItem>, ordered: bool, depth: i32) {
+    fn render_list(&mut self, items: Vec<ListItem>, ordered: bool, depth: i32, first_number: i32) {
         let hang = self.theme.base_font_size * self.theme.list_hang_ratio(); // one indent step
         let marker_x = depth as swiftshim::CGFloat * hang; // where the bullet / number sits
         let text_x = (depth + 1) as swiftshim::CGFloat * hang; // where the text (and wraps) align
         let ps = self.list_para(marker_x, text_x);
-        let mut i = 1i32;
+        let mut i = first_number;
         for item in items {
             let s = self.result.length();
             // A GFM task-list item (`- [ ]` / `- [x]`) carries a `checkbox`; show it as a box glyph
@@ -1277,11 +1996,13 @@ impl AttributedBuilder {
                 (swiftshim::NSAttributedStringKey::ForegroundColor, swiftshim::AttrValue::Color(self.theme.text_color())),
             ]);
             self.result.append(&swiftshim::NSAttributedString::with_attributes(&marker, marker_attrs));
-            // The item's own paragraph text (skip nested lists — handled after, at depth+1).
-            for child in &item.children {
-                if !matches!(child, Markup::UnorderedList(_) | Markup::OrderedList(_)) {
-                    self.render_block_inline(child);
-                }
+            // Only the item's FIRST paragraph shares the marker's line. Every later child keeps its
+            // own block shape, in source order: flattening them inline ran a table's cells together
+            // into one line ("부분AnthropicOpenAI…") and did the same to code blocks and quotes.
+            let mut rest = item.children.iter().peekable();
+            if let Some(first @ Markup::Paragraph(_)) = rest.peek().copied() {
+                self.render_block_inline(first);
+                rest.next();
             }
             self.newline(1);
             self.result.addAttribute(
@@ -1289,12 +2010,42 @@ impl AttributedBuilder {
                 swiftshim::AttrValue::ParagraphStyle(ps.clone()),
                 swiftshim::NSRange::new(s, self.result.length() - s),
             );
-            // Nested lists follow the item's line, indented one level deeper.
-            for child in &item.children {
+            for child in rest {
                 match child {
-                    Markup::UnorderedList(ul) => self.render_list(ul.list_items.clone(), false, depth + 1),
-                    Markup::OrderedList(ol) => self.render_list(ol.list_items.clone(), true, depth + 1),
-                    _ => {}
+                    // Nested lists follow, indented one level deeper.
+                    Markup::UnorderedList(ul) => self.render_list(ul.list_items.clone(), false, depth + 1, 1),
+                    Markup::OrderedList(ol) => self.render_list(ol.list_items.clone(), true, depth + 1, ol.start.max(1) as i32),
+                    // A loose item's later paragraph: aligned with the item's text, no marker.
+                    Markup::Paragraph(_) => {
+                        let ps_start = self.result.length();
+                        self.render_block_inline(child);
+                        self.newline(1);
+                        let mut cont = ps.clone();
+                        cont.firstLineHeadIndent = text_x;
+                        self.result.addAttribute(
+                            swiftshim::NSAttributedStringKey::ParagraphStyle,
+                            swiftshim::AttrValue::ParagraphStyle(cont),
+                            swiftshim::NSRange::new(ps_start, self.result.length() - ps_start),
+                        );
+                    }
+                    // Tables, code blocks, quotes, images: the same block rendering as at top level,
+                    // then indented under the item's text. A TABLE is the exception: AppKit cannot
+                    // position an `NSTextTableBlock` (a paragraph indent, a block margin and a border
+                    // were all measured not to move it — see `GridTextTable.edges(forWidth:)`), so it
+                    // keeps the item's full column; `indent_range` leaves its cell paragraphs alone.
+                    other => {
+                        let block_start = self.result.length();
+                        self.visit(other);
+                        let block = swiftshim::NSRange::new(block_start, self.result.length() - block_start);
+                        self.indent_range(block, text_x, text_x);
+                        // A quote's bar is drawn by the layout manager at the page margin; inside a
+                        // list item it has to start where the item's text does.
+                        self.result.addAttribute(
+                            crate::render::md_attr::MDAttr::quote_inset(),
+                            swiftshim::AttrValue::Double(text_x),
+                            block,
+                        );
+                    }
                 }
             }
             i += 1;
@@ -1464,6 +2215,7 @@ impl AttributedBuilder {
             this_: &AttributedBuilder,
             cells: &[TableCell],
             header: bool,
+            alignments: &[ColumnAlignment],
         ) -> Vec<crate::render::table_block_builder::CellContent> {
             let font = if header {
                 swiftshim::NSFont::systemFontWeight(this_.theme.base_font_size, swiftshim::NSFontWeight::semibold)
@@ -1472,14 +2224,39 @@ impl AttributedBuilder {
             };
             cells
                 .iter()
-                .map(|c| crate::render::table_block_builder::CellContent {
-                    content: this_.inline_string(&Markup::TableCell(c.clone()), font.clone(), this_.theme.text_color()),
-                    ..Default::default()
+                .enumerate()
+                .map(|(column, c)| {
+                    let content = this_.inline_string(&Markup::TableCell(c.clone()), font.clone(), this_.theme.text_color());
+                    // `:---` / `:---:` / `---:` — the column's alignment goes on the cell's own
+                    // paragraph style, which the grid builder grafts its block onto.
+                    let alignment = match alignments.get(column).copied().unwrap_or_default() {
+                        ColumnAlignment::None | ColumnAlignment::Left => None,
+                        ColumnAlignment::Center => Some(swiftshim::NSTextAlignment::Center),
+                        ColumnAlignment::Right => Some(swiftshim::NSTextAlignment::Right),
+                    };
+                    let content = match alignment {
+                        Some(alignment) if content.length() > 0 => {
+                            let mut m = swiftshim::NSMutableAttributedString::from_attributed_string(&content);
+                            let mut style = swiftshim::NSMutableParagraphStyle::default();
+                            style.alignment = alignment;
+                            m.addAttribute(
+                                swiftshim::NSAttributedStringKey::ParagraphStyle,
+                                swiftshim::AttrValue::ParagraphStyle(style),
+                                swiftshim::NSRange::new(0, m.length()),
+                            );
+                            m.asAttributedString().clone()
+                        }
+                        _ => content,
+                    };
+                    crate::render::table_block_builder::CellContent {
+                        content,
+                        ..Default::default()
+                    }
                 })
                 .collect()
         }
-        let mut rows = vec![render_row(self, &header_cells, true)];
-        rows.extend(body_rows.iter().map(|r| render_row(self, r, false)));
+        let mut rows = vec![render_row(self, &header_cells, true, &table.alignments)];
+        rows.extend(body_rows.iter().map(|r| render_row(self, r, false, &table.alignments)));
         let built = crate::render::table_block_builder::TableBlockBuilder::build(
             &rows,
             1,
@@ -1648,5 +2425,14 @@ impl crate::render::markdown_package::MarkupWalker for AttributedBuilder {
     }
     fn visit_table(&mut self, node: &markdown::Table) {
         AttributedBuilder::visit_table(self, node)
+    }
+    fn visit_alert(&mut self, node: &markdown::Alert) {
+        AttributedBuilder::visit_alert(self, node)
+    }
+    fn visit_footnote_definition(&mut self, node: &markdown::FootnoteDefinition) {
+        AttributedBuilder::visit_footnote_definition(self, node)
+    }
+    fn visit_description_list(&mut self, node: &markdown::DescriptionList) {
+        AttributedBuilder::visit_description_list(self, node)
     }
 }

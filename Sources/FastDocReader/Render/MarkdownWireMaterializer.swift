@@ -33,9 +33,13 @@ enum MarkdownWireMaterializer {
         }
         for (name, column) in [("font", wire.layerFont), ("color", wire.layerColor),
                                ("paragraph", wire.layerParagraph), ("attachment", wire.layerAttachment),
-                               ("underline", wire.layerUnderline), ("link", wire.layerLink)]
+                               ("underline", wire.layerUnderline), ("strikethrough", wire.layerStrikethrough),
+                               ("background", wire.layerBackground), ("link", wire.layerLink)]
         where !column.isEmpty && column.count != layers {
             throw Failure.raggedColumns("\(name) column has \(column.count) of \(layers)")
+        }
+        if !wire.layerBaseline.isEmpty && wire.layerBaseline.count != layers {
+            throw Failure.raggedColumns("baseline column has \(wire.layerBaseline.count) of \(layers)")
         }
 
         let string = NSMutableAttributedString(string: wire.text)
@@ -62,7 +66,7 @@ enum MarkdownWireMaterializer {
             table.hidesEmptyCells = spec.hidesEmptyCells
             return table
         }
-        let fonts = wire.fonts.map { font($0, theme: theme) }
+        let fonts = wire.fonts.map { rescaled(font($0, theme: theme), to: $0.size, role: $0.role) }
         let colors = wire.colors.map { color($0, theme: theme) }
         let styles = try wire.paragraphStyles.map { try paragraphStyle($0, tables: tables, colors: colors) }
 
@@ -95,6 +99,15 @@ enum MarkdownWireMaterializer {
             }
             if layer < wire.layerUnderline.count, wire.layerUnderline[layer] != 0 {
                 string.addAttribute(.underlineStyle, value: NSNumber(value: wire.layerUnderline[layer]), range: range)
+            }
+            if layer < wire.layerStrikethrough.count, wire.layerStrikethrough[layer] != 0 {
+                string.addAttribute(.strikethroughStyle, value: NSNumber(value: wire.layerStrikethrough[layer]), range: range)
+            }
+            if let index = pooled(wire.layerBackground, layer) {
+                string.addAttribute(.backgroundColor, value: try element(colors, index, "colour"), range: range)
+            }
+            if layer < wire.layerBaseline.count, wire.layerBaseline[layer] != 0 {
+                string.addAttribute(.baselineOffset, value: NSNumber(value: wire.layerBaseline[layer]), range: range)
             }
             if let index = pooled(wire.layerLink, layer) {
                 // An `NSURL`, not a `String`: that is what `MarkdownRenderer` stores and what the
@@ -156,6 +169,13 @@ enum MarkdownWireMaterializer {
         return NSFont(descriptor: descriptor, size: base.pointSize) ?? base
     }
 
+    /// A role font whose wire `size` is not the role's own is a SCRIPT-size face (`<sup>`, `<sub>`,
+    /// a footnote reference): the same role and traits at a smaller point size.
+    private static func rescaled(_ font: NSFont, to size: Double, role: String) -> NSFont {
+        guard role != "raw", size > 0, abs(font.pointSize - CGFloat(size)) > 0.01 else { return font }
+        return NSFont(descriptor: font.fontDescriptor, size: CGFloat(size)) ?? font
+    }
+
     /// Rebuilt from the palette by ROLE so the colour stays a light/dark dynamic — see
     /// `MarkdownWire.Color`. `raw` falls back to the components the engine resolved, which is a
     /// fixed colour in both appearances and is why the roles exist.
@@ -182,10 +202,25 @@ enum MarkdownWireMaterializer {
         }
     }
 
+    /// The wire's alignment codes are the Intel-macOS numbering (left 0, right 1, center 2,
+    /// justified 3, natural 4). AppKit's own `NSTextAlignment` raw values are NOT stable across
+    /// architectures — on arm64 `center` is 1 and `right` is 2 (`TARGET_ABI_USES_IOS_VALUES`) — so
+    /// feeding the code to `NSTextAlignment(rawValue:)` swapped centre and right on this app's only
+    /// architecture. Decode by name.
+    private static func alignment(_ code: Int) -> NSTextAlignment {
+        switch code {
+        case 0: return .left
+        case 1: return .right
+        case 2: return .center
+        case 3: return .justified
+        default: return .natural
+        }
+    }
+
     private static func paragraphStyle(_ spec: MarkdownWire.ParagraphStyle, tables: [NSTextTable],
                                        colors: [NSColor]) throws -> NSParagraphStyle {
         let style = NSMutableParagraphStyle()
-        style.alignment = NSTextAlignment(rawValue: Int(spec.alignment)) ?? .natural
+        style.alignment = alignment(Int(spec.alignment))
         style.lineSpacing = CGFloat(spec.lineSpacing)
         style.paragraphSpacing = CGFloat(spec.paragraphSpacing)
         style.paragraphSpacingBefore = CGFloat(spec.paragraphSpacingBefore)

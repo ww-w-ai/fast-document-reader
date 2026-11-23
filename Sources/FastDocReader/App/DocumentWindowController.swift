@@ -3078,7 +3078,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard let storage = textView.textStorage else { return }
         var bookmarks: [String: Int] = [:]
         storage.enumerateAttribute(MDAttr.bookmarkTarget, in: NSRange(location: 0, length: storage.length)) { v, r, _ in
-            guard let names = v as? [String] else { return }
+            // Office readers store `[String]`; markdown (footnote targets, `{#id}` headings) crosses
+            // the wire as a single string, which is the only shape a wire extra can carry.
+            guard let names = (v as? [String]) ?? (v as? String).map({ [$0] }) else { return }
             for name in names { bookmarks[name] = r.location }
         }
         var headings: [(text: String, position: Int)] = []

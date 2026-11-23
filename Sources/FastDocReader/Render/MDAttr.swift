@@ -24,6 +24,14 @@ enum MDAttr {
     static let blockId = NSAttributedString.Key("mdBlockId")
     /// Marks a blockquote's range so the layout manager can draw its left accent bar.
     static let blockQuote = NSAttributedString.Key("mdBlockQuote")
+    /// Value = `kind:n` — the alert kind (`note`, `tip`, `important`, `warning`, `caution`) of a
+    /// GitHub-style `> [!NOTE]` quote and a per-quote number, set over the same range as
+    /// `blockQuote`; the layout manager tints the quote's bar with the kind's colour (`AlertKind`)
+    /// and ends the bar where the number changes, so adjacent alerts keep one bar each.
+    static let alert = NSAttributedString.Key("mdAlert")
+    /// Left inset (points) of a quote's bar when the quote sits inside a list item, so the bar starts
+    /// where the item's text does instead of at the page margin.
+    static let quoteInset = NSAttributedString.Key("mdQuoteInset")
     /// Left inset (points, NSNumber) for a code block nested inside a blockquote, so its card
     /// (and buttons) shift right to align with the quote's prose instead of the page margin.
     static let codeInset = NSAttributedString.Key("mdCodeInset")
@@ -206,4 +214,18 @@ enum MDAttr {
     /// such a block to the next page rather than let a page boundary fall between it and what
     /// follows — which is what stops a heading being stranded at the foot of a page.
     static let keepWithNext = NSAttributedString.Key("mdKeepWithNext")
+}
+
+/// The five GitHub alert kinds and the colour of their quote bar. The engine paints the title with the
+/// same RGB values (`ALERT_COLORS` in `markdown_renderer.rs`), so bar and title read as one.
+enum AlertKind {
+    static func barColor(_ kind: String) -> NSColor {
+        switch kind.split(separator: ":").first.map(String.init) ?? kind {
+        case "tip": return NSColor(srgbRed: 0.20, green: 0.65, blue: 0.35, alpha: 1)
+        case "important": return NSColor(srgbRed: 0.60, green: 0.40, blue: 0.85, alpha: 1)
+        case "warning": return NSColor(srgbRed: 0.85, green: 0.60, blue: 0.10, alpha: 1)
+        case "caution": return NSColor(srgbRed: 0.88, green: 0.27, blue: 0.27, alpha: 1)
+        default: return NSColor(srgbRed: 0.19, green: 0.51, blue: 0.97, alpha: 1)
+        }
+    }
 }

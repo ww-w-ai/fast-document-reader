@@ -48,6 +48,18 @@ impl MDAttr {
         swiftshim::NSAttributedStringKey::Custom("mdBlockQuote".to_string())
     }
 
+    /// Value = the alert kind (`note`/`tip`/`important`/`warning`/`caution`) of a GitHub-style
+    /// `> [!NOTE]` quote; set over the same range as `block_quote` so the bar takes the kind's colour.
+    pub fn alert() -> swiftshim::NSAttributedStringKey {
+        swiftshim::NSAttributedStringKey::Custom("mdAlert".to_string())
+    }
+
+    /// Left inset (points) of a quote's bar when the quote sits inside a list item, so the bar starts
+    /// where the item's text does instead of at the page margin.
+    pub fn quote_inset() -> swiftshim::NSAttributedStringKey {
+        swiftshim::NSAttributedStringKey::Custom("mdQuoteInset".to_string())
+    }
+
     /// Left inset (points, NSNumber) for a code block nested inside a blockquote, so its card
     /// (and buttons) shift right to align with the quote's prose instead of the page margin.
     pub fn code_inset() -> swiftshim::NSAttributedStringKey {

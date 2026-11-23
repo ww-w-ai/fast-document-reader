@@ -14,14 +14,15 @@
 //! `NSDataDetector` autolink pass over the rendered string, and a parser that had already made
 //! links would have that pass run over its own output.
 
-use comrak::nodes::{AstNode, ListType, NodeValue};
+use comrak::nodes::{AlertType, AstNode, ListType, NodeValue, TableAlignment};
 use comrak::{parse_document, Arena, Options};
 
 use super::markdown_renderer::markdown::{
-    BlockQuote, Checkbox, CodeBlock, Document, Emphasis, HTMLBlock, Heading, Image, InlineCode,
-    InlineHTML, Link, ListItem, Markup, OrderedList, Paragraph, SourceLocation, SourceRange,
-    Strikethrough, Strong, Table, TableBody, TableCell, TableHead, TableRow, Text, ThematicBreak,
-    UnorderedList,
+    Alert, AlertKind, BlockQuote, Checkbox, CodeBlock, ColumnAlignment, DescriptionItem,
+    DescriptionList, Document, Emphasis, FootnoteDefinition, FootnoteReference, HTMLBlock, Heading,
+    Image, InlineCode, InlineHTML, InlineKind, InlineStyle, Link, ListItem, Markup, OrderedList,
+    Paragraph, SourceLocation, SourceRange, Strikethrough, Strong, Table, TableBody, TableCell,
+    TableHead, TableRow, Text, ThematicBreak, UnorderedList,
 };
 
 /// What a `Markup` hands a walker, so `accept` can dispatch the way `MarkupWalker` does.
@@ -58,6 +59,15 @@ pub trait MarkupWalker {
     fn visit_table(&mut self, node: &Table) {
         self.descend_into(&Markup::Table(node.clone()))
     }
+    fn visit_alert(&mut self, node: &Alert) {
+        self.descend_into(&Markup::Alert(node.clone()))
+    }
+    fn visit_footnote_definition(&mut self, node: &FootnoteDefinition) {
+        self.descend_into(&Markup::FootnoteDefinition(node.clone()))
+    }
+    fn visit_description_list(&mut self, node: &DescriptionList) {
+        self.descend_into(&Markup::DescriptionList(node.clone()))
+    }
 }
 
 /// `Markup.accept(_:)` — double dispatch into the walker's matching method.
@@ -76,6 +86,9 @@ pub fn accept<W: MarkupWalker + ?Sized>(markup: &Markup, walker: &mut W) {
         Markup::CodeBlock(node) => walker.visit_code_block(node),
         Markup::ThematicBreak(node) => walker.visit_thematic_break(node),
         Markup::Table(node) => walker.visit_table(node),
+        Markup::Alert(node) => walker.visit_alert(node),
+        Markup::FootnoteDefinition(node) => walker.visit_footnote_definition(node),
+        Markup::DescriptionList(node) => walker.visit_description_list(node),
         other => walker.descend_into(other),
     }
 }
@@ -93,6 +106,9 @@ pub fn children(markup: &Markup) -> Vec<Markup> {
         Markup::BlockQuote(node) => node.children.clone(),
         Markup::ListItem(node) => node.children.clone(),
         Markup::TableCell(node) => node.children.clone(),
+        Markup::InlineStyle(node) => node.children.clone(),
+        Markup::Alert(node) => node.children.clone(),
+        Markup::FootnoteDefinition(node) => node.children.clone(),
         Markup::UnorderedList(node) => {
             node.list_items.iter().cloned().map(Markup::ListItem).collect()
         }
@@ -114,6 +130,8 @@ pub fn children(markup: &Markup) -> Vec<Markup> {
         | Markup::Image(_)
         | Markup::CodeBlock(_)
         | Markup::ThematicBreak(_)
+        | Markup::FootnoteReference(_)
+        | Markup::DescriptionList(_)
         | Markup::HTMLBlock(_) => Vec::new(),
     }
 }
@@ -134,6 +152,9 @@ pub fn range(markup: &Markup) -> Option<SourceRange> {
         Markup::CodeBlock(node) => node.range,
         Markup::ThematicBreak(node) => node.range,
         Markup::Table(node) => node.range,
+        Markup::Alert(node) => node.range,
+        Markup::FootnoteDefinition(node) => node.range,
+        Markup::DescriptionList(node) => node.range,
         _ => None,
     }
 }
@@ -145,15 +166,80 @@ pub fn parse_document_text(markdown: &str) -> Document {
     options.extension.table = true;
     options.extension.tasklist = true;
     options.extension.strikethrough = true;
+    // Everything below is rendered by `markdown_renderer.rs`. An extension is enabled here only
+    // together with its renderer case (invariant 41: a feature can ship DEAD).
+    if starts_with_front_matter(markdown) {
+        options.extension.front_matter_delimiter = Some("---".to_string());
+    }
+    options.extension.footnotes = true;
+    options.extension.inline_footnotes = true;
+    options.extension.alerts = true;
+    options.extension.description_lists = true;
+    options.extension.superscript = true; // ^x^
+    options.extension.highlight = true; // ==x==
+    options.extension.insert = true; // ++x++
+    options.extension.spoiler = true; // ||x||
+    options.extension.multiline_block_quotes = true; // >>> … <<<
+    options.extension.cjk_friendly_emphasis = true;
+    options.extension.wikilinks_title_after_pipe = true; // [[target|text]]
+    options.extension.header_attributes = true; // ## Title {#id}
+    options.parse.relaxed_tasklist_matching = true;
+    options.parse.tasklist_in_table = true;
+    // DELIBERATELY OFF, and each for a measured reason:
+    //  - `extension.underline` makes `__bold__` underline instead of bold; `<u>` and `++x++` cover it.
+    //  - `extension.subscript` makes `~x~` subscript, which breaks GFM `~strike~`; `<sub>` covers it.
+    //  - `greentext` turns every `>text` line into a styled non-quote.
+    //  - `tagfilter` would escape the raw HTML the renderer interprets (`<u>`, `<br>`, `<mark>`).
+    //  - `math_dollars` / `math_code`: formulas are claimed from the SOURCE by `scan_math_spans`
+    //    before parsing (invariant 12); a second, parser-side `$…$` reading would fight that pass
+    //    and turn prices ("$5 and $10") into formulas. `link_attributes` would swallow the Pandoc
+    //    `![](x){width=N}` that `parse_pandoc_attr` already reads. `shortcodes` needs comrak's
+    //    `emojis` crate, which this build does not carry.
     // swift-markdown parses through cmark-gfm with smart punctuation ON, so this reader has always
     // shown curly quotes, en/em dashes and ellipses for the ASCII an author typed. Off here, the
     // engine produced `'` where the app produces `’` on all five documents it ships — a difference
     // no structural test can see, because the tree is identical and only the leaf text changes.
     options.parse.smart = true;
     let root = parse_document(&arena, markdown, &options);
-    Document {
-        children: root.children().filter_map(map_node).collect(),
+    let mut children: Vec<Markup> = root.children().filter_map(map_node).collect();
+    finish_footnote_numbers(&mut children);
+    Document { children }
+}
+
+/// Does the document open with a YAML front-matter block — `---`, key/value lines, `---`?
+///
+/// comrak's own rule is only "first line `---`, closed by another `---`", which also swallows a
+/// document that merely OPENS with a thematic break and has another further down (everything
+/// between them would vanish as "front matter"). So the block must also READ as YAML: every line
+/// blank, a comment, indented, a `- ` item or a `key:` line.
+pub(crate) fn starts_with_front_matter(markdown: &str) -> bool {
+    let mut lines = markdown.trim_start_matches('\u{feff}').lines();
+    if lines.next().map(str::trim_end) != Some("---") {
+        return false;
     }
+    let mut body = 0usize;
+    for line in lines {
+        let t = line.trim_end();
+        if t == "---" || t == "..." {
+            return body > 0;
+        }
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with('#') || t.starts_with(' ') || t.starts_with('\t') || t.starts_with("- ") {
+            body += 1;
+            continue;
+        }
+        let key = t.split(':').next().unwrap_or("");
+        let is_key = t.contains(':')
+            && !key.is_empty()
+            && key.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '"' | '\''));
+        if !is_key {
+            return false;
+        }
+        body += 1;
+    }
+    false
 }
 
 fn span<'a>(node: &'a AstNode<'a>) -> Option<SourceRange> {
@@ -222,6 +308,58 @@ fn map_node<'a>(node: &'a AstNode<'a>) -> Option<Markup> {
             level: i32::from(heading.level),
             children: kids(node),
             range: span(node),
+            anchor: node
+                .data
+                .borrow()
+                .attrs
+                .as_ref()
+                .and_then(|attrs| attrs.id.clone())
+                .filter(|id| !id.is_empty()),
+        }),
+        // A list's task items are read through `list_items`; one met here is a `[x]` that is the
+        // whole content of a table cell (`tasklist_in_table`), which draws as the same box glyph.
+        NodeValue::TaskItem(state) => Markup::Text(Text {
+            string: if state.symbol.is_some() { "\u{2611}" } else { "\u{2610}" }.to_string(),
+        }),
+        NodeValue::Highlight => inline_style(node, InlineKind::Highlight),
+        NodeValue::Insert => inline_style(node, InlineKind::Insert),
+        NodeValue::Superscript => inline_style(node, InlineKind::Superscript),
+        NodeValue::SpoileredText => inline_style(node, InlineKind::Spoiler),
+        NodeValue::WikiLink(_) => inline_style(node, InlineKind::Plain),
+        NodeValue::FootnoteReference(reference) => Markup::FootnoteReference(FootnoteReference {
+            name: reference.name,
+            number: reference.ix,
+            first: reference.ref_num <= 1,
+        }),
+        NodeValue::FootnoteDefinition(definition) => {
+            Markup::FootnoteDefinition(FootnoteDefinition {
+                name: definition.name,
+                // 1-based place among the notes; `finish_footnote_numbers` fills it in once the
+                // whole document is mapped, because only the definitions' ORDER is known here.
+                number: 0,
+                children: kids(node),
+                range: span(node),
+            })
+        }
+        NodeValue::Alert(alert) => Markup::Alert(Alert {
+            kind: match alert.alert_type {
+                AlertType::Note => AlertKind::Note,
+                AlertType::Tip => AlertKind::Tip,
+                AlertType::Important => AlertKind::Important,
+                AlertType::Warning => AlertKind::Warning,
+                AlertType::Caution => AlertKind::Caution,
+            },
+            title: alert.title,
+            children: kids(node),
+            range: span(node),
+        }),
+        NodeValue::MultilineBlockQuote(_) => Markup::BlockQuote(BlockQuote {
+            children: kids(node),
+            range: span(node),
+        }),
+        NodeValue::DescriptionList => Markup::DescriptionList(DescriptionList {
+            items: node.children().filter_map(description_item).collect(),
+            range: span(node),
         }),
         NodeValue::Paragraph => Markup::Paragraph(Paragraph {
             children: kids(node),
@@ -265,6 +403,7 @@ fn map_node<'a>(node: &'a AstNode<'a>) -> Option<Markup> {
                 Markup::OrderedList(OrderedList {
                     list_items: items,
                     range: span(node),
+                    start: list.start,
                 })
             } else {
                 Markup::UnorderedList(UnorderedList {
@@ -286,7 +425,17 @@ fn map_node<'a>(node: &'a AstNode<'a>) -> Option<Markup> {
             })
         }
         NodeValue::ThematicBreak => Markup::ThematicBreak(ThematicBreak { range: span(node) }),
-        NodeValue::Table(_) => {
+        NodeValue::Table(table) => {
+            let alignments = table
+                .alignments
+                .iter()
+                .map(|a| match a {
+                    TableAlignment::None => ColumnAlignment::None,
+                    TableAlignment::Left => ColumnAlignment::Left,
+                    TableAlignment::Center => ColumnAlignment::Center,
+                    TableAlignment::Right => ColumnAlignment::Right,
+                })
+                .collect();
             let mut rows = node.children();
             let head = rows
                 .next()
@@ -305,6 +454,7 @@ fn map_node<'a>(node: &'a AstNode<'a>) -> Option<Markup> {
                 head,
                 body,
                 range: span(node),
+                alignments,
             })
         }
         // Items are reached through their list, cells through their table; anything else this
@@ -312,6 +462,50 @@ fn map_node<'a>(node: &'a AstNode<'a>) -> Option<Markup> {
         // guessed at (the Swift walker never sees it either).
         _ => return None,
     })
+}
+
+fn inline_style<'a>(node: &'a AstNode<'a>, kind: InlineKind) -> Markup {
+    Markup::InlineStyle(InlineStyle {
+        kind,
+        children: kids(node),
+    })
+}
+
+/// A description item: its term's inline content and the blocks of each details.
+fn description_item<'a>(item: &'a AstNode<'a>) -> Option<DescriptionItem> {
+    if !matches!(item.data.borrow().value, NodeValue::DescriptionItem(_)) {
+        return None;
+    }
+    let mut out = DescriptionItem::default();
+    for part in item.children() {
+        let value = part.data.borrow().value.clone();
+        match value {
+            NodeValue::DescriptionTerm => {
+                // A term's content arrives as a paragraph; the renderer wants the inlines.
+                for child in kids(part) {
+                    match child {
+                        Markup::Paragraph(p) => out.term.extend(p.children),
+                        other => out.term.push(other),
+                    }
+                }
+            }
+            NodeValue::DescriptionDetails => out.details.push(kids(part)),
+            _ => {}
+        }
+    }
+    Some(out)
+}
+
+/// The notes comrak appended at the end are numbered in the order it sorted them — the order of
+/// their first reference — which is the number every reference already carries.
+fn finish_footnote_numbers(children: &mut [Markup]) {
+    let mut next = 0u32;
+    for child in children.iter_mut() {
+        if let Markup::FootnoteDefinition(definition) = child {
+            next += 1;
+            definition.number = next;
+        }
+    }
 }
 
 fn table_cells<'a>(row: &'a AstNode<'a>) -> Vec<TableCell> {

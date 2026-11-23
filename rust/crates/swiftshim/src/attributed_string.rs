@@ -21,6 +21,10 @@ pub enum NSAttributedStringKey {
     Link,
     StrikethroughStyle,
     UnderlineStyle,
+    /// swift: `.backgroundColor` — the highlight fill behind a run (`<mark>`, `==x==`).
+    BackgroundColor,
+    /// swift: `.baselineOffset` — points above (+) or below (-) the baseline (`<sup>`, `<sub>`).
+    BaselineOffset,
     /// swift: `.attachment` — the stock key `NSAttributedString(attachment:)` files an
     /// `NSTextAttachment` under.
     Attachment,

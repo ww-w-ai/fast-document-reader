@@ -242,6 +242,18 @@ pub struct MarkdownWire {
     /// run but are separate attributes, so they get separate columns.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layer_underline: Vec<i32>,
+    /// `NSUnderlineStyle` raw value of the STRIKETHROUGH attribute (GFM `~~`), `0` for none.
+    /// AppKit stores both lines with the same value type, so it shares the underline encoding.
+    #[serde(default, skip_serializing_if = "is_all_zero")]
+    pub layer_strikethrough: Vec<i32>,
+    /// Index into `colors` of the BACKGROUND fill (`<mark>`, `==x==`, spoilers), `-1` for none.
+    /// Omitted when no run sets one.
+    #[serde(default, skip_serializing_if = "is_all_unset")]
+    pub layer_background: Vec<i32>,
+    /// `NSBaselineOffsetAttributeName` in points (`<sup>`, `<sub>`, footnote refs), `0` for none.
+    /// Omitted when no run sets one.
+    #[serde(default, skip_serializing_if = "is_all_zero_f64")]
+    pub layer_baseline: Vec<f64>,
     /// Index into `link_targets`, `-1` for none — links repeat far less than they are long.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layer_link: Vec<i32>,
@@ -294,6 +306,19 @@ impl<T: serde::Serialize + Clone> Pool<T> {
         self.seen.insert(key, index);
         index
     }
+}
+
+/// Omits a column no run sets, so a document without strikethrough pays nothing on the wire.
+fn is_all_zero(column: &[i32]) -> bool {
+    column.iter().all(|v| *v == 0)
+}
+
+fn is_all_unset(column: &[i32]) -> bool {
+    column.iter().all(|v| *v < 0)
+}
+
+fn is_all_zero_f64(column: &[f64]) -> bool {
+    column.iter().all(|v| *v == 0.0)
 }
 
 fn wire_font(font: &NSFont) -> WireFont {
@@ -375,6 +400,24 @@ impl ThemeRoles {
                 // `entry` and not `insert`: the base goes in first for each role, so a face two
                 // roles happen to share keeps the FIRST role that named it rather than whichever
                 // came last, which would depend on iteration order.
+                fonts
+                    .entry(font_key(&resolved))
+                    .or_insert((role.clone(), level, extra.0));
+            }
+            // The script size (`<sup>`, `<sub>`, footnote references) of every face above: same
+            // role and traits, smaller point size. The host rebuilds the role's font and resizes it
+            // to the wire's `size`, so a superscript keeps its bold/italic and its font cascade
+            // instead of degrading to a `raw` face name that does not round-trip.
+            for extra in [
+                Traits::default(),
+                Traits::bold,
+                Traits::italic,
+                Traits::bold.union(Traits::italic),
+            ] {
+                let d = base.fontDescriptor();
+                let d = d.withSymbolicTraits(d.symbolicTraits().union(extra));
+                let size = base.pointSize() * super::markdown_renderer::SCRIPT_SCALE;
+                let resolved = NSFont::with_descriptor(&d, size).unwrap_or_else(|| base.clone());
                 fonts
                     .entry(font_key(&resolved))
                     .or_insert((role.clone(), level, extra.0));
@@ -481,7 +524,9 @@ fn wire_table_block(
     }
 }
 
-/// AppKit's OWN raw value for an alignment, which is what the host reconstructs from.
+/// The wire's alignment code: the Intel-macOS numbering (left 0, right 1, center 2, justified 3,
+/// natural 4). AppKit's own raw values differ by architecture (arm64 swaps center and right), so the
+/// host decodes this by NAME (`MarkdownWireMaterializer.alignment`), never through `rawValue:`.
 ///
 /// `as i32` on the shim's enum would send its DECLARATION ORDER instead. That happens to agree
 /// for alignment today and does NOT for writing direction, and nothing in the shim promises it
@@ -586,6 +631,9 @@ pub fn project(rendered: &NSAttributedString, theme: &RenderTheme) -> MarkdownWi
         layer_paragraph: vec![-1; runs.len()],
         layer_attachment: vec![-1; runs.len()],
         layer_underline: vec![0; runs.len()],
+        layer_strikethrough: vec![0; runs.len()],
+        layer_background: vec![-1; runs.len()],
+        layer_baseline: vec![0.0; runs.len()],
         layer_link: vec![-1; runs.len()],
         link_targets: Vec::new(),
         extras: Vec::new(),
@@ -624,6 +672,15 @@ pub fn project(rendered: &NSAttributedString, theme: &RenderTheme) -> MarkdownWi
                 (NSAttributedStringKey::UnderlineStyle, AttrValue::UnderlineStyle(u)) => {
                     wire.layer_underline[index] = u.0 as i32;
                 }
+                (NSAttributedStringKey::StrikethroughStyle, AttrValue::UnderlineStyle(u)) => {
+                    wire.layer_strikethrough[index] = u.0 as i32;
+                }
+                (NSAttributedStringKey::BackgroundColor, AttrValue::Color(c)) => {
+                    wire.layer_background[index] = interned_color(c, &roles, &mut colors) as i32;
+                }
+                (NSAttributedStringKey::BaselineOffset, AttrValue::Double(d)) => {
+                    wire.layer_baseline[index] = *d;
+                }
                 (NSAttributedStringKey::Link, AttrValue::Text(target)) => {
                     wire.layer_link[index] = links.intern(target.clone()) as i32;
                 }
@@ -659,5 +716,16 @@ pub fn project(rendered: &NSAttributedString, theme: &RenderTheme) -> MarkdownWi
     wire.tables = tables.items;
     wire.attachments = attachments;
     wire.link_targets = links.items;
+    // A column no run sets is not sent, so it must not exist here either: the wire has to equal
+    // what its own JSON decodes to.
+    if is_all_zero(&wire.layer_strikethrough) {
+        wire.layer_strikethrough.clear();
+    }
+    if is_all_unset(&wire.layer_background) {
+        wire.layer_background.clear();
+    }
+    if is_all_zero_f64(&wire.layer_baseline) {
+        wire.layer_baseline.clear();
+    }
     wire
 }

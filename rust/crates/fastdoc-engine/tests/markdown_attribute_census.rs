@@ -58,6 +58,8 @@ fn key_name(k: &NSAttributedStringKey) -> String {
         NSAttributedStringKey::Link => "link".into(),
         NSAttributedStringKey::StrikethroughStyle => "strikethroughStyle".into(),
         NSAttributedStringKey::UnderlineStyle => "underlineStyle".into(),
+        NSAttributedStringKey::BackgroundColor => "backgroundColor".into(),
+        NSAttributedStringKey::BaselineOffset => "baselineOffset".into(),
         NSAttributedStringKey::Attachment => "attachment".into(),
         NSAttributedStringKey::Custom(name) => format!("custom:{name}"),
     }

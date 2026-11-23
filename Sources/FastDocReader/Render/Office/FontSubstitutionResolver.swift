@@ -309,6 +309,9 @@ enum FontSubstitutionResolver {
 
     // MARK: - Phase 2, applying it
 
+    /// Shear for an italic the substitute face cannot draw (~11°, close to a typical true italic).
+    static let syntheticItalicObliqueness: CGFloat = 0.2
+
     /// A span whose declared font needs no substitute comes back as the EXACT SAME `Span` value —
     /// not a copy that merely leaves `resolvedFontDescriptor` `nil` — which is the byte-identical
     /// guard invariant 37 depends on: nothing downstream can tell it apart from a span this pass
@@ -437,7 +440,17 @@ enum FontSubstitutionResolver {
                 offset += length
             }
         }
-        for (range, font) in edits { string.addAttribute(.font, value: font, range: range) }
+        for (range, font) in edits {
+            // An italic run whose script falls to a face with no italic (every Korean/CJK system
+            // face) would draw upright and the emphasis would vanish; slant it synthetically, as
+            // browsers do. Read the ORIGINAL font before replacing it.
+            if let declared = string.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont,
+               declared.fontDescriptor.symbolicTraits.contains(.italic),
+               !font.fontDescriptor.symbolicTraits.contains(.italic) {
+                string.addAttribute(.obliqueness, value: syntheticItalicObliqueness, range: range)
+            }
+            string.addAttribute(.font, value: font, range: range)
+        }
         return edits.count
     }
 }
