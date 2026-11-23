@@ -29,6 +29,18 @@ enum RustEngineMeasure {
             guard let payloadPtr else { return 0 }
             return RustEngineMeasure.measure(payloadPtr.pointee, widthPoints: widthPoints)
         }
+        callbacks.measure_lines = { payloadPtr, widthPoints, out, capacity in
+            guard let payloadPtr else { return 0 }
+            let lines = RustEngineMeasure.measureLines(payloadPtr.pointee, widthPoints: widthPoints)
+            if let out {
+                for (index, line) in lines.prefix(capacity).enumerated() {
+                    out[index] = FastdocTextMeasureLine(
+                        paragraph_index: line.paragraph, char_end: line.charEnd,
+                        top: line.top, height: line.height, baseline: line.baseline)
+                }
+            }
+            return lines.count
+        }
         return fastdoc_install_text_measurer(callbacks)
     }()
 
@@ -46,18 +58,88 @@ enum RustEngineMeasure {
         }
     }
 
+    /// One laid-out line as the engine's port vocabulary has it (`swiftshim::text_measure::LineBox`).
+    struct LineBox: Equatable {
+        /// Index into the payload's paragraphs. A line read from a live document (`observedLineBox`)
+        /// has no payload and reports 0.
+        var paragraph: Int
+        /// UTF-16 offset, within the paragraph's own text, of the first position after the line.
+        var charEnd: Int
+        var top: CGFloat
+        var height: CGFloat
+        var baseline: CGFloat
+    }
+
+    /// A payload laid out by TextKit: everything the two readers below need and nothing else.
+    private struct Laid {
+        let storage: NSTextStorage
+        let layout: NSLayoutManager
+        let container: NSTextContainer
+        /// Where each paragraph begins in `storage`, and how many UTF-16 units its text has (its
+        /// terminator excluded).
+        let paragraphStarts: [Int]
+        let contentLengths: [Int]
+    }
+
     /// One call's worth of mapping + layout — pulled out of the C callback closure so it is a
     /// plain, testable Swift function (`RustEngineBridgeTests` calls this directly with a
     /// hand-built payload, without going through the FFI boundary at all).
     static func measure(_ payload: FastdocTextMeasurePayload, widthPoints: CGFloat) -> CGFloat {
+        guard let laid = layOut(payload, widthPoints: widthPoints) else { return 0 }
+        return laid.layout.usedRect(for: laid.container).height
+    }
+
+    /// The same layout, line by line (S3): what the engine's line model turns into row heights and
+    /// page-plan boxes. The layout is the one `measure` reads — a second primitive, not a second
+    /// layout rule.
+    static func measureLines(_ payload: FastdocTextMeasurePayload, widthPoints: CGFloat) -> [LineBox] {
+        guard let laid = layOut(payload, widthPoints: widthPoints) else { return [] }
+        var lines: [LineBox] = []
+        laid.layout.enumerateLineFragments(forGlyphRange: laid.layout.glyphRange(for: laid.container)) { rect, _, _, glyphRange, _ in
+            let chars = laid.layout.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            let paragraph = paragraphIndex(containing: chars.location, starts: laid.paragraphStarts)
+            lines.append(observedLineBox(
+                layout: laid.layout, rect: rect, glyphRange: glyphRange, paragraph: paragraph,
+                paragraphStart: laid.paragraphStarts[paragraph], contentLength: laid.contentLengths[paragraph]))
+        }
+        return lines
+    }
+
+    /// A line TextKit has ALREADY laid out, in the port's vocabulary — the reading the page-plan
+    /// shadow takes from the live document's own layout, with no second layout pass. `paragraphStart`
+    /// is the index of the paragraph's first character in the text storage; `contentLength` clips
+    /// `charEnd` so the paragraph's terminator is not counted as text.
+    static func observedLineBox(layout: NSLayoutManager, rect: NSRect, glyphRange: NSRange,
+                                paragraph: Int, paragraphStart: Int, contentLength: Int) -> LineBox {
+        let chars = layout.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        let baseline = glyphRange.length > 0 ? layout.location(forGlyphAt: glyphRange.location).y : 0
+        return LineBox(
+            paragraph: paragraph,
+            charEnd: min(max(0, NSMaxRange(chars) - paragraphStart), contentLength),
+            top: rect.minY, height: rect.height, baseline: baseline)
+    }
+
+    private static func paragraphIndex(containing location: Int, starts: [Int]) -> Int {
+        var low = 0, high = starts.count - 1
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if starts[mid] <= location { low = mid } else { high = mid - 1 }
+        }
+        return max(0, low)
+    }
+
+    private static func layOut(_ payload: FastdocTextMeasurePayload, widthPoints: CGFloat) -> Laid? {
         let result = NSMutableAttributedString()
         let paragraphs = payload.paragraph_count > 0
             ? UnsafeBufferPointer(start: payload.paragraphs, count: payload.paragraph_count) : nil
         let runs = payload.run_count > 0
             ? UnsafeBufferPointer(start: payload.runs, count: payload.run_count) : nil
+        var paragraphStarts: [Int] = []
+        var contentLengths: [Int] = []
 
         for (index, paragraph) in (paragraphs ?? UnsafeBufferPointer<FastdocTextMeasureParagraph>(start: nil, count: 0)).enumerated() {
             let start = result.length
+            paragraphStarts.append(start)
             for run in runs ?? UnsafeBufferPointer<FastdocTextMeasureRun>(start: nil, count: 0)
             where run.paragraph_index == index {
                 switch run.kind {
@@ -69,6 +151,7 @@ enum RustEngineMeasure {
                     continue
                 }
             }
+            contentLengths.append(result.length - start)
             // The terminator is appended BEFORE the paragraph style is applied, and the style
             // covers content + terminator together — the same order `OfficeTextBuilder` itself
             // builds a paragraph in (`result.append("\n"); let paragraphRange = ...; addAttribute`).
@@ -97,7 +180,7 @@ enum RustEngineMeasure {
         // copy in the first place.
         OfficeTextBuilder.unifyParagraphTerminators(in: result)
 
-        guard result.length > 0 else { return 0 }
+        guard result.length > 0 else { return nil }
 
         // The identical ritual `PageBandGeometry.builtHeight` performs on `OfficeTextBuilder`'s
         // own output — same container shape (unbounded height, no padding), same layout manager
@@ -111,7 +194,8 @@ enum RustEngineMeasure {
         container.lineFragmentPadding = 0
         layout.addTextContainer(container)
         layout.ensureLayout(for: container)
-        return layout.usedRect(for: container).height
+        return Laid(storage: storage, layout: layout, container: container,
+                    paragraphStarts: paragraphStarts, contentLengths: contentLengths)
     }
 
     private static func paragraphStyle(for paragraph: FastdocTextMeasureParagraph) -> NSMutableParagraphStyle {

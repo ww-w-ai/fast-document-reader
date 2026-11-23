@@ -576,7 +576,12 @@ public class S10APageCellsTests
                 }
                 foreach (var l in layout.Lines)
                 {
-                    Assert.True(l.LocalTopPoints <= 0.01 || l.LocalTopPoints + l.HeightPoints <= layout.PageContentHeightPoints + tolerancePoints,
+                    // 한글 lets a line's spacing UNDER its glyphs hang past the page's foot (invariant
+                    // 161e): the plan places a line when its glyphs fit, so the gap may overrun.
+                    var owner = blocks[l.BlockIndex];
+                    var hang = owner.LineSpacingBelow && owner.LineHeight.Mode == LineHeightMode.AtLeast
+                        ? Math.Max(0, owner.LineHeight.Value - owner.CharSizePoints) : 0;
+                    Assert.True(l.LocalTopPoints <= 0.01 || l.LocalTopPoints + l.HeightPoints - hang <= layout.PageContentHeightPoints + tolerancePoints,
                         $"{relPath} [{label}]: block {l.BlockIndex} line {l.LineIndex} starts mid-page (top={l.LocalTopPoints:F1}) " +
                         $"and overflows past the page's own bottom (top+height={l.LocalTopPoints + l.HeightPoints:F1} > " +
                         $"contentHeight={layout.PageContentHeightPoints:F1})");

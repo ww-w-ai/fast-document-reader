@@ -199,10 +199,31 @@ public static class FastdocEngine
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate double MeasureCallback(IntPtr payload, double widthPoints);
 
+    /// <summary>One laid-out line (S3): `FastdocTextMeasureLine` in fastdoc_engine_ffi.h.
+    /// `CharEnd` is a UTF-16 offset within the paragraph's own text; `Top` is measured from the top
+    /// of the laid-out column; `Height` is the line's box under the paragraph style the payload
+    /// carried.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct FastdocTextMeasureLine
+    {
+        public nuint ParagraphIndex;
+        public nuint CharEnd;
+        public double Top;
+        public double Height;
+        public double Baseline;
+    }
+
+    /// <summary>`size_t (*measure_lines)(payload, width_points, FastdocTextMeasureLine *out, size_t
+    /// capacity)` — writes up to `capacity` lines and returns how many the layout HAS; the engine
+    /// calls again with room for them all when that exceeds `capacity`.</summary>
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate nuint MeasureLinesCallback(IntPtr payload, double widthPoints, IntPtr output, nuint capacity);
+
     [StructLayout(LayoutKind.Sequential)]
     public struct FastdocTextMeasureCallbacks
     {
         public MeasureCallback Measure;
+        public MeasureLinesCallback MeasureLines;
     }
 
     // bool fastdoc_install_text_measurer(FastdocTextMeasureCallbacks callbacks);
@@ -290,6 +311,13 @@ public static class FastdocEngine
     // An ok envelope carrying the PagePlanV1, or an error envelope; free with TakeOwnedString.
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr fastdoc_office_page_plan_json(IntPtr handle, byte[] inputJson);
+
+    // char *fastdoc_office_line_model_json(const char *input_json);
+    // The line model (S3): placed line heights and table row heights from the line boxes the host
+    // measured. An ok envelope carrying the LineModelOutput, or an error envelope; free with
+    // TakeOwnedString.
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    public static extern IntPtr fastdoc_office_line_model_json(byte[] inputJson);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct FastdocMasterTemplateDesc

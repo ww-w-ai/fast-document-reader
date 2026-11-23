@@ -40,6 +40,13 @@ enum PagePlanShadow {
         var droppedByPlan = 0
         var droppedByTextKit = 0
         var skippedReason: String?
+        /// The sum of every table's laid-out height — what the engine's row model is compared with
+        /// on a host that has no TextKit (S3: Avalonia's `--sheets` prints the same sum).
+        var tableHeightTotal: CGFloat = 0
+        /// Per top-level table in document order: its laid-out height and whether a page boundary
+        /// fell inside it (TextKit shifts the lines below the boundary, so a crossed table's height
+        /// carries the band and is not comparable).
+        var tableHeights: [(height: CGFloat, crossed: Bool)] = []
 
         var text: String { summary.joined(separator: "\n") }
     }
@@ -54,6 +61,8 @@ enum PagePlanShadow {
         var top: CGFloat       // for a table cell: the cell's own top edge (padding + border included)
         var bottom: CGFloat
         var lineSpacing: CGFloat
+        /// The line as the port's vocabulary has it, read from this same pass (no second layout).
+        var box: RustEngineMeasure.LineBox
     }
 
     /// Runs the plan over `wc`'s finished layout. `nil` when the document is not paged or the engine
@@ -80,10 +89,16 @@ enum PagePlanShadow {
 
         // ---- 1. one pass over the finished layout ----
         var fragments: [Fragment] = []
+        let storageText = storage.string as NSString
         lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, glyphRange, _ in
             let chars = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
             guard chars.location >= 0, chars.location < storage.length,
                   let id = storage.attribute(MDAttr.blockId, at: chars.location, effectiveRange: nil) as? Int else { return }
+            let paragraphRange = storageText.paragraphRange(for: NSRange(location: chars.location, length: 0))
+            let terminated = paragraphRange.length > 0 && storageText.character(at: NSMaxRange(paragraphRange) - 1) == 10
+            let box = RustEngineMeasure.observedLineBox(
+                layout: lm, rect: rect, glyphRange: glyphRange, paragraph: 0,
+                paragraphStart: paragraphRange.location, contentLength: paragraphRange.length - (terminated ? 1 : 0))
             let style = storage.attribute(.paragraphStyle, at: chars.location, effectiveRange: nil) as? NSParagraphStyle
             var table: ObjectIdentifier?
             var startingRow = 0, rowSpan = 1
@@ -97,7 +112,7 @@ enum PagePlanShadow {
             }
             fragments.append(Fragment(location: chars.location, rect: rect, blockId: id, table: table,
                                       startingRow: startingRow, rowSpan: rowSpan, top: top, bottom: bottom,
-                                      lineSpacing: max(0, style?.lineSpacing ?? 0)))
+                                      lineSpacing: max(0, style?.lineSpacing ?? 0), box: box))
         }
         guard !fragments.isEmpty else { report.skippedReason = "no line fragments"; return report }
 
@@ -152,6 +167,9 @@ enum PagePlanShadow {
                 }
                 let ordered = rows.keys.sorted()
                 let tableBottom = frags.map(\.bottom).max()!
+                let tableTop = frags.map(\.top).min() ?? tableBottom
+                report.tableHeightTotal += tableBottom - tableTop
+                report.tableHeights.append((tableBottom - tableTop, page(of: tableTop) != page(of: frags.last!.rect.minY)))
                 block["kind"] = "table"
                 block["rows"] = ordered.enumerated().map { position, r -> [String: Any] in
                     let row = rows[r]!
@@ -171,7 +189,7 @@ enum PagePlanShadow {
                 previousPage = page(of: frags.last!.rect.minY)
             } else {
                 block["kind"] = "text"
-                block["lines"] = frags.map { Double($0.rect.height) }
+                block["lines"] = frags.map { Double($0.box.height) }
                 if first.lineSpacing > 0 { block["trailing"] = Double(first.lineSpacing) }
                 macPages = frags.map { page(of: $0.rect.minY) }
                 previousBottom = frags.last!.rect.maxY
@@ -275,6 +293,7 @@ enum PagePlanShadow {
         report.summary = [
             "SHADOW pages: TextKit \(report.macPages), plan \(report.planPages) (reader reports \(wc.printPageCount))",
             "SHADOW blocks: \(report.blocks) (\(report.tables) tables); on a different page: \(report.blocksOnADifferentPage); lines on a different page: \(report.linesOnADifferentPage)",
+            String(format: "SHADOW table height total: %.1f", Double(report.tableHeightTotal)),
             "SHADOW pages whose first block differs: \(report.pagesWithADifferentFirstBlock)",
             "SHADOW hard breaks dropped by 147: plan \(report.droppedByPlan), TextKit \(report.droppedByTextKit)",
             "SHADOW first difference: \(report.firstDifference ?? "none")",

@@ -22,7 +22,10 @@ internal sealed class PlanBlockInput
     public bool Empty { get; init; }
     public double SpacingBefore { get; init; }
     public double SpacingAfter { get; init; }
-    public double[]? Lines { get; init; }
+    public double[]? Lines { get; set; }
+    /// <summary>Text: the part of the last line box that is spacing under the glyphs (HWP), which a
+    /// page may let hang past its foot — decided by the engine's line model (S3).</summary>
+    public double Trailing { get; set; }
     public double Height { get; init; }
     public double[]? RowHeights { get; init; }
     public bool[]? RowCanBreakAbove { get; init; }
@@ -118,6 +121,7 @@ internal static class PagePlanClient
                 foreach (var h in lines) { w.WriteNumberValue(h); }
                 w.WriteEndArray();
             }
+            if (b.Trailing != 0) { w.WriteNumber("trailing", b.Trailing); }
             if (b.Height != 0) { w.WriteNumber("height", b.Height); }
             if (b.RowHeights is { } rows)
             {

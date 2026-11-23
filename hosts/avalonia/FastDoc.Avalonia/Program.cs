@@ -408,9 +408,13 @@ class Program
     private static int RunSheets(string path)
     {
         // TextLayout (PageLayout's own line-breaking) needs Avalonia's font manager/platform
-        // set up — the same headless bootstrap --paint-probe performs below, with no window.
+        // set up — the same Skia-backed headless bootstrap --pdf performs (RunPdf), so the sheet count
+        // this prints is the one a user's page is laid out with. The stub text shaper the default
+        // headless platform installs has fixed metrics: 편람 paginated to 404 sheets with it and 391
+        // pages with Skia's shaper, the same document through --pdf.
         AppBuilder.Configure<App>()
-            .UseHeadless(new AvaloniaHeadlessPlatformOptions())
+            .UseSkia()
+            .UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false })
             .WithBundledKoreanFallback()
             .SetupWithoutStarting();
         try
@@ -477,6 +481,22 @@ class Program
                     var block = firstBlock[page];
                     var nodeId = block != int.MaxValue && block < markers.NodeId.Length ? markers.NodeId[block].ToString() : "-";
                     Console.WriteLine($"page {page + 1}\tnode {nodeId}");
+                }
+            }
+            // FMD_SHEETS_TABLES=1: one line per top-level table, in document order — its laid-out
+            // height when it stands whole on one page, "split" when the plan broke it. What the
+            // engine's row model is compared with, table by table, against the macOS shadow probe.
+            if (Environment.GetEnvironmentVariable("FMD_SHEETS_TABLES") == "1")
+            {
+                var ordinal = 0;
+                for (var b = 0; b < blocks.Count; b++)
+                {
+                    if (blocks[b].Kind != Rendering.FlowBlockKind.Table) { continue; }
+                    var pieces = System.Linq.Enumerable.ToList(System.Linq.Enumerable.Where(layout.Placements, p => p.BlockIndex == b));
+                    Console.WriteLine(pieces.Count == 1
+                        ? $"table {ordinal}\t{pieces[0].HeightPoints:F2}"
+                        : $"table {ordinal}\tsplit");
+                    ordinal++;
                 }
             }
             return 0;

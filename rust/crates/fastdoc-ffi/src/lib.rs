@@ -1282,6 +1282,60 @@ pub unsafe extern "C" fn fastdoc_office_page_plan_json(
     })
 }
 
+/// S3 of `docs/plans/pagination-to-engine.md`: the LINE MODEL — how tall a paragraph's lines stand
+/// and how tall a table row is, from the line boxes the host's own layout produced.
+///
+/// `input_json` is a `LineModelInput` (`render/office/line_model.rs`): the document's line grid,
+/// body paragraphs and tables. A paragraph carries each line's natural box, its line-height rule,
+/// character size, spacing and whether the format puts its spacing below the glyphs; a table carries
+/// its cells' stacked paragraphs and boxes, paddings and declared heights. The answer is the placed
+/// line heights (and the spacing a page may let hang), each cell's line tops and every row's height.
+/// It carries no text and shapes nothing: the host measures, the engine decides what the document's
+/// rules make of what was measured (plan D1).
+///
+/// Returns `{"ffiVersion":1,"ok":<LineModelOutput>}` or `{"ffiVersion":1,"error":{...}}`, owned by
+/// this library and freed with `fastdoc_string_free`. NULL only when the envelope itself could not
+/// be built. The arithmetic needs no document state, so there is no handle.
+///
+/// # Safety
+/// `input_json` must be a NUL-terminated string valid for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_office_line_model_json(input_json: *const c_char) -> *mut c_char {
+    use fastdoc_engine::render::office::line_model::{solve, LineModelInput};
+
+    if input_json.is_null() {
+        return guard_envelope(|| {
+            Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "invalid NULL argument",
+            ))
+        });
+    }
+    let text = match CStr::from_ptr(input_json).to_str() {
+        Ok(text) => text.to_owned(),
+        Err(_) => {
+            return guard_envelope(|| {
+                Err(FfiFailure::new(
+                    FfiErrorKind::InvalidArgument,
+                    "the line model input is not valid UTF-8",
+                ))
+            })
+        }
+    };
+    guard_envelope(move || {
+        let input: LineModelInput = serde_json::from_str(&text).map_err(|error| {
+            FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                format!("the line model input is not a LineModelInput: {error}"),
+            )
+        })?;
+        let answer = solve(&input)
+            .map_err(|error| FfiFailure::new(FfiErrorKind::InvalidArgument, error.to_string()))?;
+        serde_json::to_vec(&answer)
+            .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error}")))
+    })
+}
+
 /// One cell's own geometry, mirroring `fastdoc_engine::render::table_resize_math::TableResizeCell`
 /// field for field. `#[repr(C)]` so the layout is exactly what the header declares.
 #[repr(C)]
@@ -2186,7 +2240,7 @@ mod tests {
             0.0
         }
         assert!(swiftshim::text_measure::install_callbacks(
-            swiftshim::text_measure::TextMeasureCallbacks { measure: reentrant_measure }
+            swiftshim::text_measure::TextMeasureCallbacks { measure: reentrant_measure, measure_lines: None }
         ));
 
         let outer = guard_scalar(-1.0_f64, || -> f64 {

@@ -12,7 +12,8 @@
 #            the host PDF so its first text line per page can be diffed against macOS.
 #
 # Writes <out-dir>/<name>.mac.txt (page<TAB>first line), <name>.avalonia.tsv (page<TAB>node id) and
-# summary.tsv (name, macOS pages, Avalonia pages). Prints the summary table. The macOS app and the
+# summary.tsv (name, macOS pages, Avalonia --sheets pages, Avalonia --pdf pages or "-"). Prints the
+# summary table. The macOS app and the
 # host build are used as they are: build them first (make-app.sh, dotnet build -c Release,
 # build-engine-xplat.sh). FMD_PARITY_SKIP_MAC=1 measures the Avalonia side only (macOS column "-").
 set -euo pipefail
@@ -70,18 +71,24 @@ for doc in "${DOCS[@]}"; do
   av_pages="${av_pages:--}"
   printf '%s\n' "$sheets_out" | sed -n 's/^page \([0-9]*\)\tnode \(.*\)$/\1\t\2/p' > "$OUT_DIR/$name.avalonia.tsv"
 
+  # `--sheets` paginates with the headless text shaper (fixed metrics); `--pdf` shapes with Skia, the
+  # text stack a user's page is laid out with. The two counts differ, so the PDF count is what a
+  # reader of this table should judge the host by when it is asked for.
+  av_pdf_pages="-"
   if [ "${FMD_PARITY_AVALONIA_PDF:-0}" = "1" ]; then
     av_pdf="$OUT_DIR/$name.avalonia.pdf"
-    "$DOTNET" exec "$HOST_DLL" --pdf "$doc" "$av_pdf" >/dev/null 2>&1 || true
+    pdf_out="$("$DOTNET" exec "$HOST_DLL" --pdf "$doc" "$av_pdf" 2>/dev/null || true)"
+    av_pdf_pages="$(printf '%s\n' "$pdf_out" | sed -n 's/^pages: //p')"
+    av_pdf_pages="${av_pdf_pages:--}"
     if [ -s "$av_pdf" ]; then
       first_lines "$av_pdf" > "$OUT_DIR/$name.avalonia.txt" || true
       rm -f "$av_pdf"
     fi
   fi
-  printf '%s\t%s\t%s\n' "$name" "$mac_pages" "$av_pages" >> "$SUMMARY"
+  printf '%s\t%s\t%s\t%s\n' "$name" "$mac_pages" "$av_pages" "$av_pdf_pages" >> "$SUMMARY"
 done
 
-printf '%-60s %8s %9s\n' document macOS Avalonia
-while IFS=$'\t' read -r name mac av; do
-  printf '%-60s %8s %9s\n' "$name" "$mac" "$av"
+printf '%-60s %8s %9s %11s\n' document macOS Avalonia Avalonia-pdf
+while IFS=$'\t' read -r name mac av avpdf; do
+  printf '%-60s %8s %9s %11s\n' "$name" "$mac" "$av" "$avpdf"
 done < "$SUMMARY"

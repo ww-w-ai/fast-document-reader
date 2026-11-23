@@ -57,6 +57,13 @@ final class PagePlanShadowProbeTests: XCTestCase {
             report.append("SHADOW \(url.lastPathComponent)")
             if let reason = result.skippedReason { report.append("SHADOW   skipped: \(reason)") }
             else { report.append(result.text); report.append(String(format: "SHADOW run %.2fs", elapsed)) }
+            // FMD_PLAN_SHADOW_TABLES=<directory>: one "<ordinal>\t<height>\t<crossed>" line per table,
+            // for the table-by-table comparison with the host that has no TextKit (S3).
+            if let directory = env["FMD_PLAN_SHADOW_TABLES"] {
+                let lines = result.tableHeights.enumerated().map { "\($0.offset)\t\(String(format: "%.2f", Double($0.element.height)))\t\($0.element.crossed ? 1 : 0)" }
+                try? (lines.joined(separator: "\n") + "\n").write(
+                    toFile: directory + "/" + url.lastPathComponent + ".tables.tsv", atomically: true, encoding: .utf8)
+            }
             doc.close()
         }
         report.forEach { print($0) }

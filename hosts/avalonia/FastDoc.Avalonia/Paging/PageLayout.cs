@@ -139,6 +139,10 @@ public sealed class PageLayoutResult
     /// <summary>What the engine's page plan reported, for `--sheets`: tables placed as row-bounded
     /// pieces, tables carried whole to the next page, hard breaks dropped by invariant 147.</summary>
     public int SplitTableCount { get; init; }
+    /// <summary>The reader's "tables break across pages" preference this layout was built under: it
+    /// decides whether a table cell's last line gives its spacing back (invariant 161b), so the painter
+    /// must draw with the same value the rows were solved with.</summary>
+    public bool SplitTables { get; init; }
     public int CarriedTableCount { get; init; }
     public int DroppedBreakCount { get; init; }
 }
@@ -179,9 +183,14 @@ public static class PageLayout
         return EffectiveLineHeight(natural, block.LineHeight, lineGridPitchPoints);
     }
 
-    private static double NaturalLineHeightPoints(double sizePoints)
+    private static double NaturalLineHeightPoints(double sizePoints) => NaturalLineHeight(sizePoints);
+
+    /// <summary>The natural line box of a line of <paramref name="size"/> (in whatever unit the caller
+    /// lays out in — points for pagination, pixels for a table cell): the host's glyph metrics, the
+    /// one input an empty paragraph's line needs from this side.</summary>
+    internal static double NaturalLineHeight(double size0)
     {
-        var size = Math.Max(1, sizePoints);
+        var size = Math.Max(1, size0);
         return NaturalLineHeights.GetOrAdd(size, s =>
         {
             var layout = new TextLayout(" ", DefaultTypeface, s, Brushes.Black);
@@ -216,6 +225,10 @@ public static class PageLayout
 
         var inputs = new List<PlanBlockInput>(blocks.Count);
         var shapes = new TextShape?[blocks.Count];
+        // Every text block's natural line boxes go to the engine's line model in ONE call; it answers
+        // the heights the document's rules make of them, in the same order.
+        var facts = new List<ParagraphFactsIn>();
+        var slots = new List<(int Input, int Block, bool Blank)>();
         for (var i = 0; i < blocks.Count; i++)
         {
             var block = blocks[i];
@@ -239,14 +252,14 @@ public static class PageLayout
                 if (layout is null)
                 {
                     // A blank paragraph is one unit: its spacing and its own line, as the old
-                    // placement summed them.
-                    var blank = block.SpacingBeforePoints + BlankLineHeightPoints(block, geometry.LineGridPitchPoints)
-                        + block.SpacingAfterPoints;
-                    shapes[i] = new TextShape { Heights = new[] { blank }, FirstChars = new[] { 0 }, Lengths = new[] { 0 } };
+                    // placement summed them. The line's height is the engine's (below).
+                    shapes[i] = new TextShape { Heights = new double[1], FirstChars = new[] { 0 }, Lengths = new[] { 0 } };
+                    facts.Add(ParagraphFactsIn.From(block, new[] { NaturalLineHeight(block.BlankLineSizePoints) }, blank: true));
+                    slots.Add((inputs.Count, i, true));
                     inputs.Add(new PlanBlockInput
                     {
                         Key = key, Kind = "text", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
-                        KeepWithNext = keepWithNext, Empty = true, Lines = shapes[i]!.Heights,
+                        KeepWithNext = keepWithNext, Empty = true,
                     });
                     continue;
                 }
@@ -255,25 +268,28 @@ public static class PageLayout
                 {
                     Heights = new double[lines.Count], FirstChars = new int[lines.Count], Lengths = new int[lines.Count],
                 };
+                var natural = new double[lines.Count];
                 for (var l = 0; l < lines.Count; l++)
                 {
-                    shape.Heights[l] = EffectiveLineHeight(lines[l].Height, block.LineHeight, geometry.LineGridPitchPoints);
+                    natural[l] = lines[l].Height;
                     shape.FirstChars[l] = lines[l].FirstTextSourceIndex;
                     shape.Lengths[l] = lines[l].Length;
                 }
                 shapes[i] = shape;
+                facts.Add(ParagraphFactsIn.From(block, natural, blank: false));
+                slots.Add((inputs.Count, i, false));
                 inputs.Add(new PlanBlockInput
                 {
                     Key = key, Kind = "text", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
                     KeepWithNext = keepWithNext, Empty = empty, SpacingBefore = block.SpacingBeforePoints,
-                    SpacingAfter = block.SpacingAfterPoints, Lines = shape.Heights,
+                    SpacingAfter = block.SpacingAfterPoints,
                 });
                 continue;
             }
 
             if (block.Kind == FlowBlockKind.Table && block.Table is { } table)
             {
-                var rowHeights = TableSettle.EstimateRowHeights(table, widthForBlock, imageRenderer);
+                var rowHeights = TableSettle.EstimateRowHeights(table, widthForBlock, imageRenderer, splitTables);
                 var canBreak = TableSettle.RowsThatCanBreakAbove(table);
                 inputs.Add(new PlanBlockInput
                 {
@@ -289,8 +305,26 @@ public static class PageLayout
             inputs.Add(new PlanBlockInput
             {
                 Key = key, Kind = "atomic", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
-                Height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer),
+                Height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer, splitTables),
             });
+        }
+
+        var (answers, _) = LineModelClient.Solve(geometry.LineGridPitchPoints, facts, Array.Empty<TableFactsIn>());
+        for (var n = 0; n < slots.Count; n++)
+        {
+            var (inputIndex, blockIndex, blank) = slots[n];
+            var shape = shapes[blockIndex]!;
+            var answer = answers[n];
+            if (blank)
+            {
+                var block = blocks[blockIndex];
+                shape.Heights[0] = block.SpacingBeforePoints + answer.Heights[0] + block.SpacingAfterPoints;
+                inputs[inputIndex].Lines = shape.Heights;
+                continue;
+            }
+            for (var l = 0; l < shape.Heights.Length; l++) { shape.Heights[l] = answer.Heights[l]; }
+            inputs[inputIndex].Lines = shape.Heights;
+            inputs[inputIndex].Trailing = answer.Trailing;
         }
 
         var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs);
@@ -322,6 +356,7 @@ public static class PageLayout
             Placements = blockPlacements,
             Lines = linePlacements,
             PageSectionIndex = pageSectionIndex,
+            SplitTables = splitTables,
             SplitTableCount = plan.SplitTableCount,
             CarriedTableCount = plan.CarriedTableCount,
             DroppedBreakCount = plan.DroppedBreakCount,
@@ -366,7 +401,8 @@ public static class PageLayout
     /// <summary>A non-text block's own height in points, at <paramref name="widthPoints"/> — a
     /// simple declared/estimated height (E2c-2's own scope line: exact table-row and picture-wrap
     /// geometry inside a page is that unit's job).</summary>
-    public static double NonTextBlockHeightPoints(FlowBlock block, double widthPoints, ImageBlockRenderer? imageRenderer = null)
+    public static double NonTextBlockHeightPoints(FlowBlock block, double widthPoints, ImageBlockRenderer? imageRenderer = null,
+        bool splitTables = true)
     {
         switch (block.Kind)
         {
@@ -389,7 +425,7 @@ public static class PageLayout
                 // a different number, and the two would never converge.
                 var heights = block.Table is null
                     ? Array.Empty<double>()
-                    : TableSettle.EstimateRowHeights(block.Table, widthPoints, imageRenderer);
+                    : TableSettle.EstimateRowHeights(block.Table, widthPoints, imageRenderer, splitTables);
                 var estimate = heights.Sum();
                 return block.SpacingBeforePoints + estimate + block.SpacingAfterPoints;
 

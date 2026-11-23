@@ -75,6 +75,10 @@ impl TextMeasurer for FakeMeasurer {
         }
         height
     }
+
+    fn measure_lines(&self, _resolved: &ResolvedText, _width_points: CGFloat) -> Option<Vec<swiftshim::text_measure::LineBox>> {
+        None
+    }
 }
 
 /// Installs `FakeMeasurer` exactly once for this process — `swiftshim::text_measure::install`

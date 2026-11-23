@@ -38,6 +38,7 @@ public static class TextMeasurerPort
     // installers are one-shot (a second install call is ignored), so there is exactly one delegate
     // instance for the life of the process.
     private static readonly FastdocEngine.MeasureCallback MeasureDelegate = Measure;
+    private static readonly FastdocEngine.MeasureLinesCallback MeasureLinesDelegate = MeasureLines;
     private static readonly FastdocEngine.FaceNamedCallback FaceNamedDelegate = FaceNamed;
     private static readonly FastdocEngine.ResolveCallback ResolveDelegate = Resolve;
     private static readonly FastdocEngine.SystemFaceCallback SystemFaceDelegate = SystemFace;
@@ -67,7 +68,11 @@ public static class TextMeasurerPort
         {
             if (_installed) { return; }
 
-            var measureCallbacks = new FastdocEngine.FastdocTextMeasureCallbacks { Measure = MeasureDelegate };
+            var measureCallbacks = new FastdocEngine.FastdocTextMeasureCallbacks
+            {
+                Measure = MeasureDelegate,
+                MeasureLines = MeasureLinesDelegate,
+            };
             FastdocEngine.fastdoc_install_text_measurer(measureCallbacks);
 
             var fontCallbacks = new FastdocEngine.FastdocFontProvider
@@ -114,6 +119,125 @@ public static class TextMeasurerPort
             MeasureCallCount++;
             MeasureTotalMs += (DateTime.UtcNow - started).TotalMilliseconds;
         }
+    }
+
+    /// <summary>One laid-out line, in the engine's port vocabulary (`swiftshim::text_measure::LineBox`).</summary>
+    public readonly record struct LineBox(int Paragraph, int CharEnd, double Top, double Height, double Baseline);
+
+    /// <summary>S3: the port's second primitive — the same layout as <see cref="Measure"/>, line by
+    /// line. Writes up to <paramref name="capacity"/> lines into <paramref name="output"/> and
+    /// returns how many the layout HAS (the engine calls again with room for them all).</summary>
+    private static nuint MeasureLines(IntPtr payloadPtr, double widthPoints, IntPtr output, nuint capacity)
+    {
+        try
+        {
+            if (payloadPtr == IntPtr.Zero || widthPoints <= 0) { return 0; }
+            var payload = Marshal.PtrToStructure<FastdocEngine.FastdocTextMeasurePayload>(payloadPtr);
+            if (payload.ParagraphCount == 0) { return 0; }
+            var paragraphs = ReadArray<FastdocEngine.FastdocTextMeasureParagraph>(payload.Paragraphs, payload.ParagraphCount);
+            var runs = payload.RunCount > 0
+                ? ReadArray<FastdocEngine.FastdocTextMeasureRun>(payload.Runs, payload.RunCount)
+                : Array.Empty<FastdocEngine.FastdocTextMeasureRun>();
+            var lines = MeasureLinesManaged(paragraphs, runs, widthPoints);
+            if (output != IntPtr.Zero)
+            {
+                var size = Marshal.SizeOf<FastdocEngine.FastdocTextMeasureLine>();
+                for (var i = 0; i < lines.Length && (nuint)i < capacity; i++)
+                {
+                    Marshal.StructureToPtr(new FastdocEngine.FastdocTextMeasureLine
+                    {
+                        ParagraphIndex = (nuint)lines[i].Paragraph,
+                        CharEnd = (nuint)lines[i].CharEnd,
+                        Top = lines[i].Top,
+                        Height = lines[i].Height,
+                        Baseline = lines[i].Baseline,
+                    }, IntPtr.Add(output, i * size), false);
+                }
+            }
+            return (nuint)lines.Length;
+        }
+        catch
+        {
+            // A measurer that throws across the FFI boundary is undefined behaviour on the Rust side.
+            return 0;
+        }
+    }
+
+    /// <summary>The managed half of <see cref="MeasureLines"/> — the host MAPS the paragraph style the
+    /// engine resolved onto its own text stack and reports what it laid out; it decides nothing. A
+    /// line's box is its natural box scaled by `line_height_multiple`, then clamped between
+    /// `minimum_line_height` and `maximum_line_height`, then followed by `line_spacing` — the
+    /// NSParagraphStyle reading TextKit applies to the same payload. A paragraph's
+    /// `spacing_before` opens it and its `spacing_after` closes it, so the next paragraph's first
+    /// line starts below both. Kept public for the same reason <see cref="MeasureManaged"/> is: one
+    /// payload, both hosts, no native round trip in a unit test.</summary>
+    public static LineBox[] MeasureLinesManaged(FastdocEngine.FastdocTextMeasureParagraph[] paragraphs,
+        FastdocEngine.FastdocTextMeasureRun[] runs, double widthPoints)
+    {
+        var all = new List<LineBox>();
+        double y = 0;
+        for (var index = 0; index < paragraphs.Length; index++)
+        {
+            var paragraph = paragraphs[index];
+            var text = new System.Text.StringBuilder();
+            var overrides = new List<ValueSpan<TextRunProperties>>();
+            double maxFontSize = DefaultFontSizePoints;
+            double maxAttachment = 0;
+            foreach (var run in runs)
+            {
+                if ((int)run.ParagraphIndex != index) { continue; }
+                if (run.Kind == FastdocEngine.FastdocTextMeasureRunKindAttachment)
+                {
+                    maxAttachment = Math.Max(maxAttachment, run.AttachmentHeight);
+                    text.Append('￼');
+                    continue;
+                }
+                var runText = PtrToUtf8String(run.Text);
+                if (string.IsNullOrEmpty(runText)) { continue; }
+                var start = text.Length;
+                text.Append(runText);
+                var size = run.Size > 0 ? run.Size : DefaultFontSizePoints;
+                maxFontSize = Math.Max(maxFontSize, size);
+                var faceName = PtrToUtf8String(run.FontName);
+                var typeface = new Typeface(string.IsNullOrEmpty(faceName) ? "Inter" : faceName,
+                    run.Italic ? FontStyle.Italic : FontStyle.Normal, run.Bold ? FontWeight.Bold : FontWeight.Normal);
+                overrides.Add(new ValueSpan<TextRunProperties>(start, runText.Length,
+                    new GenericTextRunProperties(typeface, size, foregroundBrush: Brushes.Black)));
+            }
+            y += Math.Max(0, paragraph.SpacingBefore);
+            var availableWidth = Math.Max(1, widthPoints - Math.Max(0, paragraph.HeadIndent) - Math.Max(0, paragraph.TailIndent));
+            if (text.Length == 0)
+            {
+                // A blank paragraph still stands one line, at the size its own style gives it.
+                var box = StyledBox(new TextLayout(" ", DefaultTypeface, maxFontSize, Brushes.Black).Height, paragraph);
+                all.Add(new LineBox(index, 0, y, box, box * 0.8));
+                y += box;
+            }
+            else
+            {
+                var layout = new TextLayout(text.ToString(), DefaultTypeface, maxFontSize, Brushes.Black,
+                    WireAlignment(paragraph.Alignment), TextWrapping.Wrap, maxWidth: availableWidth, textStyleOverrides: overrides);
+                foreach (var line in layout.TextLines)
+                {
+                    var natural = Math.Max(line.Height, maxAttachment);
+                    var box = StyledBox(natural, paragraph);
+                    all.Add(new LineBox(index, Math.Min(text.Length, line.FirstTextSourceIndex + line.Length),
+                        y, box, line.Baseline));
+                    y += box;
+                }
+            }
+            y += Math.Max(0, paragraph.SpacingAfter);
+        }
+        return all.ToArray();
+    }
+
+    /// <summary>NSParagraphStyle's reading of one line: scale, clamp, then the spacing under it.</summary>
+    private static double StyledBox(double natural, FastdocEngine.FastdocTextMeasureParagraph paragraph)
+    {
+        var height = natural * (paragraph.LineHeightMultiple > 0 ? paragraph.LineHeightMultiple : 1.0);
+        if (paragraph.MinimumLineHeight > 0) { height = Math.Max(height, paragraph.MinimumLineHeight); }
+        if (paragraph.MaximumLineHeight > 0) { height = Math.Min(height, paragraph.MaximumLineHeight); }
+        return height + Math.Max(0, paragraph.LineSpacing);
     }
 
     /// <summary>The managed half of <see cref="Measure"/> — everything after unmarshaling the raw

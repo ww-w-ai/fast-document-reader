@@ -17,8 +17,8 @@ public static class TableSettle
     /// <see cref="TableGridRenderer.Draw"/> uses on an uncached table, so the height the plan places
     /// is the height that is drawn.</summary>
     public static double[] EstimateRowHeights(TableGridModel model, double columnWidthPoints,
-        ImageBlockRenderer? imageRenderer = null)
-        => TableGridRenderer.MeasureRowHeightsPoints(model, columnWidthPoints, imageRenderer);
+        ImageBlockRenderer? imageRenderer = null, bool splitTables = true)
+        => TableGridRenderer.MeasureRowHeightsPoints(model, columnWidthPoints, imageRenderer, splitTables);
 
     /// <summary>Per row of <c>model.Rows</c>: is a boundary above it safe? Safe exactly when no
     /// EARLIER row's cell spans across it — mirrors `PagePagination.LaidOutRow`'s own doc. Row 0 is

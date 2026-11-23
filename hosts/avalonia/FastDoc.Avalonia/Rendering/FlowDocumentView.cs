@@ -2053,7 +2053,7 @@ public sealed class FlowDocumentView : Control
                 var h = imageHeightPoints * PointsToPixels;
                 return h + (block.SpacingBeforePoints + block.SpacingAfterPoints) * PointsToPixels;
             case FlowBlockKind.Table:
-                return (block.Table is null ? 0 : TableGridRenderer.EstimateHeight(block.Table, columnWidth, fontScale, _imageRenderer))
+                return (block.Table is null ? 0 : TableGridRenderer.EstimateHeight(block.Table, columnWidth, fontScale, _imageRenderer, _splitTablesAcrossPages))
                     + (block.SpacingBeforePoints + block.SpacingAfterPoints) * PointsToPixels;
             default:
                 var charCount = 0;
@@ -2571,7 +2571,7 @@ public sealed class FlowDocumentView : Control
                     Math.Max(40, columnWidth - indentPx), _zoomFactor,
                     tableTop + blockLocalViewTop, tableTop + blockLocalViewBottom,
                     cachedRows, out var rowHeights, rowIndicesToDraw: null, imageRenderer: _imageRenderer,
-                    diagLog: diagLog);
+                    diagLog: diagLog, splitTables: _splitTablesAcrossPages);
                 _tableRowHeightCache[blockIndex] = rowHeights;
                 return spacingBeforePx + tableHeight + spacingAfterPx;
             }

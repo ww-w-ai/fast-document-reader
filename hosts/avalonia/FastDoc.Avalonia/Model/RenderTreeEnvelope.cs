@@ -380,6 +380,9 @@ public sealed class ParagraphStyleWire
     /// <summary>`wire::ParagraphStyle.hangingIndent` — how far lines after the first sit inside it
     /// (a list item's text hangs from its marker); `firstLineHeadIndent = start + firstLine - hanging`.</summary>
     [JsonPropertyName("hangingIndent")] public double? HangingIndent { get; set; }
+    /// <summary>`wire::ParagraphStyle.lineSpacingBelow` — the format puts its line spacing UNDER the
+    /// glyphs (HWP: pitch = size + spacing, invariant 161e).</summary>
+    [JsonPropertyName("lineSpacingBelow")] public bool? LineSpacingBelow { get; set; }
 }
 
 public sealed class CharacterStyleWire
@@ -405,6 +408,9 @@ public sealed class CharacterStyleWire
     /// <summary>`wire::CharacterStyle.letterSpacingPercent` — extra advance per character as a
     /// percentage of the run's font size (negative condenses; HWP states −5 on most body text).</summary>
     [JsonPropertyName("letterSpacingPercent")] public double? LetterSpacingPercent { get; set; }
+    /// <summary>`wire::CharacterStyle.widthScalePercent` — 장평, a run's glyph advance as a percentage
+    /// of normal (HWP states 95-99 on most body text).</summary>
+    [JsonPropertyName("widthScalePercent")] public double? WidthScalePercent { get; set; }
 }
 
 /// <summary>`wire::BlockQuote`: `Alert` names a GitHub alert's kind (note, tip, important, warning,

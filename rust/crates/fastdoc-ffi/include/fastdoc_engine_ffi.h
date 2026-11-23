@@ -126,8 +126,24 @@ typedef struct {
     size_t run_count;
 } FastdocTextMeasurePayload;
 
+/* One laid-out line (S3): the host's own layout of a payload paragraph, reported so the engine can
+ * decide what the document's rules make of it. char_end is a UTF-16 offset within the paragraph's
+ * concatenated run text (an attachment counts one unit) of the first position after the line; top
+ * is measured from the top of the laid-out column; height is the line's box under the paragraph
+ * style the payload carried; baseline is the distance from top to the baseline. */
+typedef struct {
+    size_t paragraph_index;
+    size_t char_end;
+    double top, height, baseline;
+} FastdocTextMeasureLine;
+
 typedef struct {
     double (*measure)(const FastdocTextMeasurePayload *payload, double width_points);
+    /* The same layout, one FastdocTextMeasureLine per line written into out (room for capacity).
+     * Returns how many lines the layout HAS; above capacity the engine calls again with room for
+     * them all, so a host never truncates silently. NULL when the host has no such primitive. */
+    size_t (*measure_lines)(const FastdocTextMeasurePayload *payload, double width_points,
+                            FastdocTextMeasureLine *out, size_t capacity);
 } FastdocTextMeasureCallbacks;
 
 /* Install once. A second call is ignored rather than swapping, for the same reason the font
@@ -312,6 +328,20 @@ bool fastdoc_office_table_placement(
  * needs no document state — so NULL is allowed for a caller planning heights it measured without
  * holding an open document. */
 char *fastdoc_office_page_plan_json(const FastdocOfficeDocument *handle, const char *input_json);
+
+/* S3 of the pagination plan: the LINE MODEL — how tall a paragraph's lines stand and how tall a
+ * table row is, from the line boxes the host's own layout produced. input_json is a LineModelInput:
+ * the document's line grid, body paragraphs and tables. A paragraph carries each line's natural box,
+ * its line-height rule, character size, spacing and whether its format puts the spacing below the
+ * glyphs (HWP); a table carries its cells' stacked paragraphs and boxes, paddings and declared
+ * heights. The answer is the placed line heights (and the spacing a page may let hang past its
+ * foot), each cell's line tops and every row's height. It carries no text and shapes nothing: the
+ * host measures, the engine decides what the document's rules make of what was measured.
+ *
+ * Returns {"ffiVersion":1,"ok":<LineModelOutput>} or {"ffiVersion":1,"error":{...}}, owned by this
+ * library and freed with fastdoc_string_free. NULL only when the envelope itself could not be built.
+ * The arithmetic needs no document state, so there is no handle. */
+char *fastdoc_office_line_model_json(const char *input_json);
 
 /* One cell's own geometry, mirroring the arithmetic in
  * Render/TableBlockBuilder.swift:977-988. */

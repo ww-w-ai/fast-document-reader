@@ -41,7 +41,7 @@ public class S9CFlowContentTests
         public void DrawLine(Point a, Point b, Color color, double thicknessPx) { LineCount++; }
         public void DrawImage(Bitmap bitmap, byte[]? sourceBytes, string? sourceMimeType, Rect destRect) { ImageCount++; }
         public void DrawTextLayout(TextLayout layout, Point origin) { TextOrigins.Add(origin); }
-        public void DrawTextLine(TextLine line, Point origin) { }
+        public void DrawTextLine(TextLine line, Point origin) { TextOrigins.Add(origin); }
     }
 
     private static FlowRun Run(string text) => new(text, null, 12, false, false, false, false, Colors.Black);

@@ -450,13 +450,35 @@ impl OwnedPayload {
 // `font_provider.rs` already proved (S2B).
 // -------------------------------------------------------------------------------------------
 
-/// swift: the parts of a live text stack the ported layout decisions ask for. Exactly one
-/// primitive today — see `the_port_has_exactly_one_primitive_and_it_is_justified` below for why
-/// growing this list is a decision, not a convenience.
+/// One laid-out line as the host's text stack produced it (S3, plan D1): where it sits in the
+/// column and how tall its box is, in the host's own layout. The engine never shapes text; it reads
+/// these and decides what the document's rules make of them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LineBox {
+    /// Index into `ResolvedText::paragraphs`.
+    pub paragraph: usize,
+    /// UTF-16 offset, within the paragraph's concatenated run text (an attachment counts one unit,
+    /// U+FFFC), of the first position AFTER this line.
+    pub char_end: usize,
+    /// Top of the line's box, measured from the top of the laid-out column.
+    pub top: CGFloat,
+    /// Height of the line's box under the paragraph style the payload carried.
+    pub height: CGFloat,
+    /// Distance from `top` to the baseline.
+    pub baseline: CGFloat,
+}
+
+/// swift: the parts of a live text stack the ported layout decisions ask for. Two primitives — see
+/// `the_port_has_exactly_two_primitives_and_each_is_justified` below for why growing this list is a
+/// decision, not a convenience.
 pub trait TextMeasurer: Send + Sync {
     /// Builds `resolved` in a column `width_points` wide with unbounded height and no padding
     /// (the ritual `page_band_geometry.rs:230-238` performs today) and reports the used height.
     fn measure(&self, resolved: &ResolvedText, width_points: CGFloat) -> CGFloat;
+
+    /// The same layout, reported line by line (S3). `None` when the host installed no such
+    /// primitive: a caller that needs lines must say so rather than guess them from a height.
+    fn measure_lines(&self, resolved: &ResolvedText, width_points: CGFloat) -> Option<Vec<LineBox>>;
 }
 
 static MEASURER: std::sync::OnceLock<Box<dyn TextMeasurer>> = std::sync::OnceLock::new();
@@ -492,7 +514,18 @@ pub fn is_installed() -> bool {
     MEASURER.get().is_some()
 }
 
-/// The one primitive, as C function pointers.
+/// One laid-out line across the C ABI: `LineBox` plus the paragraph it belongs to, flat.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct TextMeasureLine {
+    pub paragraph_index: usize,
+    pub char_end: usize,
+    pub top: CGFloat,
+    pub height: CGFloat,
+    pub baseline: CGFloat,
+}
+
+/// The primitives, as C function pointers.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TextMeasureCallbacks {
@@ -500,6 +533,18 @@ pub struct TextMeasureCallbacks {
     /// layout, and return the used rect's height. `payload` is borrowed for the duration of this
     /// call only — see this module's header for the full ownership rule.
     pub measure: extern "C" fn(payload: *const TextMeasurePayload, width_points: CGFloat) -> CGFloat,
+    /// swift: the same layout, one `TextMeasureLine` per line written into `out` (room for
+    /// `capacity`). Returns how many lines the layout HAS; when that exceeds `capacity` the caller
+    /// calls again with room for them all, so a host never truncates silently. NULL when the host
+    /// has no such primitive.
+    pub measure_lines: Option<
+        extern "C" fn(
+            payload: *const TextMeasurePayload,
+            width_points: CGFloat,
+            out: *mut TextMeasureLine,
+            capacity: usize,
+        ) -> usize,
+    >,
 }
 
 // SAFETY: the callback is a plain function pointer into host code that must itself be safe to
@@ -517,6 +562,32 @@ impl TextMeasurer for CallbackMeasurer {
         // `owned` outlives this call (it is not dropped until this function returns), which is
         // what makes every pointer inside `payload` valid for the callback's duration.
         (self.0.measure)(&payload as *const TextMeasurePayload, width_points)
+    }
+
+    fn measure_lines(&self, resolved: &ResolvedText, width_points: CGFloat) -> Option<Vec<LineBox>> {
+        let call = self.0.measure_lines?;
+        let owned = OwnedPayload::build(resolved);
+        let payload = owned.as_ffi();
+        let mut capacity = 64usize;
+        loop {
+            let mut out = vec![TextMeasureLine::default(); capacity];
+            let have = call(&payload as *const TextMeasurePayload, width_points, out.as_mut_ptr(), capacity);
+            if have <= capacity {
+                out.truncate(have);
+                return Some(
+                    out.into_iter()
+                        .map(|l| LineBox {
+                            paragraph: l.paragraph_index,
+                            char_end: l.char_end,
+                            top: l.top,
+                            height: l.height,
+                            baseline: l.baseline,
+                        })
+                        .collect(),
+                );
+            }
+            capacity = have;
+        }
     }
 }
 
@@ -689,13 +760,14 @@ mod tests {
         assert_eq!(outcome, Err(ResolveError::UnresolvedAttachmentSize));
     }
 
-    /// S5-01: the port is what the ported code ACTUALLY calls, not what would be convenient. One
-    /// primitive today, each one named with the decision that needs it — adding a variant here
+    /// S5-01: the port is what the ported code ACTUALLY calls, not what would be convenient. Two
+    /// primitives today, each one named with the decision that needs it — adding a variant here
     /// without a real call site is the growth S5's pre-mortem warns against.
     #[test]
-    fn the_port_has_exactly_one_primitive_and_it_is_justified() {
+    fn the_port_has_exactly_two_primitives_and_each_is_justified() {
         enum PortPrimitive {
             Measure,
+            MeasureLines,
         }
         impl PortPrimitive {
             fn justification(&self) -> &'static str {
@@ -704,11 +776,14 @@ mod tests {
                     // the table gaps (table_block_builder.rs:334,1111) need a DIFFERENT surface
                     // — enumerateAttribute over LIVE storage — so they are not a call site here.
                     Self::Measure => "the running-header band height, page_band_geometry.rs:225-240",
+                    // S3: the line boxes the line model (`line_model.rs`) turns into row heights and
+                    // page-plan line boxes; a height alone cannot say where a page may cut.
+                    Self::MeasureLines => "the line boxes behind a paragraph's or a cell's height, line_model.rs",
                 }
             }
         }
-        let primitives = [PortPrimitive::Measure];
-        assert_eq!(primitives.len(), 1, "the port grew — add its call site, not just this count");
+        let primitives = [PortPrimitive::Measure, PortPrimitive::MeasureLines];
+        assert_eq!(primitives.len(), 2, "the port grew — add its call site, not just this count");
         for primitive in &primitives {
             assert!(!primitive.justification().is_empty());
         }
@@ -756,6 +831,31 @@ mod tests {
         -1.0 // a value `recording_measure` never returns, so a swap would be unmistakable.
     }
 
+    /// One line per step, `HAVE` of them in all: writes only what fits and reports the true count,
+    /// as the contract says, so the caller's retry with more room is what delivers them all.
+    const HAVE: usize = 150;
+    extern "C" fn recording_lines(
+        payload: *const TextMeasurePayload,
+        width_points: CGFloat,
+        out: *mut TextMeasureLine,
+        capacity: usize,
+    ) -> usize {
+        // SAFETY: `payload` is valid for this call, `out` has room for `capacity` lines.
+        let payload = unsafe { &*payload };
+        for i in 0..HAVE.min(capacity) {
+            unsafe {
+                *out.add(i) = TextMeasureLine {
+                    paragraph_index: payload.paragraph_count - 1,
+                    char_end: i + 1,
+                    top: i as CGFloat * 10.0,
+                    height: width_points / 10.0,
+                    baseline: 8.0,
+                };
+            }
+        }
+        HAVE
+    }
+
     /// S5-02 end to end: absence before install, installation, the payload's round trip, a
     /// second installation being ignored, and repeated calls neither leaking nor corrupting the
     /// borrowed pointers. One test, not several, because `MEASURER` is a process-global
@@ -783,12 +883,12 @@ mod tests {
         )
         .expect("resolves");
 
-        assert!(install_callbacks(TextMeasureCallbacks { measure: recording_measure }));
+        assert!(install_callbacks(TextMeasureCallbacks { measure: recording_measure, measure_lines: Some(recording_lines) }));
         assert!(is_installed());
 
         // A second installation is ignored, not swapped — proven by value, not by inspection:
         // if it had taken, the next call would return `other_measure`'s `-1.0`.
-        assert!(!install_callbacks(TextMeasureCallbacks { measure: other_measure }));
+        assert!(!install_callbacks(TextMeasureCallbacks { measure: other_measure, measure_lines: None }));
 
         let measurer = try_measurer().expect("installed above");
         for _ in 0..200 {
@@ -796,6 +896,14 @@ mod tests {
             assert_eq!(height, 300.0 * 2.0 + 1.0, "300 width * 2 runs + 1 paragraph, from the FIRST callback");
         }
         assert_eq!(CALL_COUNT.load(Ordering::SeqCst), 200);
+
+        // The line primitive: more lines than the first buffer holds, so the retry with room for
+        // all of them is what is under test; nothing is truncated and every field survives.
+        let lines = measurer.measure_lines(&resolved, 300.0).expect("a lines callback was installed");
+        assert_eq!(lines.len(), HAVE);
+        assert_eq!(lines[0], LineBox { paragraph: 0, char_end: 1, top: 0.0, height: 30.0, baseline: 8.0 });
+        assert_eq!(lines[HAVE - 1].char_end, HAVE);
+        assert_eq!(lines[HAVE - 1].top, (HAVE - 1) as CGFloat * 10.0);
         assert_eq!(SEEN_PARAGRAPHS.with(|slot| *slot.borrow()), 1);
         SEEN.with(|slot| {
             let seen = slot.borrow();

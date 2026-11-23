@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Avalonia.Media;
 using Avalonia.Media.Immutable;
 using Avalonia.Media.TextFormatting;
@@ -183,6 +184,12 @@ public sealed class FlowBlock
     /// see <see cref="Rendering.LineHeightRule"/>'s own doc for why the three modes cannot be
     /// collapsed into one number.</summary>
     public LineHeightRule LineHeight { get; init; } = LineHeightRule.Default;
+    /// <summary>The format puts its line spacing BELOW the glyphs (HWP, invariant 161e): the line
+    /// model gives such a paragraph its rule's floor per line whatever the face's natural box.</summary>
+    public bool LineSpacingBelow { get; init; }
+    /// <summary>The paragraph's character size: its largest run, else the size the reader vouched
+    /// for an empty paragraph — what the line model measures a below-the-glyphs gap against.</summary>
+    public double CharSizePoints => Runs.Count > 0 ? Runs.Max(r => r.FontSizePoints) : BlankLineSizePoints;
     /// <summary>The paragraph's background fill (office `w:shd`, HWP paragraph shading) — painted
     /// across the full column behind the block's lines, like macOS's `paraShading`.</summary>
     public Color? ShadingColor { get; init; }

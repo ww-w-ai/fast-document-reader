@@ -343,7 +343,7 @@ public sealed class PageModePainter
                     var top = contentTop + placement.LocalTopPoints * PointsToPixels * zoomFactor;
                     var repeatsHeader = placement.BlockIndex < markers.TableRepeatsHeader.Length
                         && markers.TableRepeatsHeader[placement.BlockIndex];
-                    DrawNonTextBlock(surface, block, placement, left, top, contentWidthPx, zoomFactor, repeatsHeader);
+                    DrawNonTextBlock(surface, block, placement, left, top, contentWidthPx, zoomFactor, repeatsHeader, layout.SplitTables);
                 }
             }
 
@@ -412,7 +412,7 @@ public sealed class PageModePainter
     }
 
     private void DrawNonTextBlock(IPageCanvas surface, FlowBlock block, PagedBlock placement, double left, double top,
-        double columnWidthPx, double zoomFactor, bool repeatsHeader)
+        double columnWidthPx, double zoomFactor, bool repeatsHeader, bool splitTables)
     {
         var blockIndex = placement.BlockIndex;
         var indentPx = block.IndentPoints * PointsToPixels * zoomFactor;
@@ -437,7 +437,7 @@ public sealed class PageModePainter
                 var rowsToDraw = BuildRowDrawOrder(block.Table, placement, repeatsHeader);
                 var tableHeight = TableGridRenderer.Draw(surface, block.Table, left + indentPx, top,
                     Math.Max(40, columnWidthPx - indentPx), zoomFactor, -1e9, 1e9, cachedRows, out var rowHeights,
-                    rowsToDraw, imageRenderer: _imageRenderer);
+                    rowsToDraw, imageRenderer: _imageRenderer, splitTables: splitTables);
                 _tableRowHeightCache[blockIndex] = rowHeights;
                 _ = tableHeight;
                 return;

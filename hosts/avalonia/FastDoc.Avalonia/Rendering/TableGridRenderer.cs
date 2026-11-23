@@ -5,6 +5,7 @@ using Avalonia.Media;
 using Avalonia.Media.TextFormatting;
 using Avalonia.Utilities;
 using FastDoc.Avalonia.Model;
+using FastDoc.Avalonia.Paging;
 using FastDoc.Avalonia.Printing;
 
 namespace FastDoc.Avalonia.Rendering;
@@ -189,36 +190,27 @@ public static class TableGridRenderer
 
     /// <summary>E2c-2b: the table's TRUE total height at <paramref name="columnWidth"/>/<paramref
     /// name="fontScale"/> — used by the flow-mode virtualization pre-pass (FlowDocumentView's own
-    /// offset table) BEFORE any table is actually drawn. Used to be a character-count-per-cell
-    /// GUESS (charsPerLine assumed a fixed Latin-width ratio of 0.55 glyph-widths-per-em, which
-    /// under-counts a wider script like Hangul and so over-estimates line count and height —
-    /// exactly the systematic error E2c-2's own diagnosis pinned as the leading cause of this
-    /// host's HWP/hwpx sheet-count overshoot). Now calls the SAME real per-cell <see
-    /// cref="MeasureAllRows"/> pass <see cref="Draw"/> uses on an uncached table — no more
-    /// heuristic, no separate formula to keep in sync with the real one. This trades a cheap guess
-    /// for the true O(rows) measurement on every table this pre-pass reaches; see measurements.md's
-    /// E2c-2b section for the giant-table.odt cost this was measured against.</summary>
-    public static double EstimateHeight(TableGridModel model, double columnWidth, double fontScale = 1.0, ImageBlockRenderer? imageRenderer = null)
+    /// offset table) BEFORE any table is actually drawn. Calls the SAME <see cref="SolveTable"/> pass
+    /// <see cref="Draw"/> uses, so the height reserved here and the height drawn can never disagree.
+    /// <paramref name="splitTables"/> is the reader's "tables break across pages" preference: it makes
+    /// every cell's last line a line and not a line plus its spacing (invariant 161b).</summary>
+    public static double EstimateHeight(TableGridModel model, double columnWidth, double fontScale = 1.0,
+        ImageBlockRenderer? imageRenderer = null, bool splitTables = true)
     {
         if (model.Rows.Count == 0) { return TablePaddingPx(model); }
-        var widths = ResolveColumnWidths(model, columnWidth);
-        var rowCount = model.Rows.Count;
-        var rowIndexByRowNumber = new Dictionary<uint, int>(rowCount);
-        for (var i = 0; i < rowCount; i++) { rowIndexByRowNumber[model.Rows[i].Row] = i; }
-        var cellLayouts = new Dictionary<TableGridCell, (List<CellSegment> Segments, double Height)>();
-        var heights = MeasureAllRows(model, widths, rowIndexByRowNumber, rowCount, fontScale, cellLayouts, imageRenderer);
+        var solution = SolveTable(model, columnWidth, fontScale, imageRenderer, splitTables);
         double total = 0;
-        foreach (var h in heights) { total += h; }
+        foreach (var h in solution.RowHeights) { total += h; }
         return total;
     }
 
     /// <summary>Draws the grid at pixel position (left, top) and returns its TRUE total row-height
     /// array (NOT the total height — see below) — column widths from the document's own ratios,
-    /// row heights from real TextLayout of each cell's content (or the incoming cache, see the type
-    /// doc above), merged cells spanning their full rect, per-edge borders and shading resolved per
-    /// cell. Only cells whose rect intersects [<paramref name="viewportTop"/>, <paramref
-    /// name="viewportBottom"/>) get a TextLayout built and drawn; cells outside it contribute their
-    /// row's cached or freshly measured height only.
+    /// row heights from the engine's line model over the line boxes this host measured for each cell
+    /// (see <see cref="SolveTable"/>), merged cells spanning their full rect, per-edge borders and
+    /// shading resolved per cell. Only cells whose rect intersects [<paramref name="viewportTop"/>,
+    /// <paramref name="viewportBottom"/>) get a TextLayout built and drawn; cells outside it
+    /// contribute their row's solved height only.
     ///
     /// COORDINATE-SPACE INVARIANT (S9-V, root cause fixed 2026-09-06 — read this before touching
     /// any of the three `top`-shaped parameters below): <paramref name="viewportTop"/>/<paramref
@@ -235,9 +227,9 @@ public static class TableGridRenderer
     /// `blockLocalViewTop`/`blockLocalViewBottom` parameter doc and
     /// docs/studio/sprints/S9/s9c-flow-content.md for the VM evidence
     /// (<c>FASTDOC_DRAW_LOG</c>) that caught it. <paramref name="cachedRowHeights"/> is the row
-    /// -height array THIS SAME TABLE returned last draw, or null for a first draw (or after a
-    /// width/zoom change forces the caller to drop its cache) — passing it back in is what turns an
-    /// O(rows) TextLayout rebuild into an O(visible rows) one on every subsequent scroll.</summary>
+    /// -height array THIS SAME TABLE returned last draw, or null for a first draw: the solved rows are
+    /// cached per table, width, zoom and split preference (<see cref="SolveTable"/>), so a valid cache
+    /// here changes nothing — the parameter stays for the callers that hand it back.</summary>
     public static double Draw(
         IPageCanvas surface,
         TableGridModel model,
@@ -256,8 +248,10 @@ public static class TableGridRenderer
         // content for ("cell row=.. col=.. textLayoutNull=.. height=.."). No-op (never even
         // allocates the strings) when null — the caller (FlowDocumentView.RenderCore) only passes
         // a real delegate when the env var is set.
-        Action<string>? diagLog = null)
+        Action<string>? diagLog = null,
+        bool splitTables = true)
     {
+        _ = cachedRowHeights;
         if (model.Rows.Count == 0)
         {
             rowHeightsOut = Array.Empty<double>();
@@ -269,24 +263,8 @@ public static class TableGridRenderer
         for (var i = 0; i < widths.Length; i++) { columnX[i + 1] = columnX[i] + widths[i]; }
 
         var rowCount = model.Rows.Count;
-        var rowIndexByRowNumber = new Dictionary<uint, int>(rowCount);
-        for (var i = 0; i < rowCount; i++) { rowIndexByRowNumber[model.Rows[i].Row] = i; }
-
-        var cellLayouts = new Dictionary<TableGridCell, (List<CellSegment> Segments, double Height)>();
-        double[] rowHeights;
-        var haveValidCache = cachedRowHeights is not null && cachedRowHeights.Length == rowCount;
-
-        if (haveValidCache)
-        {
-            // Trust the previous call's measured heights — nothing about this table's content or
-            // width changed, so re-deriving them would just rebuild the same TextLayouts for
-            // cells the caller may not even ask us to draw this frame.
-            rowHeights = (double[])cachedRowHeights!.Clone();
-        }
-        else
-        {
-            rowHeights = MeasureAllRows(model, widths, rowIndexByRowNumber, rowCount, fontScale, cellLayouts, imageRenderer);
-        }
+        var solution = SolveTable(model, columnWidth, fontScale, imageRenderer, splitTables);
+        var rowHeights = (double[])solution.RowHeights.Clone();
 
         // E2c-2b: which REAL row indices to draw, and in what ORDER — defaults to every row, once,
         // in document order (every pre-existing caller, unaffected). PageModePainter passes a
@@ -316,10 +294,10 @@ public static class TableGridRenderer
                 var rowSpan = (int)Math.Min(Math.Max(1, cell.RowSpan), rowCount - rowIndex);
                 // A merged cell that spans PAST this draw call's own selection (rowSpan reaching a
                 // row not in `drawOrder`, or not immediately following in the given order) draws
-                // only as tall as the rows actually present here — the settle loop's own
-                // `CanBreakAbove` already refuses to open a piece boundary a merge crosses, so this
-                // only ever bites the header-repeat scaffold (which stitches non-adjacent rows
-                // together on purpose) and never a real body piece.
+                // only as tall as the rows actually present here — the engine's page plan already
+                // refuses to open a piece boundary a merge crosses, so this only ever bites the
+                // header-repeat scaffold (which stitches non-adjacent rows together on purpose) and
+                // never a real body piece.
                 var spanEnd = rowIndex + 1;
                 while (spanEnd < rowIndex + rowSpan && positionOfRealRow.TryGetValue(spanEnd, out var p)
                        && p == position + (spanEnd - rowIndex))
@@ -349,62 +327,67 @@ public static class TableGridRenderer
                 }
 
                 var cellWidth = Math.Max(10, SpanWidth(widths, colIndex, colSpan) - HorizontalPaddingPx(cell, model));
-                if (!cellLayouts.TryGetValue(cell, out var built))
+                if (solution.Cells.TryGetValue(cell, out var solved))
                 {
-                    built = BuildCellContent(cell, cellWidth, fontScale, model, imageRenderer);
-                    cellLayouts[cell] = built;
-                }
-
-                var (segments, contentHeight) = built;
-                if (diagLog is not null)
-                {
-                    var hasTextLayout = segments.Exists(s => s.TextLayout is not null);
-                    diagLog($"cell row={cell.Row} col={cell.Column} segments={segments.Count} textLayoutNull={!hasTextLayout} height={contentHeight:F1}");
-                }
-                if (segments.Count > 0)
-                {
-                    var vAlign = cell.VerticalAlignment;
-                    var vPad = VerticalPaddingPx(cell, model);
-                    var offsetY = vAlign switch
+                    var build = BuildCellParts(cell, cellWidth, fontScale, model, imageRenderer);
+                    var contentHeight = solved.Height;
+                    if (diagLog is not null)
                     {
-                        "middle" => Math.Max(0, (h - vPad - contentHeight) / 2),
-                        "bottom" => Math.Max(0, h - vPad - contentHeight),
-                        _ => 0,
-                    };
-                    var segLeft = x + LeftPaddingPx(cell, model);
-                    var segCursorY = top + y + TopPaddingPx(cell, model) + offsetY;
-                    foreach (var segment in segments)
+                        var hasTextLayout = build.Parts.Exists(s => s.Layout is not null);
+                        diagLog($"cell row={cell.Row} col={cell.Column} segments={build.Parts.Count} textLayoutNull={!hasTextLayout} height={contentHeight:F1}");
+                    }
+                    if (build.Parts.Count > 0)
                     {
-                        if (segment.TextLayout is { } textLayout)
+                        var vAlign = cell.VerticalAlignment;
+                        var vPad = VerticalPaddingPx(cell, model);
+                        var offsetY = vAlign switch
                         {
-                            surface.DrawTextLayout(textLayout, new Point(segLeft, segCursorY));
-                        }
-                        else if (segment.NonTextBlock is { } nonTextBlock && imageRenderer is not null)
+                            "middle" => Math.Max(0, (h - vPad - contentHeight) / 2),
+                            "bottom" => Math.Max(0, h - vPad - contentHeight),
+                            _ => 0,
+                        };
+                        var segLeft = x + LeftPaddingPx(cell, model);
+                        var originY = top + y + TopPaddingPx(cell, model) + offsetY;
+                        foreach (var part in build.Parts)
                         {
-                            // S9-C: an image/vector/unsupported-placeholder or a nested table
-                            // living INSIDE a table cell used to be silently dropped by
-                            // BuildCellLayout (it only ever read Kind == Text out of
-                            // cell.Content) — real docx/hwp corpora embed pictures and
-                            // sub-tables inside cells routinely (measured: 10 images-in-cells
-                            // in one investment-memo docx, 8 nested tables in one hwpx IR form),
-                            // so flow mode was missing content in the MIDDLE of the document,
-                            // not just clipping its end. Drawn here through the SAME
-                            // ImageBlockRenderer.Draw/PictureGeometry.Measure pair the top-level
-                            // flow already uses (see BuildCellContent), so reserved and drawn
-                            // height can never disagree (invariant 46's own rule, extended into
-                            // a cell).
-                            if (nonTextBlock.Kind == FlowBlockKind.Image)
+                            var item = solved.Items[part.Item];
+                            if (part.Layout is { } textLayout && item.Paragraphs is { } laid && part.Para < laid.Count)
                             {
-                                imageRenderer.Draw(surface, nonTextBlock, segLeft, segCursorY, cellWidth, indentPx: 0);
+                                // Every line at the top the engine's line model gave it: a layout's own
+                                // natural pitch is not the pitch the document asked for.
+                                var tops = laid[part.Para].Tops;
+                                for (var l = 0; l < textLayout.TextLines.Count && l < tops.Length; l++)
+                                {
+                                    surface.DrawTextLine(textLayout.TextLines[l], new Point(segLeft, originY + tops[l]));
+                                }
                             }
-                            else if (nonTextBlock.Kind == FlowBlockKind.Table && nonTextBlock.Table is not null)
+                            else if (part.Box is { } nonTextBlock && imageRenderer is not null)
                             {
-                                Draw(surface, nonTextBlock.Table, segLeft, segCursorY, cellWidth, fontScale,
-                                    double.NegativeInfinity, double.PositiveInfinity, cachedRowHeights: null,
-                                    out _, rowIndicesToDraw: null, imageRenderer: imageRenderer);
+                                // S9-C: an image/vector/unsupported-placeholder or a nested table
+                                // living INSIDE a table cell used to be silently dropped by
+                                // BuildCellLayout (it only ever read Kind == Text out of
+                                // cell.Content) — real docx/hwp corpora embed pictures and
+                                // sub-tables inside cells routinely (measured: 10 images-in-cells
+                                // in one investment-memo docx, 8 nested tables in one hwpx IR form),
+                                // so flow mode was missing content in the MIDDLE of the document,
+                                // not just clipping its end. Drawn here through the SAME
+                                // ImageBlockRenderer.Draw/PictureGeometry.Measure pair the top-level
+                                // flow already uses (see BuildCellParts), so reserved and drawn
+                                // height can never disagree (invariant 46's own rule, extended into
+                                // a cell).
+                                var boxTop = originY + item.Top;
+                                if (nonTextBlock.Kind == FlowBlockKind.Image)
+                                {
+                                    imageRenderer.Draw(surface, nonTextBlock, segLeft, boxTop, cellWidth, indentPx: 0);
+                                }
+                                else if (nonTextBlock.Kind == FlowBlockKind.Table && nonTextBlock.Table is not null)
+                                {
+                                    Draw(surface, nonTextBlock.Table, segLeft, boxTop, cellWidth, fontScale,
+                                        double.NegativeInfinity, double.PositiveInfinity, cachedRowHeights: null,
+                                        out _, rowIndicesToDraw: null, imageRenderer: imageRenderer, splitTables: splitTables);
+                                }
                             }
                         }
-                        segCursorY += segment.Height;
                     }
                 }
 
@@ -429,216 +412,155 @@ public static class TableGridRenderer
         return order;
     }
 
-    /// <summary>E2c-2b: the SAME real, per-cell <see cref="TextLayout"/> row-height measurement
-    /// <see cref="Draw"/> uses when it has no valid cache — extracted as its own entry point (SLAP:
-    /// measurement separated from painting) so pagination (<c>PageLayout</c>) and table settle
-    /// (<c>TableSettle</c>) can get the TRUE row heights instead of a character-count guess, and so
-    /// all three (layout, settle, draw) can share ONE cache keyed the same way. Returns heights in
-    /// POINTS at <paramref name="columnWidthPoints"/> — internally measures in pixels (the unit
-    /// every other TextLayout call in this file already uses, including the per-cell padding
-    /// resolved by <see cref="VerticalPaddingPx"/>/<see cref="HorizontalPaddingPx"/>, neither of
-    /// which is itself scaled by fontScale) and converts back, rather than running the pixel-shaped
-    /// formulas at `fontScale = 1/PointsToPixels`, which would have left that padding term in the
-    /// wrong unit.</summary>
-    public static double[] MeasureRowHeightsPoints(TableGridModel model, double columnWidthPoints, ImageBlockRenderer? imageRenderer = null)
+    /// <summary>E2c-2b: the table's row heights, in POINTS at <paramref name="columnWidthPoints"/> —
+    /// pagination (<c>PageLayout</c>) and the draw path share <see cref="SolveTable"/>, so the height
+    /// the plan places is the height that is drawn. Measures in pixels (the unit every TextLayout call
+    /// in this file already uses, including the per-cell padding resolved by <see
+    /// cref="VerticalPaddingPx"/>/<see cref="HorizontalPaddingPx"/>, neither of which is itself scaled
+    /// by fontScale) and converts back.</summary>
+    public static double[] MeasureRowHeightsPoints(TableGridModel model, double columnWidthPoints,
+        ImageBlockRenderer? imageRenderer = null, bool splitTables = true)
     {
         if (model.Rows.Count == 0) { return Array.Empty<double>(); }
-        var widthsPx = ResolveColumnWidths(model, columnWidthPoints * PointsToPixels);
-        var rowCount = model.Rows.Count;
-        var rowIndexByRowNumber = new Dictionary<uint, int>(rowCount);
-        for (var i = 0; i < rowCount; i++) { rowIndexByRowNumber[model.Rows[i].Row] = i; }
-        var cellLayouts = new Dictionary<TableGridCell, (List<CellSegment> Segments, double Height)>();
-        var heightsPx = MeasureAllRows(model, widthsPx, rowIndexByRowNumber, rowCount, fontScale: 1.0, cellLayouts, imageRenderer);
-        var heightsPt = new double[heightsPx.Length];
-        for (var i = 0; i < heightsPx.Length; i++) { heightsPt[i] = heightsPx[i] / PointsToPixels; }
+        var solution = SolveTable(model, columnWidthPoints * PointsToPixels, 1.0, imageRenderer, splitTables);
+        var heightsPt = new double[solution.RowHeights.Length];
+        for (var i = 0; i < heightsPt.Length; i++) { heightsPt[i] = solution.RowHeights[i] / PointsToPixels; }
         return heightsPt;
     }
 
-    /// <summary>The full two-pass measurement this renderer always did before E3's row cache: every
-    /// cell gets a real TextLayout so its true height is known, rowSpan==1 cells set their row's
-    /// height directly (pass 1), then a rowSpan&gt;1 cell that needs more room than the rows it
-    /// covers already have gets the excess split evenly across those rows (pass 2). Runs exactly
-    /// once per table per width/zoom — its result is what the caller caches and passes back in.</summary>
-    private static double[] MeasureAllRows(
-        TableGridModel model,
-        double[] widths,
-        Dictionary<uint, int> rowIndexByRowNumber,
-        int rowCount,
-        double fontScale,
-        Dictionary<TableGridCell, (List<CellSegment> Segments, double Height)> cellLayouts,
-        ImageBlockRenderer? imageRenderer = null)
+    /// <summary>One table, solved: every row's height and where each cell's lines and boxes stand.</summary>
+    private sealed class TableSolution
     {
-        var rowHeights = new double[rowCount];
+        public required double[] RowHeights { get; init; }
+        public required Dictionary<TableGridCell, CellLayoutOut> Cells { get; init; }
+    }
 
+    private readonly record struct SolutionKey(double ColumnWidth, double FontScale, bool SplitTables, bool WithBoxes);
+
+    /// <summary>The solved tables, per model: a draw at the same width, zoom and split preference as a
+    /// measure finds the answer already there, so a scroll never re-asks the engine. Two entries are
+    /// kept — pagination (zoom 1) and the zoom the view draws at.</summary>
+    private sealed class SolutionCache
+    {
+        public readonly List<(SolutionKey Key, TableSolution Solution)> Entries = new(2);
+    }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<TableGridModel, SolutionCache> Solutions = new();
+
+    /// <summary>The two-pass measurement every caller shares: each cell's paragraphs get a real
+    /// TextLayout so its natural line boxes are known, and the ENGINE (`render/office/line_model.rs`,
+    /// S3 of docs/plans/pagination-to-engine.md) applies the document's own rules to them — line-height
+    /// rule, HWP's spacing below the glyphs, a cell's last line handing its spacing back (161b), an
+    /// empty paragraph's own size (169) — and solves the rows: a decorative band at its declared
+    /// height, a single-line cell floored at its row's (166), a merged cell's excess shared across the
+    /// rows it covers. This host measures; it decides none of that.</summary>
+    private static TableSolution SolveTable(TableGridModel model, double columnWidth, double fontScale,
+        ImageBlockRenderer? imageRenderer, bool splitTables)
+    {
+        var key = new SolutionKey(columnWidth, fontScale, splitTables, imageRenderer is not null);
+        var cache = Solutions.GetOrCreateValue(model);
+        lock (cache)
+        {
+            foreach (var (k, s) in cache.Entries)
+            {
+                if (k.Equals(key)) { return s; }
+            }
+        }
+
+        var widths = ResolveColumnWidths(model, columnWidth);
+        var rowCount = model.Rows.Count;
+        var rowIndexByRowNumber = new Dictionary<uint, int>(rowCount);
+        for (var i = 0; i < rowCount; i++) { rowIndexByRowNumber[model.Rows[i].Row] = i; }
+
+        var facts = new TableFactsIn
+        {
+            RowCount = rowCount,
+            EmptyLine = EmptyCellLineHeightPx(model, fontScale),
+            RowPadding = TablePaddingPx(model),
+            DropsTrailingGap = splitTables,
+        };
+        var order = new List<TableGridCell>();
         foreach (var row in model.Rows)
         {
             if (!rowIndexByRowNumber.TryGetValue(row.Row, out var rowIndex)) { continue; }
             foreach (var cell in row.Cells)
             {
                 var cellWidth = Math.Max(10, SpanWidth(widths, (int)cell.Column, (int)cell.ColumnSpan) - HorizontalPaddingPx(cell, model));
-                var (segments, height) = BuildCellContent(cell, cellWidth, fontScale, model, imageRenderer);
-                cellLayouts[cell] = (segments, height);
-                if (cell.RowSpan <= 1)
+                var build = BuildCellParts(cell, cellWidth, fontScale, model, imageRenderer);
+                facts.Cells.Add(new CellFactsIn
                 {
-                    double need;
-                    if (segments.Count == 0 && cell.DeclaredHeight is > 0)
-                    {
-                        // TableBlockBuilder.decorativeBand (invariants 161(a)/94-97): an EMPTY cell
-                        // whose row declares a height IS that height outright — the declaration
-                        // already accounts for both paddings and the line, so it replaces the
-                        // padding+line sum rather than adding to it (a band drawn as a thin colour
-                        // rule stays that thin instead of gaining two more 7pt paddings).
-                        need = cell.DeclaredHeight.Value * PointsToPixels;
-                    }
-                    else
-                    {
-                        need = height + VerticalPaddingPx(cell, model);
-                        // TableBlockBuilder.singleLineRowFloor (invariant 166): a NON-empty,
-                        // UNWRAPPED single-line cell in a row that declares a height (docx
-                        // `w:trHeight`) is held to at least that height — never HWP's per-cell
-                        // height, which this wire never carries as `minimumRowHeight` for HWP.
-                        // S9-C: only when the cell's WHOLE content is that one text segment (a
-                        // cell that also carries an image/nested-table segment is no longer the
-                        // single-line case this floor exists for).
-                        var singleTextSegment = segments.Count == 1 && segments[0].TextLayout is { TextLines.Count: <= 1 };
-                        if (singleTextSegment && cell.MinimumRowHeight is > 0)
-                        {
-                            need = Math.Max(need, cell.MinimumRowHeight.Value * PointsToPixels);
-                        }
-                    }
-                    if (need > rowHeights[rowIndex]) { rowHeights[rowIndex] = need; }
-                }
+                    Row = rowIndex,
+                    RowSpan = (int)Math.Max(1, cell.RowSpan),
+                    VPadding = VerticalPaddingPx(cell, model),
+                    DeclaredHeight = cell.DeclaredHeight is { } declared ? declared * PointsToPixels : null,
+                    MinRowHeight = cell.MinimumRowHeight is { } minimum ? minimum * PointsToPixels : null,
+                    Items = build.Items,
+                });
+                order.Add(cell);
             }
         }
-        // A row with literally no cells at all (a gap in the grid, not a document-declared empty
-        // cell — those are handled above via DeclaredHeight) still needs to exist: one line of the
-        // document's own default body size (invariant 169), never a hardcoded 14pt guess.
-        var baseRowHeight = EmptyCellLineHeightPx(model, fontScale) + TablePaddingPx(model);
-        for (var i = 0; i < rowCount; i++)
-        {
-            if (rowHeights[i] <= 0) { rowHeights[i] = baseRowHeight; }
-        }
+        var (_, tables) = LineModelClient.Solve(null, Array.Empty<ParagraphFactsIn>(), new[] { facts });
+        var answer = tables[0];
+        var cells = new Dictionary<TableGridCell, CellLayoutOut>(order.Count);
+        for (var i = 0; i < order.Count; i++) { cells[order[i]] = answer.Cells[i]; }
+        var solution = new TableSolution { RowHeights = answer.RowHeights, Cells = cells };
 
-        foreach (var row in model.Rows)
+        lock (cache)
         {
-            if (!rowIndexByRowNumber.TryGetValue(row.Row, out var rowIndex)) { continue; }
-            foreach (var cell in row.Cells)
-            {
-                if (cell.RowSpan <= 1) { continue; }
-                var span = (int)Math.Min(cell.RowSpan, rowCount - rowIndex);
-                if (span <= 0) { continue; }
-                var covered = 0.0;
-                for (var r = rowIndex; r < rowIndex + span; r++) { covered += rowHeights[r]; }
-                var need = cellLayouts[cell].Height + VerticalPaddingPx(cell, model);
-                if (need > covered)
-                {
-                    var extra = (need - covered) / span;
-                    for (var r = rowIndex; r < rowIndex + span; r++) { rowHeights[r] += extra; }
-                }
-            }
+            if (cache.Entries.Count >= 2) { cache.Entries.RemoveAt(0); }
+            cache.Entries.Add((key, solution));
         }
-
-        return rowHeights;
+        return solution;
     }
 
-    /// <summary>One vertically-stacked piece of a cell's content — either a built
-    /// <see cref="TextLayout"/> spanning one contiguous run of Text-kind <see cref="FlowBlock"/>s,
-    /// or a reference to a non-text <see cref="FlowBlock"/> (Image/Vector/Unsupported-placeholder,
-    /// Kind == Image; or a nested Table) drawn separately — see <see cref="BuildCellContent"/>'s
-    /// own doc for why this split exists.</summary>
-    private readonly record struct CellSegment(TextLayout? TextLayout, double Height, FlowBlock? NonTextBlock);
-
-    /// <summary>Walks <paramref name="cell"/>'s content in DOCUMENT ORDER, building one
-    /// <see cref="TextLayout"/> per contiguous run of Text-kind blocks and, when <paramref
-    /// name="imageRenderer"/> is supplied, a separate measured <see cref="CellSegment"/> for every
-    /// Image/Vector/Unsupported-placeholder or nested-Table block found in between — a cell's
-    /// pictures and nested tables are ordinary content, not a special case, and both flow mode
-    /// (<see cref="FlowDocumentView"/>) and page mode (<see cref="Paging.PageModePainter"/>, via
-    /// <see cref="Paging.TableSettle"/>/<see cref="Paging.PageLayout"/>) pass their own
-    /// <see cref="ImageBlockRenderer"/> here so a picture or sub-table nested in a cell reserves
-    /// height and draws identically in either mode. <paramref name="imageRenderer"/> stays an
-    /// OPTIONAL parameter only so a caller that genuinely wants text-only measurement (a probe, a
-    /// test fixture with no renderer to hand) can still ask for one — passing null there returns a
-    /// segment list that ignores image/nested-table content entirely, both for height and for draw.
-    /// Returns an empty segment list (with <see cref="EmptyCellLineHeightPx"/> as height) only when
-    /// the cell has NO content of any kind — a cell holding an image or nested table is never
-    /// "empty" even though it has no text.</summary>
-    private static (List<CellSegment> Segments, double Height) BuildCellContent(
-        TableGridCell cell, double width, double fontScale, TableGridModel model, ImageBlockRenderer? imageRenderer)
+    /// <summary>One thing a cell stacks: a paragraph's TextLayout (null for a blank one) or a box. `Item`
+    /// and `Para` say where the engine's answer for it lives (`CellLayoutOut.Items[Item]`, its
+    /// paragraph `Para`).</summary>
+    private sealed class CellPart
     {
-        var segments = new List<CellSegment>();
-        double totalHeight = 0;
+        public required int Item { get; init; }
+        public int Para { get; init; }
+        public TextLayout? Layout { get; init; }
+        public FlowBlock? Box { get; init; }
+    }
 
-        // S9-C mutation-review fix: the only place totalHeight advances is here, reading the
-        // segment's OWN stored Height back out after adding it — so a bug that stores the wrong
-        // Height on the segment (what Draw's cursor actually walks by) necessarily also breaks
-        // this cell's measured height, instead of a local variable happening to agree with two
-        // independently-written call sites. A prior version summed a local `segmentHeight`
-        // variable directly and passed it to `new CellSegment(...)` a second time — mutating just
-        // the CellSegment's stored Height to 0 left EstimateHeight's total untouched, and no test
-        // caught it: the cell measured correctly while Draw's cursor no longer advanced, so the
-        // NEXT segment painted on top of this one instead of below it (exactly the "content
-        // invisible" symptom this sprint exists to fix, just relocated one segment later).
-        void AddSegment(CellSegment segment)
-        {
-            segments.Add(segment);
-            totalHeight += segment.Height;
-        }
+    private sealed class CellBuild
+    {
+        public List<CellPart> Parts { get; } = new();
+        public List<CellItemIn> Items { get; } = new();
+    }
 
-        var text = new System.Text.StringBuilder();
-        var overrides = new List<ValueSpan<TextRunProperties>>();
-        var cursor = 0;
-        // Bootstrap only — every run below overwrites this with its OWN declared size the moment
-        // one exists; a cell with no runs at all returns before this value is ever used to lay
-        // anything out. The document's own default body size, never a bare "12".
-        var maxFontSizePx = model.DefaultBodyFontSizePoints * PointsToPixels * fontScale;
-        var alignment = TextAlignment.Left;
-        var firstText = true;
-        // The cell's runs are laid out as one paragraph, so they share one letter spacing — the
-        // character-weighted mean, as a text block carries it (FlowBlock.LetterSpacingPoints).
-        double spacingSum = 0;
-        var spacingChars = 0;
-
-        void FlushTextRun()
-        {
-            if (text.Length == 0) { return; }
-            var content = text.ToString();
-            if (content.EndsWith('\n')) { content = content[..^1]; }
-            var cellLetterSpacingPoints = spacingChars == 0 ? 0 : spacingSum / spacingChars;
-            spacingSum = 0;
-            spacingChars = 0;
-            if (content.Length > 0)
-            {
-                var layout = new TextLayout(content, DefaultTypeface, maxFontSizePx, Brushes.Black, alignment,
-                    TextWrapping.Wrap, maxWidth: Math.Max(10, width),
-                    letterSpacing: cellLetterSpacingPoints * fontScale * PointsToPixels, textStyleOverrides: overrides);
-                AddSegment(new CellSegment(layout, layout.Height, null));
-            }
-            text.Clear();
-            overrides = new List<ValueSpan<TextRunProperties>>();
-            cursor = 0;
-            firstText = true;
-        }
+    /// <summary>Walks <paramref name="cell"/>'s content in DOCUMENT ORDER: one <see cref="TextLayout"/>
+    /// per text paragraph (so each keeps its own alignment, letter spacing and the line rule the engine
+    /// applies to it) and, when <paramref name="imageRenderer"/> is supplied, a separately measured box
+    /// for every Image/Vector/Unsupported-placeholder or nested-Table block found in between — a cell's
+    /// pictures and nested tables are ordinary content, not a special case, and both flow mode
+    /// (<see cref="FlowDocumentView"/>) and page mode (<see cref="Paging.PageModePainter"/>) pass their
+    /// own <see cref="ImageBlockRenderer"/> here so a picture or sub-table nested in a cell reserves
+    /// height and draws identically in either mode. <paramref name="imageRenderer"/> stays an OPTIONAL
+    /// parameter only so a caller that genuinely wants text-only measurement can still ask for one —
+    /// passing null there returns parts that ignore image/nested-table content entirely, both for
+    /// height and for draw. A cell with no parts at all has no content of any kind: the engine stands
+    /// it at one line of the document's default size.</summary>
+    private static CellBuild BuildCellParts(TableGridCell cell, double width, double fontScale, TableGridModel model,
+        ImageBlockRenderer? imageRenderer)
+    {
+        var build = new CellBuild();
+        var scale = fontScale * PointsToPixels;
+        List<ParagraphFactsIn>? text = null;
 
         foreach (var block in cell.Content)
         {
             if (block.Kind == FlowBlockKind.Text)
             {
-                if (firstText) { alignment = block.Alignment; firstText = false; }
-                foreach (var run in block.Runs)
+                if (text is null)
                 {
-                    if (run.Text.Length == 0) { continue; }
-                    text.Append(run.Text);
-                    spacingSum += run.Text.Length * run.LetterSpacingPercent / 100.0 * run.FontSizePoints;
-                    spacingChars += run.Text.Length;
-                    var fontSizePx = run.FontSizePoints * fontScale * PointsToPixels;
-                    if (fontSizePx > maxFontSizePx) { maxFontSizePx = fontSizePx; }
-                    var props = FlowRun.PropertiesFor(run, fontSizePx, new SolidColorBrush(run.Foreground));
-                    overrides.Add(new ValueSpan<TextRunProperties>(cursor, run.Text.Length, props));
-                    cursor += run.Text.Length;
+                    text = new List<ParagraphFactsIn>();
+                    build.Items.Add(new CellItemIn { Paragraphs = text });
                 }
-                text.Append('\n');
-                cursor += 1;
+                var (layout, lines, blank) = BuildParagraph(block, width, fontScale, model);
+                text.Add(ParagraphFactsIn.From(block, lines, blank, scale));
+                build.Parts.Add(new CellPart { Item = build.Items.Count - 1, Para = text.Count - 1, Layout = layout });
                 continue;
             }
 
@@ -646,27 +568,61 @@ public static class TableGridRenderer
 
             if (block.Kind == FlowBlockKind.Image)
             {
-                FlushTextRun();
                 var maxWidthPoints = width / PointsToPixels;
                 var (declaredWidthPoints, declaredHeightPoints) = imageRenderer.EffectiveDeclaredSize(block);
                 var (_, imageHeightPoints) = PictureGeometry.Measure(declaredWidthPoints, declaredHeightPoints, maxWidthPoints);
-                var segmentHeight = imageHeightPoints * PointsToPixels
+                var height = imageHeightPoints * PointsToPixels
                     + (block.SpacingBeforePoints + block.SpacingAfterPoints) * PointsToPixels;
-                AddSegment(new CellSegment(null, segmentHeight, block));
+                text = null;
+                build.Items.Add(new CellItemIn { FixedHeight = height });
+                build.Parts.Add(new CellPart { Item = build.Items.Count - 1, Box = block });
             }
             else if (block.Kind == FlowBlockKind.Table && block.Table is not null)
             {
-                FlushTextRun();
-                var segmentHeight = EstimateHeight(block.Table, width, fontScale, imageRenderer)
+                var height = EstimateHeight(block.Table, width, fontScale, imageRenderer)
                     + (block.SpacingBeforePoints + block.SpacingAfterPoints) * PointsToPixels;
-                AddSegment(new CellSegment(null, segmentHeight, block));
+                text = null;
+                build.Items.Add(new CellItemIn { FixedHeight = height });
+                build.Parts.Add(new CellPart { Item = build.Items.Count - 1, Box = block });
             }
             // Rule/other rare kinds inside a cell: no reserved role today, same as before this fix.
         }
-        FlushTextRun();
+        return build;
+    }
 
-        if (segments.Count == 0) { return (segments, EmptyCellLineHeightPx(model, fontScale)); }
-        return (segments, totalHeight);
+    /// <summary>One paragraph's TextLayout and the natural box of each of its lines (pixels at the
+    /// caller's scale), or — for a paragraph with no text — no layout and the natural box of one line
+    /// of its own size.</summary>
+    private static (TextLayout? Layout, double[] Lines, bool Blank) BuildParagraph(FlowBlock block, double width,
+        double fontScale, TableGridModel model)
+    {
+        var scale = fontScale * PointsToPixels;
+        var text = new System.Text.StringBuilder();
+        var overrides = new List<ValueSpan<TextRunProperties>>();
+        var cursor = 0;
+        // Bootstrap only — every run below overwrites this with its OWN declared size the moment
+        // one exists. The document's own default body size, never a bare "12".
+        var maxFontSizePx = model.DefaultBodyFontSizePoints * scale;
+        foreach (var run in block.Runs)
+        {
+            if (run.Text.Length == 0) { continue; }
+            text.Append(run.Text);
+            var fontSizePx = run.FontSizePoints * scale;
+            if (fontSizePx > maxFontSizePx) { maxFontSizePx = fontSizePx; }
+            overrides.Add(new ValueSpan<TextRunProperties>(cursor, run.Text.Length,
+                FlowRun.PropertiesFor(run, fontSizePx, new SolidColorBrush(run.Foreground))));
+            cursor += run.Text.Length;
+        }
+        if (text.Length == 0)
+        {
+            return (null, new[] { Paging.PageLayout.NaturalLineHeight(Math.Max(1, block.BlankLineSizePoints * scale)) }, true);
+        }
+        var layout = new TextLayout(text.ToString(), DefaultTypeface, maxFontSizePx, Brushes.Black, block.Alignment,
+            TextWrapping.Wrap, maxWidth: Math.Max(10, width),
+            letterSpacing: block.LetterSpacingPoints * scale, textStyleOverrides: overrides);
+        var lines = new double[layout.TextLines.Count];
+        for (var i = 0; i < lines.Length; i++) { lines[i] = layout.TextLines[i].Height; }
+        return (layout, lines, false);
     }
 
     private static double[] ResolveColumnWidths(TableGridModel model, double columnWidth)
