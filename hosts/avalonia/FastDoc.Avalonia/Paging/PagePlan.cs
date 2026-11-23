@@ -29,12 +29,33 @@ internal sealed class PlanBlockInput
     public double Height { get; init; }
     public double[]? RowHeights { get; init; }
     public bool[]? RowCanBreakAbove { get; init; }
+    /// <summary>Per row, the cells that begin in it with the line boxes inside them — what lets the
+    /// engine flow a table taller than a page line by line. Null when the host reports none.</summary>
+    public PlanCellInput[][]? RowCells { get; init; }
     public bool KeepsWhole { get; init; }
+}
+
+/// <summary>One line inside a cell, in POINTS from the cell's content origin.</summary>
+internal readonly record struct PlanLineInput(double Top, double Height, double Trailing);
+
+internal sealed class PlanCellInput
+{
+    public int RowSpan { get; init; } = 1;
+    public double PadTop { get; init; }
+    public double PadBottom { get; init; }
+    public double ContentHeight { get; init; }
+    public required PlanLineInput[] Lines { get; init; }
 }
 
 internal readonly record struct PlannedPage(int Section, long? FirstKey);
 
-internal readonly record struct PlannedPlacement(int Block, int Page, double Top, double Height, int? RowStart, int? RowCount);
+/// <summary>One row's extent on one page of a flowed table: page-local points.</summary>
+internal readonly record struct PlannedRowSegment(int Block, int Row, int Page, double Top, double Bottom);
+
+/// <summary>One cell line of a flowed table: its page and page-local top, in points.</summary>
+internal readonly record struct PlannedCellLine(int Block, int Row, int Cell, int Line, int Page, double Top);
+
+internal readonly record struct PlannedPlacement(int Block, int Page, double Top, double Height, int? RowStart, int? RowCount, bool Flowed = false);
 
 internal readonly record struct PlannedLine(int Block, int Line, int Page, double Top);
 
@@ -45,6 +66,8 @@ internal sealed class PagePlanResult
     public required IReadOnlyList<PlannedPage> Pages { get; init; }
     public required IReadOnlyList<PlannedPlacement> Placements { get; init; }
     public required IReadOnlyList<PlannedLine> Lines { get; init; }
+    public required IReadOnlyList<PlannedRowSegment> RowSegments { get; init; }
+    public required IReadOnlyList<PlannedCellLine> CellLines { get; init; }
     public required int SplitTableCount { get; init; }
     public required int CarriedTableCount { get; init; }
     public required int DroppedBreakCount { get; init; }
@@ -58,9 +81,9 @@ internal static class PagePlanClient
     private const int PlanVersion = 1;
 
     public static PagePlanResult Plan(IntPtr handle, double contentHeightPoints, bool splitTables,
-        IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks)
+        IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks, double bandPoints = 0)
     {
-        var input = Encode(contentHeightPoints, splitTables, noteBands, blocks);
+        var input = Encode(contentHeightPoints, splitTables, noteBands, blocks, bandPoints);
         var reply = FastdocEngine.TakeOwnedString(FastdocEngine.fastdoc_office_page_plan_json(handle, input));
         if (reply is null)
         {
@@ -70,7 +93,7 @@ internal static class PagePlanClient
     }
 
     internal static byte[] Encode(double contentHeightPoints, bool splitTables,
-        IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks)
+        IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks, double bandPoints = 0)
     {
         var buffer = new ArrayBufferWriter<byte>(Math.Max(4096, blocks.Count * 96));
         using (var w = new Utf8JsonWriter(buffer))
@@ -79,6 +102,7 @@ internal static class PagePlanClient
             w.WriteNumber("planVersion", PlanVersion);
             w.WriteNumber("contentHeight", contentHeightPoints);
             w.WriteBoolean("splitTables", splitTables);
+            if (bandPoints > 0) { w.WriteNumber("band", bandPoints); }
             w.WriteStartArray("noteBands");
             if (noteBands is not null)
             {
@@ -134,6 +158,10 @@ internal static class PagePlanClient
                     {
                         w.WriteBoolean("canBreakAbove", true);
                     }
+                    if (b.RowCells is { } rowCells && r < rowCells.Length && rowCells[r].Length > 0)
+                    {
+                        WriteCells(w, rowCells[r]);
+                    }
                     w.WriteEndObject();
                 }
                 w.WriteEndArray();
@@ -141,6 +169,31 @@ internal static class PagePlanClient
             if (b.KeepsWhole) { w.WriteBoolean("keepsWhole", true); }
         }
         w.WriteEndObject();
+    }
+
+    private static void WriteCells(Utf8JsonWriter w, PlanCellInput[] cells)
+    {
+        w.WriteStartArray("cells");
+        foreach (var cell in cells)
+        {
+            w.WriteStartObject();
+            if (cell.RowSpan != 1) { w.WriteNumber("rowSpan", cell.RowSpan); }
+            w.WriteNumber("padTop", cell.PadTop);
+            w.WriteNumber("padBottom", cell.PadBottom);
+            w.WriteNumber("contentHeight", cell.ContentHeight);
+            w.WriteStartArray("lines");
+            foreach (var line in cell.Lines)
+            {
+                w.WriteStartObject();
+                w.WriteNumber("top", line.Top);
+                w.WriteNumber("height", line.Height);
+                if (line.Trailing != 0) { w.WriteNumber("trailing", line.Trailing); }
+                w.WriteEndObject();
+            }
+            w.WriteEndArray();
+            w.WriteEndObject();
+        }
+        w.WriteEndArray();
     }
 
     internal static PagePlanResult Decode(string reply)
@@ -167,7 +220,8 @@ internal static class PagePlanClient
             placements.Add(new PlannedPlacement(p.GetProperty("block").GetInt32(), p.GetProperty("page").GetInt32(),
                 p.GetProperty("top").GetDouble(), p.GetProperty("height").GetDouble(),
                 p.TryGetProperty("rowStart", out var rs) ? rs.GetInt32() : null,
-                p.TryGetProperty("rowCount", out var rc) ? rc.GetInt32() : null));
+                p.TryGetProperty("rowCount", out var rc) ? rc.GetInt32() : null,
+                p.TryGetProperty("flowed", out var flowed) && flowed.GetBoolean()));
         }
         var lineArray = plan.GetProperty("lines");
         var lines = new List<PlannedLine>(lineArray.GetArrayLength());
@@ -175,8 +229,20 @@ internal static class PagePlanClient
         {
             lines.Add(new PlannedLine(l[0].GetInt32(), l[1].GetInt32(), l[2].GetInt32(), l[3].GetDouble()));
         }
+        var segments = new List<PlannedRowSegment>();
+        foreach (var s in plan.GetProperty("rowSegments").EnumerateArray())
+        {
+            segments.Add(new PlannedRowSegment(s[0].GetInt32(), s[1].GetInt32(), s[2].GetInt32(), s[3].GetDouble(), s[4].GetDouble()));
+        }
+        var cellLines = new List<PlannedCellLine>();
+        foreach (var l in plan.GetProperty("cellLines").EnumerateArray())
+        {
+            cellLines.Add(new PlannedCellLine(l[0].GetInt32(), l[1].GetInt32(), l[2].GetInt32(), l[3].GetInt32(), l[4].GetInt32(), l[5].GetDouble()));
+        }
         return new PagePlanResult
         {
+            RowSegments = segments,
+            CellLines = cellLines,
             PageCount = plan.GetProperty("pageCount").GetInt32(),
             Pages = pages,
             Placements = placements,

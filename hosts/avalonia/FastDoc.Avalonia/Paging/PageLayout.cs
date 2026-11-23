@@ -104,8 +104,57 @@ public static class PageSheetsResolver
 /// covers, so <see cref="PageModePainter"/> can ask <see cref="Rendering.TableGridRenderer.Draw"/>
 /// to paint exactly this piece's rows (plus a repeated header, if the document asks for one)
 /// instead of the whole grid on every page it touches.</summary>
+/// <summary><paramref name="Flowed"/> marks a table piece the plan cut through the middle of its rows
+/// (a table that fits no page): its rows are drawn from <see cref="PageLayoutResult.Flowed"/>, not whole.</summary>
 public readonly record struct PagedBlock(int BlockIndex, int PageIndex, double LocalTopPoints, double HeightPoints,
-    int? RowRangeStart = null, int? RowRangeCount = null);
+    int? RowRangeStart = null, int? RowRangeCount = null, bool Flowed = false);
+
+/// <summary>One row's box on one page of a flowed table, in page-local points.</summary>
+internal readonly record struct FlowSegment(double Top, double Bottom);
+
+/// <summary>What the plan decided about the tables it flowed across pages line by line: where each row
+/// stands on each page it touches and where every cell line landed (S4 of
+/// docs/plans/pagination-to-engine.md). Keyed by the FlowBlock index, the row, the cell's position in
+/// its row and the line's position in the cell.</summary>
+public sealed class FlowedTables
+{
+    private readonly Dictionary<(int Block, int Row), List<(int Page, FlowSegment Box)>> _segments = new();
+    private readonly Dictionary<(int Block, int Row, int Cell, int Line, int Page), double> _lines = new();
+
+    public bool IsEmpty => _segments.Count == 0;
+
+    internal void Add(PlannedRowSegment s)
+    {
+        if (!_segments.TryGetValue((s.Block, s.Row), out var list))
+        {
+            list = new List<(int, FlowSegment)>(1);
+            _segments[(s.Block, s.Row)] = list;
+        }
+        list.Add((s.Page, new FlowSegment(s.Top, s.Bottom)));
+    }
+
+    internal void Add(PlannedCellLine l) => _lines[(l.Block, l.Row, l.Cell, l.Line, l.Page)] = l.Top;
+
+    internal bool TryGetSegment(int block, int row, int page, out FlowSegment segment)
+    {
+        segment = default;
+        if (!_segments.TryGetValue((block, row), out var list)) { return false; }
+        foreach (var (p, box) in list)
+        {
+            if (p == page) { segment = box; return true; }
+        }
+        return false;
+    }
+
+    internal bool StartsOnPage(int block, int row, int page) =>
+        _segments.TryGetValue((block, row), out var list) && list.Count > 0 && list[0].Page == page;
+
+    internal bool EndsOnPage(int block, int row, int page) =>
+        _segments.TryGetValue((block, row), out var list) && list.Count > 0 && list[^1].Page == page;
+
+    internal bool TryGetLine(int block, int row, int cell, int line, int page, out double top) =>
+        _lines.TryGetValue((block, row, cell, line, page), out top);
+}
 
 /// <summary>E2c-1b: one TEXT LINE's placement — the granularity PageBandLayoutDelegate.swift
 /// shifts at on macOS. A text block ("paragraph"/"heading"/"listItem"/... FlowDocumentBuilder
@@ -145,6 +194,8 @@ public sealed class PageLayoutResult
     public bool SplitTables { get; init; }
     public int CarriedTableCount { get; init; }
     public int DroppedBreakCount { get; init; }
+    /// <summary>The tables the plan cut through the middle of their rows; null when there are none.</summary>
+    public FlowedTables? Flowed { get; init; }
 }
 
 /// <summary>
@@ -291,12 +342,16 @@ public static class PageLayout
             {
                 var rowHeights = TableSettle.EstimateRowHeights(table, widthForBlock, imageRenderer, splitTables);
                 var canBreak = TableSettle.RowsThatCanBreakAbove(table);
+                // A table taller than the page body is flowed line by line by the plan, which needs each
+                // cell's lines; every other table is placed from its rows alone.
+                var flowable = rowHeights.Sum() > contentHeight;
                 inputs.Add(new PlanBlockInput
                 {
                     Key = key, Kind = "table", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
                     SpacingBefore = block.SpacingBeforePoints, SpacingAfter = block.SpacingAfterPoints,
                     RowHeights = rowHeights.Length == canBreak.Length ? rowHeights : PadRows(rowHeights, canBreak.Length),
                     RowCanBreakAbove = canBreak,
+                    RowCells = flowable ? TableGridRenderer.FlowFacts(table, widthForBlock, imageRenderer, splitTables) : null,
                     KeepsWhole = i < markers.TableKeepsWhole.Length && markers.TableKeepsWhole[i],
                 });
                 continue;
@@ -327,14 +382,22 @@ public static class PageLayout
             inputs[inputIndex].Trailing = answer.Trailing;
         }
 
-        var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs);
+        var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs, band.BandPoints);
 
         var blockPlacements = new List<PagedBlock>(plan.Placements.Count);
         foreach (var placed in plan.Placements)
         {
             var hasRows = blocks[placed.Block].Kind == FlowBlockKind.Table && blocks[placed.Block].Table is not null;
             blockPlacements.Add(new PagedBlock(placed.Block, placed.Page, placed.Top, placed.Height,
-                RowRangeStart: hasRows ? placed.RowStart : null, RowRangeCount: hasRows ? placed.RowCount : null));
+                RowRangeStart: hasRows ? placed.RowStart : null, RowRangeCount: hasRows ? placed.RowCount : null,
+                Flowed: placed.Flowed));
+        }
+        FlowedTables? flowed = null;
+        if (plan.RowSegments.Count > 0)
+        {
+            flowed = new FlowedTables();
+            foreach (var segment in plan.RowSegments) { flowed.Add(segment); }
+            foreach (var line in plan.CellLines) { flowed.Add(line); }
         }
         var linePlacements = new List<PagedLine>(plan.Lines.Count);
         foreach (var placed in plan.Lines)
@@ -357,6 +420,7 @@ public static class PageLayout
             Lines = linePlacements,
             PageSectionIndex = pageSectionIndex,
             SplitTables = splitTables,
+            Flowed = flowed,
             SplitTableCount = plan.SplitTableCount,
             CarriedTableCount = plan.CarriedTableCount,
             DroppedBreakCount = plan.DroppedBreakCount,

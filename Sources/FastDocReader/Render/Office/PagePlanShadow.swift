@@ -34,6 +34,10 @@ enum PagePlanShadow {
         var tables = 0
         var blocksOnADifferentPage = 0
         var linesOnADifferentPage = 0
+        /// Lines inside tables the plan flowed line by line, and how many of them the plan placed on
+        /// another page (or at another top) than TextKit did.
+        var cellLines = 0
+        var cellLinesOnADifferentPage = 0
         var firstDifference: String?
         var context: [String] = []
         var pagesWithADifferentFirstBlock = 0
@@ -63,6 +67,115 @@ enum PagePlanShadow {
         var lineSpacing: CGFloat
         /// The line as the port's vocabulary has it, read from this same pass (no second layout).
         var box: RustEngineMeasure.LineBox
+        var column: Int = 0
+        var paragraphStart: Int = 0
+        var spaceBefore: CGFloat = 0
+        var spaceAfter: CGFloat = 0
+        /// The cell blocks the line sits in, outermost first (a nested table adds one).
+        var chain: [NSTextTableBlock] = []
+    }
+
+    private static func inset(_ block: NSTextTableBlock, _ edge: NSRectEdge) -> CGFloat {
+        block.width(for: .padding, edge: edge) + block.width(for: .border, edge: edge)
+    }
+
+    /// The rows of the table at nesting `depth`, as the plan's flow wants them: every cell's items at
+    /// their NATURAL offsets (a gap a page break opened between two of them is taken back out),
+    /// nested tables as items of their own, and a row's height from its cells whenever a page
+    /// boundary fell in or beside it (the observed distance to the next row then carries the gap).
+    private static func flowRows(_ frags: [Fragment], depth: Int, blockIndex: Int, page: (CGFloat) -> Int,
+                                 leading: CGFloat, pitch: CGFloat,
+                                 refs: inout [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)])
+        -> (rows: [[String: Any]], height: CGFloat) {
+        var order: [ObjectIdentifier] = []
+        var byCell: [ObjectIdentifier: [Fragment]] = [:]
+        for f in frags where f.chain.count > depth {
+            let id = ObjectIdentifier(f.chain[depth])
+            if byCell[id] == nil { order.append(id) }
+            byCell[id, default: []].append(f)
+        }
+        let rowKeys = Set(order.map { byCell[$0]![0].chain[depth].startingRow }).sorted()
+        let position = Dictionary(uniqueKeysWithValues: rowKeys.enumerated().map { ($1, $0) })
+        var cellsOfRow: [Int: [[String: Any]]] = [:]
+        var extentOfRow: [Int: CGFloat] = [:]
+        var shiftedRows: Set<Int> = []
+        var observedTop: [Int: CGFloat] = [:]
+        var observedPage: [Int: Int] = [:]
+        for id in order {
+            let fs = byCell[id]!
+            let block = fs[0].chain[depth]
+            guard let at = position[block.startingRow] else { continue }
+            let padTop = inset(block, .minY), padBottom = inset(block, .maxY)
+            let top = fs[0].rect.minY - padTop
+            if observedTop[at] == nil || top < observedTop[at]! { observedTop[at] = top; observedPage[at] = page(fs[0].rect.minY) }
+            var items: [[String: Any]] = []
+            var natural: CGFloat = 0
+            var previous: (bottom: CGFloat, page: Int, spaceAfter: CGFloat, paragraph: Int)?
+            let cellIndex = cellsOfRow[at, default: []].count
+            var i = 0
+            while i < fs.count {
+                let f = fs[i]
+                var item: [String: Any]
+                var itemTop: CGFloat, itemBottom: CGFloat, itemHeight: CGFloat
+                var last = f
+                if f.chain.count > depth + 1 {
+                    let nestedTable = ObjectIdentifier(f.chain[depth + 1].table)
+                    var j = i
+                    while j < fs.count, fs[j].chain.count > depth + 1,
+                          ObjectIdentifier(fs[j].chain[depth + 1].table) == nestedTable { j += 1 }
+                    let run = Array(fs[i..<j])
+                    let sub = flowRows(run, depth: depth + 1, blockIndex: blockIndex, page: page, leading: leading,
+                                       pitch: pitch, refs: &refs)
+                    itemTop = run.map { $0.rect.minY - inset($0.chain[depth + 1], .minY) }.min()!
+                    itemBottom = run.map { $0.rect.maxY + inset($0.chain[depth + 1], .maxY) }.max()!
+                    itemHeight = sub.height
+                    item = ["height": Double(itemHeight), "rows": sub.rows]
+                    last = run.last!
+                    i = j
+                } else {
+                    itemTop = f.rect.minY
+                    itemBottom = f.rect.maxY
+                    itemHeight = f.rect.height
+                    item = ["height": Double(itemHeight), "trailing": Double(f.lineSpacing)]
+                    if depth == 0 {
+                        refs.append((block: blockIndex, row: at, cell: cellIndex, line: items.count,
+                                     page: page(f.rect.minY), top: f.rect.minY - leading - CGFloat(page(f.rect.minY)) * pitch, loc: f.location))
+                    }
+                    i += 1
+                }
+                if let p = previous {
+                    if p.page == page(f.rect.minY) {
+                        natural += max(0, itemTop - p.bottom)
+                    } else {
+                        shiftedRows.insert(at)
+                        natural += p.paragraph == f.paragraphStart ? 0 : p.spaceAfter + f.spaceBefore
+                    }
+                }
+                item["top"] = Double(natural)
+                items.append(item)
+                natural += itemHeight
+                previous = (itemBottom, page(last.rect.minY), last.spaceAfter, last.paragraphStart)
+            }
+            var cell: [String: Any] = ["padTop": Double(padTop), "padBottom": Double(padBottom),
+                                       "contentHeight": Double(natural), "lines": items]
+            if block.rowSpan > 1 { cell["rowSpan"] = block.rowSpan }
+            cellsOfRow[at, default: []].append(cell)
+            if block.rowSpan <= 1 { extentOfRow[at] = max(extentOfRow[at] ?? 0, padTop + natural + padBottom) }
+        }
+        var rows: [[String: Any]] = []
+        var total: CGFloat = 0
+        for r in rowKeys.indices {
+            // The observed distance to the next row is the natural height only when nothing moved in
+            // this row and the next row begins on the page this one did.
+            var height = extentOfRow[r] ?? 0
+            if !shiftedRows.contains(r), r + 1 < rowKeys.count, let a = observedTop[r], let b = observedTop[r + 1],
+               observedPage[r] == observedPage[r + 1] {
+                height = max(height, b - a)
+            }
+            total += height
+            rows.append(["height": Double(height), "cells": cellsOfRow[r] ?? []])
+        }
+        return (rows, total)
     }
 
     /// Runs the plan over `wc`'s finished layout. `nil` when the document is not paged or the engine
@@ -101,18 +214,23 @@ enum PagePlanShadow {
                 paragraphStart: paragraphRange.location, contentLength: paragraphRange.length - (terminated ? 1 : 0))
             let style = storage.attribute(.paragraphStyle, at: chars.location, effectiveRange: nil) as? NSParagraphStyle
             var table: ObjectIdentifier?
-            var startingRow = 0, rowSpan = 1
+            var startingRow = 0, rowSpan = 1, column = 0
             var top = rect.minY, bottom = rect.maxY
             if let cell = style?.textBlocks.first as? NSTextTableBlock {
                 table = ObjectIdentifier(cell.table)
                 startingRow = cell.startingRow
+                column = cell.startingColumn
                 rowSpan = cell.rowSpan
                 top = rect.minY - cell.width(for: .padding, edge: .minY) - cell.width(for: .border, edge: .minY)
                 bottom = rect.maxY + cell.width(for: .padding, edge: .maxY) + cell.width(for: .border, edge: .maxY)
             }
             fragments.append(Fragment(location: chars.location, rect: rect, blockId: id, table: table,
                                       startingRow: startingRow, rowSpan: rowSpan, top: top, bottom: bottom,
-                                      lineSpacing: max(0, style?.lineSpacing ?? 0), box: box))
+                                      lineSpacing: max(0, style?.lineSpacing ?? 0), box: box,
+                                      column: column, paragraphStart: paragraphRange.location,
+                                      spaceBefore: max(0, style?.paragraphSpacingBefore ?? 0),
+                                      spaceAfter: max(0, style?.paragraphSpacing ?? 0),
+                                      chain: (style?.textBlocks ?? []).compactMap { $0 as? NSTextTableBlock }))
         }
         guard !fragments.isEmpty else { report.skippedReason = "no line fragments"; return report }
 
@@ -126,6 +244,7 @@ enum PagePlanShadow {
         let text = storage.string as NSString
 
         var planBlocks: [[String: Any]] = []
+        var cellLineRefs: [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)] = []
         var observed: [ObservedBlock] = []
         var lineMacPages: [[Int]] = []          // per block, the page TextKit put each line on
         var previousBottom: CGFloat?
@@ -166,21 +285,47 @@ enum PagePlanShadow {
                     } else { rows[f.startingRow] = (f.top, f.bottom) }
                 }
                 let ordered = rows.keys.sorted()
+                // The row heights the host reports are the layout's own BEFORE the page rule moved
+                // anything: every band the rule opened inside this table is empty space the rows did
+                // not have, so it is taken back out (the `proposedTableLineTops` idea of invariant 72,
+                // applied to heights).
+                let tableFirstTop = frags.map(\.top).min() ?? 0
+                let bandsInside = delegate.openedBands.values.filter { $0.top > tableFirstTop + 0.5 }
+                func natural(_ y: CGFloat) -> CGFloat {
+                    y - bandsInside.filter { $0.top < y - 0.01 }.reduce(0) { $0 + $1.height }
+                }
                 let tableBottom = frags.map(\.bottom).max()!
                 let tableTop = frags.map(\.top).min() ?? tableBottom
                 report.tableHeightTotal += tableBottom - tableTop
                 report.tableHeights.append((tableBottom - tableTop, page(of: tableTop) != page(of: frags.last!.rect.minY)))
                 block["kind"] = "table"
-                block["rows"] = ordered.enumerated().map { position, r -> [String: Any] in
+                var rowEntries = ordered.enumerated().map { position, r -> [String: Any] in
                     let row = rows[r]!
                     let crossed = spans.contains { $0.start < r && $0.end > r }
                     // A row runs from its own top to the next row's top. Its cells' bottoms cannot say:
                     // a cell merged down several rows ends far below the row it starts in.
                     let end = position + 1 < ordered.count ? rows[ordered[position + 1]]!.top : tableBottom
-                    var entry: [String: Any] = ["height": max(0, end - row.top)]
+                    var entry: [String: Any] = ["height": max(0, natural(end) - natural(row.top))]
                     if r != ordered.first && !crossed { entry["canBreakAbove"] = true }
                     return entry
                 }
+                // A table the reader breaks where it stands (invariant 64's over-tall pieces) flows line
+                // by line, so the host reports what the flow needs: each cell's lines at their NATURAL
+                // offsets (the gap a page break opened between two of them is taken back out) and the
+                // cell's padding.
+                let firstLocation = first.location, lastLocation = frags.last!.location
+                let breaksWhereItStands = delegate.oversizedPieces.keys.contains { $0 >= firstLocation && $0 <= lastLocation }
+                if breaksWhereItStands {
+                    let built = flowRows(frags.filter { $0.table == first.table }, depth: 0, blockIndex: planBlocks.count,
+                                         page: page, leading: leading, pitch: pitch, refs: &cellLineRefs)
+                    if built.rows.count == rowEntries.count {
+                        for position in rowEntries.indices {
+                            rowEntries[position]["cells"] = built.rows[position]["cells"]
+                            rowEntries[position]["height"] = built.rows[position]["height"]
+                        }
+                    }
+                }
+                block["rows"] = rowEntries
                 if (storage.attribute(MDAttr.tableKeepsWhole, at: location, effectiveRange: nil) as? Bool) == true {
                     block["keepsWhole"] = true
                 }
@@ -214,6 +359,7 @@ enum PagePlanShadow {
             "planVersion": 1,
             "contentHeight": Double(delegate.pageContentHeight),
             "splitTables": wc.mdDocument?.pageOptions.splitTables ?? false,
+            "band": Double(delegate.band),
             "noteBands": delegate.noteBands.sorted { $0.key < $1.key }.map { ["page": $0.key, "height": Double($0.value)] },
             "blocks": planBlocks,
         ]
@@ -226,6 +372,20 @@ enum PagePlanShadow {
         }
 
         // ---- 4. diff ----
+        // A flowed table's cell lines, each against the page and top TextKit gave it.
+        var plannedCellLines: [String: (page: Int, top: Double)] = [:]
+        for l in (plan["cellLines"] as? [[Any]]) ?? [] where l.count == 6 {
+            let n = l.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
+            plannedCellLines["\(Int(n[0])),\(Int(n[1])),\(Int(n[2])),\(Int(n[3]))"] = (Int(n[4]), n[5])
+        }
+        for ref in cellLineRefs {
+            report.cellLines += 1
+            let planned = plannedCellLines["\(ref.block),\(ref.row),\(ref.cell),\(ref.line)"]
+            guard let planned, planned.page == ref.page, abs(planned.top - Double(ref.top)) < 0.6 else {
+                report.cellLinesOnADifferentPage += 1
+                continue
+            }
+        }
         let planPages = plan["pageCount"] as? Int ?? 0
         let planLines = (plan["lines"] as? [[Any]]) ?? []
         let placements = (plan["placements"] as? [[String: Any]]) ?? []
@@ -292,7 +452,7 @@ enum PagePlanShadow {
         report.droppedByTextKit = max(0, rawBreaks - delegate.documentPageBreaks.count)
         report.summary = [
             "SHADOW pages: TextKit \(report.macPages), plan \(report.planPages) (reader reports \(wc.printPageCount))",
-            "SHADOW blocks: \(report.blocks) (\(report.tables) tables); on a different page: \(report.blocksOnADifferentPage); lines on a different page: \(report.linesOnADifferentPage)",
+            "SHADOW blocks: \(report.blocks) (\(report.tables) tables); on a different page: \(report.blocksOnADifferentPage); lines on a different page: \(report.linesOnADifferentPage); flowed cell lines: \(report.cellLines), differing: \(report.cellLinesOnADifferentPage)",
             String(format: "SHADOW table height total: %.1f", Double(report.tableHeightTotal)),
             "SHADOW pages whose first block differs: \(report.pagesWithADifferentFirstBlock)",
             "SHADOW hard breaks dropped by 147: plan \(report.droppedByPlan), TextKit \(report.droppedByTextKit)",

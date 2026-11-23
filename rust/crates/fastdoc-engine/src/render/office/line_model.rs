@@ -207,6 +207,9 @@ pub struct LineModelInput {
 pub struct ParagraphLayout {
     pub tops: Vec<f64>,
     pub heights: Vec<f64>,
+    /// The part of each line's box that is spacing under the glyphs (HWP, 161e), which a page may
+    /// let hang past its foot; `0` when the paragraph has no such rule or handed it back.
+    pub trailing: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -320,7 +323,7 @@ fn layout_cell(cell: &CellFacts, empty_line: f64, grid: Option<f64>, table_drops
                         y += *h;
                     }
                     y += p.spacing_after;
-                    laid.push(ParagraphLayout { tops, heights: placed.heights });
+                    laid.push(ParagraphLayout { tops, heights: placed.heights, trailing: placed.trailing });
                 }
                 items.push(ItemLayout::Text { paragraphs: laid });
             }

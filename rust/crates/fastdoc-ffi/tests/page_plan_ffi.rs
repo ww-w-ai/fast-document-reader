@@ -131,6 +131,26 @@ fn a_bad_input_is_an_error_envelope_not_a_null_or_a_guess() {
 }
 
 #[test]
+fn a_table_that_fits_no_page_comes_back_flowed_with_its_cell_lines_and_segments() {
+    // One row, one cell of five 40pt lines on a 100pt page: two a page. The cells' lines travel in
+    // the row; the answer names where each landed and which pages the row touches.
+    let reply = call(
+        std::ptr::null(),
+        r#"{"planVersion":1,"contentHeight":100,"band":20,"blocks":[
+            {"key":9,"kind":"table","rows":[{"height":200,"cells":[{"padTop":0,"padBottom":0,"contentHeight":200,
+              "lines":[{"top":0,"height":40},{"top":40,"height":40},{"top":80,"height":40},
+                       {"top":120,"height":40},{"top":160,"height":40}]}]}]}]}"#,
+    );
+    let plan = &reply["ok"];
+    assert_eq!(plan["pageCount"], 3, "{reply}");
+    assert_eq!(plan["placements"][0]["flowed"], true);
+    assert_eq!(plan["cellLines"][0], serde_json::json!([0, 0, 0, 0, 0, 0.0]));
+    assert_eq!(plan["cellLines"][2], serde_json::json!([0, 0, 0, 2, 1, 0.0]));
+    assert_eq!(plan["rowSegments"].as_array().unwrap().len(), 3);
+    assert_eq!(plan["pulledLines"], serde_json::json!([]));
+}
+
+#[test]
 fn a_null_handle_plans_and_a_null_input_is_refused() {
     let reply = call(std::ptr::null(), r#"{"planVersion":1,"contentHeight":100,"blocks":[]}"#);
     assert_eq!(reply["ok"]["pageCount"], 1, "{reply}");

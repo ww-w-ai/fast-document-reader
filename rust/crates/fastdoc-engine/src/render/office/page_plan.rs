@@ -25,14 +25,23 @@
 //!   the placement once reaches the state the settle loop converges on (diagnosis cause 5);
 //! - which section every page belongs to.
 //!
-//! Out of scope here (later slices): splitting a paragraph or a row mid-block at a host-supplied
-//! split point (S4), header/footer bands, the footnote fixpoint, columns and master pages (S5). A
-//! per-page footnote reservation is accepted as an INPUT so a host that runs its own footnote loop
-//! can still use the plan.
+//! - a paragraph is split at a LINE index (every line is placed on its own), and a table taller than
+//!   the page body it starts on — one that fits no page — is split at LINE index inside its cells,
+//!   mid-row, when the host reported the cells' lines (`table_flow.rs`, invariants 61d, 64, 142). The
+//!   reader reaches that layout over several passes (its first layout lays every table out whole,
+//!   each later one applies what the last measured, and the 1-3 line pulls it records are never
+//!   taken back); `plan_pages` replays those passes. A line taller than the page is placed at a
+//!   page top and overruns it.
+//!
+//! Out of scope here (a later slice): header/footer bands, the footnote fixpoint, columns and master
+//! pages (S5). A per-page footnote reservation is accepted as an INPUT so a host that runs its own
+//! footnote loop can still use the plan.
 
 use super::page_pagination::{LaidOutRow, PagePagination};
+pub use super::table_flow::{CellLinePlacement, RowSegment};
+use super::table_flow::{flow_table, has_cells, orphan_runs, FlowGeometry, LinePath, PlacedLines, MAX_ROUNDS};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// `PagePlanV1.plan_version` / `PlanInput.plan_version`. A host that sends another value is refused
 /// rather than guessed at.
@@ -41,7 +50,6 @@ pub const PAGE_PLAN_VERSION: u32 = 1;
 /// How far past a page's text bottom an item may reach and still count as fitting — the same hair
 /// every placement rule on both hosts already used.
 const FIT_TOLERANCE: f64 = 0.01;
-
 /// One page's footnote reservation, subtracted from that page's body.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,13 +59,54 @@ pub struct PlanNoteBand {
 }
 
 /// One table row as the host measured it.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanRow {
     pub height: f64,
     /// `false` when a cell spans across the boundary above this row (row 0: always `false`).
     #[serde(default)]
     pub can_break_above: bool,
+    /// The cells that BEGIN in this row, with the line boxes inside them. Only needed from a host
+    /// that wants a table taller than a page flowed line by line (`table_flow.rs`); without it such
+    /// a table is broken at the rows alone.
+    #[serde(default)]
+    pub cells: Vec<PlanCell>,
+}
+
+/// One line inside a cell: where it stands from the cell's content origin, and how tall.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanLine {
+    pub top: f64,
+    /// A line's box; for a nested table, its natural height.
+    pub height: f64,
+    /// The part of the box that is spacing under the glyphs, which a page may let hang past its foot.
+    #[serde(default)]
+    pub trailing: f64,
+    /// A table nested in the cell, standing where this line would: it flows by the same rule.
+    #[serde(default)]
+    pub rows: Vec<PlanRow>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanCell {
+    #[serde(default = "one")]
+    pub row_span: u32,
+    /// Border plus padding above and below the content.
+    #[serde(default)]
+    pub pad_top: f64,
+    #[serde(default)]
+    pub pad_bottom: f64,
+    /// The content's own height, padding excluded.
+    #[serde(default)]
+    pub content_height: f64,
+    #[serde(default)]
+    pub lines: Vec<PlanLine>,
+}
+
+fn one() -> u32 {
+    1
 }
 
 /// What a block IS, as far as placement goes.
@@ -123,6 +172,10 @@ pub struct PlanInput {
     pub split_tables: bool,
     #[serde(default)]
     pub note_bands: Vec<PlanNoteBand>,
+    /// The space between one page's body foot and the next page's body top. Only a table flowed
+    /// across pages reads it (a row that runs past a whole page lands on a later one).
+    #[serde(default)]
+    pub band: f64,
     pub blocks: Vec<PlanBlock>,
 }
 
@@ -143,6 +196,10 @@ pub struct BlockPlacement {
     pub row_start: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub row_count: Option<u32>,
+    /// A table piece the flow cut through the middle of rows: its rows are drawn from
+    /// `rowSegments` and `cellLines`, not as whole rows.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub flowed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -163,6 +220,12 @@ pub struct PagePlan {
     pub pages: Vec<PlanPage>,
     pub placements: Vec<BlockPlacement>,
     pub lines: Vec<LinePlacement>,
+    /// For a flowed table: each row's extent on each page it touches.
+    pub row_segments: Vec<RowSegment>,
+    /// For a flowed table: each cell line's page and page-local top.
+    pub cell_lines: Vec<CellLinePlacement>,
+    /// The lines the 1-3 line rule moved to the next page, as `[block, row, cell, item, ...]`.
+    pub pulled_lines: Vec<Vec<u32>>,
     /// Tables the plan placed as more than one piece.
     pub split_table_count: u32,
     /// Tables the plan moved whole to the page after the one they would have overrun.
@@ -203,20 +266,102 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
         .enumerate()
         .filter(|(i, b)| b.page_break_before && !honoured[*i])
         .count() as u32;
+    // A table that fits no page flows line by line, and the reader reaches that layout over several
+    // passes: its first layout has no record that any table is over-tall, so every table lies where
+    // it falls; each later one applies what the last measured, and the 1-3 line pulls it records
+    // are never taken back. The plan replays those passes when the host reported cell lines.
+    let flowable = input
+        .blocks
+        .iter()
+        .any(|b| !b.skip && b.kind == PlanKind::Table && has_cells(&b.rows));
+    let mut pulled: BTreeSet<(u32, LinePath)> = BTreeSet::new();
+    if flowable {
+        for round in 1..=MAX_ROUNDS {
+            let mode = if round == 1 { Mode::Natural } else { Mode::Settled };
+            let pass = run_pass(input, &honoured, mode, &pulled);
+            let mut added = false;
+            for table in &pass.flowed {
+                for path in orphan_runs(&input.blocks[table.block as usize].rows, &table.lines) {
+                    added |= pulled.insert((table.block, path));
+                }
+            }
+            if !added && round > 1 {
+                break;
+            }
+        }
+    }
+    let state = run_pass(input, &honoured, Mode::Settled, &pulled);
+
+    let page_count = state.page + 1;
+    let mut section = 0u32;
+    let mut cursor = 0usize;
+    let mut pages = Vec::with_capacity(page_count as usize);
+    for page in 0..page_count {
+        while cursor < state.section_boundaries.len() && state.section_boundaries[cursor] == page {
+            section += 1;
+            cursor += 1;
+        }
+        pages.push(PlanPage { section, first_key: state.first_key.get(page as usize).copied().flatten() });
+    }
+    Ok(PagePlan {
+        plan_version: PAGE_PLAN_VERSION,
+        page_count,
+        pages,
+        placements: state.placements,
+        lines: state.lines,
+        row_segments: state.row_segments,
+        cell_lines: state.cell_lines,
+        pulled_lines: pulled
+            .iter()
+            .map(|(block, path)| std::iter::once(*block).chain(path.iter().copied()).collect())
+            .collect(),
+        split_table_count: state.split_table_count,
+        carried_table_count: state.carried_table_count,
+        dropped_break_count: dropped,
+    })
+}
+
+/// Which layout of the reader a pass stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The first layout: nothing is known to be over-tall, so a table is laid out whole where it
+    /// falls and its lines are not moved.
+    Natural,
+    /// A later layout: tables are carried, broken or flowed.
+    Settled,
+}
+
+/// A flowed table's lines in one pass, for the pull rule.
+struct FlowedTable {
+    block: u32,
+    lines: PlacedLines,
+}
+
+fn run_pass<'a>(
+    input: &'a PlanInput,
+    honoured: &[bool],
+    mode: Mode,
+    pulled: &'a BTreeSet<(u32, LinePath)>,
+) -> State<'a> {
     let note_bands: HashMap<u32, f64> = input.note_bands.iter().map(|n| (n.page, n.height)).collect();
     let mut state = State {
         content_height: input.content_height,
+        band: input.band.max(0.0),
         note_bands,
+        mode,
+        pulled,
+        flowed: Vec::new(),
         page: 0,
         cursor: 0.0,
         placements: Vec::new(),
         lines: Vec::new(),
+        row_segments: Vec::new(),
+        cell_lines: Vec::new(),
         first_key: vec![None],
         section_boundaries: Vec::new(),
         split_table_count: 0,
         carried_table_count: 0,
     };
-
     for (index, block) in input.blocks.iter().enumerate() {
         if block.skip {
             continue;
@@ -237,28 +382,7 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
             PlanKind::Table => state.place_table(index, block, input.split_tables),
         }
     }
-
-    let page_count = state.page + 1;
-    let mut section = 0u32;
-    let mut cursor = 0usize;
-    let mut pages = Vec::with_capacity(page_count as usize);
-    for page in 0..page_count {
-        while cursor < state.section_boundaries.len() && state.section_boundaries[cursor] == page {
-            section += 1;
-            cursor += 1;
-        }
-        pages.push(PlanPage { section, first_key: state.first_key.get(page as usize).copied().flatten() });
-    }
-    Ok(PagePlan {
-        plan_version: PAGE_PLAN_VERSION,
-        page_count,
-        pages,
-        placements: state.placements,
-        lines: state.lines,
-        split_table_count: state.split_table_count,
-        carried_table_count: state.carried_table_count,
-        dropped_break_count: dropped,
-    })
+    state
 }
 
 fn finite_all(block: &PlanBlock) -> bool {
@@ -302,20 +426,26 @@ fn honoured_breaks(blocks: &[PlanBlock]) -> Vec<bool> {
     honoured
 }
 
-struct State {
+struct State<'a> {
     content_height: f64,
+    band: f64,
     note_bands: HashMap<u32, f64>,
+    mode: Mode,
+    pulled: &'a BTreeSet<(u32, LinePath)>,
+    flowed: Vec<FlowedTable>,
     page: u32,
     cursor: f64,
     placements: Vec<BlockPlacement>,
     lines: Vec<LinePlacement>,
+    row_segments: Vec<RowSegment>,
+    cell_lines: Vec<CellLinePlacement>,
     first_key: Vec<Option<i64>>,
     section_boundaries: Vec<u32>,
     split_table_count: u32,
     carried_table_count: u32,
 }
 
-impl State {
+impl State<'_> {
     fn body(&self, page: u32) -> f64 {
         self.content_height - self.note_bands.get(&page).copied().unwrap_or(0.0)
     }
@@ -378,14 +508,93 @@ impl State {
             height: block.height,
             row_start: None,
             row_count: None,
+            flowed: false,
         });
         self.cursor += block.height;
+    }
+
+    fn flow_table(&mut self, index: u32, block: &PlanBlock) {
+        self.cursor += block.spacing_before;
+        let geometry = FlowGeometry { content_height: self.content_height, band: self.band, note_bands: &self.note_bands };
+        let mine: BTreeSet<LinePath> =
+            self.pulled.iter().filter(|(b, _)| *b == index).map(|(_, p)| p.clone()).collect();
+        let (flow, every_line) = flow_table(&geometry, index, block, (self.page, self.cursor), &mine, true);
+        self.flowed.push(FlowedTable { block: index, lines: every_line });
+        while self.page < flow.first_page {
+            self.next_page();
+        }
+        self.mark_first(block.key);
+        self.split_table_count += 1;
+        // One placement per page the table touches: the rows it holds there, and its extent.
+        let mut by_page: std::collections::BTreeMap<u32, (u32, u32, f64, f64)> = std::collections::BTreeMap::new();
+        for s in &flow.segments {
+            let e = by_page.entry(s.2).or_insert((s.1, s.1, s.3, s.4));
+            e.0 = e.0.min(s.1);
+            e.1 = e.1.max(s.1);
+            e.2 = e.2.min(s.3);
+            e.3 = e.3.max(s.4);
+        }
+        for (page, (first, last, top, bottom)) in by_page {
+            if self.first_key.len() <= page as usize {
+                self.first_key.resize(page as usize + 1, None);
+            }
+            if self.first_key[page as usize].is_none() {
+                self.first_key[page as usize] = Some(block.key);
+            }
+            self.placements.push(BlockPlacement {
+                block: index,
+                key: block.key,
+                page,
+                top,
+                height: bottom - top,
+                row_start: Some(first),
+                row_count: Some(last - first + 1),
+                flowed: true,
+            });
+        }
+        self.row_segments.extend(flow.segments);
+        self.cell_lines.extend(flow.lines);
+        while self.page < flow.end.0 {
+            self.next_page();
+        }
+        self.cursor = flow.end.1 + block.spacing_after;
+    }
+
+    /// The reader's first layout of a table: it lies where it falls, whole, and runs on past the page
+    /// foot. An over-tall one reports where its lines fell, which is what the first pulls are read
+    /// from.
+    fn place_table_naturally(&mut self, index: u32, block: &PlanBlock, total: f64, over_tall: bool) {
+        self.cursor += block.spacing_before;
+        let geometry = FlowGeometry { content_height: self.content_height, band: self.band, note_bands: &self.note_bands };
+        let end = if over_tall {
+            let none = BTreeSet::new();
+            let (flow, every_line) = flow_table(&geometry, index, block, (self.page, self.cursor), &none, false);
+            self.flowed.push(FlowedTable { block: index, lines: every_line });
+            flow.end
+        } else {
+            geometry.normalise(self.page, self.cursor + total)
+        };
+        while self.page < end.0 {
+            self.next_page();
+        }
+        self.cursor = end.1 + block.spacing_after;
     }
 
     fn place_table(&mut self, index: u32, block: &PlanBlock, split_tables: bool) {
         let rows = &block.rows;
         let total: f64 = rows.iter().map(|r| r.height).sum();
         let whole = block.spacing_before + total + block.spacing_after;
+        let over_tall = total > self.body(self.page) && has_cells(rows);
+        if self.mode == Mode::Natural {
+            self.place_table_naturally(index, block, total, over_tall);
+            return;
+        }
+        // A table taller than the page body it starts on has nowhere to be carried to: when the host
+        // reported its cells' lines it flows line by line, as prose does (`table_flow.rs`).
+        if over_tall {
+            self.flow_table(index, block);
+            return;
+        }
         let fits_here = self.cursor + whole <= self.body(self.page) + FIT_TOLERANCE;
 
         let groups = if fits_here { Vec::new() } else { table_groups(rows) };
@@ -408,6 +617,7 @@ impl State {
                 height: whole,
                 row_start: Some(0),
                 row_count: Some(rows.len() as u32),
+                flowed: false,
             });
             self.cursor += whole;
             return;
@@ -435,6 +645,7 @@ impl State {
                 height: piece,
                 row_start: Some(start as u32),
                 row_count: Some(count as u32),
+                flowed: false,
             });
             self.cursor += piece;
         }
@@ -491,14 +702,14 @@ mod tests {
     fn table(key: i64, rows: &[(f64, bool)], keeps_whole: bool) -> PlanBlock {
         PlanBlock {
             kind: PlanKind::Table,
-            rows: rows.iter().map(|&(height, can_break_above)| PlanRow { height, can_break_above }).collect(),
+            rows: rows.iter().map(|&(height, can_break_above)| PlanRow { height, can_break_above, cells: Vec::new() }).collect(),
             keeps_whole,
             ..text(key, &[])
         }
     }
 
     fn input(content_height: f64, blocks: Vec<PlanBlock>) -> PlanInput {
-        PlanInput { plan_version: 1, content_height, split_tables: true, note_bands: Vec::new(), blocks }
+        PlanInput { plan_version: 1, content_height, split_tables: true, note_bands: Vec::new(), band: 0.0, blocks }
     }
 
     fn pages_of_lines(plan: &PagePlan) -> Vec<u32> {
@@ -511,6 +722,12 @@ mod tests {
         assert_eq!(plan.page_count, 2);
         assert_eq!(pages_of_lines(&plan), vec![0, 0, 1, 1]);
         assert_eq!(plan.lines[2].3, 0.0);
+    }
+
+    #[test]
+    fn a_line_that_ends_exactly_on_the_foot_fits() {
+        let plan = plan_pages(&input(100.0, vec![text(1, &[50.0, 50.0, 50.0])])).unwrap();
+        assert_eq!(pages_of_lines(&plan), vec![0, 0, 1]);
     }
 
     #[test]
@@ -735,6 +952,61 @@ mod tests {
         assert!(plan_pages(&input(0.0, vec![])).is_err());
         assert!(plan_pages(&input(100.0, vec![text(1, &[f64::NAN])])).is_err());
         assert_eq!(plan_pages(&input(100.0, vec![])).unwrap().page_count, 1);
+    }
+
+    fn flow_cell(lines: &[f64]) -> PlanCell {
+        let mut top = 0.0;
+        let lines = lines
+            .iter()
+            .map(|&h| {
+                let line = PlanLine { top, height: h, trailing: 0.0, rows: Vec::new() };
+                top += h;
+                line
+            })
+            .collect();
+        PlanCell { row_span: 1, pad_top: 0.0, pad_bottom: 0.0, content_height: top, lines }
+    }
+
+    fn flow_table_block(key: i64, rows: Vec<(f64, Vec<PlanCell>)>) -> PlanBlock {
+        let rows = rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, (height, cells))| PlanRow { height, can_break_above: i > 0, cells })
+            .collect();
+        PlanBlock { kind: PlanKind::Table, rows, ..text(key, &[]) }
+    }
+
+    #[test]
+    fn a_table_taller_than_a_page_flows_line_by_line_through_the_middle_of_a_row() {
+        // One row, one cell of ten 20pt lines on a 100pt page that already holds 20pt of text.
+        let table = flow_table_block(2, vec![(200.0, vec![flow_cell(&[20.0; 10])])]);
+        let plan = plan_pages(&input(100.0, vec![text(1, &[20.0]), table])).unwrap();
+        let pages: Vec<u32> = plan.cell_lines.iter().map(|l| l.4).collect();
+        assert_eq!(pages, vec![0, 0, 0, 0, 1, 1, 1, 1, 1, 2], "four fit under the text, then five a page");
+        assert_eq!(plan.page_count, 3);
+        assert!(plan.placements.iter().all(|p| p.flowed), "every piece is marked as cut through its rows");
+        let touched: Vec<u32> = plan.placements.iter().map(|p| p.page).collect();
+        assert_eq!(touched, vec![0, 1, 2]);
+        assert_eq!(plan.row_segments.len(), 3, "the row has one extent per page it crosses");
+    }
+
+    #[test]
+    fn a_run_of_three_lines_or_fewer_stranded_at_a_foot_starts_the_next_page() {
+        // The table follows a 60pt line: two of its 20pt lines fit on page 0 and it goes on. Two
+        // lines are not worth the seam, so the first of them starts page 1 and the run follows it.
+        let table = flow_table_block(2, vec![(120.0, vec![flow_cell(&[20.0; 6])])]);
+        let plan = plan_pages(&input(100.0, vec![text(1, &[60.0]), table])).unwrap();
+        assert_eq!(plan.pulled_lines, vec![vec![1, 0, 0, 0]]);
+        assert_eq!(plan.cell_lines[0].4, 1);
+    }
+
+    #[test]
+    fn a_table_with_no_cell_data_is_still_cut_at_its_rows() {
+        let rows: Vec<PlanRow> = (0..6).map(|i| PlanRow { height: 30.0, can_break_above: i > 0, cells: Vec::new() }).collect();
+        let table = PlanBlock { kind: PlanKind::Table, rows, ..text(2, &[]) };
+        let plan = plan_pages(&input(100.0, vec![text(1, &[20.0]), table])).unwrap();
+        assert!(plan.placements.iter().all(|p| !p.flowed));
+        assert!(plan.cell_lines.is_empty());
     }
 
     #[test]

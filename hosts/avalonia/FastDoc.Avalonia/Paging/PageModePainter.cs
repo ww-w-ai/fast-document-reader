@@ -343,6 +343,15 @@ public sealed class PageModePainter
                     var top = contentTop + placement.LocalTopPoints * PointsToPixels * zoomFactor;
                     var repeatsHeader = placement.BlockIndex < markers.TableRepeatsHeader.Length
                         && markers.TableRepeatsHeader[placement.BlockIndex];
+                    if (placement.Flowed && layout.Flowed is { } flowedTables && block.Table is { } flowedModel
+                        && placement.RowRangeStart is { } flowStart && placement.RowRangeCount is { } flowCount)
+                    {
+                        var indent = block.IndentPoints * PointsToPixels * zoomFactor;
+                        TableGridRenderer.DrawFlowed(surface, flowedModel, placement.BlockIndex, flowedTables, pageIndex,
+                            flowStart, flowCount, left + indent, contentTop, Math.Max(40, contentWidthPx - indent),
+                            zoomFactor, _imageRenderer, layout.SplitTables);
+                        continue;
+                    }
                     DrawNonTextBlock(surface, block, placement, left, top, contentWidthPx, zoomFactor, repeatsHeader, layout.SplitTables);
                 }
             }

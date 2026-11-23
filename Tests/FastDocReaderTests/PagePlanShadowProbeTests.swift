@@ -44,12 +44,14 @@ final class PagePlanShadowProbeTests: XCTestCase {
         for path in list.split(separator: ":").map(String.init) {
             let url = URL(fileURLWithPath: path)
             let doc = MarkdownDocument()
+            doc.readingSize = FontSizeStore.defaultSize
             doc.fileURL = url
             try doc.read(from: try Data(contentsOf: url), ofType: "public.data")
             doc.makeWindowControllers()
             let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
             wc.window?.setFrame(NSRect(x: 0, y: 0, width: 1098, height: 640), display: false)
-            HeadlessPDF.waitForRenderToSettle(doc: doc, wc: wc)
+            let settled = HeadlessPDF.waitForRenderToSettle(doc: doc, wc: wc)
+            report.append("SHADOW settled: \(settled)")
             wc.textView.layoutManager?.ensureLayout(for: wc.textView.textContainer!)
             let started = Date()
             let result = PagePlanShadow.run(controller: wc)

@@ -53,17 +53,42 @@ public class PagePlanClientTests
         const string reply = """
             {"ffiVersion":1,"ok":{"planVersion":1,"pageCount":2,
               "pages":[{"section":0,"firstKey":77},{"section":1}],
-              "placements":[{"block":1,"key":78,"page":1,"top":0.0,"height":50.0,"rowStart":0,"rowCount":2}],
+              "placements":[{"block":1,"key":78,"page":1,"top":0.0,"height":50.0,"rowStart":0,"rowCount":2},
+                            {"block":2,"key":79,"page":1,"top":50.0,"height":30.0,"rowStart":1,"rowCount":1,"flowed":true}],
               "lines":[[0,0,0,0.0],[0,1,1,0.0]],
+              "rowSegments":[[2,1,1,50.0,80.0]],
+              "cellLines":[[2,1,0,3,1,52.5]],
+              "pulledLines":[],
               "splitTableCount":0,"carriedTableCount":1,"droppedBreakCount":3}}
             """;
         var plan = PagePlanClient.Decode(reply);
         Assert.Equal(2, plan.PageCount);
         Assert.Equal(new PlannedPage(1, null), plan.Pages[1]);
         Assert.Equal(new PlannedPlacement(1, 1, 0, 50, 0, 2), plan.Placements[0]);
+        Assert.True(plan.Placements[1].Flowed);
+        Assert.Equal(new PlannedRowSegment(2, 1, 1, 50, 80), plan.RowSegments[0]);
+        Assert.Equal(new PlannedCellLine(2, 1, 0, 3, 1, 52.5), plan.CellLines[0]);
         Assert.Equal(new PlannedLine(0, 1, 1, 0), plan.Lines[1]);
         Assert.Equal(1, plan.CarriedTableCount);
         Assert.Equal(3, plan.DroppedBreakCount);
+    }
+
+    [Fact]
+    public void A_table_taller_than_a_page_flows_mid_row_through_the_real_engine()
+    {
+        // One row, one cell of five 40pt lines on a 100pt page (band 20): the cell's lines travel in
+        // the row, and the engine answers where each landed — no host decision involved.
+        var lines = new PlanLineInput[5];
+        for (var i = 0; i < lines.Length; i++) { lines[i] = new PlanLineInput(i * 40.0, 40, 0); }
+        var cells = new[] { new[] { new PlanCellInput { ContentHeight = 200, Lines = lines } } };
+        var plan = PagePlanClient.Plan(IntPtr.Zero, 100, splitTables: true, null, new List<PlanBlockInput>
+        {
+            new() { Key = 5, Kind = "table", RowHeights = new[] { 200.0 }, RowCanBreakAbove = new[] { false }, RowCells = cells },
+        }, bandPoints: 20);
+        Assert.Equal(3, plan.PageCount);
+        Assert.All(plan.Placements, p => Assert.True(p.Flowed));
+        Assert.Equal(new[] { 0, 0, 1, 1, 2 }, System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Select(plan.CellLines, l => l.Page)));
+        Assert.Equal(3, plan.RowSegments.Count);
     }
 
     [Fact]

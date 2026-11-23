@@ -74,6 +74,9 @@ internal sealed class ParagraphLayoutOut
 {
     public required double[] Tops { get; init; }
     public required double[] Heights { get; init; }
+    /// <summary>The part of each line's box that is spacing under the glyphs, which a page may let
+    /// hang past its foot (the page plan's cell lines carry it).</summary>
+    public double Trailing { get; init; }
 }
 
 internal sealed class CellItemLayoutOut
@@ -233,7 +236,12 @@ internal static class LineModelClient
                         var laid = new List<ParagraphLayoutOut>();
                         foreach (var p in item.GetProperty("paragraphs").EnumerateArray())
                         {
-                            laid.Add(new ParagraphLayoutOut { Tops = Doubles(p.GetProperty("tops")), Heights = Doubles(p.GetProperty("heights")) });
+                            laid.Add(new ParagraphLayoutOut
+                            {
+                                Tops = Doubles(p.GetProperty("tops")),
+                                Heights = Doubles(p.GetProperty("heights")),
+                                Trailing = p.GetProperty("trailing").GetDouble(),
+                            });
                         }
                         items.Add(new CellItemLayoutOut { Paragraphs = laid });
                     }

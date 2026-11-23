@@ -461,7 +461,8 @@ class Program
                 $"content: {layout.PageContentWidthPoints:F1}x{layout.PageContentHeightPoints:F1} " +
                 $"band: {layout.Band.HeaderPoints:F1}/{layout.Band.FooterPoints:F1}/{layout.Band.BandPoints:F1} " +
                 $"(fromEngine={layout.Band.FromEngine})");
-            Console.WriteLine($"plan: split tables: {layout.SplitTableCount}, carried tables: {layout.CarriedTableCount}, dropped breaks: {layout.DroppedBreakCount}");
+            Console.WriteLine($"plan: split tables: {layout.SplitTableCount}, carried tables: {layout.CarriedTableCount}, dropped breaks: {layout.DroppedBreakCount}, " +
+                $"flowed tables: {System.Linq.Enumerable.Count(System.Linq.Enumerable.Distinct(System.Linq.Enumerable.Select(System.Linq.Enumerable.Where(layout.Placements, p => p.Flowed), p => p.BlockIndex)))}");
             // FMD_SHEETS_PAGES=1 (Scripts/page-parity.sh): one line per page naming the first
             // block laid on it, so two runs of this CLI can be diffed page by page.
             if (Environment.GetEnvironmentVariable("FMD_SHEETS_PAGES") == "1")

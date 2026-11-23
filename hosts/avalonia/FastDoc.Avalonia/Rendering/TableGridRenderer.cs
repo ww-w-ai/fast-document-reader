@@ -399,6 +399,164 @@ public static class TableGridRenderer
         return totalHeight;
     }
 
+    /// <summary>What the page plan needs from this table to flow it across pages line by line (S4 of
+    /// docs/plans/pagination-to-engine.md): per row, the cells that begin in it with each line's
+    /// place inside the cell — the engine line model's own answer, in POINTS. Lines are listed in
+    /// the order <see cref="DrawFlowed"/> counts them: a paragraph's lines in turn (a blank
+    /// paragraph's one empty line included), a picture or nested table as one box.</summary>
+    internal static PlanCellInput[][] FlowFacts(TableGridModel model, double columnWidthPoints,
+        ImageBlockRenderer? imageRenderer, bool splitTables)
+    {
+        var result = new PlanCellInput[model.Rows.Count][];
+        if (model.Rows.Count == 0) { return result; }
+        var solution = SolveTable(model, columnWidthPoints * PointsToPixels, 1.0, imageRenderer, splitTables);
+        for (var r = 0; r < model.Rows.Count; r++)
+        {
+            var cells = new List<PlanCellInput>(model.Rows[r].Cells.Count);
+            foreach (var cell in model.Rows[r].Cells)
+            {
+                var lines = new List<PlanLineInput>();
+                var contentHeight = 0.0;
+                if (solution.Cells.TryGetValue(cell, out var solved))
+                {
+                    contentHeight = solved.Height / PointsToPixels;
+                    foreach (var item in solved.Items)
+                    {
+                        if (item.Paragraphs is { } paragraphs)
+                        {
+                            foreach (var paragraph in paragraphs)
+                            {
+                                for (var l = 0; l < paragraph.Tops.Length; l++)
+                                {
+                                    lines.Add(new PlanLineInput(paragraph.Tops[l] / PointsToPixels,
+                                        paragraph.Heights[l] / PointsToPixels, paragraph.Trailing / PointsToPixels));
+                                }
+                            }
+                        }
+                        else
+                        {
+                            lines.Add(new PlanLineInput(item.Top / PointsToPixels, item.Height / PointsToPixels, 0));
+                        }
+                    }
+                }
+                var top = TopPaddingPx(cell, model) / PointsToPixels;
+                cells.Add(new PlanCellInput
+                {
+                    RowSpan = (int)Math.Max(1, cell.RowSpan),
+                    PadTop = top,
+                    PadBottom = VerticalPaddingPx(cell, model) / PointsToPixels - top,
+                    ContentHeight = contentHeight,
+                    Lines = lines.ToArray(),
+                });
+            }
+            result[r] = cells.ToArray();
+        }
+        return result;
+    }
+
+    /// <summary>Draws the part of a FLOWED table (one the plan cut through the middle of its rows) that
+    /// lands on <paramref name="pageIndex"/>: every cell whose rows touch the page gets its box from the
+    /// plan's row segments, and every line the plan put on the page is drawn at the top it gave it.
+    /// Cells are top-aligned, as the reader forces for a table it breaks where it stands.</summary>
+    internal static void DrawFlowed(IPageCanvas surface, TableGridModel model, int blockIndex, FlowedTables flowed,
+        int pageIndex, int rowStart, int rowCount, double left, double contentTopPx, double columnWidth,
+        double zoom, ImageBlockRenderer? imageRenderer, bool splitTables)
+    {
+        if (model.Rows.Count == 0) { return; }
+        var scale = PointsToPixels * zoom;
+        var widths = ResolveColumnWidths(model, columnWidth);
+        var columnX = new double[widths.Length + 1];
+        for (var i = 0; i < widths.Length; i++) { columnX[i + 1] = columnX[i] + widths[i]; }
+        var rowEnd = Math.Min(model.Rows.Count, rowStart + rowCount);
+        var solved = SolveTable(model, columnWidth, zoom, imageRenderer, splitTables);
+
+        for (var r = 0; r < rowEnd; r++)
+        {
+            for (var c = 0; c < model.Rows[r].Cells.Count; c++)
+            {
+                var cell = model.Rows[r].Cells[c];
+                var span = (int)Math.Min(Math.Max(1, cell.RowSpan), model.Rows.Count - r);
+                if (r + span <= rowStart) { continue; }
+
+                // The cell's extent on this page: from its first row's top here to its last row's bottom.
+                double top = double.MaxValue, bottom = double.MinValue;
+                var startsHere = false;
+                var endsHere = false;
+                for (var k = r; k < r + span && k < rowEnd; k++)
+                {
+                    if (!flowed.TryGetSegment(blockIndex, k, pageIndex, out var segment)) { continue; }
+                    top = Math.Min(top, segment.Top);
+                    bottom = Math.Max(bottom, segment.Bottom);
+                    if (k == r) { startsHere = flowed.StartsOnPage(blockIndex, k, pageIndex); }
+                    if (k == r + span - 1) { endsHere = flowed.EndsOnPage(blockIndex, k, pageIndex); }
+                }
+                if (top > bottom) { continue; }
+
+                var colIndex = (int)cell.Column;
+                if (colIndex < 0 || colIndex >= widths.Length) { continue; }
+                var colSpan = Math.Max(1, (int)cell.ColumnSpan);
+                var x = left + columnX[colIndex];
+                var w = SpanWidth(widths, colIndex, colSpan);
+                var rect = new Rect(x, contentTopPx + top * scale, w, (bottom - top) * scale);
+
+                if (ResolveShading(cell, model) is { } shading) { surface.DrawRect(rect, shading, null, 0); }
+
+                if (solved.Cells.TryGetValue(cell, out var layout))
+                {
+                    var cellWidth = Math.Max(10, w - HorizontalPaddingPx(cell, model));
+                    var build = BuildCellParts(cell, cellWidth, zoom, model, imageRenderer);
+                    var segLeft = x + LeftPaddingPx(cell, model);
+                    var lineNumber = 0;
+                    foreach (var part in build.Parts)
+                    {
+                        var item = layout.Items[part.Item];
+                        if (part.Layout is { } textLayout && item.Paragraphs is { } laid && part.Para < laid.Count)
+                        {
+                            var count = laid[part.Para].Tops.Length;
+                            for (var l = 0; l < textLayout.TextLines.Count && l < count; l++)
+                            {
+                                if (flowed.TryGetLine(blockIndex, r, c, lineNumber + l, pageIndex, out var lineTop))
+                                {
+                                    surface.DrawTextLine(textLayout.TextLines[l],
+                                        new Point(segLeft, contentTopPx + lineTop * scale));
+                                }
+                            }
+                            lineNumber += count;
+                        }
+                        else if (part.Layout is null && item.Paragraphs is { } blank && part.Para < blank.Count)
+                        {
+                            lineNumber += blank[part.Para].Tops.Length;
+                        }
+                        else if (part.Box is { } box && imageRenderer is not null)
+                        {
+                            if (flowed.TryGetLine(blockIndex, r, c, lineNumber, pageIndex, out var boxTop))
+                            {
+                                var y = contentTopPx + boxTop * scale;
+                                if (box.Kind == FlowBlockKind.Image)
+                                {
+                                    imageRenderer.Draw(surface, box, segLeft, y, cellWidth, indentPx: 0);
+                                }
+                                else if (box.Kind == FlowBlockKind.Table && box.Table is not null)
+                                {
+                                    Draw(surface, box.Table, segLeft, y, cellWidth, zoom, double.NegativeInfinity,
+                                        double.PositiveInfinity, cachedRowHeights: null, out _, rowIndicesToDraw: null,
+                                        imageRenderer: imageRenderer, splitTables: splitTables);
+                                }
+                            }
+                            lineNumber++;
+                        }
+                    }
+                }
+
+                // A box cut by a page break shows no rule where it was cut.
+                if (startsHere) { DrawEdge(surface, rect, Edge.Top, ResolveEdge(cell, model, e => e.Top)); }
+                DrawEdge(surface, rect, Edge.Right, ResolveEdge(cell, model, e => e.Right));
+                if (endsHere) { DrawEdge(surface, rect, Edge.Bottom, ResolveEdge(cell, model, e => e.Bottom)); }
+                DrawEdge(surface, rect, Edge.Left, ResolveEdge(cell, model, e => e.Left));
+            }
+        }
+    }
+
     private static readonly Dictionary<int, int[]> DefaultRowOrderCache = new();
 
     /// <summary>0..rowCount-1 in order — cached per count since it never varies for a given table

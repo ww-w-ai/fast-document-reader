@@ -436,6 +436,37 @@ public class PagingTests
     }
 
     [Fact]
+    public void A_single_row_taller_than_a_page_is_cut_through_the_lines_of_its_cell()
+    {
+        // One row, one cell of wrapped text far taller than the 100pt page: there is no row boundary to
+        // break at, so the engine flows the cell's lines across the pages (S4) and every piece it
+        // reports stays within one page body.
+        var longRun = new FlowRun(
+            string.Concat(System.Linq.Enumerable.Repeat("wrap ", 120)), null, 12, false, false, false, false, Colors.Black);
+        var cellContent = new FlowBlock { Kind = FlowBlockKind.Text, Runs = new() { longRun } };
+        var cell = new TableGridCell { Row = 0, Column = 0, Content = new() { cellContent } };
+        var model = new TableGridModel
+        {
+            ColumnCount = 1, ColumnWidthRatios = new() { 1.0 },
+            Rows = new() { new TableGridRow { Row = 0, Cells = new() { cell } } },
+        };
+        var blocks = new System.Collections.Generic.List<FlowBlock> { new() { Kind = FlowBlockKind.Table, Table = model } };
+
+        var (layout, _, _, _) = PageLayout.BuildWithTableSettle(
+            blocks, FlatMarkers(1), SimpleGeometry(), IntPtr.Zero, headersOn: false, footersOn: false, splitTablesDefault: true);
+
+        var pieces = layout.Placements.Where(p => p.BlockIndex == 0).OrderBy(p => p.PageIndex).ToList();
+        Assert.NotNull(layout.Flowed);
+        Assert.True(pieces.Count > 1, "the one row must be cut across pages");
+        Assert.All(pieces, p => Assert.True(p.Flowed));
+        Assert.All(pieces, p => Assert.True(p.HeightPoints <= 100.001, "no piece exceeds the page body"));
+        // The first line of the cell is on the first page, under the cell's 7pt default padding.
+        Assert.True(layout.Flowed!.TryGetLine(0, 0, 0, 0, pieces[0].PageIndex, out var firstTop));
+        Assert.Equal(7, firstTop, precision: 3);
+        Assert.True(layout.Flowed.TryGetSegment(0, 0, pieces[^1].PageIndex, out _));
+    }
+
+    [Fact]
     public void Table_settle_row_heights_match_the_real_cell_TextLayout_measurement()
     {
         // A cell with enough text to wrap across several lines at a NARROW column width — a
