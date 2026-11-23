@@ -43,11 +43,16 @@ fi
 # A release build must not carry this machine's paths: map the checkout away from #file/#filePath
 # strings and debug info, and drop the linker's debug map (it records every object and static-library
 # member path, e.g. `…/.build/…/librhwp_native_ffi.a(…)`). Debug builds keep both for the debugger.
-SWIFT_BUILD_FLAGS=()
+# `--build-system native` for EVERY config: Xcode 27's default (swiftbuild) copies each xcframework's
+# Headers/module.modulemap to the same `include/module.modulemap`, and RhwpNative and FastdocEngine
+# both carry one ("Multiple commands produce …/include/module.modulemap"). `-dead_strip` for every
+# config too: both static libraries embed wasm_bindgen and ld rejects the duplicate symbols unless
+# the dead copies are stripped (release always did; debug now needs it).
+SWIFT_BUILD_FLAGS=(--build-system native -Xlinker -dead_strip)
 if [[ "$CONFIG" == "release" ]]; then
   # shellcheck source=remap-paths.sh
   source Scripts/remap-paths.sh
-  SWIFT_BUILD_FLAGS=(--build-system native "${FMD_SWIFT_PREFIX_FLAGS[@]}" -Xlinker -S -Xlinker -dead_strip)
+  SWIFT_BUILD_FLAGS+=("${FMD_SWIFT_PREFIX_FLAGS[@]}" -Xlinker -S)
 fi
 
 swift build -c "$CONFIG" ${SWIFT_BUILD_FLAGS[@]+"${SWIFT_BUILD_FLAGS[@]}"}
