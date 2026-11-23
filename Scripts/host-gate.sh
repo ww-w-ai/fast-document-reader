@@ -14,7 +14,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DOTNET="/Users/taehyoungkim/.dotnet/dotnet"
+DOTNET="${DOTNET:-$(command -v dotnet || echo "$HOME/.dotnet/dotnet")}"
 
 HOST_DIR="$REPO_ROOT/hosts/avalonia/FastDoc.Avalonia"
 HOST_CSPROJ="$HOST_DIR/FastDoc.Avalonia.csproj"

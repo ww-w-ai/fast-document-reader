@@ -18,7 +18,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DOTNET="/Users/taehyoungkim/.dotnet/dotnet"
+DOTNET="${DOTNET:-$(command -v dotnet || echo "$HOME/.dotnet/dotnet")}"
 
 DIRS="${1:?usage: host-corpus-gate.sh <dir1[:dir2:...]> <output.tsv> [host-dll] [engine-lib]}"
 OUT_TSV="${2:?usage: host-corpus-gate.sh <dir1[:dir2:...]> <output.tsv> [host-dll] [engine-lib]}"

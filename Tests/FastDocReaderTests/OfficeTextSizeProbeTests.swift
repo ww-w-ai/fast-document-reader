@@ -73,7 +73,7 @@ final class OfficeTextSizeProbeTests: XCTestCase {
         }
 
         // Write the full table to scratch — never paste this back, it's the whole corpus.
-        let scratchDir = URL(fileURLWithPath: "/Users/taehyoungkim/.claude/jobs/b865c686/tmp/")
+        let scratchDir = FileManager.default.temporaryDirectory
         try? FileManager.default.createDirectory(at: scratchDir, withIntermediateDirectories: true)
         let scratchFile = scratchDir.appendingPathComponent("office-text-size-probe.tsv")
         var tsv = "chars\tbytes\tpaged\tpath\n"
