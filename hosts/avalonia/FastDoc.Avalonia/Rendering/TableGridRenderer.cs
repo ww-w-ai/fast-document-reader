@@ -594,16 +594,24 @@ public static class TableGridRenderer
         var maxFontSizePx = model.DefaultBodyFontSizePoints * PointsToPixels * fontScale;
         var alignment = TextAlignment.Left;
         var firstText = true;
+        // The cell's runs are laid out as one paragraph, so they share one letter spacing — the
+        // character-weighted mean, as a text block carries it (FlowBlock.LetterSpacingPoints).
+        double spacingSum = 0;
+        var spacingChars = 0;
 
         void FlushTextRun()
         {
             if (text.Length == 0) { return; }
             var content = text.ToString();
             if (content.EndsWith('\n')) { content = content[..^1]; }
+            var cellLetterSpacingPoints = spacingChars == 0 ? 0 : spacingSum / spacingChars;
+            spacingSum = 0;
+            spacingChars = 0;
             if (content.Length > 0)
             {
                 var layout = new TextLayout(content, DefaultTypeface, maxFontSizePx, Brushes.Black, alignment,
-                    TextWrapping.Wrap, maxWidth: Math.Max(10, width), textStyleOverrides: overrides);
+                    TextWrapping.Wrap, maxWidth: Math.Max(10, width),
+                    letterSpacing: cellLetterSpacingPoints * fontScale * PointsToPixels, textStyleOverrides: overrides);
                 AddSegment(new CellSegment(layout, layout.Height, null));
             }
             text.Clear();
@@ -621,6 +629,8 @@ public static class TableGridRenderer
                 {
                     if (run.Text.Length == 0) { continue; }
                     text.Append(run.Text);
+                    spacingSum += run.Text.Length * run.LetterSpacingPercent / 100.0 * run.FontSizePoints;
+                    spacingChars += run.Text.Length;
                     var fontSizePx = run.FontSizePoints * fontScale * PointsToPixels;
                     if (fontSizePx > maxFontSizePx) { maxFontSizePx = fontSizePx; }
                     var props = FlowRun.PropertiesFor(run, fontSizePx, new SolidColorBrush(run.Foreground));

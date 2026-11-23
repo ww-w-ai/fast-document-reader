@@ -214,6 +214,19 @@ public sealed class ImageBlockRenderer
         return drawHeight;
     }
 
+    /// <summary>Draws a resource's picture into EXACTLY <paramref name="rect"/> — the placement of an
+    /// object the document pinned to a sheet, whose box is the document's own (no column clamp, no
+    /// aspect re-derivation: macOS's <c>drawArtwork(image, in: rect)</c> stretches to the frame the
+    /// same way). A resource that cannot be decoded draws nothing (never a placeholder box over
+    /// the page). Returns whether a picture was drawn.</summary>
+    public bool DrawResourceInRect(IPageCanvas surface, ulong resourceId, Rect rect)
+    {
+        var resolved = Resolve(resourceId);
+        if (resolved.Bitmap is not { } bitmap) { return false; }
+        surface.DrawImage(bitmap, resolved.Bytes, resolved.MimeType, rect);
+        return true;
+    }
+
     /// <summary>Decodes (and caches) one resource without drawing it — lets a caller confirm
     /// decode success/failure counts (DecodeSuccessCount/DecodeFailureCount) without needing a
     /// live DrawingContext, e.g. the S4/E2b measurement harness.</summary>

@@ -211,6 +211,33 @@ public sealed class SectionPayload
     [JsonPropertyName("lineGridPoints")] public double? LineGridPoints { get; set; }
     [JsonPropertyName("hidesHeader")] public bool HidesHeader { get; set; }
     [JsonPropertyName("hidesFooter")] public bool HidesFooter { get; set; }
+    /// <summary>`wire::Section.hidesMasterPage` — the section's own veto of every 바탕쪽 template
+    /// (a cover that says "no master page"), mirroring `MasterPageContent.sectionsHidingMasterPage`.</summary>
+    [JsonPropertyName("hidesMasterPage")] public bool HidesMasterPage { get; set; }
+    /// <summary>`wire::Section.pageNumbering` — the section's own counter start and its hide flag.</summary>
+    [JsonPropertyName("pageNumbering")] public PageNumberingWire? PageNumbering { get; set; }
+    /// <summary>`wire::Section.footnoteSeparator` — the rule above this section's footnotes (HWP only).</summary>
+    [JsonPropertyName("footnoteSeparator")] public FootnoteSeparatorWire? FootnoteSeparator { get; set; }
+}
+
+/// <summary>`wire::FootnoteSeparator` — every length already in points.</summary>
+public sealed class FootnoteSeparatorWire
+{
+    [JsonPropertyName("lineType")] public long LineType { get; set; }
+    [JsonPropertyName("lineWidthPoints")] public double LineWidthPoints { get; set; }
+    [JsonPropertyName("color")] public ColorWire? Color { get; set; }
+    [JsonPropertyName("lengthPoints")] public double? LengthPoints { get; set; }
+    [JsonPropertyName("marginTopPoints")] public double MarginTopPoints { get; set; }
+    [JsonPropertyName("marginBottomPoints")] public double MarginBottomPoints { get; set; }
+    [JsonPropertyName("noteSpacingPoints")] public double NoteSpacingPoints { get; set; }
+}
+
+/// <summary>`wire::PageNumbering` — `Start` restarts the counter at the section's first page;
+/// `Hidden` means the section prints no page number at all.</summary>
+public sealed class PageNumberingWire
+{
+    [JsonPropertyName("start")] public long? Start { get; set; }
+    [JsonPropertyName("hidden")] public bool Hidden { get; set; }
 }
 
 /// <summary>
@@ -271,6 +298,15 @@ public sealed class RenderNode
     /// <see cref="FootnotePayload"/>'s own doc for why the body is reached through
     /// <see cref="FootnotePayload.BodyFlowId"/> rather than this node's `Children`.</summary>
     public FootnotePayload? AsFootnote => Decode<FootnotePayload>("footnote");
+    /// <summary>`wire::AnchoredObject` — an object the document pins off the flow (seal, stamp, text
+    /// box, floating picture). Null for any other node type.</summary>
+    public AnchoredObjectPayload? AsAnchoredObject => Decode<AnchoredObjectPayload>("anchoredObject");
+    /// <summary>`wire::MasterPage` — one 바탕쪽 template a section declares.</summary>
+    public MasterPagePayload? AsMasterPage => Decode<MasterPagePayload>("masterPage");
+    /// <summary>`wire::MasterPageObject` — one object placed on a master page, paper-relative.</summary>
+    public MasterPageObjectPayload? AsMasterPageObject => Decode<MasterPageObjectPayload>("masterPageObject");
+    /// <summary>`wire::FormControl` as a standalone node (office readers emit it inline on a run).</summary>
+    public FormControlWire? AsFormControl => Decode<FormControlWire>("formControl");
     public FormulaPayload? AsFormula => Decode<FormulaPayload>("formula");
     /// <summary>S12-F: `wire::Diagram` (rust/crates/fastdoc-engine/src/render/render_tree/wire.rs:
     /// 940-944) — a fenced diagram (currently only mermaid) as its OWN node type, distinct from
@@ -329,6 +365,15 @@ public sealed class ParagraphStyleWire
     [JsonPropertyName("spacingBefore")] public double? SpacingBefore { get; set; }
     [JsonPropertyName("spacingAfter")] public double? SpacingAfter { get; set; }
     [JsonPropertyName("lineHeight")] public LineHeightWire? LineHeight { get; set; }
+    /// <summary>`wire::ParagraphStyle.borders` — per-edge paragraph rules (a `suppressed` edge is
+    /// told apart from an unmentioned one, as for tables). macOS draws one colour and width for every
+    /// drawn edge, taken from the first drawn one — mirrored by <c>FlowDocumentBuilder</c>.</summary>
+    [JsonPropertyName("borders")] public BorderSetWire? Borders { get; set; }
+    /// <summary>`wire::ParagraphStyle.shading` — the paragraph's background fill.</summary>
+    [JsonPropertyName("shading")] public ColorWire? Shading { get; set; }
+    /// <summary>`wire::ParagraphStyle.hangingIndent` — how far lines after the first sit inside it
+    /// (a list item's text hangs from its marker); `firstLineHeadIndent = start + firstLine - hanging`.</summary>
+    [JsonPropertyName("hangingIndent")] public double? HangingIndent { get; set; }
 }
 
 public sealed class CharacterStyleWire
@@ -348,6 +393,12 @@ public sealed class CharacterStyleWire
     [JsonPropertyName("background")] public ColorWire? Background { get; set; }
     /// <summary>"normal" | "superscript" | "subscript" — `wire::VerticalPosition`.</summary>
     [JsonPropertyName("verticalPosition")] public string? VerticalPosition { get; set; }
+    /// <summary>`wire::CharacterStyle.caps` / `smallCaps` — all capitals / small capitals.</summary>
+    [JsonPropertyName("caps")] public bool Caps { get; set; }
+    [JsonPropertyName("smallCaps")] public bool SmallCaps { get; set; }
+    /// <summary>`wire::CharacterStyle.letterSpacingPercent` — extra advance per character as a
+    /// percentage of the run's font size (negative condenses; HWP states −5 on most body text).</summary>
+    [JsonPropertyName("letterSpacingPercent")] public double? LetterSpacingPercent { get; set; }
 }
 
 /// <summary>`wire::BlockQuote`: `Alert` names a GitHub alert's kind (note, tip, important, warning,
@@ -369,10 +420,21 @@ public sealed class ListNumberingWire
     [JsonPropertyName("startNumber")] public long? StartNumber { get; set; }
 }
 
+/// <summary>`wire::TabStop` — a position (points from the paragraph's left margin), an alignment
+/// ("left" | "center" | "right" | "decimal") and a leader ("none" | "dot" | "hyphen" |
+/// "underscore"), as `Rendering.TabLayout` resolves them.</summary>
+public sealed class TabStopWire
+{
+    [JsonPropertyName("positionPoints")] public double PositionPoints { get; set; }
+    [JsonPropertyName("alignment")] public string Alignment { get; set; } = "left";
+    [JsonPropertyName("leader")] public string Leader { get; set; } = "none";
+}
+
 public sealed class HeadingPayload
 {
     [JsonPropertyName("level")] public long Level { get; set; }
     [JsonPropertyName("style")] public ParagraphStyleWire Style { get; set; } = new();
+    [JsonPropertyName("tabStops")] public List<TabStopWire> TabStops { get; set; } = new();
     /// <summary>E2c-1: null for a producer that never emitted pagination (older fixtures) — treated
     /// as "no hard break, no keep-with-next" by <see cref="Paging.PageGeometry"/>.</summary>
     [JsonPropertyName("pagination")] public PaginationWire? Pagination { get; set; }
@@ -381,6 +443,7 @@ public sealed class HeadingPayload
 public sealed class ParagraphPayload
 {
     [JsonPropertyName("style")] public ParagraphStyleWire Style { get; set; } = new();
+    [JsonPropertyName("tabStops")] public List<TabStopWire> TabStops { get; set; } = new();
     [JsonPropertyName("pagination")] public PaginationWire? Pagination { get; set; }
 }
 
@@ -401,6 +464,91 @@ public sealed class TextRunPayload
     /// Markdown's own `[^n]` reference syntax — mirrors `Span.footnoteRef` in
     /// `OfficeMarkdownSerializer.swift`).</summary>
     [JsonPropertyName("footnoteReferenceNumber")] public long? FootnoteReferenceNumber { get; set; }
+    /// <summary>`wire::TextRun.pageNumberField` — "page" | "numPages" when this run stands in for a
+    /// LIVE page-number field (a master-page text box's number, a running head's page).</summary>
+    [JsonPropertyName("pageNumberField")] public string? PageNumberField { get; set; }
+    /// <summary>`wire::TextRun.formControl` — an inline HWP form control; its visible glyph text is
+    /// already this run's <see cref="Text"/> (macOS draws nothing beyond that span either).</summary>
+    [JsonPropertyName("formControl")] public FormControlWire? FormControl { get; set; }
+}
+
+/// <summary>`wire::InlineFormControl` / `wire::FormControl` — a read-only form control's kind,
+/// caption/text, value (checked / selected) and enabled flag.</summary>
+public sealed class FormControlWire
+{
+    [JsonPropertyName("kind")] public string Kind { get; set; } = "unknown";
+    [JsonPropertyName("caption")] public string Caption { get; set; } = "";
+    [JsonPropertyName("text")] public string Text { get; set; } = "";
+    [JsonPropertyName("value")] public long Value { get; set; }
+    [JsonPropertyName("enabled")] public bool Enabled { get; set; } = true;
+}
+
+/// <summary>`wire::ParagraphAnchor` — the vertical half of a paragraph-anchored object's placement:
+/// which edge of the anchoring line the offset is measured from ("top" | "center" | "bottom").</summary>
+public sealed class ParagraphAnchorWire
+{
+    [JsonPropertyName("align")] public string Align { get; set; } = "top";
+    [JsonPropertyName("offset")] public double Offset { get; set; }
+
+    /// <summary>The object's top edge, given the anchoring line's own top and height and the
+    /// object's height in ONE coordinate space — rhwp's `calc_shape_bottom_y` `Para` rule, the same
+    /// arithmetic as `ParagraphAnchor.top(lineTop:lineHeight:objectHeight:)` on macOS.</summary>
+    public double Top(double lineTop, double lineHeight, double objectHeight) => Align switch
+    {
+        "center" => lineTop + (lineHeight - objectHeight) / 2 + Offset,
+        "bottom" => lineTop + lineHeight - objectHeight - Offset,
+        _ => lineTop + Offset,
+    };
+}
+
+/// <summary>`wire::AnchoredObject` — `X`/`Width`/`Height` are final paper points; `Y` is final only
+/// for a paper/page-relative object, otherwise null and <see cref="ParagraphAnchor"/> carries the
+/// rule layout completes. <see cref="AnchoredToId"/> names the carrier paragraph;
+/// <see cref="ContentId"/> a child image / vector / flow node.</summary>
+public sealed class AnchoredObjectPayload
+{
+    [JsonPropertyName("x")] public double X { get; set; }
+    [JsonPropertyName("width")] public double Width { get; set; }
+    [JsonPropertyName("height")] public double Height { get; set; }
+    [JsonPropertyName("y")] public double? Y { get; set; }
+    [JsonPropertyName("paragraphAnchor")] public ParagraphAnchorWire? ParagraphAnchor { get; set; }
+    [JsonPropertyName("anchoredToId")] public ulong AnchoredToId { get; set; }
+    [JsonPropertyName("contentId")] public ulong ContentId { get; set; }
+}
+
+/// <summary>`wire::MasterPage` — which pages the template covers and the objects it holds.</summary>
+public sealed class MasterPagePayload
+{
+    [JsonPropertyName("appliesTo")] public string AppliesTo { get; set; } = "defaultPages";
+    [JsonPropertyName("objectIds")] public List<ulong> ObjectIds { get; set; } = new();
+}
+
+/// <summary>`wire::MasterPageObject` — always paper-relative, all four of x/y/width/height final.</summary>
+public sealed class MasterPageObjectPayload
+{
+    [JsonPropertyName("x")] public double X { get; set; }
+    [JsonPropertyName("y")] public double Y { get; set; }
+    [JsonPropertyName("width")] public double Width { get; set; }
+    [JsonPropertyName("height")] public double Height { get; set; }
+    [JsonPropertyName("contentId")] public ulong ContentId { get; set; }
+}
+
+/// <summary>`wire::PathCommand` — "moveTo" (2 values) | "lineTo" (2) | "curveTo" (6) | "close" (0).</summary>
+public sealed class PathCommandWire
+{
+    [JsonPropertyName("command")] public string Command { get; set; } = "";
+    [JsonPropertyName("values")] public List<double> Values { get; set; } = new();
+}
+
+/// <summary>`wire::VectorPath` — one drawn path of a vector graphic in points relative to the
+/// object's own box (top-left origin), with its stroke, fill and arrowheads.</summary>
+public sealed class VectorPathWire
+{
+    [JsonPropertyName("commands")] public List<PathCommandWire> Commands { get; set; } = new();
+    [JsonPropertyName("stroke")] public DrawnBorderWire? Stroke { get; set; }
+    [JsonPropertyName("fill")] public ColorWire? Fill { get; set; }
+    [JsonPropertyName("arrowStart")] public bool ArrowStart { get; set; }
+    [JsonPropertyName("arrowEnd")] public bool ArrowEnd { get; set; }
 }
 
 public sealed class ListItemPayload
@@ -409,6 +557,7 @@ public sealed class ListItemPayload
     [JsonPropertyName("ordered")] public bool Ordered { get; set; }
     [JsonPropertyName("marker")] public string? Marker { get; set; }
     [JsonPropertyName("style")] public ParagraphStyleWire Style { get; set; } = new();
+    [JsonPropertyName("tabStops")] public List<TabStopWire> TabStops { get; set; } = new();
 }
 
 public sealed class TaskListItemPayload
@@ -461,6 +610,8 @@ public sealed class ImagePayload
 public sealed class VectorPayload
 {
     [JsonPropertyName("resourceId")] public ulong? ResourceId { get; set; }
+    /// <summary>`wire::Vector.paths` — the drawing itself; drawn by <c>Paging.PinnedObjectPainter</c>.</summary>
+    [JsonPropertyName("paths")] public List<VectorPathWire> Paths { get; set; } = new();
     [JsonPropertyName("intrinsicSize")] public SizeWire IntrinsicSize { get; set; } = new();
     [JsonPropertyName("displaySize")] public SizeWire? DisplaySize { get; set; }
     [JsonPropertyName("alignment")] public string? Alignment { get; set; }

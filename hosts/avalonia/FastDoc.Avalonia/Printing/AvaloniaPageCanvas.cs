@@ -1,3 +1,4 @@
+using System;
 using Avalonia;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -55,5 +56,60 @@ public sealed class AvaloniaPageCanvas : IPageCanvas
     {
         if (SyntheticItalic.NeedsSynthesis(line)) { SyntheticItalic.DrawTextLine(_context, line, origin); }
         else { line.Draw(_context, origin); }
+    }
+
+    private readonly System.Collections.Generic.Stack<DrawingContext.PushedState> _clips = new();
+
+    public void PushClip(Rect rect) => _clips.Push(_context.PushClip(rect));
+
+    public void PopClip()
+    {
+        if (_clips.Count > 0) { _clips.Pop().Dispose(); }
+    }
+
+    public void DrawVectorPath(System.Collections.Generic.IReadOnlyList<VectorSegment> segments, Color? fill,
+        Color? stroke, double strokeWidthPx, string strokeStyle)
+    {
+        if (segments.Count == 0) { return; }
+        var geometry = new StreamGeometry();
+        using (var g = geometry.Open())
+        {
+            var open = false;
+            foreach (var seg in segments)
+            {
+                switch (seg.Op)
+                {
+                    case 'M':
+                        if (open) { g.EndFigure(false); }
+                        g.BeginFigure(new Point(seg.X1, seg.Y1), fill is not null);
+                        open = true;
+                        break;
+                    case 'L':
+                        if (open) { g.LineTo(new Point(seg.X1, seg.Y1)); }
+                        break;
+                    case 'C':
+                        if (open) { g.CubicBezierTo(new Point(seg.X1, seg.Y1), new Point(seg.X2, seg.Y2), new Point(seg.X3, seg.Y3)); }
+                        break;
+                    case 'Z':
+                        if (open) { g.EndFigure(true); open = false; }
+                        break;
+                }
+            }
+            if (open) { g.EndFigure(false); }
+        }
+        IBrush? brush = fill is { } f ? new SolidColorBrush(f) : null;
+        IPen? pen = null;
+        if (stroke is { } s && strokeWidthPx > 0)
+        {
+            var width = Math.Max(strokeWidthPx, 0.0001);
+            IDashStyle? dash = strokeStyle switch
+            {
+                "dashed" => new DashStyle(new double[] { 4, 2 }, 0),
+                "dotted" => new DashStyle(new double[] { 1, 2 }, 0),
+                _ => null,
+            };
+            pen = new Pen(new SolidColorBrush(s), width, dash);
+        }
+        _context.DrawGeometry(brush, pen, geometry);
     }
 }

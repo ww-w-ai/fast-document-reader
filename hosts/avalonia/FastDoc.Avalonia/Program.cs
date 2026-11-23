@@ -446,10 +446,11 @@ class Program
             // splitTablesDefault: true mirrors PageViewOptions.default.splitTables (Swift) — this
             // headless CLI has no per-document preference store, so it uses the document-level
             // default every fresh document opens with.
-            var (layout, settleRounds, pushedCount, oversizedCount) =
-                FastDoc.Avalonia.Paging.PageLayout.BuildWithTableSettle(blocks, markers, geometry,
-                    result.Handle?.RawHandle ?? IntPtr.Zero, headersOn: true, footersOn: true,
-                    splitTablesDefault: true, imageRenderer: imageRenderer);
+            // Footnote bands shorten the pages that cite notes, so the sheet count depends on them.
+            var (layout, _) = FastDoc.Avalonia.Paging.FootnoteLayout.Build(result.Tree!, blocks, markers, geometry,
+                result.Handle?.RawHandle ?? IntPtr.Zero, headersOn: true, footersOn: true,
+                splitTablesDefault: true, imageRenderer: imageRenderer);
+            var (settleRounds, pushedCount, oversizedCount) = (0, 0, 0);
 
             Console.WriteLine($"sheets: {layout.PageCount}");
             Console.WriteLine(

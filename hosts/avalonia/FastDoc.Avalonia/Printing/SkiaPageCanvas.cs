@@ -241,6 +241,64 @@ public sealed class SkiaPageCanvas : IPageCanvas
         }
     }
 
+    private int _clipDepth;
+
+    public void PushClip(Rect rect)
+    {
+        _canvas.Save();
+        _canvas.ClipRect(ToSkRect(rect));
+        _clipDepth++;
+    }
+
+    public void PopClip()
+    {
+        if (_clipDepth == 0) { return; }
+        _clipDepth--;
+        _canvas.Restore();
+    }
+
+    public void DrawVectorPath(IReadOnlyList<VectorSegment> segments, Color? fill, Color? stroke,
+        double strokeWidthPx, string strokeStyle)
+    {
+        if (segments.Count == 0) { return; }
+        using var path = new SKPath();
+        var open = false;
+        foreach (var seg in segments)
+        {
+            switch (seg.Op)
+            {
+                case 'M': path.MoveTo((float)seg.X1, (float)seg.Y1); open = true; break;
+                case 'L': if (open) { path.LineTo((float)seg.X1, (float)seg.Y1); } break;
+                case 'C':
+                    if (open) { path.CubicTo((float)seg.X1, (float)seg.Y1, (float)seg.X2, (float)seg.Y2, (float)seg.X3, (float)seg.Y3); }
+                    break;
+                case 'Z': if (open) { path.Close(); } break;
+            }
+        }
+        if (fill is { } f)
+        {
+            using var paint = new SKPaint { Color = ToSk(f), Style = SKPaintStyle.Fill, IsAntialias = true };
+            _canvas.DrawPath(path, paint);
+        }
+        if (stroke is { } s && strokeWidthPx > 0)
+        {
+            using var paint = new SKPaint
+            {
+                Color = ToSk(s), Style = SKPaintStyle.Stroke, IsAntialias = true,
+                StrokeWidth = (float)strokeWidthPx,
+            };
+            var w = (float)Math.Max(strokeWidthPx, 0.5);
+            using var effect = strokeStyle switch
+            {
+                "dashed" => SKPathEffect.CreateDash(new[] { w * 4, w * 2 }, 0),
+                "dotted" => SKPathEffect.CreateDash(new[] { w, w * 2 }, 0),
+                _ => null,
+            };
+            paint.PathEffect = effect;
+            _canvas.DrawPath(path, paint);
+        }
+    }
+
     /// <summary>S8-A4: a control character (U+000A LINE FEED — the whole-run break marker
     /// <c>Rendering.FlowDocumentBuilder</c>'s "lineBreak" case and its own control-char splitter
     /// both produce) or a separator character the bundled Noto Sans KR TTF's cmap does not map

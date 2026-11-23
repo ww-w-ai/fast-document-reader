@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Avalonia;
 using Avalonia.Media;
 using Avalonia.Media.Imaging;
@@ -49,4 +50,25 @@ public interface IPageCanvas
     /// the piece-by-piece case <see cref="Paging.PageModePainter"/> needs when a block's lines are
     /// split across pages and only SOME of a block's lines belong to the page being drawn right now.</summary>
     void DrawTextLine(TextLine line, Point origin);
+
+    /// <summary>Starts clipping everything drawn until the matching <see cref="PopClip"/> to
+    /// <paramref name="rect"/> — an object pinned to a sheet is paper ink and must never run onto the
+    /// desk or the next page (invariant 81). Default: no clipping, so a surface that predates this
+    /// member still compiles.</summary>
+    void PushClip(Rect rect) { }
+
+    /// <summary>Ends the innermost <see cref="PushClip"/>.</summary>
+    void PopClip() { }
+
+    /// <summary>Fills and/or strokes one vector path already placed in this surface's pixel space.
+    /// <paramref name="strokeStyle"/> is "solid" | "dashed" | "dotted" | "double". Default: draws
+    /// nothing.</summary>
+    void DrawVectorPath(IReadOnlyList<VectorSegment> segments, Color? fill, Color? stroke, double strokeWidthPx,
+        string strokeStyle) { }
 }
+
+/// <summary>One segment of a <see cref="IPageCanvas.DrawVectorPath"/> path: <see cref="Op"/> is
+/// 'M' (move to X1,Y1), 'L' (line to X1,Y1), 'C' (cubic to X3,Y3 through X1,Y1 and X2,Y2) or 'Z'
+/// (close).</summary>
+public readonly record struct VectorSegment(char Op, double X1 = 0, double Y1 = 0, double X2 = 0, double Y2 = 0,
+    double X3 = 0, double Y3 = 0);

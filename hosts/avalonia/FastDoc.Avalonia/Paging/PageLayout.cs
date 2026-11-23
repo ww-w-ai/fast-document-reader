@@ -115,7 +115,8 @@ public readonly record struct PagedBlock(int BlockIndex, int PageIndex, double L
 /// <see cref="LineIndex"/> is the line's position within its OWN block's TextLayout (rebuilt at
 /// draw time at pixel scale — see PageModePainter's own doc for why the two layouts wrap
 /// identically) — never a global line number.</summary>
-public readonly record struct PagedLine(int BlockIndex, int LineIndex, int PageIndex, double LocalTopPoints, double HeightPoints);
+public readonly record struct PagedLine(int BlockIndex, int LineIndex, int PageIndex, double LocalTopPoints, double HeightPoints,
+    int FirstChar = 0, int Length = 0);
 
 /// <summary>The result of one pagination pass: how many pages, the page content box, and where
 /// every block/line landed.</summary>
@@ -164,7 +165,7 @@ public static class PageLayout
     public static PageLayoutResult Build(IReadOnlyList<FlowBlock> blocks, BlockPageMarkers.Markers markers,
         PageGeometry geometry, IntPtr engineHandle, bool headersOn, bool footersOn,
         ISet<int>? forcePushTableBlocks = null, IReadOnlyDictionary<int, SortedSet<int>>? forcedTableRowBreaks = null,
-        ImageBlockRenderer? imageRenderer = null)
+        ImageBlockRenderer? imageRenderer = null, IReadOnlyDictionary<int, double>? noteBands = null)
     {
         var contentWidth = geometry.ContentWidthPoints;
         var contentHeight = geometry.ContentHeightPoints;
@@ -184,6 +185,9 @@ public static class PageLayout
         for (var i = 0; i < blocks.Count; i++)
         {
             var block = blocks[i];
+            // The footnote tail flow mode shows after the body is NOT part of a sheet's flow: each
+            // note is drawn at the foot of the page that cites it (FootnoteLayout).
+            if (block.FootnoteOf is not null && noteBands is not null) { continue; }
             var sectionStart = i < markers.SectionStart.Length && markers.SectionStart[i];
             var hardBreak = i < markers.PageBreakBefore.Length && markers.PageBreakBefore[i];
             if ((sectionStart || hardBreak) && (pageIndex > 0 || cursor > 0))
@@ -197,7 +201,7 @@ public static class PageLayout
 
             if (block.Kind == FlowBlockKind.Text)
             {
-                PlaceTextLines(block, i, widthForBlock, contentHeight, geometry.LineGridPitchPoints,
+                PlaceTextLines(block, i, widthForBlock, contentHeight, noteBands, geometry.LineGridPitchPoints,
                     linePlacements, ref pageIndex, ref cursor);
                 continue;
             }
@@ -216,12 +220,12 @@ public static class PageLayout
             if (block.Kind == FlowBlockKind.Table && block.Table is not null
                 && forcedTableRowBreaks is not null && forcedTableRowBreaks.TryGetValue(i, out var breaks) && breaks.Count > 0)
             {
-                PlaceTableRows(block, i, widthForBlock, contentHeight, breaks, blockPlacements, ref pageIndex, ref cursor, imageRenderer);
+                PlaceTableRows(block, i, widthForBlock, contentHeight, noteBands, breaks, blockPlacements, ref pageIndex, ref cursor, imageRenderer);
                 continue;
             }
 
             var height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer);
-            if (ShouldPushToFreshPage(cursor, height, contentHeight))
+            if (ShouldPushToFreshPage(cursor, height, contentHeight - BandOf(noteBands, pageIndex)))
             {
                 pageIndex++;
                 cursor = 0;
@@ -271,7 +275,13 @@ public static class PageLayout
     /// draws the FULL table on its first piece's page only (see that file's own doc for the
     /// disclosed multi-page table drawing gap) — this method only owns where pages break, not what
     /// gets painted.</summary>
-    private static void PlaceTableRows(FlowBlock block, int blockIndex, double widthPoints, double contentHeight,
+    /// <summary>The room a page's footnote band takes off the foot of its body, in points (0 for a
+    /// page that cites no note).</summary>
+    private static double BandOf(IReadOnlyDictionary<int, double>? noteBands, int pageIndex) =>
+        noteBands is not null && noteBands.TryGetValue(pageIndex, out var band) ? band : 0;
+
+    private static void PlaceTableRows(FlowBlock block, int blockIndex, double widthPoints, double fullContentHeight,
+        IReadOnlyDictionary<int, double>? noteBands,
         SortedSet<int> forcedBreaksBeforeRow, List<PagedBlock> output, ref int pageIndex, ref double cursor,
         ImageBlockRenderer? imageRenderer = null)
     {
@@ -297,6 +307,7 @@ public static class PageLayout
             // A_table_taller_than_one_page_splits_at_a_row_boundary). A piece this loop places is
             // always EITHER already page-width-safe (`CanBreakAbove`-bounded) or is about to be
             // re-evaluated by the very next settle round, so the narrower guard is kept here.
+            var contentHeight = fullContentHeight - BandOf(noteBands, pageIndex);
             if (cursor > 0 && cursor + pieceHeight > contentHeight + 0.01 && pieceHeight <= contentHeight)
             {
                 pageIndex++;
@@ -321,9 +332,10 @@ public static class PageLayout
     public static (PageLayoutResult Layout, int Rounds, int Pushed, int Oversized) BuildWithTableSettle(
         IReadOnlyList<FlowBlock> blocks, BlockPageMarkers.Markers markers, PageGeometry geometry,
         IntPtr engineHandle, bool headersOn, bool footersOn, bool splitTablesDefault,
-        ImageBlockRenderer? imageRenderer = null)
+        ImageBlockRenderer? imageRenderer = null, IReadOnlyDictionary<int, double>? noteBands = null)
     {
-        var layout = Build(blocks, markers, geometry, engineHandle, headersOn, footersOn, imageRenderer: imageRenderer);
+        var layout = Build(blocks, markers, geometry, engineHandle, headersOn, footersOn, imageRenderer: imageRenderer,
+            noteBands: noteBands);
         var pushed = new Dictionary<long, (double Height, double TopInset)>();
         var oversized = new Dictionary<long, long>();
         var rounds = 0;
@@ -340,7 +352,8 @@ public static class PageLayout
             pushed = new Dictionary<long, (double, double)>(result.Pushed);
             oversized = new Dictionary<long, long>(result.Oversized);
             var (forcePush, forcedBreaks) = TableSettle.ExtractBlockOverrides(pushed.Keys, oversized);
-            layout = Build(blocks, markers, geometry, engineHandle, headersOn, footersOn, forcePush, forcedBreaks, imageRenderer);
+            layout = Build(blocks, markers, geometry, engineHandle, headersOn, footersOn, forcePush, forcedBreaks, imageRenderer,
+                noteBands);
         }
 
         var (finalPush, finalBreaks) = TableSettle.ExtractBlockOverrides(pushed.Keys, oversized);
@@ -352,14 +365,15 @@ public static class PageLayout
     /// line that does not fit the REMAINING room on its page (and would fit a fresh page) starts
     /// the next page instead, at local y 0. A blank paragraph (no visible runs) still contributes
     /// exactly one line, matching TextMeasurerPort's own "the terminator still gets a line" rule.</summary>
-    private static void PlaceTextLines(FlowBlock block, int blockIndex, double widthPoints, double contentHeight,
+    private static void PlaceTextLines(FlowBlock block, int blockIndex, double widthPoints, double fullContentHeight,
+        IReadOnlyDictionary<int, double>? noteBands,
         double? lineGridPitchPoints, List<PagedLine> output, ref int pageIndex, ref double cursor)
     {
         var layout = BuildPointsTextLayout(block, widthPoints);
         if (layout is null)
         {
             var blankHeight = block.SpacingBeforePoints + BlankParagraphHeightPoints + block.SpacingAfterPoints;
-            if (ShouldPushToFreshPage(cursor, blankHeight, contentHeight))
+            if (ShouldPushToFreshPage(cursor, blankHeight, fullContentHeight - BandOf(noteBands, pageIndex)))
             {
                 pageIndex++;
                 cursor = 0;
@@ -374,12 +388,13 @@ public static class PageLayout
         for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
             var lineHeight = EffectiveLineHeight(lines[lineIndex].Height, block.LineHeight, lineGridPitchPoints);
-            if (ShouldPushToFreshPage(cursor, lineHeight, contentHeight))
+            if (ShouldPushToFreshPage(cursor, lineHeight, fullContentHeight - BandOf(noteBands, pageIndex)))
             {
                 pageIndex++;
                 cursor = 0;
             }
-            output.Add(new PagedLine(blockIndex, lineIndex, pageIndex, cursor, lineHeight));
+            output.Add(new PagedLine(blockIndex, lineIndex, pageIndex, cursor, lineHeight,
+                lines[lineIndex].FirstTextSourceIndex, lines[lineIndex].Length));
             cursor += lineHeight;
         }
         cursor += block.SpacingAfterPoints;
@@ -498,6 +513,7 @@ public static class PageLayout
         // the line grid — the SAME two-step OfficeTextBuilder.bodyParagraphStyle performs
         // (`lineHeightMultiple` against the natural height; the grid only when no explicit rule).
         return new TextLayout(text, DefaultTypeface, maxFontSize, Brushes.Black, block.Alignment,
-            TextWrapping.Wrap, maxWidth: Math.Max(1, widthAtScale), textStyleOverrides: overrides);
+            TextWrapping.Wrap, maxWidth: Math.Max(1, widthAtScale),
+            letterSpacing: block.LetterSpacingPoints * fontScale, textStyleOverrides: overrides);
     }
 }

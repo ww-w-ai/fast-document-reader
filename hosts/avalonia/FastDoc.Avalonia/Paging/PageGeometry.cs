@@ -95,8 +95,13 @@ public static class BlockPageMarkers
     /// directly, rather than trusting that matching COUNTS implies matching order. Added when a
     /// mutation that reversed only <see cref="AppendFootnoteMarkers"/>'s footnote sort order
     /// passed every existing test here — they compared lengths, never identities.</summary>
+    /// <summary>`HidesPageNumber` / `PageNumberRestart` are per-block too (null = a producer that
+    /// states none): the page a block lands on prints no master-page number / restarts the counter
+    /// there — `wire::ParagraphPagination`, mirroring macOS's `hiddenPageNumberPages` and
+    /// `pageNumberRestarts`.</summary>
     public readonly record struct Markers(
-        bool[] SectionStart, bool[] PageBreakBefore, bool[] TableKeepsWhole, bool[] TableRepeatsHeader, ulong[] NodeId);
+        bool[] SectionStart, bool[] PageBreakBefore, bool[] TableKeepsWhole, bool[] TableRepeatsHeader, ulong[] NodeId,
+        bool[]? HidesPageNumber = null, long?[]? PageNumberRestart = null);
 
     /// <summary>The five parallel per-block lists <see cref="Walk"/> fills, bundled so adding a
     /// sixth marker later does not mean widening every method's parameter list again.</summary>
@@ -107,10 +112,12 @@ public static class BlockPageMarkers
         public readonly List<bool> TableKeepsWhole = new();
         public readonly List<bool> TableRepeatsHeader = new();
         public readonly List<ulong> NodeId = new();
+        public readonly List<bool> HidesPageNumber = new();
+        public readonly List<long?> PageNumberRestart = new();
 
         public Markers ToMarkers() => new(
             SectionStart.ToArray(), PageBreakBefore.ToArray(), TableKeepsWhole.ToArray(), TableRepeatsHeader.ToArray(),
-            NodeId.ToArray());
+            NodeId.ToArray(), HidesPageNumber.ToArray(), PageNumberRestart.ToArray());
     }
 
     public static Markers Compute(RenderTree tree)
@@ -235,6 +242,7 @@ public static class BlockPageMarkers
             case "image":
             case "vector":
             case "unsupported":
+            case "formControl":
             case "thematicBreak":
                 Emit(node.Id, null, false, false, acc, ref pendingSectionStart);
                 return;
@@ -264,7 +272,6 @@ public static class BlockPageMarkers
             case "masterPage":
             case "masterPageObject":
             case "anchoredObject":
-            case "formControl":
             case "textRun":
             case "lineBreak":
                 return;
@@ -393,6 +400,8 @@ public static class BlockPageMarkers
         acc.TableKeepsWhole.Add(keepsWhole);
         acc.TableRepeatsHeader.Add(repeatsHeader);
         acc.NodeId.Add(nodeId);
+        acc.HidesPageNumber.Add(pagination?.HidesPageNumber ?? false);
+        acc.PageNumberRestart.Add(pagination?.PageNumberRestart);
         pendingSectionStart = false;
     }
 }

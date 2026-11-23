@@ -168,7 +168,7 @@ public class S9B3Batch2Tests
         Assert.Contains("splitTablesDefault: _splitTablesAcrossPages", source);
         Assert.Contains("headersOn: _masterPageFurniture, footersOn: _masterPageFurniture", source);
         Assert.DoesNotContain("splitTablesDefault: true);", source);
-        Assert.Contains("_pageModePainter.Draw(surface, _blocks, _tree!, _pageLayout!, _pageGeometry!, _zoomFactor,\n                    width, Math.Max(0, Bounds.Height), _scrollOffset, _pageMarkers, _masterPageFurniture);",
+        Assert.Contains("_pageModePainter.Draw(surface, _blocks, _tree!, _pageLayout!, _pageGeometry!, _zoomFactor,\n                    width, Math.Max(0, Bounds.Height), _scrollOffset, _pageMarkers, _masterPageFurniture, _footnotePlan);",
             source);
     }
 

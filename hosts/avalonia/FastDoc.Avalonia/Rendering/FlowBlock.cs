@@ -61,7 +61,10 @@ public readonly record struct LineHeightRule(LineHeightMode Mode, double Value)
 /// constructor call keeps compiling unchanged.</summary>
 /// <remarks>`Background` is a highlight/spoiler wash behind the run (null for none); `Script` is 1 for
 /// a superscript, -1 for a subscript (the run's own <see cref="FontSizePoints"/> is already the
-/// reduced size) and 0 otherwise.</remarks>
+/// reduced size) and 0 otherwise. `PageField` is 1 for a live PAGE number placeholder, 2 for the
+/// page COUNT (`wire::TextRun.pageNumberField`) — the run's own text is only the document's
+/// literal value at parse time; a pinned master-page text box substitutes the real page's number
+/// before drawing (<c>Paging.PinnedObjectPainter</c>).</remarks>
 public sealed record FlowRun(
     string Text,
     string? FontFamily,
@@ -73,7 +76,11 @@ public sealed record FlowRun(
     Color Foreground,
     string? LinkTarget = null,
     Color? Background = null,
-    int Script = 0)
+    int Script = 0,
+    int PageField = 0,
+    bool Tab = false,
+    double LetterSpacingPercent = 0,
+    long FootnoteRef = 0)
 {
     /// <summary>The ONE place a run becomes Avalonia text properties, for the flow view, pagination,
     /// and table cells alike. <paramref name="fontSizePx"/> is the run's size at the caller's scale.
@@ -96,6 +103,10 @@ public sealed record FlowRun(
             backgroundBrush: background, baselineAlignment: baseline);
     }
 }
+
+/// <summary>A paragraph's border box: the rule colour and width (points) shared by every drawn
+/// edge, and which of the four edges the document drew.</summary>
+public sealed record ParagraphBorder(Color Color, double WidthPoints, bool Top, bool Right, bool Bottom, bool Left);
 
 /// <summary>What kind of thing a FlowBlock draws. List items stay indented-paragraph text; tables
 /// (E2b) get real grid geometry via <see cref="TableGridRenderer"/>, and pictures (E2b) decode to
@@ -144,7 +155,8 @@ public sealed class FlowBlock
     /// builder's) — reads this flag when constructing that block's `TextLayout` and chooses
     /// `TextWrapping.Wrap` vs `NoWrap` from it; this builder decides INTENT only, never pixels.</summary>
     public bool WrapCode { get; init; } = true;
-    public List<FlowRun> Runs { get; init; } = new();
+    private List<FlowRun> _runs = new();
+    public List<FlowRun> Runs { get => _runs; init => _runs = value; }
     /// <summary>Text alignment for Text blocks; doubles as the picture's paragraph alignment
     /// (left/center/right) for Image blocks — the same field, because both are "how this block
     /// sits in the column", never two spellings of one concept.</summary>
@@ -161,6 +173,31 @@ public sealed class FlowBlock
     /// see <see cref="Rendering.LineHeightRule"/>'s own doc for why the three modes cannot be
     /// collapsed into one number.</summary>
     public LineHeightRule LineHeight { get; init; } = LineHeightRule.Default;
+    /// <summary>The paragraph's background fill (office `w:shd`, HWP paragraph shading) — painted
+    /// across the full column behind the block's lines, like macOS's `paraShading`.</summary>
+    public Color? ShadingColor { get; init; }
+
+    /// <summary>Non-null for a block of the footnote tail <see cref="FlowDocumentBuilder"/> appends
+    /// after the body (the number of the note it belongs to; 0 for the separating rule). Flow mode
+    /// shows that tail; page mode leaves it out of the flow and draws each note at the foot of the
+    /// page that cites it (<c>Paging.FootnoteLayout</c>).</summary>
+    public long? FootnoteOf { get; set; }
+
+    /// <summary>The paragraph's rules, one colour and width for every drawn edge (macOS's
+    /// `paraBorder*`) — null when the paragraph declares none.</summary>
+    public ParagraphBorder? Border { get; init; }
+
+    /// <summary>Where the FIRST line starts relative to the rest, in points: `firstLineIndent −
+    /// hangingIndent` (macOS `firstLineHeadIndent = start + firstLine − hanging`). Negative outdents
+    /// the first line — a list marker hanging out of its text — and never past the column's left edge.</summary>
+    public double FirstLineOffsetPoints { get; init; }
+
+    /// <summary>Extra advance after every character, in points at zoom 1 — the character-weighted
+    /// mean of the runs' `letterSpacingPercent × font size`. Avalonia lays letter spacing out per
+    /// paragraph, not per run, so a block carries ONE value (HWP states the same −5% on whole
+    /// paragraphs; measured 4,908 of the 편람's runs).</summary>
+    public double LetterSpacingPoints { get; init; }
+
     public double? ImageWidthPoints { get; init; }
     public double? ImageHeightPoints { get; init; }
     /// <summary>The wire resource this Image block's bytes live in — null when the document
@@ -175,4 +212,14 @@ public sealed class FlowBlock
     public string? PlaceholderLabel { get; init; }
     /// <summary>Non-null only for Kind == Table — the resolved grid TableGridRenderer draws.</summary>
     public TableGridModel? Table { get; init; }
+
+    /// <summary>A copy of this block carrying <paramref name="runs"/> instead of its own — every
+    /// other field is carried over unchanged, so a caller that substitutes text (a live page-number
+    /// field) never has to know which fields exist.</summary>
+    public FlowBlock WithRuns(List<FlowRun> runs)
+    {
+        var copy = (FlowBlock)MemberwiseClone();
+        copy._runs = runs;
+        return copy;
+    }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Avalonia.Media;
 using FastDoc.Avalonia.Model;
 
@@ -90,15 +91,18 @@ public static class FlowDocumentBuilder
             SpacingBeforePoints = 12,
             SpacingAfterPoints = 8,
             NodeId = tree.Document!.RootNodeId,
+            FootnoteOf = 0,
         });
 
         foreach (var (node, note) in footnotes)
         {
+            var start = blocks.Count;
             blocks.Add(FootnoteLabelBlock(node.Id, note.Number, defaultFontSize));
             if (byId.TryGetValue(note.BodyFlowId, out var flow))
             {
                 WalkChildren(flow, byId, blocks, indent: CellIndentPoints, defaultFontSize, tableDepth: 0, wrapCodeBlocks);
             }
+            for (var i = start; i < blocks.Count; i++) { blocks[i].FootnoteOf = (long)note.Number; }
         }
     }
 
@@ -185,7 +189,7 @@ public static class FlowDocumentBuilder
                 var h = node.AsHeading;
                 if (h is null) { return; }
                 var runs = CollectRuns(node.Children, byId, HeadingFontSize(h.Level, defaultFontSize), boldDefault: true);
-                blocks.Add(TextBlock(runs, h.Style, indent, defaultFontSize, node.Id));
+                blocks.Add(TextBlock(runs, h.Style, indent, defaultFontSize, node.Id, h.TabStops));
                 return;
             }
 
@@ -194,7 +198,7 @@ public static class FlowDocumentBuilder
                 var p = node.AsParagraph;
                 if (p is null) { return; }
                 AppendInlineContentBlocks(node.Children, byId, blocks, indent, defaultFontSize, boldDefault: false,
-                    runs => TextBlock(runs, p.Style, indent, defaultFontSize, node.Id), leadingMarkerRuns: null);
+                    runs => TextBlock(runs, p.Style, indent, defaultFontSize, node.Id, p.TabStops), leadingMarkerRuns: null);
                 return;
             }
 
@@ -212,7 +216,7 @@ public static class FlowDocumentBuilder
                     runs => new FlowBlock
                     {
                         Kind = FlowBlockKind.Text,
-                        Runs = runs,
+                        Runs = TabLayout.Resolve(runs, null, 0),
                         IndentPoints = itemIndent,
                         SpacingAfterPoints = 2,
                         NodeId = node.Id,
@@ -378,6 +382,26 @@ public static class FlowDocumentBuilder
                 return;
             }
 
+            case "formControl":
+            {
+                // A standalone form control (office readers put theirs INLINE on a run, where its
+                // glyph text is already the run's text — macOS draws exactly that span). A node of
+                // its own is read-only text too: the glyph for its kind and state, then its caption.
+                var fc = node.AsFormControl;
+                if (fc is null) { return; }
+                blocks.Add(new FlowBlock
+                {
+                    Kind = FlowBlockKind.Text,
+                    Runs = new List<FlowRun> { new FlowRun(FormControlText(fc), null, defaultFontSize, false, false,
+                        false, false, Colors.Black) },
+                    IndentPoints = indent,
+                    SpacingBeforePoints = defaultFontSize * 0.3,
+                    SpacingAfterPoints = defaultFontSize * 0.3,
+                    NodeId = node.Id,
+                });
+                return;
+            }
+
             case "thematicBreak":
                 blocks.Add(new FlowBlock
                 {
@@ -407,7 +431,6 @@ public static class FlowDocumentBuilder
             case "masterPage":
             case "masterPageObject":
             case "anchoredObject":
-            case "formControl":
             case "textRun":
             case "lineBreak":
                 return;
@@ -419,6 +442,35 @@ public static class FlowDocumentBuilder
                 WalkChildren(node, byId, blocks, indent, defaultFontSize, tableDepth, wrapCodeBlocks);
                 return;
         }
+    }
+
+    /// <summary>The visible text of a read-only form control: a box / radio mark that follows its
+    /// <c>value</c>, then its caption (or text for an edit/combo box) — ASCII-bracket marks, because
+    /// the bundled faces have no ballot-box glyphs (the same reason <see cref="AddTextRun"/> swaps
+    /// U+2611/U+2610 for `[x]`/`[ ]`).</summary>
+    internal static string FormControlText(FormControlWire fc)
+    {
+        var label = fc.Caption.Length > 0 ? fc.Caption : fc.Text;
+        return fc.Kind switch
+        {
+            "checkBox" => (fc.Value != 0 ? "[x] " : "[ ] ") + label,
+            "radioButton" => (fc.Value != 0 ? "(o) " : "( ) ") + label,
+            "pushButton" => $"[ {label} ]",
+            "comboBox" => $"[ {label} v ]",
+            _ => label,
+        };
+    }
+
+    /// <summary>Builds the blocks a pinned object's text box holds (an anchored or master-page
+    /// "flow" node's children) through the SAME walk the body uses, so a seal's text and a page
+    /// number box typeset like any other paragraph (invariant 29).</summary>
+    internal static List<FlowBlock> BuildFlowBlocks(RenderTree tree, Dictionary<ulong, RenderNode> byId,
+        RenderNode flow, bool wrapCodeBlocks = true)
+    {
+        var blocks = new List<FlowBlock>();
+        var defaultFontSize = tree.Document is { DefaultBodyFontSize: > 0 } d ? d.DefaultBodyFontSize : 12.0;
+        WalkChildren(flow, byId, blocks, indent: 0, defaultFontSize, tableDepth: 0, wrapCodeBlocks);
+        return blocks;
     }
 
     private static void WalkChildren(RenderNode node, Dictionary<ulong, RenderNode> byId, List<FlowBlock> blocks,
@@ -446,7 +498,7 @@ public static class FlowDocumentBuilder
         var markerRuns = new List<FlowRun> { new FlowRun($"{marker} ", null, defaultFontSize, false, false, false, false, Colors.Black) };
         var itemIndent = indent + ListIndentPoints * Math.Max(1, li.Level + 1);
         AppendItemContent(node, byId, blocks, indent, itemIndent, defaultFontSize, tableDepth, wrapCodeBlocks,
-            runs => TextBlock(runs, li.Style, itemIndent, defaultFontSize, node.Id), markerRuns);
+            runs => TextBlock(runs, li.Style, itemIndent, defaultFontSize, node.Id, li.TabStops), markerRuns);
     }
 
     /// <summary>One list item's children. Inline children (and a leading paragraph's, in a loose
@@ -529,14 +581,23 @@ public static class FlowDocumentBuilder
     private static Color QuoteBarColorFor(string? alert) =>
         alert is not null && AlertBarColors.TryGetValue(alert, out var c) ? c : PlainQuoteBarColor;
 
-    private static FlowBlock TextBlock(List<FlowRun> runs, ParagraphStyleWire style, double indent, double defaultFontSize, ulong nodeId)
+    private static FlowBlock TextBlock(List<FlowRun> runs, ParagraphStyleWire style, double indent, double defaultFontSize, ulong nodeId,
+        IReadOnlyList<TabStopWire>? tabStops = null)
     {
+        var resolved = TabLayout.Resolve(runs, tabStops, Math.Max(0, style.HeadIndent ?? 0));
+        var indentPoints = indent + Math.Max(0, style.HeadIndent ?? 0);
         return new FlowBlock
         {
             Kind = FlowBlockKind.Text,
-            Runs = runs,
+            Runs = resolved,
             Alignment = AlignmentFrom(style.Alignment),
-            IndentPoints = indent + Math.Max(0, style.HeadIndent ?? 0),
+            IndentPoints = indentPoints,
+            ShadingColor = style.Shading is { } shading ? ColorFrom(shading) : null,
+            Border = BorderFrom(style.Borders),
+            // macOS: firstLineHeadIndent = start + firstLine - hanging. An outdent never passes the
+            // column's left edge.
+            FirstLineOffsetPoints = Math.Max(-indentPoints, (style.FirstLineIndent ?? 0) - (style.HangingIndent ?? 0)),
+            LetterSpacingPoints = LetterSpacingOf(resolved),
             SpacingBeforePoints = Math.Max(0, style.SpacingBefore ?? (defaultFontSize * 0.3)),
             SpacingAfterPoints = Math.Max(0, style.SpacingAfter ?? (defaultFontSize * 0.3)),
             // E2c-2b: the whole mode + value now, not just `.multiple`'s ratio (see LineHeightRule's
@@ -544,6 +605,38 @@ public static class FlowDocumentBuilder
             LineHeight = LineHeightRule.From(style.LineHeight),
             NodeId = nodeId,
         };
+    }
+
+    /// <summary>The paragraph's rules as macOS draws them (`paraBorderColor/Width/Edges`): the edges the
+    /// document DREW (a suppressed or unmentioned edge draws nothing), all in the colour and width of
+    /// the first drawn one. Null when no edge is drawn.</summary>
+    internal static ParagraphBorder? BorderFrom(BorderSetWire? set)
+    {
+        if (set is null) { return null; }
+        static DrawnBorderWire? Drawn(BorderDeclarationWire? d) => d is { Kind: "drawn", Value: { } v } ? v : null;
+        var top = Drawn(set.Top);
+        var right = Drawn(set.Right);
+        var bottom = Drawn(set.Bottom);
+        var left = Drawn(set.Left);
+        var first = top ?? left ?? bottom ?? right;
+        if (first is null) { return null; }
+        return new ParagraphBorder(first.Color is { } c ? ColorFrom(c) : Colors.Black, first.WidthPoints,
+            top is not null, right is not null, bottom is not null, left is not null);
+    }
+
+    /// <summary>The character-weighted mean letter spacing of <paramref name="runs"/>, in points: each
+    /// run contributes `percent / 100 × its font size` for every character it holds.</summary>
+    internal static double LetterSpacingOf(List<FlowRun> runs)
+    {
+        double sum = 0;
+        var count = 0;
+        foreach (var run in runs)
+        {
+            if (run.Text.Length == 0 || run.Text == "\n") { continue; }
+            count += run.Text.Length;
+            sum += run.Text.Length * run.LetterSpacingPercent / 100.0 * run.FontSizePoints;
+        }
+        return count == 0 ? 0 : sum / count;
     }
 
     private static TextAlignment AlignmentFrom(string? wire) => wire switch
@@ -668,8 +761,59 @@ public static class FlowDocumentBuilder
         var script = style.VerticalPosition switch { "superscript" => 1, "subscript" => -1, _ => 0 };
         var size = (style.FontSizePoints ?? defaultFontSize) * (script != 0 ? ScriptScale : 1.0);
         Color? background = style.Background is { } wash ? ColorFrom(wash) : null;
+        var pageField = tr.PageNumberField switch { "page" => 1, "numPages" => 2, _ => 0 };
+        var spacing = style.LetterSpacingPercent ?? 0;
+        var firstNew = runs.Count;
+        AddTextRunCore(runs, tr, style, text, family, size, script, background, pageField, spacing, boldDefault);
+        // The run that IS a footnote's in-body marker: tagged so page mode can find the page it lands on.
+        if (tr.FootnoteReferenceNumber is { } note)
+        {
+            for (var i = firstNew; i < runs.Count; i++) { runs[i] = runs[i] with { FootnoteRef = note }; }
+        }
+    }
+
+    private static void AddTextRunCore(List<FlowRun> runs, TextRunPayload tr, CharacterStyleWire style, string text,
+        string? family, double size, int script, Color? background, int pageField, double spacing, bool boldDefault)
+    {
+
+        // All capitals: the face has no `caps` feature to ask for, so the text itself is upper-cased
+        // (the stored text is what Copy / find / --extract read, so this changes the drawn string
+        // only — a field's own text, a page number, is left alone).
+        if (style.Caps && pageField == 0) { text = text.ToUpperInvariant(); }
+
+        if (style.SmallCaps && !style.Caps && pageField == 0 && text.Any(char.IsLower))
+        {
+            // Small capitals: each lower-case letter becomes a capital at a smaller size, in runs of
+            // its own; everything else stays at the run's size.
+            foreach (var (segment, small) in SmallCapsSegments(text))
+            {
+                AppendTextRunSplitOnControlChars(runs, small ? segment.ToUpperInvariant() : segment, family,
+                    small ? size * SmallCapsScale : size, style.Bold || boldDefault, style.Italic,
+                    style.Underline is not null, style.Strike, ColorFrom(style.Foreground), tr.Link, background, script,
+                    pageField, spacing);
+            }
+            return;
+        }
         AppendTextRunSplitOnControlChars(runs, text, family, size, style.Bold || boldDefault, style.Italic,
-            style.Underline is not null, style.Strike, ColorFrom(style.Foreground), tr.Link, background, script);
+            style.Underline is not null, style.Strike, ColorFrom(style.Foreground), tr.Link, background, script,
+            pageField, spacing);
+    }
+
+    /// <summary>How much smaller a small capital is than a full one — the proportion a word
+    /// processor's synthetic small caps use.</summary>
+    internal const double SmallCapsScale = 0.8;
+
+    /// <summary>Splits <paramref name="text"/> into maximal runs that are (small = true) all
+    /// lower-case letters, or (small = false) everything else.</summary>
+    internal static IEnumerable<(string Segment, bool Small)> SmallCapsSegments(string text)
+    {
+        var start = 0;
+        for (var i = 1; i <= text.Length; i++)
+        {
+            if (i < text.Length && char.IsLower(text[i]) == char.IsLower(text[start])) { continue; }
+            yield return (text[start..i], char.IsLower(text[start]));
+            start = i;
+        }
     }
 
     private static List<FlowRun> CollectRuns(List<ulong> childIds, Dictionary<ulong, RenderNode> byId,
@@ -710,17 +854,16 @@ public static class FlowDocumentBuilder
     /// character instead, U+2024 ONE DOT LEADER, repeated many times. The bundled Inter/Noto Sans
     /// KR fallback has no glyph for it, so the same tofu box appears — catalog finding F9.
     ///
-    /// Per-code-point handling (never a blanket strip): TAB becomes a short run of ordinary spaces
-    /// IN THE SAME STYLE as its surrounding text (a real tab-stop/leader-dot layout is a separate,
-    /// larger feature this host does not have yet — this keeps the visible field separation an
-    /// author intended instead of a lost or tofu'd character). LINE FEED becomes exactly the same
+    /// Per-code-point handling (never a blanket strip): TAB becomes a tab-marked run that
+    /// <see cref="TabLayout"/> turns into the gap (and leader) the paragraph's tab stops ask for,
+    /// in the same style as its surrounding text — never a tofu'd control character. LINE FEED becomes exactly the same
     /// default-styled break <c>FlowRun("\n", ...)</c> a genuine "lineBreak" node already produces
     /// above, so a line inside one run breaks the same way a line between two runs does. ONE DOT
     /// LEADER becomes an ordinary FULL STOP (U+002E) in the SAME style — visually the closest
     /// glyph this reader is guaranteed to have, until a real tab-leader layout exists.</summary>
     private static void AppendTextRunSplitOnControlChars(List<FlowRun> runs, string text, string? family,
         double fontSize, bool bold, bool italic, bool underline, bool strike, Color foreground, string? link = null,
-        Color? background = null, int script = 0)
+        Color? background = null, int script = 0, int pageField = 0, double letterSpacing = 0)
     {
         // S8-B5: a run carrying a link draws underlined in the theme's link colour — otherwise a
         // link was visually indistinguishable from body text (the bug this unit was dispatched
@@ -741,17 +884,18 @@ public static class FlowDocumentBuilder
             if (c != '\t' && c != '\n' && c != '․') { continue; }
             if (i > start)
             {
-                runs.Add(new FlowRun(text[start..i], family, fontSize, bold, italic, underline, strike, foreground, link, background, script));
+                runs.Add(new FlowRun(text[start..i], family, fontSize, bold, italic, underline, strike, foreground, link, background, script, pageField, LetterSpacingPercent: letterSpacing));
             }
             if (c == '\t')
             {
-                // A synthetic run standing in for whitespace — not part of the document's own run
-                // text, so it never carries the surrounding run's link (S8-B4).
-                runs.Add(new FlowRun("    ", family, fontSize, bold, italic, underline, strike, foreground, null, background, script));
+                // A TAB run, resolved to the gap its paragraph's tab stops ask for once the whole
+                // paragraph's runs are known (TabLayout.Resolve, called by TextBlock) — a synthetic
+                // run, so it never carries the surrounding run's link (S8-B4) or an underline.
+                runs.Add(new FlowRun("\t", family, fontSize, bold, italic, false, false, foreground, null, null, script, pageField, Tab: true, LetterSpacingPercent: letterSpacing));
             }
             else if (c == '․')
             {
-                runs.Add(new FlowRun(".", family, fontSize, bold, italic, underline, strike, foreground, null, background, script));
+                runs.Add(new FlowRun(".", family, fontSize, bold, italic, underline, strike, foreground, null, background, script, pageField, LetterSpacingPercent: letterSpacing));
             }
             else
             {
@@ -761,11 +905,11 @@ public static class FlowDocumentBuilder
         }
         if (start < text.Length)
         {
-            runs.Add(new FlowRun(text[start..], family, fontSize, bold, italic, underline, strike, foreground, link, background, script));
+            runs.Add(new FlowRun(text[start..], family, fontSize, bold, italic, underline, strike, foreground, link, background, script, pageField, LetterSpacingPercent: letterSpacing));
         }
         else if (text.Length == 0)
         {
-            runs.Add(new FlowRun(text, family, fontSize, bold, italic, underline, strike, foreground, link, background, script));
+            runs.Add(new FlowRun(text, family, fontSize, bold, italic, underline, strike, foreground, link, background, script, pageField, LetterSpacingPercent: letterSpacing));
         }
     }
 

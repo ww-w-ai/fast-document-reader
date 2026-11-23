@@ -48,9 +48,109 @@ public sealed class PageModePainter
     /// <see cref="InvalidateTextCache"/>) is the whole "줄 높이는 블록 높이 캐시와 함께 캐시" ask.</summary>
     private readonly Dictionary<int, (double Zoom, TextLayout Layout)> _textLayoutCache = new();
 
+    private readonly PinnedObjectPainter _pinnedPainter;
+
     public PageModePainter(ImageBlockRenderer imageRenderer)
     {
         _imageRenderer = imageRenderer;
+        _pinnedPainter = new PinnedObjectPainter(imageRenderer);
+    }
+
+    /// <summary>What a layout pass adds to a page beyond its blocks: the pinned objects (read off the
+    /// tree once per tree+blocks), each anchored object's page and completed top, and the document's
+    /// page-number vetoes / restarts. Rebuilt only when the layout object itself is replaced.</summary>
+    private sealed class PageFacts
+    {
+        public required PinnedObjectSet Pinned { get; init; }
+        public required PageNumberFacts Numbers { get; init; }
+        public required Dictionary<int, List<(PinnedObject Object, double TopPoints)>> AnchoredByPage { get; init; }
+    }
+
+    private (RenderTree Tree, object Blocks, PinnedObjectSet Set)? _pinnedCache;
+    private (PageLayoutResult Layout, BlockPageMarkers.Markers Markers, PageFacts Facts)? _factsCache;
+
+    private PageFacts FactsFor(RenderTree tree, IReadOnlyList<FlowBlock> blocks, PageLayoutResult layout,
+        PageGeometry geometry, BlockPageMarkers.Markers markers)
+    {
+        if (_factsCache is { } cached && ReferenceEquals(cached.Layout, layout)
+            && ReferenceEquals(cached.Markers.NodeId, markers.NodeId)
+            && ReferenceEquals(_pinnedCache?.Tree, tree) && ReferenceEquals(_pinnedCache?.Blocks, blocks))
+        {
+            return cached.Facts;
+        }
+        if (_pinnedCache is not { } p || !ReferenceEquals(p.Tree, tree) || !ReferenceEquals(p.Blocks, blocks))
+        {
+            _pinnedCache = (tree, blocks, PinnedObjectSet.Build(tree, blocks));
+        }
+        var pinned = _pinnedCache!.Value.Set;
+
+        var anchored = new Dictionary<int, List<(PinnedObject, double)>>();
+        if (pinned.Anchored.Count > 0)
+        {
+            var firstLine = new Dictionary<int, PagedLine>();
+            foreach (var line in layout.Lines) { firstLine.TryAdd(line.BlockIndex, line); }
+            var firstPlacement = new Dictionary<int, PagedBlock>();
+            foreach (var placement in layout.Placements) { firstPlacement.TryAdd(placement.BlockIndex, placement); }
+            foreach (var obj in pinned.Anchored)
+            {
+                int page;
+                double lineTop, lineHeight;
+                if (firstLine.TryGetValue(obj.AnchorBlockIndex, out var line))
+                {
+                    (page, lineTop, lineHeight) = (line.PageIndex, line.LocalTopPoints, line.HeightPoints);
+                }
+                else if (firstPlacement.TryGetValue(obj.AnchorBlockIndex, out var block))
+                {
+                    (page, lineTop, lineHeight) = (block.PageIndex, block.LocalTopPoints, block.HeightPoints);
+                }
+                else { continue; }
+                // The line's top in PAPER points: the page body starts a top margin below the sheet's edge.
+                var top = obj.Anchor is { } rule
+                    ? rule.Top(geometry.MarginTopPoints + lineTop, lineHeight, obj.Height)
+                    : obj.Y;
+                if (!anchored.TryGetValue(page, out var list)) { anchored[page] = list = new(); }
+                list.Add((obj, top));
+            }
+        }
+        var facts = new PageFacts
+        {
+            Pinned = pinned,
+            Numbers = PageNumberFacts.From(layout, markers),
+            AnchoredByPage = anchored,
+        };
+        _factsCache = (layout, markers, facts);
+        return facts;
+    }
+
+    /// <summary>Which master template covers each page this pass draws — ONE batched engine call
+    /// for the whole visible range (never one per page), over exactly the pages the draw loop will
+    /// visit. Pages with no covering template are absent from the result.</summary>
+    private Dictionary<int, int> SelectMasters(PinnedObjectSet pinned, PageLayoutResult layout, int singlePageIndex,
+        PageGeometry geometry, double zoomFactor, double viewportHeightPx, double scrollOffsetPx, double buffer)
+    {
+        var pageHeightPx = PageHeightPx(geometry, zoomFactor);
+        var pages = new List<(int PageIndex, int? Section)>();
+        for (var p = 0; p < layout.PageCount; p++)
+        {
+            if (singlePageIndex >= 0)
+            {
+                if (p != singlePageIndex) { continue; }
+            }
+            else
+            {
+                var localTop = PageTopPx(geometry, p, zoomFactor) - scrollOffsetPx;
+                if (localTop + pageHeightPx < -buffer) { continue; }
+                if (localTop > viewportHeightPx + buffer) { break; }
+            }
+            pages.Add((p, p < layout.PageSectionIndex.Count ? layout.PageSectionIndex[p] : 0));
+        }
+        var answers = MasterPageSelector.Select(pinned.Masters, pinned.SectionsHidingMasterPage, pages);
+        var result = new Dictionary<int, int>();
+        for (var i = 0; i < pages.Count; i++)
+        {
+            if (answers[i] >= 0 && answers[i] < pinned.Masters.Count) { result[pages[i].PageIndex] = answers[i]; }
+        }
+        return result;
     }
 
     /// <summary>Drops every cached pixel-scale TextLayout — call whenever the tree/PageLayoutResult
@@ -83,7 +183,7 @@ public sealed class PageModePainter
     public void Draw(IPageCanvas surface, IReadOnlyList<FlowBlock> blocks, RenderTree tree,
         PageLayoutResult layout, PageGeometry geometry, double zoomFactor,
         double viewportWidthPx, double viewportHeightPx, double scrollOffsetPx,
-        BlockPageMarkers.Markers markers, bool masterPageFurniture = true)
+        BlockPageMarkers.Markers markers, bool masterPageFurniture = true, FootnotePlan? footnotes = null)
     {
         var pageWidthPx = PageWidthPx(geometry, zoomFactor);
         var pageHeightPx = PageHeightPx(geometry, zoomFactor);
@@ -138,6 +238,14 @@ public sealed class PageModePainter
         var footerCandidates = HeaderFooterText.CollectCandidates(tree, "footer");
         var byId = new Dictionary<ulong, RenderNode>(tree.Nodes.Count);
         foreach (var n in tree.Nodes) { byId[n.Id] = n; }
+
+        // What the document pins to its sheets: master-page templates (every page they cover) and
+        // anchored objects (the page their carrier paragraph lands on). Resolved once per layout.
+        var facts = FactsFor(tree, blocks, layout, geometry, markers);
+        var masterByPage = masterPageFurniture && facts.Pinned.Masters.Count > 0
+            ? SelectMasters(facts.Pinned, layout, isSinglePageExport ? singlePageIndex : -1,
+                geometry, zoomFactor, viewportHeightPx, scrollOffsetPx, buffer)
+            : null;
         // S12-J: the fallback size for a header/footer run that declared no size of its own —
         // the document's own default body size (mirrors FlowDocumentBuilder.Build's identical
         // fallback), never a bare literal.
@@ -166,7 +274,22 @@ public sealed class PageModePainter
             var sectionIndex = pageIndex < layout.PageSectionIndex.Count ? layout.PageSectionIndex[pageIndex] : 0;
             var isFirstPageOfSection = pageIndex == 0
                 || (pageIndex - 1 < layout.PageSectionIndex.Count && layout.PageSectionIndex[pageIndex - 1] != sectionIndex);
-            var pageNumber = pageIndex + 1;
+            // The number the sheet PRINTS: the document's own counter (a 새 번호 restart renumbers
+            // from that page on; macOS's displayedPageNumber), not the sheet's ordinal.
+            var pageNumber = facts.Numbers.Displayed(pageIndex);
+
+            // 바탕쪽 first (behind everything): the artwork, the ruled title and the page number a
+            // Korean document draws on the sheet itself. View > Master Page Furniture governs it
+            // like the running header/footer — off means nothing pinned, nothing reserved.
+            if (masterByPage is not null && masterByPage.TryGetValue(pageIndex, out var templateIndex))
+            {
+                var template = facts.Pinned.Masters[templateIndex];
+                foreach (var obj in template.Objects)
+                {
+                    _pinnedPainter.Draw(surface, obj, obj.Y, paperRect, zoomFactor, pageNumber, layout.PageCount,
+                        facts.Numbers.Hides(pageIndex));
+                }
+            }
             // S9-B3 batch 2: View > Master Page Furniture off suppresses the running header/footer
             // band entirely — mirrors PageViewOptions.header/footer deriving from `outline` on
             // macOS (turning the furniture off leaves the content flowing with nothing drawn in
@@ -200,6 +323,17 @@ public sealed class PageModePainter
 
             var left = deskX + marginLeftPx;
 
+            facts.AnchoredByPage.TryGetValue(pageIndex, out var anchoredHere);
+            if (anchoredHere is not null)
+            {
+                foreach (var (obj, topPoints) in anchoredHere)
+                {
+                    if (obj.Content is not PinnedImage) { continue; }
+                    _pinnedPainter.Draw(surface, obj, topPoints, paperRect, zoomFactor, pageNumber, layout.PageCount,
+                        facts.Numbers.Hides(pageIndex));
+                }
+            }
+
             if (blocksByPage.TryGetValue(pageIndex, out var placements))
             {
                 foreach (var placement in placements)
@@ -217,6 +351,63 @@ public sealed class PageModePainter
             {
                 DrawTextLinesOnPage(surface, blocks, pageLines, left, contentTop, contentWidthPx, zoomFactor);
             }
+
+            if (footnotes is { IsEmpty: false }) { DrawFootnotes(surface, footnotes, layout, pageIndex, localTop, geometry, left, contentWidthPx, zoomFactor); }
+
+            // Drawings and text boxes the document anchored at a place in the text, on the page
+            // their carrier paragraph lands on — a seal over a signature line, a rule beside a
+            // table. Drawn OVER the page's blocks: the carrier is very often a table whose cells are
+            // filled, and the tree carries no wrap/z-order, so the order that never hides a stamp is
+            // the one chosen. Pictures went under the blocks above (a cover's full-page artwork must
+            // not bury its own title).
+            if (anchoredHere is not null)
+            {
+                foreach (var (obj, topPoints) in anchoredHere)
+                {
+                    if (obj.Content is PinnedImage) { continue; }
+                    _pinnedPainter.Draw(surface, obj, topPoints, paperRect, zoomFactor, pageNumber, layout.PageCount,
+                        facts.Numbers.Hides(pageIndex));
+                }
+            }
+        }
+    }
+
+    /// <summary>The notes a page cites, at the foot of its body in the band the page reserved: the
+    /// separator rule, then each note's own blocks (the number is part of the body, as the document
+    /// wrote it). Mirrors macOS's `FootnotePainter` — the rule sits on the section's own top margin
+    /// (or centred in the reader's minimum), runs the declared length or a third of the column, and a
+    /// declared line type of 0 draws none.</summary>
+    private static void DrawFootnotes(IPageCanvas surface, FootnotePlan plan, PageLayoutResult layout, int pageIndex,
+        double pageTopPx, PageGeometry geometry, double left, double columnWidthPx, double zoomFactor)
+    {
+        if (!plan.NoteBands.TryGetValue(pageIndex, out var bandPoints) || bandPoints <= 0) { return; }
+        if (!plan.NotesByPage.TryGetValue(pageIndex, out var numbers) || numbers.Count == 0) { return; }
+        var scale = PointsToPixels * zoomFactor;
+        var bodyBottom = pageTopPx + (geometry.MarginTopPoints + layout.PageContentHeightPoints) * scale;
+        var top = bodyBottom - bandPoints * scale;
+        var separator = plan.SeparatorForPage(layout, pageIndex);
+        var allowance = FootnoteLayout.SeparatorAllowance(separator);
+
+        if (!(separator is { IsDeclared: true, LineType: 0 }))
+        {
+            var offset = separator is { IsDeclared: true } ? separator.MarginTopPoints : allowance / 2;
+            var y = Math.Round(top + offset * scale) + 0.5;
+            var length = separator?.LengthPoints is { } declared
+                ? (declared <= 0 || declared * scale >= columnWidthPx ? columnWidthPx : declared * scale)
+                : columnWidthPx / 3;
+            var color = separator?.Color ?? Color.FromArgb(0x8c, 0x66, 0x66, 0x66);
+            surface.DrawLine(new Point(left, y), new Point(left + Math.Min(length, columnWidthPx), y), color,
+                Math.Max(separator?.LineWidthPoints ?? 0, 0.5) * scale);
+        }
+
+        var cursor = top + allowance * scale;
+        var spacing = (separator?.NoteSpacingPoints ?? 0) * scale;
+        for (var i = 0; i < numbers.Count; i++)
+        {
+            if (i > 0) { cursor += spacing; }
+            if (!plan.Notes.TryGetValue(numbers[i], out var note)) { continue; }
+            cursor = PinnedObjectPainter.DrawBlocks(surface, note.Blocks,
+                new Rect(left, cursor, columnWidthPx, 0), scale);
         }
     }
 
@@ -300,8 +491,20 @@ public sealed class PageModePainter
             var indentPx = block.IndentPoints * PointsToPixels * zoomFactor;
             var maxWidth = Math.Max(20, columnWidthPx - indentPx);
             var pixelLayout = GetOrBuildPixelLayout(blockIndex, block, maxWidth, zoomFactor);
+
+            // A shaded / ruled paragraph: ONE rectangle per page, from the first of its lines on
+            // this page to the last (a paragraph that continues onto the next page is boxed again there).
+            var scale = PointsToPixels * zoomFactor;
+            if (ParagraphDecor.HasAny(block) && linesForBlock.Count > 0)
+            {
+                var first = linesForBlock.Min(l => l.LocalTopPoints);
+                var last = linesForBlock.Max(l => l.LocalTopPoints + l.HeightPoints);
+                ParagraphDecor.Draw(surface, block, left, columnWidthPx, contentTop + first * scale, (last - first) * scale, scale);
+            }
             if (pixelLayout is null) { continue; } // a blank paragraph's single "line" has no TextLayout to draw
 
+            // The first line of a hanging / first-line-indented paragraph starts left or right of the rest.
+            var firstLineOffsetPx = block.FirstLineOffsetPoints * scale;
             foreach (var line in linesForBlock)
             {
                 if (line.LineIndex < 0 || line.LineIndex >= pixelLayout.TextLines.Count) { continue; }
@@ -312,7 +515,7 @@ public sealed class PageModePainter
                     var barX = left + block.QuoteBarXPoints * PointsToPixels * zoomFactor;
                     surface.DrawRect(new Rect(barX, top, 3, textLine.Height), barColor, null, 0);
                 }
-                surface.DrawTextLine(textLine, new Point(left + indentPx, top));
+                surface.DrawTextLine(textLine, new Point(left + indentPx + (line.LineIndex == 0 ? firstLineOffsetPx : 0), top));
             }
         }
     }

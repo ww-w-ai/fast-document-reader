@@ -198,11 +198,19 @@ public sealed class FlowDocumentView : Control
     // ---- page mode ------------------------------------------------------------------------------
     private readonly PageModePainter _pageModePainter;
     private RenderTree? _tree;
+
+    /// <summary>The objects the document pins off the flow (seals, stamps, text boxes, floating
+    /// pictures), read off the tree once per block list; null until a frame first asks. Flow mode
+    /// has no sheet, so each is drawn against its carrier block (see <see cref="DrawFlowPinned"/>);
+    /// page mode keeps its own copy in <see cref="PageModePainter"/>.</summary>
+    private PinnedObjectSet? _flowPinned;
+    private PinnedObjectPainter? _flowPinnedPainter;
     private OfficeDocumentHandle? _officeHandle;
     private bool _pageMode;
     private PageGeometry? _pageGeometry;
     private BlockPageMarkers.Markers _pageMarkers;
     private PageLayoutResult? _pageLayout;
+    private FootnotePlan _footnotePlan = FootnotePlan.Empty;
     private bool _pageLayoutDirty = true;
 
     /// <summary>S9-B3 batch 2: mirrors macOS's <c>PageViewOptions.masterPage</c> — whether the
@@ -737,6 +745,7 @@ public sealed class FlowDocumentView : Control
         _officeHandle = null;
         _pageGeometry = tree is null ? null : PageGeometry.FromDocument(tree);
         _pageMarkers = tree is null ? default : BlockPageMarkers.Compute(tree);
+        _flowPinned = null;
         _pageLayout = null;
         _pageLayoutDirty = true;
         _pageModePainter.InvalidateTextCache(); // block indices from the OLD tree must never draw against the new one
@@ -795,7 +804,8 @@ public sealed class FlowDocumentView : Control
         // (PageLayout.BuildWithTableSettle) — headersOn/footersOn/splitTablesDefault come from the
         // View menu's Master Page Furniture / Split Tables Across Pages toggles (S9-B3 batch 2),
         // both true by default, mirroring PageViewOptions.default (Swift).
-        (_pageLayout, _, _, _) = PageLayout.BuildWithTableSettle(_blocks, _pageMarkers, _pageGeometry,
+        // Footnote bands ride the same layout: a page that cites notes reserves room at its foot.
+        (_pageLayout, _footnotePlan) = FootnoteLayout.Build(_tree!, _blocks, _pageMarkers, _pageGeometry,
             handle, headersOn: _masterPageFurniture, footersOn: _masterPageFurniture,
             splitTablesDefault: _splitTablesAcrossPages, imageRenderer: _imageRenderer);
         _pageLayoutDirty = false;
@@ -907,6 +917,7 @@ public sealed class FlowDocumentView : Control
         var (anchorBlock, anchorFraction) = CaptureScrollAnchor();
 
         _blocks = FlowDocumentBuilder.Build(_tree, _wrapCodeBlocks);
+        _flowPinned = null;
         _layoutWidth = -1; // wrap intent changed -> every code-block estimate/measurement is stale
         ClearCaches();
         EnsureEstimates(width);
@@ -2107,7 +2118,7 @@ public sealed class FlowDocumentView : Control
             if (PageModeActive)
             {
                 _pageModePainter.Draw(surface, _blocks, _tree!, _pageLayout!, _pageGeometry!, _zoomFactor,
-                    width, Math.Max(0, Bounds.Height), _scrollOffset, _pageMarkers, _masterPageFurniture);
+                    width, Math.Max(0, Bounds.Height), _scrollOffset, _pageMarkers, _masterPageFurniture, _footnotePlan);
                 return;
             }
             // No page geometry for this document — fall through to the ordinary flow render below
@@ -2228,6 +2239,8 @@ public sealed class FlowDocumentView : Control
             }
         }
 
+        DrawFlowPinned(surface, startIndex, endIndex, columnWidth, pictures: true);
+
         for (var i = startIndex; i < endIndex; i++)
         {
             var block = _blocks[i];
@@ -2294,6 +2307,8 @@ public sealed class FlowDocumentView : Control
             RebuildOffsets();
         }
 
+        DrawFlowPinned(surface, startIndex, endIndex, columnWidth, pictures: false);
+
         // S9-B3 batch 3: additive overlay, drawn AFTER the block loop above and reading only its
         // already-computed _offsets/_blockHeights — never touches DrawBlock/DrawTextBlock or any
         // measure path, so it cannot disturb table/column geometry.
@@ -2313,6 +2328,34 @@ public sealed class FlowDocumentView : Control
 
         UpdateScrollDirection();
         SchedulePrefetch(startIndex, endIndex, columnWidth);
+    }
+
+    /// <summary>Flow mode's half of the pinned objects — the same placement macOS's continuous mode
+    /// uses (`drawAnchoredObjectsInContinuousFlow`): there is no sheet, so an object keeps the
+    /// paper x it declared, measured from the column's own left edge, and takes its y from the
+    /// block it travels with (a paragraph-anchored object by the same align/offset rule, a paper-
+    /// or page-relative one by its declared y from that block's top). Pictures are drawn under the
+    /// blocks and everything else over them (see <see cref="PageModePainter"/> for why).</summary>
+    private void DrawFlowPinned(IPageCanvas surface, int startIndex, int endIndex, double columnWidth, bool pictures)
+    {
+        if (_tree is null || _blocks.Count == 0) { return; }
+        _flowPinned ??= PinnedObjectSet.Build(_tree, _blocks);
+        if (_flowPinned.Anchored.Count == 0) { return; }
+        _flowPinnedPainter ??= new PinnedObjectPainter(_imageRenderer);
+
+        foreach (var obj in _flowPinned.Anchored)
+        {
+            if ((obj.Content is PinnedImage) != pictures) { continue; }
+            var i = obj.AnchorBlockIndex;
+            if (i < startIndex || i >= endIndex) { continue; }
+            var carrierTop = _offsets[i] - _scrollOffset;
+            var carrierHeightPoints = Math.Max(1, _blockHeights[i] / (PointsToPixels * _zoomFactor));
+            var top = obj.Anchor is { } rule ? rule.Top(0, carrierHeightPoints, obj.Height) : obj.Y;
+            // A "sheet" whose top-left is the carrier's own: x from the column edge, y from its top.
+            var sheet = new Rect(LeftMargin, carrierTop, columnWidth, Math.Max(1, _blockHeights[i]));
+            _flowPinnedPainter.Draw(surface, obj, top, sheet, _zoomFactor, shownPage: 1, totalPages: 1,
+                hidePageNumber: false, clip: false);
+        }
     }
 
     /// <summary>Draws a right-aligned line-number label in the left margin beside every numbered
@@ -2585,12 +2628,36 @@ public sealed class FlowDocumentView : Control
             DrawReadingLineBand(surface, layout, clampedOffset, top + spacingBeforePx, columnWidth);
         }
 
+        // A paragraph's own fill and rules go under everything else it draws.
+        if (ParagraphDecor.HasAny(block))
+        {
+            ParagraphDecor.Draw(surface, block, LeftMargin, columnWidth, top + spacingBeforePx, layout.Height,
+                PointsToPixels * _zoomFactor);
+        }
+
         // Highlights paint BEFORE the text (S8-D2 contract) — selection first, find on top of it,
         // both through the SAME PaintHighlightRange primitive so D2-b's find-visibility fix reuses
         // this rather than adding a third highlight painter.
         DrawSelectionHighlight(surface, blockIndex, block, layout, LeftMargin + indentPx, top + spacingBeforePx);
         DrawFindHighlights(surface, blockIndex, layout, LeftMargin + indentPx, top + spacingBeforePx);
-        surface.DrawTextLayout(layout, new Point(LeftMargin + indentPx, top + spacingBeforePx));
+        if (block.FirstLineOffsetPoints == 0)
+        {
+            surface.DrawTextLayout(layout, new Point(LeftMargin + indentPx, top + spacingBeforePx));
+        }
+        else
+        {
+            // A hanging / first-line-indented paragraph: the first line starts left or right of the
+            // rest (macOS `firstLineHeadIndent`). Avalonia's TextLayout has no such notion, so each
+            // line is drawn on its own, only the first moved.
+            var y = top + spacingBeforePx;
+            var firstLineOffsetPx = block.FirstLineOffsetPoints * PointsToPixels * _zoomFactor;
+            for (var i = 0; i < layout.TextLines.Count; i++)
+            {
+                var line = layout.TextLines[i];
+                surface.DrawTextLine(line, new Point(LeftMargin + indentPx + (i == 0 ? firstLineOffsetPx : 0), y));
+                y += line.Height;
+            }
+        }
         return spacingBeforePx + layout.Height + spacingAfterPx;
     }
 
@@ -2668,6 +2735,7 @@ public sealed class FlowDocumentView : Control
             wrapping,
             maxWidth: maxWidth,
             lineHeight: lineHeightPx,
+            letterSpacing: block.LetterSpacingPoints * zoomFactor * PointsToPixels,
             textStyleOverrides: overrides);
     }
 
