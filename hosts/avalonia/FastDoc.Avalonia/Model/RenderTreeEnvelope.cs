@@ -152,6 +152,12 @@ public sealed class RenderDocument
     /// when declared. Null when the document never stated one.</summary>
     [JsonPropertyName("lineGridPoints")]
     public double? LineGridPoints { get; set; }
+
+    /// <summary>`wire::Document.pagedBlockSpacingPoints` — the gap a paged document puts around a
+    /// block that declared none (a paragraph without spacing, a table, a picture, a rule), resolved
+    /// by the engine. Null when the document states no page; the host then keeps its own spacing.</summary>
+    [JsonPropertyName("pagedBlockSpacingPoints")]
+    public double? PagedBlockSpacingPoints { get; set; }
 }
 
 /// <summary>E2c-1: `wire::Paper` — one page's size, margins, and running-band distances, in points.

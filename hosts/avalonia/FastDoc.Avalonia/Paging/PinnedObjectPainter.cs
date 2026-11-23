@@ -202,7 +202,7 @@ public sealed class PinnedObjectPainter
             var layout = PageLayout.BuildTextLayout(block, Math.Max(1, rect.Width - indent), scale);
             if (layout is null)
             {
-                y += (block.SpacingAfterPoints + 14) * scale;
+                y += (block.SpacingAfterPoints + PageLayout.BlankLineHeightPoints(block, null)) * scale;
                 continue;
             }
             var rule = block.LineHeight.ScaledBy(scale);

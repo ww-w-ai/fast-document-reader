@@ -276,7 +276,7 @@ public static class FootnoteLayout
         if (block.Kind != FlowBlockKind.Text) { return PageLayout.NonTextBlockHeightPoints(block, width, imageRenderer); }
         var layout = PageLayout.BuildPointsTextLayout(block, width);
         double height = block.SpacingBeforePoints + block.SpacingAfterPoints;
-        if (layout is null) { return height + 14; }
+        if (layout is null) { return height + PageLayout.BlankLineHeightPoints(block, lineGridPitch); }
         foreach (var line in layout.TextLines)
         {
             var applied = block.LineHeight.Apply(line.Height);

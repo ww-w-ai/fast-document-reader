@@ -199,6 +199,7 @@ pub fn produce(bytes: &[u8], source_name: &str) -> Result<ValidatedRenderTree, P
         // line grid to record -- `None` here is "the source stated none", not a default.
         document_paper: None,
         line_grid_points: None,
+        paged_block_spacing_points: None,
     };
     let mut builder = RenderTreeBuilder::new("fastdoc-plaintext-producer", document);
 

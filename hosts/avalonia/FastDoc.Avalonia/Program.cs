@@ -459,6 +459,27 @@ class Program
                 $"band: {layout.Band.HeaderPoints:F1}/{layout.Band.FooterPoints:F1}/{layout.Band.BandPoints:F1} " +
                 $"(fromEngine={layout.Band.FromEngine})");
             Console.WriteLine($"settle rounds: {settleRounds}, pushed: {pushedCount}, oversized: {oversizedCount}");
+            // FMD_SHEETS_PAGES=1 (Scripts/page-parity.sh): one line per page naming the first
+            // block laid on it, so two runs of this CLI can be diffed page by page.
+            if (Environment.GetEnvironmentVariable("FMD_SHEETS_PAGES") == "1")
+            {
+                var firstBlock = new int[layout.PageCount];
+                Array.Fill(firstBlock, int.MaxValue);
+                foreach (var line in layout.Lines)
+                {
+                    if (line.BlockIndex < firstBlock[line.PageIndex]) { firstBlock[line.PageIndex] = line.BlockIndex; }
+                }
+                foreach (var placed in layout.Placements)
+                {
+                    if (placed.BlockIndex < firstBlock[placed.PageIndex]) { firstBlock[placed.PageIndex] = placed.BlockIndex; }
+                }
+                for (var page = 0; page < layout.PageCount; page++)
+                {
+                    var block = firstBlock[page];
+                    var nodeId = block != int.MaxValue && block < markers.NodeId.Length ? markers.NodeId[block].ToString() : "-";
+                    Console.WriteLine($"page {page + 1}\tnode {nodeId}");
+                }
+            }
             return 0;
         }
         catch (Exception ex)

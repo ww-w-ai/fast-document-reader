@@ -33,15 +33,15 @@ public sealed class PageGeometry
     public double ContentWidthPoints => Math.Max(1, PageWidthPoints - MarginLeftPoints - MarginRightPoints);
     public double ContentHeightPoints => Math.Max(1, PageHeightPoints - MarginTopPoints - MarginBottomPoints);
 
-    /// <summary>Builds page geometry from the document's OWN declared paper — the first section's
-    /// paper when present (mirroring the reader's own "a page takes its own section's" rule,
-    /// invariant 78) falling back to the document-level paper wire.SectionPayload carries a
-    /// per-section override; this unit reads only the FIRST section's declaration (or the
-    /// document's own) since multi-section paper changes mid-document are E2c's own later scope —
-    /// disclosed here rather than silently ignored.</summary>
+    /// <summary>Builds page geometry from the document's OWN declared paper: the engine's
+    /// document-level paper (`wire::Document.documentPaper`), which for a multi-section Korean file is
+    /// the section that holds most of the document, not its cover (invariant 73) — the same paper the
+    /// macOS reader cuts every page from unless a section declared one of its own. Falls back to the
+    /// first section's paper only when the document carries none. A section's own differing paper
+    /// (`wire::Section.paper` with `paperIsDeclared`) is not laid out per page by this host yet.</summary>
     public static PageGeometry? FromDocument(RenderTree tree)
     {
-        var paper = FirstSectionPaper(tree) ?? tree.Document?.DocumentPaper;
+        var paper = tree.Document?.DocumentPaper ?? FirstSectionPaper(tree);
         if (paper is null) { return null; }
         return new PageGeometry
         {

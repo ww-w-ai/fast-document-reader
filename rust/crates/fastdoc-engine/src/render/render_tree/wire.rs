@@ -158,6 +158,17 @@ pub struct Document {
     /// to this one, so it cannot also serve as the record of what the document said.
     #[serde(default)]
     pub line_grid_points: Option<f64>,
+    /// The gap a paged document puts around a block that declared none — a paragraph or heading
+    /// without its own spacing, a table, a picture, a rule — in points. It lives HERE, once, for
+    /// the same reason `default_body_font_size` does: copied onto every block it would be smeared,
+    /// and a declared 0 could no longer be told from "said nothing" (invariant 107). `Some` exactly
+    /// when the document declared a page (`document_paper`) — the macOS reader's own "paged"
+    /// predicate (`OfficeTextBuilder`'s `paged`), under which the reader supplies no rhythm of its
+    /// own (invariant 57) — and `None` for every document that states no page, whose host keeps its
+    /// own editorial spacing. Additive under `schema_version` 1: readers that do not know the field
+    /// ignore it, and a tree that omits it means `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paged_block_spacing_points: Option<f64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

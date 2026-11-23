@@ -72,7 +72,30 @@ public static class FlowDocumentBuilder
         // MUST mirror this exact append (same node types, same order) or PageLayout's per-block
         // index space drifts from this list.
         AppendFootnotes(tree, byId, blocks, defaultFontSize, wrapCodeBlocks);
+        if (tree.Document.PagedBlockSpacingPoints is { } pagedGap)
+        {
+            ApplyPagedSpacing(blocks, Math.Max(0, pagedGap));
+        }
         return blocks;
+    }
+
+    /// <summary>A paged document supplies no rhythm of its own (invariant 57): every block whose
+    /// spacing the document did not state takes the engine's resolved gap
+    /// (`wire::Document.pagedBlockSpacingPoints`) instead of this host's editorial default — the
+    /// 0.3 em paragraph gap, 6/6 around a table, 4/4 around a picture, 8/8 around a rule. Walks into
+    /// table cells, whose paragraphs follow the same rule.</summary>
+    private static void ApplyPagedSpacing(IEnumerable<FlowBlock> blocks, double gap)
+    {
+        foreach (var block in blocks)
+        {
+            if (!block.SpacingBeforeDeclared) { block.SpacingBeforePoints = gap; }
+            if (!block.SpacingAfterDeclared) { block.SpacingAfterPoints = gap; }
+            if (block.Table is null) { continue; }
+            foreach (var row in block.Table.Rows)
+            {
+                foreach (var cell in row.Cells) { ApplyPagedSpacing(cell.Content, gap); }
+            }
+        }
     }
 
     /// <summary>S12-A: appends every footnote's body at the end of the flow, sorted by citation
@@ -600,6 +623,9 @@ public static class FlowDocumentBuilder
             LetterSpacingPoints = LetterSpacingOf(resolved),
             SpacingBeforePoints = Math.Max(0, style.SpacingBefore ?? (defaultFontSize * 0.3)),
             SpacingAfterPoints = Math.Max(0, style.SpacingAfter ?? (defaultFontSize * 0.3)),
+            SpacingBeforeDeclared = style.SpacingBefore is not null,
+            SpacingAfterDeclared = style.SpacingAfter is not null,
+            BlankLineSizePoints = resolved.Count > 0 ? resolved.Max(r => r.FontSizePoints) : defaultFontSize,
             // E2c-2b: the whole mode + value now, not just `.multiple`'s ratio (see LineHeightRule's
             // own doc) — `.exact`/`.atLeast` used to be silently dropped to 1.0 here.
             LineHeight = LineHeightRule.From(style.LineHeight),

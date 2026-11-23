@@ -50,9 +50,14 @@ struct WireDocument: Decodable {
     let declaredSectionCount: UInt32
     let documentPaper: WirePaper?
     let lineGridPoints: Double?
+    /// The gap the engine resolves around a block that declared none, in a paged document (`nil`
+    /// when the document states no page). Mirrored so the envelope decodes whole; the macOS reader
+    /// reaches the same 0 through its own `paged` predicate (`OfficeTextBuilder`) and does not read it.
+    let pagedBlockSpacingPoints: Double?
 
     private enum CodingKeys: String, CodingKey {
         case rootNodeId, declaredFaces, defaultBodyFontSize, declaredSectionCount, documentPaper, lineGridPoints
+        case pagedBlockSpacingPoints
     }
 
     init(from decoder: Decoder) throws {
@@ -71,6 +76,7 @@ struct WireDocument: Decodable {
         declaredSectionCount = try c.decode(UInt32.self, forKey: .declaredSectionCount)
         documentPaper = try c.decodeIfPresent(WirePaper.self, forKey: .documentPaper)
         lineGridPoints = try c.decodeIfPresent(Double.self, forKey: .lineGridPoints)
+        pagedBlockSpacingPoints = try c.decodeIfPresent(Double.self, forKey: .pagedBlockSpacingPoints)
     }
 }
 

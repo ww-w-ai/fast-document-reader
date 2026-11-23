@@ -160,7 +160,29 @@ public sealed class PageLayoutResult
 public static class PageLayout
 {
     private static readonly Typeface DefaultTypeface = new("Inter");
-    private const double BlankParagraphHeightPoints = 14;
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<double, double> NaturalLineHeights = new();
+
+    /// <summary>The line an empty paragraph still occupies: its OWN line-height rule applied to a
+    /// line of its own size (an `exact 0.01` anchor is 0.01 pt, an `atLeast 16` blank is at least 16),
+    /// then floored by the line grid like any other line. A fixed constant here stood for every
+    /// blank paragraph whatever it declared (diagnosis cause 3). The host supplies only the glyph
+    /// metrics, and only when the rule leaves the height to them.</summary>
+    internal static double BlankLineHeightPoints(FlowBlock block, double? lineGridPitchPoints)
+    {
+        var natural = block.LineHeight.Mode == LineHeightMode.Exact ? 0 : NaturalLineHeightPoints(block.BlankLineSizePoints);
+        return EffectiveLineHeight(natural, block.LineHeight, lineGridPitchPoints);
+    }
+
+    private static double NaturalLineHeightPoints(double sizePoints)
+    {
+        var size = Math.Max(1, sizePoints);
+        return NaturalLineHeights.GetOrAdd(size, s =>
+        {
+            var layout = new TextLayout(" ", DefaultTypeface, s, Brushes.Black);
+            return layout.TextLines.Count > 0 ? layout.TextLines[0].Height : s * 1.2;
+        });
+    }
 
     public static PageLayoutResult Build(IReadOnlyList<FlowBlock> blocks, BlockPageMarkers.Markers markers,
         PageGeometry geometry, IntPtr engineHandle, bool headersOn, bool footersOn,
@@ -372,7 +394,8 @@ public static class PageLayout
         var layout = BuildPointsTextLayout(block, widthPoints);
         if (layout is null)
         {
-            var blankHeight = block.SpacingBeforePoints + BlankParagraphHeightPoints + block.SpacingAfterPoints;
+            var blankHeight = block.SpacingBeforePoints + BlankLineHeightPoints(block, lineGridPitchPoints)
+                + block.SpacingAfterPoints;
             if (ShouldPushToFreshPage(cursor, blankHeight, fullContentHeight - BandOf(noteBands, pageIndex)))
             {
                 pageIndex++;

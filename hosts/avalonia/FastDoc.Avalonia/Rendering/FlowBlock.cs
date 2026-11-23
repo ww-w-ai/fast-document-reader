@@ -167,8 +167,18 @@ public sealed class FlowBlock
     /// An alert's bar carries the alert kind's colour.</summary>
     public Color? QuoteBarColor { get; set; }
     public double QuoteBarXPoints { get; set; }
-    public double SpacingBeforePoints { get; init; }
-    public double SpacingAfterPoints { get; init; }
+    /// <summary>Settable only so <see cref="FlowDocumentBuilder.Build"/> can replace a host default
+    /// with the engine's paged value once the whole tree is known (see <see cref="SpacingBeforeDeclared"/>).</summary>
+    public double SpacingBeforePoints { get; set; }
+    public double SpacingAfterPoints { get; set; }
+    /// <summary>The document itself stated this block's spacing (a paragraph's `spacingBefore` /
+    /// `spacingAfter`). False means <see cref="SpacingBeforePoints"/> is this host's own default, which
+    /// a paged document replaces with `wire::Document.pagedBlockSpacingPoints`.</summary>
+    public bool SpacingBeforeDeclared { get; init; }
+    public bool SpacingAfterDeclared { get; init; }
+    /// <summary>The size an empty paragraph's line is measured at — its own runs' largest, else the
+    /// document default. Read only when the block has no text to lay out.</summary>
+    public double BlankLineSizePoints { get; init; } = 12;
     /// <summary>E2c-2b: the paragraph's WHOLE line-height rule (mode + value), not just a ratio —
     /// see <see cref="Rendering.LineHeightRule"/>'s own doc for why the three modes cannot be
     /// collapsed into one number.</summary>

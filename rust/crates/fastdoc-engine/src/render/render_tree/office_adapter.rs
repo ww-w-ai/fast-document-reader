@@ -292,6 +292,7 @@ pub(super) fn from_office(
         payload: wire::NodePayload::Document(wire::Empty {}),
     });
 
+    let document_paper = result_page_geometry(result).map(|geo| build_paper(&geo, result));
     let document = wire::Document {
         format: input.format,
         editable: false,
@@ -305,7 +306,11 @@ pub(super) fn from_office(
             .collect(),
         default_body_font_size: result.default_body_font_size,
         declared_section_count: result.sections.len() as u32,
-        document_paper: result_page_geometry(result).map(|geo| build_paper(&geo, result)),
+        // A paged document supplies no spacing of its own around a block that declared none
+        // (invariant 57): the macOS reader draws 0 there, and a host that has no declared page
+        // keeps its own rhythm, so the fact is stated only when a page is.
+        paged_block_spacing_points: document_paper.as_ref().map(|_| 0.0),
+        document_paper,
         line_grid_points: result.line_grid_pitch,
     };
     let mut builder = RenderTreeBuilder::new("fastdoc-office-adapter", document);
@@ -2305,6 +2310,34 @@ mod tests {
             .find(|n| n["type"] == "section")
             .expect("a section exists");
         assert!(section["data"]["paper"].is_null(), "no invented sheet");
+    }
+
+    /// The paged-spacing fact is stated once at document level, and only when the document states a
+    /// page: a paged document supplies no rhythm of its own (invariant 57), an unpaged one keeps its
+    /// host's. A partial page statement is no page, so it states nothing either.
+    #[test]
+    fn paged_block_spacing_is_stated_exactly_when_a_page_is() {
+        let document_of = |result: &OfficeReadResult| -> serde_json::Value {
+            let tree = from_office(input(result)).expect("canonicalizes");
+            let value: serde_json::Value =
+                serde_json::from_slice(&tree.encode_json().unwrap()).unwrap();
+            value["document"].clone()
+        };
+
+        let paged = OfficeReadResult {
+            page_content_width: Some(400.0),
+            page_content_height: Some(600.0),
+            page_margin_left: Some(50.0),
+            page_margin_right: Some(50.0),
+            page_margin_top: Some(60.0),
+            page_margin_bottom: Some(60.0),
+            ..OfficeReadResult::default()
+        };
+        assert_eq!(document_of(&paged)["pagedBlockSpacingPoints"], 0.0);
+
+        let partial = OfficeReadResult { page_content_width: Some(400.0), ..OfficeReadResult::default() };
+        assert!(document_of(&partial).get("pagedBlockSpacingPoints").is_none(), "no page, no statement");
+        assert!(document_of(&OfficeReadResult::default()).get("pagedBlockSpacingPoints").is_none());
     }
 
     #[test]

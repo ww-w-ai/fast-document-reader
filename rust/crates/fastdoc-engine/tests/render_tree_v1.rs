@@ -464,6 +464,7 @@ fn public_typed_builder_uses_the_same_checked_canonicalization() {
         declared_section_count: 0,
         document_paper: None,
         line_grid_points: None,
+        paged_block_spacing_points: None,
     };
     let mut builder = RenderTreeBuilder::new("builder-test", document);
     builder.add_source(RenderSourceDraft {
@@ -616,6 +617,7 @@ fn build_with_image_fraction(fraction: Option<f64>) -> Result<ValidatedRenderTre
         declared_section_count: 0,
         document_paper: None,
         line_grid_points: None,
+        paged_block_spacing_points: None,
     };
     let mut builder = RenderTreeBuilder::new("image-fraction-test", document);
     builder.add_resource(RenderResourceDraft {
@@ -718,6 +720,7 @@ fn build_with_unsupported_size(width: f64, height: f64) -> Result<ValidatedRende
         declared_section_count: 0,
         document_paper: None,
         line_grid_points: None,
+        paged_block_spacing_points: None,
     };
     let mut builder = RenderTreeBuilder::new("unsupported-size-test", document);
     builder.add_node(RenderNodeDraft {
