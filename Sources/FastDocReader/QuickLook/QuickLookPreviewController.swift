@@ -86,6 +86,8 @@ final class QuickLookPreviewController: NSViewController, QLPreviewingController
         // dispatches on `fileURL`'s extension and `ofType` is unused by that override, exactly as
         // `HeadlessPDF` and the test suite's own helper do.
         let doc = MarkdownDocument()
+        // A preview shows the file at its own size, not the viewer's last ⌘+/⌘−.
+        doc.readingSize = FontSizeStore.defaultSize
         doc.fileURL = url
         try doc.read(from: data, ofType: "public.data")
         // Content only: a preview panel is small, and reproducing the author's paper would spend most

@@ -58,6 +58,9 @@ enum HeadlessPDF {
         // unused by that override, so any placeholder UTI string is fine (the test suite's own
         // `openOffice` helper does the same).
         let doc = MarkdownDocument()
+        // The size asked for, else the default — never the viewer's last ⌘+/⌘−, so the same command
+        // prints the same PDF on every machine. Set before `read`, which renders at `readingSize`.
+        doc.readingSize = parsed.fontSize ?? FontSizeStore.defaultSize
         doc.fileURL = inputURL
         do { try doc.read(from: data, ofType: "public.data") }
         catch { err("cannot parse \(inputURL.lastPathComponent): \(error.localizedDescription)"); return 1 }
@@ -283,12 +286,13 @@ enum HeadlessPDF {
 
     // MARK: - Argument parsing
 
-    private struct Parsed { let input: String; let output: String?; let force: Bool }
+    private struct Parsed { let input: String; let output: String?; let force: Bool; let fontSize: CGFloat? }
 
     private static func parseArgs(_ args: [String]) -> Parsed? {
         var input: String?
         var output: String?
         var force = false
+        var fontSize: CGFloat?
         var i = 0
         while i < args.count {
             let a = args[i]
@@ -299,6 +303,12 @@ enum HeadlessPDF {
                 output = args[i]
             case "-f", "--force":
                 force = true
+            case "-s", "--font-size":
+                i += 1
+                // The reader's own range; a value it would clamp is refused rather than silently changed.
+                guard i < args.count, let v = Double(args[i]),
+                      FontSizeStore.clamped(CGFloat(v)) == CGFloat(v) else { return nil }
+                fontSize = CGFloat(v)
             default:
                 guard !a.hasPrefix("-"), input == nil else { return nil }
                 input = a
@@ -306,7 +316,7 @@ enum HeadlessPDF {
             i += 1
         }
         guard let input else { return nil }
-        return Parsed(input: input, output: output, force: force)
+        return Parsed(input: input, output: output, force: force, fontSize: fontSize)
     }
 
     /// `-o` not given: the input's own basename, next to it, with a `.pdf` extension — never merging
@@ -320,10 +330,12 @@ enum HeadlessPDF {
     }
 
     private static let usage =
-        "usage: FastDocReader --pdf <file> [-o <out.pdf>] [-f]\n" +
+        "usage: FastDocReader --pdf <file> [-o <out.pdf>] [-f] [-s <pt>]\n" +
         "  Prints the document to a PDF file — the same pages the reader shows and ⌘P prints.\n" +
         "  -o, --output <path>   write to this path (default: <file's own name>.pdf, next to it)\n" +
         "  -f, --force            overwrite the output file if it already exists\n" +
+        "  -s, --font-size <pt>   body text size, 10–36 (default: \(Int(FontSizeStore.defaultSize)));\n" +
+        "                         the viewer's own zoom never applies\n" +
         "  Supported: .docx .docm .dotx .dotm .odt .hwp .hwpx · .md .txt and this app's other plain-text kinds.\n" +
         "  One document per run — merging several files into one PDF is not supported."
 
