@@ -15,8 +15,16 @@ import AppKit
 /// sheet itself (section, running head and foot, master page, printed number), the footnote bands and
 /// which page cites which note, and — for a columned document — every line of every columned run
 /// against the reader's column map. `FMD_PLAN_SHADOW_COLUMNS=1` lists each such line and the first
-/// differences in the stack the columns are dealt from. Run one document alone: a long multi-document
-/// run under load can leave a document unsettled (invariants 102, 151).
+/// differences in the stack the columns are dealt from. Dumps for diagnosis, each into the named
+/// directory: `FMD_PLAN_SHADOW_BLOCKS` (one row per block, TextKit against the plan),
+/// `FMD_PLAN_SHADOW_STATE` (the reader's settle records), `FMD_PLAN_SHADOW_TABLES`; and into the report:
+/// `FMD_PLAN_SHADOW_CELLS=<block>,..` (cell lines against the plan, with both sides' pulls),
+/// `FMD_PLAN_SHADOW_ROWS=<block>,..` (row extents as measured), `FMD_PLAN_SHADOW_PLACEMENTS=<block>,..`.
+///
+/// Known, not fixed: a document laid out for paper AFTER `1790387_prep_final_report.hwpx` in the same
+/// process settles to a different table-line trajectory on TextKit's side (the 편람 prints 395 pages
+/// where it prints 391 alone or after any other baseline document); the plan's input is identical in
+/// both orders. Run the 편람 first or alone.
 final class PagePlanShadowProbeTests: XCTestCase {
 
     /// The Swift side of the FFI: a plan comes back in the envelope, keyed by the caller's keys.
@@ -49,7 +57,7 @@ final class PagePlanShadowProbeTests: XCTestCase {
         let env = ProcessInfo.processInfo.environment
         guard let list = env["FMD_PLAN_SHADOW"] else { throw XCTSkip("set FMD_PLAN_SHADOW=<document>[:<document>...]") }
         var report: [String] = []
-        for path in list.split(separator: ":").map(String.init) {
+        for (ordinal, path) in list.split(separator: ":").map(String.init).enumerated() {
             let url = URL(fileURLWithPath: path)
             let doc = MarkdownDocument()
             doc.readingSize = FontSizeStore.defaultSize
@@ -73,7 +81,26 @@ final class PagePlanShadowProbeTests: XCTestCase {
             if let directory = env["FMD_PLAN_SHADOW_TABLES"] {
                 let lines = result.tableHeights.enumerated().map { "\($0.offset)\t\(String(format: "%.2f", Double($0.element.height)))\t\($0.element.crossed ? 1 : 0)" }
                 try? (lines.joined(separator: "\n") + "\n").write(
-                    toFile: directory + "/" + url.lastPathComponent + ".tables.tsv", atomically: true, encoding: .utf8)
+                    toFile: directory + "/" + (ordinal > 0 ? "\(ordinal)-" : "") + url.lastPathComponent + ".tables.tsv", atomically: true, encoding: .utf8)
+            }
+            // FMD_PLAN_SHADOW_BLOCKS=<directory>: one row per block, TextKit against the plan, so two
+            // runs of one document (alone, after another) can be diffed block by block.
+            if let directory = env["FMD_PLAN_SHADOW_BLOCKS"] {
+                try? (result.blockRows.joined(separator: "\n") + "\n").write(
+                    toFile: directory + "/" + (ordinal > 0 ? "\(ordinal)-" : "") + url.lastPathComponent + ".blocks.tsv", atomically: true, encoding: .utf8)
+            }
+            // FMD_PLAN_SHADOW_STATE=<directory>: what the reader's settle recorded, sorted, so two runs
+            // of one document can be diffed.
+            if let directory = env["FMD_PLAN_SHADOW_STATE"] {
+                let d = wc.pageBandDelegate
+                var lines: [String] = []
+                lines += d.pushedTables.keys.sorted().map { "pushed \($0) h \(d.pushedTables[$0]!.height) inset \(d.pushedTables[$0]!.topInset)" }
+                lines += d.oversizedPieces.keys.sorted().map { "oversized \($0)-\(d.oversizedPieces[$0]!)" }
+                lines += d.pullToNextPage.sorted().map { "pull \($0)" }
+                lines += d.openedBands.keys.sorted().map { "band \($0) top \(d.openedBands[$0]!.top) h \(d.openedBands[$0]!.height)" }
+                lines += d.documentPageBreaks.sorted().map { "break \($0)" }
+                try? (lines.joined(separator: "\n") + "\n").write(
+                    toFile: directory + "/" + (ordinal > 0 ? "\(ordinal)-" : "") + url.lastPathComponent + ".state.txt", atomically: true, encoding: .utf8)
             }
             doc.close()
         }

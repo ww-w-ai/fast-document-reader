@@ -155,15 +155,24 @@ impl Runner<'_> {
         for (r, row) in rows.iter().enumerate() {
             let (row_page, row_y) = (page, y);
             let mut end = g.normalise(row_page, row_y + row.height);
+            // Where the row's cells begin. A cell whose FIRST line the page rule carries to a later
+            // page takes the row's origin with it: the cells laid out after it start from there, as
+            // the reader's typesetter lays them (measured: a one-line label pulled to the next page
+            // brings the long cell beside it to the same page top).
+            let mut origin = (row_page, row_y);
             for (c, cell) in row.cells.iter().enumerate() {
-                let mut pos = g.normalise(row_page, row_y + cell.pad_top);
+                let mut pos = g.normalise(origin.0, origin.1 + cell.pad_top);
                 let mut previous_bottom = 0.0_f64;
                 for (l, line) in cell.lines.iter().enumerate() {
                     let at = g.normalise(pos.0, pos.1 + (line.top - previous_bottom).max(0.0));
                     let mut path = prefix.to_vec();
                     path.extend([r as u32, c as u32, l as u32]);
                     pos = if line.rows.is_empty() {
-                        self.line(&path, at, line.height, line.trailing)
+                        let after = self.line(&path, at, line.height, line.trailing);
+                        if l == 0 && self.shift && after.0 > origin.0 {
+                            origin = (after.0, (after.1 - line.height) - cell.pad_top);
+                        }
+                        after
                     } else {
                         // A table inside the cell flows by the same rule.
                         self.rows(&line.rows, at, &path)
@@ -425,6 +434,17 @@ mod tests {
         let (flow, pulled) = run_settled(100.0, 0.0, (0, 0.0), rows);
         assert_eq!(pulled, 0);
         assert_eq!(pages_of(&flow), vec![0, 0, 1, 1, 2]);
+    }
+
+    #[test]
+    fn a_cell_whose_first_line_is_carried_over_brings_the_cells_after_it() {
+        // A one-line label and a four-line cell beside it, starting at y=95 of a 100pt page: the
+        // label's line does not fit and starts page 1, and the cell laid out after it begins there
+        // too, instead of keeping its first line on page 0.
+        let rows = vec![row(80.0, false, vec![cell(&[20.0], 0.0, 0.0), cell(&[1.0; 4], 0.0, 0.0)])];
+        let flow = run(100.0, 0.0, (0, 95.0), rows);
+        assert_eq!(pages_of(&flow), vec![1, 1, 1, 1, 1]);
+        assert_eq!(flow.lines[1].5, 0.0, "the second cell starts at the page top");
     }
 
     #[test]

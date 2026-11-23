@@ -24,6 +24,7 @@ enum PagePlanShadow {
         var preview: String
         var detail: String       // TextKit local top, the block's height and the gap before it
         var macLocalTop: CGFloat
+        var heightMac: CGFloat = 0   // the block's height in TextKit
     }
 
     struct Report {
@@ -43,6 +44,10 @@ enum PagePlanShadow {
         var cellLinesOnADifferentPage = 0
         var firstDifference: String?
         var context: [String] = []
+        /// One tab-separated row per block (`FMD_PLAN_SHADOW_BLOCKS`): index, kind, TextKit page,
+        /// TextKit page-local top, height, plan page, plan top, spacing before, lines or rows, flags, text.
+        var blockRows: [String] = []
+        var cellDump: [String] = []
         var pagesWithADifferentFirstBlock = 0
         var droppedByPlan = 0
         var droppedByTextKit = 0
@@ -226,9 +231,38 @@ enum PagePlanShadow {
         var masters: [Int?] = []
         var numbers: [Int] = []
         var hidden: Set<Int> = []
+        /// What the reader itself prints (`hiddenPageNumberPages`), which differs from `hidden` where
+        /// two vetoing paragraphs are adjacent.
+        var hiddenByReader: Set<Int> = []
         var footnotePages: [Int: [Int]] = [:]
         var noteBands: [Int: CGFloat] = [:]
         var columnPlacements: [Int: (x: CGFloat, y: CGFloat)] = [:]
+    }
+
+    /// The pages a document's own vetoes land on, read paragraph by paragraph. The reader's
+    /// `hiddenPageNumberPages` asks where each attribute RUN begins, and two consecutive vetoing
+    /// paragraphs are one run (equal values merge): the second one's page is never asked about.
+    /// 1790387's contents page is one such second paragraph — the document hides its number, the
+    /// reader prints it. The plan answers per block, as the document declared.
+    private static func hiddenPages(_ wc: DocumentWindowController) -> Set<Int> {
+        guard let storage = wc.textView.textStorage, storage.length > 0, let lm = wc.textView.layoutManager,
+              wc.pageBandDelegate.isActive else { return [] }
+        let pitch = PagePagination.pitch(pageContentHeight: wc.pageBandDelegate.pageContentHeight, band: wc.pageBandDelegate.band)
+        guard pitch > 0 else { return [] }
+        let text = storage.string as NSString
+        var out: Set<Int> = []
+        storage.enumerateAttribute(MDAttr.hidesPageNumber, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
+            guard value as? Bool == true else { return }
+            var at = range.location
+            while at < NSMaxRange(range) {
+                let glyph = lm.glyphIndexForCharacter(at: at)
+                let frame = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                let page = PageBandLayoutDelegate.page(of: frame.minY, leadingBand: wc.pageBandDelegate.leadingBand, pitch: pitch)
+                if page >= 0 { out.insert(Int(page)) }
+                at = max(at + 1, NSMaxRange(text.paragraphRange(for: NSRange(location: at, length: 0))))
+            }
+        }
+        return out
     }
 
     static func macFacts(_ wc: DocumentWindowController) -> MacFacts {
@@ -237,7 +271,8 @@ enum PagePlanShadow {
         facts.columnPlacements = wc.pageBandDelegate.columnPlacements
         facts.noteBands = wc.pageBandDelegate.noteBands
         facts.footnotePages = wc.footnotePages
-        facts.hidden = wc.hiddenPageNumberPages
+        facts.hiddenByReader = wc.hiddenPageNumberPages
+        facts.hidden = hiddenPages(wc)
         let content = wc.pageBandContent
         let master = wc.masterPageContent
         for page in 0..<facts.pageCount {
@@ -374,6 +409,10 @@ enum PagePlanShadow {
                 rowSpan = cell.rowSpan
                 top = rect.minY - cell.width(for: .padding, edge: .minY) - cell.width(for: .border, edge: .minY)
                 bottom = rect.maxY + cell.width(for: .padding, edge: .maxY) + cell.width(for: .border, edge: .maxY)
+                // The cell's own box as the layout stored it: a row is as tall as its cells' boxes,
+                // wherever a vertically centred or bottom-aligned cell put its lines inside one.
+                let box = lm.boundsRect(for: cell, at: glyphRange.location, effectiveRange: nil)
+                if box.height > 0, box.minY <= rect.minY + 0.01, box.maxY >= rect.maxY - 0.01 { top = box.minY; bottom = box.maxY }
             }
             fragments.append(Fragment(location: chars.location, rect: rect, blockId: id, table: table,
                                       startingRow: startingRow, rowSpan: rowSpan, top: top, bottom: bottom,
@@ -467,6 +506,11 @@ enum PagePlanShadow {
                     } else { rows[f.startingRow] = (f.top, f.bottom) }
                 }
                 let ordered = rows.keys.sorted()
+                if (ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_ROWS"] ?? "").split(separator: ",").compactMap({ Int($0) }).contains(planBlocks.count) {
+                    for r in ordered {
+                        report.cellDump.append("SHADOW   row [\(planBlocks.count)] \(r): top \(String(format: "%.1f", Double(rows[r]!.top))) bottom \(String(format: "%.1f", Double(rows[r]!.bottom))) spans \(spans.filter { $0.start == r }.map { $0.end - $0.start })")
+                    }
+                }
                 // The row heights the host reports are the layout's own BEFORE the page rule moved
                 // anything: every band the rule opened inside this table is empty space the rows did
                 // not have, so it is taken back out (the `proposedTableLineTops` idea of invariant 72,
@@ -481,13 +525,18 @@ enum PagePlanShadow {
                 report.tableHeightTotal += tableBottom - tableTop
                 report.tableHeights.append((tableBottom - tableTop, page(of: tableTop) != page(of: frags.last!.rect.minY)))
                 block["kind"] = "table"
+                // A row's top is the least of its own cells' tops and every later row's: rows never run
+                // upward, and a cell that is vertically centred (or sits in a merge) has its lines — and
+                // so its measured top — below the row it starts in.
+                var rowTop: [Int: CGFloat] = [:]
+                var lowest = CGFloat.greatestFiniteMagnitude
+                for r in ordered.reversed() { lowest = min(lowest, rows[r]!.top); rowTop[r] = lowest }
                 var rowEntries = ordered.enumerated().map { position, r -> [String: Any] in
-                    let row = rows[r]!
                     let crossed = spans.contains { $0.start < r && $0.end > r }
                     // A row runs from its own top to the next row's top. Its cells' bottoms cannot say:
                     // a cell merged down several rows ends far below the row it starts in.
-                    let end = position + 1 < ordered.count ? rows[ordered[position + 1]]!.top : tableBottom
-                    var entry: [String: Any] = ["height": max(0, natural(end) - natural(row.top))]
+                    let end = position + 1 < ordered.count ? rowTop[ordered[position + 1]]! : tableBottom
+                    var entry: [String: Any] = ["height": max(0, natural(end) - natural(rowTop[r]!))]
                     if r != ordered.first && !crossed { entry["canBreakAbove"] = true }
                     return entry
                 }
@@ -507,6 +556,7 @@ enum PagePlanShadow {
                     if inColumnRun { columnCellRefs.append(contentsOf: measured) } else { cellLineRefs.append(contentsOf: measured) }
                     if built.rows.count == rowEntries.count {
                         for position in rowEntries.indices {
+                            rowEntries[position]["observedHeight"] = rowEntries[position]["height"]
                             rowEntries[position]["cells"] = built.rows[position]["cells"]
                             rowEntries[position]["height"] = built.rows[position]["height"]
                         }
@@ -538,7 +588,8 @@ enum PagePlanShadow {
                 detail: String(format: "TextKit top %.1f, height %.1f, gap %.1f",
                                top - leading - CGFloat(macPages[0]) * pitch,
                                (isTable ? frags.map(\.bottom).max()! : frags.last!.rect.maxY) - top, gap),
-                macLocalTop: top - leading - CGFloat(macPages[0]) * pitch))
+                macLocalTop: top - leading - CGFloat(macPages[0]) * pitch,
+                heightMac: (isTable ? frags.map(\.bottom).max()! : frags.last!.rect.maxY) - top))
         }
 
         // ---- 3. ask the engine ----
@@ -573,9 +624,19 @@ enum PagePlanShadow {
             let n = l.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
             plannedCellLines["\(Int(n[0])),\(Int(n[1])),\(Int(n[2])),\(Int(n[3]))"] = (Int(n[4]), n[5])
         }
+        // FMD_PLAN_SHADOW_CELLS=<block>[,<block>...]: every flowed cell line of those blocks against the
+        // plan, with the reader's own pulls (`pullToNextPage`) and the plan's marked.
+        let dumpedBlocks = Set((ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_CELLS"] ?? "").split(separator: ",").compactMap { Int($0) })
+        let planPulls = Set(((plan["pulledLines"] as? [[Any]]) ?? []).map { $0.map { "\(($0 as? NSNumber)?.intValue ?? -1)" }.joined(separator: ",") })
         for ref in cellLineRefs {
             report.cellLines += 1
             let planned = plannedCellLines["\(ref.block),\(ref.row),\(ref.cell),\(ref.line)"]
+            if dumpedBlocks.contains(ref.block) {
+                let ok = planned.map { $0.page == ref.page && abs($0.top - Double(ref.top)) < 0.6 } ?? false
+                let pulled = delegate.pullToNextPage.contains(ref.loc) ? " PULLED(TextKit)" : ""
+                let planPulled = planPulls.contains("\(ref.block),\(ref.row),\(ref.cell),\(ref.line)") ? " PULLED(plan)" : ""
+                report.cellDump.append("SHADOW   cell [\(ref.block)] r\(ref.row) c\(ref.cell) l\(ref.line): TextKit p\(ref.page + 1) top \(String(format: "%.1f", Double(ref.top))); plan p\(planned.map { String($0.page + 1) } ?? "-") top \(planned.map { String(format: "%.1f", $0.top) } ?? "-")\(ok ? "" : " DIFF")\(pulled)\(planPulled)")
+            }
             guard let planned, planned.page == ref.page, abs(planned.top - Double(ref.top)) < 0.6 else {
                 report.cellLinesOnADifferentPage += 1
                 continue
@@ -591,7 +652,12 @@ enum PagePlanShadow {
             planLinePage[b, default: [:]][l] = p
         }
         var planBlockPage: [Int: Int] = [:]
+        // FMD_PLAN_SHADOW_PLACEMENTS=<block>[,<block>...]: every piece the plan placed for those blocks.
+        let placedBlocks = Set((ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_PLACEMENTS"] ?? "").split(separator: ",").compactMap { Int($0) })
         for placement in placements {
+            if let b = placement["block"] as? Int, placedBlocks.contains(b) {
+                report.cellDump.append("SHADOW   placed [\(b)] page \(placement["page"] ?? "-") top \(placement["top"] ?? "-") height \(placement["height"] ?? "-") rows \(placement["rowStart"] ?? "-")+\(placement["rowCount"] ?? "-") flowed \(placement["flowed"] ?? "-")")
+            }
             if let b = placement["block"] as? Int, let p = placement["page"] as? Int, planBlockPage[b] == nil {
                 planBlockPage[b] = p
             }
@@ -638,6 +704,24 @@ enum PagePlanShadow {
                 }
             }
             if block.isTable { report.tables += 1 }
+            // One row per block for `FMD_PLAN_SHADOW_BLOCKS`: what TextKit did and what the plan did.
+            let pb = planBlocks[index]
+            let flags = ["pageBreakBefore", "keepWithNext", "sectionStart", "sectionMarker", "empty", "keepsWhole", "columnRun", "hidesPageNumber", "pageNumberRestart"]
+                .filter { pb[$0] != nil }.joined(separator: ",")
+            let heights = ((pb["lines"] as? [Double]) ?? ((pb["rows"] as? [[String: Any]]) ?? []).compactMap { row -> Double? in
+                (row["height"] as? Double) ?? (row["height"] as? CGFloat).map(Double.init) })
+                .map { String(format: "%.1f", $0) }.joined(separator: ",")
+            // For a table the reader breaks line by line: each row's observed height beside the one the
+            // plan was given (they differ where a spanning or centred cell decides the row).
+            let observedHeights = ((pb["rows"] as? [[String: Any]]) ?? []).compactMap { row -> String? in
+                (row["observedHeight"] as? Double).map { String(format: "%.1f", $0) } }.joined(separator: ",")
+            let planTopText = planTops[index].map { String(format: "%.1f", $0) } ?? "-"
+            let planPageText = planPage.map { String($0 + 1) } ?? "-"
+            let spacing = String(format: "%.1f", (pb["spacingBefore"] as? Double) ?? 0)
+            let macTop = String(format: "%.1f", Double(block.macLocalTop)), macHeight = String(format: "%.1f", Double(block.heightMac))
+            report.blockRows.append([String(index), block.isTable ? "table" : "text", String(block.macPage + 1), macTop, macHeight,
+                                     planPageText, planTopText, spacing, heights, flags, block.preview, observedHeights,
+                                     String(format: "%.2f", (pb["trailing"] as? Double) ?? 0)].joined(separator: "\t"))
         }
         report.pagesWithADifferentFirstBlock = Set(planFirstOnPage.keys).union(macFirstOnPage.keys)
             .filter { planFirstOnPage[$0] != macFirstOnPage[$0] }.count
@@ -766,15 +850,18 @@ enum PagePlanShadow {
         report.droppedByTextKit = max(0, rawBreaks - delegate.documentPageBreaks.count)
         report.summary = [
             "SHADOW pages: TextKit \(report.macPages), plan \(report.planPages) (reader reports \(facts.pageCount); observed stack \(report.stackPages))",
+            "SHADOW grid: content \(delegate.pageContentHeight) band \(delegate.band) leading \(leading) pitch \(pitch)",
+            "SHADOW settle records: pushed \(delegate.pushedTables.count), oversized \(delegate.oversizedPieces.count), pulled \(delegate.pullToNextPage.count), opened bands \(delegate.openedBands.count), keepWithNext \(delegate.keepWithNextRanges.count), page breaks \(delegate.documentPageBreaks.count)",
             "SHADOW blocks: \(report.blocks) (\(report.tables) tables); on a different page: \(report.blocksOnADifferentPage); lines on a different page: \(report.linesOnADifferentPage); flowed cell lines: \(report.cellLines), differing: \(report.cellLinesOnADifferentPage)",
             String(format: "SHADOW table height total: %.1f", Double(report.tableHeightTotal)),
             "SHADOW pages whose first block differs: \(report.pagesWithADifferentFirstBlock)",
             "SHADOW hard breaks dropped by 147: plan \(report.droppedByPlan), TextKit \(report.droppedByTextKit)",
             "SHADOW first difference: \(report.firstDifference ?? "none")",
             "SHADOW sheets: \(report.furniturePages) pages compared; differences \(report.furnitureDifferences.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", ").nonEmpty ?? "none"); first: \(report.furnitureFirstDifference ?? "none")",
+            "SHADOW reader's own number vetoes differ from the document's on pages: \(facts.hiddenByReader.symmetricDifference(facts.hidden).sorted().map { String($0 + 1) }.joined(separator: " ").nonEmpty ?? "none")",
             "SHADOW footnotes: TextKit bands \(report.noteBandsTextKit.sorted { $0.key < $1.key }.map { "\($0.key + 1):\(String(format: "%.1f", Double($0.value)))" }.joined(separator: " ")); plan bands \(report.noteBandsPlan.sorted { $0.key < $1.key }.map { "\($0.key + 1):\(String(format: "%.1f", $0.value))" }.joined(separator: " ")); pages whose cited notes differ: \(report.noteAssignmentDifferences)",
             "SHADOW columns: \(report.columnLines) lines in columned runs, different: \(report.columnLinesDifferent); first: \(report.columnFirstDifference ?? "none")",
-        ] + report.context
+        ] + report.context + report.cellDump
         return report
     }
 

@@ -51,6 +51,11 @@ use super::plan_furniture::{applicable_entry, displayed_numbers, master_pages, P
 use super::footnote_band_settle::{FootnoteBandSettle, Outcome};
 pub use super::table_flow::{CellLinePlacement, RowSegment};
 use super::table_flow::{flow_table, has_cells, orphan_runs, FlowGeometry, LinePath, PlacedLines, MAX_ROUNDS};
+
+/// Layouts the plan replays before taking the last as it stands: the reader's settle budget per
+/// loop (`table_flow::MAX_ROUNDS`, `maxPagedTableSettles`) times the outer alternation of tables and
+/// notes that `settlePagedTablesFully` runs.
+const SETTLE_PASSES: usize = MAX_ROUNDS * MAX_ROUNDS;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -484,27 +489,30 @@ fn plan_core(input: &PlanInput, honoured: &[bool], bands: &HashMap<u32, f64>) ->
     // passes: its first layout has no record that any table is over-tall, so every table lies where
     // it falls; each later one applies what the last measured, and the 1-3 line pulls it records
     // are never taken back. The plan replays those passes when the host reported cell lines.
-    let flowable = input
-        .blocks
-        .iter()
-        .any(|b| !b.skip && b.kind == PlanKind::Table && b.column_run.is_none() && has_cells(&b.rows));
+    //
+    // The reader also settles a round BEHIND its layout for the tables it carries: a table is moved
+    // only once a layout has measured it overrunning, and what a later layout pulls from an over-tall
+    // table depends on where the tables above it stood in that round. Each pass therefore moves only
+    // the tables the passes before it recorded.
     let mut pulled: BTreeSet<(u32, LinePath)> = BTreeSet::new();
-    if flowable {
-        for round in 1..=MAX_ROUNDS {
-            let mode = if round == 1 { Mode::Natural } else { Mode::Settled };
-            let pass = run_pass(input, honoured, mode, &pulled, bands);
-            let mut added = false;
-            for table in &pass.flowed {
-                for path in orphan_runs(&input.blocks[table.block as usize].rows, &table.lines) {
-                    added |= pulled.insert((table.block, path));
-                }
-            }
-            if !added && round > 1 {
-                break;
+    let mut known: BTreeSet<u32> = BTreeSet::new();
+    for round in 1..=SETTLE_PASSES {
+        let mode = if round == 1 { Mode::Natural } else { Mode::Settled };
+        let pass = run_pass(input, honoured, mode, &pulled, &known, bands);
+        let mut added = false;
+        for table in &pass.flowed {
+            for path in orphan_runs(&input.blocks[table.block as usize].rows, &table.lines) {
+                added |= pulled.insert((table.block, path));
             }
         }
+        for table in &pass.new_pushes {
+            added |= known.insert(*table);
+        }
+        if !added && round > 1 {
+            break;
+        }
     }
-    let state = run_pass(input, honoured, Mode::Settled, &pulled, bands);
+    let state = run_pass(input, honoured, Mode::Settled, &pulled, &known, bands);
     (state, pulled)
 }
 
@@ -602,6 +610,7 @@ fn run_pass(
     honoured: &[bool],
     mode: Mode,
     pulled: &BTreeSet<(u32, LinePath)>,
+    known: &BTreeSet<u32>,
     bands: &HashMap<u32, f64>,
 ) -> State {
     let mut state = State {
@@ -610,6 +619,8 @@ fn run_pass(
         note_bands: bands.clone(),
         mode,
         pulled: pulled.clone(),
+        known_pushes: known.clone(),
+        new_pushes: BTreeSet::new(),
         flowed: Vec::new(),
         page: 0,
         reached: 0,
@@ -707,6 +718,13 @@ struct State {
     note_bands: HashMap<u32, f64>,
     mode: Mode,
     pulled: BTreeSet<(u32, LinePath)>,
+    /// The tables the reader has recorded as overrunning in an EARLIER layout (`tablesToPush`'s
+    /// record): only those are moved by this layout. A table that first overruns in this one lies
+    /// where it falls until the next layout has measured it — the reader settles a round behind its
+    /// own layout, and what each round pulls depends on where the tables above stood in it.
+    known_pushes: BTreeSet<u32>,
+    /// The tables this layout found overrunning where they lie, for the next one.
+    new_pushes: BTreeSet<u32>,
     flowed: Vec<FlowedTable>,
     page: u32,
     /// The furthest page anything reached. A columned run ends on the page its last line was dealt
@@ -799,6 +817,7 @@ impl State {
         let page_before = self.page as usize;
         let reached_before = self.reached;
         let mut stack: Vec<StackItem> = Vec::new();
+        let mut opened: Vec<(usize, u32, u32)> = Vec::new();
         let mut spacing_after = 0.0;
         for index in from..to {
             let block = &input.blocks[index];
@@ -806,7 +825,14 @@ impl State {
                 continue;
             }
             let idx = index as u32;
+            let boundaries_before = self.section_boundaries.len();
             self.open_block(block, honoured[index]);
+            // A section opened inside the run is named by the page of the STACK it fell on; the
+            // columns deal the stack onto other pages, so the boundary follows its block's first line
+            // (a boundary that waits for the next sheet keeps its one page of delay).
+            for slot in boundaries_before..self.section_boundaries.len() {
+                opened.push((slot, idx, self.section_boundaries[slot].saturating_sub(self.page)));
+            }
             match block.kind {
                 PlanKind::Text => {
                     let start = self.lines.len();
@@ -864,6 +890,12 @@ impl State {
                 self.first_key[page as usize] = Some(input.blocks[item.block as usize].key);
             }
             self.reached = self.reached.max(page);
+        }
+        for (slot, block, offset) in opened {
+            let first = stack.iter().find(|item| item.block == block).map(|item| self.position_of(item.slot).0);
+            if let Some(page) = first {
+                self.section_boundaries[slot] = page + offset;
+            }
         }
         if let Some((page, top, height)) = last {
             self.page = page;
@@ -987,7 +1019,10 @@ impl State {
                 && block.keep_with_next
                 && self.cursor > 0.0
                 && self.cursor + height > self.body(self.page) - height;
-            if keeps || self.overruns(height - hangs) {
+            // The delegate's own comparison for a line: glyphs past the foot, no tolerance (it is a
+            // plain `>` there; the hair is the table rule's).
+            let past_foot = self.cursor > 0.0 && self.cursor + height - hangs > self.body(self.page);
+            if keeps || past_foot {
                 self.next_page();
             }
             self.mark_first(block.key);
@@ -1068,6 +1103,9 @@ impl State {
     /// foot. An over-tall one reports where its lines fell, which is what the first pulls are read
     /// from.
     fn place_table_naturally(&mut self, index: u32, block: &PlanBlock, total: f64, over_tall: bool) {
+        if !over_tall {
+            self.record_if_overrunning(index, block, total);
+        }
         self.cursor += block.spacing_before;
         let geometry = FlowGeometry { content_height: self.content_height, band: self.band, note_bands: &self.note_bands };
         let end = if over_tall {
@@ -1082,6 +1120,42 @@ impl State {
             self.next_page();
         }
         self.cursor = end.1 + block.spacing_after;
+    }
+
+    /// A table the reader has not yet recorded as overrunning: it stays where it falls and its tail
+    /// may run past the page foot. What follows it is moved on by the ordinary page rule.
+    fn place_table_lying(&mut self, index: u32, block: &PlanBlock, total: f64, whole: f64) {
+        self.record_if_overrunning(index, block, total);
+        self.mark_first(block.key);
+        self.placements.push(BlockPlacement {
+            block: index,
+            key: block.key,
+            page: self.page,
+            top: self.cursor,
+            height: whole,
+            row_start: Some(0),
+            row_count: Some(block.rows.len() as u32),
+            flowed: false,
+            column: None,
+        });
+        let geometry = FlowGeometry { content_height: self.content_height, band: self.band, note_bands: &self.note_bands };
+        let y = self.cursor + block.spacing_before + total;
+        // A table that runs past a whole page is on a later one; one that ends exactly on the foot
+        // is still on this page, and the next block moves on by its own fit.
+        let end = if y > self.content_height + self.band { geometry.normalise(self.page, y) } else { (self.page, y) };
+        while self.page < end.0 {
+            self.next_page();
+        }
+        self.cursor = end.1 + block.spacing_after;
+    }
+
+    /// `tablesToPush`'s test, taken on the layout just made: the table's bottom, spacing included
+    /// (the plan's own measure of a whole table), is past the foot of the page its top is on.
+    fn record_if_overrunning(&mut self, index: u32, block: &PlanBlock, total: f64) {
+        let whole = block.spacing_before + total + block.spacing_after;
+        if self.cursor + whole > self.body(self.page) + FIT_TOLERANCE {
+            self.new_pushes.insert(index);
+        }
     }
 
     fn place_table(&mut self, index: u32, block: &PlanBlock, split_tables: bool) {
@@ -1099,7 +1173,13 @@ impl State {
             self.flow_table(index, block);
             return;
         }
-        let fits_here = self.cursor + whole <= self.body(self.page) + FIT_TOLERANCE;
+        // A table no earlier layout has measured overrunning lies where it falls, whole, and is only
+        // recorded for the next one (`tablesToPush`'s `known || overruns`).
+        if !self.known_pushes.contains(&index) {
+            self.place_table_lying(index, block, total, whole);
+            return;
+        }
+        let fits_here =self.cursor + whole <= self.body(self.page) + FIT_TOLERANCE;
 
         let groups = if fits_here { Vec::new() } else { table_groups(rows) };
         // Where the table would land if carried: a table taller than that page's body has nowhere to
@@ -1254,6 +1334,33 @@ mod tests {
         assert_eq!(plan.page_count, 2);
         assert_eq!(pages_of_lines(&plan), vec![0, 0, 1, 1]);
         assert_eq!(plan.lines[2].3, 0.0);
+    }
+
+    #[test]
+    fn a_line_a_hair_past_the_foot_moves_on() {
+        // The delegate compares glyphs with the foot by a plain `>`: no tolerance for a line.
+        let plan = plan_pages(&input(100.0, vec![text(1, &[50.0]), text(2, &[50.005])])).unwrap();
+        assert_eq!(pages_of_lines(&plan), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_table_is_moved_only_by_the_layout_after_the_one_that_measured_it_overrunning() {
+        let blocks = vec![text(1, &[40.0]), table(2, &[(50.0, false), (30.0, false)], false)];
+        let plan_input = input(100.0, blocks);
+        let honoured = honoured_breaks(&plan_input.blocks);
+        let bands = HashMap::new();
+        let none = BTreeSet::new();
+        // The first measured layout has recorded nothing, so the table lies where it falls and is
+        // recorded for the next one.
+        let lying = run_pass(&plan_input, &honoured, Mode::Settled, &BTreeSet::new(), &none, &bands);
+        assert_eq!(lying.placements[0].page, 0);
+        assert!(lying.new_pushes.contains(&1));
+        // Once recorded it is carried.
+        let known: BTreeSet<u32> = [1].into_iter().collect();
+        let carried = run_pass(&plan_input, &honoured, Mode::Settled, &BTreeSet::new(), &known, &bands);
+        assert_eq!(carried.placements[0].page, 1);
+        // And the plan reaches that layout by itself.
+        assert_eq!(plan_pages(&plan_input).unwrap().placements[0].page, 1);
     }
 
     #[test]
@@ -1814,6 +1921,23 @@ mod tests {
         assert_eq!(plan.lines.iter().filter(|l| l.2 == 1).count(), 5);
         assert_eq!(plan.pages[1].first_key, Some(1));
         assert!(plan.column_lines.contains(&[0, 24, 0]));
+    }
+
+    #[test]
+    fn a_section_opened_inside_a_columned_run_starts_on_the_page_its_first_line_was_dealt_to() {
+        // 25 lines a sheet-and-a-bit in two columns (twenty a sheet), then a section start in the
+        // same run: in the reader's stack it opens stack page 5, but the columns deal it to the sheet
+        // that holds its line, and that is where the section begins.
+        let mut opener = columned(text(2, &[10.0]), 0);
+        opener.section_start = true;
+        let blocks = vec![columned(text(1, &[10.0; 25]), 0), opener];
+        let mut plan_input = input(100.0, blocks);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        let dealt = plan.lines.iter().find(|l| l.0 == 1).map(|l| l.2).unwrap();
+        assert_eq!(plan.pages[dealt as usize].section, 1);
+        assert_eq!(plan.pages[dealt as usize - 1].section, 0);
     }
 
     #[test]
