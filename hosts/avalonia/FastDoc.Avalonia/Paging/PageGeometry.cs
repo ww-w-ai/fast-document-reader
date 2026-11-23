@@ -99,9 +99,11 @@ public static class BlockPageMarkers
     /// states none): the page a block lands on prints no master-page number / restarts the counter
     /// there — `wire::ParagraphPagination`, mirroring macOS's `hiddenPageNumberPages` and
     /// `pageNumberRestarts`.</summary>
+    /// <summary>`KeepWithNext` is per-block too (null = a producer that states none): the paragraph
+    /// asks to stay on the page its successor starts on, which the page plan applies.</summary>
     public readonly record struct Markers(
         bool[] SectionStart, bool[] PageBreakBefore, bool[] TableKeepsWhole, bool[] TableRepeatsHeader, ulong[] NodeId,
-        bool[]? HidesPageNumber = null, long?[]? PageNumberRestart = null);
+        bool[]? HidesPageNumber = null, long?[]? PageNumberRestart = null, bool[]? KeepWithNext = null);
 
     /// <summary>The five parallel per-block lists <see cref="Walk"/> fills, bundled so adding a
     /// sixth marker later does not mean widening every method's parameter list again.</summary>
@@ -114,10 +116,11 @@ public static class BlockPageMarkers
         public readonly List<ulong> NodeId = new();
         public readonly List<bool> HidesPageNumber = new();
         public readonly List<long?> PageNumberRestart = new();
+        public readonly List<bool> KeepWithNext = new();
 
         public Markers ToMarkers() => new(
             SectionStart.ToArray(), PageBreakBefore.ToArray(), TableKeepsWhole.ToArray(), TableRepeatsHeader.ToArray(),
-            NodeId.ToArray(), HidesPageNumber.ToArray(), PageNumberRestart.ToArray());
+            NodeId.ToArray(), HidesPageNumber.ToArray(), PageNumberRestart.ToArray(), KeepWithNext.ToArray());
     }
 
     public static Markers Compute(RenderTree tree)
@@ -402,6 +405,7 @@ public static class BlockPageMarkers
         acc.NodeId.Add(nodeId);
         acc.HidesPageNumber.Add(pagination?.HidesPageNumber ?? false);
         acc.PageNumberRestart.Add(pagination?.PageNumberRestart);
+        acc.KeepWithNext.Add(pagination?.KeepWithNext ?? false);
         pendingSectionStart = false;
     }
 }

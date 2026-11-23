@@ -450,7 +450,6 @@ class Program
             var (layout, _) = FastDoc.Avalonia.Paging.FootnoteLayout.Build(result.Tree!, blocks, markers, geometry,
                 result.Handle?.RawHandle ?? IntPtr.Zero, headersOn: true, footersOn: true,
                 splitTablesDefault: true, imageRenderer: imageRenderer);
-            var (settleRounds, pushedCount, oversizedCount) = (0, 0, 0);
 
             Console.WriteLine($"sheets: {layout.PageCount}");
             Console.WriteLine(
@@ -458,7 +457,7 @@ class Program
                 $"content: {layout.PageContentWidthPoints:F1}x{layout.PageContentHeightPoints:F1} " +
                 $"band: {layout.Band.HeaderPoints:F1}/{layout.Band.FooterPoints:F1}/{layout.Band.BandPoints:F1} " +
                 $"(fromEngine={layout.Band.FromEngine})");
-            Console.WriteLine($"settle rounds: {settleRounds}, pushed: {pushedCount}, oversized: {oversizedCount}");
+            Console.WriteLine($"plan: split tables: {layout.SplitTableCount}, carried tables: {layout.CarriedTableCount}, dropped breaks: {layout.DroppedBreakCount}");
             // FMD_SHEETS_PAGES=1 (Scripts/page-parity.sh): one line per page naming the first
             // block laid on it, so two runs of this CLI can be diffed page by page.
             if (Environment.GetEnvironmentVariable("FMD_SHEETS_PAGES") == "1")

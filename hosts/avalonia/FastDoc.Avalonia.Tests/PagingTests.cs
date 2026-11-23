@@ -376,20 +376,39 @@ public class PagingTests
         var markers = FlatMarkers(2);
         var geometry = SimpleGeometry();
 
-        // Note: the ORDINARY per-block placement loop (Build's own non-text fallback, present
-        // since E2c-1) already pushes any block — table included — that overruns a page it would
-        // otherwise fit whole, so this simple single-page-overrun case is already resolved before
-        // TableSettle's own round ever runs (its `pushed` counter can legitimately read 0 here —
-        // nothing was left for it to change). What this test actually pins is the OUTCOME the
-        // dispatch asked for: the table lands WHOLE, flush at a later page's top.
-        var (layout, _, _, _) = PageLayout.BuildWithTableSettle(
-            blocks, markers, geometry, IntPtr.Zero, headersOn: false, footersOn: false, splitTablesDefault: true);
+        // With table splitting OFF the engine's page plan carries the table whole: it lands flush at
+        // a later page's top, never in pieces.
+        var (layout, _, pushed, _) = PageLayout.BuildWithTableSettle(
+            blocks, markers, geometry, IntPtr.Zero, headersOn: false, footersOn: false, splitTablesDefault: false);
 
         var tablePlacements = layout.Placements.Where(p => p.BlockIndex == 1).ToList();
         Assert.Single(tablePlacements); // pushed WHOLE — never split into pieces
+        Assert.Equal(1, pushed);
         Assert.True(tablePlacements[0].PageIndex > 0, "expected the table to move off the page the rule left it on");
         Assert.Equal(0, tablePlacements[0].LocalTopPoints); // lands flush at the top of its new page
         Assert.Equal(78, tablePlacements[0].HeightPoints, precision: 3); // 3 rows * 26pt, whole
+    }
+
+    [Fact]
+    public void With_splitting_on_a_table_that_does_not_fit_the_end_of_a_page_splits_at_a_row_boundary()
+    {
+        // The same rule at row 0 (71pt used, 29pt left, 26pt rows): row 0 stays on the page the rule
+        // left it on, the rest follow on the next — what macOS does with "split tables" on
+        // (diagnosis cause 5: this host used to carry the whole table instead).
+        var ruleBlock = new FlowBlock { Kind = FlowBlockKind.Rule, SpacingBeforePoints = 70 };
+        var blocks = new System.Collections.Generic.List<FlowBlock> { ruleBlock, EmptyTableBlock(rowCount: 3) };
+
+        var (layout, _, pushed, split) = PageLayout.BuildWithTableSettle(
+            blocks, FlatMarkers(2), SimpleGeometry(), IntPtr.Zero, headersOn: false, footersOn: false,
+            splitTablesDefault: true);
+
+        var pieces = layout.Placements.Where(p => p.BlockIndex == 1).OrderBy(p => p.PageIndex).ThenBy(p => p.LocalTopPoints).ToList();
+        Assert.Equal(1, split);
+        Assert.Equal(0, pushed);
+        Assert.Equal(new int?[] { 0, 1, 2 }, pieces.Select(p => p.RowRangeStart).ToArray());
+        Assert.Equal(0, pieces[0].PageIndex);
+        Assert.Equal(1, pieces[1].PageIndex);
+        Assert.Equal(78, pieces.Sum(p => p.HeightPoints), precision: 3);
     }
 
     [Fact]

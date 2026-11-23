@@ -14,7 +14,7 @@
 # Writes <out-dir>/<name>.mac.txt (page<TAB>first line), <name>.avalonia.tsv (page<TAB>node id) and
 # summary.tsv (name, macOS pages, Avalonia pages). Prints the summary table. The macOS app and the
 # host build are used as they are: build them first (make-app.sh, dotnet build -c Release,
-# build-engine-xplat.sh).
+# build-engine-xplat.sh). FMD_PARITY_SKIP_MAC=1 measures the Avalonia side only (macOS column "-").
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,12 +52,17 @@ SUMMARY="$OUT_DIR/summary.tsv"
 for doc in "${DOCS[@]}"; do
   name="$(basename "$doc")"
   mac_pdf="$OUT_DIR/$name.mac.pdf"
-  mac_out="$("$MAC_APP" --pdf "$doc" -o "$mac_pdf" -f 2>/dev/null || true)"
-  mac_pages="$(printf '%s\n' "$mac_out" | sed -n 's/^pages: //p')"
-  mac_pages="${mac_pages:--}"
-  if [ -s "$mac_pdf" ]; then
-    first_lines "$mac_pdf" > "$OUT_DIR/$name.mac.txt" || true
-    rm -f "$mac_pdf"
+  if [ "${FMD_PARITY_SKIP_MAC:-0}" = "1" ]; then
+    # Avalonia-only run: the macOS column is not measured.
+    mac_pages="-"
+  else
+    mac_out="$("$MAC_APP" --pdf "$doc" -o "$mac_pdf" -f 2>/dev/null || true)"
+    mac_pages="$(printf '%s\n' "$mac_out" | sed -n 's/^pages: //p')"
+    mac_pages="${mac_pages:--}"
+    if [ -s "$mac_pdf" ]; then
+      first_lines "$mac_pdf" > "$OUT_DIR/$name.mac.txt" || true
+      rm -f "$mac_pdf"
+    fi
   fi
 
   sheets_out="$(FMD_SHEETS_PAGES=1 "$DOTNET" exec "$HOST_DLL" --sheets "$doc" 2>/dev/null || true)"

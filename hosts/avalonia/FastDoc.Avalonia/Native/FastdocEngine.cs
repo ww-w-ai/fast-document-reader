@@ -276,38 +276,7 @@ public static class FastdocEngine
         double pitch, double topMargin, double deskGap,
         [In, Out] double[] out_, nuint outCapacity, out nuint outCount);
 
-    // ---- E2c-2 Part B: table placement (fastdoc_office_table_placement) ----
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct FastdocLaidOutRow
-    {
-        public long FirstChar;
-        public double Top;
-        public double Bottom;
-        public double FirstLineTop;
-        [MarshalAs(UnmanagedType.I1)] public bool CanBreakAbove;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct FastdocLaidOutTable
-    {
-        public long FirstChar;
-        public double VisualTop;
-        public double Bottom;
-        public double FirstLineTop;
-        public long LastChar;
-        public nuint RowOffset;
-        public nuint RowCount;
-        [MarshalAs(UnmanagedType.I1)] public bool KeepsWhole;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct FastdocTableMetricsEntry
-    {
-        public long Key;
-        public double Height;
-        public double TopInset;
-    }
+    // ---- footnote bands (fastdoc_office_footnote_band_settle) ----
 
     [StructLayout(LayoutKind.Sequential)]
     public struct FastdocNoteBandEntry
@@ -316,31 +285,11 @@ public static class FastdocEngine
         public double Value;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    public struct FastdocI64Entry
-    {
-        public long Key;
-        public long Value;
-    }
-
-    // bool fastdoc_office_table_placement(handle, tables, table_count, rows, row_count,
-    //     page_content_height, band, leading_band, split_tables, already_pushed,
-    //     already_pushed_count, note_bands, note_bands_count, already_oversized,
-    //     already_oversized_count, out_push, out_push_capacity, out_push_count,
-    //     out_oversized, out_oversized_capacity, out_oversized_count);
+    // char *fastdoc_office_page_plan_json(const FastdocOfficeDocument *handle, const char *input_json);
+    // The page plan (S2): where every whole block goes, from the heights the host observed. Returns
+    // An ok envelope carrying the PagePlanV1, or an error envelope; free with TakeOwnedString.
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static extern bool fastdoc_office_table_placement(
-        IntPtr handle,
-        [In] FastdocLaidOutTable[] tables, nuint tableCount,
-        [In] FastdocLaidOutRow[] rows, nuint rowCount,
-        double pageContentHeight, double band, double leadingBand,
-        [MarshalAs(UnmanagedType.I1)] bool splitTables,
-        [In] FastdocTableMetricsEntry[] alreadyPushed, nuint alreadyPushedCount,
-        [In] FastdocNoteBandEntry[] noteBands, nuint noteBandsCount,
-        [In] FastdocI64Entry[] alreadyOversized, nuint alreadyOversizedCount,
-        [Out] FastdocTableMetricsEntry[] outPush, nuint outPushCapacity, out nuint outPushCount,
-        [Out] FastdocI64Entry[] outOversized, nuint outOversizedCapacity, out nuint outOversizedCount);
+    public static extern IntPtr fastdoc_office_page_plan_json(IntPtr handle, byte[] inputJson);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct FastdocMasterTemplateDesc

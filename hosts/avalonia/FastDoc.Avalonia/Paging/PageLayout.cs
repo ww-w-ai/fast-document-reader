@@ -136,16 +136,21 @@ public sealed class PageLayoutResult
     /// header/footer/first-page band for a page instead of concatenating every header/footer node
     /// in the whole document onto every page (the bug behind catalog findings F5/F6/F8-F10).</summary>
     public required IReadOnlyList<int> PageSectionIndex { get; init; }
+    /// <summary>What the engine's page plan reported, for `--sheets`: tables placed as row-bounded
+    /// pieces, tables carried whole to the next page, hard breaks dropped by invariant 147.</summary>
+    public int SplitTableCount { get; init; }
+    public int CarriedTableCount { get; init; }
+    public int DroppedBreakCount { get; init; }
 }
 
 /// <summary>
-/// E2c-1b: assigns every FlowBlock to a page at LINE granularity for text — a paragraph that will
-/// not finish on the page it starts on is split at the TextLine boundary and continues flush at
-/// the top of the next page's content area, mirroring `PageBandLayoutDelegate.swift`'s own line
-/// shift (the macOS reader never moves a line partway; it shifts the WHOLE remaining line to the
-/// next band). Table/image/rule blocks stay BLOCK-atomic — invariant 61's own move-whole rule for
-/// a table, extended to every non-text kind — because their row/cell-level settle is E2c-2's job
-/// (`fastdoc_office_table_placement`), not this unit's.
+/// Assigns every FlowBlock to a page. This host MEASURES — a paragraph's line boxes, a picture's
+/// height, a table's row heights — and the engine's page plan DECIDES (`fastdoc_office_page_plan_json`,
+/// S2 of docs/plans/pagination-to-engine.md): a paragraph that will not finish on the page it
+/// starts on is split at a line boundary and continues flush at the top of the next page, a hard
+/// break at the top of an empty page opens nothing, keep-with-next carries a heading with what
+/// follows, and a table that overruns its page is carried whole, split at the rows no merged cell
+/// crosses, or — when it fits no page — broken at every such boundary.
 ///
 /// A line taller than the whole page body (invariant 142's own case) is placed at the top of the
 /// page it starts on and simply overruns it — never split further.
@@ -184,243 +189,164 @@ public static class PageLayout
         });
     }
 
+    /// <summary>One text block as this host measured it: each line box's placed height and the source
+    /// range it covers — what <see cref="PagedLine"/> carries back once the engine has said which
+    /// page each line is on.</summary>
+    private sealed class TextShape
+    {
+        public required double[] Heights { get; init; }
+        public required int[] FirstChars { get; init; }
+        public required int[] Lengths { get; init; }
+    }
+
+    /// <summary>Measures the blocks, asks the engine where each goes (the page plan, S2 of
+    /// docs/plans/pagination-to-engine.md) and carries its answer back. This host decides nothing
+    /// about pages: it supplies line boxes, picture heights and table row heights, and the engine
+    /// answers every "does it fit, does it break, does it move" question — hard breaks, keep-with-next,
+    /// table push and split, the section each page belongs to.</summary>
     public static PageLayoutResult Build(IReadOnlyList<FlowBlock> blocks, BlockPageMarkers.Markers markers,
         PageGeometry geometry, IntPtr engineHandle, bool headersOn, bool footersOn,
-        ISet<int>? forcePushTableBlocks = null, IReadOnlyDictionary<int, SortedSet<int>>? forcedTableRowBreaks = null,
-        ImageBlockRenderer? imageRenderer = null, IReadOnlyDictionary<int, double>? noteBands = null)
+        bool splitTables = false, ImageBlockRenderer? imageRenderer = null,
+        IReadOnlyDictionary<int, double>? noteBands = null)
     {
         var contentWidth = geometry.ContentWidthPoints;
         var contentHeight = geometry.ContentHeightPoints;
         var band = PageBandResolver.Resolve(engineHandle, geometry, contentWidth, headersOn, footersOn,
             separatesPages: true, deskGapPoints: null);
 
-        var blockPlacements = new List<PagedBlock>();
-        var linePlacements = new List<PagedLine>();
-        var pageIndex = 0;
-        var cursor = 0.0;
-        // S8-A2 (C3/C5): pageIndex values at which a NEW section's first page begins — page 0 is
-        // always section 0 implicitly, so this only records boundaries AFTER it. A section start
-        // that lands on the very first block (pageIndex still 0, cursor still 0) is exactly that
-        // implicit page-0/section-0 case and is not recorded again.
-        var sectionBoundaryPages = new List<int>();
-
+        var inputs = new List<PlanBlockInput>(blocks.Count);
+        var shapes = new TextShape?[blocks.Count];
         for (var i = 0; i < blocks.Count; i++)
         {
             var block = blocks[i];
+            var key = i < markers.NodeId.Length ? (long)markers.NodeId[i] : i;
+            var sectionStart = i < markers.SectionStart.Length && markers.SectionStart[i];
+            var pageBreakBefore = i < markers.PageBreakBefore.Length && markers.PageBreakBefore[i];
             // The footnote tail flow mode shows after the body is NOT part of a sheet's flow: each
             // note is drawn at the foot of the page that cites it (FootnoteLayout).
-            if (block.FootnoteOf is not null && noteBands is not null) { continue; }
-            var sectionStart = i < markers.SectionStart.Length && markers.SectionStart[i];
-            var hardBreak = i < markers.PageBreakBefore.Length && markers.PageBreakBefore[i];
-            if ((sectionStart || hardBreak) && (pageIndex > 0 || cursor > 0))
+            if (block.FootnoteOf is not null && noteBands is not null)
             {
-                pageIndex++;
-                cursor = 0;
-                if (sectionStart) { sectionBoundaryPages.Add(pageIndex); }
+                inputs.Add(new PlanBlockInput { Key = key, Kind = "atomic", Skip = true });
+                continue;
             }
-
+            var keepWithNext = markers.KeepWithNext is { } keeps && i < keeps.Length && keeps[i];
             var widthForBlock = Math.Max(1, contentWidth - block.IndentPoints);
 
             if (block.Kind == FlowBlockKind.Text)
             {
-                PlaceTextLines(block, i, widthForBlock, contentHeight, noteBands, geometry.LineGridPitchPoints,
-                    linePlacements, ref pageIndex, ref cursor);
+                var empty = block.Runs.TrueForAll(r => string.IsNullOrWhiteSpace(r.Text));
+                var layout = BuildPointsTextLayout(block, widthForBlock);
+                if (layout is null)
+                {
+                    // A blank paragraph is one unit: its spacing and its own line, as the old
+                    // placement summed them.
+                    var blank = block.SpacingBeforePoints + BlankLineHeightPoints(block, geometry.LineGridPitchPoints)
+                        + block.SpacingAfterPoints;
+                    shapes[i] = new TextShape { Heights = new[] { blank }, FirstChars = new[] { 0 }, Lengths = new[] { 0 } };
+                    inputs.Add(new PlanBlockInput
+                    {
+                        Key = key, Kind = "text", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
+                        KeepWithNext = keepWithNext, Empty = true, Lines = shapes[i]!.Heights,
+                    });
+                    continue;
+                }
+                var lines = layout.TextLines;
+                var shape = new TextShape
+                {
+                    Heights = new double[lines.Count], FirstChars = new int[lines.Count], Lengths = new int[lines.Count],
+                };
+                for (var l = 0; l < lines.Count; l++)
+                {
+                    shape.Heights[l] = EffectiveLineHeight(lines[l].Height, block.LineHeight, geometry.LineGridPitchPoints);
+                    shape.FirstChars[l] = lines[l].FirstTextSourceIndex;
+                    shape.Lengths[l] = lines[l].Length;
+                }
+                shapes[i] = shape;
+                inputs.Add(new PlanBlockInput
+                {
+                    Key = key, Kind = "text", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
+                    KeepWithNext = keepWithNext, Empty = empty, SpacingBefore = block.SpacingBeforePoints,
+                    SpacingAfter = block.SpacingAfterPoints, Lines = shape.Heights,
+                });
                 continue;
             }
 
-            // E2c-2 Part B: a table the settle loop decided must move whole starts a fresh page —
-            // BEFORE the normal "does it overrun" check below, mirroring `tablesToPush`'s own
-            // idempotent re-application (a pushed table sitting at a page top declines to move
-            // again, since `cursor == 0` already and this guard only fires when `cursor > 0`).
-            if (block.Kind == FlowBlockKind.Table && forcePushTableBlocks is not null
-                && forcePushTableBlocks.Contains(i) && cursor > 0)
+            if (block.Kind == FlowBlockKind.Table && block.Table is { } table)
             {
-                pageIndex++;
-                cursor = 0;
-            }
-
-            if (block.Kind == FlowBlockKind.Table && block.Table is not null
-                && forcedTableRowBreaks is not null && forcedTableRowBreaks.TryGetValue(i, out var breaks) && breaks.Count > 0)
-            {
-                PlaceTableRows(block, i, widthForBlock, contentHeight, noteBands, breaks, blockPlacements, ref pageIndex, ref cursor, imageRenderer);
+                var rowHeights = TableSettle.EstimateRowHeights(table, widthForBlock, imageRenderer);
+                var canBreak = TableSettle.RowsThatCanBreakAbove(table);
+                inputs.Add(new PlanBlockInput
+                {
+                    Key = key, Kind = "table", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
+                    SpacingBefore = block.SpacingBeforePoints, SpacingAfter = block.SpacingAfterPoints,
+                    RowHeights = rowHeights.Length == canBreak.Length ? rowHeights : PadRows(rowHeights, canBreak.Length),
+                    RowCanBreakAbove = canBreak,
+                    KeepsWhole = i < markers.TableKeepsWhole.Length && markers.TableKeepsWhole[i],
+                });
                 continue;
             }
 
-            var height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer);
-            if (ShouldPushToFreshPage(cursor, height, contentHeight - BandOf(noteBands, pageIndex)))
+            inputs.Add(new PlanBlockInput
             {
-                pageIndex++;
-                cursor = 0;
-            }
-            var rowRangeCount = block.Kind == FlowBlockKind.Table ? block.Table?.Rows.Count : null;
-            blockPlacements.Add(new PagedBlock(i, pageIndex, cursor, height,
-                RowRangeStart: rowRangeCount is null ? null : 0, RowRangeCount: rowRangeCount));
-            cursor += height;
+                Key = key, Kind = "atomic", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
+                Height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer),
+            });
         }
 
-        var pageCount = pageIndex + 1;
-        var pageSectionIndex = new int[pageCount];
-        var section = 0;
-        var boundaryCursor = 0;
-        for (var p = 0; p < pageCount; p++)
+        var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs);
+
+        var blockPlacements = new List<PagedBlock>(plan.Placements.Count);
+        foreach (var placed in plan.Placements)
         {
-            while (boundaryCursor < sectionBoundaryPages.Count && sectionBoundaryPages[boundaryCursor] == p)
-            {
-                section++;
-                boundaryCursor++;
-            }
-            pageSectionIndex[p] = section;
+            var hasRows = blocks[placed.Block].Kind == FlowBlockKind.Table && blocks[placed.Block].Table is not null;
+            blockPlacements.Add(new PagedBlock(placed.Block, placed.Page, placed.Top, placed.Height,
+                RowRangeStart: hasRows ? placed.RowStart : null, RowRangeCount: hasRows ? placed.RowCount : null));
         }
+        var linePlacements = new List<PagedLine>(plan.Lines.Count);
+        foreach (var placed in plan.Lines)
+        {
+            var shape = shapes[placed.Block]!;
+            linePlacements.Add(new PagedLine(placed.Block, placed.Line, placed.Page, placed.Top,
+                shape.Heights[placed.Line], shape.FirstChars[placed.Line], shape.Lengths[placed.Line]));
+        }
+
+        var pageSectionIndex = new int[plan.PageCount];
+        for (var p = 0; p < pageSectionIndex.Length; p++) { pageSectionIndex[p] = plan.Pages[p].Section; }
 
         return new PageLayoutResult
         {
-            PageCount = pageCount,
+            PageCount = plan.PageCount,
             PageContentWidthPoints = contentWidth,
             PageContentHeightPoints = contentHeight,
             Band = band,
             Placements = blockPlacements,
             Lines = linePlacements,
             PageSectionIndex = pageSectionIndex,
+            SplitTableCount = plan.SplitTableCount,
+            CarriedTableCount = plan.CarriedTableCount,
+            DroppedBreakCount = plan.DroppedBreakCount,
         };
     }
 
-    /// <summary>E2c-2 Part B: places ONE table block as several row-bounded PIECES — each entry in
-    /// <paramref name="forcedBreaksBeforeRow"/> (row indices from `TableSettle`'s oversized-piece
-    /// resolution, all of them `CanBreakAbove`-safe) starts a fresh PagedBlock. A piece flows onto
-    /// the CURRENT page whenever it fits the room left there — exactly the ordinary between-page
-    /// rule `PlaceTextLines` already applies to a text line — and only starts a fresh page when it
-    /// does not (contract §1e's own words: an oversized table is "handed to the reader's ORDINARY
-    /// between-page rule, one line at a time, exactly as prose is"). Forcing every piece onto its
-    /// OWN new page regardless of fit was tried first and measured: it multiplied a 400-page HWP
-    /// manual to 722 sheets, because one huge table's row-boundary pieces (all safe to break, since
-    /// the document has no merges) each claimed a whole page it did not need. PageModePainter still
-    /// draws the FULL table on its first piece's page only (see that file's own doc for the
-    /// disclosed multi-page table drawing gap) — this method only owns where pages break, not what
-    /// gets painted.</summary>
-    /// <summary>The room a page's footnote band takes off the foot of its body, in points (0 for a
-    /// page that cites no note).</summary>
-    private static double BandOf(IReadOnlyDictionary<int, double>? noteBands, int pageIndex) =>
-        noteBands is not null && noteBands.TryGetValue(pageIndex, out var band) ? band : 0;
-
-    private static void PlaceTableRows(FlowBlock block, int blockIndex, double widthPoints, double fullContentHeight,
-        IReadOnlyDictionary<int, double>? noteBands,
-        SortedSet<int> forcedBreaksBeforeRow, List<PagedBlock> output, ref int pageIndex, ref double cursor,
-        ImageBlockRenderer? imageRenderer = null)
+    private static double[] PadRows(double[] heights, int rowCount)
     {
-        var model = block.Table!;
-        var rowHeights = TableSettle.EstimateRowHeights(model, widthPoints, imageRenderer);
-        cursor += block.SpacingBeforePoints;
-
-        var pieceStartRow = 0;
-        for (var r = 0; r <= model.Rows.Count; r++)
-        {
-            if (r < model.Rows.Count && !forcedBreaksBeforeRow.Contains(r)) { continue; }
-
-            var pieceHeight = 0.0;
-            for (var k = pieceStartRow; k < r; k++) { pieceHeight += rowHeights[k]; }
-
-            // NOTE: deliberately NOT ShouldPushToFreshPage here (unlike the other three placement
-            // sites in this file) — TableSettle's own host-fallback resolver (ResolveViaHost)
-            // re-derives each piece's row geometry from THIS method's own placement output on every
-            // settle round, and pushing an already-oversized piece to a fresh page here changes the
-            // geometry that resolver reads BEFORE it has registered a break for it, which starved a
-            // 10-row/260pt fixture of the extra row-boundary break its 4-row/104pt piece needed to
-            // shrink under one page (measured regression: PagingTests.
-            // A_table_taller_than_one_page_splits_at_a_row_boundary). A piece this loop places is
-            // always EITHER already page-width-safe (`CanBreakAbove`-bounded) or is about to be
-            // re-evaluated by the very next settle round, so the narrower guard is kept here.
-            var contentHeight = fullContentHeight - BandOf(noteBands, pageIndex);
-            if (cursor > 0 && cursor + pieceHeight > contentHeight + 0.01 && pieceHeight <= contentHeight)
-            {
-                pageIndex++;
-                cursor = 0;
-            }
-
-            output.Add(new PagedBlock(blockIndex, pageIndex, cursor, pieceHeight,
-                RowRangeStart: pieceStartRow, RowRangeCount: r - pieceStartRow));
-            cursor += pieceHeight;
-            pieceStartRow = r;
-        }
-        cursor += block.SpacingAfterPoints;
+        var padded = new double[rowCount];
+        Array.Copy(heights, padded, Math.Min(heights.Length, rowCount));
+        return padded;
     }
 
-    /// <summary>E2c-2 Part B: the outer settle loop — mirrors `DocumentWindowController.
-    /// settlePagedTablesFully()`'s table half (footnote bands are out of this unit's scope, see
-    /// measurements.md). Re-lays out up to <see cref="TableSettle.MaxRounds"/> times, feeding each
-    /// round's `fastdoc_office_table_placement` answer back into the NEXT layout pass, and stops
-    /// the moment a round changes nothing (idempotent, same as Swift's own loop). Counts (rounds
-    /// actually run, pushed-table count, oversized-piece count) are returned for `--sheets`'s own
-    /// reporting line — sheets must only be counted AFTER this returns (contract §2.7).</summary>
+    /// <summary>The paged layout with the reader's table split preference applied — what every
+    /// caller that draws or counts sheets goes through. The engine's plan settles tables itself, so
+    /// there is one round; the counts are what the plan reported (`Pushed` = tables carried whole to
+    /// the next page, `Oversized` = tables placed as row-bounded pieces).</summary>
     public static (PageLayoutResult Layout, int Rounds, int Pushed, int Oversized) BuildWithTableSettle(
         IReadOnlyList<FlowBlock> blocks, BlockPageMarkers.Markers markers, PageGeometry geometry,
         IntPtr engineHandle, bool headersOn, bool footersOn, bool splitTablesDefault,
         ImageBlockRenderer? imageRenderer = null, IReadOnlyDictionary<int, double>? noteBands = null)
     {
-        var layout = Build(blocks, markers, geometry, engineHandle, headersOn, footersOn, imageRenderer: imageRenderer,
-            noteBands: noteBands);
-        var pushed = new Dictionary<long, (double Height, double TopInset)>();
-        var oversized = new Dictionary<long, long>();
-        var rounds = 0;
-
-        for (; rounds < TableSettle.MaxRounds; rounds++)
-        {
-            var pitch = layout.PageContentHeightPoints + layout.Band.BandPoints;
-            var laidOut = TableSettle.BuildLaidOutTables(blocks, layout.Placements, markers.TableKeepsWhole,
-                pitch, geometry.ContentWidthPoints, imageRenderer);
-            var result = TableSettle.Resolve(engineHandle, laidOut, layout.PageContentHeightPoints,
-                layout.Band.BandPoints, leadingBand: 0, splitTablesDefault, pushed, oversized);
-            if (!result.Changed) { break; }
-
-            pushed = new Dictionary<long, (double, double)>(result.Pushed);
-            oversized = new Dictionary<long, long>(result.Oversized);
-            var (forcePush, forcedBreaks) = TableSettle.ExtractBlockOverrides(pushed.Keys, oversized);
-            layout = Build(blocks, markers, geometry, engineHandle, headersOn, footersOn, forcePush, forcedBreaks, imageRenderer,
-                noteBands);
-        }
-
-        var (finalPush, finalBreaks) = TableSettle.ExtractBlockOverrides(pushed.Keys, oversized);
-        return (layout, rounds, finalPush.Count, finalBreaks.Values.Sum(b => b.Count));
-    }
-
-    /// <summary>Places one text block's lines, mutating <paramref name="pageIndex"/>/<paramref
-    /// name="cursor"/> exactly the way the block-level loop above does for a non-text block — a
-    /// line that does not fit the REMAINING room on its page (and would fit a fresh page) starts
-    /// the next page instead, at local y 0. A blank paragraph (no visible runs) still contributes
-    /// exactly one line, matching TextMeasurerPort's own "the terminator still gets a line" rule.</summary>
-    private static void PlaceTextLines(FlowBlock block, int blockIndex, double widthPoints, double fullContentHeight,
-        IReadOnlyDictionary<int, double>? noteBands,
-        double? lineGridPitchPoints, List<PagedLine> output, ref int pageIndex, ref double cursor)
-    {
-        var layout = BuildPointsTextLayout(block, widthPoints);
-        if (layout is null)
-        {
-            var blankHeight = block.SpacingBeforePoints + BlankLineHeightPoints(block, lineGridPitchPoints)
-                + block.SpacingAfterPoints;
-            if (ShouldPushToFreshPage(cursor, blankHeight, fullContentHeight - BandOf(noteBands, pageIndex)))
-            {
-                pageIndex++;
-                cursor = 0;
-            }
-            output.Add(new PagedLine(blockIndex, 0, pageIndex, cursor, blankHeight));
-            cursor += blankHeight;
-            return;
-        }
-
-        cursor += block.SpacingBeforePoints;
-        var lines = layout.TextLines;
-        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
-        {
-            var lineHeight = EffectiveLineHeight(lines[lineIndex].Height, block.LineHeight, lineGridPitchPoints);
-            if (ShouldPushToFreshPage(cursor, lineHeight, fullContentHeight - BandOf(noteBands, pageIndex)))
-            {
-                pageIndex++;
-                cursor = 0;
-            }
-            output.Add(new PagedLine(blockIndex, lineIndex, pageIndex, cursor, lineHeight,
-                lines[lineIndex].FirstTextSourceIndex, lines[lineIndex].Length));
-            cursor += lineHeight;
-        }
-        cursor += block.SpacingAfterPoints;
+        var layout = Build(blocks, markers, geometry, engineHandle, headersOn, footersOn, splitTablesDefault,
+            imageRenderer, noteBands);
+        return (layout, 1, layout.CarriedTableCount, layout.SplitTableCount);
     }
 
     /// <summary>E2c-2b: a line's PLACED height — the document's own <see cref="LineHeightRule"/>
@@ -436,27 +362,6 @@ public static class PageLayout
         var applied = lineHeight.Apply(naturalHeight);
         return lineGridPitchPoints is > 0 ? Math.Max(applied, lineGridPitchPoints.Value) : applied;
     }
-
-    /// <summary>The one push/stay decision every placement loop in this file makes (a text line,
-    /// a blank paragraph, a table row-piece, a whole non-text block) — extracted so all four share
-    /// ONE answer instead of four copies that can drift. Pushes to a fresh page whenever the item
-    /// does not fit the room left on the current page, WITHOUT also requiring that it fit a FULL
-    /// fresh page. An item taller than <paramref name="contentHeight"/> still overflows wherever it
-    /// starts (a table row's own content is drawn as one atomic block — see <see
-    /// cref="TableGridRenderer.Draw"/> — with no mid-row page break), but the amount that overflows
-    /// past the page's own bottom edge is exactly <c>itemHeight - (contentHeight - startCursor)</c>
-    /// — strictly SMALLER the closer <paramref name="cursor"/> is to 0. A prior version required
-    /// <c>itemHeight &lt;= contentHeight</c> too (reasoning: "pushing an oversized item does not
-    /// help it fit, so don't bother") — that reasoning ignored the printing pipeline's own PAGE
-    /// CLIP: content that lands past a page's bottom edge is not merely visually cropped, it is
-    /// never emitted to that page at all (measured: a single-row table cell whose reserved height
-    /// grew to ~1.4pt over one full page, starting 575pt into an already-used page, lost ~85% of
-    /// its own text to that clip — pushing it to page-top first would have clipped only the ~1.4pt
-    /// tail). Pushing an oversized item is therefore never worse than leaving it (cursor stays 0 or
-    /// smaller either way) and is often the difference between losing a sliver and losing most of a
-    /// block's content.</summary>
-    private static bool ShouldPushToFreshPage(double cursor, double itemHeight, double contentHeight) =>
-        cursor > 0 && cursor + itemHeight > contentHeight + 0.01;
 
     /// <summary>A non-text block's own height in points, at <paramref name="widthPoints"/> — a
     /// simple declared/estimated height (E2c-2's own scope line: exact table-row and picture-wrap

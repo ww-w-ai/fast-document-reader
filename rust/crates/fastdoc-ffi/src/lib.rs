@@ -1222,6 +1222,66 @@ pub unsafe extern "C" fn fastdoc_office_table_placement(
     true
 }
 
+/// S2 of `docs/plans/pagination-to-engine.md`: the PAGE PLAN — where every whole block of a paged
+/// document goes, decided once, from the heights the host observed.
+///
+/// `input_json` is a `PlanInput` (`render/office/page_plan.rs`): the page body height, the table
+/// split preference, optional per-page footnote reservations, and one entry per flow block carrying
+/// an opaque host `key` (the RenderTree node id on the Avalonia host), its page flags (section
+/// start, hard break, keep-with-next, blank), and what the host measured (line boxes, a picture's
+/// height, table row heights). The answer is keyed by the same keys and by block index, and carries
+/// no text: it is geometry over node ids, not a second projection of the document (plan D2).
+///
+/// Returns `{"ffiVersion":1,"ok":<PagePlanV1>}` or `{"ffiVersion":1,"error":{...}}`, owned by this
+/// library and freed with `fastdoc_string_free` — the envelope shape `fastdoc_office_tree_json`
+/// uses. NULL only when the envelope itself could not be built. `handle` is the open document the
+/// plan belongs to; like `fastdoc_office_table_placement` the arithmetic needs no document state, so
+/// it is never dereferenced — NULL is allowed, for a caller that plans heights it measured without
+/// holding an open document.
+///
+/// # Safety
+/// `handle` must be either NULL or a live pointer `fastdoc_office_open` returned that has not been
+/// closed. `input_json` must be a NUL-terminated string valid for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn fastdoc_office_page_plan_json(
+    _handle: *const FastdocOfficeDocument,
+    input_json: *const c_char,
+) -> *mut c_char {
+    use fastdoc_engine::render::office::page_plan::{plan_pages, PlanInput};
+
+    if input_json.is_null() {
+        return guard_envelope(|| {
+            Err(FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                "invalid NULL argument",
+            ))
+        });
+    }
+    let text = match CStr::from_ptr(input_json).to_str() {
+        Ok(text) => text.to_owned(),
+        Err(_) => {
+            return guard_envelope(|| {
+                Err(FfiFailure::new(
+                    FfiErrorKind::InvalidArgument,
+                    "the page plan input is not valid UTF-8",
+                ))
+            })
+        }
+    };
+    guard_envelope(move || {
+        let input: PlanInput = serde_json::from_str(&text).map_err(|error| {
+            FfiFailure::new(
+                FfiErrorKind::InvalidArgument,
+                format!("the page plan input is not a PlanInput: {error}"),
+            )
+        })?;
+        let plan = plan_pages(&input)
+            .map_err(|error| FfiFailure::new(FfiErrorKind::InvalidArgument, error.to_string()))?;
+        serde_json::to_vec(&plan)
+            .map_err(|error| FfiFailure::new(FfiErrorKind::ExportFailed, format!("{error}")))
+    })
+}
+
 /// One cell's own geometry, mirroring `fastdoc_engine::render::table_resize_math::TableResizeCell`
 /// field for field. `#[repr(C)]` so the layout is exactly what the header declares.
 #[repr(C)]

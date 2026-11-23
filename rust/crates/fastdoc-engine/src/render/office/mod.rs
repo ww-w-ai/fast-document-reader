@@ -6,6 +6,7 @@ pub mod odf_script_type;
 pub mod script;
 pub mod zip_archive;
 pub mod page_pagination;
+pub mod page_plan;
 pub mod page_grid;
 pub mod page_band_geometry;
 pub mod hwp_shape_path;

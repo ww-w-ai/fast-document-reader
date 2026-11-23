@@ -298,6 +298,21 @@ bool fastdoc_office_table_placement(
     FastdocTableMetricsEntry *out_push, size_t out_push_capacity, size_t *out_push_count,
     FastdocI64Entry *out_oversized, size_t out_oversized_capacity, size_t *out_oversized_count);
 
+/* S2 of the pagination plan: the PAGE PLAN — where every whole block of a paged document goes,
+ * decided once from the heights the host observed. input_json is a PlanInput (page body height,
+ * table split preference, optional per-page footnote reservations, and one entry per flow block:
+ * an opaque host key — the RenderTree node id on the Avalonia host —, its page flags (section
+ * start, hard break, keep-with-next, blank) and what the host measured: line boxes, a picture's
+ * height, table row heights). The answer is keyed by the same keys and by block index and carries no
+ * text: geometry over node ids, not a second projection of the document.
+ *
+ * Returns {"ffiVersion":1,"ok":<PagePlanV1>} or {"ffiVersion":1,"error":{...}}, owned by this
+ * library and freed with fastdoc_string_free — the envelope fastdoc_office_tree_json uses. NULL
+ * only when the envelope itself could not be built. handle is never dereferenced — the arithmetic
+ * needs no document state — so NULL is allowed for a caller planning heights it measured without
+ * holding an open document. */
+char *fastdoc_office_page_plan_json(const FastdocOfficeDocument *handle, const char *input_json);
+
 /* One cell's own geometry, mirroring the arithmetic in
  * Render/TableBlockBuilder.swift:977-988. */
 typedef struct {

@@ -336,7 +336,7 @@ macOS; the Linux pair has been run on Ubuntu 24.04 in a VM, the Windows pair has
 | `Native/` | `FastdocEngine.cs` — P/Invoke bindings, byte-matched structs, engine library lookup |
 | `Model/` | `RenderTreeEnvelope.cs` — the C# mirror of `EnvelopeV1` |
 | `Rendering/` | flow mode: `FlowDocumentBuilder` / `FlowBlock` / `FlowDocumentView` (virtualisation, zoom, find, scroll), `TableGridRenderer` (the one row measurement), `ImageBlockRenderer`, `RenderTreeLoader` (handle lifetime) |
-| `Paging/` | page mode: `TextMeasurerPort`, `PageGeometry`, `PageLayout`, `TableSettle`, `PageModePainter` |
+| `Paging/` | page mode: `TextMeasurerPort`, `PageGeometry`, `PageLayout`, `PagePlan` (the engine page plan client), `TableSettle` (row heights), `PageModePainter` |
 | `Printing/` | `PdfExporter` |
 | `Open/` | `OpenService`, `RecentFiles` |
 | `Reading/` | `ReadingPosition` |
