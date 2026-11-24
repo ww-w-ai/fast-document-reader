@@ -262,6 +262,43 @@ pub struct PlanBlock {
     pub first_loc: Option<i64>,
     #[serde(default)]
     pub first_line_inset: f64,
+    /// Table: the line fragments the host's layout put after the last cell that belong to no cell
+    /// (the separators a table ends in, invariant 161a), in order. They are laid out like any line:
+    /// a columned run deals them in its stack, anywhere else they stand at the table's end.
+    #[serde(default)]
+    pub tail: Vec<PlanTail>,
+}
+
+/// A line fragment a table group holds outside its cells: where it begins in the host's text and the
+/// height of the box it occupies.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanTail {
+    pub loc: i64,
+    pub height: f64,
+}
+
+/// A piece of a table in a columned run that the page rule carries whole when it would run off the
+/// foot of the page it stands on (the reader's `pushedTables` entry): where it starts and how tall
+/// it is, and whether the stack's own page rule moved the piece to a later page than the one before
+/// it ended on (the gap that leaves is not where the typesetter proposes the line).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PushedPiece {
+    block: u32,
+    row_start: u32,
+    height: f64,
+    displaced: bool,
+}
+
+/// Where the plan puts one of a table's tail fragments: `[block, index in tail]`, page, page-local
+/// top and the column of a columned run.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TailPlacement {
+    block: u32,
+    index: u32,
+    page: u32,
+    top: f64,
+    column: Option<u32>,
 }
 
 /// What the host's observation was taken from.
@@ -717,8 +754,33 @@ fn targets_of(input: &PlanInput, core: &State) -> Vec<PlanTarget> {
             out.push(PlanTarget { loc, page: piece.page, top: piece.top + inset, column: None });
         }
     }
+    for tail in &core.tail_lines {
+        let Some(part) = input.blocks[tail.block as usize].tail.get(tail.index as usize) else { continue };
+        out.push(PlanTarget { loc: part.loc, page: tail.page, top: tail.top, column: tail.column });
+    }
     out.sort_by_key(|t| t.loc);
+    carry_pushed_pieces(input, core, &mut out);
     out
+}
+
+/// The page rule meets a pushed piece's first line after the columns have placed it, but only when
+/// the column rule left the line where the typesetter proposed it: the piece is one the stack did not
+/// move (a gap is not a proposal) and the line is in the first column (any other has to be moved
+/// sideways). Then, when the whole piece would run off the foot of the page the line was dealt to,
+/// the line begins the next page (its piece's top at the page top). The reader's rule moves that one
+/// line and leaves the rest of the piece where the columns put it.
+fn carry_pushed_pieces(input: &PlanInput, core: &State, out: &mut [PlanTarget]) {
+    for piece in core.pushed_pieces.iter().filter(|p| !p.displaced) {
+        let Some((loc, inset)) = piece_first_line(&input.blocks[piece.block as usize], piece.row_start) else { continue };
+        let Ok(at) = out.binary_search_by_key(&loc, |t| t.loc) else { continue };
+        let target = &mut out[at];
+        // Only the first column keeps the typesetter's x: a line the column rule has to move sideways
+        // never meets the page rule.
+        if target.column == Some(0) && target.top - inset + piece.height > core.body(target.page) {
+            target.page += 1;
+            target.top = inset;
+        }
+    }
 }
 
 /// The keys of the tables the plan flows line by line.
@@ -936,6 +998,8 @@ fn run_pass(
         column_cell_lines: Vec::new(),
         column_row_segments: Vec::new(),
         nested_lines: Vec::new(),
+        tail_lines: Vec::new(),
+        pushed_pieces: Vec::new(),
         first_key: vec![None],
         section_boundaries: Vec::new(),
         split_table_count: 0,
@@ -968,7 +1032,10 @@ fn run_pass(
         match block.kind {
             PlanKind::Text => state.place_text(idx, block),
             PlanKind::Atomic => state.place_atomic(idx, block),
-            PlanKind::Table => state.place_table(idx, block, input.split_tables),
+            PlanKind::Table => {
+                state.place_table(idx, block, input.split_tables);
+                state.place_tail(idx, block);
+            }
         }
         index += 1;
     }
@@ -1088,6 +1155,8 @@ struct State {
     column_cell_lines: Vec<[u32; 5]>,
     column_row_segments: Vec<ColumnRowSegment>,
     nested_lines: Vec<NestedLine>,
+    tail_lines: Vec<TailPlacement>,
+    pushed_pieces: Vec<PushedPiece>,
     first_key: Vec<Option<i64>>,
     section_boundaries: Vec<u32>,
     split_table_count: u32,
@@ -1101,6 +1170,7 @@ enum StackSlot {
     Placement(usize),
     CellLine(usize),
     Nested(usize),
+    Tail(usize),
 }
 
 /// A line inside a table nested in a cell of a table in a columned run: it is dealt like any other
@@ -1348,6 +1418,7 @@ impl State {
             StackSlot::Placement(i) => (self.placements[i].page, self.placements[i].top),
             StackSlot::CellLine(i) => (self.cell_lines[i].4, self.cell_lines[i].5),
             StackSlot::Nested(i) => (self.nested_lines[i].page, self.nested_lines[i].top),
+            StackSlot::Tail(i) => (self.tail_lines[i].page, self.tail_lines[i].top),
         }
     }
 
@@ -1375,6 +1446,12 @@ impl State {
                 line.top = top;
                 line.column = column;
             }
+            StackSlot::Tail(i) => {
+                let line = &mut self.tail_lines[i];
+                line.page = page;
+                line.top = top;
+                line.column = Some(column);
+            }
         }
     }
 
@@ -1382,6 +1459,30 @@ impl State {
     /// whole, cut at its rows, or flowed line by line — and its lines, those of a table nested in a
     /// cell included, are what the columns deal. One with no cell data is dealt piece by piece.
     fn place_table_in_stack(&mut self, split_tables: bool, index: u32, block: &PlanBlock, stack: &mut Vec<StackItem>) {
+        self.place_table_lines_in_stack(split_tables, index, block, stack);
+        // The separators the table ends in follow its last line in the stack, each a line of its own
+        // that the columns deal like any other.
+        let (page, mut top) = (self.page, (self.cursor - block.spacing_after).max(0.0));
+        for (at, tail) in block.tail.iter().enumerate() {
+            stack.push(StackItem { slot: StackSlot::Tail(self.tail_lines.len()), block: index, height: tail.height, leaf: None });
+            self.tail_lines.push(TailPlacement { block: index, index: at as u32, page, top, column: None });
+            top += tail.height;
+        }
+        self.cursor += block.tail.iter().map(|t| t.height).sum::<f64>();
+    }
+
+    /// Where the table's tail stands when no columns deal it: inside the table's own end, which the
+    /// host's rows already reach (`rows_observed` ends at the lowest fragment the group has).
+    fn place_tail(&mut self, index: u32, block: &PlanBlock) {
+        let total: f64 = block.tail.iter().map(|t| t.height).sum();
+        let mut top = (self.cursor - block.spacing_after - total).max(0.0);
+        for (at, tail) in block.tail.iter().enumerate() {
+            self.tail_lines.push(TailPlacement { block: index, index: at as u32, page: self.page, top, column: None });
+            top += tail.height;
+        }
+    }
+
+    fn place_table_lines_in_stack(&mut self, split_tables: bool, index: u32, block: &PlanBlock, stack: &mut Vec<StackItem>) {
         // The reader's first layout lays a columned run's stack like any other text: a table whose
         // cells were measured stays where it falls. Only the later layouts settle it.
         let keep_natural = self.mode == Mode::Natural && has_cells(&block.rows);
@@ -1430,10 +1531,22 @@ impl State {
             }
             // The leaf lines describe the table from here on; the pieces were only where it stood.
             self.placements.truncate(placements_from);
+            let mut before = start.0;
             for piece in pieces {
+                let displaced = piece.page != before;
+                before = piece.page;
                 let start = piece.row_start.unwrap_or(0) as usize;
                 let end = (start + piece.row_count.unwrap_or(block.rows.len() as u32) as usize).min(block.rows.len());
                 let rows_height: f64 = block.rows[start..end].iter().map(|r| r.height).sum();
+                if !keep_natural && self.known_pushes.contains(&index) {
+                    let hang = if end == block.rows.len() && !block.rows_observed { last_row_hang(&block.rows) } else { 0.0 };
+                    self.pushed_pieces.push(PushedPiece {
+                        block: index,
+                        row_start: start as u32,
+                        height: rows_height + hang,
+                        displaced,
+                    });
+                }
                 // A whole table's placement carries its spacing; the rows begin below the spacing before.
                 let top = piece.top + if (piece.height - rows_height).abs() > 1e-9 { block.spacing_before } else { 0.0 };
                 synth_leaves(&block.rows[start..end], start as u32, top, piece.page, &[], &mut leaves);
@@ -2629,6 +2742,100 @@ mod tests {
         // The geometry the columns index into: two columns of (300 - 10) / 2.
         assert_eq!(plan.column_runs.len(), 1);
         assert_eq!(plan.column_runs[0].iter().map(|c| (c.x, c.width)).collect::<Vec<_>>(), vec![(0.0, 145.0), (155.0, 145.0)]);
+    }
+
+    #[test]
+    fn the_separators_a_table_ends_in_are_dealt_with_the_run_and_follow_the_table_into_its_column() {
+        // Columns hold 100. Text 0..70, then a one-row table (cell lines 20, 20) with a 20pt box at
+        // 70..110 that the column cut puts in column two, then two 0.01pt separators, then 10pt text.
+        // The separators stand after the last cell line wherever the columns put it, and the text
+        // after them is moved by their height.
+        let mut table = columned(flow_table_block(2, vec![(40.0, vec![located_cell(&[20.0, 20.0], 2000)])]), 0);
+        table.tail = vec![PlanTail { loc: 2900, height: 0.01 }, PlanTail { loc: 2901, height: 0.01 }];
+        let mut after = columned(located(text(3, &[10.0])), 0);
+        after.spacing_before = 0.0;
+        let mut plan_input = input(100.0, vec![columned(text(1, &[10.0; 7]), 0), table, after]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        let last_cell = target_of(&plan, 2010).unwrap();
+        let (a, b, text_after) = (target_of(&plan, 2900).unwrap(), target_of(&plan, 2901).unwrap(), target_of(&plan, 3000).unwrap());
+        assert_eq!((a.0, a.2), (last_cell.0, last_cell.2), "the first separator is in the column of the last cell line");
+        assert_eq!((b.0, b.2), (a.0, a.2));
+        assert!(a.1 >= last_cell.1 + 20.0 - 1e-9, "after the last line: {a:?} {last_cell:?}");
+        assert!((b.1 - a.1 - 0.01).abs() < 1e-9, "each takes its own height: {a:?} {b:?}");
+        assert_eq!((text_after.0, text_after.2), (b.0, b.2), "{:?}", plan.targets);
+        assert!((text_after.1 - b.1 - 0.01).abs() < 1e-9, "the text after them starts below the second: {b:?} {text_after:?}");
+    }
+
+    /// A text block, then a columned run of `run_lines` 10pt lines and `table`, on 100pt sheets: the
+    /// 60pt block above the run makes the first sheet's columns 40 tall and every later one 100.
+    fn pushed_piece_plan(run_lines: usize, table: PlanBlock) -> PagePlan {
+        let mut plan_input = input(100.0, vec![text(0, &[10.0; 6]), columned(text(1, &vec![10.0; run_lines]), 0), columned(table, 0)]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        plan_pages(&plan_input).unwrap()
+    }
+
+    fn two_row_table(first_rows_lines: usize) -> PlanBlock {
+        let row = |lines: usize, base: i64| (10.0 * lines as f64, vec![located_cell(&vec![10.0; lines], base)]);
+        let mut table = flow_table_block(2, vec![row(first_rows_lines, 2000), row(6, 3000)]);
+        table.first_loc = Some(2000);
+        table
+    }
+
+    #[test]
+    fn a_pushed_pieces_first_line_begins_the_next_page_when_the_columns_leave_it_no_room() {
+        // Sixteen run lines end at 220 on the stack. The table (a 40pt piece, then a 60pt one
+        // the stack carries to 300) makes its first piece a pushed piece that the stack leaves in
+        // place: it stands in the stack's page but straddles the foot of column one of the second
+        // sheet (240), so the columns deal its first two lines to 80 and 90 and the rest to column
+        // two. The piece as a whole does not fit below 80, so the page rule carries its first line to
+        // the top of the next sheet while the other lines stay where the columns put them.
+        let plan = pushed_piece_plan(16, two_row_table(4));
+        let at = |loc: i64| target_of(&plan, loc).unwrap();
+        assert_eq!((at(2010).0, at(2010).1, at(2010).2), (1, 90.0, Some(0)), "{:?}", plan.targets);
+        assert_eq!((at(2020).0, at(2020).1, at(2020).2), (1, 0.0, Some(1)), "{:?}", plan.targets);
+        assert_eq!((at(2000).0, at(2000).1, at(2000).2), (2, 0.0, Some(0)), "the first line begins the next sheet: {:?}", plan.targets);
+        // A piece the stack's own page rule moved keeps the position the columns gave it: the gap that
+        // left is not where the typesetter proposes the line, so the column rule moves it first.
+        let displaced = pushed_piece_plan(12, {
+            let mut table = flow_table_block(2, vec![(60.0, vec![located_cell(&[10.0; 6], 2000)])]);
+            table.first_loc = Some(2000);
+            table
+        });
+        assert_eq!(target_of(&displaced, 2000), Some((1, 60.0, Some(0))), "{:?}", displaced.targets);
+        // A first line the columns move to the top of a column never meets the page rule: eighteen
+        // run lines end column one of the second sheet at 240, the 70pt piece the stack carries to 300
+        // is dealt 60 down column two, where it does not fit, and stays.
+        let moved = pushed_piece_plan(18, {
+            let mut table = flow_table_block(2, vec![(70.0, vec![located_cell(&[10.0; 7], 2000)])]);
+            table.first_loc = Some(2000);
+            table
+        });
+        assert_eq!(target_of(&moved, 2000), Some((1, 60.0, Some(1))), "{:?}", moved.targets);
+        // Only the first column keeps the x the typesetter proposed: a first line the columns put in
+        // column two foot-first (27 run lines end at 330, the piece starts 90 down column two of the
+        // second sheet and runs past its foot) is moved sideways by the column rule and stays.
+        let second_column = pushed_piece_plan(27, two_row_table(2));
+        assert_eq!(target_of(&second_column, 2000), Some((1, 90.0, Some(1))), "{:?}", second_column.targets);
+    }
+
+    #[test]
+    fn the_separators_of_a_table_outside_any_run_stand_inside_the_end_of_its_rows() {
+        let mut table = flow_table_block(2, vec![(30.0, vec![located_cell(&[30.0], 2000)])]);
+        table.rows_observed = true;
+        table.tail = vec![PlanTail { loc: 2900, height: 0.01 }, PlanTail { loc: 2901, height: 0.01 }];
+        let plan = plan_pages(&input(100.0, vec![text(1, &[40.0]), table])).unwrap();
+        let a = target_of(&plan, 2900).unwrap();
+        let b = target_of(&plan, 2901).unwrap();
+        assert_eq!((a.0, b.0), (0, 0));
+        assert!((a.1 - (40.0 + 30.0 - 0.02)).abs() < 1e-9, "{a:?}");
+        assert!((b.1 - a.1 - 0.01).abs() < 1e-9);
+        // A host that sent none gets none.
+        let mut bare = flow_table_block(2, vec![(30.0, vec![located_cell(&[30.0], 2000)])]);
+        bare.rows_observed = true;
+        assert!(target_of(&plan_pages(&input(100.0, vec![text(1, &[40.0]), bare])).unwrap(), 2900).is_none());
     }
 
     #[test]

@@ -111,18 +111,18 @@ final class PagePlanShadowProbeTests: XCTestCase {
             var readerLines: [Int: PlanApplyProbe.Line] = [:]
             let readerPages = wc.printPageCount
             let readerColumnRuns = wc.columnRunRanges()
-            if apply, let lm = wc.textView.layoutManager, let tc = wc.textView.textContainer, let storage = wc.textView.textStorage {
+            if natural, let lm = wc.textView.layoutManager, let tc = wc.textView.textContainer, let storage = wc.textView.textStorage {
                 readerLines = PlanApplyProbe.lines(of: lm, tc, length: storage.length)
             }
             report.append("SHADOW observation: \(natural ? "natural" : "paginated")")
-            let result = PagePlanShadow.run(controller: wc, natural: natural)
+            let result = PagePlanShadow.run(controller: wc, natural: natural, drawn: readerLines.mapValues(\.y))
             let elapsed = Date().timeIntervalSince(started)
             if apply, let answer = result.planAnswer {
                 report.append("APPLY \(url.lastPathComponent)")
                 report.append(contentsOf: PlanApplyProbe.run(
                     wc: wc, plan: answer, reader: readerLines, readerPages: readerPages, leading: result.gridLeading,
                     pageContentHeight: result.gridPageContentHeight, band: result.gridBand, columnRuns: readerColumnRuns,
-                    bodyWidth: result.gridBodyWidth, insetX: result.columnLineInset, naturalTop: result.columnLineTop))
+                    bodyWidth: result.gridBodyWidth, insetX: result.columnLineInset))
             }
             report.append("SHADOW \(url.lastPathComponent)")
             if let reason = result.skippedReason { report.append("SHADOW   skipped: \(reason)"); report.append("SHADOW print pages: \(result.macPages)") }

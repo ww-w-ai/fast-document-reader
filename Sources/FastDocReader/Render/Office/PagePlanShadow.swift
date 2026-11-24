@@ -100,8 +100,6 @@ enum PagePlanShadow {
         var gridBand: CGFloat = 0
         var gridBodyWidth: CGFloat = 0
         var columnLineInset: [Int: CGFloat] = [:]
-        /// Where every line of a columned run stands in the natural stack.
-        var columnLineTop: [Int: CGFloat] = [:]
 
         var text: String { summary.joined(separator: "\n") }
     }
@@ -389,7 +387,7 @@ enum PagePlanShadow {
 
     /// Runs the plan over `wc`'s finished layout. `nil` when the document is not paged or the engine
     /// answered no plan; the reason is in `Report.skippedReason`.
-    static func run(controller wc: DocumentWindowController, natural: Bool = false) -> Report {
+    static func run(controller wc: DocumentWindowController, natural: Bool = false, drawn: [Int: CGFloat] = [:]) -> Report {
         var report = Report()
         let delegate = wc.pageBandDelegate
         guard delegate.pageContentHeight > 0, let lm = wc.textView.layoutManager,
@@ -675,6 +673,10 @@ enum PagePlanShadow {
                     // `table_rows.rs`); every other table keeps the layout's own rows.
                     if !inColumnRun { block["rowsObserved"] = true }
                     block["firstLoc"] = first.location
+                    // What the group holds outside its cells (the separators a table ends in): lines of
+                    // their own that the plan places, so the apply pass never has to guess where they go.
+                    let tail = frags.filter { $0.chain.isEmpty }
+                    if !tail.isEmpty { block["tail"] = tail.map { ["loc": $0.location, "height": Double($0.rect.height)] as [String: Any] } }
                     if let proposed = proposedTops[first.location] { block["firstLineInset"] = Double(proposed - tableTop) }
                 }
                 if breaksWhereItStands || inColumnRun {
@@ -777,7 +779,6 @@ enum PagePlanShadow {
                 let inRun = nat.filter { NSLocationInRange($0.location, declared.range) }
                 guard let left = inRun.map({ $0.rect.minX }).min() else { continue }
                 for f in inRun {
-                    report.columnLineTop[f.location] = f.rect.minY
                     if !f.chain.isEmpty { report.columnLineInset[f.location] = max(0, f.rect.minX - left) }
                 }
             }
@@ -1110,7 +1111,7 @@ enum PagePlanShadow {
         if natural {
             checkTargets(&report, plan: plan, askedBlocks: askedBlocks, groups: groups.map { ($0.id, $0.range) }, fragments: fragments,
                          facts: facts, columnRuns: columnRuns, delegate: delegate, page: page, leading: leading, pitch: pitch,
-                         readerOversized: reader.oversizedKeys)
+                         readerOversized: reader.oversizedKeys, drawn: drawn)
             checkPrefixes(&report, full: plan, input: input, askedBlocks: askedBlocks, cuts: prefixCuts)
         }
         let lastMacPage = (observed.map { $0.macPage }.max() ?? 0)
@@ -1150,7 +1151,7 @@ enum PagePlanShadow {
     private static func checkTargets(_ report: inout Report, plan: [String: Any], askedBlocks: [[String: Any]],
                                      groups: [(id: Int, range: Range<Int>)], fragments: [Fragment], facts: MacFacts,
                                      columnRuns: [(range: NSRange, layout: OfficeColumnLayout)], delegate: PageBandLayoutDelegate,
-                                     page: (CGFloat) -> Int, leading: CGFloat, pitch: CGFloat, readerOversized: Set<Int>) {
+                                     page: (CGFloat) -> Int, leading: CGFloat, pitch: CGFloat, readerOversized: Set<Int>, drawn: [Int: CGFloat]) {
         func local(_ y: CGFloat) -> (page: Int, top: Double) {
             let p = page(y)
             return (p, Double(y - leading - CGFloat(p) * pitch))
@@ -1208,7 +1209,10 @@ enum PagePlanShadow {
             var expectedColumn: Int?
             if let placed = facts.columnPlacements[loc] {
                 // A line in a columned run: the reader's column map is where it stands.
-                let at = local(placed.y)
+                // A pushed piece's first line the column rule leaves where the typesetter proposed it meets the page
+                // rule as well (`pushWholeTable`): the reader's drawn position, when the host has it, is its answer.
+                var at = local(placed.y)
+                if delegate.pushedTables[loc] != nil, let y = drawn[loc] { at = local(y) }
                 expected = at
                 kind = "column line"
                 if let run = columnRuns.firstIndex(where: { NSLocationInRange(loc, $0.range) }) {

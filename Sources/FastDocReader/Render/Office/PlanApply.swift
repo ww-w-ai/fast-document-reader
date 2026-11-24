@@ -96,7 +96,7 @@ enum PlanApplyProbe {
     /// grid; the host turns that into its `y`, adding `deskGap` per page where the screen has one.
     static func targets(plan: [String: Any], leading: CGFloat, pitch: CGFloat, deskGap: CGFloat,
                         columnRuns: [(range: NSRange, layout: OfficeColumnLayout)], bodyWidth: CGFloat,
-                        insetX: [Int: CGFloat], naturalTop: [Int: CGFloat]) -> [Int: PlanApplyDelegate.Target] {
+                        insetX: [Int: CGFloat]) -> [Int: PlanApplyDelegate.Target] {
         var columns: [[ColumnGeometry.Column]] = []
         for run in columnRuns { columns.append(ColumnGeometry.columns(inWidth: bodyWidth, layout: run.layout)) }
         var out: [Int: PlanApplyDelegate.Target] = [:]
@@ -111,21 +111,6 @@ enum PlanApplyProbe {
             }
             out[loc] = PlanApplyDelegate.Target(y: y, columnX: columnX, insetX: insetX[loc] ?? 0)
         }
-        // A line of a columned run the plan names no target for sits on the natural line of one it
-        // does (a fragment of a table row that is no cell's paragraph): it goes where that sibling
-        // goes, by the distance the two stand apart in the natural stack.
-        var byTop: [Int: [Int]] = [:]
-        for (loc, top) in naturalTop where out[loc]?.columnX != nil { byTop[Int((top * 20).rounded()), default: []].append(loc) }
-        for (loc, top) in naturalTop where out[loc] == nil {
-            let key = Int((top * 20).rounded())
-            // Several cells of one row can stand on the natural line and be dealt to different columns
-            // (a tall one is carried on, a short one is not): the nearest in the text is its own.
-            let sibling = (key - 2...key + 2).flatMap { byTop[$0] ?? [] }
-                .filter { abs((naturalTop[$0] ?? .infinity) - top) <= 0.1 }
-                .min { abs($0 - loc) < abs($1 - loc) }
-            guard let sibling, let target = out[sibling] else { continue }
-            out[loc] = PlanApplyDelegate.Target(y: target.y + (top - (naturalTop[sibling] ?? top)), columnX: target.columnX, insetX: 0)
-        }
         return out
     }
 
@@ -135,12 +120,12 @@ enum PlanApplyProbe {
     static func run(wc: DocumentWindowController, plan: [String: Any], reader: [Int: Line], readerPages: Int,
                     leading: CGFloat, pageContentHeight: CGFloat, band: CGFloat,
                     columnRuns: [(range: NSRange, layout: OfficeColumnLayout)], bodyWidth: CGFloat,
-                    insetX: [Int: CGFloat], naturalTop: [Int: CGFloat]) -> [String] {
+                    insetX: [Int: CGFloat]) -> [String] {
         guard let storage = wc.textView.textStorage, let tc = wc.textView.textContainer else { return ["APPLY skipped: no storage"] }
         let pitch = pageContentHeight + band
         let delegate = PlanApplyDelegate(storage: storage)
         delegate.targets = targets(plan: plan, leading: leading, pitch: pitch, deskGap: 0, columnRuns: columnRuns,
-                                   bodyWidth: bodyWidth, insetX: insetX, naturalTop: naturalTop)
+                                   bodyWidth: bodyWidth, insetX: insetX)
         let applied = PlanObservation(storage: storage, like: tc, applying: delegate)
         defer { applied.remove() }
         applied.walk()
@@ -212,12 +197,14 @@ enum PlanApplyProbe {
             if abs(a.y - b.y) > 0.001 || abs(a.x - b.x) > 0.001 { unstable += 1 }
         }
         let untargeted = first.keys.filter { delegate.targets[$0] == nil }.count
+        // A columned run's lines are all dealt by the plan: one it names no target for would be a guess.
+        let untargetedInRuns = first.keys.filter { loc in delegate.targets[loc] == nil && columnRuns.contains { NSLocationInRange(loc, $0.range) } }.count
         let revisited = visitsFirst.values.filter { $0 > 1 }.count
         let planPages = (plan["pageCount"] as? NSNumber)?.intValue ?? -1
         return [
             "APPLY lines: \(reader.count) in TextKit, \(first.count) applied (missing \(missing), extra \(extra)); differing: \(different) (page \(pageDiff), top \(topDiff), x \(xDiff)); max top delta \(String(format: "%.3f", Double(maxDelta))); within-page deltas over 0.01: \(loose); first: \(firstDifference ?? "none")",
             "APPLY pages: applied \(countApplied), plan \(planPages), TextKit \(readerPages)",
-            "APPLY placed: \(delegate.targets.count) targets, \(placedFirst.count) lines set; untargeted lines \(untargeted); set lines TextKit moved afterwards: \(planMoved) of \(planTexts) (\(byKind.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value.moved)/\($0.value.placed), over 0.6: \($0.value.big), most \(String(format: "%.3f", Double($0.value.most)))" }.joined(separator: ", ")))",
+            "APPLY placed: \(delegate.targets.count) targets, \(placedFirst.count) lines set; untargeted lines \(untargeted) (in columned runs \(untargetedInRuns)); set lines TextKit moved afterwards: \(planMoved) of \(planTexts) (\(byKind.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value.moved)/\($0.value.placed), over 0.6: \($0.value.big), most \(String(format: "%.3f", Double($0.value.most)))" }.joined(separator: ", ")))",
             "APPLY stability: lines differing between two layouts of the same text: \(unstable); lines the typesetter asked about again during the first walk: \(revisited)",
         ]
     }
