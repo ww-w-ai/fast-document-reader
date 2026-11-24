@@ -101,9 +101,12 @@ public static class BlockPageMarkers
     /// `pageNumberRestarts`.</summary>
     /// <summary>`KeepWithNext` is per-block too (null = a producer that states none): the paragraph
     /// asks to stay on the page its successor starts on, which the page plan applies.</summary>
+    /// <summary>`ColumnFlow` is the multi-column declaration a block's own text runs carry (null: none
+    /// begins here) — a run of blocks lasts from one declaration to the next.</summary>
     public readonly record struct Markers(
         bool[] SectionStart, bool[] PageBreakBefore, bool[] TableKeepsWhole, bool[] TableRepeatsHeader, ulong[] NodeId,
-        bool[]? HidesPageNumber = null, long?[]? PageNumberRestart = null, bool[]? KeepWithNext = null);
+        bool[]? HidesPageNumber = null, long?[]? PageNumberRestart = null, bool[]? KeepWithNext = null,
+        ColumnFlowWire?[]? ColumnFlow = null);
 
     /// <summary>The five parallel per-block lists <see cref="Walk"/> fills, bundled so adding a
     /// sixth marker later does not mean widening every method's parameter list again.</summary>
@@ -117,10 +120,15 @@ public static class BlockPageMarkers
         public readonly List<bool> HidesPageNumber = new();
         public readonly List<long?> PageNumberRestart = new();
         public readonly List<bool> KeepWithNext = new();
+        public readonly List<ColumnFlowWire?> ColumnFlow = new();
+        /// <summary>The declaration the NEXT emitted block carries: set where a node's own runs are
+        /// read, taken (and cleared) by the first <see cref="Emit"/> after it.</summary>
+        public ColumnFlowWire? PendingColumnFlow;
 
         public Markers ToMarkers() => new(
             SectionStart.ToArray(), PageBreakBefore.ToArray(), TableKeepsWhole.ToArray(), TableRepeatsHeader.ToArray(),
-            NodeId.ToArray(), HidesPageNumber.ToArray(), PageNumberRestart.ToArray(), KeepWithNext.ToArray());
+            NodeId.ToArray(), HidesPageNumber.ToArray(), PageNumberRestart.ToArray(), KeepWithNext.ToArray(),
+            ColumnFlow.ToArray());
     }
 
     public static Markers Compute(RenderTree tree)
@@ -229,15 +237,18 @@ public static class BlockPageMarkers
                 return;
 
             case "heading":
+                acc.PendingColumnFlow = ColumnFlowOf(node, byId);
                 Emit(node.Id, node.AsHeading?.Pagination, false, false, acc, ref pendingSectionStart);
                 return;
 
             case "paragraph":
+                acc.PendingColumnFlow = ColumnFlowOf(node, byId);
                 EmitInlineContentMarkers(node, byId, node.AsParagraph?.Pagination, hasLeadingMarker: false, acc, ref pendingSectionStart);
                 return;
 
             case "listItem":
             case "taskListItem":
+                acc.PendingColumnFlow = ColumnFlowOf(node, byId);
                 EmitItemMarkers(node, byId, acc, ref pendingSectionStart, tableDepth, visiting);
                 return;
 
@@ -283,6 +294,19 @@ public static class BlockPageMarkers
                 WalkChildren(node, byId, acc, ref pendingSectionStart, tableDepth, visiting);
                 return;
         }
+    }
+
+    /// <summary>The multi-column declaration one of this node's own text runs carries (the first one).</summary>
+    private static ColumnFlowWire? ColumnFlowOf(RenderNode node, Dictionary<ulong, RenderNode> byId)
+    {
+        foreach (var childId in node.Children)
+        {
+            if (byId.TryGetValue(childId, out var child) && child.Type == "textRun" && child.AsTextRun?.ColumnFlow is { } flow)
+            {
+                return flow;
+            }
+        }
+        return null;
     }
 
     private static void WalkChildren(RenderNode node, Dictionary<ulong, RenderNode> byId,
@@ -406,6 +430,8 @@ public static class BlockPageMarkers
         acc.HidesPageNumber.Add(pagination?.HidesPageNumber ?? false);
         acc.PageNumberRestart.Add(pagination?.PageNumberRestart);
         acc.KeepWithNext.Add(pagination?.KeepWithNext ?? false);
+        acc.ColumnFlow.Add(acc.PendingColumnFlow);
+        acc.PendingColumnFlow = null;
         pendingSectionStart = false;
     }
 }

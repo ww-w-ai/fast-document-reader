@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using FastDoc.Avalonia.Paging;
@@ -113,5 +114,67 @@ public class PagePlanClientTests
         Assert.Equal(2, plan.PageCount);
         Assert.Equal(2, plan.Pages[1].FirstKey);
         Assert.Equal(1, plan.Placements[1].Page);
+    }
+
+    [Fact]
+    public void Encode_carries_the_column_declarations_and_the_run_a_block_sits_under()
+    {
+        var columns = new PlanColumnsInput
+        {
+            BodyWidth = 300,
+            Runs = new[] { new PlanColumnRunInput { Count = 2, Spacing = 10, Widths = new[] { 100.0, 190.0 }, Gaps = new[] { 10.0, 0.0 }, Proportional = true } },
+        };
+        var bytes = PagePlanClient.Encode(100, splitTables: false, null,
+            new List<PlanBlockInput> { new() { Key = 1, Kind = "text", Lines = new[] { 10.0 }, ColumnRun = 0 } }, columns: columns);
+        using var doc = JsonDocument.Parse(Encoding.UTF8.GetString(bytes, 0, bytes.Length - 1));
+        var root = doc.RootElement;
+        Assert.Equal(300, root.GetProperty("bodyWidth").GetDouble());
+        var run = root.GetProperty("columnRuns")[0];
+        Assert.Equal(2, run.GetProperty("count").GetInt32());
+        Assert.Equal(190, run.GetProperty("widths")[1].GetDouble());
+        Assert.True(run.GetProperty("proportional").GetBoolean());
+        Assert.Equal(0, root.GetProperty("blocks")[0].GetProperty("columnRun").GetInt32());
+    }
+
+    [Fact]
+    public void A_columned_run_is_dealt_into_columns_by_the_real_engine()
+    {
+        // Ten 10pt lines on a 50pt body in two equal columns of a 300pt body: five a column.
+        var columns = new PlanColumnsInput
+        {
+            BodyWidth = 300,
+            Runs = new[] { new PlanColumnRunInput { Count = 2, Spacing = 20 } },
+        };
+        var plan = PagePlanClient.Plan(IntPtr.Zero, 50, splitTables: false, null,
+            new List<PlanBlockInput> { new() { Key = 1, Kind = "text", Lines = new double[10].Select(_ => 10.0).ToArray(), ColumnRun = 0 } },
+            columns: columns);
+        Assert.Equal(1, plan.PageCount);
+        Assert.Equal(2, plan.ColumnRuns[0].Count);
+        Assert.Equal(0, plan.ColumnRuns[0][0].X);
+        Assert.Equal(140, plan.ColumnRuns[0][0].Width);
+        Assert.Equal(160, plan.ColumnRuns[0][1].X);
+        Assert.Equal(0, plan.ColumnLines[(0, 4)]);
+        Assert.Equal(1, plan.ColumnLines[(0, 5)]);
+        Assert.Equal(0, plan.Lines[5].Top);
+    }
+
+    [Fact]
+    public void Decode_reads_column_answers_in_the_hosts_terms()
+    {
+        const string reply = """
+            {"ffiVersion":1,"ok":{"planVersion":1,"pageCount":1,"pages":[{"section":0}],
+              "placements":[{"block":0,"key":1,"page":0,"top":0.0,"height":10.0,"column":1}],
+              "lines":[],"rowSegments":[],"cellLines":[],"pulledLines":[],
+              "splitTableCount":0,"carriedTableCount":0,"droppedBreakCount":0,
+              "columnLines":[[2,3,1]],"columnCellLines":[[4,0,1,2,1]],
+              "columnRowSegments":[[4,0,0,1,10.0,25.5]],
+              "columnRuns":[[{"x":0.0,"width":140.0},{"x":160.0,"width":140.0}]]}}
+            """;
+        var plan = PagePlanClient.Decode(reply);
+        Assert.Equal(1, plan.Placements[0].Column);
+        Assert.Equal(1, plan.ColumnLines[(2, 3)]);
+        Assert.Equal(1, plan.ColumnCellLines[(4, 0, 1, 2)]);
+        Assert.Equal(new PlannedColumnRowSegment(4, 0, 0, 1, 10, 25.5), plan.ColumnRowSegments[0]);
+        Assert.Equal(new PlannedColumn(160, 140), plan.ColumnRuns[0][1]);
     }
 }

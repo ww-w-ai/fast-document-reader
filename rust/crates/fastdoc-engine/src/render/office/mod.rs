@@ -11,6 +11,7 @@ pub mod plan_columns;
 pub mod plan_footnotes;
 pub mod plan_furniture;
 pub mod table_flow;
+pub mod table_rows;
 pub mod line_model;
 pub mod page_grid;
 pub mod page_band_geometry;

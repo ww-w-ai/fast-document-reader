@@ -4032,6 +4032,15 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     func makePrintOperation() -> NSPrintOperation {
+        // The screen's own settle runs first, however far the asynchronous one has got. Settling
+        // breaks a table that fits no page where it stands and top-aligns the cells of that piece IN
+        // THE STORAGE (`topAlignCellsOf`), and the storage keeps it: the paper layout below starts
+        // from whatever the screen settle left. Measured on the 편람: laid out for paper straight
+        // after its render (the async settle had not begun) it came to 395 sheets; once the async
+        // settle had run, to 391 — and `--pdf` after a document that kept the main queue busy gave
+        // the first answer. Finishing the screen settle here makes the paper a function of the
+        // document, not of the timing (invariant 151).
+        if !printLayoutApplied { settlePagedTablesFully() }
         // Paper has pages whether or not the reader is drawing them, so the paged shape goes on
         // FIRST — before the settle, which depends on the band it produces.
         beginPrintLayout()

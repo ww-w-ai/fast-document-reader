@@ -90,6 +90,10 @@ public sealed class PageModePainter
             foreach (var line in layout.Lines) { firstLine.TryAdd(line.BlockIndex, line); }
             var firstPlacement = new Dictionary<int, PagedBlock>();
             foreach (var placement in layout.Placements) { firstPlacement.TryAdd(placement.BlockIndex, placement); }
+            // A table of a columned run has no placement of its own: it is dealt line by line, and the
+            // first column it stands in is where it is.
+            var firstRegion = new Dictionary<int, ColumnRegion>();
+            foreach (var region in layout.ColumnTables) { firstRegion.TryAdd(region.BlockIndex, region); }
             foreach (var obj in pinned.Anchored)
             {
                 int page;
@@ -101,6 +105,10 @@ public sealed class PageModePainter
                 else if (firstPlacement.TryGetValue(obj.AnchorBlockIndex, out var block))
                 {
                     (page, lineTop, lineHeight) = (block.PageIndex, block.LocalTopPoints, block.HeightPoints);
+                }
+                else if (firstRegion.TryGetValue(obj.AnchorBlockIndex, out var region))
+                {
+                    (page, lineTop, lineHeight) = (region.PageIndex, region.TopPoints, region.HeightPoints);
                 }
                 else { continue; }
                 // The line's top in PAPER points: the page body starts a top margin below the sheet's edge.
@@ -191,6 +199,17 @@ public sealed class PageModePainter
                 blocksByPage[placement.PageIndex] = list;
             }
             list.Add(placement);
+        }
+        // The tables of a columned run, per page: each column a table reaches is one region.
+        var columnTablesByPage = new Dictionary<int, List<ColumnRegion>>();
+        foreach (var region in layout.ColumnTables)
+        {
+            if (!columnTablesByPage.TryGetValue(region.PageIndex, out var regions))
+            {
+                regions = new List<ColumnRegion>();
+                columnTablesByPage[region.PageIndex] = regions;
+            }
+            regions.Add(region);
         }
         var linesByPage = new Dictionary<int, List<PagedLine>>();
         foreach (var line in layout.Lines)
@@ -319,13 +338,29 @@ public sealed class PageModePainter
                             zoomFactor, _imageRenderer, layout.SplitTables);
                         continue;
                     }
-                    DrawNonTextBlock(surface, block, placement, left, top, contentWidthPx, zoomFactor, repeatsHeader, layout.SplitTables);
+                    // A block of a columned run stands in the column the plan dealt it to.
+                    var (blockLeft, blockWidth) = ColumnBox(layout, placement.BlockIndex, placement.Column, left, contentWidthPx, zoomFactor);
+                    DrawNonTextBlock(surface, block, placement, blockLeft, top, blockWidth, zoomFactor, repeatsHeader, layout.SplitTables);
+                }
+            }
+
+            if (layout.Flowed is { } columnFlowed && columnTablesByPage.TryGetValue(pageIndex, out var columnRegions))
+            {
+                foreach (var region in columnRegions)
+                {
+                    if (region.BlockIndex < 0 || region.BlockIndex >= blocks.Count || blocks[region.BlockIndex].Table is not { } columnModel) { continue; }
+                    var columnBlock = blocks[region.BlockIndex];
+                    var (columnLeft, columnWidth) = ColumnBox(layout, region.BlockIndex, region.Column, left, contentWidthPx, zoomFactor);
+                    var columnIndent = columnBlock.IndentPoints * PointsToPixels * zoomFactor;
+                    TableGridRenderer.DrawFlowed(surface, columnModel, region.BlockIndex, columnFlowed,
+                        FlowedTables.RegionKey(pageIndex, region.Column), 0, columnModel.Rows.Count, columnLeft + columnIndent,
+                        contentTop, Math.Max(40, columnWidth - columnIndent), zoomFactor, _imageRenderer, layout.SplitTables);
                 }
             }
 
             if (linesByPage.TryGetValue(pageIndex, out var pageLines))
             {
-                DrawTextLinesOnPage(surface, blocks, pageLines, left, contentTop, contentWidthPx, zoomFactor);
+                DrawTextLinesOnPage(surface, blocks, pageLines, left, contentTop, contentWidthPx, zoomFactor, layout);
             }
 
             if (footnotes is { IsEmpty: false }) { DrawFootnotes(surface, footnotes, layout, pageIndex, localTop, geometry, left, contentWidthPx, zoomFactor); }
@@ -447,7 +482,8 @@ public sealed class PageModePainter
     /// block's pixel-scale TextLayout is rebuilt (or reused from cache) exactly ONCE per page even
     /// when several of its lines land here — never once per line.</summary>
     private void DrawTextLinesOnPage(IPageCanvas surface, IReadOnlyList<FlowBlock> blocks,
-        List<PagedLine> pageLines, double left, double contentTop, double columnWidthPx, double zoomFactor)
+        List<PagedLine> pageLines, double left, double contentTop, double columnWidthPx, double zoomFactor,
+        PageLayoutResult layout)
     {
         var byBlock = new Dictionary<int, List<PagedLine>>();
         foreach (var line in pageLines)
@@ -465,7 +501,10 @@ public sealed class PageModePainter
             if (blockIndex < 0 || blockIndex >= blocks.Count) { continue; }
             var block = blocks[blockIndex];
             var indentPx = block.IndentPoints * PointsToPixels * zoomFactor;
-            var maxWidth = Math.Max(20, columnWidthPx - indentPx);
+            // A block of a columned run is measured at its run's column width and drawn in the
+            // column the plan dealt each of its lines to.
+            var (_, blockColumnWidthPx) = ColumnBox(layout, blockIndex, 0, left, columnWidthPx, zoomFactor);
+            var maxWidth = Math.Max(20, blockColumnWidthPx - indentPx);
             var pixelLayout = GetOrBuildPixelLayout(blockIndex, block, maxWidth, zoomFactor);
 
             // A shaded / ruled paragraph: ONE rectangle per page, from the first of its lines on
@@ -475,7 +514,8 @@ public sealed class PageModePainter
             {
                 var first = linesForBlock.Min(l => l.LocalTopPoints);
                 var last = linesForBlock.Max(l => l.LocalTopPoints + l.HeightPoints);
-                ParagraphDecor.Draw(surface, block, left, columnWidthPx, contentTop + first * scale, (last - first) * scale, scale);
+                var (decorLeft, decorWidth) = ColumnBox(layout, blockIndex, linesForBlock[0].Column, left, columnWidthPx, zoomFactor);
+                ParagraphDecor.Draw(surface, block, decorLeft, decorWidth, contentTop + first * scale, (last - first) * scale, scale);
             }
             if (pixelLayout is null) { continue; } // a blank paragraph's single "line" has no TextLayout to draw
 
@@ -486,14 +526,32 @@ public sealed class PageModePainter
                 if (line.LineIndex < 0 || line.LineIndex >= pixelLayout.TextLines.Count) { continue; }
                 var top = contentTop + line.LocalTopPoints * PointsToPixels * zoomFactor;
                 var textLine = pixelLayout.TextLines[line.LineIndex];
+                var (lineLeft, _) = ColumnBox(layout, blockIndex, line.Column, left, columnWidthPx, zoomFactor);
                 if (block.QuoteBarColor is { } barColor)
                 {
-                    var barX = left + block.QuoteBarXPoints * PointsToPixels * zoomFactor;
+                    var barX = lineLeft + block.QuoteBarXPoints * PointsToPixels * zoomFactor;
                     surface.DrawRect(new Rect(barX, top, 3, textLine.Height), barColor, null, 0);
                 }
-                surface.DrawTextLine(textLine, new Point(left + indentPx + (line.LineIndex == 0 ? firstLineOffsetPx : 0), top));
+                surface.DrawTextLine(textLine, new Point(lineLeft + indentPx + (line.LineIndex == 0 ? firstLineOffsetPx : 0), top));
             }
         }
+    }
+
+    /// <summary>Where a block of a columned run stands: the left edge and width, in pixels, of the
+    /// column the plan dealt it to (the first column when it named none — the width a block of the
+    /// run is measured at). A block outside any run gets the body's own edge and width.</summary>
+    private static (double Left, double Width) ColumnBox(PageLayoutResult layout, int blockIndex, int? column,
+        double bodyLeft, double bodyWidthPx, double zoomFactor)
+    {
+        var scale = PointsToPixels * zoomFactor;
+        if (blockIndex < layout.BlockColumnRun.Count && layout.BlockColumnRun[blockIndex] is { } run
+            && run < layout.ColumnRuns.Count && layout.ColumnRuns[run].Count > 0)
+        {
+            var columns = layout.ColumnRuns[run];
+            var at = column is { } c && c >= 0 && c < columns.Count ? c : 0;
+            return (bodyLeft + columns[at].X * scale, columns[at].Width * scale);
+        }
+        return (bodyLeft, bodyWidthPx);
     }
 
     private TextLayout? GetOrBuildPixelLayout(int blockIndex, FlowBlock block, double maxWidthPx, double zoomFactor)

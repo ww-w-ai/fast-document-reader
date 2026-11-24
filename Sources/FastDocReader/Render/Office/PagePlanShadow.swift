@@ -106,7 +106,7 @@ enum PagePlanShadow {
     /// nested tables as items of their own, and a row's height from its cells whenever a page
     /// boundary fell in or beside it (the observed distance to the next row then carries the gap).
     private static func flowRows(_ frags: [Fragment], depth: Int, blockIndex: Int, page: (CGFloat) -> Int,
-                                 leading: CGFloat, pitch: CGFloat, aligned: Bool = false,
+                                 leading: CGFloat, pitch: CGFloat,
                                  refs: inout [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)])
         -> (rows: [[String: Any]], height: CGFloat) {
         var order: [ObjectIdentifier] = []
@@ -123,7 +123,6 @@ enum PagePlanShadow {
         var shiftedRows: Set<Int> = []
         var observedTop: [Int: CGFloat] = [:]
         var observedPage: [Int: Int] = [:]
-        var cellTopsOfRow: [Int: [CGFloat]] = [:]
         for id in order {
             let fs = byCell[id]!
             let block = fs[0].chain[depth]
@@ -148,7 +147,7 @@ enum PagePlanShadow {
                           ObjectIdentifier(fs[j].chain[depth + 1].table) == nestedTable { j += 1 }
                     let run = Array(fs[i..<j])
                     let sub = flowRows(run, depth: depth + 1, blockIndex: blockIndex, page: page, leading: leading,
-                                       pitch: pitch, aligned: aligned, refs: &refs)
+                                       pitch: pitch, refs: &refs)
                     itemTop = run.map { $0.rect.minY - inset($0.chain[depth + 1], .minY) }.min()!
                     itemBottom = run.map { $0.rect.maxY + inset($0.chain[depth + 1], .maxY) }.max()!
                     itemHeight = sub.height
@@ -182,24 +181,14 @@ enum PagePlanShadow {
             var cell: [String: Any] = ["padTop": Double(padTop), "padBottom": Double(padBottom),
                                        "contentHeight": Double(natural), "lines": items]
             if block.rowSpan > 1 { cell["rowSpan"] = block.rowSpan }
-            cellTopsOfRow[at, default: []].append(top)
+            // Where the document puts the content in the cell's box is the plan's to apply.
+            switch block.verticalAlignment {
+            case .middleAlignment: cell["verticalAlign"] = "middle"
+            case .bottomAlignment: cell["verticalAlign"] = "bottom"
+            default: break
+            }
             cellsOfRow[at, default: []].append(cell)
             if block.rowSpan <= 1 { extentOfRow[at] = max(extentOfRow[at] ?? 0, padTop + natural + padBottom) }
-        }
-        // A table the columns deal is dealt from where its lines STAND: a cell whose content the
-        // document centres or bottoms starts lower than its row, and the stack the columns divide
-        // has those lines where they are, not where a top-aligned cell would put them.
-        if aligned {
-            for r in rowKeys.indices {
-                guard let rowTop = observedTop[r], var cells = cellsOfRow[r] else { continue }
-                for (index, cellTop) in (cellTopsOfRow[r] ?? []).enumerated() where index < cells.count {
-                    let shift = Double(cellTop - rowTop)
-                    guard shift > 0.01, var lines = cells[index]["lines"] as? [[String: Any]] else { continue }
-                    for l in lines.indices { lines[l]["top"] = ((lines[l]["top"] as? Double) ?? 0) + shift }
-                    cells[index]["lines"] = lines
-                }
-                cellsOfRow[r] = cells
-            }
         }
         var rows: [[String: Any]] = []
         var total: CGFloat = 0
@@ -511,6 +500,33 @@ enum PagePlanShadow {
                         report.cellDump.append("SHADOW   row [\(planBlocks.count)] \(r): top \(String(format: "%.1f", Double(rows[r]!.top))) bottom \(String(format: "%.1f", Double(rows[r]!.bottom))) spans \(spans.filter { $0.start == r }.map { $0.end - $0.start })")
                     }
                 }
+                if (ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_CELLBOX"] ?? "").split(separator: ",").compactMap({ Int($0) }).contains(planBlocks.count) {
+                    var seen: [ObjectIdentifier] = []
+                    var by: [ObjectIdentifier: [Fragment]] = [:]
+                    for f in frags where f.table == first.table && !f.chain.isEmpty {
+                        let id = ObjectIdentifier(f.chain[0])
+                        if by[id] == nil { seen.append(id) }
+                        by[id, default: []].append(f)
+                    }
+                    // The cells of a table nested one level down.
+                    var nestedSeen: [ObjectIdentifier] = []
+                    var nestedBy: [ObjectIdentifier: [Fragment]] = [:]
+                    for f in frags where f.table == first.table && f.chain.count > 1 {
+                        let id = ObjectIdentifier(f.chain[1])
+                        if nestedBy[id] == nil { nestedSeen.append(id) }
+                        nestedBy[id, default: []].append(f)
+                    }
+                    for id in nestedSeen {
+                        let fs = nestedBy[id]!, cell = fs[0].chain[1]
+                        let box = lm.boundsRect(for: cell, at: lm.glyphIndexForCharacter(at: fs[0].location), effectiveRange: nil)
+                        report.cellDump.append("SHADOW   nestedbox [\(planBlocks.count)] r\(cell.startingRow)+\(cell.rowSpan) c\(cell.startingColumn)+\(cell.columnSpan) va\(cell.verticalAlignment.rawValue) box \(String(format: "%.2f", Double(box.minY)))..\(String(format: "%.2f", Double(box.maxY))) lines \(String(format: "%.2f", Double(fs.map { $0.rect.minY }.min()!)))..\(String(format: "%.2f", Double(fs.map { $0.rect.maxY }.max()!))) n\(fs.count) pad \(String(format: "%.2f", Double(inset(cell, .minY))))/\(String(format: "%.2f", Double(inset(cell, .maxY))))")
+                    }
+                    for id in seen {
+                        let fs = by[id]!, cell = fs[0].chain[0]
+                        let box = lm.boundsRect(for: cell, at: lm.glyphIndexForCharacter(at: fs[0].location), effectiveRange: nil)
+                        report.cellDump.append("SHADOW   cellbox [\(planBlocks.count)] r\(cell.startingRow)+\(cell.rowSpan) c\(cell.startingColumn)+\(cell.columnSpan) va\(cell.verticalAlignment.rawValue) box \(String(format: "%.2f", Double(box.minY)))..\(String(format: "%.2f", Double(box.maxY))) lines \(String(format: "%.2f", Double(fs.map { $0.rect.minY }.min()!)))..\(String(format: "%.2f", Double(fs.map { $0.rect.maxY }.max()!))) n\(fs.count) pad \(String(format: "%.2f", Double(inset(cell, .minY))))/\(String(format: "%.2f", Double(inset(cell, .maxY)))) nested \(fs.contains { $0.chain.count > 1 })")
+                    }
+                }
                 // The row heights the host reports are the layout's own BEFORE the page rule moved
                 // anything: every band the rule opened inside this table is empty space the rows did
                 // not have, so it is taken back out (the `proposedTableLineTops` idea of invariant 72,
@@ -551,15 +567,18 @@ enum PagePlanShadow {
                 if breaksWhereItStands || inColumnRun {
                     var measured: [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)] = []
                     let built = flowRows(frags.filter { $0.table == first.table }, depth: 0, blockIndex: planBlocks.count,
-                                         page: page, leading: leading, pitch: pitch, aligned: inColumnRun, refs: &measured)
+                                         page: page, leading: leading, pitch: pitch, refs: &measured)
                     // Positions in the stack of a columned run are not the plan's final ones.
                     if inColumnRun { columnCellRefs.append(contentsOf: measured) } else { cellLineRefs.append(contentsOf: measured) }
                     if built.rows.count == rowEntries.count {
                         for position in rowEntries.indices {
                             rowEntries[position]["observedHeight"] = rowEntries[position]["height"]
                             rowEntries[position]["cells"] = built.rows[position]["cells"]
-                            rowEntries[position]["height"] = built.rows[position]["height"]
+                            // A table in a columned run keeps the rows TextKit made of it; the other
+                            // tables the flow breaks take the heights the cells add up to.
+                            if !inColumnRun { rowEntries[position]["height"] = built.rows[position]["height"] }
                         }
+                        if inColumnRun { block["rowsObserved"] = true }
                     }
                 }
                 block["rows"] = rowEntries
@@ -772,6 +791,24 @@ enum PagePlanShadow {
                         if let b = (line[0] as? NSNumber)?.intValue, let l = (line[1] as? NSNumber)?.intValue,
                            let p = (line[2] as? NSNumber)?.intValue, let t = (line[3] as? NSNumber)?.doubleValue { stackTop["\(b),\(l)"] = (p, t) }
                     }
+                    // The cell lines of the stack: the plan's flat answer against the observed stack.
+                    var flatCells: [String: (Int, Double)] = [:]
+                    for l in (flatPlan["cellLines"] as? [[Any]]) ?? [] where l.count == 6 {
+                        let n = l.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
+                        flatCells["\(Int(n[0])),\(Int(n[1])),\(Int(n[2])),\(Int(n[3]))"] = (Int(n[4]), n[5])
+                    }
+                    var stackCellsDifferent = 0, stackCellsShown = 0
+                    for ref in columnCellRefs {
+                        let planned = flatCells["\(ref.block),\(ref.row),\(ref.cell),\(ref.line)"]
+                        if planned?.0 != ref.page || abs((planned?.1 ?? .infinity) - Double(ref.top)) > 0.6 {
+                            stackCellsDifferent += 1
+                            if stackCellsShown < 6 {
+                                stackCellsShown += 1
+                                report.context.append("SHADOW   stackcell [\(ref.block)] r\(ref.row) c\(ref.cell) l\(ref.line): TextKit p\(ref.page + 1) top \(String(format: "%.1f", Double(ref.top))); plan p\(planned.map { String($0.0 + 1) } ?? "-") top \(planned.map { String(format: "%.1f", $0.1) } ?? "-")")
+                            }
+                        }
+                    }
+                    report.context.append("SHADOW   stack cell lines: \(columnCellRefs.count), different \(stackCellsDifferent)")
                     var shown = 0
                     for (blockIndex, group) in groups.enumerated() where planBlocks[blockIndex]["columnRun"] != nil && !observed[blockIndex].isTable {
                         for (line, frag) in fragments[group.range].enumerated() {

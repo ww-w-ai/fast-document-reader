@@ -45,7 +45,9 @@
 //!   number it prints (`plan_furniture.rs`; invariants 62, 77, 78, 189).
 
 use super::page_pagination::{LaidOutRow, PagePagination};
+use super::column_geometry::Column;
 use super::plan_columns::{place_run, ColumnedLine, PlanColumnRun, RunGrid};
+use super::table_rows::{row_heights, RowNeed};
 use super::plan_footnotes::{self as notes, Bands, NotesByPage, PlanCite, PlanNote, PlanSeparator};
 use super::plan_furniture::{applicable_entry, displayed_numbers, master_pages, PlanEntry};
 use super::footnote_band_settle::{FootnoteBandSettle, Outcome};
@@ -117,8 +119,34 @@ pub struct PlanCell {
     /// The content's own height, padding excluded.
     #[serde(default)]
     pub content_height: f64,
+    /// Where the document puts the content inside the cell's box (the box is as tall as the rows the
+    /// cell covers). The plan applies it itself, so a host sends its lines at their natural offsets.
+    #[serde(default)]
+    pub vertical_align: PlanAlign,
     #[serde(default)]
     pub lines: Vec<PlanLine>,
+}
+
+/// A cell's vertical alignment.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanAlign {
+    #[default]
+    Top,
+    Middle,
+    Bottom,
+}
+
+impl PlanAlign {
+    /// How far below the top of its padding the content starts in a box with `room` to spare.
+    fn offset(self, room: f64) -> f64 {
+        match self {
+            Self::Top => 0.0,
+            Self::Middle => room / 2.0,
+            Self::Bottom => room,
+        }
+        .max(0.0)
+    }
 }
 
 fn one() -> u32 {
@@ -181,6 +209,11 @@ pub struct PlanBlock {
     /// Table: the document forbids cutting it at a page boundary.
     #[serde(default)]
     pub keeps_whole: bool,
+    /// Table: `rows[].height` is what the host's own layout made of each row (TextKit's), so the
+    /// engine keeps it; without this a table described cell by cell has its rows solved from the
+    /// cells (`table_rows.rs`).
+    #[serde(default)]
+    pub rows_observed: bool,
     /// The page this block's first line lands on restarts the page counter at this number (HWP's
     /// 새 번호); the first restart on a page wins.
     #[serde(default)]
@@ -323,8 +356,17 @@ pub struct PagePlan {
     pub column_lines: Vec<[u32; 3]>,
     /// The column of every cell line of a table in a columned run: `[block, row, cell, line, column]`.
     pub column_cell_lines: Vec<[u32; 5]>,
+    /// Where each row of a table in a columned run stands in each column it reaches:
+    /// `[block, row, page, column, top, bottom]`, page-local points — the box its cells are drawn in,
+    /// from the cell lines dealt there and the room each cell keeps above its first line and below
+    /// its last. A row only merged cells begin in has none.
+    pub column_row_segments: Vec<ColumnRowSegment>,
     /// The lines of tables nested in cells of a columned run's tables, each with its column.
     pub nested_lines: Vec<NestedLine>,
+    /// The columns of each declared run, as `x` from the body's left edge and `width`: the geometry
+    /// `columnLines` and the other column answers index into. One list per `columnRuns` entry of the
+    /// input (a declaration that does not split the text yields one column, the whole body).
+    pub column_runs: Vec<Vec<Column>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -352,6 +394,21 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
             return Err(PlanError(format!("block {index} carries a non-finite height")));
         }
     }
+    // A table the host described cell by cell, without having laid its rows out itself, is as tall as
+    // TextKit makes it whatever heights the host summed (`table_rows.rs`): the rows are solved here,
+    // from the cells.
+    let solves_rows = |b: &PlanBlock| b.kind == PlanKind::Table && has_cells(&b.rows) && !b.rows_observed;
+    let solved;
+    let input = if input.blocks.iter().any(solves_rows) {
+        let mut copy = input.clone();
+        for block in copy.blocks.iter_mut().filter(|b| solves_rows(b)) {
+            settle_rows(&mut block.rows);
+        }
+        solved = copy;
+        &solved
+    } else {
+        input
+    };
     let honoured = honoured_breaks(&input.blocks);
     let dropped = input
         .blocks
@@ -478,7 +535,9 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
         footnote_rounds,
         column_lines: core.column_lines,
         column_cell_lines: core.column_cell_lines,
+        column_row_segments: core.column_row_segments,
         nested_lines: core.nested_lines,
+        column_runs: input.column_runs.iter().map(|run| run.columns(input.body_width)).collect(),
     })
 }
 
@@ -631,6 +690,7 @@ fn run_pass(
         cell_lines: Vec::new(),
         column_lines: Vec::new(),
         column_cell_lines: Vec::new(),
+        column_row_segments: Vec::new(),
         nested_lines: Vec::new(),
         first_key: vec![None],
         section_boundaries: Vec::new(),
@@ -669,6 +729,40 @@ fn run_pass(
         index += 1;
     }
     state
+}
+
+/// Rows from cells: every nested table first (it is an item of a cell, and the items under it move
+/// with its height), then this table's rows by TextKit's rule (`table_rows.rs`).
+fn settle_rows(rows: &mut [PlanRow]) {
+    for row in rows.iter_mut() {
+        for cell in row.cells.iter_mut() {
+            let mut shift = 0.0;
+            for line in cell.lines.iter_mut() {
+                line.top += shift;
+                if !line.rows.is_empty() {
+                    settle_rows(&mut line.rows);
+                    let height: f64 = line.rows.iter().map(|r| r.height).sum();
+                    shift += height - line.height;
+                    line.height = height;
+                }
+            }
+            cell.content_height += shift;
+        }
+    }
+    if !has_cells(rows) {
+        return;
+    }
+    let needs: Vec<RowNeed> = rows
+        .iter()
+        .enumerate()
+        .flat_map(|(r, row)| {
+            row.cells.iter().map(move |c| RowNeed { row: r, span: c.row_span.max(1) as usize, need: c.pad_top + c.content_height + c.pad_bottom })
+        })
+        .collect();
+    let given: Vec<f64> = rows.iter().map(|r| r.height).collect();
+    for (row, height) in rows.iter_mut().zip(row_heights(given.len(), &needs, &given)) {
+        row.height = height;
+    }
 }
 
 fn finite_all(block: &PlanBlock) -> bool {
@@ -737,6 +831,7 @@ struct State {
     cell_lines: Vec<CellLinePlacement>,
     column_lines: Vec<[u32; 3]>,
     column_cell_lines: Vec<[u32; 5]>,
+    column_row_segments: Vec<ColumnRowSegment>,
     nested_lines: Vec<NestedLine>,
     first_key: Vec<Option<i64>>,
     section_boundaries: Vec<u32>,
@@ -769,6 +864,45 @@ struct StackItem {
     slot: StackSlot,
     block: u32,
     height: f64,
+    /// What the cell holding this line keeps around it (a line of a table's cell only).
+    leaf: Option<LeafBox>,
+}
+
+/// One row's extent in one column: `[block, row, page, column, top, bottom]`, page-local points.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct ColumnRowSegment(pub u32, pub u32, pub u32, pub u32, pub f64, pub f64);
+
+/// The room a cell keeps above its first line and below its last, and which cell it is.
+#[derive(Debug, Clone, Copy)]
+struct LeafBox {
+    row: u32,
+    cell: u32,
+    /// The cell covers one row: a merged cell's box is the union of the rows it covers, which draw
+    /// their own boxes.
+    single_row: bool,
+    above: f64,
+    below: f64,
+}
+
+/// What the cell a leaf line belongs to keeps around it. `flowed` tables are top-aligned and run on
+/// past their rows, so the room below comes from the cell's own tail rather than from its rows.
+fn leaf_box(rows: &[PlanRow], path: &[u32], flowed: bool) -> Option<LeafBox> {
+    let (r, c, l) = (*path.first()? as usize, *path.get(1)? as usize, *path.get(2)? as usize);
+    let cell = rows.get(r)?.cells.get(c)?;
+    let line = cell.lines.get(l)?;
+    let span = (cell.row_span.max(1) as usize).min(rows.len() - r);
+    let box_height: f64 = rows[r..r + span].iter().map(|row| row.height).sum();
+    let (above, below) = if path.len() > 3 {
+        // A line of a table nested in the cell: the cell's own padding bounds the whole nest.
+        (cell.pad_top, cell.pad_bottom)
+    } else if flowed {
+        (cell.pad_top + line.top, cell.pad_bottom + (cell.content_height - line.top - line.height).max(0.0))
+    } else {
+        let room = box_height - cell.pad_top - cell.content_height - cell.pad_bottom;
+        let above = cell.pad_top + cell.vertical_align.offset(room) + line.top;
+        (above, (box_height - above - line.height).max(0.0))
+    };
+    Some(LeafBox { row: path[0], cell: path[1], single_row: cell.row_span <= 1, above, below })
 }
 
 impl State {
@@ -839,13 +973,13 @@ impl State {
                     self.place_text(idx, block);
                     for (at, line) in self.lines[start..].iter().enumerate() {
                         let height = block.lines.get(line.1 as usize).copied().unwrap_or(0.0);
-                        stack.push(StackItem { slot: StackSlot::Line(start + at), block: idx, height });
+                        stack.push(StackItem { slot: StackSlot::Line(start + at), block: idx, height, leaf: None });
                     }
                     spacing_after = block.spacing_after;
                 }
                 PlanKind::Atomic => {
                     self.place_atomic(idx, block);
-                    stack.push(StackItem { slot: StackSlot::Placement(self.placements.len() - 1), block: idx, height: block.height });
+                    stack.push(StackItem { slot: StackSlot::Placement(self.placements.len() - 1), block: idx, height: block.height, leaf: None });
                     spacing_after = 0.0;
                 }
                 PlanKind::Table => {
@@ -891,9 +1025,25 @@ impl State {
             }
             self.reached = self.reached.max(page);
         }
+        self.column_row_segments_of(&stack, &dealt);
+        // A page belongs to the section its top-left line is in (the reader asks which character
+        // stands at the page's top edge, in the first column): a section whose opener the columns
+        // dealt to a later column, or lower down a sheet, begins on the first sheet whose top-left
+        // line is the opener or comes after it. The 편람's colophon opens mid-sheet in column two.
+        let mut top_left: BTreeMap<u32, (f64, u32)> = BTreeMap::new();
+        for (id, item) in stack.iter().enumerate() {
+            if let Some(at) = dealt.get(&(id as i64)).filter(|at| at.column == 0) {
+                let entry = top_left.entry(at.page).or_insert((at.top, item.block));
+                if at.top < entry.0 - 1e-9 {
+                    *entry = (at.top, item.block);
+                }
+            }
+        }
         for (slot, block, offset) in opened {
             let first = stack.iter().find(|item| item.block == block).map(|item| self.position_of(item.slot).0);
-            if let Some(page) = first {
+            if let Some((&page, _)) = top_left.iter().find(|(_, (_, top_block))| *top_block >= block) {
+                self.section_boundaries[slot] = page;
+            } else if let Some(page) = first {
                 self.section_boundaries[slot] = page + offset;
             }
         }
@@ -902,6 +1052,39 @@ impl State {
             self.cursor = top + height + spacing_after;
         }
         true
+    }
+
+    /// The boxes the rows of a columned run's tables are drawn in, one per row per column the row
+    /// reaches: its cells' lines as dealt there, each cell keeping the room it had above its first
+    /// line and below its last (a cell the columns cut keeps none at the cut).
+    fn column_row_segments_of(&mut self, stack: &[StackItem], dealt: &HashMap<i64, ColumnedLine>) {
+        let mut first: HashMap<(u32, u32, u32), usize> = HashMap::new();
+        let mut last: HashMap<(u32, u32, u32), usize> = HashMap::new();
+        for (id, item) in stack.iter().enumerate() {
+            if let Some(leaf) = item.leaf {
+                let key = (item.block, leaf.row, leaf.cell);
+                first.entry(key).or_insert(id);
+                last.insert(key, id);
+            }
+        }
+        let mut boxes: BTreeMap<(u32, u32, u32, u32), (f64, f64)> = BTreeMap::new();
+        for (id, item) in stack.iter().enumerate() {
+            let (Some(leaf), Some(at)) = (item.leaf, dealt.get(&(id as i64))) else { continue };
+            if !leaf.single_row {
+                continue;
+            }
+            let key = (item.block, leaf.row, leaf.cell);
+            let above = if first.get(&key) == Some(&id) { leaf.above } else { 0.0 };
+            let below = if last.get(&key) == Some(&id) { leaf.below } else { 0.0 };
+            let top = (at.top - above).max(0.0);
+            let bottom = at.top + item.height + below;
+            let entry = boxes.entry((item.block, leaf.row, at.page, at.column)).or_insert((top, bottom));
+            entry.0 = entry.0.min(top);
+            entry.1 = entry.1.max(bottom);
+        }
+        for ((block, row, page, column), (top, bottom)) in boxes {
+            self.column_row_segments.push(ColumnRowSegment(block, row, page, column, top, bottom));
+        }
     }
 
     fn position_of(&self, slot: StackSlot) -> (u32, f64) {
@@ -951,7 +1134,8 @@ impl State {
         self.place_table(index, block, split_tables);
         self.mode = mode;
         let mut leaves: Vec<(Vec<u32>, u32, f64, f64)> = Vec::new(); // (path, page, top, height)
-        if self.placements[placements_from..].iter().any(|p| p.flowed) {
+        let flowed_table = self.placements[placements_from..].iter().any(|p| p.flowed);
+        if flowed_table {
             // Flowed: the flow already placed every line, nested ones included. What it said about
             // the table's pieces and rows was only where the stack stood.
             if let Some(flowed) = self.flowed.last().filter(|f| f.block == index) {
@@ -966,7 +1150,7 @@ impl State {
             let pieces: Vec<BlockPlacement> = self.placements[placements_from..].to_vec();
             if !has_cells(&block.rows) {
                 for (offset, piece) in pieces.into_iter().enumerate() {
-                    stack.push(StackItem { slot: StackSlot::Placement(placements_from + offset), block: index, height: piece.height });
+                    stack.push(StackItem { slot: StackSlot::Placement(placements_from + offset), block: index, height: piece.height, leaf: None });
                 }
                 return;
             }
@@ -982,11 +1166,12 @@ impl State {
             }
         }
         for (path, page, top, height) in leaves {
+            let leaf = leaf_box(&block.rows, &path, flowed_table);
             if path.len() == 3 {
-                stack.push(StackItem { slot: StackSlot::CellLine(self.cell_lines.len()), block: index, height });
+                stack.push(StackItem { slot: StackSlot::CellLine(self.cell_lines.len()), block: index, height, leaf });
                 self.cell_lines.push(CellLinePlacement(index, path[0], path[1], path[2], page, top));
             } else {
-                stack.push(StackItem { slot: StackSlot::Nested(self.nested_lines.len()), block: index, height });
+                stack.push(StackItem { slot: StackSlot::Nested(self.nested_lines.len()), block: index, height, leaf });
                 self.nested_lines.push(NestedLine { block: index, path, page, top, column: 0 });
             }
         }
@@ -1265,8 +1450,13 @@ fn synth_leaves(rows: &[PlanRow], first_row: u32, top: f64, page: u32, prefix: &
     let mut row_top = top;
     for (offset, row) in rows.iter().enumerate() {
         for (c, cell) in row.cells.iter().enumerate() {
+            // The cell's box is as tall as the rows it covers; its content sits in it as aligned.
+            let span = (cell.row_span.max(1) as usize).min(rows.len() - offset);
+            let box_height: f64 = rows[offset..offset + span].iter().map(|r| r.height).sum();
+            let room = box_height - cell.pad_top - cell.content_height - cell.pad_bottom;
+            let aligned = cell.vertical_align.offset(room);
             for (l, line) in cell.lines.iter().enumerate() {
-                let line_top = row_top + cell.pad_top + line.top;
+                let line_top = row_top + cell.pad_top + aligned + line.top;
                 let mut path = prefix.to_vec();
                 path.extend([first_row + offset as u32, c as u32, l as u32]);
                 if line.rows.is_empty() {
@@ -1603,7 +1793,7 @@ mod tests {
                 line
             })
             .collect();
-        PlanCell { row_span: 1, pad_top: 0.0, pad_bottom: 0.0, content_height: top, lines }
+        PlanCell { row_span: 1, pad_top: 0.0, pad_bottom: 0.0, content_height: top, vertical_align: PlanAlign::Top, lines }
     }
 
     fn flow_table_block(key: i64, rows: Vec<(f64, Vec<PlanCell>)>) -> PlanBlock {
@@ -1669,11 +1859,31 @@ mod tests {
         // Table 1 pulls its first line; table 2 has a line on the same path that fits where it
         // stands (a single line: nothing of it is ever stranded) and must stay there.
         let first = flow_table_block(1, vec![(120.0, vec![flow_cell(&[20.0; 6])])]);
-        let second = flow_table_block(2, vec![(120.0, vec![flow_cell(&[20.0])])]);
+        // The cell stands 120 tall (the row is as tall as its cells), its one line 20.
+        let second = flow_table_block(2, vec![(120.0, vec![PlanCell { content_height: 120.0, ..flow_cell(&[20.0]) }])]);
         let plan = plan_pages(&input(100.0, vec![text(0, &[60.0]), first, second])).unwrap();
         assert_eq!(plan.pulled_lines, vec![vec![1, 0, 0, 0]]);
         let second_first_line = plan.cell_lines.iter().find(|l| l.0 == 2 && l.3 == 0).unwrap();
         assert_eq!(second_first_line.4, 2, "table 2's first line is on the page the first table ended on");
+    }
+
+    #[test]
+    fn a_cells_content_sits_in_the_box_of_the_rows_it_covers_as_the_document_aligns_it() {
+        // Two rows of 10 and 30; a cell begun in row 0 covers both (box 40) and holds one 6pt line
+        // between 1pt paddings (content 6). Room = 40 - 1 - 6 - 1 = 32.
+        let cell = |align| PlanCell { row_span: 2, pad_top: 1.0, pad_bottom: 1.0, vertical_align: align, ..flow_cell(&[6.0]) };
+        let tops = |align| {
+            let rows = vec![
+                PlanRow { height: 10.0, can_break_above: true, cells: vec![cell(align)] },
+                PlanRow { height: 30.0, can_break_above: false, cells: Vec::new() },
+            ];
+            let mut out = Vec::new();
+            synth_leaves(&rows, 0, 100.0, 0, &[], &mut out);
+            out[0].2
+        };
+        assert_eq!(tops(PlanAlign::Top), 101.0);
+        assert_eq!(tops(PlanAlign::Middle), 101.0 + 16.0);
+        assert_eq!(tops(PlanAlign::Bottom), 101.0 + 32.0);
     }
 
     fn entry(applies_to: PlanApplies, section: Option<i64>) -> PlanEntry {
@@ -1800,6 +2010,7 @@ mod tests {
             pad_top: 0.0,
             pad_bottom: 0.0,
             content_height: 80.0,
+            vertical_align: PlanAlign::Top,
             lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested }],
         };
         let table = columned(flow_table_block(1, vec![(80.0, vec![outer])]), 0);
@@ -1823,6 +2034,7 @@ mod tests {
             pad_top: 0.0,
             pad_bottom: 0.0,
             content_height: 80.0,
+            vertical_align: PlanAlign::Top,
             lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested }],
         };
         let table = columned(flow_table_block(2, vec![(80.0, vec![outer])]), 0);
@@ -1964,6 +2176,122 @@ mod tests {
         // tall, so everything fits column one.
         assert_eq!(plan.cell_lines.iter().map(|l| (l.4, l.5)).collect::<Vec<_>>(), vec![(0, 40.0), (0, 60.0), (0, 80.0)]);
         assert_eq!(plan.column_cell_lines.len(), 3);
+        // The row stands in column one from its first line to its last (the cell has no padding).
+        assert_eq!(plan.column_row_segments, vec![ColumnRowSegment(1, 0, 0, 0, 40.0, 100.0)]);
+        // The geometry the columns index into: two columns of (300 - 10) / 2.
+        assert_eq!(plan.column_runs.len(), 1);
+        assert_eq!(plan.column_runs[0].iter().map(|c| (c.x, c.width)).collect::<Vec<_>>(), vec![(0.0, 145.0), (155.0, 145.0)]);
+    }
+
+    #[test]
+    fn a_row_a_column_cuts_is_boxed_in_each_column_with_its_cell_padding_only_at_the_cut_ends() {
+        // One cell of four 20pt lines padded 4 above and below (a row 88 tall) in a run whose columns
+        // hold 70: the first three lines fit column one, the fourth starts column two.
+        let mut cell = flow_cell(&[20.0; 4]);
+        cell.pad_top = 4.0;
+        cell.pad_bottom = 4.0;
+        cell.content_height = 80.0;
+        let table = columned(flow_table_block(1, vec![(88.0, vec![cell])]), 0);
+        let mut plan_input = input(70.0, vec![table]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        let boxes: Vec<(u32, f64, f64)> = plan.column_row_segments.iter().map(|s| (s.3, s.4, s.5)).collect();
+        // Column one: from the top, with the room above the first line, and the cut keeps nothing
+        // below its last line (three 20pt lines: the box ends where they do).
+        // Column two: the line left, which as the cell's last line keeps its 4 below it.
+        assert_eq!(boxes.len(), 2, "{boxes:?}");
+        assert_eq!((boxes[0].0, boxes[0].1), (0, 0.0), "{boxes:?}");
+        assert_eq!(boxes[0].2 % 20.0, 0.0, "the cut keeps no room: {boxes:?}");
+        assert_eq!(boxes[1].0, 1, "{boxes:?}");
+        assert_eq!(boxes[1].2 - boxes[1].1, 20.0 + 4.0, "{boxes:?}");
+    }
+
+    #[test]
+    fn a_cell_in_a_columned_run_is_boxed_with_the_padding_it_has_above_its_first_line_and_below_its_last() {
+        // 40pt of text, then in the same run a one-row table whose cell (padded 4 and 4) holds one 20pt
+        // line: the line stands at 44, the box from 40 to 68.
+        let mut cell = flow_cell(&[20.0]);
+        cell.pad_top = 4.0;
+        cell.pad_bottom = 4.0;
+        let table = columned(flow_table_block(1, vec![(28.0, vec![cell])]), 0);
+        let mut plan_input = input(100.0, vec![columned(text(0, &[40.0]), 0), table]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.cell_lines.iter().map(|l| l.5).collect::<Vec<_>>(), vec![44.0]);
+        assert_eq!(plan.column_row_segments, vec![ColumnRowSegment(1, 0, 0, 0, 40.0, 68.0)]);
+    }
+
+    #[test]
+    fn what_stands_below_a_nested_table_is_dealt_where_the_engine_solved_the_nest_ends() {
+        // The same cell as the nesting test above (a line, a nest the host summed to 80 but solved to
+        // 40, a line) in a columned run: the last line stands at 10 + 40, not 10 + 80.
+        let nested = vec![PlanRow { height: 80.0, can_break_above: false, cells: vec![flow_cell(&[40.0])] }];
+        let line = |top, height| PlanLine { top, height, trailing: 0.0, rows: Vec::new() };
+        let outer = PlanCell {
+            row_span: 1,
+            pad_top: 0.0,
+            pad_bottom: 0.0,
+            content_height: 100.0,
+            vertical_align: PlanAlign::Top,
+            lines: vec![line(0.0, 10.0), PlanLine { top: 10.0, height: 80.0, trailing: 0.0, rows: nested }, line(90.0, 10.0)],
+        };
+        let table = columned(PlanBlock { kind: PlanKind::Table, rows: vec![PlanRow { height: 100.0, can_break_above: false, cells: vec![outer] }], ..text(1, &[]) }, 0);
+        let mut plan_input = input(1000.0, vec![table]);
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        let last = plan.cell_lines.iter().find(|l| l.3 == 2).unwrap();
+        assert_eq!(last.5, 50.0);
+    }
+
+    #[test]
+    fn a_table_described_cell_by_cell_is_as_tall_as_textkit_makes_it_whatever_heights_the_host_summed() {
+        // Row 0 holds a two-row cell needing 25 and a one-row cell needing 9; row 1 a one-row cell
+        // needing 8. The rows are 9 and 8 plus the 8 the two-row cell is short, all on row 1 (9 + 16):
+        // the table is 25 tall however tall the host said its rows were.
+        let merged = PlanCell { row_span: 2, vertical_align: PlanAlign::Middle, ..flow_cell(&[25.0]) };
+        let rows = vec![
+            PlanRow { height: 100.0, can_break_above: true, cells: vec![merged, flow_cell(&[9.0])] },
+            PlanRow { height: 100.0, can_break_above: false, cells: vec![flow_cell(&[8.0])] },
+        ];
+        let table = PlanBlock { kind: PlanKind::Table, rows, ..text(1, &[]) };
+        let plan = plan_pages(&input(1000.0, vec![table])).unwrap();
+        assert_eq!(plan.placements[0].height, 25.0);
+    }
+
+    #[test]
+    fn rows_the_host_observed_are_kept_as_they_are() {
+        // The same table as above, but its host laid it out itself (TextKit) and says these are the
+        // rows it made: the engine does not second-guess them from the cells.
+        let merged = PlanCell { row_span: 2, vertical_align: PlanAlign::Middle, ..flow_cell(&[25.0]) };
+        let rows = vec![
+            PlanRow { height: 30.0, can_break_above: true, cells: vec![merged, flow_cell(&[9.0])] },
+            PlanRow { height: 12.0, can_break_above: false, cells: vec![flow_cell(&[8.0])] },
+        ];
+        let table = PlanBlock { kind: PlanKind::Table, rows, rows_observed: true, ..text(1, &[]) };
+        let plan = plan_pages(&input(1000.0, vec![table])).unwrap();
+        assert_eq!(plan.placements[0].height, 42.0);
+    }
+
+    #[test]
+    fn a_table_nested_in_a_cell_moves_what_stands_below_it_when_the_engine_solves_its_height() {
+        // A cell holds a 10pt line, a nested table the host summed to 80 (its one row's cell needs
+        // only 40) and a 10pt line. The nest is 40, so the cell is 60 tall, not 100.
+        let nested = vec![PlanRow { height: 80.0, can_break_above: false, cells: vec![flow_cell(&[40.0])] }];
+        let line = |top, height| PlanLine { top, height, trailing: 0.0, rows: Vec::new() };
+        let outer = PlanCell {
+            row_span: 1,
+            pad_top: 0.0,
+            pad_bottom: 0.0,
+            content_height: 100.0,
+            vertical_align: PlanAlign::Top,
+            lines: vec![line(0.0, 10.0), PlanLine { top: 10.0, height: 80.0, trailing: 0.0, rows: nested }, line(90.0, 10.0)],
+        };
+        let table = PlanBlock { kind: PlanKind::Table, rows: vec![PlanRow { height: 100.0, can_break_above: false, cells: vec![outer] }], ..text(1, &[]) };
+        let plan = plan_pages(&input(1000.0, vec![table])).unwrap();
+        assert_eq!(plan.placements[0].height, 60.0);
     }
 
     #[test]

@@ -21,10 +21,14 @@ import AppKit
 /// `FMD_PLAN_SHADOW_CELLS=<block>,..` (cell lines against the plan, with both sides' pulls),
 /// `FMD_PLAN_SHADOW_ROWS=<block>,..` (row extents as measured), `FMD_PLAN_SHADOW_PLACEMENTS=<block>,..`.
 ///
-/// Known, not fixed: a document laid out for paper AFTER `1790387_prep_final_report.hwpx` in the same
-/// process settles to a different table-line trajectory on TextKit's side (the 편람 prints 395 pages
-/// where it prints 391 alone or after any other baseline document); the plan's input is identical in
-/// both orders. Run the 편람 first or alone.
+/// More dumps: `FMD_PLAN_SHADOW_CELLBOX=<block>,..` (every cell's box and lines in TextKit, and those
+/// of the tables nested one level down), `FMD_PLAN_SHADOW_SPIN=<seconds>` (run the main loop after a
+/// document closes). Each document's report starts with "before print", where the reader's own
+/// asynchronous settle stood when the probe took over.
+///
+/// A document's paper layout no longer depends on that: the 편람 prints 391 sheets whether it follows
+/// `1790387_prep_final_report.hwpx` in the process or not (`makePrintOperation` finishes the screen
+/// settle itself, because the storage keeps what a settle did to it).
 final class PagePlanShadowProbeTests: XCTestCase {
 
     /// The Swift side of the FFI: a plan comes back in the envelope, keyed by the caller's keys.
@@ -66,8 +70,15 @@ final class PagePlanShadowProbeTests: XCTestCase {
             doc.makeWindowControllers()
             let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
             wc.window?.setFrame(NSRect(x: 0, y: 0, width: 820, height: 640), display: false)
+            let waited = Date()
             let settled = HeadlessPDF.waitForRenderToSettle(doc: doc, wc: wc)
             report.append("SHADOW settled: \(settled)")
+            // Where the reader's own async settle stood when the probe took over (a leak bisect).
+            let d0 = wc.pageBandDelegate
+            report.append(String(format: "SHADOW before print: waited %.2fs, generation %d, frame %.1f, pushed %d, oversized %d, pulled %d, bands %d, deferred tables %d, progressive pending %@",
+                                 Date().timeIntervalSince(waited), doc.renderGeneration, Double(wc.textView.frame.height),
+                                 d0.pushedTables.count, d0.oversizedPieces.count, d0.pullToNextPage.count, d0.openedBands.count,
+                                 doc.deferredTables.count, doc.isProgressiveRenderPending ? "yes" : "no"))
             wc.textView.layoutManager?.ensureLayout(for: wc.textView.textContainer!)
             PagePlanShadow.layOutForPrint(wc)
             let started = Date()
@@ -103,6 +114,11 @@ final class PagePlanShadowProbeTests: XCTestCase {
                     toFile: directory + "/" + (ordinal > 0 ? "\(ordinal)-" : "") + url.lastPathComponent + ".state.txt", atomically: true, encoding: .utf8)
             }
             doc.close()
+            // FMD_PLAN_SHADOW_SPIN=<seconds>: let whatever the closed document left on the main queue
+            // run before the next one opens (a leak bisect).
+            if let spin = env["FMD_PLAN_SHADOW_SPIN"].flatMap(Double.init) {
+                RunLoop.main.run(until: Date().addingTimeInterval(spin))
+            }
         }
         report.forEach { print($0) }
         if let out = env["FMD_PLAN_SHADOW_OUT"] {

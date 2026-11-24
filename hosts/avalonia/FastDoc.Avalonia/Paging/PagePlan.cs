@@ -41,7 +41,35 @@ internal sealed class PlanBlockInput
     /// engine flow a table taller than a page line by line. Null when the host reports none.</summary>
     public PlanCellInput[][]? RowCells { get; init; }
     public bool KeepsWhole { get; init; }
+    /// <summary>The multi-column declaration (an index into <see cref="PlanColumnsInput.Runs"/>) this
+    /// block sits under — from one declaration to the next. Null: not in a columned run.</summary>
+    public int? ColumnRun { get; init; }
 }
+
+/// <summary>One multi-column declaration as the document states it: the count, the spacing and the
+/// per-column widths and gaps (points, or shares of the whole when <see cref="Proportional"/>).</summary>
+internal sealed class PlanColumnRunInput
+{
+    public required int Count { get; init; }
+    public double Spacing { get; init; }
+    public IReadOnlyList<double> Widths { get; init; } = Array.Empty<double>();
+    public IReadOnlyList<double> Gaps { get; init; } = Array.Empty<double>();
+    public bool Proportional { get; init; }
+}
+
+/// <summary>The columns of a document: the width of the page body they are dealt across, and each
+/// declaration in document order. The engine decides what columns that makes.</summary>
+internal sealed class PlanColumnsInput
+{
+    public required double BodyWidth { get; init; }
+    public required IReadOnlyList<PlanColumnRunInput> Runs { get; init; }
+}
+
+/// <summary>One column of a declaration: its left edge from the body's left edge, and its width, in points.</summary>
+public readonly record struct PlannedColumn(double X, double Width);
+
+/// <summary>One row of a table in a columned run, as drawn in one column: page-local points.</summary>
+internal readonly record struct PlannedColumnRowSegment(int Block, int Row, int Page, int Column, double Top, double Bottom);
 
 /// <summary>One line inside a cell, in POINTS from the cell's content origin.</summary>
 internal readonly record struct PlanLineInput(double Top, double Height, double Trailing);
@@ -52,6 +80,9 @@ internal sealed class PlanCellInput
     public double PadTop { get; init; }
     public double PadBottom { get; init; }
     public double ContentHeight { get; init; }
+    /// <summary>"middle" or "bottom" when the document puts the content there in the cell's box;
+    /// null is top. The plan applies it.</summary>
+    public string? VerticalAlign { get; init; }
     public required PlanLineInput[] Lines { get; init; }
 }
 
@@ -96,7 +127,7 @@ internal readonly record struct PlannedRowSegment(int Block, int Row, int Page, 
 /// <summary>One cell line of a flowed table: its page and page-local top, in points.</summary>
 internal readonly record struct PlannedCellLine(int Block, int Row, int Cell, int Line, int Page, double Top);
 
-internal readonly record struct PlannedPlacement(int Block, int Page, double Top, double Height, int? RowStart, int? RowCount, bool Flowed = false);
+internal readonly record struct PlannedPlacement(int Block, int Page, double Top, double Height, int? RowStart, int? RowCount, bool Flowed = false, int? Column = null);
 
 internal readonly record struct PlannedLine(int Block, int Line, int Page, double Top);
 
@@ -115,6 +146,13 @@ internal sealed class PagePlanResult
     /// <summary>The footnote bands the plan settled on and the notes each page cites, both by page.</summary>
     public required IReadOnlyDictionary<int, double> NoteBands { get; init; }
     public required IReadOnlyDictionary<int, List<long>> NotesByPage { get; init; }
+    /// <summary>The columns of each declared run, in the order the input named them.</summary>
+    public IReadOnlyList<IReadOnlyList<PlannedColumn>> ColumnRuns { get; init; } = Array.Empty<IReadOnlyList<PlannedColumn>>();
+    /// <summary>The column of each text line of a columned run, by (block, line).</summary>
+    public IReadOnlyDictionary<(int Block, int Line), int> ColumnLines { get; init; } = new Dictionary<(int, int), int>();
+    /// <summary>The column of each cell line of a table in a columned run, by (block, row, cell, line).</summary>
+    public IReadOnlyDictionary<(int Block, int Row, int Cell, int Line), int> ColumnCellLines { get; init; } = new Dictionary<(int, int, int, int), int>();
+    public IReadOnlyList<PlannedColumnRowSegment> ColumnRowSegments { get; init; } = Array.Empty<PlannedColumnRowSegment>();
 }
 
 /// <summary>S2 of docs/plans/pagination-to-engine.md: the one call that decides where every whole
@@ -126,9 +164,9 @@ internal static class PagePlanClient
 
     public static PagePlanResult Plan(IntPtr handle, double contentHeightPoints, bool splitTables,
         IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks, double bandPoints = 0,
-        PlanFurnitureInput? furniture = null)
+        PlanFurnitureInput? furniture = null, PlanColumnsInput? columns = null)
     {
-        var input = Encode(contentHeightPoints, splitTables, noteBands, blocks, bandPoints, furniture);
+        var input = Encode(contentHeightPoints, splitTables, noteBands, blocks, bandPoints, furniture, columns);
         var reply = FastdocEngine.TakeOwnedString(FastdocEngine.fastdoc_office_page_plan_json(handle, input));
         if (reply is null)
         {
@@ -139,7 +177,7 @@ internal static class PagePlanClient
 
     internal static byte[] Encode(double contentHeightPoints, bool splitTables,
         IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks, double bandPoints = 0,
-        PlanFurnitureInput? furniture = null)
+        PlanFurnitureInput? furniture = null, PlanColumnsInput? columns = null)
     {
         var buffer = new ArrayBufferWriter<byte>(Math.Max(4096, blocks.Count * 96));
         using (var w = new Utf8JsonWriter(buffer))
@@ -162,6 +200,7 @@ internal static class PagePlanClient
             }
             w.WriteEndArray();
             if (furniture is not null) { WriteFurniture(w, furniture); }
+            if (columns is not null) { WriteColumns(w, columns); }
             w.WriteStartArray("blocks");
             foreach (var b in blocks) { WriteBlock(w, b); }
             w.WriteEndArray();
@@ -232,11 +271,33 @@ internal static class PagePlanClient
         }
     }
 
+    private static void WriteColumns(Utf8JsonWriter w, PlanColumnsInput columns)
+    {
+        w.WriteNumber("bodyWidth", columns.BodyWidth);
+        w.WriteStartArray("columnRuns");
+        foreach (var run in columns.Runs)
+        {
+            w.WriteStartObject();
+            w.WriteNumber("count", run.Count);
+            w.WriteNumber("spacing", run.Spacing);
+            w.WriteStartArray("widths");
+            foreach (var v in run.Widths) { w.WriteNumberValue(v); }
+            w.WriteEndArray();
+            w.WriteStartArray("gaps");
+            foreach (var v in run.Gaps) { w.WriteNumberValue(v); }
+            w.WriteEndArray();
+            w.WriteBoolean("proportional", run.Proportional);
+            w.WriteEndObject();
+        }
+        w.WriteEndArray();
+    }
+
     private static void WriteBlock(Utf8JsonWriter w, PlanBlockInput b)
     {
         w.WriteStartObject();
         w.WriteNumber("key", b.Key);
         w.WriteString("kind", b.Kind);
+        if (b.ColumnRun is { } run) { w.WriteNumber("columnRun", run); }
         if (b.PageNumberRestart is { } restart) { w.WriteNumber("pageNumberRestart", restart); }
         if (b.HidesPageNumber) { w.WriteBoolean("hidesPageNumber", true); }
         if (b.Cites is { Count: > 0 } cites)
@@ -299,6 +360,7 @@ internal static class PagePlanClient
         {
             w.WriteStartObject();
             if (cell.RowSpan != 1) { w.WriteNumber("rowSpan", cell.RowSpan); }
+            if (cell.VerticalAlign is { } align) { w.WriteString("verticalAlign", align); }
             w.WriteNumber("padTop", cell.PadTop);
             w.WriteNumber("padBottom", cell.PadBottom);
             w.WriteNumber("contentHeight", cell.ContentHeight);
@@ -361,7 +423,8 @@ internal static class PagePlanClient
                 p.GetProperty("top").GetDouble(), p.GetProperty("height").GetDouble(),
                 p.TryGetProperty("rowStart", out var rs) ? rs.GetInt32() : null,
                 p.TryGetProperty("rowCount", out var rc) ? rc.GetInt32() : null,
-                p.TryGetProperty("flowed", out var flowed) && flowed.GetBoolean()));
+                p.TryGetProperty("flowed", out var flowed) && flowed.GetBoolean(),
+                p.TryGetProperty("column", out var column) ? column.GetInt32() : null));
         }
         var lineArray = plan.GetProperty("lines");
         var lines = new List<PlannedLine>(lineArray.GetArrayLength());
@@ -379,8 +442,41 @@ internal static class PagePlanClient
         {
             cellLines.Add(new PlannedCellLine(l[0].GetInt32(), l[1].GetInt32(), l[2].GetInt32(), l[3].GetInt32(), l[4].GetInt32(), l[5].GetDouble()));
         }
+        var columnRuns = new List<IReadOnlyList<PlannedColumn>>();
+        if (plan.TryGetProperty("columnRuns", out var runArray))
+        {
+            foreach (var run in runArray.EnumerateArray())
+            {
+                var columns = new List<PlannedColumn>(run.GetArrayLength());
+                foreach (var c in run.EnumerateArray()) { columns.Add(new PlannedColumn(c.GetProperty("x").GetDouble(), c.GetProperty("width").GetDouble())); }
+                columnRuns.Add(columns);
+            }
+        }
+        var columnLines = new Dictionary<(int, int), int>();
+        if (plan.TryGetProperty("columnLines", out var columnLineArray))
+        {
+            foreach (var l in columnLineArray.EnumerateArray()) { columnLines[(l[0].GetInt32(), l[1].GetInt32())] = l[2].GetInt32(); }
+        }
+        var columnCellLines = new Dictionary<(int, int, int, int), int>();
+        if (plan.TryGetProperty("columnCellLines", out var columnCellArray))
+        {
+            foreach (var l in columnCellArray.EnumerateArray()) { columnCellLines[(l[0].GetInt32(), l[1].GetInt32(), l[2].GetInt32(), l[3].GetInt32())] = l[4].GetInt32(); }
+        }
+        var columnSegments = new List<PlannedColumnRowSegment>();
+        if (plan.TryGetProperty("columnRowSegments", out var columnSegmentArray))
+        {
+            foreach (var s in columnSegmentArray.EnumerateArray())
+            {
+                columnSegments.Add(new PlannedColumnRowSegment(s[0].GetInt32(), s[1].GetInt32(), s[2].GetInt32(), s[3].GetInt32(),
+                    s[4].GetDouble(), s[5].GetDouble()));
+            }
+        }
         return new PagePlanResult
         {
+            ColumnRuns = columnRuns,
+            ColumnLines = columnLines,
+            ColumnCellLines = columnCellLines,
+            ColumnRowSegments = columnSegments,
             RowSegments = segments,
             CellLines = cellLines,
             PageCount = plan.GetProperty("pageCount").GetInt32(),

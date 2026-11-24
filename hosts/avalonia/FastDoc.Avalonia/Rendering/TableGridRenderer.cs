@@ -446,6 +446,7 @@ public static class TableGridRenderer
                     PadTop = top,
                     PadBottom = VerticalPaddingPx(cell, model) / PointsToPixels - top,
                     ContentHeight = contentHeight,
+                    VerticalAlign = cell.VerticalAlignment is "middle" or "bottom" ? cell.VerticalAlignment : null,
                     Lines = lines.ToArray(),
                 });
             }

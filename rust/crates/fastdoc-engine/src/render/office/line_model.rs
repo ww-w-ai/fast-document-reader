@@ -20,10 +20,11 @@
 //! - an empty paragraph in an HWP cell is one line of its own character size (169);
 //! - a table row's height from its cells: each cell's content plus its padding, a decorative band
 //!   standing at its declared height, a single-line cell floored at its row's declared height
-//!   (166), and a merged cell's excess shared across the rows it covers.
+//!   (166), and a merged cell's shortfall added to the last row it covers (`table_rows.rs`).
 //!
 //! Units: whatever the host used, throughout one call. The module never converts.
 
+use super::table_rows::{self, RowNeed};
 use serde::{Deserialize, Serialize};
 
 /// `LineModelInput.version`. A host that sends another value is refused rather than guessed at.
@@ -368,52 +369,36 @@ pub fn solve_table(table: &TableFacts, grid: Option<f64>) -> Result<TableLayout,
         cells.push(layout_cell(cell, table.empty_line, grid, table.drops_trailing_gap));
     }
 
-    let mut row_heights = vec![0.0_f64; rows];
-    for (cell, laid) in table.cells.iter().zip(&cells) {
-        if cell.row_span > 1 {
-            continue;
-        }
-        let need = match cell.declared_height {
-            // A band the document drew that tall: the declaration already counts both paddings and
-            // the line, so it replaces their sum.
-            Some(declared) if declared > 0.0 && !has_content(cell) => declared,
-            _ => {
-                let mut need = laid.height + cell.v_padding;
-                if let Some(floor) = cell.min_row_height {
-                    if floor > 0.0 && single_text_line(cell) {
-                        need = need.max(floor);
+    // A cell asks for its content plus its padding (a decorative band for its declared height, a
+    // single-line cell for at least its row's); `table_rows` says how TextKit turns those claims into
+    // row heights, merged cells included.
+    let needs: Vec<RowNeed> = table
+        .cells
+        .iter()
+        .zip(&cells)
+        .map(|(cell, laid)| {
+            let span = cell.row_span.max(1);
+            let need = match cell.declared_height {
+                // A band the document drew that tall: the declaration already counts both paddings and
+                // the line, so it replaces their sum.
+                Some(declared) if span == 1 && declared > 0.0 && !has_content(cell) => declared,
+                _ => {
+                    let mut need = laid.height + cell.v_padding;
+                    if span == 1 {
+                        if let Some(floor) = cell.min_row_height {
+                            if floor > 0.0 && single_text_line(cell) {
+                                need = need.max(floor);
+                            }
+                        }
                     }
+                    need
                 }
-                need
-            }
-        };
-        if need > row_heights[cell.row] {
-            row_heights[cell.row] = need;
-        }
-    }
+            };
+            RowNeed { row: cell.row, span, need }
+        })
+        .collect();
     let base = table.empty_line + table.row_padding;
-    for h in row_heights.iter_mut() {
-        if *h <= 0.0 {
-            *h = base;
-        }
-    }
-    for (cell, laid) in table.cells.iter().zip(&cells) {
-        if cell.row_span <= 1 {
-            continue;
-        }
-        let span = cell.row_span.min(rows - cell.row);
-        if span == 0 {
-            continue;
-        }
-        let covered: f64 = row_heights[cell.row..cell.row + span].iter().sum();
-        let need = laid.height + cell.v_padding;
-        if need > covered {
-            let extra = (need - covered) / span as f64;
-            for h in &mut row_heights[cell.row..cell.row + span] {
-                *h += extra;
-            }
-        }
-    }
+    let row_heights = table_rows::row_heights(rows, &needs, &vec![base; rows]);
     Ok(TableLayout { row_heights, cells })
 }
 
@@ -602,13 +587,23 @@ mod tests {
     }
 
     #[test]
-    fn a_merged_cells_excess_is_shared_across_the_rows_it_covers() {
+    fn a_merged_cells_shortfall_goes_to_the_last_row_it_covers() {
         let tall = cell(0, 2, vec![text(vec![para(&[20.0, 20.0, 20.0, 20.0], None, 10.0, false)])]);
         let a = cell(0, 1, vec![text(vec![para(&[10.0], None, 10.0, false)])]);
         let b = cell(1, 1, vec![text(vec![para(&[10.0], None, 10.0, false)])]);
         let solved = solve_table(&table(2, false, vec![tall, a, b]), None).unwrap();
-        // rows start at 14 + 14; the merged cell needs 84, so 56 more: 28 each.
-        assert_eq!(solved.row_heights, vec![42.0, 42.0]);
+        // rows start at 14 + 14; the merged cell needs 84, so 56 more, all on the second row (the
+        // TextKit rule measured on the 편람's table 3120).
+        assert_eq!(solved.row_heights, vec![14.0, 70.0]);
+    }
+
+    #[test]
+    fn a_row_only_a_merged_cell_begins_in_is_as_tall_as_nothing() {
+        let tall = cell(0, 2, vec![text(vec![para(&[20.0], None, 10.0, false)])]);
+        let b = cell(1, 1, vec![text(vec![para(&[10.0], None, 10.0, false)])]);
+        let solved = solve_table(&table(2, false, vec![tall, b]), None).unwrap();
+        // The merged cell needs 24; row 1 stands at 14 and takes the 10 the pair is short.
+        assert_eq!(solved.row_heights, vec![0.0, 24.0]);
     }
 
     #[test]

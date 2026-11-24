@@ -297,7 +297,7 @@ mod tests {
                 l
             })
             .collect();
-        PlanCell { row_span: 1, pad_top, pad_bottom, content_height: top, lines }
+        PlanCell { row_span: 1, pad_top, pad_bottom, content_height: top, vertical_align: Default::default(), lines }
     }
 
     fn row(height: f64, can_break_above: bool, cells: Vec<PlanCell>) -> PlanRow {

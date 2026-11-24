@@ -107,7 +107,7 @@ public static class PageSheetsResolver
 /// <summary><paramref name="Flowed"/> marks a table piece the plan cut through the middle of its rows
 /// (a table that fits no page): its rows are drawn from <see cref="PageLayoutResult.Flowed"/>, not whole.</summary>
 public readonly record struct PagedBlock(int BlockIndex, int PageIndex, double LocalTopPoints, double HeightPoints,
-    int? RowRangeStart = null, int? RowRangeCount = null, bool Flowed = false);
+    int? RowRangeStart = null, int? RowRangeCount = null, bool Flowed = false, int? Column = null);
 
 /// <summary>One row's box on one page of a flowed table, in page-local points.</summary>
 internal readonly record struct FlowSegment(double Top, double Bottom);
@@ -154,7 +154,14 @@ public sealed class FlowedTables
 
     internal bool TryGetLine(int block, int row, int cell, int line, int page, out double top) =>
         _lines.TryGetValue((block, row, cell, line, page), out top);
+
+    /// <summary>The "page" a table of a columned run is keyed by: one region per column of a page.</summary>
+    public static int RegionKey(int page, int column) => page * 64 + column;
 }
+
+/// <summary>One column of one page a table of a columned run reaches, and the extent its rows have
+/// there (page-local points).</summary>
+public readonly record struct ColumnRegion(int BlockIndex, int PageIndex, int Column, double TopPoints = 0, double HeightPoints = 0);
 
 /// <summary>E2c-1b: one TEXT LINE's placement — the granularity PageBandLayoutDelegate.swift
 /// shifts at on macOS. A text block ("paragraph"/"heading"/"listItem"/... FlowDocumentBuilder
@@ -165,7 +172,7 @@ public sealed class FlowedTables
 /// draw time at pixel scale — see PageModePainter's own doc for why the two layouts wrap
 /// identically) — never a global line number.</summary>
 public readonly record struct PagedLine(int BlockIndex, int LineIndex, int PageIndex, double LocalTopPoints, double HeightPoints,
-    int FirstChar = 0, int Length = 0);
+    int FirstChar = 0, int Length = 0, int? Column = null);
 
 /// <summary>The result of one pagination pass: how many pages, the page content box, and where
 /// every block/line landed.</summary>
@@ -204,6 +211,15 @@ public sealed class PageLayoutResult
     /// citation order. Empty for a document with no notes.</summary>
     public IReadOnlyDictionary<int, double> NoteBands { get; init; } = new Dictionary<int, double>();
     public IReadOnlyDictionary<int, List<long>> NotesByPage { get; init; } = new Dictionary<int, List<long>>();
+    /// <summary>The columns of each multi-column declaration, as the engine laid them across the body
+    /// (<see cref="PlannedColumn.X"/> from the body's left edge). A block's run is
+    /// <see cref="BlockColumnRun"/>; a text line's column is <see cref="PagedLine.Column"/>.</summary>
+    public IReadOnlyList<IReadOnlyList<PlannedColumn>> ColumnRuns { get; init; } = Array.Empty<IReadOnlyList<PlannedColumn>>();
+    /// <summary>Per block, the declaration it sits under when that declaration splits the text.</summary>
+    public IReadOnlyList<int?> BlockColumnRun { get; init; } = Array.Empty<int?>();
+    /// <summary>The columns of a page that hold part of a table of a columned run; such a table is
+    /// drawn from <see cref="Flowed"/> under <see cref="FlowedTables.RegionKey"/>.</summary>
+    public IReadOnlyList<ColumnRegion> ColumnTables { get; init; } = Array.Empty<ColumnRegion>();
 }
 
 /// <summary>One page's furniture as the plan answered it. <see cref="Header"/>, <see cref="Footer"/>
@@ -287,6 +303,42 @@ public static class PageLayout
         var band = PageBandResolver.Resolve(engineHandle, geometry, contentWidth, headersOn, footersOn,
             separatesPages: true, deskGapPoints: null);
 
+        // Multi-column runs: a run lasts from one declaration to the next. The engine says what columns
+        // a declaration makes at this body width; a text or table block is then measured at the first
+        // column's width, as the reader builds a columned block (invariant 144).
+        var runInputs = new List<PlanColumnRunInput>();
+        var declaredRun = new int?[blocks.Count];
+        if (markers.ColumnFlow is { } flows)
+        {
+            int? current = null;
+            for (var i = 0; i < blocks.Count; i++)
+            {
+                if (i < flows.Length && flows[i] is { } flow)
+                {
+                    runInputs.Add(new PlanColumnRunInput
+                    {
+                        Count = (int)flow.Count, Spacing = flow.SpacingPoints, Widths = flow.Widths, Gaps = flow.Gaps,
+                        Proportional = flow.SourceProportionalWidths,
+                    });
+                    current = runInputs.Count - 1;
+                }
+                declaredRun[i] = current;
+            }
+        }
+        PlanColumnsInput? columns = null;
+        IReadOnlyList<IReadOnlyList<PlannedColumn>> runColumns = Array.Empty<IReadOnlyList<PlannedColumn>>();
+        if (runInputs.Count > 0)
+        {
+            columns = new PlanColumnsInput { BodyWidth = contentWidth, Runs = runInputs };
+            runColumns = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, null, Array.Empty<PlanBlockInput>(),
+                band.BandPoints, null, columns).ColumnRuns;
+        }
+        var blockRun = new int?[blocks.Count];
+        for (var i = 0; i < blocks.Count; i++)
+        {
+            if (declaredRun[i] is { } r && r < runColumns.Count && runColumns[r].Count >= 2) { blockRun[i] = r; }
+        }
+
         var inputs = new List<PlanBlockInput>(blocks.Count);
         var shapes = new TextShape?[blocks.Count];
         // Every text block's natural line boxes go to the engine's line model in ONE call; it answers
@@ -311,7 +363,8 @@ public static class PageLayout
             // shows which number.
             var hidesNumber = markers.HidesPageNumber is { } hides && i < hides.Length && hides[i];
             var numberRestart = markers.PageNumberRestart is { } restarts && i < restarts.Length ? restarts[i] : null;
-            var widthForBlock = Math.Max(1, contentWidth - block.IndentPoints);
+            var blockWidth = blockRun[i] is { } run ? runColumns[run][0].Width : contentWidth;
+            var widthForBlock = Math.Max(1, blockWidth - block.IndentPoints);
 
             if (block.Kind == FlowBlockKind.Text)
             {
@@ -328,7 +381,7 @@ public static class PageLayout
                     {
                         Key = key, Kind = "text", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
                         KeepWithNext = keepWithNext, Empty = true,
-                        PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
+                        PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber, ColumnRun = blockRun[i],
                     });
                     continue;
                 }
@@ -353,7 +406,7 @@ public static class PageLayout
                     KeepWithNext = keepWithNext, Empty = empty, SpacingBefore = block.SpacingBeforePoints,
                     SpacingAfter = block.SpacingAfterPoints,
                     PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
-                    Cites = settlesNotes ? TextCites(block, shape) : null,
+                    Cites = settlesNotes ? TextCites(block, shape) : null, ColumnRun = blockRun[i],
                 });
                 continue;
             }
@@ -364,7 +417,8 @@ public static class PageLayout
                 var canBreak = TableSettle.RowsThatCanBreakAbove(table);
                 // A table taller than the page body is flowed line by line by the plan, which needs each
                 // cell's lines; every other table is placed from its rows alone.
-                var flowable = rowHeights.Sum() > contentHeight;
+                // (A table of a columned run is dealt cell line by cell line too.)
+                var flowable = rowHeights.Sum() > contentHeight || blockRun[i] is not null;
                 inputs.Add(new PlanBlockInput
                 {
                     Key = key, Kind = "table", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
@@ -374,7 +428,7 @@ public static class PageLayout
                     RowCells = flowable ? TableGridRenderer.FlowFacts(table, widthForBlock, imageRenderer, splitTables) : null,
                     KeepsWhole = i < markers.TableKeepsWhole.Length && markers.TableKeepsWhole[i],
                     PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
-                    Cites = settlesNotes ? BlockCites(block) : null,
+                    Cites = settlesNotes ? BlockCites(block) : null, ColumnRun = blockRun[i],
                 });
                 continue;
             }
@@ -383,7 +437,7 @@ public static class PageLayout
             {
                 Key = key, Kind = "atomic", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
                 Height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer, splitTables),
-                PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
+                PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber, ColumnRun = blockRun[i],
             });
         }
 
@@ -405,7 +459,7 @@ public static class PageLayout
             inputs[inputIndex].Trailing = answer.Trailing;
         }
 
-        var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs, band.BandPoints, furniture);
+        var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs, band.BandPoints, furniture, columns);
 
         var blockPlacements = new List<PagedBlock>(plan.Placements.Count);
         foreach (var placed in plan.Placements)
@@ -413,21 +467,47 @@ public static class PageLayout
             var hasRows = blocks[placed.Block].Kind == FlowBlockKind.Table && blocks[placed.Block].Table is not null;
             blockPlacements.Add(new PagedBlock(placed.Block, placed.Page, placed.Top, placed.Height,
                 RowRangeStart: hasRows ? placed.RowStart : null, RowRangeCount: hasRows ? placed.RowCount : null,
-                Flowed: placed.Flowed));
+                Flowed: placed.Flowed, Column: placed.Column));
         }
         FlowedTables? flowed = null;
-        if (plan.RowSegments.Count > 0)
+        var columnTables = new List<ColumnRegion>();
+        if (plan.RowSegments.Count > 0 || plan.ColumnRowSegments.Count > 0)
         {
             flowed = new FlowedTables();
             foreach (var segment in plan.RowSegments) { flowed.Add(segment); }
-            foreach (var line in plan.CellLines) { flowed.Add(line); }
+            foreach (var line in plan.CellLines)
+            {
+                // A table of a columned run keeps its lines per column of a page.
+                if (plan.ColumnCellLines.TryGetValue((line.Block, line.Row, line.Cell, line.Line), out var lineColumn))
+                {
+                    flowed.Add(line with { Page = FlowedTables.RegionKey(line.Page, lineColumn) });
+                }
+                else { flowed.Add(line); }
+            }
+            var extents = new Dictionary<(int Block, int Page, int Column), (double Top, double Bottom)>();
+            foreach (var segment in plan.ColumnRowSegments)
+            {
+                flowed.Add(new PlannedRowSegment(segment.Block, segment.Row, FlowedTables.RegionKey(segment.Page, segment.Column),
+                    segment.Top, segment.Bottom));
+                var key = (segment.Block, segment.Page, segment.Column);
+                extents[key] = extents.TryGetValue(key, out var known)
+                    ? (Math.Min(known.Top, segment.Top), Math.Max(known.Bottom, segment.Bottom))
+                    : (segment.Top, segment.Bottom);
+            }
+            foreach (var (key, extent) in extents)
+            {
+                columnTables.Add(new ColumnRegion(key.Block, key.Page, key.Column, extent.Top, extent.Bottom - extent.Top));
+            }
+            columnTables.Sort((a, b) => a.PageIndex != b.PageIndex ? a.PageIndex.CompareTo(b.PageIndex)
+                : a.Column != b.Column ? a.Column.CompareTo(b.Column) : a.BlockIndex.CompareTo(b.BlockIndex));
         }
         var linePlacements = new List<PagedLine>(plan.Lines.Count);
         foreach (var placed in plan.Lines)
         {
             var shape = shapes[placed.Block]!;
             linePlacements.Add(new PagedLine(placed.Block, placed.Line, placed.Page, placed.Top,
-                shape.Heights[placed.Line], shape.FirstChars[placed.Line], shape.Lengths[placed.Line]));
+                shape.Heights[placed.Line], shape.FirstChars[placed.Line], shape.Lengths[placed.Line],
+                plan.ColumnLines.TryGetValue((placed.Block, placed.Line), out var lineColumn) ? lineColumn : null));
         }
 
         var pageSectionIndex = new int[plan.PageCount];
@@ -450,6 +530,9 @@ public static class PageLayout
             Sheets = plan.Pages.Select(p => new PageSheet(p.Number, p.NumberHidden, p.Header, p.Footer, p.Master)).ToList(),
             NoteBands = plan.NoteBands,
             NotesByPage = plan.NotesByPage,
+            ColumnRuns = runColumns.Count > 0 ? plan.ColumnRuns : runColumns,
+            BlockColumnRun = blockRun,
+            ColumnTables = columnTables,
         };
     }
 

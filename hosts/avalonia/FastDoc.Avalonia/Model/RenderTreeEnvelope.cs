@@ -482,6 +482,23 @@ public sealed class TextRunPayload
     /// <summary>`wire::TextRun.formControl` — an inline HWP form control; its visible glyph text is
     /// already this run's <see cref="Text"/> (macOS draws nothing beyond that span either).</summary>
     [JsonPropertyName("formControl")] public FormControlWire? FormControl { get; set; }
+    /// <summary>`wire::TextRun.columnFlow` — the multi-column declaration that begins at this run: the
+    /// text from here to the next declaration is laid out at a column's width and dealt into columns
+    /// by the page plan.</summary>
+    [JsonPropertyName("columnFlow")] public ColumnFlowWire? ColumnFlow { get; set; }
+}
+
+/// <summary>`wire::ColumnFlowDeclaration` — what a document declares at the start of a columned run.
+/// Only what the page plan's geometry needs is mirrored; the plan owns every decision about it.
+/// <see cref="Widths"/>/<see cref="Gaps"/> are points (HWPX) or shares of the whole
+/// (<see cref="SourceProportionalWidths"/>, HWP 5).</summary>
+public sealed class ColumnFlowWire
+{
+    [JsonPropertyName("count")] public uint Count { get; set; }
+    [JsonPropertyName("spacingPoints")] public double SpacingPoints { get; set; }
+    [JsonPropertyName("widths")] public List<double> Widths { get; set; } = new();
+    [JsonPropertyName("gaps")] public List<double> Gaps { get; set; } = new();
+    [JsonPropertyName("sourceProportionalWidths")] public bool SourceProportionalWidths { get; set; }
 }
 
 /// <summary>`wire::InlineFormControl` / `wire::FormControl` — a read-only form control's kind,
