@@ -42,13 +42,19 @@ pub struct PlanSeparator {
 }
 
 /// A note a block cites. `line` is the line of a text block holding the marker; a block with no
-/// lines of its own to point at (a table, a picture) is cited from where it starts.
+/// lines of its own to point at (a picture, a table carried or cut at its rows) is cited from where
+/// it starts; a flowed table names the cell line (`cell`).
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanCite {
     pub note: i64,
     #[serde(default)]
     pub line: Option<u32>,
+    /// A marker in a table the reader flows line by line: `[row, cell, line]` of the cell line that
+    /// holds it. The note is cited from the page that line stands on, not from where the table
+    /// starts.
+    #[serde(default)]
+    pub cell: Option<[u32; 3]>,
 }
 
 /// Page → the notes it cites, in citation order.

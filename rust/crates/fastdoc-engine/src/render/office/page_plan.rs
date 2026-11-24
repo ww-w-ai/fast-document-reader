@@ -52,7 +52,7 @@ use super::plan_footnotes::{self as notes, Bands, NotesByPage, PlanCite, PlanNot
 use super::plan_furniture::{applicable_entry, displayed_numbers, master_pages, PlanEntry};
 use super::footnote_band_settle::{FootnoteBandSettle, Outcome};
 pub use super::table_flow::{CellLinePlacement, RowSegment};
-use super::table_flow::{flow_table, has_cells, orphan_runs, FlowGeometry, LinePath, PlacedLines, MAX_ROUNDS};
+use super::table_flow::{flow_table, has_cells, orphan_runs, FlowGeometry, LinePath, PageGrid, PlacedLines, MAX_ROUNDS};
 
 /// Layouts the plan replays before taking the last as it stands: the reader's settle budget per
 /// loop (`table_flow::MAX_ROUNDS`, `maxPagedTableSettles`) times the outer alternation of tables and
@@ -566,12 +566,13 @@ fn plan_core(input: &PlanInput, honoured: &[bool], bands: &HashMap<u32, f64>) ->
     // the tables the passes before it recorded.
     let mut pulled: BTreeSet<(u32, LinePath)> = BTreeSet::new();
     let mut known: BTreeSet<u32> = BTreeSet::new();
+    let grid = PageGrid { pitch: input.content_height + input.band, leading: input.leading_band };
     for round in 1..=SETTLE_PASSES {
         let mode = if round == 1 { Mode::Natural } else { Mode::Settled };
         let pass = run_pass(input, honoured, mode, &pulled, &known, bands);
         let mut added = false;
         for table in &pass.flowed {
-            for path in orphan_runs(&input.blocks[table.block as usize].rows, &table.lines) {
+            for path in orphan_runs(&grid, &input.blocks[table.block as usize].rows, &table.lines) {
                 added |= pulled.insert((table.block, path));
             }
         }
@@ -641,7 +642,16 @@ fn assign_notes(input: &PlanInput, state: &State) -> NotesByPage {
                     let at = cite.line.map_or(0, |l| l as usize).min(pages.len().saturating_sub(1));
                     pages.get(at).copied()
                 }),
-                _ => first.get(&(index as u32)).copied(),
+                _ => cite
+                    .cell
+                    .and_then(|[row, cell, line]| {
+                        state
+                            .cell_lines
+                            .iter()
+                            .find(|l| l.0 == index as u32 && l.1 == row && l.2 == cell && l.3 == line)
+                            .map(|l| l.4)
+                    })
+                    .or_else(|| first.get(&(index as u32)).copied()),
             };
             if let Some(page) = page {
                 citations.push((page, index, order, cite.note));
@@ -2022,7 +2032,7 @@ mod tests {
     }
 
     fn cited(mut block: PlanBlock, notes: &[(i64, u32)]) -> PlanBlock {
-        block.cites = notes.iter().map(|&(note, line)| PlanCite { note, line: Some(line) }).collect();
+        block.cites = notes.iter().map(|&(note, line)| PlanCite { note, line: Some(line), cell: None }).collect();
         block
     }
 
@@ -2053,6 +2063,21 @@ mod tests {
         // re-taken assignment is adopted only when its bands are already covered: it is not, so the
         // note stays on the page the stopping round saw it on.
         assert_eq!(plan.notes_by_page, vec![(0, vec![1])]);
+    }
+
+    #[test]
+    fn a_marker_in_a_flowed_table_is_cited_from_the_page_of_its_own_line() {
+        // Ten 20pt lines flow over pages 0 and 1 after a 20pt line; the marker is on the sixth, which
+        // stands on page 1. Without the cell line the note is cited from where the table starts.
+        let cite_at = |cell: Option<[u32; 3]>| {
+            let mut table = flow_table_block(2, vec![(200.0, vec![flow_cell(&[20.0; 10])])]);
+            table.cites = vec![PlanCite { note: 1, line: None, cell }];
+            let mut plan_input = input(100.0, vec![text(1, &[20.0]), table]);
+            plan_input.notes = vec![PlanNote { number: 1, height: 10.0 }];
+            plan_pages(&plan_input).unwrap().notes_by_page
+        };
+        assert_eq!(cite_at(None), vec![(0, vec![1])]);
+        assert_eq!(cite_at(Some([0, 0, 5])), vec![(1, vec![1])]);
     }
 
     #[test]

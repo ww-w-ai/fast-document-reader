@@ -467,8 +467,10 @@ enum PagePlanShadow {
             if let restart { block["pageNumberRestart"] = restart }
             if hides { block["hidesPageNumber"] = true }
             var cites: [[String: Any]] = []
+            var citeLocations: [Int] = []
             storage.enumerateAttribute(MDAttr.footnoteRef, in: extentRange) { value, range, _ in
                 guard let number = (value as? NSNumber)?.intValue else { return }
+                citeLocations.append(range.location)
                 var cite: [String: Any] = ["note": number]
                 if !isTable, let line = frags.lastIndex(where: { $0.location <= range.location }) { cite["line"] = line }
                 cites.append(cite)
@@ -491,7 +493,12 @@ enum PagePlanShadow {
             let top = isTable ? frags.map(\.top).min()! : first.rect.minY
             let topPage = page(of: top)
             var gap: CGFloat = 0
-            if let previousBottom, previousPage == topPage { gap = max(0, top - previousBottom) }
+            // A table's own top can sit in the band below a page's foot while its first line, which
+            // the page rule carried over, stands on the next page: that distance is the band, not
+            // spacing, so it is the first line's page that must agree.
+            if let previousBottom, previousPage == topPage, page(of: first.rect.minY) == topPage {
+                gap = max(0, top - previousBottom)
+            }
             if gap > 0.001 { block["spacingBefore"] = gap }
             // A section that really opened its own sheet in the reader's layout names its section to
             // the plan. One whose break the reader dropped (invariant 147) or that continued on the
@@ -600,6 +607,18 @@ enum PagePlanShadow {
                                          page: page, leading: leading, pitch: pitch, refs: &measured)
                     // Positions in the stack of a columned run are not the plan's final ones.
                     if inColumnRun { columnCellRefs.append(contentsOf: measured) } else { cellLineRefs.append(contentsOf: measured) }
+                    // A marker in a table the reader flows stands on the page of ITS line, not of the
+                    // table's start: name the cell line that holds it (a marker in a nested table
+                    // names none, and is cited from where the table starts).
+                    if !inColumnRun, !cites.isEmpty, cites.count == citeLocations.count {
+                        for (n, marker) in citeLocations.enumerated() {
+                            guard let holder = frags.last(where: { $0.location <= marker }),
+                                  holder.chain.count == 1,
+                                  let ref = measured.first(where: { $0.loc == holder.location }) else { continue }
+                            cites[n]["cell"] = [ref.row, ref.cell, ref.line]
+                        }
+                        block["cites"] = cites
+                    }
                     if built.rows.count == rowEntries.count {
                         for position in rowEntries.indices {
                             rowEntries[position]["observedHeight"] = rowEntries[position]["height"]

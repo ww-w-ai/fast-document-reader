@@ -266,22 +266,53 @@ fn push_segments(
     out.push(RowSegment(block, row, page, top, to.1.max(top)));
 }
 
+/// The page grid the reader bins a line by: `pitch` is a page's body plus the band after it, and
+/// `leading` the band above the first page. The default (no pitch) files every line under its own
+/// page.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PageGrid {
+    pub pitch: f64,
+    pub leading: f64,
+}
+
+impl PageGrid {
+    /// The page the reader's `orphanRunStarts` files a line under, and the line's top on that page.
+    ///
+    /// It divides the line's absolute offset by the pitch and floors, with no tolerance. A line the
+    /// page rule moved to the top of page `k` stands at `k * pitch + leading`, and the reader
+    /// subtracts `leading` again before dividing; that round trip loses the last bit for some grids,
+    /// so the line is filed under page `k - 1`, a full pitch below its top. The reader's run counts
+    /// follow that filing, so the plan's must.
+    fn filed(&self, page: u32, top: f64) -> (u32, f64) {
+        if top != 0.0 || page == 0 || !(self.pitch > 0.0) {
+            return (page, top);
+        }
+        let landed = f64::from(page) * self.pitch + self.leading;
+        let offset = landed - self.leading;
+        if (offset / self.pitch).floor() < f64::from(page) {
+            return (page - 1, self.pitch);
+        }
+        (page, top)
+    }
+}
+
 /// The first line of every run of three lines or fewer a group leaves at a page's foot while it
 /// continues on the next.
-pub fn orphan_runs(rows: &[PlanRow], lines: &[(LinePath, u32, f64)]) -> Vec<LinePath> {
+pub fn orphan_runs(grid: &PageGrid, rows: &[PlanRow], lines: &[(LinePath, u32, f64)]) -> Vec<LinePath> {
     let group_of = group_starts(rows);
-    // (group, page) -> lines
-    let mut runs: BTreeMap<(usize, u32), Vec<&(LinePath, u32, f64)>> = BTreeMap::new();
+    // (group, page) -> lines, each with the top it is filed at
+    let mut runs: BTreeMap<(usize, u32), Vec<(&LinePath, f64)>> = BTreeMap::new();
     for line in lines {
-        runs.entry((group_of[line.0[0] as usize], line.1)).or_default().push(line);
+        let (page, top) = grid.filed(line.1, line.2);
+        runs.entry((group_of[line.0[0] as usize], page)).or_default().push((&line.0, top));
     }
     let mut out = Vec::new();
     for (&(group, page), members) in &runs {
         if members.len() > MAX_ORPHAN_RUN || !runs.contains_key(&(group, page + 1)) {
             continue;
         }
-        let first = members.iter().min_by(|a, b| a.0.cmp(&b.0)).expect("a run has a line");
-        if first.2 > NOT_AT_TOP {
+        let first = members.iter().min_by(|a, b| a.0.cmp(b.0)).expect("a run has a line");
+        if first.1 > NOT_AT_TOP {
             out.push(first.0.clone());
         }
     }
@@ -340,7 +371,7 @@ mod tests {
         loop {
             let (flow, lines) = flow_table(&g, 0, &block, start, &pulled, true);
             let before = pulled.len();
-            pulled.extend(orphan_runs(&block.rows, &lines));
+            pulled.extend(orphan_runs(&PageGrid::default(), &block.rows, &lines));
             if pulled.len() == before {
                 return (flow, pulled.len());
             }
@@ -547,6 +578,41 @@ mod tests {
         assert_eq!((first.lines[0].4, first.lines[0].5), (0, 60.0));
         let (later, _) = flow_table(&g, 0, &block, (0, 60.0), &pulled, true);
         assert_eq!((later.lines[0].4, later.lines[0].5), (1, 0.0), "a later layout applies the pull");
+    }
+
+    /// A grid whose page-6 top does not survive the reader's `(6 * pitch + leading) - leading`
+    /// round trip: 700.18 + 141.7 and a 70.85 leading band.
+    fn lossy_grid() -> PageGrid {
+        let grid = PageGrid { pitch: 700.18 + 141.7, leading: 70.85 };
+        let landed = 6.0 * grid.pitch + grid.leading;
+        assert!(((landed - grid.leading) / grid.pitch).floor() < 6.0, "the grid must lose the bit");
+        grid
+    }
+
+    /// One row, one cell: a run of lines on page 5 and the line the page rule moved to page 6's top.
+    fn stranded_with_a_moved_line() -> (PlanBlock, Vec<(LinePath, u32, f64)>) {
+        let block = table(vec![row(0.0, false, vec![cell(&[10.0; 8], 0.0, 0.0)])]);
+        let line = |i: u32, page: u32, top: f64| (vec![0, 0, i], page, top);
+        let lines = vec![line(0, 5, 650.0), line(1, 5, 660.0), line(2, 5, 670.0), line(3, 6, 0.0), line(4, 6, 10.0)];
+        (block, lines)
+    }
+
+    #[test]
+    fn a_line_moved_to_a_page_top_is_filed_under_the_page_above_when_the_grid_loses_a_bit() {
+        // Three lines at the foot of page 5 and the moved one at page 6's top: the reader files the
+        // fourth under page 5, so the run is four lines and nothing is stranded.
+        let (block, lines) = stranded_with_a_moved_line();
+        assert!(orphan_runs(&lossy_grid(), &block.rows, &lines).is_empty());
+        // Where the grid keeps the bit the line stays on its own page and the three are stranded.
+        let exact = PageGrid { pitch: 100.0, leading: 0.0 };
+        assert_eq!(orphan_runs(&exact, &block.rows, &lines), vec![vec![0, 0, 0]]);
+    }
+
+    #[test]
+    fn a_line_below_a_page_top_is_never_refiled() {
+        let (block, mut lines) = stranded_with_a_moved_line();
+        lines[3].2 = 0.5;
+        assert_eq!(orphan_runs(&lossy_grid(), &block.rows, &lines), vec![vec![0, 0, 0]]);
     }
 
     #[test]
