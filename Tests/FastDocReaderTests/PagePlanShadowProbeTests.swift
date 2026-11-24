@@ -82,7 +82,11 @@ final class PagePlanShadowProbeTests: XCTestCase {
             wc.textView.layoutManager?.ensureLayout(for: wc.textView.textContainer!)
             PagePlanShadow.layOutForPrint(wc)
             let started = Date()
-            let result = PagePlanShadow.run(controller: wc)
+            // FMD_PLAN_SHADOW_NATURAL=1: the plan is asked from a layout nobody paginated (S6b2-0a,
+            // `PlanObservation`), and is still compared with the pages TextKit's reader printed.
+            let natural = env["FMD_PLAN_SHADOW_NATURAL"] == "1"
+            report.append("SHADOW observation: \(natural ? "natural" : "paginated")")
+            let result = PagePlanShadow.run(controller: wc, natural: natural)
             let elapsed = Date().timeIntervalSince(started)
             report.append("SHADOW \(url.lastPathComponent)")
             if let reason = result.skippedReason { report.append("SHADOW   skipped: \(reason)"); report.append("SHADOW print pages: \(result.macPages)") }

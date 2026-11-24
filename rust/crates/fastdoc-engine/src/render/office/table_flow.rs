@@ -342,7 +342,7 @@ mod tests {
         let lines: Vec<PlanLine> = lines
             .iter()
             .map(|&h| {
-                let l = PlanLine { top, height: h, trailing: 0.0, rows: Vec::new() };
+                let l = PlanLine { top, height: h, trailing: 0.0, rows: Vec::new(), loc: None };
                 top += h;
                 l
             })
@@ -552,7 +552,7 @@ mod tests {
             row(40.0, true, vec![cell(&[40.0], 0.0, 0.0)]),
         ];
         let mut outer = cell(&[], 0.0, 0.0);
-        outer.lines.push(PlanLine { top: 0.0, height: 120.0, trailing: 0.0, rows: nested });
+        outer.lines.push(PlanLine { top: 0.0, height: 120.0, trailing: 0.0, rows: nested, loc: None });
         outer.content_height = 120.0;
         let flow = run(100.0, 20.0, (0, 0.0), vec![row(120.0, false, vec![outer])]);
         assert_eq!(flow.end, (1, 40.0));

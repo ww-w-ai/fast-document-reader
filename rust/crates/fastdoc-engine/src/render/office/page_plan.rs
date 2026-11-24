@@ -104,6 +104,9 @@ pub struct PlanLine {
     /// A table nested in the cell, standing where this line would: it flows by the same rule.
     #[serde(default)]
     pub rows: Vec<PlanRow>,
+    /// The host's character location of this line. Opaque to the plan.
+    #[serde(default)]
+    pub loc: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -239,6 +242,32 @@ pub struct PlanBlock {
     /// blocks naming the same one are laid out as one run.
     #[serde(default)]
     pub column_run: Option<u32>,
+    /// The block opens a document section, a FACT the host observed (natural observation only). The
+    /// engine decides whether it opens a sheet: with a hard break before it, it does; without, the
+    /// section is named from the next sheet on (`section_start` / `section_marker`).
+    #[serde(default)]
+    pub section: bool,
+    /// Text: the host's character location of each line, parallel to `lines`. Opaque to the plan.
+    #[serde(default)]
+    pub line_locs: Vec<i64>,
+    /// Table: the host's location of its first line, and how far that line's proposed top stands
+    /// below the table's top. Opaque to the plan.
+    #[serde(default)]
+    pub first_loc: Option<i64>,
+    #[serde(default)]
+    pub first_line_inset: f64,
+}
+
+/// What the host's observation was taken from.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanObservation {
+    /// A layout nobody paginated: no field carries a decision of the host's own page rule, and
+    /// `PlanBlock::section` is decided here.
+    Natural,
+    /// A layout the host's page rule already placed (the shadow's first form).
+    #[default]
+    Paginated,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -285,6 +314,11 @@ pub struct PlanInput {
     pub notes: Vec<PlanNote>,
     #[serde(default)]
     pub separators: Vec<PlanSeparator>,
+    #[serde(default)]
+    pub observation: PlanObservation,
+    /// The blocks are a prefix of the document, observed for a first paint.
+    #[serde(default)]
+    pub truncated: bool,
     pub blocks: Vec<PlanBlock>,
 }
 
@@ -405,6 +439,25 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
             return Err(PlanError(format!("block {index} carries a non-finite height")));
         }
     }
+    // A natural observation names a section as a fact; whether it opens a sheet is decided here.
+    let named;
+    let input = if input.observation == PlanObservation::Natural && input.blocks.iter().any(|b| b.section) {
+        let mut copy = input.clone();
+        // TextKit's rule drops a hard break whatever the paragraph beside it is (invariant 147): a
+        // section opens a sheet only when its own break survives that rule.
+        let standing = honoured_breaks(&copy.blocks);
+        for (index, block) in copy.blocks.iter_mut().enumerate().filter(|(_, b)| b.section && !b.section_start && !b.section_marker) {
+            if block.page_break_before && standing[index] {
+                block.section_start = true;
+            } else {
+                block.section_marker = true;
+            }
+        }
+        named = copy;
+        &named
+    } else {
+        input
+    };
     // A table the host described cell by cell, without having laid its rows out itself, is as tall as
     // TextKit makes it whatever heights the host summed (`table_rows.rs`): the rows are solved here,
     // from the cells.
@@ -1738,6 +1791,53 @@ mod tests {
     }
 
     #[test]
+    fn a_natural_observation_names_a_section_and_the_plan_decides_whether_it_opens_a_sheet() {
+        let named = |key: i64, hard_break: bool| {
+            let mut b = text(key, &[10.0]);
+            b.section = true;
+            b.page_break_before = hard_break;
+            b
+        };
+        let natural = |blocks| PlanInput { observation: PlanObservation::Natural, ..input(100.0, blocks) };
+        // With a hard break before it the section opens its own sheet.
+        let plan = plan_pages(&natural(vec![text(1, &[10.0]), named(2, true)])).unwrap();
+        assert_eq!(plan.page_count, 2);
+        assert_eq!(plan.pages.iter().map(|p| p.section).collect::<Vec<_>>(), vec![0, 1]);
+        // Without one it opens none, and names the section from the next sheet on.
+        let plan = plan_pages(&natural(vec![text(1, &[10.0]), named(2, false), text(3, &[95.0])])).unwrap();
+        assert_eq!(plan.page_count, 2);
+        assert_eq!(plan.pages.iter().map(|p| p.section).collect::<Vec<_>>(), vec![0, 1]);
+        // A section whose break the blank-paragraph rule drops opens no sheet of its own: the next
+        // break opens the page, and the section is named from there on.
+        let mut dropped = named(2, true);
+        dropped.empty = true;
+        let mut blank_between = text(3, &[10.0]);
+        blank_between.empty = true;
+        blank_between.page_break_before = true;
+        let plan = plan_pages(&natural(vec![text(1, &[10.0]), dropped, blank_between, text(4, &[10.0])])).unwrap();
+        assert_eq!(plan.page_count, 2, "one sheet break stands of the two");
+        // The paginated form ignores the fact: the host named the start itself.
+        let plan = plan_pages(&input(100.0, vec![text(1, &[10.0]), named(2, true)])).unwrap();
+        assert_eq!(plan.page_count, 2);
+        assert_eq!(plan.pages.iter().map(|p| p.section).collect::<Vec<_>>(), vec![0, 0]);
+    }
+
+    #[test]
+    fn the_locations_a_natural_observation_carries_are_accepted_and_change_nothing() {
+        let json = r#"{"planVersion":1,"contentHeight":100,"observation":"natural","truncated":false,
+            "blocks":[{"key":1,"kind":"text","lines":[60,60],"lineLocs":[0,14],"section":true},
+                      {"key":2,"kind":"table","firstLoc":30,"firstLineInset":2.5,
+                       "rows":[{"height":20,"cells":[{"lines":[{"top":0,"height":10,"loc":31}]}]}],"rowsObserved":true}]}"#;
+        let parsed: PlanInput = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.observation, PlanObservation::Natural);
+        assert_eq!(parsed.blocks[0].line_locs, vec![0, 14]);
+        assert_eq!(parsed.blocks[1].first_loc, Some(30));
+        assert_eq!(parsed.blocks[1].rows[0].cells[0].lines[0].loc, Some(31));
+        let plain: PlanInput = serde_json::from_str(&json.replace(r#","lineLocs":[0,14]"#, "").replace(r#","firstLoc":30,"firstLineInset":2.5"#, "").replace(r#","loc":31"#, "")).unwrap();
+        assert_eq!(plan_pages(&parsed).unwrap().lines, plan_pages(&plain).unwrap().lines);
+    }
+
+    #[test]
     fn keep_with_next_moves_a_block_that_starts_in_the_last_line_of_its_page() {
         let mut heading = text(2, &[20.0]);
         heading.keep_with_next = true;
@@ -1867,7 +1967,7 @@ mod tests {
         let lines = lines
             .iter()
             .map(|&h| {
-                let line = PlanLine { top, height: h, trailing: 0.0, rows: Vec::new() };
+                let line = PlanLine { top, height: h, trailing: 0.0, rows: Vec::new(), loc: None };
                 top += h;
                 line
             })
@@ -2106,7 +2206,7 @@ mod tests {
             content_height: 80.0,
             box_content: None,
             vertical_align: PlanAlign::Top,
-            lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested }],
+            lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested, loc: None }],
         };
         let table = columned(flow_table_block(1, vec![(80.0, vec![outer])]), 0);
         let mut plan_input = input(60.0, vec![table]);
@@ -2131,7 +2231,7 @@ mod tests {
             content_height: 80.0,
             box_content: None,
             vertical_align: PlanAlign::Top,
-            lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested }],
+            lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested, loc: None }],
         };
         let table = columned(flow_table_block(2, vec![(80.0, vec![outer])]), 0);
         let mut plan_input = input(100.0, vec![columned(text(1, &[40.0]), 0), table]);
@@ -2247,7 +2347,7 @@ mod tests {
         // The line standing for the nested table is 10 tall and the table solves to 30: the cell's
         // content, and what its box encloses, both grow by 20.
         let nested = vec![PlanRow { height: 30.0, can_break_above: false, cells: Vec::new() }];
-        let line = PlanLine { top: 0.0, height: 10.0, trailing: 0.0, rows: nested };
+        let line = PlanLine { top: 0.0, height: 10.0, trailing: 0.0, rows: nested, loc: None };
         let cell = PlanCell { content_height: 10.0, box_content: Some(8.0), lines: vec![line], ..flow_cell(&[]) };
         let mut rows = vec![PlanRow { height: 0.0, can_break_above: false, cells: vec![cell] }];
         settle_rows(&mut rows);
@@ -2361,7 +2461,7 @@ mod tests {
         // The same cell as the nesting test above (a line, a nest the host summed to 80 but solved to
         // 40, a line) in a columned run: the last line stands at 10 + 40, not 10 + 80.
         let nested = vec![PlanRow { height: 80.0, can_break_above: false, cells: vec![flow_cell(&[40.0])] }];
-        let line = |top, height| PlanLine { top, height, trailing: 0.0, rows: Vec::new() };
+        let line = |top, height| PlanLine { top, height, trailing: 0.0, rows: Vec::new(), loc: None };
         let outer = PlanCell {
             row_span: 1,
             pad_top: 0.0,
@@ -2369,7 +2469,7 @@ mod tests {
             content_height: 100.0,
             box_content: None,
             vertical_align: PlanAlign::Top,
-            lines: vec![line(0.0, 10.0), PlanLine { top: 10.0, height: 80.0, trailing: 0.0, rows: nested }, line(90.0, 10.0)],
+            lines: vec![line(0.0, 10.0), PlanLine { top: 10.0, height: 80.0, trailing: 0.0, rows: nested, loc: None }, line(90.0, 10.0)],
         };
         let table = columned(PlanBlock { kind: PlanKind::Table, rows: vec![PlanRow { height: 100.0, can_break_above: false, cells: vec![outer] }], ..text(1, &[]) }, 0);
         let mut plan_input = input(1000.0, vec![table]);
@@ -2410,7 +2510,7 @@ mod tests {
     }
 
     fn hanging_cell(box_content: f64) -> PlanCell {
-        let line = PlanLine { top: 0.0, height: 28.0, trailing: 8.0, rows: Vec::new() };
+        let line = PlanLine { top: 0.0, height: 28.0, trailing: 8.0, rows: Vec::new(), loc: None };
         PlanCell { content_height: 28.0, box_content: Some(box_content), lines: vec![line], ..flow_cell(&[]) }
     }
 
@@ -2428,7 +2528,7 @@ mod tests {
         // 15 lines of 10 on 100pt pages: ten on the first, five on the second, the last hanging 5 of
         // spacing below its box, with 1pt of padding under the cell.
         let below = |box_content: f64| {
-            let lines: Vec<PlanLine> = (0..15).map(|i| PlanLine { top: i as f64 * 10.0, height: 10.0, trailing: 0.0, rows: Vec::new() }).collect();
+            let lines: Vec<PlanLine> = (0..15).map(|i| PlanLine { top: i as f64 * 10.0, height: 10.0, trailing: 0.0, rows: Vec::new(), loc: None }).collect();
             let cell = PlanCell { pad_bottom: 1.0, content_height: 150.0, box_content: Some(box_content), lines, ..flow_cell(&[]) };
             let rows = vec![PlanRow { height: 146.0, can_break_above: false, cells: vec![cell] }];
             let table = PlanBlock { kind: PlanKind::Table, rows, ..text(1, &[]) };
@@ -2459,7 +2559,7 @@ mod tests {
         // A cell holds a 10pt line, a nested table the host summed to 80 (its one row's cell needs
         // only 40) and a 10pt line. The nest is 40, so the cell is 60 tall, not 100.
         let nested = vec![PlanRow { height: 80.0, can_break_above: false, cells: vec![flow_cell(&[40.0])] }];
-        let line = |top, height| PlanLine { top, height, trailing: 0.0, rows: Vec::new() };
+        let line = |top, height| PlanLine { top, height, trailing: 0.0, rows: Vec::new(), loc: None };
         let outer = PlanCell {
             row_span: 1,
             pad_top: 0.0,
@@ -2467,7 +2567,7 @@ mod tests {
             content_height: 100.0,
             box_content: None,
             vertical_align: PlanAlign::Top,
-            lines: vec![line(0.0, 10.0), PlanLine { top: 10.0, height: 80.0, trailing: 0.0, rows: nested }, line(90.0, 10.0)],
+            lines: vec![line(0.0, 10.0), PlanLine { top: 10.0, height: 80.0, trailing: 0.0, rows: nested, loc: None }, line(90.0, 10.0)],
         };
         let table = PlanBlock { kind: PlanKind::Table, rows: vec![PlanRow { height: 100.0, can_break_above: false, cells: vec![outer] }], ..text(1, &[]) };
         let plan = plan_pages(&input(1000.0, vec![table])).unwrap();

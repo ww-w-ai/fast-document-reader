@@ -166,7 +166,7 @@ enum PagePlanShadow {
                     itemTop = f.rect.minY
                     itemBottom = f.rect.maxY
                     itemHeight = f.rect.height
-                    item = ["height": Double(itemHeight), "trailing": Double(f.lineSpacing)]
+                    item = ["height": Double(itemHeight), "trailing": Double(f.lineSpacing), "loc": f.location]
                     if depth == 0 {
                         refs.append((block: blockIndex, row: at, cell: cellIndex, line: items.count,
                                      page: page(f.rect.minY), top: f.rect.minY - leading - CGFloat(page(f.rect.minY)) * pitch, loc: f.location))
@@ -360,7 +360,7 @@ enum PagePlanShadow {
 
     /// Runs the plan over `wc`'s finished layout. `nil` when the document is not paged or the engine
     /// answered no plan; the reason is in `Report.skippedReason`.
-    static func run(controller wc: DocumentWindowController) -> Report {
+    static func run(controller wc: DocumentWindowController, natural: Bool = false) -> Report {
         var report = Report()
         let delegate = wc.pageBandDelegate
         guard delegate.pageContentHeight > 0, let lm = wc.textView.layoutManager,
@@ -389,8 +389,11 @@ enum PagePlanShadow {
         }
 
         // ---- 1. one pass over the finished layout ----
-        var fragments: [Fragment] = []
         let storageText = storage.string as NSString
+        /// Every line fragment of a layout, in order, as the plan's host reads it. The visible layout
+        /// and the natural observer are read by this same function.
+        func collect(_ lm: NSLayoutManager, _ tc: NSTextContainer) -> [Fragment] {
+        var fragments: [Fragment] = []
         lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, usedRect, _, glyphRange, _ in
             let chars = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
             guard chars.location >= 0, chars.location < storage.length,
@@ -428,22 +431,43 @@ enum PagePlanShadow {
                                       spaceAfter: max(0, style?.paragraphSpacing ?? 0),
                                       chain: (style?.textBlocks ?? []).compactMap { $0 as? NSTextTableBlock }))
         }
+        return fragments
+        }
+        let fragments = collect(lm, tc)
         guard !fragments.isEmpty else { report.skippedReason = "no line fragments"; return report }
 
         // ---- 2. group into blocks, in document order ----
         struct Group { var id: Int; var range: Range<Int> }
-        var groups: [Group] = []
-        for (i, f) in fragments.enumerated() {
-            if let last = groups.last, last.id == f.blockId { groups[groups.count - 1].range = last.range.lowerBound..<(i + 1) }
-            else { groups.append(Group(id: f.blockId, range: i..<(i + 1))) }
+        func group(_ fragments: [Fragment]) -> [Group] {
+            var groups: [Group] = []
+            for (i, f) in fragments.enumerated() {
+                if let last = groups.last, last.id == f.blockId { groups[groups.count - 1].range = last.range.lowerBound..<(i + 1) }
+                else { groups.append(Group(id: f.blockId, range: i..<(i + 1))) }
+            }
+            return groups
         }
+        let groups = group(fragments)
         let text = storage.string as NSString
 
+        typealias CellRef = (block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)
+        struct Built {
+            var planBlocks: [[String: Any]] = []
+            var cellLineRefs: [CellRef] = []
+            var columnCellRefs: [CellRef] = []
+            var observed: [ObservedBlock] = []
+            var lineMacPages: [[Int]] = []      // per block, the page TextKit put each line on
+        }
+        /// Turns one layout's fragments into the plan's blocks. `natural` is a layout nobody
+        /// paginated (`PlanObservation`): every page-dependent read is gone — no band to take back
+        /// out of a row, no reader record deciding which table flows, a section named as a fact —
+        /// and the page function answers 0 for everything, so nothing is judged "moved".
+        func build(_ fragments: [Fragment], _ groups: [Group], natural: Bool, proposedTops: [Int: CGFloat] = [:]) -> Built {
+        func pageOf(_ y: CGFloat) -> Int { natural ? 0 : page(of: y) }
         var planBlocks: [[String: Any]] = []
-        var cellLineRefs: [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)] = []
-        var columnCellRefs: [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)] = []
+        var cellLineRefs: [CellRef] = []
+        var columnCellRefs: [CellRef] = []
         var observed: [ObservedBlock] = []
-        var lineMacPages: [[Int]] = []          // per block, the page TextKit put each line on
+        var lineMacPages: [[Int]] = []
         var previousBottom: CGFloat?
         var previousPage = -1
         for (groupIndex, group) in groups.enumerated() {
@@ -491,12 +515,12 @@ enum PagePlanShadow {
             // The gap TextKit left between this block and the one before it, when neither was moved
             // across a page boundary: that is the paragraph spacing the plan adds itself.
             let top = isTable ? frags.map(\.top).min()! : first.rect.minY
-            let topPage = page(of: top)
+            let topPage = pageOf( top)
             var gap: CGFloat = 0
             // A table's own top can sit in the band below a page's foot while its first line, which
             // the page rule carried over, stands on the next page: that distance is the band, not
             // spacing, so it is the first line's page that must agree.
-            if let previousBottom, previousPage == topPage, page(of: first.rect.minY) == topPage {
+            if let previousBottom, previousPage == topPage, pageOf( first.rect.minY) == topPage {
                 gap = max(0, top - previousBottom)
             }
             if gap > 0.001 { block["spacingBefore"] = gap }
@@ -504,7 +528,12 @@ enum PagePlanShadow {
             // the plan. One whose break the reader dropped (invariant 147) or that continued on the
             // page it began on opened nothing, and the plan is not told it did.
             if storage.attribute(MDAttr.sectionIndex, at: location, effectiveRange: nil) != nil {
-                block[block["pageBreakBefore"] != nil && topPage > previousPage ? "sectionStart" : "sectionMarker"] = true
+                if natural {
+                    // A fact only: whether the section opens a sheet is the plan's to say.
+                    block["section"] = true
+                } else {
+                    block[block["pageBreakBefore"] != nil && topPage > previousPage ? "sectionStart" : "sectionMarker"] = true
+                }
             }
 
             var macPages: [Int] = []
@@ -519,12 +548,12 @@ enum PagePlanShadow {
                     } else { rows[f.startingRow] = (f.top, f.bottom) }
                 }
                 let ordered = rows.keys.sorted()
-                if (ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_ROWS"] ?? "").split(separator: ",").compactMap({ Int($0) }).contains(planBlocks.count) {
+                if !natural, (ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_ROWS"] ?? "").split(separator: ",").compactMap({ Int($0) }).contains(planBlocks.count) {
                     for r in ordered {
                         report.cellDump.append("SHADOW   row [\(planBlocks.count)] \(r): top \(String(format: "%.1f", Double(rows[r]!.top))) bottom \(String(format: "%.1f", Double(rows[r]!.bottom))) spans \(spans.filter { $0.start == r }.map { $0.end - $0.start })")
                     }
                 }
-                if (ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_CELLBOX"] ?? "").split(separator: ",").compactMap({ Int($0) }).contains(planBlocks.count) {
+                if !natural, (ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_CELLBOX"] ?? "").split(separator: ",").compactMap({ Int($0) }).contains(planBlocks.count) {
                     var seen: [ObjectIdentifier] = []
                     var by: [ObjectIdentifier: [Fragment]] = [:]
                     for f in frags where f.table == first.table && !f.chain.isEmpty {
@@ -556,14 +585,17 @@ enum PagePlanShadow {
                 // not have, so it is taken back out (the `proposedTableLineTops` idea of invariant 72,
                 // applied to heights).
                 let tableFirstTop = frags.map(\.top).min() ?? 0
-                let bandsInside = delegate.openedBands.values.filter { $0.top > tableFirstTop + 0.5 }
-                func natural(_ y: CGFloat) -> CGFloat {
+                // A natural layout opened no band: there is nothing to take back.
+                let bandsInside = natural ? [] : delegate.openedBands.values.filter { $0.top > tableFirstTop + 0.5 }
+                func unbanded(_ y: CGFloat) -> CGFloat {
                     y - bandsInside.filter { $0.top < y - 0.01 }.reduce(0) { $0 + $1.height }
                 }
                 let tableBottom = frags.map(\.bottom).max()!
                 let tableTop = frags.map(\.top).min() ?? tableBottom
-                report.tableHeightTotal += tableBottom - tableTop
-                report.tableHeights.append((tableBottom - tableTop, page(of: tableTop) != page(of: frags.last!.rect.minY)))
+                if !natural {
+                    report.tableHeightTotal += tableBottom - tableTop
+                    report.tableHeights.append((tableBottom - tableTop, pageOf(tableTop) != pageOf(frags.last!.rect.minY)))
+                }
                 block["kind"] = "table"
                 // A row's top is the least of its own cells' tops and every later row's: rows never run
                 // upward, and a cell that is vertically centred (or sits in a merge) has its lines — and
@@ -588,7 +620,7 @@ enum PagePlanShadow {
                     // Only a hang is taken back: a hair of border width between the two measures is not one.
                     let lastEnd = cellsEnd.map { tableBottom - $0 > 0.5 ? $0 : tableBottom } ?? tableBottom
                     let end = position + 1 < ordered.count ? rowTop[ordered[position + 1]]! : lastEnd
-                    var entry: [String: Any] = ["height": max(0, natural(end) - natural(rowTop[r]!))]
+                    var entry: [String: Any] = ["height": max(0, unbanded(end) - unbanded(rowTop[r]!))]
                     if r != ordered.first && !crossed { entry["canBreakAbove"] = true }
                     return entry
                 }
@@ -598,15 +630,26 @@ enum PagePlanShadow {
                 // cell's padding.
                 let boxHeights = rowEntries.map { ($0["height"] as? Double) ?? 0 }
                 let firstLocation = first.location, lastLocation = frags.last!.location
-                let breaksWhereItStands = delegate.oversizedPieces.keys.contains { $0 >= firstLocation && $0 <= lastLocation }
+                // A natural observation names no table as "broken where it stands": that is the plan's
+                // to decide from the rows, so every table hands in its cells.
+                let breaksWhereItStands = natural || delegate.oversizedPieces.keys.contains { $0 >= firstLocation && $0 <= lastLocation }
                 // A table in a columned run is dealt line by line too, from where its lines fall.
                 let inColumnRun = block["columnRun"] != nil
+                if natural {
+                    // A table in a columned run is sized by the engine from its cells (the rule of
+                    // `table_rows.rs`); every other table keeps the layout's own rows.
+                    if !inColumnRun { block["rowsObserved"] = true }
+                    block["firstLoc"] = first.location
+                    if let proposed = proposedTops[first.location] { block["firstLineInset"] = Double(proposed - tableTop) }
+                }
                 if breaksWhereItStands || inColumnRun {
-                    var measured: [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)] = []
-                    let built = flowRows(frags.filter { $0.table == first.table }, depth: 0, blockIndex: planBlocks.count,
-                                         page: page, leading: leading, pitch: pitch, refs: &measured)
+                    var measured: [CellRef] = []
+                    let flowed = flowRows(frags.filter { $0.table == first.table }, depth: 0, blockIndex: planBlocks.count,
+                                         page: pageOf, leading: leading, pitch: pitch, refs: &measured)
                     // Positions in the stack of a columned run are not the plan's final ones.
-                    if inColumnRun { columnCellRefs.append(contentsOf: measured) } else { cellLineRefs.append(contentsOf: measured) }
+                    if natural {
+                        // Where the REPORTER put each line is the other layout's business.
+                    } else if inColumnRun { columnCellRefs.append(contentsOf: measured) } else { cellLineRefs.append(contentsOf: measured) }
                     // A marker in a table the reader flows stands on the page of ITS line, not of the
                     // table's start: name the cell line that holds it (a marker in a nested table
                     // names none, and is cited from where the table starts).
@@ -619,14 +662,15 @@ enum PagePlanShadow {
                         }
                         block["cites"] = cites
                     }
-                    if built.rows.count == rowEntries.count {
+                    if flowed.rows.count == rowEntries.count {
                         for position in rowEntries.indices {
                             rowEntries[position]["observedHeight"] = rowEntries[position]["height"]
-                            rowEntries[position]["cells"] = built.rows[position]["cells"]
+                            rowEntries[position]["cells"] = flowed.rows[position]["cells"]
                             // A table in a columned run is sized by the engine from its cells (the rule
                             // of `table_rows.rs`); the other tables the flow breaks take the heights the
                             // cells add up to.
-                            if !inColumnRun { rowEntries[position]["height"] = built.rows[position]["height"] }
+                            // A natural observation's rows are the layout's own, nothing was shifted in them.
+                            if !inColumnRun && !natural { rowEntries[position]["height"] = flowed.rows[position]["height"] }
                         }
                     }
                 }
@@ -639,23 +683,24 @@ enum PagePlanShadow {
                     let bottom = f.rect.maxY + cell.width(for: .padding, edge: .maxY) + cell.width(for: .border, edge: .maxY)
                     lineBottom[f.startingRow] = max(lineBottom[f.startingRow] ?? bottom, bottom)
                 }
-                let reach = ordered.map { r in max(0, natural(lineBottom[r] ?? rows[r]!.bottom) - natural(rowTop[r]!)) }
+                let reach = ordered.map { r in max(0, unbanded(lineBottom[r] ?? rows[r]!.bottom) - unbanded(rowTop[r]!)) }
                 if zip(reach, boxHeights).contains(where: { Double($0) > $1 + 0.01 }) {
                     block["rowReach"] = reach.map { Double($0) }
                 }
                 if (storage.attribute(MDAttr.tableKeepsWhole, at: location, effectiveRange: nil) as? Bool) == true {
                     block["keepsWhole"] = true
                 }
-                macPages = [page(of: top)]
+                macPages = [pageOf( top)]
                 previousBottom = frags.map(\.bottom).max()
-                previousPage = page(of: frags.last!.rect.minY)
+                previousPage = pageOf( frags.last!.rect.minY)
             } else {
                 block["kind"] = "text"
                 block["lines"] = frags.map { Double($0.box.height) }
+                if natural { block["lineLocs"] = frags.map { $0.location } }
                 if first.lineSpacing > 0 { block["trailing"] = Double(first.lineSpacing) }
-                macPages = frags.map { page(of: $0.rect.minY) }
+                macPages = frags.map { pageOf( $0.rect.minY) }
                 previousBottom = frags.last!.rect.maxY
-                previousPage = page(of: frags.last!.rect.minY)
+                previousPage = pageOf( frags.last!.rect.minY)
             }
             // A section start is deliberately NOT passed as one: TextKit opens a page only for
             // `startsPage`, so the per-page section answer is compared in S5, not here.
@@ -671,6 +716,31 @@ enum PagePlanShadow {
                 macLocalTop: top - leading - CGFloat(macPages[0]) * pitch,
                 heightMac: (isTable ? frags.map(\.bottom).max()! : frags.last!.rect.maxY) - top))
         }
+        return Built(planBlocks: planBlocks, cellLineRefs: cellLineRefs, columnCellRefs: columnCellRefs,
+                     observed: observed, lineMacPages: lineMacPages)
+        }
+
+        let reader = build(fragments, groups, natural: false)
+        let planBlocks = reader.planBlocks
+        let cellLineRefs = reader.cellLineRefs
+        let columnCellRefs = reader.columnCellRefs
+        let observed = reader.observed
+        let lineMacPages = reader.lineMacPages
+        // What the engine is asked: the reader's own observation, or a layout nobody paginated.
+        var askedBlocks = planBlocks
+        if natural {
+            let observer = PlanObservation(storage: storage, like: tc)
+            observer.walk()
+            let nat = collect(observer.layout, observer.container)
+            let naturalGroups = group(nat)
+            let proposed = observer.recorder.proposedTableLineTops
+            observer.remove()
+            guard naturalGroups.map(\.id) == groups.map(\.id) else {
+                report.skippedReason = "the observer's layout holds other blocks (\(naturalGroups.count) against \(groups.count))"
+                return report
+            }
+            askedBlocks = build(nat, naturalGroups, natural: true, proposedTops: proposed).planBlocks
+        }
 
         // ---- 3. ask the engine ----
         // With notes the plan runs the band fixpoint itself, so the reader's bands are NOT handed in:
@@ -683,11 +753,12 @@ enum PagePlanShadow {
             "leadingBand": Double(leading),
             "bodyWidth": Double(delegate.columnBodyWidth),
             "columnRuns": columnRunsInput(columnRuns),
-            "noteBands": wc.footnotes.isEmpty
+            "noteBands": wc.footnotes.isEmpty && !natural
                 ? facts.noteBands.sorted { $0.key < $1.key }.map { ["page": $0.key, "height": Double($0.value)] }
                 : [],
-            "blocks": planBlocks,
+            "blocks": askedBlocks,
         ]
+        if natural { input["observation"] = "natural" }
         input.merge(furnitureInput(wc)) { a, _ in a }
         guard let json = try? JSONSerialization.data(withJSONObject: input),
               let reply = plan(json: json),
