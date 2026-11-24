@@ -91,6 +91,17 @@ enum PagePlanShadow {
         var prefixDifferent = 0
         var prefixFirstDifference: String?
         var prefixFinal: [String] = []
+        /// S6b2-0c: what the apply probe needs from the plan call: the answer itself, the print grid
+        /// it is on, and how far each table line in a columned run stands from the run's own left
+        /// edge in the natural layout (a cell keeps that distance inside its column).
+        var planAnswer: [String: Any]?
+        var gridLeading: CGFloat = 0
+        var gridPageContentHeight: CGFloat = 0
+        var gridBand: CGFloat = 0
+        var gridBodyWidth: CGFloat = 0
+        var columnLineInset: [Int: CGFloat] = [:]
+        /// Where every line of a columned run stands in the natural stack.
+        var columnLineTop: [Int: CGFloat] = [:]
 
         var text: String { summary.joined(separator: "\n") }
     }
@@ -574,7 +585,8 @@ enum PagePlanShadow {
                         report.cellDump.append("SHADOW   row [\(planBlocks.count)] \(r): top \(String(format: "%.1f", Double(rows[r]!.top))) bottom \(String(format: "%.1f", Double(rows[r]!.bottom))) spans \(spans.filter { $0.start == r }.map { $0.end - $0.start })")
                     }
                 }
-                if !natural, (ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_CELLBOX"] ?? "").split(separator: ",").compactMap({ Int($0) }).contains(planBlocks.count) {
+                if (ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_CELLBOX"] ?? "").split(separator: ",").compactMap({ Int($0) }).contains(planBlocks.count)
+                    || ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_CELLBOX_LOC"].flatMap({ Int($0) }).map({ loc in frags.contains { $0.location == loc } }) == true {
                     var seen: [ObjectIdentifier] = []
                     var by: [ObjectIdentifier: [Fragment]] = [:]
                     for f in frags where f.table == first.table && !f.chain.isEmpty {
@@ -593,12 +605,12 @@ enum PagePlanShadow {
                     for id in nestedSeen {
                         let fs = nestedBy[id]!, cell = fs[0].chain[1]
                         let box = lm.boundsRect(for: cell, at: lm.glyphIndexForCharacter(at: fs[0].location), effectiveRange: nil)
-                        report.cellDump.append("SHADOW   nestedbox [\(planBlocks.count)] r\(cell.startingRow)+\(cell.rowSpan) c\(cell.startingColumn)+\(cell.columnSpan) va\(cell.verticalAlignment.rawValue) box \(String(format: "%.2f", Double(box.minY)))..\(String(format: "%.2f", Double(box.maxY))) lines \(String(format: "%.2f", Double(fs.map { $0.rect.minY }.min()!)))..\(String(format: "%.2f", Double(fs.map { $0.rect.maxY }.max()!))) n\(fs.count) pad \(String(format: "%.2f", Double(inset(cell, .minY))))/\(String(format: "%.2f", Double(inset(cell, .maxY))))")
+                        report.cellDump.append("SHADOW   nestedbox [\(planBlocks.count)] r\(cell.startingRow)+\(cell.rowSpan) c\(cell.startingColumn)+\(cell.columnSpan) va\(cell.verticalAlignment.rawValue)/\(cell.authoredVerticalAlignment.rawValue) box \(String(format: "%.2f", Double(box.minY)))..\(String(format: "%.2f", Double(box.maxY))) lines \(String(format: "%.2f", Double(fs.map { $0.rect.minY }.min()!)))..\(String(format: "%.2f", Double(fs.map { $0.rect.maxY }.max()!))) n\(fs.count) pad \(String(format: "%.2f", Double(inset(cell, .minY))))/\(String(format: "%.2f", Double(inset(cell, .maxY))))")
                     }
                     for id in seen {
                         let fs = by[id]!, cell = fs[0].chain[0]
                         let box = lm.boundsRect(for: cell, at: lm.glyphIndexForCharacter(at: fs[0].location), effectiveRange: nil)
-                        report.cellDump.append("SHADOW   cellbox [\(planBlocks.count)] r\(cell.startingRow)+\(cell.rowSpan) c\(cell.startingColumn)+\(cell.columnSpan) va\(cell.verticalAlignment.rawValue) box \(String(format: "%.2f", Double(box.minY)))..\(String(format: "%.2f", Double(box.maxY))) lines \(String(format: "%.2f", Double(fs.map { $0.rect.minY }.min()!)))..\(String(format: "%.2f", Double(fs.map { $0.rect.maxY }.max()!))) n\(fs.count) pad \(String(format: "%.2f", Double(inset(cell, .minY))))/\(String(format: "%.2f", Double(inset(cell, .maxY)))) nested \(fs.contains { $0.chain.count > 1 }) lastLS \(String(format: "%.2f", Double(fs.last!.lineSpacing))) lastH \(String(format: "%.2f", Double(fs.last!.rect.height))) boxH \(String(format: "%.2f", Double(fs.last!.box.height))) used \(String(format: "%.2f", Double(lm.lineFragmentUsedRect(forGlyphAt: lm.glyphIndexForCharacter(at: fs.last!.location), effectiveRange: nil).height))) spaceAfter \(String(format: "%.2f", Double(fs.last!.spaceAfter))) spaceBefore \(String(format: "%.2f", Double(fs.first!.spaceBefore)))")
+                        report.cellDump.append("SHADOW   cellbox [\(planBlocks.count)] r\(cell.startingRow)+\(cell.rowSpan) c\(cell.startingColumn)+\(cell.columnSpan) va\(cell.verticalAlignment.rawValue)/\(cell.authoredVerticalAlignment.rawValue) box \(String(format: "%.2f", Double(box.minY)))..\(String(format: "%.2f", Double(box.maxY))) lines \(String(format: "%.2f", Double(fs.map { $0.rect.minY }.min()!)))..\(String(format: "%.2f", Double(fs.map { $0.rect.maxY }.max()!))) n\(fs.count) pad \(String(format: "%.2f", Double(inset(cell, .minY))))/\(String(format: "%.2f", Double(inset(cell, .maxY)))) nested \(fs.contains { $0.chain.count > 1 }) lastLS \(String(format: "%.2f", Double(fs.last!.lineSpacing))) lastH \(String(format: "%.2f", Double(fs.last!.rect.height))) boxH \(String(format: "%.2f", Double(fs.last!.box.height))) used \(String(format: "%.2f", Double(lm.lineFragmentUsedRect(forGlyphAt: lm.glyphIndexForCharacter(at: fs.last!.location), effectiveRange: nil).height))) spaceAfter \(String(format: "%.2f", Double(fs.last!.spaceAfter))) spaceBefore \(String(format: "%.2f", Double(fs.first!.spaceBefore)))")
                     }
                 }
                 // The row heights the host reports are the layout's own BEFORE the page rule moved
@@ -760,6 +772,15 @@ enum PagePlanShadow {
             let naturalGroups = group(nat)
             let proposed = observer.recorder.proposedTableLineTops
             observer.remove()
+            // Where a columned run's own left edge is in this layout: a table cell keeps its distance from it.
+            for declared in columnRuns {
+                let inRun = nat.filter { NSLocationInRange($0.location, declared.range) }
+                guard let left = inRun.map({ $0.rect.minX }).min() else { continue }
+                for f in inRun {
+                    report.columnLineTop[f.location] = f.rect.minY
+                    if !f.chain.isEmpty { report.columnLineInset[f.location] = max(0, f.rect.minX - left) }
+                }
+            }
             for pages in [1, 2, 3, 5] {
                 let reach = leading + CGFloat(pages) * pitch
                 let blocks = naturalGroups.filter { nat[$0.range.lowerBound].rect.minY < reach }.count
@@ -797,6 +818,11 @@ enum PagePlanShadow {
             report.skippedReason = "the engine returned no plan"
             return report
         }
+        report.planAnswer = plan
+        report.gridLeading = leading
+        report.gridPageContentHeight = delegate.pageContentHeight
+        report.gridBand = delegate.band
+        report.gridBodyWidth = delegate.columnBodyWidth
 
         // ---- 4. diff ----
         // A flowed table's cell lines, each against the page and top TextKit gave it.
@@ -1136,6 +1162,14 @@ enum PagePlanShadow {
         report.flowedTablesPlanOnly = flowedKeys.subtracting(readerOversized).count
         var reader: [Int: (page: Int, top: Double)] = [:]
         var inTable: Set<Int> = []
+        var byLocation: [Int: Fragment] = [:]
+        var runLefts: [Int: CGFloat] = [:]
+        for f in fragments {
+            byLocation[f.location] = f
+            if let run = columnRuns.firstIndex(where: { NSLocationInRange(f.location, $0.range) }) {
+                runLefts[run] = min(runLefts[run] ?? f.rect.minX, f.rect.minX)
+            }
+        }
         for f in fragments {
             reader[f.location] = local(f.rect.minY)
             if f.table != nil { inTable.insert(f.location) }
@@ -1179,7 +1213,12 @@ enum PagePlanShadow {
                 kind = "column line"
                 if let run = columnRuns.firstIndex(where: { NSLocationInRange(loc, $0.range) }) {
                     let columns = ColumnGeometry.columns(inWidth: delegate.columnBodyWidth, layout: columnRuns[run].layout)
-                    expectedColumn = columns.lastIndex { $0.x <= placed.x + 0.5 } ?? 0
+                    // The reader's x is the column's edge plus how far a table cell stood from the run's
+                    // own left edge (`settleColumnPlacements`); take that distance back out before asking
+                    // which column the edge is.
+                    let runLeft = runLefts[run] ?? 0
+                    let inset: CGFloat = byLocation[loc].map { $0.chain.isEmpty ? 0 : max(0, $0.rect.minX - runLeft) } ?? 0
+                    expectedColumn = columns.indices.min { abs(columns[$0].x + inset - placed.x) < abs(columns[$1].x + inset - placed.x) }
                 }
             } else if let p = piece[loc], !flowedKeys.contains(p.key), !p.columnRun {
                 expected = (p.page, p.top + p.inset)
@@ -1197,7 +1236,10 @@ enum PagePlanShadow {
                 report.targetsDifferent += 1
                 // FMD_PLAN_SHADOW_TARGETS=1 lists every differing target.
                 if ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_TARGETS"] == "1" {
-                    report.cellDump.append("SHADOW   target \(kind) at \(loc): TextKit p\(expected.page + 1) top \(String(format: "%.2f", expected.top)); plan p\(tPage + 1) top \(String(format: "%.2f", tTop))")
+                    let cellInfo = byLocation[loc].map { f in
+                        "stack y \(String(format: "%.2f", Double(f.rect.minY))) h \(String(format: "%.2f", Double(f.rect.height))) chain " + f.chain.map { "r\($0.startingRow)+\($0.rowSpan) c\($0.startingColumn)+\($0.columnSpan) va\($0.verticalAlignment.rawValue)/\($0.authoredVerticalAlignment.rawValue)" }.joined(separator: " > ")
+                    } ?? "-"
+                    report.cellDump.append("SHADOW   target \(kind) at \(loc): TextKit p\(expected.page + 1) top \(String(format: "%.2f", expected.top)); plan p\(tPage + 1) top \(String(format: "%.2f", tTop)); \(cellInfo)")
                 }
                 if report.targetsFirstDifference == nil {
                     report.targetsFirstDifference = "\(kind) at \(loc): TextKit p\(expected.page + 1) top \(String(format: "%.2f", expected.top)) column \(expectedColumn.map(String.init) ?? "-"); plan p\(tPage + 1) top \(String(format: "%.2f", tTop)) column \(tColumn.map(String.init) ?? "-")"

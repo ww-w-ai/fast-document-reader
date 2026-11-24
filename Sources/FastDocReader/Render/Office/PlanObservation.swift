@@ -20,11 +20,14 @@ final class PlanObservation {
 
     /// Configured from the visible container, so a line breaks where it does there: the same width,
     /// the same fragment padding.
-    init(storage: NSTextStorage, like visible: NSTextContainer) {
+    ///
+    /// `applying` swaps the recording delegate for the apply pass of S6b2-0c (`PlanApplyDelegate`):
+    /// the same layout manager configuration, with lines put at the plan's targets.
+    init(storage: NSTextStorage, like visible: NSTextContainer, applying: PlanApplyDelegate? = nil) {
         self.storage = storage
         recorder = PlanObservationDelegate(storage: storage)
         layout.allowsNonContiguousLayout = false
-        layout.delegate = recorder
+        layout.delegate = applying ?? recorder
         container = NSTextContainer(size: visible.size)
         container.widthTracksTextView = false
         container.lineFragmentPadding = visible.lineFragmentPadding

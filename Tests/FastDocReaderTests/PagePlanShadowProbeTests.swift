@@ -104,9 +104,26 @@ final class PagePlanShadowProbeTests: XCTestCase {
             // FMD_PLAN_SHADOW_NATURAL=1: the plan is asked from a layout nobody paginated (S6b2-0a,
             // `PlanObservation`), and is still compared with the pages TextKit's reader printed.
             let natural = env["FMD_PLAN_SHADOW_NATURAL"] == "1"
+            // FMD_PLAN_APPLY=1 (S6b2-0c, needs the natural observation): every line the reader printed
+            // is read back BEFORE the shadow lays the document out again, then the plan is applied on a
+            // layout manager of its own and compared with it.
+            let apply = natural && env["FMD_PLAN_APPLY"] == "1"
+            var readerLines: [Int: PlanApplyProbe.Line] = [:]
+            let readerPages = wc.printPageCount
+            let readerColumnRuns = wc.columnRunRanges()
+            if apply, let lm = wc.textView.layoutManager, let tc = wc.textView.textContainer, let storage = wc.textView.textStorage {
+                readerLines = PlanApplyProbe.lines(of: lm, tc, length: storage.length)
+            }
             report.append("SHADOW observation: \(natural ? "natural" : "paginated")")
             let result = PagePlanShadow.run(controller: wc, natural: natural)
             let elapsed = Date().timeIntervalSince(started)
+            if apply, let answer = result.planAnswer {
+                report.append("APPLY \(url.lastPathComponent)")
+                report.append(contentsOf: PlanApplyProbe.run(
+                    wc: wc, plan: answer, reader: readerLines, readerPages: readerPages, leading: result.gridLeading,
+                    pageContentHeight: result.gridPageContentHeight, band: result.gridBand, columnRuns: readerColumnRuns,
+                    bodyWidth: result.gridBodyWidth, insetX: result.columnLineInset, naturalTop: result.columnLineTop))
+            }
             report.append("SHADOW \(url.lastPathComponent)")
             if let reason = result.skippedReason { report.append("SHADOW   skipped: \(reason)"); report.append("SHADOW print pages: \(result.macPages)") }
             else { report.append(result.text); report.append(String(format: "SHADOW run %.2fs", elapsed)) }

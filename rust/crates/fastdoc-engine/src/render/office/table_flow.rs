@@ -351,7 +351,7 @@ mod tests {
     }
 
     fn row(height: f64, can_break_above: bool, cells: Vec<PlanCell>) -> PlanRow {
-        PlanRow { height, can_break_above, cells }
+        PlanRow { height, can_break_above, cells, box_top: None }
     }
 
     fn table(rows: Vec<PlanRow>) -> PlanBlock {

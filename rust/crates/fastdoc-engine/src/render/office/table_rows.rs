@@ -33,11 +33,27 @@ pub struct RowNeed {
     pub need: f64,
 }
 
+/// What the rule says about a table: the height of every row, and where the boxes of the cells that
+/// begin in each row start.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowLayout {
+    pub heights: Vec<f64>,
+    /// The top of each row's cell boxes, from the table's top. Row tops are made monotone for the
+    /// heights; the boxes keep the unadjusted ones, so a cell in a row beside a merged block can be
+    /// drawn below where the rows above it add up to.
+    pub box_tops: Vec<f64>,
+}
+
 /// The height of each of `rows` rows. A row no cell covers has no cell to size it; it stands at
 /// `fallback[row]`.
 pub fn row_heights(rows: usize, needs: &[RowNeed], fallback: &[f64]) -> Vec<f64> {
+    row_layout(rows, needs, fallback).heights
+}
+
+/// `row_heights`, and the cell boxes' own tops (see `RowLayout`).
+pub fn row_layout(rows: usize, needs: &[RowNeed], fallback: &[f64]) -> RowLayout {
     if rows == 0 {
-        return Vec::new();
+        return RowLayout { heights: Vec::new(), box_tops: Vec::new() };
     }
     let needs: Vec<(usize, usize, f64)> = needs
         .iter()
@@ -64,10 +80,11 @@ pub fn row_heights(rows: usize, needs: &[RowNeed], fallback: &[f64]) -> Vec<f64>
         lowest = lowest.max(top[r + 1]);
     }
     top[rows] = lowest;
+    let box_tops = top[..rows].to_vec();
     for r in (0..rows).rev() {
         top[r] = top[r].min(top[r + 1]);
     }
-    (0..rows).map(|r| top[r + 1] - top[r]).collect()
+    RowLayout { heights: (0..rows).map(|r| top[r + 1] - top[r]).collect(), box_tops }
 }
 
 #[cfg(test)]
@@ -134,6 +151,17 @@ mod tests {
             assert!((got - want).abs() < 1e-6, "row {row}: {got} against {want} in {h:?}");
         }
         assert!((h.iter().sum::<f64>() - 125.84).abs() < 1e-6, "the table ends at the lowest bottom: {h:?}");
+    }
+
+    #[test]
+    fn the_cell_boxes_keep_the_row_tops_the_heights_are_made_monotone_from() {
+        // The right-hand block's rows begin above rows the left-hand block has not reached: a cell
+        // spanning rows 1-3 ends at 38, while the cell in row 2 begins at 50.
+        let needs = [need(0, 1, 10.0), need(1, 1, 40.0), need(1, 3, 28.0), need(2, 1, 4.0), need(4, 1, 6.0)];
+        let layout = row_layout(5, &needs, &[0.0; 5]);
+        assert_eq!(layout.heights, vec![10.0, 28.0, 0.0, 0.0, 16.0]);
+        assert_eq!(layout.box_tops, vec![0.0, 10.0, 50.0, 54.0, 38.0]);
+        assert_eq!(layout.heights.iter().sum::<f64>(), 54.0);
     }
 
     #[test]
