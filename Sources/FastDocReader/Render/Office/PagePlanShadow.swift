@@ -42,6 +42,8 @@ enum PagePlanShadow {
         /// another page (or at another top) than TextKit did.
         var cellLines = 0
         var cellLinesOnADifferentPage = 0
+        /// Which blocks hold the differing cell lines, and how many each.
+        var cellLinesDifferingByBlock: [Int: Int] = [:]
         var firstDifference: String?
         var context: [String] = []
         /// One tab-separated row per block (`FMD_PLAN_SHADOW_BLOCKS`): index, kind, TextKit page,
@@ -86,6 +88,9 @@ enum PagePlanShadow {
         var rowSpan: Int
         var top: CGFloat       // for a table cell: the cell's own top edge (padding + border included)
         var bottom: CGFloat
+        /// A table cell: where the cell's own box ends, which the spacing after its last line hangs
+        /// below. Equal to `bottom` for anything else.
+        var boxBottom: CGFloat = 0
         var lineSpacing: CGFloat
         /// The line as the port's vocabulary has it, read from this same pass (no second layout).
         var box: RustEngineMeasure.LineBox
@@ -399,6 +404,7 @@ enum PagePlanShadow {
             var table: ObjectIdentifier?
             var startingRow = 0, rowSpan = 1, column = 0
             var top = rect.minY, bottom = rect.maxY
+            var boxBottom: CGFloat?
             if let cell = style?.textBlocks.first as? NSTextTableBlock {
                 table = ObjectIdentifier(cell.table)
                 startingRow = cell.startingRow
@@ -410,9 +416,11 @@ enum PagePlanShadow {
                 // wherever a vertically centred or bottom-aligned cell put its lines inside one.
                 let box = lm.boundsRect(for: cell, at: glyphRange.location, effectiveRange: nil)
                 if box.height > 0, box.minY <= rect.minY + 0.01, box.maxY >= rect.maxY - 0.01 { top = box.minY; bottom = box.maxY }
+                if box.height > 0, box.minY <= rect.minY + 0.01 { boxBottom = box.maxY }
             }
             fragments.append(Fragment(location: chars.location, rect: rect, blockId: id, table: table,
                                       startingRow: startingRow, rowSpan: rowSpan, top: top, bottom: bottom,
+                                      boxBottom: boxBottom ?? bottom,
                                       lineSpacing: max(0, style?.lineSpacing ?? 0), box: box,
                                       usedHeight: usedRect.height,
                                       column: column, paragraphStart: paragraphRange.location,
@@ -560,7 +568,19 @@ enum PagePlanShadow {
                     let crossed = spans.contains { $0.start < r && $0.end > r }
                     // A row runs from its own top to the next row's top. Its cells' bottoms cannot say:
                     // a cell merged down several rows ends far below the row it starts in.
-                    let end = position + 1 < ordered.count ? rowTop[ordered[position + 1]]! : tableBottom
+                    // The last row ends where the cells' boxes do: the next block starts there, and the
+                    // spacing after a last line hangs below it. (A table the reader breaks line by line
+                    // takes its rows from its cells, which carry that hang themselves.)
+                    // The block after a table starts at the lower of two things: the cells' boxes, and the
+                    // last line the typesetter placed (the last cell's, spacing after included).
+                    let lastRow = ordered.last ?? 0
+                    let reachesLast = frags.filter { f in f.chain.first.map { $0.startingRow + $0.rowSpan > lastRow } ?? false }
+                    let boxesEnd = reachesLast.map(\.boxBottom).max()
+                    let lastLineEnd = frags.last { !$0.chain.isEmpty }?.rect.maxY
+                    let cellsEnd = boxesEnd.map { max($0, lastLineEnd ?? $0) }
+                    // Only a hang is taken back: a hair of border width between the two measures is not one.
+                    let lastEnd = cellsEnd.map { tableBottom - $0 > 0.5 ? $0 : tableBottom } ?? tableBottom
+                    let end = position + 1 < ordered.count ? rowTop[ordered[position + 1]]! : lastEnd
                     var entry: [String: Any] = ["height": max(0, natural(end) - natural(rowTop[r]!))]
                     if r != ordered.first && !crossed { entry["canBreakAbove"] = true }
                     return entry
@@ -569,6 +589,7 @@ enum PagePlanShadow {
                 // by line, so the host reports what the flow needs: each cell's lines at their NATURAL
                 // offsets (the gap a page break opened between two of them is taken back out) and the
                 // cell's padding.
+                let boxHeights = rowEntries.map { ($0["height"] as? Double) ?? 0 }
                 let firstLocation = first.location, lastLocation = frags.last!.location
                 let breaksWhereItStands = delegate.oversizedPieces.keys.contains { $0 >= firstLocation && $0 <= lastLocation }
                 // A table in a columned run is dealt line by line too, from where its lines fall.
@@ -591,6 +612,18 @@ enum PagePlanShadow {
                     }
                 }
                 block["rows"] = rowEntries
+                // Where each row's lines end, spacing after the last one included: the rule that carries
+                // a piece to the next page asks that, not where the row's box ends.
+                var lineBottom: [Int: CGFloat] = [:]
+                for f in frags {
+                    guard let cell = f.chain.first else { continue }
+                    let bottom = f.rect.maxY + cell.width(for: .padding, edge: .maxY) + cell.width(for: .border, edge: .maxY)
+                    lineBottom[f.startingRow] = max(lineBottom[f.startingRow] ?? bottom, bottom)
+                }
+                let reach = ordered.map { r in max(0, natural(lineBottom[r] ?? rows[r]!.bottom) - natural(rowTop[r]!)) }
+                if zip(reach, boxHeights).contains(where: { Double($0) > $1 + 0.01 }) {
+                    block["rowReach"] = reach.map { Double($0) }
+                }
                 if (storage.attribute(MDAttr.tableKeepsWhole, at: location, effectiveRange: nil) as? Bool) == true {
                     block["keepsWhole"] = true
                 }
@@ -678,6 +711,7 @@ enum PagePlanShadow {
                 }
                 if !inPiece {
                     report.cellLinesOnADifferentPage += 1
+                    report.cellLinesDifferingByBlock[ref.block, default: 0] += 1
                     if dumpedBlocks.contains(ref.block) {
                         report.cellDump.append("SHADOW   cell [\(ref.block)] r\(ref.row) c\(ref.cell) l\(ref.line): TextKit p\(ref.page + 1) top \(String(format: "%.1f", Double(ref.top))); plan pieces \((pieces[ref.block] ?? []).map { "p\($0.page + 1) \(String(format: "%.1f", $0.top))..\(String(format: "%.1f", $0.bottom)) rows \($0.rows)" }) DIFF")
                     }
@@ -693,6 +727,7 @@ enum PagePlanShadow {
             }
             guard let planned, planned.page == ref.page, abs(planned.top - Double(ref.top)) < 0.6 else {
                 report.cellLinesOnADifferentPage += 1
+                report.cellLinesDifferingByBlock[ref.block, default: 0] += 1
                 continue
             }
         }
@@ -938,6 +973,7 @@ enum PagePlanShadow {
             "SHADOW grid: content \(delegate.pageContentHeight) band \(delegate.band) leading \(leading) pitch \(pitch)",
             "SHADOW settle records: pushed \(delegate.pushedTables.count), oversized \(delegate.oversizedPieces.count), pulled \(delegate.pullToNextPage.count), opened bands \(delegate.openedBands.count), keepWithNext \(delegate.keepWithNextRanges.count), page breaks \(delegate.documentPageBreaks.count)",
             "SHADOW blocks: \(report.blocks) (\(report.tables) tables); on a different page: \(report.blocksOnADifferentPage); lines on a different page: \(report.linesOnADifferentPage); flowed cell lines: \(report.cellLines), differing: \(report.cellLinesOnADifferentPage)",
+            "SHADOW cell lines differing by block: \(report.cellLinesDifferingByBlock.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }.joined(separator: " ").nonEmpty ?? "none")",
             String(format: "SHADOW table height total: %.1f", Double(report.tableHeightTotal)),
             "SHADOW pages whose first block differs: \(report.pagesWithADifferentFirstBlock)",
             "SHADOW hard breaks dropped by 147: plan \(report.droppedByPlan), TextKit \(report.droppedByTextKit)",

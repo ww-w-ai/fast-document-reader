@@ -214,6 +214,12 @@ pub struct PlanBlock {
     /// Table: the document forbids cutting it at a page boundary.
     #[serde(default)]
     pub keeps_whole: bool,
+    /// Table: per row, how far its lines reach below the row's top, spacing after the last line
+    /// included. The host's lines hang that spacing below the row's box, and a carried piece is
+    /// asked to fit by where its lines end, not where its box does. Empty = every row ends at its
+    /// height; otherwise one entry per row.
+    #[serde(default)]
+    pub row_reach: Vec<f64>,
     /// Table: `rows[].height` is what the host's own layout made of each row (TextKit's), so the
     /// engine keeps it; without this a table described cell by cell has its rows solved from the
     /// cells (`table_rows.rs`).
@@ -1305,10 +1311,10 @@ impl State {
         }
         self.row_segments.extend(flow.segments);
         self.cell_lines.extend(flow.lines);
-        while self.page < flow.end.0 {
+        while self.page < flow.after.0 {
             self.next_page();
         }
-        self.cursor = flow.end.1 + block.spacing_after;
+        self.cursor = flow.after.1 + block.spacing_after;
     }
 
     /// The reader's first layout of a table: it lies where it falls, whole, and runs on past the page
@@ -1324,7 +1330,7 @@ impl State {
             let none = BTreeSet::new();
             let (flow, every_line) = flow_table(&geometry, index, block, (self.page, self.cursor), &none, false);
             self.flowed.push(FlowedTable { block: index, lines: every_line });
-            flow.end
+            flow.after
         } else {
             geometry.normalise(self.page, self.cursor + total)
         };
@@ -1372,9 +1378,11 @@ impl State {
 
     fn place_table(&mut self, index: u32, block: &PlanBlock, split_tables: bool) {
         let rows = &block.rows;
-        let total: f64 = rows.iter().map(|r| r.height).sum();
+        let rows_height: f64 = rows.iter().map(|r| r.height).sum();
+        let hang = if block.rows_observed { 0.0 } else { last_row_hang(rows) };
+        let total = rows_height + hang;
         let whole = block.spacing_before + total + block.spacing_after;
-        let over_tall = total > self.body(self.page) && has_cells(rows);
+        let over_tall = rows_height > self.body(self.page) && has_cells(rows);
         if self.mode == Mode::Natural {
             self.place_table_naturally(index, block, total, over_tall);
             return;
@@ -1425,11 +1433,14 @@ impl State {
         for group in &groups {
             let start = group.first_char as usize;
             let count = group.row_count as usize;
-            let piece: f64 = rows[start..start + count].iter().map(|r| r.height).sum();
+            let ends_the_table = start + count == rows.len();
+            let tail = if ends_the_table { hang } else { 0.0 };
+            let piece: f64 = rows[start..start + count].iter().map(|r| r.height).sum::<f64>() + tail;
+            let reach = piece_reach(block, start, count).max(piece);
             // A piece taller than the page body is never pushed: it overruns wherever it starts.
             if self.cursor > 0.0
-                && self.cursor + piece > self.body(self.page) + FIT_TOLERANCE
-                && piece <= self.body(self.page)
+                && self.cursor + reach > self.body(self.page) + FIT_TOLERANCE
+                && reach <= self.body(self.page)
             {
                 self.next_page();
             }
@@ -1449,6 +1460,37 @@ impl State {
         }
         self.cursor += block.spacing_after;
     }
+}
+
+/// What a table's last row hangs below its box: the spacing after the last paragraph of the cells
+/// that end in it. A row solved from its cells ends at the box (`settle_rows`), but the host's next
+/// block starts after the lines, so the table is that much taller.
+fn last_row_hang(rows: &[PlanRow]) -> f64 {
+    // The block after a table starts at the lower of the cells' boxes and the last line the
+    // typesetter placed, which is the LAST cell's, wherever its content sits in its box.
+    let Some((r, cell)) = rows.iter().enumerate().flat_map(|(r, row)| row.cells.iter().map(move |c| (r, c))).last() else {
+        return 0.0;
+    };
+    let Some(boxed) = cell.box_content else { return 0.0 };
+    let end = (r + cell.row_span.max(1) as usize).min(rows.len());
+    let box_height: f64 = rows[r..end].iter().map(|row| row.height).sum();
+    let room = (box_height - cell.pad_top - boxed - cell.pad_bottom).max(0.0);
+    let lines_end = cell.pad_top + cell.vertical_align.offset(room) + cell.content_height;
+    (lines_end - (box_height - cell.pad_bottom)).max(0.0)
+}
+
+/// How far the lines of rows `start..start + count` reach below the piece's top: the piece's height,
+/// or further where a row's last line hangs its spacing after past the row's box (`row_reach`).
+fn piece_reach(block: &PlanBlock, start: usize, count: usize) -> f64 {
+    let rows = &block.rows;
+    let mut offset = 0.0;
+    let mut reach = 0.0f64;
+    for i in start..start + count {
+        let row_reach = block.row_reach.get(i).copied().filter(|_| block.row_reach.len() == rows.len()).unwrap_or(rows[i].height);
+        reach = reach.max(offset + row_reach.max(rows[i].height));
+        offset += rows[i].height;
+    }
+    reach
 }
 
 /// The height of the line a path names: row, cell, line, then the same again inside a table nested
@@ -2326,6 +2368,51 @@ mod tests {
         let table = PlanBlock { kind: PlanKind::Table, rows, ..text(1, &[]) };
         let plan = plan_pages(&input(1000.0, vec![table])).unwrap();
         assert_eq!(plan.placements[0].height, 25.0);
+    }
+
+    #[test]
+    fn a_piece_is_carried_when_its_lines_reach_past_the_foot_though_its_box_would_fit() {
+        // Row 1's box would end at 100, the foot; its last line hangs 6 below it, which is where the
+        // reader asks a carried piece to fit.
+        let rows = [(10.0, false), (10.0, true), (10.0, true)];
+        let page_of_row = |plan: &PagePlan, row: u32| plan.placements.iter().find(|p| p.row_start == Some(row)).unwrap().page;
+        let mut reaching = table(2, &rows, false);
+        reaching.row_reach = vec![10.0, 16.0, 10.0];
+        let plan = plan_pages(&input(100.0, vec![text(1, &[80.0]), reaching])).unwrap();
+        assert_eq!((page_of_row(&plan, 0), page_of_row(&plan, 1)), (0, 1));
+        let plain = plan_pages(&input(100.0, vec![text(1, &[80.0]), table(2, &rows, false)])).unwrap();
+        assert_eq!((page_of_row(&plain, 0), page_of_row(&plain, 1)), (0, 0));
+    }
+
+    fn hanging_cell(box_content: f64) -> PlanCell {
+        let line = PlanLine { top: 0.0, height: 28.0, trailing: 8.0, rows: Vec::new() };
+        PlanCell { content_height: 28.0, box_content: Some(box_content), lines: vec![line], ..flow_cell(&[]) }
+    }
+
+    #[test]
+    fn what_follows_a_table_starts_below_its_last_line_where_the_spacing_after_hangs_past_the_box() {
+        let rows = vec![PlanRow { height: 20.0, can_break_above: false, cells: vec![hanging_cell(20.0)] }];
+        let table = PlanBlock { kind: PlanKind::Table, rows, ..text(1, &[]) };
+        let plan = plan_pages(&input(1000.0, vec![table, text(2, &[10.0])])).unwrap();
+        assert_eq!(plan.placements[0].height, 28.0);
+        assert_eq!(plan.lines[0].3, 28.0);
+    }
+
+    #[test]
+    fn a_flowed_table_ends_at_its_last_line_where_the_spacing_after_it_hangs_below_the_box() {
+        // 15 lines of 10 on 100pt pages: ten on the first, five on the second, the last hanging 5 of
+        // spacing below its box, with 1pt of padding under the cell.
+        let below = |box_content: f64| {
+            let lines: Vec<PlanLine> = (0..15).map(|i| PlanLine { top: i as f64 * 10.0, height: 10.0, trailing: 0.0, rows: Vec::new() }).collect();
+            let cell = PlanCell { pad_bottom: 1.0, content_height: 150.0, box_content: Some(box_content), lines, ..flow_cell(&[]) };
+            let rows = vec![PlanRow { height: 146.0, can_break_above: false, cells: vec![cell] }];
+            let table = PlanBlock { kind: PlanKind::Table, rows, ..text(1, &[]) };
+            let plan = plan_pages(&input(100.0, vec![table, text(2, &[10.0])])).unwrap();
+            let line = plan.lines.iter().find(|l| l.0 == 1).unwrap();
+            (line.2, line.3)
+        };
+        // The last line ends it, though the row's box (with the padding under it) ends at 46.
+        assert_eq!(below(145.0), (1, 50.0));
     }
 
     #[test]

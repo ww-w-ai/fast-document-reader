@@ -81,6 +81,9 @@ impl FlowGeometry<'_> {
 pub struct TableFlow {
     /// Where the table's last row ends: `(page, y)`.
     pub end: (u32, f64),
+    /// Where the block after the table starts: the lower of `end` and the last line the typesetter
+    /// placed (the last cell's, in text order), whose spacing after hangs below its box.
+    pub after: (u32, f64),
     pub segments: Vec<RowSegment>,
     pub lines: Vec<CellLinePlacement>,
     /// The page the table's top edge is on.
@@ -134,10 +137,12 @@ pub fn flow_table(
         segments: Vec::new(),
         lines: Vec::new(),
         every_line: Vec::new(),
+        last_line: None,
     };
     let start = geometry.normalise(start.0, start.1);
     let end = runner.rows(&block.rows, start, &[]);
-    let flow = TableFlow { end, segments: runner.segments, lines: runner.lines, first_page: start.0 };
+    let after = runner.last_line.map_or(end, |line_end| later(end, line_end));
+    let flow = TableFlow { end, after, segments: runner.segments, lines: runner.lines, first_page: start.0 };
     (flow, runner.every_line)
 }
 
@@ -149,6 +154,8 @@ struct Runner<'a> {
     segments: Vec<RowSegment>,
     lines: Vec<CellLinePlacement>,
     every_line: PlacedLines,
+    /// Where the outer table's last cell in text order ended its last line, spacing after included.
+    last_line: Option<(u32, f64)>,
 }
 
 impl Runner<'_> {
@@ -185,6 +192,9 @@ impl Runner<'_> {
                         self.rows(&line.rows, at, &path)
                     };
                     previous_bottom = line.top + line.height;
+                }
+                if prefix.is_empty() {
+                    self.last_line = Some(pos);
                 }
                 let tail = (cell.content_height - previous_bottom).max(0.0);
                 // The box ends at what the last line uses: the spacing after it hangs below.
