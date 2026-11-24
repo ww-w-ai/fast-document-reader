@@ -53,6 +53,25 @@ final class PlanObservation {
     }
 }
 
+private var authoredAlignmentKey: UInt8 = 0
+
+extension NSTextTableBlock {
+    /// Remembers the vertical alignment the document asked for, before anything changes it. The
+    /// reader top-aligns the cells of a table it breaks across pages and leaves the block changed;
+    /// the plan is told the alignment the document declared.
+    func rememberAuthoredAlignment() {
+        guard objc_getAssociatedObject(self, &authoredAlignmentKey) == nil else { return }
+        objc_setAssociatedObject(self, &authoredAlignmentKey, NSNumber(value: verticalAlignment.rawValue), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    /// The alignment the document asked for: what `rememberAuthoredAlignment` saw, else the current one.
+    var authoredVerticalAlignment: NSTextBlock.VerticalAlignment {
+        guard let saved = objc_getAssociatedObject(self, &authoredAlignmentKey) as? NSNumber,
+              let value = NSTextBlock.VerticalAlignment(rawValue: saved.intValue) else { return verticalAlignment }
+        return value
+    }
+}
+
 /// Records where the typesetter first proposed each table line, and changes nothing: the proposed top
 /// is what a table's first-line inset is measured across (invariant 72), before the cell's vertical
 /// alignment moves the line inside its box.

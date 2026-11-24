@@ -370,6 +370,20 @@ pub struct PlanPage {
     pub master: Option<u32>,
 }
 
+/// Where the host puts the line (or the table piece) that begins at character `loc`: the page, the
+/// page-local top on the plan's own grid (`PagePlan::pitch_used`), and the column of a columned run.
+/// The host keys it by the location it sent in `lineLocs` / `PlanLine::loc` / `firstLoc`, so it
+/// applies a plan by lookup and decides nothing about pages itself.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanTarget {
+    pub loc: i64,
+    pub page: u32,
+    pub top: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PagePlan {
@@ -412,6 +426,19 @@ pub struct PagePlan {
     /// `columnLines` and the other column answers index into. One list per `columnRuns` entry of the
     /// input (a declaration that does not split the text yields one column, the whole body).
     pub column_runs: Vec<Vec<Column>>,
+    /// One entry per located line the plan placed, by character location: every text line, every cell
+    /// line of a table the plan flows or deals into columns (nested ones included), and the first
+    /// line of every other table piece. Empty for a host that sent no locations.
+    pub targets: Vec<PlanTarget>,
+    /// The tables (by block key) the plan flows line by line: the host top-aligns their cells, the
+    /// plan places their lines as if they were.
+    pub flowed_tables: Vec<i64>,
+    /// How many leading pages no block after the observed ones can change. All of them for a
+    /// complete observation; for a `truncated` one, the pages before the first that the last
+    /// observed block (or the run it belongs to) touches.
+    pub final_pages: u32,
+    /// The page pitch the tops and pages are on: the body plus the band after it.
+    pub pitch_used: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -579,6 +606,9 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
 
     let mut note_bands: Vec<(u32, f64)> = bands.iter().filter(|(_, h)| **h > 0.0).map(|(p, h)| (*p, *h)).collect();
     note_bands.sort_by_key(|(page, _)| *page);
+    let targets = targets_of(input, &core);
+    let flowed_tables = flowed_keys(input, &core);
+    let final_pages = final_pages_of(input, &core, page_count);
     Ok(PagePlan {
         plan_version: PAGE_PLAN_VERSION,
         page_count,
@@ -602,7 +632,130 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
         column_row_segments: core.column_row_segments,
         nested_lines: core.nested_lines,
         column_runs: input.column_runs.iter().map(|run| run.columns(input.body_width)).collect(),
+        targets,
+        flowed_tables,
+        final_pages,
+        pitch_used: input.content_height + input.band.max(0.0),
     })
+}
+
+/// The line a path (row, cell, line — then the same again inside a table nested at that line) names.
+fn line_at<'a>(rows: &'a [PlanRow], path: &[u32]) -> Option<&'a PlanLine> {
+    let mut rows = rows;
+    let mut chunks = path.chunks(3).peekable();
+    while let Some(step) = chunks.next() {
+        let [r, c, l] = step else { return None };
+        let line = rows.get(*r as usize)?.cells.get(*c as usize)?.lines.get(*l as usize)?;
+        if chunks.peek().is_none() {
+            return Some(line);
+        }
+        rows = &line.rows;
+    }
+    None
+}
+
+/// The first located line of a table piece starting at `row`, and how far below the piece's top it
+/// stands: the table's own `first_line_inset` for its first row, else the cell's padding plus the
+/// line's offset in the cell (the reader's proposed frame, before a cell's alignment moves the line).
+fn piece_first_line(block: &PlanBlock, row: u32) -> Option<(i64, f64)> {
+    if row == 0 {
+        if let Some(loc) = block.first_loc {
+            return Some((loc, block.first_line_inset));
+        }
+    }
+    block
+        .rows
+        .get(row as usize)?
+        .cells
+        .iter()
+        .find_map(|cell| cell.lines.iter().find_map(|line| line.loc.map(|loc| (loc, cell.pad_top + line.top))))
+}
+
+/// Every located line the plan placed, by character location. A table is represented by its lines
+/// when the plan deals them one by one (flowed, or in a columned run), by its first line per piece
+/// otherwise.
+fn targets_of(input: &PlanInput, core: &State) -> Vec<PlanTarget> {
+    let mut out: Vec<PlanTarget> = Vec::new();
+    let column_of: HashMap<(u32, u32), u32> = core.column_lines.iter().map(|c| ((c[0], c[1]), c[2])).collect();
+    for line in &core.lines {
+        let Some(&loc) = input.blocks[line.0 as usize].line_locs.get(line.1 as usize) else { continue };
+        out.push(PlanTarget { loc, page: line.2, top: line.3, column: column_of.get(&(line.0, line.1)).copied() });
+    }
+    let column_of_cell: HashMap<[u32; 4], u32> =
+        core.column_cell_lines.iter().map(|c| ([c[0], c[1], c[2], c[3]], c[4])).collect();
+    let dealt: HashSet<u32> = core.column_cell_lines.iter().map(|c| c[0]).collect();
+    for cell in &core.cell_lines {
+        if !core.leaf_tables.contains(&cell.0) {
+            continue;
+        }
+        let Some(loc) = line_at(&input.blocks[cell.0 as usize].rows, &[cell.1, cell.2, cell.3]).and_then(|l| l.loc) else { continue };
+        out.push(PlanTarget { loc, page: cell.4, top: cell.5, column: column_of_cell.get(&[cell.0, cell.1, cell.2, cell.3]).copied() });
+    }
+    for nested in &core.nested_lines {
+        let Some(loc) = line_at(&input.blocks[nested.block as usize].rows, &nested.path).and_then(|l| l.loc) else { continue };
+        out.push(PlanTarget { loc, page: nested.page, top: nested.top, column: dealt.contains(&nested.block).then_some(nested.column) });
+    }
+    for table in core.flowed.iter().filter(|t| !core.leaf_tables.contains(&t.block)) {
+        for (path, page, top) in &table.lines {
+            let Some(loc) = line_at(&input.blocks[table.block as usize].rows, path).and_then(|l| l.loc) else { continue };
+            out.push(PlanTarget { loc, page: *page, top: *top, column: None });
+        }
+    }
+    let flowed: HashSet<u32> = core.flowed.iter().map(|t| t.block).collect();
+    for piece in &core.piece_tops {
+        let block = &input.blocks[piece.block as usize];
+        if core.leaf_tables.contains(&piece.block) || flowed.contains(&piece.block) || block.column_run.is_some() {
+            continue;
+        }
+        if let Some((loc, inset)) = piece_first_line(block, piece.row_start) {
+            out.push(PlanTarget { loc, page: piece.page, top: piece.top + inset, column: None });
+        }
+    }
+    out.sort_by_key(|t| t.loc);
+    out
+}
+
+/// The keys of the tables the plan flows line by line.
+fn flowed_keys(input: &PlanInput, core: &State) -> Vec<i64> {
+    let blocks: BTreeSet<u32> = core.flowed.iter().map(|t| t.block).collect();
+    blocks.into_iter().map(|b| input.blocks[b as usize].key).collect()
+}
+
+/// The leading pages a longer document cannot change. A block's placement depends on the blocks
+/// before it alone, with two exceptions that look ahead: a hard break is dropped when only blanks
+/// stand between it and the next one (`honoured_breaks`), and a columned run is dealt as one stack.
+/// So the pages from the one the last block starts on — or the earlier block those two rules make
+/// uncertain — are open; the pages before it are final.
+fn final_pages_of(input: &PlanInput, core: &State, page_count: u32) -> u32 {
+    if !input.truncated {
+        return page_count;
+    }
+    let Some(last) = input.blocks.iter().rposition(|b| !b.skip) else { return 0 };
+    let blank = |b: &PlanBlock| b.empty || b.skip;
+    let mut open_from = last;
+    // An observation that ends in blanks after a hard break has not seen the next marker yet.
+    let mut at = last;
+    while at > 0 && blank(&input.blocks[at]) && !input.blocks[at].page_break_before {
+        at -= 1;
+    }
+    let mut break_open = false;
+    if input.blocks[at].page_break_before && !input.blocks[at].section_start && blank(&input.blocks[at]) {
+        open_from = at;
+        break_open = true;
+    }
+    if let Some(run) = input.blocks[last].column_run {
+        while open_from > 0 && input.blocks[open_from - 1].column_run == Some(run) {
+            open_from -= 1;
+        }
+    }
+    let first = first_pages(core)
+        .iter()
+        .filter(|(block, _)| **block as usize >= open_from)
+        .map(|(_, page)| *page)
+        .min()
+        .unwrap_or(page_count.saturating_sub(1));
+    // A break the full plan may drop leaves its block on the page before the one the prefix opened.
+    if break_open { first.saturating_sub(1) } else { first }
 }
 
 /// One complete layout against a given set of note bands: the reader's passes replayed (see below),
@@ -732,6 +885,15 @@ enum Mode {
     Settled,
 }
 
+/// The top of a table piece placed as rows, page-local.
+#[derive(Debug, Clone, Copy)]
+struct PieceTop {
+    block: u32,
+    row_start: u32,
+    page: u32,
+    top: f64,
+}
+
 /// A flowed table's lines in one pass, for the pull rule.
 struct FlowedTable {
     block: u32,
@@ -755,6 +917,8 @@ fn run_pass(
         known_pushes: known.clone(),
         new_pushes: BTreeSet::new(),
         flowed: Vec::new(),
+        piece_tops: Vec::new(),
+        leaf_tables: BTreeSet::new(),
         page: 0,
         reached: 0,
         cursor: 0.0,
@@ -897,6 +1061,12 @@ struct State {
     /// The tables this layout found overrunning where they lie, for the next one.
     new_pushes: BTreeSet<u32>,
     flowed: Vec<FlowedTable>,
+    /// Where each table piece the page rule placed whole (or cut at its rows) stands: the table's
+    /// own top, for the first-line targets.
+    piece_tops: Vec<PieceTop>,
+    /// Tables whose lines are dealt one by one from a stack (a columned run); their targets are
+    /// those lines.
+    leaf_tables: BTreeSet<u32>,
     page: u32,
     /// The furthest page anything reached. A columned run ends on the page its last line was dealt
     /// to, which is not always the furthest.
@@ -1261,6 +1431,9 @@ impl State {
                 synth_leaves(&block.rows[start..end], start as u32, top, piece.page, &[], &mut leaves);
             }
         }
+        if !leaves.is_empty() {
+            self.leaf_tables.insert(index);
+        }
         for (path, page, top, height) in leaves {
             let leaf = leaf_box(&block.rows, &path, flowed_table);
             if path.len() == 3 {
@@ -1408,6 +1581,7 @@ impl State {
     fn place_table_lying(&mut self, index: u32, block: &PlanBlock, total: f64, whole: f64) {
         self.record_if_overrunning(index, block, total);
         self.mark_first(block.key);
+        self.piece_tops.push(PieceTop { block: index, row_start: 0, page: self.page, top: self.cursor + block.spacing_before });
         self.placements.push(BlockPlacement {
             block: index,
             key: block.key,
@@ -1476,6 +1650,7 @@ impl State {
                 self.next_page();
             }
             self.mark_first(block.key);
+            self.piece_tops.push(PieceTop { block: index, row_start: 0, page: self.page, top: self.cursor + block.spacing_before });
             self.placements.push(BlockPlacement {
                 block: index,
                 key: block.key,
@@ -1508,6 +1683,7 @@ impl State {
                 self.next_page();
             }
             self.mark_first(block.key);
+            self.piece_tops.push(PieceTop { block: index, row_start: start as u32, page: self.page, top: self.cursor });
             self.placements.push(BlockPlacement {
                 block: index,
                 key: block.key,
@@ -2596,6 +2772,198 @@ mod tests {
         let plan = plan_pages(&input(100.0, vec![text(1, &[20.0]), table])).unwrap();
         assert!(plan.placements.iter().all(|p| !p.flowed));
         assert!(plan.cell_lines.is_empty());
+    }
+
+    /// Gives every line of a text block a location of its own: 1000 * key + 10 * line.
+    fn located(mut block: PlanBlock) -> PlanBlock {
+        block.line_locs = (0..block.lines.len() as i64).map(|l| block.key * 1000 + l * 10).collect();
+        block
+    }
+
+    /// A cell of one-line items, each carrying the location `base + 10 * line`.
+    fn located_cell(lines: &[f64], base: i64) -> PlanCell {
+        let mut cell = flow_cell(lines);
+        for (i, line) in cell.lines.iter_mut().enumerate() {
+            line.loc = Some(base + 10 * i as i64);
+        }
+        cell
+    }
+
+    fn target_of(plan: &PagePlan, loc: i64) -> Option<(u32, f64, Option<u32>)> {
+        plan.targets.iter().find(|t| t.loc == loc).map(|t| (t.page, t.top, t.column))
+    }
+
+    #[test]
+    fn a_text_line_with_a_location_gets_a_target_at_its_page_and_top() {
+        let plan = plan_pages(&input(100.0, vec![located(text(1, &[40.0, 40.0, 40.0]))])).unwrap();
+        assert_eq!(target_of(&plan, 1000), Some((0, 0.0, None)));
+        assert_eq!(target_of(&plan, 1010), Some((0, 40.0, None)));
+        assert_eq!(target_of(&plan, 1020), Some((1, 0.0, None)), "the third line starts the next page");
+        assert_eq!(plan.targets.len(), 3);
+        assert_eq!(plan.pitch_used, 100.0);
+        let mut banded = input(100.0, vec![located(text(1, &[40.0]))]);
+        banded.band = 24.0;
+        assert_eq!(plan_pages(&banded).unwrap().pitch_used, 124.0, "the grid the pages and tops are on is named");
+        // A host that sent no locations gets no targets.
+        assert!(plan_pages(&input(100.0, vec![text(1, &[40.0, 40.0, 40.0])])).unwrap().targets.is_empty());
+    }
+
+    #[test]
+    fn targets_come_out_in_character_order_and_serialize_by_name() {
+        let plan = plan_pages(&input(100.0, vec![located(text(2, &[10.0])), located(text(1, &[10.0]))])).unwrap();
+        assert_eq!(plan.targets.iter().map(|t| t.loc).collect::<Vec<_>>(), vec![1000, 2000]);
+        let out = serde_json::to_value(&plan).unwrap();
+        assert_eq!(out["targets"][1], serde_json::json!({"loc": 2000, "page": 0, "top": 0.0}));
+        assert_eq!(out["pitchUsed"], 100.0);
+        assert_eq!(out["finalPages"], 1);
+        assert_eq!(out["flowedTables"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn a_flowed_table_names_every_cell_line_and_is_listed_as_flowed() {
+        let cell = located_cell(&[20.0; 10], 5000);
+        let table = flow_table_block(5, vec![(200.0, vec![cell])]);
+        let plan = plan_pages(&input(100.0, vec![located(text(1, &[20.0])), table])).unwrap();
+        assert_eq!(plan.flowed_tables, vec![5]);
+        for line in &plan.cell_lines {
+            let loc = 5000 + 10 * i64::from(line.3);
+            assert_eq!(target_of(&plan, loc), Some((line.4, line.5, None)), "line {}", line.3);
+        }
+        assert_eq!(plan.targets.len(), 11, "the text line and the ten cell lines");
+        assert_eq!(target_of(&plan, 5090).map(|t| t.0), Some(2));
+    }
+
+    #[test]
+    fn a_nested_table_line_of_a_flowed_table_has_a_target_too() {
+        let inner = PlanRow { height: 40.0, can_break_above: false, cells: vec![located_cell(&[20.0, 20.0], 7000)] };
+        let mut outer = flow_cell(&[20.0; 8]);
+        outer.lines[3] = PlanLine { top: 60.0, height: 40.0, trailing: 0.0, rows: vec![inner], loc: None };
+        let table = flow_table_block(5, vec![(200.0, vec![outer])]);
+        let plan = plan_pages(&input(100.0, vec![table])).unwrap();
+        assert_eq!(plan.flowed_tables, vec![5]);
+        assert!(target_of(&plan, 7000).is_some() && target_of(&plan, 7010).is_some(), "{:?}", plan.targets);
+    }
+
+    #[test]
+    fn a_table_cut_at_its_rows_has_a_target_per_piece_at_its_first_line() {
+        let row = |base: i64| (30.0, vec![located_cell(&[30.0], base)]);
+        let mut table = flow_table_block(2, vec![row(2000), row(2100), row(2200)]);
+        table.rows_observed = true;
+        table.first_loc = Some(2000);
+        table.first_line_inset = 4.0;
+        let plan = plan_pages(&input(100.0, vec![text(1, &[40.0]), table])).unwrap();
+        // The pieces stand at 40, 70 and (next page) 0: the first line of each is placed there.
+        assert_eq!(target_of(&plan, 2000), Some((0, 44.0, None)), "the table's own first-line inset");
+        assert_eq!(target_of(&plan, 2100), Some((0, 70.0, None)), "a later piece: the cell's padding plus the line's offset");
+        assert_eq!(target_of(&plan, 2200), Some((1, 0.0, None)));
+        assert!(plan.flowed_tables.is_empty());
+    }
+
+    #[test]
+    fn a_table_carried_whole_is_placed_below_its_spacing_before() {
+        let mut table = flow_table_block(2, vec![(30.0, vec![located_cell(&[30.0], 2000)]), (30.0, vec![located_cell(&[30.0], 2100)])]);
+        table.rows_observed = true;
+        table.spacing_before = 6.0;
+        table.keeps_whole = true;
+        let plan = plan_pages(&input(100.0, vec![text(1, &[70.0]), table])).unwrap();
+        assert_eq!(plan.placements[0].page, 1, "carried to the next page");
+        assert_eq!(target_of(&plan, 2000), Some((1, 6.0, None)), "the page top plus the spacing before it");
+    }
+
+    #[test]
+    fn a_columned_run_names_the_column_of_every_line_and_cell_line() {
+        let mut plan_input = input(
+            100.0,
+            vec![located(text(1, &[30.0])), columned(located(text(2, &[10.0; 10])), 0)],
+        );
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(target_of(&plan, 2000), Some((0, 30.0, Some(0))));
+        assert_eq!(target_of(&plan, 2070), Some((0, 30.0, Some(1))), "the eighth line begins column two");
+        assert_eq!(target_of(&plan, 1000), Some((0, 0.0, None)), "text outside the run has no column");
+    }
+
+    #[test]
+    fn a_complete_observation_is_final_to_its_last_page() {
+        let blocks: Vec<PlanBlock> = (1..=4).map(|k| located(text(k, &[60.0]))).collect();
+        let plan = plan_pages(&input(100.0, blocks.clone())).unwrap();
+        assert_eq!((plan.page_count, plan.final_pages), (4, 4));
+        // A prefix leaves the page its last block starts on open: more can still land there.
+        let prefix = PlanInput { truncated: true, ..input(100.0, blocks) };
+        assert_eq!(plan_pages(&prefix).unwrap().final_pages, 3);
+    }
+
+    /// Plans every prefix of `blocks` and checks that, wherever it says a page is final, the full
+    /// plan agrees on every located line of those pages — and holds nothing else there.
+    fn assert_prefix_stable(base: PlanInput) {
+        let full = plan_pages(&base).unwrap();
+        for cut in 1..=base.blocks.len() {
+            let mut prefix = base.clone();
+            prefix.blocks.truncate(cut);
+            prefix.truncated = true;
+            let part = plan_pages(&prefix).unwrap();
+            assert!(part.final_pages <= part.page_count, "cut {cut}");
+            let limit = part.final_pages;
+            let settled = |plan: &PagePlan| -> Vec<PlanTarget> { plan.targets.iter().filter(|t| t.page < limit).copied().collect() };
+            assert_eq!(settled(&part), settled(&full), "cut {cut}: final pages {limit} of {}", part.page_count);
+        }
+    }
+
+    #[test]
+    fn a_prefix_plan_agrees_with_the_full_plan_on_its_final_pages() {
+        let mut blocks: Vec<PlanBlock> = (1..=12).map(|k| located(text(k, &[30.0, 25.0, 35.0]))).collect();
+        blocks[4].page_break_before = true;
+        blocks[8].keep_with_next = true;
+        blocks[8].spacing_before = 9.0;
+        assert_prefix_stable(input(100.0, blocks));
+    }
+
+    #[test]
+    fn a_prefix_that_ends_in_blanks_after_a_break_leaves_that_break_open() {
+        // The break on the blank block is dropped by invariant 147 only when the NEXT break shows
+        // up: the prefix ending on the blank cannot know, so its page is not final.
+        let mut a = located(blank(2, 20.0));
+        a.page_break_before = true;
+        let mut b = located(text(4, &[20.0]));
+        b.page_break_before = true;
+        let blocks = vec![located(text(1, &[30.0])), a, located(blank(3, 20.0)), b, located(text(5, &[20.0]))];
+        let base = input(100.0, blocks);
+        assert_prefix_stable(base.clone());
+        let mut prefix = base;
+        prefix.blocks.truncate(3);
+        prefix.truncated = true;
+        let plan = plan_pages(&prefix).unwrap();
+        assert_eq!(plan.page_count, 2, "the prefix honours the break");
+        assert_eq!(plan.final_pages, 0, "but it is not final: the full plan drops it");
+    }
+
+    #[test]
+    fn a_prefix_plan_deals_a_run_it_cuts_only_after_the_whole_run_is_seen() {
+        let mut plan_input = input(
+            100.0,
+            vec![
+                located(text(1, &[30.0])),
+                columned(located(text(2, &[10.0; 30])), 0),
+                columned(located(text(5, &[10.0; 30])), 0),
+                columned(located(text(6, &[10.0; 30])), 0),
+                located(text(3, &[10.0; 4])),
+                located(text(4, &[40.0, 40.0])),
+            ],
+        );
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        assert_prefix_stable(plan_input);
+    }
+
+    #[test]
+    fn a_prefix_plan_agrees_on_a_table_cut_through_its_rows_and_one_flowed() {
+        let row = |base: i64| (30.0, vec![located_cell(&[30.0], base)]);
+        let mut cut = flow_table_block(3, vec![row(3000), row(3100), row(3200), row(3300)]);
+        cut.rows_observed = true;
+        cut.first_loc = Some(3000);
+        let flowed = flow_table_block(5, vec![(260.0, vec![located_cell(&[20.0; 13], 5000)])]);
+        assert_prefix_stable(input(100.0, vec![located(text(1, &[40.0, 40.0])), located(text(2, &[40.0])), cut, located(text(4, &[30.0])), flowed, located(text(6, &[50.0, 50.0]))]));
     }
 
     #[test]

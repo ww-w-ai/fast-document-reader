@@ -50,6 +50,25 @@ final class PagePlanShadowProbeTests: XCTestCase {
         XCTAssertEqual(placements.first?["page"] as? Int, 1)
     }
 
+    /// S6b2-0b: the answer names every located line by character location, the grid it is on, and how
+    /// many leading pages a longer document cannot change.
+    func testTargetsAndFinalPagesCrossTheFFIFromSwift() throws {
+        let input = """
+        {"planVersion":1,"contentHeight":100,"band":20,"truncated":true,
+         "blocks":[{"key":1,"kind":"text","lines":[60,60],"lineLocs":[0,12]},
+                    {"key":2,"kind":"text","lines":[60],"lineLocs":[30]}]}
+        """
+        let reply = try XCTUnwrap(PagePlanShadow.plan(json: Data(input.utf8)))
+        let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])
+        let plan = try XCTUnwrap(envelope["ok"] as? [String: Any])
+        let targets = try XCTUnwrap(plan["targets"] as? [[String: Any]])
+        XCTAssertEqual(targets.map { $0["loc"] as? Int }, [0, 12, 30])
+        XCTAssertEqual(targets.map { $0["page"] as? Int }, [0, 1, 2])
+        XCTAssertEqual(plan["pitchUsed"] as? Double, 120)
+        XCTAssertEqual(plan["finalPages"] as? Int, 2, "the page the last block starts on is still open")
+        XCTAssertEqual((plan["flowedTables"] as? [Int]) ?? [-1], [])
+    }
+
     func testAnUnsupportedPlanVersionIsAnErrorEnvelope() throws {
         let reply = try XCTUnwrap(PagePlanShadow.plan(json: Data(#"{"planVersion":9,"contentHeight":100,"blocks":[]}"#.utf8)))
         let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])

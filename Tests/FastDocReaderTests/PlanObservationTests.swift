@@ -111,4 +111,19 @@ final class PlanObservationTests: XCTestCase {
         XCTAssertEqual(observation.layout.firstUnlaidCharacterIndex(), storage.length)
         observation.remove()
     }
+
+    /// The reader top-aligns the cells of a table it breaks and leaves the block changed; the plan is
+    /// told what the document asked for.
+    func testTheAuthoredAlignmentOutlivesTheReadersTopAligning() {
+        let table = NSTextTable()
+        table.numberOfColumns = 1
+        let cell = NSTextTableBlock(table: table, startingRow: 0, rowSpan: 1, startingColumn: 0, columnSpan: 1)
+        cell.verticalAlignment = .middleAlignment
+        XCTAssertEqual(cell.authoredVerticalAlignment, .middleAlignment, "a block nobody touched answers for itself")
+        cell.rememberAuthoredAlignment()
+        cell.verticalAlignment = .topAlignment
+        cell.rememberAuthoredAlignment()
+        XCTAssertEqual(cell.authoredVerticalAlignment, .middleAlignment, "the first call is the one that counts")
+        XCTAssertEqual(cell.verticalAlignment, .topAlignment)
+    }
 }

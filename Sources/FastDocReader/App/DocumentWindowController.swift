@@ -2044,6 +2044,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             storage.enumerateAttribute(.paragraphStyle, in: range) { value, _, _ in
                 guard let style = value as? NSParagraphStyle else { return }
                 for block in style.textBlocks where block.verticalAlignment != .topAlignment {
+                    (block as? NSTextTableBlock)?.rememberAuthoredAlignment()
                     block.verticalAlignment = .topAlignment
                 }
             }

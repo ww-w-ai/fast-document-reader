@@ -75,6 +75,22 @@ enum PagePlanShadow {
         /// fell inside it (TextKit shifts the lines below the boundary, so a crossed table's height
         /// carries the band and is not comparable).
         var tableHeights: [(height: CGFloat, crossed: Bool)] = []
+        /// S6b2-0b (natural observation): the plan's `targets` against where TextKit put each line.
+        var targets = 0
+        var targetsDifferent = 0
+        /// A target the reader has no line to compare with (a location the reader's layout lacks).
+        var targetsUnmatched = 0
+        var targetsMaxDelta = 0.0
+        var targetsFirstDifference: String?
+        var targetKinds: [String: Int] = [:]
+        var flowedTablesPlan = 0
+        var flowedTablesPlanOnly = 0
+        var pitchMatches = true
+        /// Prefix plans (`truncated`): one per cut, each compared with the full plan on its final pages.
+        var prefixPlans = 0
+        var prefixDifferent = 0
+        var prefixFirstDifference: String?
+        var prefixFinal: [String] = []
 
         var text: String { summary.joined(separator: "\n") }
     }
@@ -114,7 +130,7 @@ enum PagePlanShadow {
     /// nested tables as items of their own, and a row's height from its cells whenever a page
     /// boundary fell in or beside it (the observed distance to the next row then carries the gap).
     private static func flowRows(_ frags: [Fragment], depth: Int, blockIndex: Int, page: (CGFloat) -> Int,
-                                 leading: CGFloat, pitch: CGFloat,
+                                 leading: CGFloat, pitch: CGFloat, authored: Bool = false,
                                  refs: inout [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)])
         -> (rows: [[String: Any]], height: CGFloat) {
         var order: [ObjectIdentifier] = []
@@ -155,7 +171,7 @@ enum PagePlanShadow {
                           ObjectIdentifier(fs[j].chain[depth + 1].table) == nestedTable { j += 1 }
                     let run = Array(fs[i..<j])
                     let sub = flowRows(run, depth: depth + 1, blockIndex: blockIndex, page: page, leading: leading,
-                                       pitch: pitch, refs: &refs)
+                                       pitch: pitch, authored: authored, refs: &refs)
                     itemTop = run.map { $0.rect.minY - inset($0.chain[depth + 1], .minY) }.min()!
                     itemBottom = run.map { $0.rect.maxY + inset($0.chain[depth + 1], .maxY) }.max()!
                     itemHeight = sub.height
@@ -195,7 +211,9 @@ enum PagePlanShadow {
                 cell["boxContent"] = Double(natural - (tail.rect.height - tail.usedHeight))
             }
             // Where the document puts the content in the cell's box is the plan's to apply.
-            switch block.verticalAlignment {
+            // A natural observation reads the alignment the document asked for: the reader top-aligns
+            // the cells of a table it breaks (`topAlignCellsOf`) and leaves the block changed.
+            switch authored ? block.authoredVerticalAlignment : block.verticalAlignment {
             case .middleAlignment: cell["verticalAlign"] = "middle"
             case .bottomAlignment: cell["verticalAlign"] = "bottom"
             default: break
@@ -456,6 +474,8 @@ enum PagePlanShadow {
             var columnCellRefs: [CellRef] = []
             var observed: [ObservedBlock] = []
             var lineMacPages: [[Int]] = []      // per block, the page TextKit put each line on
+            /// The keys of the tables the reader's record calls "broken where they stand".
+            var oversizedKeys: Set<Int> = []
         }
         /// Turns one layout's fragments into the plan's blocks. `natural` is a layout nobody
         /// paginated (`PlanObservation`): every page-dependent read is gone — no band to take back
@@ -468,6 +488,7 @@ enum PagePlanShadow {
         var columnCellRefs: [CellRef] = []
         var observed: [ObservedBlock] = []
         var lineMacPages: [[Int]] = []
+        var oversizedKeys: Set<Int> = []
         var previousBottom: CGFloat?
         var previousPage = -1
         for (groupIndex, group) in groups.enumerated() {
@@ -632,7 +653,9 @@ enum PagePlanShadow {
                 let firstLocation = first.location, lastLocation = frags.last!.location
                 // A natural observation names no table as "broken where it stands": that is the plan's
                 // to decide from the rows, so every table hands in its cells.
-                let breaksWhereItStands = natural || delegate.oversizedPieces.keys.contains { $0 >= firstLocation && $0 <= lastLocation }
+                let readerBreaks = delegate.oversizedPieces.keys.contains { $0 >= firstLocation && $0 <= lastLocation }
+                if readerBreaks { oversizedKeys.insert(group.id) }
+                let breaksWhereItStands = natural || readerBreaks
                 // A table in a columned run is dealt line by line too, from where its lines fall.
                 let inColumnRun = block["columnRun"] != nil
                 if natural {
@@ -645,7 +668,7 @@ enum PagePlanShadow {
                 if breaksWhereItStands || inColumnRun {
                     var measured: [CellRef] = []
                     let flowed = flowRows(frags.filter { $0.table == first.table }, depth: 0, blockIndex: planBlocks.count,
-                                         page: pageOf, leading: leading, pitch: pitch, refs: &measured)
+                                         page: pageOf, leading: leading, pitch: pitch, authored: natural && ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_AUTHORED"] == "1", refs: &measured)
                     // Positions in the stack of a columned run are not the plan's final ones.
                     if natural {
                         // Where the REPORTER put each line is the other layout's business.
@@ -717,7 +740,7 @@ enum PagePlanShadow {
                 heightMac: (isTable ? frags.map(\.bottom).max()! : frags.last!.rect.maxY) - top))
         }
         return Built(planBlocks: planBlocks, cellLineRefs: cellLineRefs, columnCellRefs: columnCellRefs,
-                     observed: observed, lineMacPages: lineMacPages)
+                     observed: observed, lineMacPages: lineMacPages, oversizedKeys: oversizedKeys)
         }
 
         let reader = build(fragments, groups, natural: false)
@@ -728,6 +751,8 @@ enum PagePlanShadow {
         let lineMacPages = reader.lineMacPages
         // What the engine is asked: the reader's own observation, or a layout nobody paginated.
         var askedBlocks = planBlocks
+        /// Prefix plans: how many blocks one viewport, then 1, 2, 3 and 5 pages of the NATURAL layout hold.
+        var prefixCuts: [(pages: Int, blocks: Int)] = []
         if natural {
             let observer = PlanObservation(storage: storage, like: tc)
             observer.walk()
@@ -735,6 +760,11 @@ enum PagePlanShadow {
             let naturalGroups = group(nat)
             let proposed = observer.recorder.proposedTableLineTops
             observer.remove()
+            for pages in [1, 2, 3, 5] {
+                let reach = leading + CGFloat(pages) * pitch
+                let blocks = naturalGroups.filter { nat[$0.range.lowerBound].rect.minY < reach }.count
+                if blocks > 0, blocks < naturalGroups.count, !prefixCuts.contains(where: { $0.blocks == blocks }) { prefixCuts.append((pages, blocks)) }
+            }
             guard naturalGroups.map(\.id) == groups.map(\.id) else {
                 report.skippedReason = "the observer's layout holds other blocks (\(naturalGroups.count) against \(groups.count))"
                 return report
@@ -1051,6 +1081,12 @@ enum PagePlanShadow {
                 }
             }
         }
+        if natural {
+            checkTargets(&report, plan: plan, askedBlocks: askedBlocks, groups: groups.map { ($0.id, $0.range) }, fragments: fragments,
+                         facts: facts, columnRuns: columnRuns, delegate: delegate, page: page, leading: leading, pitch: pitch,
+                         readerOversized: reader.oversizedKeys)
+            checkPrefixes(&report, full: plan, input: input, askedBlocks: askedBlocks, cuts: prefixCuts)
+        }
         let lastMacPage = (observed.map { $0.macPage }.max() ?? 0)
         report.stackPages = lastMacPage + 1
         report.planPages = planPages
@@ -1072,8 +1108,145 @@ enum PagePlanShadow {
             "SHADOW reader's own number vetoes differ from the document's on pages: \(facts.hiddenByReader.symmetricDifference(facts.hidden).sorted().map { String($0 + 1) }.joined(separator: " ").nonEmpty ?? "none")",
             "SHADOW footnotes: TextKit bands \(report.noteBandsTextKit.sorted { $0.key < $1.key }.map { "\($0.key + 1):\(String(format: "%.1f", Double($0.value)))" }.joined(separator: " ")); plan bands \(report.noteBandsPlan.sorted { $0.key < $1.key }.map { "\($0.key + 1):\(String(format: "%.1f", $0.value))" }.joined(separator: " ")); pages whose cited notes differ: \(report.noteAssignmentDifferences)",
             "SHADOW columns: \(report.columnLines) lines in columned runs, different: \(report.columnLinesDifferent); first: \(report.columnFirstDifference ?? "none")",
-        ] + report.context + report.cellDump
+        ] + (natural ? [
+            "SHADOW targets: \(report.targets) (\(report.targetKinds.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value)" }.joined(separator: ", "))), different: \(report.targetsDifferent), unmatched: \(report.targetsUnmatched), max delta \(String(format: "%.3f", report.targetsMaxDelta)); first: \(report.targetsFirstDifference ?? "none")",
+            "SHADOW flowedTables: plan \(report.flowedTablesPlan), not in the reader's oversized record: \(report.flowedTablesPlanOnly); pitchUsed matches the grid: \(report.pitchMatches)",
+            "SHADOW prefix: \(report.prefixPlans) plans, different: \(report.prefixDifferent); final pages \(report.prefixFinal.joined(separator: " ")); first: \(report.prefixFirstDifference ?? "none")",
+        ] : []) + report.context + report.cellDump
         return report
+    }
+
+    // MARK: - S6b2-0b: targets and prefix plans
+
+    /// The plan's `targets` against the layout the reader printed: every target is a line (or a table
+    /// piece's first line) the engine placed by character location, so the page and top it names must
+    /// be where TextKit put that line.
+    private static func checkTargets(_ report: inout Report, plan: [String: Any], askedBlocks: [[String: Any]],
+                                     groups: [(id: Int, range: Range<Int>)], fragments: [Fragment], facts: MacFacts,
+                                     columnRuns: [(range: NSRange, layout: OfficeColumnLayout)], delegate: PageBandLayoutDelegate,
+                                     page: (CGFloat) -> Int, leading: CGFloat, pitch: CGFloat, readerOversized: Set<Int>) {
+        func local(_ y: CGFloat) -> (page: Int, top: Double) {
+            let p = page(y)
+            return (p, Double(y - leading - CGFloat(p) * pitch))
+        }
+        let pitchUsed = (plan["pitchUsed"] as? NSNumber)?.doubleValue ?? 0
+        report.pitchMatches = abs(pitchUsed - Double(pitch)) < 1e-6
+        let flowedKeys = Set(((plan["flowedTables"] as? [NSNumber]) ?? []).map(\.intValue))
+        report.flowedTablesPlan = flowedKeys.count
+        report.flowedTablesPlanOnly = flowedKeys.subtracting(readerOversized).count
+        var reader: [Int: (page: Int, top: Double)] = [:]
+        var inTable: Set<Int> = []
+        for f in fragments {
+            reader[f.location] = local(f.rect.minY)
+            if f.table != nil { inTable.insert(f.location) }
+        }
+        // A table piece's first line: the reader's row top, with the inset the host sent for that line.
+        var piece: [Int: (page: Int, top: Double, inset: Double, key: Int, columnRun: Bool)] = [:]
+        for (index, group) in groups.enumerated() where (askedBlocks[index]["kind"] as? String) == "table" {
+            let block = askedBlocks[index]
+            let frags = Array(fragments[group.range])
+            guard let outer = frags.first?.table else { continue }
+            for (r, row) in ((block["rows"] as? [[String: Any]]) ?? []).enumerated() {
+                let rowTops = frags.filter { $0.table == outer && $0.chain.first?.startingRow == r }.map(\.top)
+                guard let top = rowTops.min() else { continue }
+                var found: (loc: Int, inset: Double)?
+                for cell in (row["cells"] as? [[String: Any]]) ?? [] where found == nil {
+                    for line in (cell["lines"] as? [[String: Any]]) ?? [] {
+                        if let loc = (line["loc"] as? NSNumber)?.intValue {
+                            let own = (cell["padTop"] as? Double ?? 0) + (line["top"] as? Double ?? 0)
+                            found = (loc, own)
+                            break
+                        }
+                    }
+                }
+                guard var (loc, inset) = found.map({ ($0.loc, $0.inset) }) else { continue }
+                if r == 0, let firstLoc = block["firstLoc"] as? Int { loc = firstLoc; inset = block["firstLineInset"] as? Double ?? 0 }
+                let at = local(top)
+                piece[loc] = (at.page, at.top, inset, group.id, block["columnRun"] != nil)
+            }
+        }
+        for target in (plan["targets"] as? [[String: Any]]) ?? [] {
+            guard let loc = (target["loc"] as? NSNumber)?.intValue, let tPage = (target["page"] as? NSNumber)?.intValue,
+                  let tTop = (target["top"] as? NSNumber)?.doubleValue else { continue }
+            let tColumn = (target["column"] as? NSNumber)?.intValue
+            var expected: (page: Int, top: Double)?
+            var kind = "line"
+            var expectedColumn: Int?
+            if let placed = facts.columnPlacements[loc] {
+                // A line in a columned run: the reader's column map is where it stands.
+                let at = local(placed.y)
+                expected = at
+                kind = "column line"
+                if let run = columnRuns.firstIndex(where: { NSLocationInRange(loc, $0.range) }) {
+                    let columns = ColumnGeometry.columns(inWidth: delegate.columnBodyWidth, layout: columnRuns[run].layout)
+                    expectedColumn = columns.lastIndex { $0.x <= placed.x + 0.5 } ?? 0
+                }
+            } else if let p = piece[loc], !flowedKeys.contains(p.key), !p.columnRun {
+                expected = (p.page, p.top + p.inset)
+                kind = "piece"
+            } else if let at = reader[loc] {
+                expected = at
+                if inTable.contains(loc) { kind = "cell line" }
+            }
+            report.targets += 1
+            report.targetKinds[kind, default: 0] += 1
+            guard let expected else { report.targetsUnmatched += 1; continue }
+            let delta = abs(expected.top - tTop)
+            report.targetsMaxDelta = max(report.targetsMaxDelta, expected.page == tPage ? delta : 0)
+            if expected.page != tPage || delta > 0.6 || (expectedColumn != nil && expectedColumn != tColumn) {
+                report.targetsDifferent += 1
+                // FMD_PLAN_SHADOW_TARGETS=1 lists every differing target.
+                if ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_TARGETS"] == "1" {
+                    report.cellDump.append("SHADOW   target \(kind) at \(loc): TextKit p\(expected.page + 1) top \(String(format: "%.2f", expected.top)); plan p\(tPage + 1) top \(String(format: "%.2f", tTop))")
+                }
+                if report.targetsFirstDifference == nil {
+                    report.targetsFirstDifference = "\(kind) at \(loc): TextKit p\(expected.page + 1) top \(String(format: "%.2f", expected.top)) column \(expectedColumn.map(String.init) ?? "-"); plan p\(tPage + 1) top \(String(format: "%.2f", tTop)) column \(tColumn.map(String.init) ?? "-")"
+                }
+            }
+        }
+    }
+
+    /// A plan over a prefix of the blocks (`truncated`), on the pages it calls final, against the full
+    /// plan: the same targets, and nothing else standing on those pages.
+    private static func checkPrefixes(_ report: inout Report, full: [String: Any], input: [String: Any],
+                                      askedBlocks: [[String: Any]], cuts: [(pages: Int, blocks: Int)]) {
+        func table(_ p: [String: Any]) -> [Int: String] {
+            var out: [Int: String] = [:]
+            for t in (p["targets"] as? [[String: Any]]) ?? [] {
+                guard let loc = (t["loc"] as? NSNumber)?.intValue, let page = (t["page"] as? NSNumber)?.intValue else { continue }
+                let top = (t["top"] as? NSNumber)?.doubleValue ?? 0
+                out[loc] = "\(page) \(String(format: "%.3f", top)) \((t["column"] as? NSNumber)?.intValue ?? -1)"
+            }
+            return out
+        }
+        let fullTargets = table(full)
+        let fullPages = (full["pageCount"] as? NSNumber)?.intValue ?? 0
+        for cut in cuts {
+            var asked = input
+            asked["blocks"] = Array(askedBlocks.prefix(cut.blocks))
+            asked["truncated"] = true
+            guard let json = try? JSONSerialization.data(withJSONObject: asked), let reply = plan(json: json),
+                  let envelope = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any],
+                  let part = envelope["ok"] as? [String: Any] else {
+                report.prefixDifferent += 1
+                report.prefixFirstDifference = report.prefixFirstDifference ?? "no plan for a prefix of \(cut.blocks) blocks"
+                continue
+            }
+            report.prefixPlans += 1
+            let final = (part["finalPages"] as? NSNumber)?.intValue ?? 0
+            let partPages = (part["pageCount"] as? NSNumber)?.intValue ?? 0
+            report.prefixFinal.append("\(cut.pages)p:\(final)/\(partPages)")
+            func settled(_ table: [Int: String]) -> [Int: String] { table.filter { (Int($0.value.split(separator: " ")[0]) ?? 0) < final } }
+            let a = settled(table(part)), b = settled(fullTargets)
+            let differing = Set(a.keys).union(b.keys).filter { a[$0] != b[$0] }
+            if final > partPages || final > fullPages || !differing.isEmpty {
+                report.prefixDifferent += 1
+                if report.prefixFirstDifference == nil {
+                    let loc = differing.min()
+                    report.prefixFirstDifference = "prefix of \(cut.blocks) blocks (\(cut.pages) pages), final \(final) of \(partPages): \(differing.count) targets differ" + (loc.map { ", first at \($0): prefix \(a[$0] ?? "-") full \(b[$0] ?? "-")" } ?? "")
+                }
+            }
+        }
     }
 
     static func plan(json: Data) -> Data? {
