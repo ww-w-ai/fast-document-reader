@@ -89,6 +89,9 @@ enum PagePlanShadow {
         var lineSpacing: CGFloat
         /// The line as the port's vocabulary has it, read from this same pass (no second layout).
         var box: RustEngineMeasure.LineBox
+        /// The height of the glyphs the line holds (`usedRect`): the fragment adds the paragraph's
+        /// spacing after when this is the paragraph's last line.
+        var usedHeight: CGFloat = 0
         var column: Int = 0
         var paragraphStart: Int = 0
         var spaceBefore: CGFloat = 0
@@ -181,6 +184,11 @@ enum PagePlanShadow {
             var cell: [String: Any] = ["padTop": Double(padTop), "padBottom": Double(padBottom),
                                        "contentHeight": Double(natural), "lines": items]
             if block.rowSpan > 1 { cell["rowSpan"] = block.rowSpan }
+            // The cell's box encloses what its last line USES; the paragraph spacing after that line
+            // adds to the fragment, not to the box.
+            if depth == 0, let tail = fs.last, tail.chain.count <= depth + 1, tail.rect.height - tail.usedHeight > 0.01 {
+                cell["boxContent"] = Double(natural - (tail.rect.height - tail.usedHeight))
+            }
             // Where the document puts the content in the cell's box is the plan's to apply.
             switch block.verticalAlignment {
             case .middleAlignment: cell["verticalAlign"] = "middle"
@@ -378,7 +386,7 @@ enum PagePlanShadow {
         // ---- 1. one pass over the finished layout ----
         var fragments: [Fragment] = []
         let storageText = storage.string as NSString
-        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, glyphRange, _ in
+        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, usedRect, _, glyphRange, _ in
             let chars = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
             guard chars.location >= 0, chars.location < storage.length,
                   let id = storage.attribute(MDAttr.blockId, at: chars.location, effectiveRange: nil) as? Int else { return }
@@ -406,6 +414,7 @@ enum PagePlanShadow {
             fragments.append(Fragment(location: chars.location, rect: rect, blockId: id, table: table,
                                       startingRow: startingRow, rowSpan: rowSpan, top: top, bottom: bottom,
                                       lineSpacing: max(0, style?.lineSpacing ?? 0), box: box,
+                                      usedHeight: usedRect.height,
                                       column: column, paragraphStart: paragraphRange.location,
                                       spaceBefore: max(0, style?.paragraphSpacingBefore ?? 0),
                                       spaceAfter: max(0, style?.paragraphSpacing ?? 0),
@@ -524,7 +533,7 @@ enum PagePlanShadow {
                     for id in seen {
                         let fs = by[id]!, cell = fs[0].chain[0]
                         let box = lm.boundsRect(for: cell, at: lm.glyphIndexForCharacter(at: fs[0].location), effectiveRange: nil)
-                        report.cellDump.append("SHADOW   cellbox [\(planBlocks.count)] r\(cell.startingRow)+\(cell.rowSpan) c\(cell.startingColumn)+\(cell.columnSpan) va\(cell.verticalAlignment.rawValue) box \(String(format: "%.2f", Double(box.minY)))..\(String(format: "%.2f", Double(box.maxY))) lines \(String(format: "%.2f", Double(fs.map { $0.rect.minY }.min()!)))..\(String(format: "%.2f", Double(fs.map { $0.rect.maxY }.max()!))) n\(fs.count) pad \(String(format: "%.2f", Double(inset(cell, .minY))))/\(String(format: "%.2f", Double(inset(cell, .maxY)))) nested \(fs.contains { $0.chain.count > 1 })")
+                        report.cellDump.append("SHADOW   cellbox [\(planBlocks.count)] r\(cell.startingRow)+\(cell.rowSpan) c\(cell.startingColumn)+\(cell.columnSpan) va\(cell.verticalAlignment.rawValue) box \(String(format: "%.2f", Double(box.minY)))..\(String(format: "%.2f", Double(box.maxY))) lines \(String(format: "%.2f", Double(fs.map { $0.rect.minY }.min()!)))..\(String(format: "%.2f", Double(fs.map { $0.rect.maxY }.max()!))) n\(fs.count) pad \(String(format: "%.2f", Double(inset(cell, .minY))))/\(String(format: "%.2f", Double(inset(cell, .maxY)))) nested \(fs.contains { $0.chain.count > 1 }) lastLS \(String(format: "%.2f", Double(fs.last!.lineSpacing))) lastH \(String(format: "%.2f", Double(fs.last!.rect.height))) boxH \(String(format: "%.2f", Double(fs.last!.box.height))) used \(String(format: "%.2f", Double(lm.lineFragmentUsedRect(forGlyphAt: lm.glyphIndexForCharacter(at: fs.last!.location), effectiveRange: nil).height))) spaceAfter \(String(format: "%.2f", Double(fs.last!.spaceAfter))) spaceBefore \(String(format: "%.2f", Double(fs.first!.spaceBefore)))")
                     }
                 }
                 // The row heights the host reports are the layout's own BEFORE the page rule moved
@@ -574,11 +583,11 @@ enum PagePlanShadow {
                         for position in rowEntries.indices {
                             rowEntries[position]["observedHeight"] = rowEntries[position]["height"]
                             rowEntries[position]["cells"] = built.rows[position]["cells"]
-                            // A table in a columned run keeps the rows TextKit made of it; the other
-                            // tables the flow breaks take the heights the cells add up to.
+                            // A table in a columned run is sized by the engine from its cells (the rule
+                            // of `table_rows.rs`); the other tables the flow breaks take the heights the
+                            // cells add up to.
                             if !inColumnRun { rowEntries[position]["height"] = built.rows[position]["height"] }
                         }
-                        if inColumnRun { block["rowsObserved"] = true }
                     }
                 }
                 block["rows"] = rowEntries
@@ -647,14 +656,40 @@ enum PagePlanShadow {
         // plan, with the reader's own pulls (`pullToNextPage`) and the plan's marked.
         let dumpedBlocks = Set((ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_CELLS"] ?? "").split(separator: ",").compactMap { Int($0) })
         let planPulls = Set(((plan["pulledLines"] as? [[Any]]) ?? []).map { $0.map { "\(($0 as? NSNumber)?.intValue ?? -1)" }.joined(separator: ",") })
+        // A table the reader's record calls oversized can be one the plan does not flow: the record only
+        // grows (`oversizedPieces`), so a piece measured tall in an early round stays "broken where it
+        // stands" after the final layout holds it whole. The plan then places it by row pieces and has
+        // no cell lines to compare. Each such line is checked against the piece the plan put its row
+        // in: same page, and its top inside that piece.
+        var pieces: [Int: [(page: Int, top: Double, bottom: Double, rows: Range<Int>)]] = [:]
+        for placement in (plan["placements"] as? [[String: Any]]) ?? [] {
+            guard let b = placement["block"] as? Int, let p = placement["page"] as? Int,
+                  let start = placement["rowStart"] as? Int, let count = placement["rowCount"] as? Int,
+                  let top = (placement["top"] as? NSNumber)?.doubleValue,
+                  let height = (placement["height"] as? NSNumber)?.doubleValue else { continue }
+            pieces[b, default: []].append((p, top, top + height, start..<(start + count)))
+        }
+        let flowedBlocks = Set(plannedCellLines.keys.compactMap { $0.split(separator: ",").first.flatMap { Int($0) } })
         for ref in cellLineRefs {
             report.cellLines += 1
+            if !flowedBlocks.contains(ref.block) {
+                let inPiece = (pieces[ref.block] ?? []).contains {
+                    $0.rows.contains(ref.row) && $0.page == ref.page && Double(ref.top) > $0.top - 0.6 && Double(ref.top) < $0.bottom + 0.6
+                }
+                if !inPiece {
+                    report.cellLinesOnADifferentPage += 1
+                    if dumpedBlocks.contains(ref.block) {
+                        report.cellDump.append("SHADOW   cell [\(ref.block)] r\(ref.row) c\(ref.cell) l\(ref.line): TextKit p\(ref.page + 1) top \(String(format: "%.1f", Double(ref.top))); plan pieces \((pieces[ref.block] ?? []).map { "p\($0.page + 1) \(String(format: "%.1f", $0.top))..\(String(format: "%.1f", $0.bottom)) rows \($0.rows)" }) DIFF")
+                    }
+                }
+                continue
+            }
             let planned = plannedCellLines["\(ref.block),\(ref.row),\(ref.cell),\(ref.line)"]
             if dumpedBlocks.contains(ref.block) {
                 let ok = planned.map { $0.page == ref.page && abs($0.top - Double(ref.top)) < 0.6 } ?? false
                 let pulled = delegate.pullToNextPage.contains(ref.loc) ? " PULLED(TextKit)" : ""
                 let planPulled = planPulls.contains("\(ref.block),\(ref.row),\(ref.cell),\(ref.line)") ? " PULLED(plan)" : ""
-                report.cellDump.append("SHADOW   cell [\(ref.block)] r\(ref.row) c\(ref.cell) l\(ref.line): TextKit p\(ref.page + 1) top \(String(format: "%.1f", Double(ref.top))); plan p\(planned.map { String($0.page + 1) } ?? "-") top \(planned.map { String(format: "%.1f", $0.top) } ?? "-")\(ok ? "" : " DIFF")\(pulled)\(planPulled)")
+                report.cellDump.append("SHADOW   cell [\(ref.block)] r\(ref.row) c\(ref.cell) l\(ref.line): TextKit p\(ref.page + 1) top \(String(format: "%.3f", Double(ref.top))); plan p\(planned.map { String($0.page + 1) } ?? "-") top \(planned.map { String(format: "%.3f", $0.top) } ?? "-")\(ok ? "" : " DIFF")\(pulled)\(planPulled)")
             }
             guard let planned, planned.page == ref.page, abs(planned.top - Double(ref.top)) < 0.6 else {
                 report.cellLinesOnADifferentPage += 1
@@ -833,7 +868,20 @@ enum PagePlanShadow {
                 if n.count == 5 { planCellColumn["\(n[0]),\(n[1]),\(n[2]),\(n[3])"] = n[4] }
             }
             var cellsShown = 0
+            if ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_PULLS"] != nil {
+                var kitOnly: [String] = [], planOnly: [String] = [], both = 0
+                for ref in columnCellRefs {
+                    let key = "\(ref.block),\(ref.row),\(ref.cell),\(ref.line)"
+                    let kit = delegate.pullToNextPage.contains(ref.loc), planned = planPulls.contains(key)
+                    if kit && planned { both += 1 } else if kit { kitOnly.append(key) } else if planned { planOnly.append(key) }
+                }
+                report.context.append("SHADOW   column-table pulls: both \(both), TextKit only \(kitOnly.count) \(kitOnly.prefix(12)), plan only \(planOnly.count) \(planOnly.prefix(12))")
+            }
+            let stackDumped = Set((ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_STACKCELLS"] ?? "").split(separator: ",").compactMap { Int($0) })
             for ref in columnCellRefs {
+                if stackDumped.contains(ref.block) {
+                    report.cellDump.append("SHADOW   stackref [\(ref.block)] r\(ref.row) c\(ref.cell) l\(ref.line): stack p\(ref.page + 1) top \(String(format: "%.2f", Double(ref.top)))\(delegate.pullToNextPage.contains(ref.loc) ? " PULLED(TextKit)" : "")")
+                }
                 guard let target = facts.columnPlacements[ref.loc] else { continue }
                 report.columnLines += 1
                 let macPage = page(of: target.y)

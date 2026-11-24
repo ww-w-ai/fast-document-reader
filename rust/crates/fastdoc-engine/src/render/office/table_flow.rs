@@ -99,9 +99,16 @@ pub type LinePath = Vec<u32>;
 /// Every line a flow placed, nested ones included: `(path, page, top)`.
 pub type PlacedLines = Vec<(LinePath, u32, f64)>;
 
+/// Floating-point slack in a fit test, in points.
+const NOISE: f64 = 1e-6;
+
 fn fits(geometry: &FlowGeometry, page: u32, y: f64, height: f64, trailing: f64) -> bool {
     // The delegate's own comparison: the glyphs must clear the foot, the spacing under them may hang.
-    !(y + height - trailing > geometry.body(page))
+    // The delegate compares absolute coordinates thousands of points down the document and this
+    // compares page-local sums of the host's line heights, so a line that ends exactly on the foot
+    // lands on either side of it by arithmetic noise alone; `NOISE` is far below anything a
+    // document can say.
+    !(y + height - trailing > geometry.body(page) + NOISE)
 }
 
 /// One pass of a table's flow from `(page, y)`, which is where its top edge stands.
@@ -180,7 +187,9 @@ impl Runner<'_> {
                     previous_bottom = line.top + line.height;
                 }
                 let tail = (cell.content_height - previous_bottom).max(0.0);
-                let cell_end = g.normalise(pos.0, pos.1 + tail + cell.pad_bottom);
+                // The box ends at what the last line uses: the spacing after it hangs below.
+                let hanging = cell.box_content.map_or(0.0, |b| (cell.content_height - b).max(0.0));
+                let cell_end = g.normalise(pos.0, pos.1 + tail - hanging + cell.pad_bottom);
                 let target = row_index_end(r, cell.row_span, rows.len());
                 if target == r {
                     end = later(end, cell_end);
@@ -297,7 +306,7 @@ mod tests {
                 l
             })
             .collect();
-        PlanCell { row_span: 1, pad_top, pad_bottom, content_height: top, vertical_align: Default::default(), lines }
+        PlanCell { row_span: 1, pad_top, pad_bottom, content_height: top, box_content: None, vertical_align: Default::default(), lines }
     }
 
     fn row(height: f64, can_break_above: bool, cells: Vec<PlanCell>) -> PlanRow {
@@ -334,6 +343,25 @@ mod tests {
 
     fn pages_of(flow: &TableFlow) -> Vec<u32> {
         flow.lines.iter().map(|l| l.4).collect()
+    }
+
+    #[test]
+    fn a_cells_box_ends_where_its_last_line_uses_and_the_spacing_after_it_hangs_below() {
+        // Two 10pt lines whose last carries 4pt of spacing after: the box encloses 16 of the 20.
+        let mut c = cell(&[10.0, 10.0], 1.0, 1.0);
+        c.box_content = Some(16.0);
+        let flow = run(100.0, 20.0, (0, 0.0), vec![row(0.0, false, vec![c])]);
+        assert_eq!(flow.end, (0, 18.0));
+        let flow = run(100.0, 20.0, (0, 0.0), vec![row(0.0, false, vec![cell(&[10.0, 10.0], 1.0, 1.0)])]);
+        assert_eq!(flow.end, (0, 22.0));
+    }
+
+    #[test]
+    fn a_line_that_ends_on_the_foot_to_within_arithmetic_noise_stays() {
+        // The second line ends 1e-10 past a 79.18 body: rounding, not a document, put it there.
+        let rows = vec![row(200.0, false, vec![cell(&[69.18, 10.0 + 1e-10, 10.0], 0.0, 0.0)])];
+        let flow = run(79.18, 20.0, (0, 0.0), rows);
+        assert_eq!(pages_of(&flow)[1], 0, "the second line ends on the foot and stays");
     }
 
     #[test]

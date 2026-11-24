@@ -1,26 +1,29 @@
-//! How tall TextKit makes each row of a table (S6c of `docs/plans/pagination-to-engine.md`).
+//! How tall AppKit's text table makes each row (S6c/S6d of `docs/plans/pagination-to-engine.md`).
 //!
-//! Measured on the 편람's table 3120 (25 grid columns, 12 rows, cells merged across up to eight rows,
-//! 2025_행정업무운영편람_최종.hwp): AppKit sizes a row from the cells that BEGIN in it and span one
-//! row — the tallest of their content plus padding — and a row no such cell begins in is as tall as
-//! nothing. A cell that spans several rows then asks for its own content plus padding: when the rows
-//! it covers are already that tall it changes nothing, and when they are shorter the WHOLE shortfall
-//! goes to the LAST row it covers. Rows 10-11 of that table: single-row cells need 9.0 and 8.8, a
-//! two-row cell needs 25.4, so the rows stand at 9.0 and 16.4 (not 12.7 and 12.7); rows 4-5: a
-//! two-row cell begins in row 4 where no single-row cell does, so row 4 is 0.0 and row 5 takes the
-//! 9.8. Every cell box of that table matches this to the hundredth of a point.
+//! The rule below is the one `NSTextTable` applies, read off cell boxes measured on the 편람
+//! (2025_행정업무운영편람_최종.hwp: table 3120 with 25 grid columns and cells merged across up to eight
+//! rows, and the 15-row table nested in table 3173, whose merged cells make its row tops run upward
+//! from one column group to the next):
 //!
-//! Known exception, not modelled: `s7-page-restart.hwp`'s table 11 has a top-aligned two-row cell whose
-//! line needs 25.5 against the 21.0 its rows make, and TextKit leaves the rows at 21.0 and lets the
-//! line run past its box. Limiting growth to cells that are not top-aligned fits that table and
-//! table 3120 but costs the 편람 more than it gains (measured: 1,236 of its 1,426 column lines then
-//! differ, against 1,096), so the rule is stated without it. A host that has TextKit reports the
-//! rows it observed (`PlanBlock.rows_observed`) and never reaches this rule.
+//! 1. A cell is as tall as its content plus padding and borders (`need`); a cell never grows because
+//!    the rows it covers are taller.
+//! 2. A row's top is the bottom of the cells that END in the row above it. A row with no cell ending
+//!    in the row above stands where that row stood (it is as tall as nothing).
+//! 3. Every cell that ends in the same row has the same bottom: the lowest any of them reaches
+//!    (its top plus its `need`). That is why a one-line cell beside a taller neighbour is stretched to
+//!    the neighbour's bottom, and why a merged cell's shortfall lands on the LAST row it covers.
 //!
-//! Spans are applied in the order the cells were given (document order); a shortfall one span left
-//! on a row counts as height for the next.
+//! Row tops of such a table are not monotone across column groups (a cell in the right-hand block can
+//! start above a cell in the left-hand block that sits in a later row), so heights are taken between
+//! tops made monotone from below (the least top of this row and every row after it): rows never run
+//! upward, and the table's total is the lowest bottom any cell reaches.
+//!
+//! Known exception, not modelled: `s7-page-restart.hwp`'s table 11 has a top-aligned two-row cell
+//! whose line needs 25.5 against the 21.0 its rows make, and TextKit leaves the rows at 21.0 and lets
+//! the line run past its box. A host that has TextKit can report the rows it observed
+//! (`PlanBlock.rows_observed`) and never reaches this rule.
 
-/// One cell's claim on the rows it begins in.
+/// One cell's claim on the rows it covers.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RowNeed {
     pub row: usize,
@@ -30,37 +33,41 @@ pub struct RowNeed {
     pub need: f64,
 }
 
-/// The height of each of `rows` rows. A row no cell begins in and no span covers has no cell to
-/// size it; it stands at `fallback[row]`.
+/// The height of each of `rows` rows. A row no cell covers has no cell to size it; it stands at
+/// `fallback[row]`.
 pub fn row_heights(rows: usize, needs: &[RowNeed], fallback: &[f64]) -> Vec<f64> {
-    let mut heights = vec![0.0_f64; rows];
-    let mut claimed = vec![false; rows];
-    for n in needs.iter().filter(|n| n.row < rows) {
-        claimed[n.row] = true;
-        let span = n.span.max(1).min(rows - n.row);
-        for slot in &mut claimed[n.row..n.row + span] {
+    if rows == 0 {
+        return Vec::new();
+    }
+    let needs: Vec<(usize, usize, f64)> = needs
+        .iter()
+        .filter(|n| n.row < rows)
+        .map(|n| (n.row, (n.row + n.span.max(1)).min(rows) - 1, n.need))
+        .collect();
+    let mut covered = vec![false; rows];
+    for &(first, last, _) in &needs {
+        for slot in &mut covered[first..=last] {
             *slot = true;
         }
-        if span == 1 && n.need > heights[n.row] {
-            heights[n.row] = n.need;
-        }
     }
-    for (row, h) in heights.iter_mut().enumerate() {
-        if !claimed[row] {
-            *h = fallback.get(row).copied().unwrap_or(0.0);
-        }
+    // `top[r]` is where row r begins; `top[rows]` is where the table ends.
+    let mut top = vec![0.0_f64; rows + 1];
+    let mut lowest = 0.0_f64;
+    for r in 0..rows {
+        let ending = needs.iter().filter(|&&(_, last, _)| last == r);
+        let bottom = ending.map(|&(first, _, need)| top[first] + need).fold(None, |m: Option<f64>, b| Some(m.map_or(b, |m| m.max(b))));
+        top[r + 1] = match bottom {
+            Some(b) => b,
+            None if covered[r] => top[r],
+            None => top[r] + fallback.get(r).copied().unwrap_or(0.0),
+        };
+        lowest = lowest.max(top[r + 1]);
     }
-    for n in needs.iter().filter(|n| n.row < rows) {
-        let span = n.span.max(1).min(rows - n.row);
-        if n.span <= 1 || span <= 1 {
-            continue;
-        }
-        let covered: f64 = heights[n.row..n.row + span].iter().sum();
-        if n.need > covered {
-            heights[n.row + span - 1] += n.need - covered;
-        }
+    top[rows] = lowest;
+    for r in (0..rows).rev() {
+        top[r] = top[r].min(top[r + 1]);
     }
-    heights
+    (0..rows).map(|r| top[r + 1] - top[r]).collect()
 }
 
 #[cfg(test)]
@@ -105,6 +112,38 @@ mod tests {
     #[test]
     fn a_span_past_the_last_row_is_clamped() {
         assert_eq!(row_heights(2, &[need(0, 1, 14.0), need(1, 5, 44.0)], &[0.0; 2]), vec![14.0, 44.0]);
+    }
+
+    #[test]
+    fn cells_that_end_in_the_same_row_share_the_lowest_bottom_and_row_tops_may_run_upward() {
+        // The 15-row table nested in the 편람's table 3173 (rows 0-9 of it, cell needs read off the
+        // boxes AppKit drew): the right-hand block's rows begin above rows the left-hand block has
+        // not reached, and every cell ending in row 9 stops at the lowest of them.
+        let cells = [
+            (0, 1, 22.0), (0, 1, 23.5), (0, 1, 13.0), (0, 10, 10.0),
+            (1, 1, 41.34), (1, 1, 22.17), (1, 3, 28.0), (1, 3, 28.0),
+            (2, 1, 4.0),
+            (3, 2, 21.0), (3, 2, 10.5),
+            (4, 6, 22.5), (4, 2, 10.5), (4, 2, 10.5),
+            (5, 2, 12.0), (6, 2, 18.55), (7, 2, 12.0), (8, 2, 18.56), (9, 1, 12.0),
+        ];
+        let needs: Vec<RowNeed> = cells.iter().map(|&(r, s, n)| need(r, s, n)).collect();
+        let h = row_heights(10, &needs, &[0.0; 10]);
+        let expected = [23.5, 28.0, 0.0, 0.0, 10.5, 0.0, 18.55, 0.0, 33.29, 12.0];
+        for (row, (got, want)) in h.iter().zip(expected).enumerate() {
+            assert!((got - want).abs() < 1e-6, "row {row}: {got} against {want} in {h:?}");
+        }
+        assert!((h.iter().sum::<f64>() - 125.84).abs() < 1e-6, "the table ends at the lowest bottom: {h:?}");
+    }
+
+    #[test]
+    fn a_cell_beside_a_taller_neighbour_that_ends_in_the_same_row_is_stretched_to_it() {
+        let h = row_heights(1, &[need(0, 1, 9.0), need(0, 1, 30.0)], &[0.0]);
+        assert_eq!(h, vec![30.0]);
+        assert_eq!(row_heights(1, &[need(0, 1, 30.0), need(0, 1, 9.0)], &[0.0]), vec![30.0], "whatever order they come in");
+        // Two rows: the short cell in row 1 ends where the tall one does, so the row stands at the tall one.
+        let h = row_heights(2, &[need(0, 1, 10.0), need(1, 1, 5.0), need(1, 1, 20.0)], &[0.0; 2]);
+        assert_eq!(h, vec![10.0, 20.0]);
     }
 
     #[test]

@@ -119,6 +119,11 @@ pub struct PlanCell {
     /// The content's own height, padding excluded.
     #[serde(default)]
     pub content_height: f64,
+    /// What the cell's box encloses when that is less than the lines' extent: the paragraph spacing
+    /// after the last line is part of its fragment but not of the box (TextKit's `usedRect`).
+    /// Absent, the box encloses `content_height`.
+    #[serde(default)]
+    pub box_content: Option<f64>,
     /// Where the document puts the content inside the cell's box (the box is as tall as the rows the
     /// cell covers). The plan applies it itself, so a host sends its lines at their natural offsets.
     #[serde(default)]
@@ -747,6 +752,9 @@ fn settle_rows(rows: &mut [PlanRow]) {
                 }
             }
             cell.content_height += shift;
+            if let Some(boxed) = cell.box_content.as_mut() {
+                *boxed += shift;
+            }
         }
     }
     if !has_cells(rows) {
@@ -756,7 +764,7 @@ fn settle_rows(rows: &mut [PlanRow]) {
         .iter()
         .enumerate()
         .flat_map(|(r, row)| {
-            row.cells.iter().map(move |c| RowNeed { row: r, span: c.row_span.max(1) as usize, need: c.pad_top + c.content_height + c.pad_bottom })
+            row.cells.iter().map(move |c| RowNeed { row: r, span: c.row_span.max(1) as usize, need: c.pad_top + c.box_content.unwrap_or(c.content_height) + c.pad_bottom })
         })
         .collect();
     let given: Vec<f64> = rows.iter().map(|r| r.height).collect();
@@ -1127,14 +1135,18 @@ impl State {
     /// whole, cut at its rows, or flowed line by line — and its lines, those of a table nested in a
     /// cell included, are what the columns deal. One with no cell data is dealt piece by piece.
     fn place_table_in_stack(&mut self, split_tables: bool, index: u32, block: &PlanBlock, stack: &mut Vec<StackItem>) {
-        // The stack is a later layout, never the reader's first one.
-        let mode = std::mem::replace(&mut self.mode, Mode::Settled);
+        // The reader's first layout lays a columned run's stack like any other text: a table whose
+        // cells were measured stays where it falls. Only the later layouts settle it.
+        let keep_natural = self.mode == Mode::Natural && has_cells(&block.rows);
+        let mode = if keep_natural { self.mode } else { std::mem::replace(&mut self.mode, Mode::Settled) };
+        let start = (self.page, self.cursor);
         let (placements_from, cells_from, segments_from) =
             (self.placements.len(), self.cell_lines.len(), self.row_segments.len());
         self.place_table(index, block, split_tables);
         self.mode = mode;
         let mut leaves: Vec<(Vec<u32>, u32, f64, f64)> = Vec::new(); // (path, page, top, height)
-        let flowed_table = self.placements[placements_from..].iter().any(|p| p.flowed);
+        let flowed_table = self.placements[placements_from..].iter().any(|p| p.flowed)
+            || (keep_natural && self.flowed.last().map_or(false, |f| f.block == index));
         if flowed_table {
             // Flowed: the flow already placed every line, nested ones included. What it said about
             // the table's pieces and rows was only where the stack stood.
@@ -1147,7 +1159,22 @@ impl State {
             self.row_segments.truncate(segments_from);
             self.placements.truncate(placements_from);
         } else {
-            let pieces: Vec<BlockPlacement> = self.placements[placements_from..].to_vec();
+            let mut pieces: Vec<BlockPlacement> = self.placements[placements_from..].to_vec();
+            if keep_natural {
+                // Lying where it fell, whole: one piece from where it began.
+                let total: f64 = block.rows.iter().map(|r| r.height).sum();
+                pieces = vec![BlockPlacement {
+                    block: index,
+                    key: block.key,
+                    page: start.0,
+                    top: start.1 + block.spacing_before,
+                    height: total,
+                    row_start: Some(0),
+                    row_count: Some(block.rows.len() as u32),
+                    flowed: false,
+                    column: None,
+                }];
+            }
             if !has_cells(&block.rows) {
                 for (offset, piece) in pieces.into_iter().enumerate() {
                     stack.push(StackItem { slot: StackSlot::Placement(placements_from + offset), block: index, height: piece.height, leaf: None });
@@ -1793,7 +1820,7 @@ mod tests {
                 line
             })
             .collect();
-        PlanCell { row_span: 1, pad_top: 0.0, pad_bottom: 0.0, content_height: top, vertical_align: PlanAlign::Top, lines }
+        PlanCell { row_span: 1, pad_top: 0.0, pad_bottom: 0.0, content_height: top, box_content: None, vertical_align: PlanAlign::Top, lines }
     }
 
     fn flow_table_block(key: i64, rows: Vec<(f64, Vec<PlanCell>)>) -> PlanBlock {
@@ -2010,6 +2037,7 @@ mod tests {
             pad_top: 0.0,
             pad_bottom: 0.0,
             content_height: 80.0,
+            box_content: None,
             vertical_align: PlanAlign::Top,
             lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested }],
         };
@@ -2034,6 +2062,7 @@ mod tests {
             pad_top: 0.0,
             pad_bottom: 0.0,
             content_height: 80.0,
+            box_content: None,
             vertical_align: PlanAlign::Top,
             lines: vec![PlanLine { top: 0.0, height: 80.0, trailing: 0.0, rows: nested }],
         };
@@ -2119,6 +2148,43 @@ mod tests {
         assert_eq!((after.2, after.3), (0, 67.0));
         assert_eq!(plan.pages[0].first_key, Some(0), "the page's first block is the one before the run");
         assert_eq!(plan.page_count, 1);
+    }
+
+    #[test]
+    fn a_table_in_a_columned_stack_is_pulled_by_the_first_layout_like_any_other() {
+        // As `a_pull_the_first_layout_made_stays_even_when_the_settled_layout_would_not_make_it`, with
+        // the table under a column declaration: the stack's first layout leaves its first line at
+        // y=95 stranded at the foot, and the reader keeps the pull that finds.
+        let table = columned(flow_table_block(2, vec![(200.0, vec![flow_cell(&[20.0; 10])])]), 0);
+        let mut plan_input = input(100.0, vec![text(1, &[95.0]), table]);
+        plan_input.band = 20.0;
+        plan_input.body_width = 300.0;
+        plan_input.column_runs = vec![two_columns()];
+        let plan = plan_pages(&plan_input).unwrap();
+        assert_eq!(plan.pulled_lines, vec![vec![1, 0, 0, 0]]);
+    }
+
+    #[test]
+    fn a_cell_box_encloses_what_its_last_line_uses_not_the_spacing_after_it() {
+        let cell = |boxed: Option<f64>| PlanCell { pad_top: 1.0, pad_bottom: 1.0, box_content: boxed, ..flow_cell(&[30.0]) };
+        let mut with = vec![PlanRow { height: 0.0, can_break_above: false, cells: vec![cell(Some(25.0))] }];
+        let mut without = vec![PlanRow { height: 0.0, can_break_above: false, cells: vec![cell(None)] }];
+        settle_rows(&mut with);
+        settle_rows(&mut without);
+        assert_eq!(with[0].height, 27.0);
+        assert_eq!(without[0].height, 32.0);
+    }
+
+    #[test]
+    fn a_nested_table_grows_the_box_content_with_the_cell_it_stands_in() {
+        // The line standing for the nested table is 10 tall and the table solves to 30: the cell's
+        // content, and what its box encloses, both grow by 20.
+        let nested = vec![PlanRow { height: 30.0, can_break_above: false, cells: Vec::new() }];
+        let line = PlanLine { top: 0.0, height: 10.0, trailing: 0.0, rows: nested };
+        let cell = PlanCell { content_height: 10.0, box_content: Some(8.0), lines: vec![line], ..flow_cell(&[]) };
+        let mut rows = vec![PlanRow { height: 0.0, can_break_above: false, cells: vec![cell] }];
+        settle_rows(&mut rows);
+        assert_eq!(rows[0].height, 28.0);
     }
 
     #[test]
@@ -2234,6 +2300,7 @@ mod tests {
             pad_top: 0.0,
             pad_bottom: 0.0,
             content_height: 100.0,
+            box_content: None,
             vertical_align: PlanAlign::Top,
             lines: vec![line(0.0, 10.0), PlanLine { top: 10.0, height: 80.0, trailing: 0.0, rows: nested }, line(90.0, 10.0)],
         };
@@ -2286,6 +2353,7 @@ mod tests {
             pad_top: 0.0,
             pad_bottom: 0.0,
             content_height: 100.0,
+            box_content: None,
             vertical_align: PlanAlign::Top,
             lines: vec![line(0.0, 10.0), PlanLine { top: 10.0, height: 80.0, trailing: 0.0, rows: nested }, line(90.0, 10.0)],
         };
