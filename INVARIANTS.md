@@ -3294,8 +3294,11 @@ this file tells you why, and why the obvious alternative does not work.
     layout manager, ~65 ms of typesetting and glyph generation, plus pre-existing tree decode and
     build); 편람 memory at first paint 625 → 595 MB (base 588, +1.1%; (4) alone ~-5 MB, not the
     -25 MB estimated), 편람 worst turn not reduced measurably (1,087 → 1,204 ms at load 9 against 5):
-    the turn is `paginate` itself, the observer walk (owner-kept on the main thread). Remaining
-    misses: Zero100 settled and MK_2 first paint, both the second typesetting pass.
+    the turn is `paginate` itself, the observer walk (owner-kept on the main thread). Zero100 settled
+    (+41%) and MK_2 first paint (+24%) stay over the earlier bounds, both the second typesetting
+    pass; the owner ACCEPTED them on 2026-11-26 (about 0.1 s each, while the manual and MK_2 finish
+    their full layout 2.6-3.8x sooner). Do not reopen them without a new measurement that changes
+    that trade.
 
     **Shadow evidence, each document run alone.** Natural-observation shadow 0 on every axis
     (blocks, lines, cell lines, sheets, furniture, footnote bands, columns) on 65 paged documents;
