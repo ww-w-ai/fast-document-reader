@@ -3186,18 +3186,37 @@ this file tells you why, and why the obvious alternative does not work.
     Zero100 103 → 132 (132), 덕소5B 60 → 59 (59), GnBS 31 → 32 (32), OpenAPI 17 → 20 (19). One
     document moved away: `s9-picture-crop.hwp` 29 → 28 (macOS 31), caused by the runs-only cell
     default alone (with the old default it stays 29; Inter at the largest run's size gives 28 too,
-    so it is the default SIZE, not the face) — an HWP cell line measured at its runs' size where
-    something on macOS still stands it taller; not yet charged to a field.
+    so it is the default SIZE, not the face). A plan-input diff charges the gap to cell WRAPPING, not
+    to a line box: line heights agree (an 11 pt cell line is 11 + 3.3 on both), but Avalonia fits
+    narrow Hangul cells in fewer lines (table at block 273, row 1: `최종 지원대상 사업계획, 사업비 심의
+    및 결과 통보` in 3 lines at 73.9 pt against 4, row 41.6 pt against 56.9). The old default only
+    hid it by flooring every line taller. Joining Hangul syllables with U+2060 to keep words whole
+    made it worse (Avalonia applies letter spacing per character, the joiner included), so it was
+    not kept. Not fixed: the width of a Hangul run at a 장평 below 100% is the next thing to measure.
     `PageLayout.BuildTextLayout` still uses the Inter/12 pt default for body text (runs-only there
     moved Zero100 down before the face floor existed; not re-measured).
 
-    **Reader quirks the plan reproduces on purpose**, because the counts were judged against the
-    reader that had them: the grid FILING FLOOR of the old `orphanRunStarts` (a line moved to the
-    top of page `k` stands at `k * pitch + leading`; subtracting `leading` and flooring loses the
-    last bit on some grids and files it under page `k - 1`, so run counts follow that filing —
-    `PageGrid::filed`, pinned by its unit test); and the `pushWholeTable` FIRST LINE of a carried
-    piece in a columned run (moved to the next page top plus its inset in the same column when it
-    sits in column 0, continues its predecessor and overruns — `carry_pushed_pieces`).
+    **Two reader quirks the plan once reproduced are fixed in the engine (owner, 2026-11-25).**
+    (1) The 1-3 line run rule (`orphan_runs`) counts a line on the page the plan placed it on. The
+    old `orphanRunStarts` re-derived the page with a bare `floor((y - leading) / pitch)`, which on
+    some grids filed a line moved to a page top under the page above, so a stranded run looked one
+    line longer and was kept (`PageGrid::filed` is gone). (2) A pushed piece of a table in a
+    columned run that overruns the foot of the page its first line was dealt to moves WHOLE to the
+    next page: every line of the piece, in the first column, at its offset below the first line
+    (`carry_pushed_pieces`). The old `pushWholeTable` moved only the first line and left the rest
+    where the columns put it. Which pieces qualify is unchanged (not moved by the stack's own page
+    rule, first line in column 0). (3) A pull is sticky while the passes settle, but a pull
+    recorded in an earlier pass whose group, laid out without it, stays on one page is dropped
+    before the final layout: the run rule never moves a row that fits (a forced line moves even
+    from a page top, so a stale pull pushed a fitting row a whole page on). Tables in a columned run
+    keep their pulls (they are judged on the stack). Pinned by
+    `a_row_that_fits_below_the_row_before_is_never_pulled`. Measured against the reader-quirk
+    state: testdocs unchanged except the 편람 (macOS 391 → 390, Avalonia 390 → 385 — OPEN: the
+    same rule drops 1 pull of the big table at block 3109 on macOS's input and 6 on Avalonia's,
+    whose text and solved rows (no `rowsObserved`) place that table differently; replaying
+    Avalonia's input with `rowsObserved` gives 387); a dropped pull that strands a new short run is
+    re-pulled (never the dropped one); 40 private
+    documents unchanged, one 30 → 29 (Avalonia 31 → 30), its fitting row restored.
 
     **Accepted costs and change (owner, 2026-11-25).** Settle-free documents take one extra full
     walk to complete: Zero100 time to fully laid out 158 → 184 ms (+16%), first paint 212 → 219 ms;

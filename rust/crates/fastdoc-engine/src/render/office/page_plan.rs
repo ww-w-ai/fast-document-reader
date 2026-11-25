@@ -52,7 +52,7 @@ use super::plan_footnotes::{self as notes, Bands, NotesByPage, PlanCite, PlanNot
 use super::plan_furniture::{applicable_entry, displayed_numbers, master_pages, PlanEntry};
 use super::footnote_band_settle::{FootnoteBandSettle, Outcome};
 pub use super::table_flow::{CellLinePlacement, RowSegment};
-use super::table_flow::{flow_table, has_cells, orphan_runs, FlowGeometry, LinePath, PageGrid, PlacedLines, MAX_ROUNDS};
+use super::table_flow::{flow_table, group_crosses_a_page, has_cells, orphan_runs, FlowGeometry, LinePath, PlacedLines, MAX_ROUNDS};
 
 /// Layouts the plan replays before taking the last as it stands: the reader's settle budget per
 /// loop (`table_flow::MAX_ROUNDS`, `maxPagedTableSettles`) times the outer alternation of tables and
@@ -286,6 +286,7 @@ pub struct PlanTail {
 struct PushedPiece {
     block: u32,
     row_start: u32,
+    row_end: u32,
     height: f64,
     displaced: bool,
 }
@@ -846,25 +847,39 @@ fn targets_of(input: &PlanInput, core: &State) -> (Vec<PlanTarget>, Vec<(u32, f6
     (out, carried)
 }
 
-/// The page rule meets a pushed piece's first line after the columns have placed it, but only when
-/// the column rule left the line where the typesetter proposed it: the piece is one the stack did not
-/// move (a gap is not a proposal) and the line is in the first column (any other has to be moved
-/// sideways). Then, when the whole piece would run off the foot of the page the line was dealt to,
-/// the line begins the next page (its piece's top at the page top). The reader's rule moves that one
-/// line and leaves the rest of the piece where the columns put it.
+/// The page rule meets a pushed piece after the columns have dealt it, when the piece is one the
+/// stack did not move (a gap is not a proposal) and its first line was dealt to the first column.
+/// When the whole piece would then run off the foot of that page, the piece begins the next page:
+/// every one of its lines moves to that page's first column, at its offset below the piece's first
+/// line (the reader moved only the first line and left the rest where the columns put it).
 fn carry_pushed_pieces(input: &PlanInput, core: &State, out: &mut [PlanTarget]) -> Vec<(u32, f64)> {
     let mut gaps = Vec::new();
     for piece in core.pushed_pieces.iter().filter(|p| !p.displaced) {
-        let Some((loc, inset)) = piece_first_line(&input.blocks[piece.block as usize], piece.row_start) else { continue };
+        let block = &input.blocks[piece.block as usize];
+        let Some((loc, inset)) = piece_first_line(block, piece.row_start) else { continue };
         let Ok(at) = out.binary_search_by_key(&loc, |t| t.loc) else { continue };
-        let target = &mut out[at];
-        // Only the first column keeps the typesetter's x: a line the column rule has to move sideways
-        // never meets the page rule.
-        if target.column == Some(0) && target.top - inset + piece.height > core.body(target.page) {
-            // The reader records the gap at the piece's own top, where the typesetter proposed it.
-            gaps.push((target.page, target.top - inset));
-            target.page += 1;
-            target.top = inset;
+        let (page, top) = (out[at].page, out[at].top);
+        if out[at].column != Some(0) || top - inset + piece.height <= core.body(page) {
+            continue;
+        }
+        // The gap opens at the piece's own top.
+        gaps.push((page, top - inset));
+        let mut leaves = Vec::new();
+        let rows = &block.rows[piece.row_start as usize..(piece.row_end as usize).min(block.rows.len())];
+        synth_leaves(rows, piece.row_start, 0.0, 0, &[], &mut leaves);
+        let offsets: Vec<(i64, f64)> =
+            leaves.iter().filter_map(|(path, _, top, _)| line_at(&block.rows, path).and_then(|l| l.loc).map(|l| (l, *top))).collect();
+        // Offsets are below the piece's top; the first line keeps its inset where it is one of them.
+        let shift = offsets.iter().find(|(l, _)| *l == loc).map_or(0.0, |(_, t)| inset - *t);
+        let mut moved = false;
+        for (line_loc, offset) in &offsets {
+            if let Ok(i) = out.binary_search_by_key(line_loc, |t| t.loc) {
+                out[i] = PlanTarget { loc: *line_loc, page: page + 1, top: offset + shift, column: Some(0) };
+                moved |= *line_loc == loc;
+            }
+        }
+        if !moved {
+            out[at] = PlanTarget { loc, page: page + 1, top: inset, column: Some(0) };
         }
     }
     gaps
@@ -927,13 +942,12 @@ fn plan_core(input: &PlanInput, honoured: &[bool], bands: &HashMap<u32, f64>) ->
     // the tables the passes before it recorded.
     let mut pulled: BTreeSet<(u32, LinePath)> = BTreeSet::new();
     let mut known: BTreeSet<u32> = BTreeSet::new();
-    let grid = PageGrid { pitch: input.content_height + input.band, leading: input.leading_band };
     for round in 1..=SETTLE_PASSES {
         let mode = if round == 1 { Mode::Natural } else { Mode::Settled };
         let pass = run_pass(input, honoured, mode, &pulled, &known, bands);
         let mut added = false;
         for table in &pass.flowed {
-            for path in orphan_runs(&grid, &input.blocks[table.block as usize].rows, &table.lines) {
+            for path in orphan_runs(&input.blocks[table.block as usize].rows, &table.lines) {
                 added |= pulled.insert((table.block, path));
             }
         }
@@ -944,7 +958,49 @@ fn plan_core(input: &PlanInput, honoured: &[bool], bands: &HashMap<u32, f64>) ->
             break;
         }
     }
-    let state = run_pass(input, honoured, Mode::Settled, &pulled, &known, bands);
+    // A pull is never taken back while the passes settle, but the run rule exists for a group split
+    // across a page boundary: a pull whose group, laid out without it, stays on one page (the row
+    // fits) is dropped, so the rule never moves a row that fits.
+    // A table in a columned run is judged on the stack, not on its pages (the columns deal it
+    // afterwards), so its pulls are kept as recorded.
+    // Dropping a pull moves what follows up, which can strand a new short run: the final layout is
+    // checked by the same rule again and any new stranded run is pulled (a dropped pull is never
+    // re-added), until nothing changes or the round budget is spent.
+    let mut dropped: BTreeSet<(u32, LinePath)> = BTreeSet::new();
+    let mut state = run_pass(input, honoured, Mode::Settled, &pulled, &known, bands);
+    for _ in 0..SETTLE_PASSES {
+        let recorded: Vec<(u32, LinePath)> =
+            pulled.iter().filter(|(block, _)| input.blocks[*block as usize].column_run.is_none()).cloned().collect();
+        for entry in recorded {
+            let mut without = pulled.clone();
+            without.remove(&entry);
+            let trial = run_pass(input, honoured, Mode::Settled, &without, &known, bands);
+            let rows = &input.blocks[entry.0 as usize].rows;
+            let split = trial
+                .flowed
+                .iter()
+                .find(|t| t.block == entry.0)
+                .map_or(true, |t| group_crosses_a_page(rows, &t.lines, entry.1[0]));
+            if !split {
+                pulled = without;
+                dropped.insert(entry);
+            }
+        }
+        state = run_pass(input, honoured, Mode::Settled, &pulled, &known, bands);
+        let mut added = false;
+        for table in &state.flowed {
+            for path in orphan_runs(&input.blocks[table.block as usize].rows, &table.lines) {
+                let entry = (table.block, path);
+                if !dropped.contains(&entry) {
+                    added |= pulled.insert(entry);
+                }
+            }
+        }
+        if !added {
+            break;
+        }
+        state = run_pass(input, honoured, Mode::Settled, &pulled, &known, bands);
+    }
     (state, pulled)
 }
 
@@ -1661,6 +1717,7 @@ impl State {
                     self.pushed_pieces.push(PushedPiece {
                         block: index,
                         row_start: start as u32,
+                        row_end: end as u32,
                         height: rows_height + hang,
                         displaced,
                     });
@@ -2454,6 +2511,43 @@ mod tests {
     }
 
     #[test]
+    fn a_row_that_fits_below_the_row_before_is_never_pulled() {
+        // Five-line row 0 after a 5pt line: its fifth line starts page 1, ending at 20. Row 1 (two
+        // lines) straddled a foot in an earlier pass and was pulled then; laid out without that pull
+        // it stands whole on page 1 below row 0, so the pull is dropped and the row stays. Every
+        // other shape of this family holds the same (row 1 never lands a page after a page with room
+        // for it), and the 200pt row 2, split on every layout, keeps its pull.
+        for lead in (5..95).step_by(5) {
+            for band in [0.0, 10.0, 20.0, 40.0, 200.0] {
+                for l0 in 1..6usize {
+                    for l1 in 1..5usize {
+                        let row = |n: usize| (20.0 * n as f64, vec![flow_cell(&vec![20.0; n])]);
+                        let table = flow_table_block(2, vec![row(l0), row(l1), (200.0, vec![flow_cell(&[20.0; 10])])]);
+                        let mut plan_input = input(100.0, vec![text(1, &[lead as f64]), table]);
+                        plan_input.band = band;
+                        let plan = plan_pages(&plan_input).unwrap();
+                        let lines_of = |r: u32| -> Vec<(u32, f64)> {
+                            plan.cell_lines.iter().filter(|l| l.1 == r).map(|l| (l.4, l.5)).collect()
+                        };
+                        let (r0, r1) = (lines_of(0), lines_of(1));
+                        let end0 = r0.last().map(|l| (l.0, l.1 + 20.0)).unwrap();
+                        let room_above = r1[0].0 > end0.0 && end0.1 + 20.0 * l1 as f64 <= 100.0 + 1e-9;
+                        assert!(!room_above, "{lead} {band} {l0} {l1}: row 1 pulled though it fits: {r0:?} {r1:?} {:?}", plan.pulled_lines);
+                    }
+                }
+            }
+        }
+        let row = |n: usize| (20.0 * n as f64, vec![flow_cell(&vec![20.0; n])]);
+        let table = flow_table_block(2, vec![row(5), row(2), (200.0, vec![flow_cell(&[20.0; 10])])]);
+        let mut plan_input = input(100.0, vec![text(1, &[5.0]), table]);
+        plan_input.band = 20.0;
+        let plan = plan_pages(&plan_input).unwrap();
+        let row1: Vec<(u32, f64)> = plan.cell_lines.iter().filter(|l| l.1 == 1).map(|l| (l.4, l.5)).collect();
+        assert_eq!(row1, vec![(1, 20.0), (1, 40.0)], "{:?}", plan.pulled_lines);
+        assert!(plan.pulled_lines.iter().all(|p| p[1] != 1), "{:?}", plan.pulled_lines);
+    }
+
+    #[test]
     fn a_pull_belongs_to_the_table_that_made_it() {
         // Table 1 pulls its first line; table 2 has a line on the same path that fits where it
         // stands (a single line: nothing of it is ever stranded) and must stay there.
@@ -2901,18 +2995,18 @@ mod tests {
     }
 
     #[test]
-    fn a_pushed_pieces_first_line_begins_the_next_page_when_the_columns_leave_it_no_room() {
+    fn a_pushed_piece_begins_the_next_page_whole_when_the_columns_leave_it_no_room() {
         // Sixteen run lines end at 220 on the stack. The table (a 40pt piece, then a 60pt one
         // the stack carries to 300) makes its first piece a pushed piece that the stack leaves in
         // place: it stands in the stack's page but straddles the foot of column one of the second
         // sheet (240), so the columns deal its first two lines to 80 and 90 and the rest to column
-        // two. The piece as a whole does not fit below 80, so the page rule carries its first line to
-        // the top of the next sheet while the other lines stay where the columns put them.
+        // two. The piece as a whole does not fit below 80, so the page rule carries the whole piece
+        // to the top of the next sheet: all four lines, in its first column, one below the other.
         let plan = pushed_piece_plan(16, two_row_table(4));
         let at = |loc: i64| target_of(&plan, loc).unwrap();
-        assert_eq!((at(2010).0, at(2010).1, at(2010).2), (1, 90.0, Some(0)), "{:?}", plan.targets);
-        assert_eq!((at(2020).0, at(2020).1, at(2020).2), (1, 0.0, Some(1)), "{:?}", plan.targets);
-        assert_eq!((at(2000).0, at(2000).1, at(2000).2), (2, 0.0, Some(0)), "the first line begins the next sheet: {:?}", plan.targets);
+        for (i, loc) in [2000, 2010, 2020, 2030].into_iter().enumerate() {
+            assert_eq!(at(loc), (2, 10.0 * i as f64, Some(0)), "line {loc} moves with its piece: {:?}", plan.targets);
+        }
         // The page rule's move leaves the gap the reader records at the piece's own top.
         assert!(plan.opened_bands.contains(&OpenedBand { page: 1, top: 80.0, height: 20.0 }), "{:?}", plan.opened_bands);
         // A piece the stack's own page rule moved keeps the position the columns gave it: the gap that
