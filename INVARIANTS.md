@@ -3267,6 +3267,17 @@ this file tells you why, and why the obvious alternative does not work.
     owner decision. `ProgressiveTurnProbeTests` now times the settle loop too, so office documents
     report a worst turn (it read 0 for all of them): Zero100 158 → 189 ms, MK_2 133 → 221 ms, 편람
     543 → 1,087 ms.
+    (3) Making the VISIBLE layout manager the observer and applying the plan by MOVING its line
+    fragments (`setLineFragmentRect`, the cell boxes follow their lines on their own; TextKit relays
+    only from the first block whose lines move unequally, a table line's move measured from its
+    PROPOSED top, inv 72) was built and is exact: `FMD_PLAN_PARITY` 0 differing / 0 unstable on all
+    19 paged testdocs, `page-parity.sh` identical. Measured against 1d8b70a (2026-11-25, load 4.5-7.7,
+    medians of 3): Zero100 settled 208 → 306 ms (+47%), worst turn 108 ms; MK_2 first paint 343 → 402
+    ms, settled 847 → 449 ms; but the 편람 worst turn 4.3 s and settled 8.7 s (cf1d36a: 1.1 s / 1.6
+    s). Its tail is relaid from char 17,418 (the first table that cannot move whole) and a draw
+    forces glyph generation and layout of the whole remainder in one turn; bounding `printPageCount`
+    to the laid glyphs during the walk did not remove it. Reverted; the cause of that turn is not
+    yet isolated. The bounds (Zero100 +16%, MK_2 first paint +8%, 편람 memory +5%) remain open.
 
     **Shadow evidence, each document run alone.** Natural-observation shadow 0 on every axis
     (blocks, lines, cell lines, sheets, furniture, footnote bands, columns) on 65 paged documents;
