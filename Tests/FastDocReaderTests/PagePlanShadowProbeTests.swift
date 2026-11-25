@@ -69,6 +69,26 @@ final class PagePlanShadowProbeTests: XCTestCase {
         XCTAssertEqual((plan["flowedTables"] as? [Int]) ?? [-1], [])
     }
 
+    /// S6b2-0e: the state the painters read — opened boundaries and where their gaps are — comes back
+    /// from the plan, additively, on the print grid.
+    func testPainterStateCrossesTheFFIFromSwift() throws {
+        let input = """
+        {"planVersion":1,"contentHeight":100,"band":20,
+         "blocks":[{"key":1,"kind":"text","lines":[40,40,40,40],"lineLocs":[0,10,20,30]}]}
+        """
+        let reply = try XCTUnwrap(PagePlanShadow.plan(json: Data(input.utf8)))
+        let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])
+        let plan = try XCTUnwrap(envelope["ok"] as? [String: Any])
+        XCTAssertEqual((plan["openedBoundaries"] as? [Int]) ?? [], [0])
+        let bands = try XCTUnwrap(plan["openedBands"] as? [[String: Any]])
+        XCTAssertEqual(bands.count, 1)
+        XCTAssertEqual(bands[0]["page"] as? Int, 0)
+        XCTAssertEqual(bands[0]["top"] as? Double, 80)
+        XCTAssertEqual(bands[0]["height"] as? Double, 40)
+        XCTAssertEqual((plan["straddledBoundaries"] as? [Int]) ?? [-1], [])
+        XCTAssertEqual((plan["columnOpenedBoundaries"] as? [Int]) ?? [-1], [])
+    }
+
     func testAnUnsupportedPlanVersionIsAnErrorEnvelope() throws {
         let reply = try XCTUnwrap(PagePlanShadow.plan(json: Data(#"{"planVersion":9,"contentHeight":100,"blocks":[]}"#.utf8)))
         let envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])

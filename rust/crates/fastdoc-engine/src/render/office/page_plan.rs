@@ -482,6 +482,29 @@ pub struct PagePlan {
     pub final_pages: u32,
     /// The page pitch the tops and pages are on: the body plus the band after it.
     pub pitch_used: f64,
+    /// The page boundaries the page rule opened: page `n` is here when something that would have
+    /// stood on page `n` was moved to the top of page `n + 1`, leaving real empty space between them.
+    /// The painter draws a running head, foot and sheet edge only across these.
+    pub opened_boundaries: Vec<u32>,
+    /// Where each opened boundary's empty space is.
+    pub opened_bands: Vec<OpenedBand>,
+    /// The boundaries a table is drawn across (its top above, its bottom below): the page rules a
+    /// sheet must not draw through it.
+    pub straddled_boundaries: Vec<u32>,
+    /// The boundaries a columned run crosses, which the page rule never opens: every boundary from
+    /// the first page the run's lines occupy to the last.
+    pub column_opened_boundaries: Vec<u32>,
+}
+
+/// The empty space the page rule opened after page `page`: it begins `top` points below that
+/// page's own top (the bottom of what stood there, however far that overran) and is `height`
+/// points tall on the plan's print grid; a host that spaces its sheets apart adds the desk gap.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedBand {
+    pub page: u32,
+    pub top: f64,
+    pub height: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -649,9 +672,17 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
 
     let mut note_bands: Vec<(u32, f64)> = bands.iter().filter(|(_, h)| **h > 0.0).map(|(p, h)| (*p, *h)).collect();
     note_bands.sort_by_key(|(page, _)| *page);
-    let targets = targets_of(input, &core);
+    let (targets, carried) = targets_of(input, &core);
+    for (page, top) in carried {
+        core.record_gap(page, top);
+    }
     let flowed_tables = flowed_keys(input, &core);
     let final_pages = final_pages_of(input, &core, page_count);
+    let opened_bands: Vec<OpenedBand> =
+        core.gaps.iter().map(|(page, (top, height))| OpenedBand { page: *page, top: *top, height: *height }).collect();
+    let opened_boundaries: Vec<u32> = core.gaps.keys().copied().collect();
+    let straddled_boundaries = straddled_of(input, &core);
+    let column_opened_boundaries = column_crossed_of(&targets);
     Ok(PagePlan {
         plan_version: PAGE_PLAN_VERSION,
         page_count,
@@ -679,7 +710,73 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
         flowed_tables,
         final_pages,
         pitch_used: input.content_height + input.band.max(0.0),
+        opened_boundaries,
+        opened_bands,
+        straddled_boundaries,
+        column_opened_boundaries,
     })
+}
+
+/// The boundaries each table is drawn across: from the page its top edge is on to the page its
+/// bottom edge is on, measured on the print grid (`PagePlan::pitch_used`). A table's extent is every
+/// piece the plan placed for it, flowed pieces and columned rows included.
+fn straddled_of(input: &PlanInput, core: &State) -> Vec<u32> {
+    let pitch = input.content_height + input.band.max(0.0);
+    if !(pitch > 0.0) {
+        return Vec::new();
+    }
+    // block -> (smallest visual top, largest bottom), both as `page * pitch + local`.
+    let mut extent: BTreeMap<u32, (f64, f64)> = BTreeMap::new();
+    let mut widen = |block: u32, top: f64, bottom: f64| {
+        let e = extent.entry(block).or_insert((top, bottom));
+        e.0 = e.0.min(top);
+        e.1 = e.1.max(bottom);
+    };
+    let columned: BTreeSet<u32> = core.column_table_extent.keys().copied().collect();
+    for p in &core.placements {
+        let block = &input.blocks[p.block as usize];
+        if block.kind != PlanKind::Table || columned.contains(&p.block) {
+            continue;
+        }
+        // A whole piece's height carries the spacing around it; a flowed piece's is its rows.
+        let (before, after) = if p.flowed { (0.0, 0.0) } else { (block.spacing_before, block.spacing_after) };
+        let top = f64::from(p.page) * pitch + p.top + before;
+        widen(p.block, top, top.max(f64::from(p.page) * pitch + p.top + p.height - after));
+    }
+    for (block, (top, bottom)) in &core.column_table_extent {
+        widen(*block, *top, *bottom);
+    }
+    // The lines of tables nested in a dealt table's cells belong to its extent, with the padding of
+    // the outer cell they stand in.
+    for nested in &core.nested_lines {
+        let rows = &input.blocks[nested.block as usize].rows;
+        let Some(line) = line_at(rows, &nested.path) else { continue };
+        let cell = nested.path.chunks(3).next().and_then(|c| rows.get(c[0] as usize)?.cells.get(c[1] as usize));
+        let (above, below) = cell.map_or((0.0, 0.0), |c| (c.pad_top, c.pad_bottom));
+        let top = f64::from(nested.page) * pitch + nested.top;
+        widen(nested.block, top - above, top + line.height + below);
+    }
+    let mut out: BTreeSet<u32> = BTreeSet::new();
+    for (top, bottom) in extent.values() {
+        if !(bottom > top) {
+            continue;
+        }
+        // A page edge computed as `page * pitch` lands a hair under its own multiple half the time.
+        let first = (top / pitch + 1e-9).floor() as i64;
+        let last = (bottom / pitch + 1e-9).floor() as i64;
+        for boundary in first.max(0)..last {
+            out.insert(boundary as u32);
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// The boundaries between the first and the last page a columned run's lines occupy (the page rule
+/// never opens them, but the run is continuous across them).
+fn column_crossed_of(targets: &[PlanTarget]) -> Vec<u32> {
+    let pages = targets.iter().filter(|t| t.column.is_some()).map(|t| t.page);
+    let (Some(low), Some(high)) = (pages.clone().min(), pages.max()) else { return Vec::new() };
+    (low..high).collect()
 }
 
 /// The line a path (row, cell, line — then the same again inside a table nested at that line) names.
@@ -717,7 +814,7 @@ fn piece_first_line(block: &PlanBlock, row: u32) -> Option<(i64, f64)> {
 /// Every located line the plan placed, by character location. A table is represented by its lines
 /// when the plan deals them one by one (flowed, or in a columned run), by its first line per piece
 /// otherwise.
-fn targets_of(input: &PlanInput, core: &State) -> Vec<PlanTarget> {
+fn targets_of(input: &PlanInput, core: &State) -> (Vec<PlanTarget>, Vec<(u32, f64)>) {
     let mut out: Vec<PlanTarget> = Vec::new();
     let column_of: HashMap<(u32, u32), u32> = core.column_lines.iter().map(|c| ((c[0], c[1]), c[2])).collect();
     for line in &core.lines {
@@ -759,8 +856,8 @@ fn targets_of(input: &PlanInput, core: &State) -> Vec<PlanTarget> {
         out.push(PlanTarget { loc: part.loc, page: tail.page, top: tail.top, column: tail.column });
     }
     out.sort_by_key(|t| t.loc);
-    carry_pushed_pieces(input, core, &mut out);
-    out
+    let carried = carry_pushed_pieces(input, core, &mut out);
+    (out, carried)
 }
 
 /// The page rule meets a pushed piece's first line after the columns have placed it, but only when
@@ -769,7 +866,8 @@ fn targets_of(input: &PlanInput, core: &State) -> Vec<PlanTarget> {
 /// sideways). Then, when the whole piece would run off the foot of the page the line was dealt to,
 /// the line begins the next page (its piece's top at the page top). The reader's rule moves that one
 /// line and leaves the rest of the piece where the columns put it.
-fn carry_pushed_pieces(input: &PlanInput, core: &State, out: &mut [PlanTarget]) {
+fn carry_pushed_pieces(input: &PlanInput, core: &State, out: &mut [PlanTarget]) -> Vec<(u32, f64)> {
+    let mut gaps = Vec::new();
     for piece in core.pushed_pieces.iter().filter(|p| !p.displaced) {
         let Some((loc, inset)) = piece_first_line(&input.blocks[piece.block as usize], piece.row_start) else { continue };
         let Ok(at) = out.binary_search_by_key(&loc, |t| t.loc) else { continue };
@@ -777,10 +875,13 @@ fn carry_pushed_pieces(input: &PlanInput, core: &State, out: &mut [PlanTarget]) 
         // Only the first column keeps the typesetter's x: a line the column rule has to move sideways
         // never meets the page rule.
         if target.column == Some(0) && target.top - inset + piece.height > core.body(target.page) {
+            // The reader records the gap at the piece's own top, where the typesetter proposed it.
+            gaps.push((target.page, target.top - inset));
             target.page += 1;
             target.top = inset;
         }
     }
+    gaps
 }
 
 /// The keys of the tables the plan flows line by line.
@@ -1004,6 +1105,8 @@ fn run_pass(
         section_boundaries: Vec::new(),
         split_table_count: 0,
         carried_table_count: 0,
+        gaps: BTreeMap::new(),
+        column_table_extent: BTreeMap::new(),
     };
     let mut index = 0usize;
     while index < input.blocks.len() {
@@ -1161,6 +1264,13 @@ struct State {
     section_boundaries: Vec<u32>,
     split_table_count: u32,
     carried_table_count: u32,
+    /// The gaps the page rule opened, by the page each one follows: where the item it moved was
+    /// proposed (page-local) and how far it moved. The last item moved across a boundary wins, as
+    /// in the reader.
+    gaps: BTreeMap<u32, (f64, f64)>,
+    /// Per table dealt into columns: the highest top and lowest bottom of any of its lines, as
+    /// `page * pitch + local`.
+    column_table_extent: BTreeMap<u32, (f64, f64)>,
 }
 
 /// One thing a columned run's stack holds, by where the layout recorded it.
@@ -1244,12 +1354,26 @@ impl State {
         }
     }
 
+    /// Moves the item proposed at `proposed` (page-local) to the top of the next page, and records
+    /// the gap that opens between them (a move of half a point or less opens none).
+    fn shift_page(&mut self, proposed: f64) {
+        self.record_gap(self.page, proposed);
+        self.next_page();
+    }
+
+    fn record_gap(&mut self, page: u32, proposed: f64) {
+        let height = self.content_height + self.band - proposed;
+        if height > 0.5 {
+            self.gaps.insert(page, (proposed, height));
+        }
+    }
+
     /// A section start or an honoured hard break opens a page — unless the page is still empty.
     fn open_block(&mut self, block: &PlanBlock, honoured_break: bool) {
         if block.section_start || (block.page_break_before && honoured_break) {
             // A break at the top of an empty page is a no-op: the page it would open is this one.
             if self.cursor > 0.0 {
-                self.next_page();
+                self.shift_page(self.cursor + block.spacing_before);
             }
             if block.section_start && self.page > 0 {
                 self.section_boundaries.push(self.page);
@@ -1395,14 +1519,22 @@ impl State {
         let mut boxes: BTreeMap<(u32, u32, u32, u32), (f64, f64)> = BTreeMap::new();
         for (id, item) in stack.iter().enumerate() {
             let (Some(leaf), Some(at)) = (item.leaf, dealt.get(&(id as i64))) else { continue };
-            if !leaf.single_row {
-                continue;
-            }
             let key = (item.block, leaf.row, leaf.cell);
             let above = if first.get(&key) == Some(&id) { leaf.above } else { 0.0 };
             let below = if last.get(&key) == Some(&id) { leaf.below } else { 0.0 };
             let top = (at.top - above).max(0.0);
             let bottom = at.top + item.height + below;
+            // The table's own extent in the columns takes every line it deals, merged cells' too.
+            // Every line carries its cell's padding, as the reader measures a table: a line at a page
+            // top puts the table's top edge above it, on the page before.
+            let pitch = self.content_height + self.band;
+            let (line_top, line_bottom) = (f64::from(at.page) * pitch + at.top - leaf.above, f64::from(at.page) * pitch + at.top + item.height + leaf.below);
+            let extent = self.column_table_extent.entry(item.block).or_insert((line_top, line_bottom));
+            extent.0 = extent.0.min(line_top);
+            extent.1 = extent.1.max(line_bottom);
+            if !leaf.single_row {
+                continue;
+            }
             let entry = boxes.entry((item.block, leaf.row, at.page, at.column)).or_insert((top, bottom));
             entry.0 = entry.0.min(top);
             entry.1 = entry.1.max(bottom);
@@ -1598,7 +1730,7 @@ impl State {
             // plain `>` there; the hair is the table rule's).
             let past_foot = self.cursor > 0.0 && self.cursor + height - hangs > self.body(self.page);
             if keeps || past_foot {
-                self.next_page();
+                self.shift_page(self.cursor);
             }
             self.mark_first(block.key);
             self.lines.push(LinePlacement(index, line_index as u32, self.page, self.cursor));
@@ -1609,7 +1741,7 @@ impl State {
 
     fn place_atomic(&mut self, index: u32, block: &PlanBlock) {
         if self.overruns(block.height) {
-            self.next_page();
+            self.shift_page(self.cursor);
         }
         self.mark_first(block.key);
         self.placements.push(BlockPlacement {
@@ -1633,6 +1765,9 @@ impl State {
             self.pulled.iter().filter(|(b, _)| *b == index).map(|(_, p)| p.clone()).collect();
         let (flow, every_line) = flow_table(&geometry, index, block, (self.page, self.cursor), &mine, true);
         self.flowed.push(FlowedTable { block: index, lines: every_line });
+        for &(page, top) in &flow.shifts {
+            self.record_gap(page, top);
+        }
         while self.page < flow.first_page {
             self.next_page();
         }
@@ -1768,7 +1903,7 @@ impl State {
         if !breaks_into_groups {
             if self.overruns(whole) {
                 self.carried_table_count += 1;
-                self.next_page();
+                self.shift_page(self.cursor + block.spacing_before);
             }
             self.mark_first(block.key);
             self.piece_tops.push(PieceTop { block: index, row_start: 0, page: self.page, top: self.cursor + block.spacing_before });
@@ -1801,7 +1936,7 @@ impl State {
                 && self.cursor + reach > self.body(self.page) + FIT_TOLERANCE
                 && reach <= self.body(self.page)
             {
-                self.next_page();
+                self.shift_page(self.cursor);
             }
             self.mark_first(block.key);
             self.piece_tops.push(PieceTop { block: index, row_start: start as u32, page: self.page, top: self.cursor });
@@ -2797,6 +2932,8 @@ mod tests {
         assert_eq!((at(2010).0, at(2010).1, at(2010).2), (1, 90.0, Some(0)), "{:?}", plan.targets);
         assert_eq!((at(2020).0, at(2020).1, at(2020).2), (1, 0.0, Some(1)), "{:?}", plan.targets);
         assert_eq!((at(2000).0, at(2000).1, at(2000).2), (2, 0.0, Some(0)), "the first line begins the next sheet: {:?}", plan.targets);
+        // The page rule's move leaves the gap the reader records at the piece's own top.
+        assert!(plan.opened_bands.contains(&OpenedBand { page: 1, top: 80.0, height: 20.0 }), "{:?}", plan.opened_bands);
         // A piece the stack's own page rule moved keeps the position the columns gave it: the gap that
         // left is not where the typesetter proposes the line, so the column rule moves it first.
         let displaced = pushed_piece_plan(12, {
@@ -3223,5 +3360,75 @@ mod tests {
         assert_eq!(out["pageCount"], 2);
         assert_eq!(out["lines"][2], serde_json::json!([0, 2, 1, 0.0]));
         assert_eq!(out["pages"][0]["firstKey"], 7);
+    }
+
+    fn with_band(content_height: f64, band: f64, blocks: Vec<PlanBlock>) -> PlanInput {
+        PlanInput { band, ..input(content_height, blocks) }
+    }
+
+    #[test]
+    fn a_line_moved_to_the_next_page_opens_the_gap_between_them() {
+        let plan = plan_pages(&with_band(100.0, 20.0, vec![text(1, &[40.0, 40.0, 40.0, 40.0])])).unwrap();
+        // The third line was proposed 80 below page 0's top; it now starts page 1, one pitch on.
+        assert_eq!(plan.opened_boundaries, vec![0]);
+        assert_eq!(plan.opened_bands, vec![OpenedBand { page: 0, top: 80.0, height: 40.0 }]);
+        assert!(plan.straddled_boundaries.is_empty());
+        assert!(plan.column_opened_boundaries.is_empty());
+    }
+
+    #[test]
+    fn a_page_that_holds_everything_opens_nothing() {
+        let plan = plan_pages(&with_band(100.0, 20.0, vec![text(1, &[40.0, 40.0])])).unwrap();
+        assert!(plan.opened_boundaries.is_empty() && plan.opened_bands.is_empty());
+    }
+
+    #[test]
+    fn a_table_carried_whole_opens_the_gap_at_its_visual_top() {
+        let mut t = table(2, &[(50.0, false), (30.0, false)], false);
+        t.spacing_before = 5.0;
+        let plan = plan_pages(&with_band(100.0, 20.0, vec![text(1, &[40.0]), t])).unwrap();
+        assert_eq!(plan.placements[0].page, 1);
+        assert_eq!(plan.opened_bands, vec![OpenedBand { page: 0, top: 45.0, height: 75.0 }]);
+    }
+
+    #[test]
+    fn the_last_item_moved_across_a_boundary_decides_where_its_gap_is() {
+        let plan = plan_pages(&with_band(100.0, 20.0, vec![text(1, &[90.0, 30.0]), text(2, &[10.0])])).unwrap();
+        assert_eq!(plan.opened_bands.len(), 1);
+        assert_eq!(plan.opened_bands[0].top, 90.0);
+    }
+
+    #[test]
+    fn a_table_lying_across_a_boundary_straddles_it() {
+        let blocks = vec![table(1, &[(60.0, true), (60.0, true)], false)];
+        let input = with_band(100.0, 20.0, blocks);
+        let honoured = honoured_breaks(&input.blocks);
+        let lying = run_pass(&input, &honoured, Mode::Settled, &BTreeSet::new(), &BTreeSet::new(), &HashMap::new());
+        assert_eq!(straddled_of(&input, &lying), vec![0]);
+        // A table that stays inside its page straddles nothing.
+        let small = with_band(100.0, 20.0, vec![table(1, &[(30.0, true)], false)]);
+        let state = run_pass(&small, &honoured_breaks(&small.blocks), Mode::Settled, &BTreeSet::new(), &BTreeSet::new(), &HashMap::new());
+        assert!(straddled_of(&small, &state).is_empty());
+    }
+
+    #[test]
+    fn a_columned_run_crosses_every_boundary_between_its_first_and_last_page() {
+        let at = |page, column| PlanTarget { loc: 0, page, top: 0.0, column };
+        assert_eq!(column_crossed_of(&[at(2, Some(0)), at(5, Some(1)), at(7, None)]), vec![2, 3, 4]);
+        assert!(column_crossed_of(&[at(2, None), at(3, None)]).is_empty());
+        assert!(column_crossed_of(&[at(4, Some(0))]).is_empty());
+    }
+
+    #[test]
+    fn a_line_in_a_flowed_table_that_crosses_a_boundary_opens_the_gap() {
+        let cell: PlanCell = serde_json::from_value(serde_json::json!({
+            "contentHeight": 120.0,
+            "lines": [{"top": 0.0, "height": 40.0}, {"top": 40.0, "height": 40.0}, {"top": 80.0, "height": 40.0}]
+        }))
+        .unwrap();
+        let mut t = table(1, &[(120.0, false)], false);
+        t.rows[0].cells = vec![cell];
+        let plan = plan_pages(&with_band(100.0, 20.0, vec![t])).unwrap();
+        assert_eq!(plan.opened_bands, vec![OpenedBand { page: 0, top: 80.0, height: 40.0 }]);
     }
 }

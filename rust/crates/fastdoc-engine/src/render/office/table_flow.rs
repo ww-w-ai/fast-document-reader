@@ -88,6 +88,9 @@ pub struct TableFlow {
     pub lines: Vec<CellLinePlacement>,
     /// The page the table's top edge is on.
     pub first_page: u32,
+    /// Every line the page rule moved to the next page, in text order: the page it was on and the
+    /// page-local top the typesetter proposed for it (where the gap it opened begins).
+    pub shifts: Vec<(u32, f64)>,
 }
 
 /// Does this table have the line data a flow needs?
@@ -137,12 +140,13 @@ pub fn flow_table(
         segments: Vec::new(),
         lines: Vec::new(),
         every_line: Vec::new(),
+        shifts: Vec::new(),
         last_line: None,
     };
     let start = geometry.normalise(start.0, start.1);
     let end = runner.rows(&block.rows, start, &[]);
     let after = runner.last_line.map_or(end, |line_end| later(end, line_end));
-    let flow = TableFlow { end, after, segments: runner.segments, lines: runner.lines, first_page: start.0 };
+    let flow = TableFlow { end, after, segments: runner.segments, lines: runner.lines, first_page: start.0, shifts: runner.shifts };
     (flow, runner.every_line)
 }
 
@@ -154,6 +158,7 @@ struct Runner<'a> {
     segments: Vec<RowSegment>,
     lines: Vec<CellLinePlacement>,
     every_line: PlacedLines,
+    shifts: Vec<(u32, f64)>,
     /// Where the outer table's last cell in text order ended its last line, spacing after included.
     last_line: Option<(u32, f64)>,
 }
@@ -227,6 +232,7 @@ impl Runner<'_> {
         if self.shift && (forced || !fits(self.geometry, p, ly, height, trailing)) && (forced || ly > 0.0) {
             // A line already at the page's top has nowhere better to go; a forced one is moved
             // whatever it would have done (the delegate's `pullToNextPage`).
+            self.shifts.push((p, ly));
             p += 1;
             ly = 0.0;
         }

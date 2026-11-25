@@ -2114,6 +2114,17 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// That is deliberately the whole test: whether the break inside it lands on a cell edge or in
     /// a cell's middle changes what is DRAWN there (invariant 61's policy — a cut cell shows no
     /// rule, a cell-boundary split does), not whether the two sheets are one sheet.
+    /// What `settlePagedTables` would record from the layout as it stands now — the probe's read of
+    /// the boundaries the tables straddle, without waiting for a settle round to take it.
+    func currentTableStraddles() -> Set<Int> {
+        straddledBoundaries(of: laidOutTables())
+    }
+
+    /// Each table's first character and its vertical extent in the layout as it stands (probe).
+    func currentTableExtents() -> [(firstChar: Int, top: CGFloat, bottom: CGFloat)] {
+        laidOutTables().map { ($0.firstChar, $0.visualTop, $0.bottom) }
+    }
+
     private func straddledBoundaries(of tables: [PagePagination.LaidOutTable]) -> Set<Int> {
         let d = pageBandDelegate
         let pitch = d.pageContentHeight + d.band
