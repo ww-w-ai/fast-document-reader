@@ -71,7 +71,7 @@ pub fn applicable_template_index(
         .or_else(|| candidates.first().copied())
 }
 
-/// The batched answer `fastdoc_office_master_selection` hands back — one template index (or none)
+/// The master page behind each page of the plan (`plan_furniture::master_pages`) — one template index (or none)
 /// per query, folding `applicable_template_index` together with the section veto
 /// (`MasterPagePainter.swift:73`) into the SAME "which template, if any" reply, exactly as
 /// `s5c3.md`'s "What moves, what does not" table describes the veto and the selection producing

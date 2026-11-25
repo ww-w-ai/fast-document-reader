@@ -1750,6 +1750,28 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         var section: Int
         var number: Int
         var hidesNumber: Bool
+        /// Positions in `pageBandContent.headers` / `.footers` and `masterPageContent.pages` of the
+        /// entry this sheet shows (`nil`: none). The plan chose them (`plan_furniture`).
+        var header: Int? = nil
+        var footer: Int? = nil
+        var master: Int? = nil
+
+        /// The plan's `pages`, in order.
+        static func list(from plan: [String: Any]) -> [PlannedPage] {
+            ((plan["pages"] as? [[String: Any]]) ?? []).map {
+                PlannedPage(section: ($0["section"] as? NSNumber)?.intValue ?? 0,
+                            number: ($0["number"] as? NSNumber)?.intValue ?? 0,
+                            hidesNumber: ($0["numberHidden"] as? NSNumber)?.boolValue ?? false,
+                            header: ($0["header"] as? NSNumber)?.intValue,
+                            footer: ($0["footer"] as? NSNumber)?.intValue,
+                            master: ($0["master"] as? NSNumber)?.intValue)
+            }
+        }
+    }
+
+    /// The plan's own sheet facts for page `page`, or `nil` for a page outside the last plan.
+    func plannedPage(_ page: Int) -> PlannedPage? {
+        page >= 0 && page < plannedPages.count ? plannedPages[page] : nil
     }
 
     /// The sheets of the last plan, in order. Empty until a plan has been applied, and for every
@@ -1803,11 +1825,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             columnRuns: built.columnRuns, bodyWidth: delegate.columnBodyWidth, insetX: built.columnLineInset)
         topAlign(flowed: PlanPagination.flowedRanges(plan: plan, observation: built.observation, storageLength: storage.length),
                  in: storage)
-        plannedPages = ((plan["pages"] as? [[String: Any]]) ?? []).map {
-            PlannedPage(section: ($0["section"] as? NSNumber)?.intValue ?? 0,
-                        number: ($0["number"] as? NSNumber)?.intValue ?? 0,
-                        hidesNumber: ($0["numberHidden"] as? NSNumber)?.boolValue ?? false)
-        }
+        plannedPages = PlannedPage.list(from: plan)
         for pair in (plan["notesByPage"] as? [[Any]]) ?? [] where pair.count == 2 {
             if let page = (pair[0] as? NSNumber)?.intValue, let numbers = pair[1] as? [NSNumber] {
                 plannedNotes[page] = numbers.map(\.intValue)
@@ -1844,11 +1862,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             belowPage: final)
         topAlign(flowed: PlanPagination.flowedRanges(plan: plan, observation: built.observation, storageLength: storage.length),
                  in: storage)
-        plannedPages = ((plan["pages"] as? [[String: Any]]) ?? []).prefix(final).map {
-            PlannedPage(section: ($0["section"] as? NSNumber)?.intValue ?? 0,
-                        number: ($0["number"] as? NSNumber)?.intValue ?? 0,
-                        hidesNumber: ($0["numberHidden"] as? NSNumber)?.boolValue ?? false)
-        }
+        plannedPages = Array(PlannedPage.list(from: plan).prefix(final))
         for pair in (plan["notesByPage"] as? [[Any]]) ?? [] where pair.count == 2 {
             if let page = (pair[0] as? NSNumber)?.intValue, page < final, let numbers = pair[1] as? [NSNumber] {
                 plannedNotes[page] = numbers.map(\.intValue)
@@ -3311,17 +3325,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard let key = printGridKey else { return [] }
         if let memo = printGridMemo, memo.key == key { return memo.sheets }
         pageGridComputations += 1
-        // S5C2-02: the engine's own answer for the SAME inputs the host would otherwise compute
-        // this from. `nil` — no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()`
-        // names which) — falls back to the host's own arithmetic below, the same failure
-        // direction S5C-1 established for the band query. `pageSheets` keeps deriving from
-        // THIS property rather than asking the engine a second time, so screen and print can
-        // never source from two different answers (invariant 59).
-        let sheets = mdDocument?.officeEngineHandle?.sheets(
-            count: key.pageCount, width: key.width, textOriginY: key.textOriginY,
-            leadingBand: key.leadingBand, pitch: key.pitch, topMargin: key.topMargin,
-            deskGap: key.deskGap)
-            ?? PagePagination.sheets(count: key.pageCount, width: key.width,
+        // The plan's grid laid down as rectangles: the same `leading + page × pitch` the layout
+        // delegate places every planned line by, so this is applying the plan, not deciding it.
+        // `pageSheets` derives from THIS property, so screen and print can never source from two
+        // different answers (invariant 59).
+        let sheets = PagePagination.sheets(count: key.pageCount, width: key.width,
                                      textOriginY: key.textOriginY,
                                      leadingBand: key.leadingBand,
                                      pitch: key.pitch,

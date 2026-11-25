@@ -38,9 +38,8 @@ mod ffi_guard;
 
 use fastdoc_engine::render::office::hwp_reader::mapping::{HwpReader, PictureBytes, RetainedParse};
 use fastdoc_engine::render::office::{
-    docx_reader::DocxReader, odt_reader::OdtReader, office_block::HeaderFooterApplicability,
+    docx_reader::DocxReader, odt_reader::OdtReader,
     office_block::OfficeReadResult, office_markdown_serializer::OfficeMarkdownSerializer,
-    master_page_selection::{select_master_templates, MasterPageQuery, MasterTemplateDescriptor},
     zip_archive::ZipArchive,
 };
 use fastdoc_engine::render::render_tree::{DocumentFormat, OfficeAdapterInput, ValidatedRenderTree};
@@ -807,81 +806,6 @@ pub unsafe extern "C" fn fastdoc_office_band_sides(
     }
 }
 
-/// S5C2-01: every SHEET a paged document prints as, from the scalars `printSheets` already
-/// resolves (`page_pagination::PagePagination::sheets`'s own doc explains why `pitch` and
-/// `top_margin` are not crossed separately — they are scalar addition/`max`, and the divergence
-/// invariant 59 guards against is never at risk from that arithmetic agreeing). `count` is the
-/// host's own `printPageCount` (a LIVE layout answer, unavailable to the engine — the host still
-/// decides how many pages there are).
-///
-/// Fills `out[0..count*4]` as `[x, y, width, height]` per sheet, in the SAME order
-/// `PagePagination.sheets` returns them, and sets `*out_count` to the sheet count actually
-/// written (`0` for a document that does not paginate, matching the host's own empty-array
-/// answer). Returns `false` (`fastdoc_take_last_error` names it) when `out_capacity` is smaller
-/// than `count * 4` — the host must size its buffer from the SAME `count` it passed in, which it
-/// always knows ahead of the call.
-///
-/// # Safety
-/// `handle` must be either NULL or a live pointer `fastdoc_office_open` returned that has not been
-/// closed (unused beyond the NULL check — this arithmetic needs no document state, but the export
-/// is shaped over the handle for consistency with this file's other S5C1/S5C2 exports). `out` must
-/// describe a writable buffer of at least `out_capacity` `f64`s, and `out_count` a writable
-/// `usize`, both for the duration of the call.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn fastdoc_office_sheets(
-    handle: *const FastdocOfficeDocument,
-    count: i64,
-    width: f64,
-    text_origin_y: f64,
-    leading_band: f64,
-    pitch: f64,
-    top_margin: f64,
-    desk_gap: f64,
-    out: *mut f64,
-    out_capacity: usize,
-    out_count: *mut usize,
-) -> bool {
-    clear_last_error();
-    if handle.is_null() || out.is_null() || out_count.is_null() {
-        set_last_error(&FfiFailure::new(
-            FfiErrorKind::InvalidArgument,
-            "invalid NULL argument",
-        ));
-        return false;
-    }
-    let sheets: Vec<swiftshim::CGRect> = guard_scalar(Vec::new(), move || {
-        fastdoc_engine::render::office::page_pagination::PagePagination::sheets(
-            count, width, text_origin_y, leading_band, pitch, top_margin, desk_gap,
-        )
-    });
-    let Some(needed) = sheets.len().checked_mul(4) else {
-        set_last_error(&FfiFailure::new(
-            FfiErrorKind::InvalidArgument,
-            "sheet count overflowed the output buffer size",
-        ));
-        return false;
-    };
-    if needed > out_capacity {
-        set_last_error(&FfiFailure::new(
-            FfiErrorKind::InvalidArgument,
-            "out buffer too small for the sheet count",
-        ));
-        return false;
-    }
-    if needed > 0 {
-        let out_slice = std::slice::from_raw_parts_mut(out, needed);
-        for (i, rect) in sheets.iter().enumerate() {
-            out_slice[i * 4] = rect.minX();
-            out_slice[i * 4 + 1] = rect.minY();
-            out_slice[i * 4 + 2] = rect.width();
-            out_slice[i * 4 + 3] = rect.height();
-        }
-    }
-    *out_count = sheets.len();
-    true
-}
-
 /// S2 of `docs/plans/pagination-to-engine.md`: the PAGE PLAN — where every whole block of a paged
 /// document goes, decided once, from the heights the host observed.
 ///
@@ -1248,134 +1172,6 @@ pub unsafe extern "C" fn fastdoc_table_resize_cell_widths_batch(
             false
         }
     }
-}
-
-/// One master-page TEMPLATE descriptor — `(section, appliesTo)`, mirroring `OfficeMasterPage`'s
-/// own two selection fields (`OfficeBlock.swift`). `#[repr(C)]` so the layout is exactly what the
-/// header declares.
-///
-/// `applies_to` is `HeaderFooterApplicability`'s wire tag, the same three-way vocabulary a master
-/// page shares with a running header/footer: `0` = `.defaultPages`, `1` = `.firstPage`, `2` =
-/// `.evenPages`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct FastdocMasterTemplateDesc {
-    pub section: i64,
-    pub applies_to: i32,
-}
-
-/// One VISIBLE page's selection query — `(pageIndex, section?)`, mirroring
-/// `MasterPagePainter.applicablePage`'s own two arguments beyond the template list. Position `i`
-/// in the caller's array answers to `out_template_index[i]`. `has_section == false` matches
-/// `applicablePage`'s own `nil` fallback: every template is a candidate, not none. `#[repr(C)]` so
-/// the layout is exactly what the header declares.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct FastdocMasterPageQuery {
-    pub page_index: i64,
-    pub has_section: bool,
-    pub section: i64,
-}
-
-/// `fastdoc_office_master_selection` — S5C3-01/03: `MasterPagePainter.applicablePage` plus the
-/// section veto (`:73`), ported as a pure function (`office::master_page_selection`) and exposed
-/// batched over every visible page in ONE call, the shape `s5c3.md`'s API section requires ("the
-/// host's own loop is per page … one crossing per page at scroll frequency is the shape this plan
-/// rejected"). Retires S5C3-06a, deleted in this same change.
-///
-/// **In:** `templates`/`template_count` — the document's own master-page descriptors, in the SAME
-/// order the caller's array holds them (an output index below names a position in THAT array, not
-/// a Rust-side reordering). `vetoed_sections`/`vetoed_section_count` — the section-veto set
-/// (`MasterPageContent.sectionsHidingMasterPage`). `pages`/`page_count` — one entry per VISIBLE
-/// sheet this draw pass is walking.
-///
-/// **Out:** `out_template_index[i]` is the applicable template's index into the caller's own
-/// `templates` array for `pages[i]`, or `-1` for "no template applies" (no candidates for the
-/// page's section, or the page's section is vetoed).
-///
-/// # Safety
-/// `templates`/`template_count`, `vetoed_sections`/`vetoed_section_count` and `pages`/`page_count`
-/// describe readable buffers for the duration of the call. `out_template_index` describes a
-/// writable buffer of at least `page_count` `i64`s for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn fastdoc_office_master_selection(
-    templates: *const FastdocMasterTemplateDesc,
-    template_count: usize,
-    vetoed_sections: *const i64,
-    vetoed_section_count: usize,
-    pages: *const FastdocMasterPageQuery,
-    page_count: usize,
-    out_template_index: *mut i64,
-    out_capacity: usize,
-) -> bool {
-    clear_last_error();
-    if (template_count > 0 && templates.is_null())
-        || (vetoed_section_count > 0 && vetoed_sections.is_null())
-        || (page_count > 0 && (pages.is_null() || out_template_index.is_null()))
-        || page_count > out_capacity
-    {
-        set_last_error(&FfiFailure::new(
-            FfiErrorKind::InvalidArgument,
-            "invalid NULL argument or out buffer too small",
-        ));
-        return false;
-    }
-    // MARSHAL IN — owned copies of the template descriptors (mapped into the engine's own
-    // vocabulary), a set for O(1) veto membership (what `sectionsHidingMasterPage.contains`
-    // needs), and owned page queries.
-    let template_descs: Vec<MasterTemplateDescriptor> = if template_count == 0 {
-        Vec::new()
-    } else {
-        std::slice::from_raw_parts(templates, template_count)
-            .iter()
-            .map(|d| MasterTemplateDescriptor {
-                section: d.section,
-                applies_to: match d.applies_to {
-                    1 => HeaderFooterApplicability::FirstPage,
-                    2 => HeaderFooterApplicability::EvenPages,
-                    3 => HeaderFooterApplicability::OddPages,
-                    _ => HeaderFooterApplicability::DefaultPages,
-                },
-            })
-            .collect()
-    };
-    let vetoed: std::collections::HashSet<i64> = if vetoed_section_count == 0 {
-        std::collections::HashSet::new()
-    } else {
-        std::slice::from_raw_parts(vetoed_sections, vetoed_section_count)
-            .iter()
-            .copied()
-            .collect()
-    };
-    let page_queries: Vec<MasterPageQuery> = if page_count == 0 {
-        Vec::new()
-    } else {
-        std::slice::from_raw_parts(pages, page_count)
-            .iter()
-            .map(|q| MasterPageQuery {
-                page_index: q.page_index,
-                section: q.has_section.then_some(q.section),
-            })
-            .collect()
-    };
-    let answers: Vec<i64> = guard_scalar(Vec::new(), move || {
-        select_master_templates(&template_descs, &vetoed, &page_queries)
-            .into_iter()
-            .map(|index| index.map(|i| i as i64).unwrap_or(-1))
-            .collect()
-    });
-    if answers.len() != page_count {
-        set_last_error(&FfiFailure::new(
-            FfiErrorKind::InvalidArgument,
-            "internal: answer count did not match page_count",
-        ));
-        return false;
-    }
-    if page_count > 0 {
-        let out = std::slice::from_raw_parts_mut(out_template_index, page_count);
-        out.copy_from_slice(&answers);
-    }
-    true
 }
 
 /// One footnote's own answer — `(number, height)`, an "entry struct, not parallel

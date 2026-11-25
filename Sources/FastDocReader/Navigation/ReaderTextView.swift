@@ -110,7 +110,10 @@ final class ReaderTextView: NSTextView {
                                  band: wc.pageBandDelegate.band,
                                  documentHeight: lm.usedRect(for: tc).height,
                                  visibleRect: visibleRect, origin: textContainerOrigin,
-                                 sectionOfPage: { wc.sectionOfPage($0) })
+                                 sectionOfPage: { wc.sectionOfPage($0) },
+                                 plannedEntry: { page, header in
+                                     wc.plannedPage(page).map { header ? $0.header : $0.footer }
+                                 })
         }
         // Then the notes, into the room the body was kept out of. AFTER the running head above,
         // because they are the same ink on the same page and the later one wins any overlap — and a
@@ -193,20 +196,13 @@ final class ReaderTextView: NSTextView {
         drawAnchoredObjects(wc, content: content, sheets: sheets)
     }
 
-    /// S5C3-04: the engine crossing `MasterPagePainter.draw` uses for the batch it assembles —
-    /// ONE call per draw pass, never one per page. `nil` is `draw`'s own signal to fall back to
-    /// `applicablePage`, so this returns `nil` whenever the flag is off (the `#else` half below,
-    /// which is the WHOLE function on a flag-off build) or the document has no engine handle (the
-    /// same failure direction S5C-1 established for every query before this one).
+    /// The master page the plan chose for each page of the batch `MasterPagePainter.draw` assembles
+    /// (`PlannedPage.master`, decided by the engine with the section veto). `nil` — a page outside
+    /// the last plan — is `draw`'s signal to fall back to `applicablePage` for the batch.
     private func masterTemplateSelectionClosure(
         _ wc: DocumentWindowController, _ content: MasterPageContent
     ) -> (([MasterPageSelectionQuery]) -> [Int?]?)? {
-        guard let handle = wc.mdDocument?.officeEngineHandle else { return nil }
-        return { queries in
-            handle.masterTemplateSelection(
-                templates: content.pages, vetoedSections: content.sectionsHidingMasterPage,
-                pages: queries.map { ($0.pageIndex, $0.section) })
-        }
+        { queries in MasterPagePainter.plannedSelection(queries, plannedPage: wc.plannedPage) }
     }
 
     /// Objects the document pinned to the PAPER at a particular place in the text — a cover's

@@ -166,26 +166,15 @@ final class ScreenPrintParityTests: XCTestCase {
         return wc
     }
 
-    /// S5C2-03: the same parity property `testTheScreenDrawsTheSameSheetsThePrinterPrints` proves
-    /// for the host's own arithmetic, proven again on a real document whose `officeEngineHandle`
-    /// is non-nil — so `printSheets` actually reaches `fastdoc_office_sheets` rather than the
-    /// `#else` fallback, and `pageSheets` (unmodified by this sprint) still derives from it.
-    /// Mutation: make `pageSheets` recompute instead of derive from `printSheets` — this must
-    /// fail, exactly as the unflagged test's own mutation does (invariant 59). Mutation: ignore
-    /// the engine's answer at the `printSheets` call site (always fall through to the `#else`
-    /// arithmetic) — `answeredQueries` must have grown, or this test fails on that assertion
-    /// alone, the same observable S5C-1's own band test used for the same reason.
-    func testTheEnginesSheetsAreTheSameSheetsTheScreenDraws() throws {
+    /// The same parity property `testTheScreenDrawsTheSameSheetsThePrinterPrints` proves, on a real
+    /// planned document: `pageSheets` derives from `printSheets` (invariant 59). Mutation: make
+    /// `pageSheets` recompute instead of derive — this must fail.
+    func testThePrintedSheetsAreTheSameSheetsTheScreenDrawsOnARealPlannedDocument() throws {
         let wc = try openRealPagedFixture("docs/fixtures/office/bus-headings.docx")
         XCTAssertTrue(wc.pageBandDelegate.isActive, "this fixture must actually paginate")
-        let handle = try XCTUnwrap(wc.mdDocument?.officeEngineHandle,
-                                   "the engine must have opened this document for this test to mean anything")
-        let answeredBefore = handle.answeredQueries
         let printed = wc.printSheets
         XCTAssertGreaterThan(printed.count, 1,
                              "the fixture must produce MORE THAN ONE page, or a parity check proves nothing")
-        XCTAssertGreaterThan(handle.answeredQueries, answeredBefore,
-                             "printSheets must have actually asked the engine, not merely agreed with the host")
 
         let drawn = wc.pageSheets
         XCTAssertLessThanOrEqual(drawn.count, printed.count)
@@ -193,43 +182,9 @@ final class ScreenPrintParityTests: XCTestCase {
         let bottoms = Set(printed.map { $0.maxY.rounded() })
         for sheet in drawn {
             XCTAssertTrue(tops.contains(sheet.minY.rounded()),
-                          "a drawn sheet must start where an engine-sourced printed one does")
+                          "a drawn sheet must start where a printed one does")
             XCTAssertTrue(bottoms.contains(sheet.maxY.rounded()),
-                          "…and end where an engine-sourced printed one does")
-        }
-    }
-
-    /// S5C2-05: parity — the engine's own sheet rectangles must equal the host's OWN pure
-    /// `PagePagination.sheets` arithmetic for the identical inputs, within 0.5pt, on a document
-    /// asserted to produce MORE THAN ONE page before anything is compared (a one-page document
-    /// agrees trivially and proves nothing — S5C-2's own pre-mortem #2).
-    func testEnginesSheetsAgreeWithTheHostsOwnArithmeticOnARealMultiPageDocument() throws {
-        let wc = try openRealPagedFixture("docs/fixtures/office/bus-headings.docx")
-        XCTAssertTrue(wc.pageBandDelegate.isActive)
-        wc.paginateNow()
-        let engineSheets = wc.printSheets
-        XCTAssertGreaterThan(engineSheets.count, 1,
-                             "docs/fixtures/office/bus-headings.docx must produce more than one page")
-
-        // The host's OWN formula, called DIRECTLY rather than through `printSheets` — this is
-        // deliberately NOT the fallback arithmetic `printSheets` itself would take if the engine
-        // refused; it is the independent reference the engine's answer is judged against.
-        let pitch = PagePagination.pitch(pageContentHeight: wc.pageBandDelegate.pageContentHeight,
-                                         band: wc.pageBandDelegate.band)
-        let width = try XCTUnwrap(wc.pagedDocumentWidth)
-        let topMargin = PagePagination.topMargin(declared: wc.mdDocument?.officePageMarginTop,
-                                                  band: wc.pageBandDelegate.band - wc.pageBandDelegate.deskGap)
-        let hostSheets = PagePagination.sheets(count: wc.printPageCount, width: width,
-                                               textOriginY: wc.textView.textContainerOrigin.y,
-                                               leadingBand: wc.pageBandDelegate.leadingBand,
-                                               pitch: pitch, topMargin: topMargin,
-                                               deskGap: wc.pageBandDelegate.deskGap)
-        XCTAssertEqual(engineSheets.count, hostSheets.count)
-        for (a, b) in zip(engineSheets, hostSheets) {
-            XCTAssertEqual(a.minX, b.minX, accuracy: 0.5)
-            XCTAssertEqual(a.minY, b.minY, accuracy: 0.5)
-            XCTAssertEqual(a.width, b.width, accuracy: 0.5)
-            XCTAssertEqual(a.height, b.height, accuracy: 0.5)
+                          "…and end where a printed one does")
         }
     }
 

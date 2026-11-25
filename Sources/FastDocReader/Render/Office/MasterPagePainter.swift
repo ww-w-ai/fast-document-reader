@@ -13,10 +13,9 @@ struct MasterPageContent {
     var pageContentWidth: CGFloat?
 }
 
-/// One VISIBLE page's selection question, batched to the engine as ONE call per draw pass rather
-/// than once per page — `MasterPagePainter.draw(_:sheets:…)` assembles the batch itself, from the
-/// same `sectionOfPage` and veto set it already reads. Mirrors `applicablePage`'s own two
-/// arguments beyond the template list (S5C3-04).
+/// One VISIBLE page's selection question — `MasterPagePainter.draw(_:sheets:…)` assembles the batch
+/// from the same `sectionOfPage` and veto set it already reads. Mirrors `applicablePage`'s own two
+/// arguments beyond the template list.
 struct MasterPageSelectionQuery {
     var pageIndex: Int
     var section: Int?
@@ -76,13 +75,22 @@ enum MasterPagePainter {
     /// only; the rest of the template (title, artwork) is untouched. Defaults to "never hidden" for
     /// every caller that has no such veto (docx/odt, and every HWP page that never declared one).
     ///
-    /// `templateSelection` is S5C3-04's engine crossing: given every page this pass is about to
-    /// draw, it answers each one's applicable template index (or `nil` for "no template applies"),
-    /// in ONE call — never once per page, which is the shape the plan rejected twice. `nil` — the
-    /// default, and what a document with no engine handle produces — falls back to `applicablePage`
-    /// for the whole batch, unchanged from before this parameter existed. A `nil`
-    /// ENTRY inside a non-`nil` array is a real engine answer ("no template applies"), not a gap;
-    /// it is trusted rather than re-asked of the host.
+    /// `templateSelection` answers, for every page this pass is about to draw, the template the
+    /// page plan chose (`plannedSelection`), or `nil` for the whole batch — the default, and a page
+    /// outside the plan — which falls back to `applicablePage`. A `nil` ENTRY inside a non-`nil`
+    /// array is the plan's own "no template applies", not a gap; it is trusted, not re-asked.
+    /// The plan's master page for every query, or `nil` when any page lies outside the plan.
+    static func plannedSelection(_ queries: [MasterPageSelectionQuery],
+                                 plannedPage: (Int) -> DocumentWindowController.PlannedPage?) -> [Int?]? {
+        var out: [Int?] = []
+        out.reserveCapacity(queries.count)
+        for query in queries {
+            guard let planned = plannedPage(query.pageIndex) else { return nil }
+            out.append(planned.master)
+        }
+        return out
+    }
+
     static func draw(_ content: MasterPageContent, sheets: [CGRect], totalPages: Int,
                      visibleRect: NSRect, sectionOfPage: (Int) -> Int? = { _ in nil },
                      hidesPageNumber: (Int) -> Bool = { _ in false },

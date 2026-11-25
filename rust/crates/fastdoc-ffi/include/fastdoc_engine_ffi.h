@@ -215,22 +215,6 @@ bool fastdoc_office_band_sides(const FastdocOfficeDocument *handle, double colum
                                bool headers_on, bool footers_on, bool separates_pages,
                                double desk_gap, bool has_desk_gap, double *out);
 
-/* S5C2-01: every SHEET a paged document prints as, from the scalars printSheets already resolves
- * (pitch and top_margin are scalar addition/max and are NOT crossed separately — S5C-2's own plan
- * says why). count is the host's own live printPageCount.
- *
- * Fills out[0..count*4] as [x, y, width, height] per sheet, in the same order the host's own
- * PagePagination.sheets returns them, and sets *out_count to the number written. Returns false
- * (fastdoc_take_last_error names it) when out_capacity is smaller than count * 4, or on a NULL
- * handle/out/out_count.
- *
- * handle is unused beyond the NULL check — this arithmetic needs no document state — but the
- * export is shaped over the handle for consistency with this file's other S5C1/S5C2 exports. */
-bool fastdoc_office_sheets(const FastdocOfficeDocument *handle, long long count, double width,
-                           double text_origin_y, double leading_band, double pitch,
-                           double top_margin, double desk_gap, double *out, size_t out_capacity,
-                           size_t *out_count);
-
 /* S2 of the pagination plan: the PAGE PLAN — where every whole block of a paged document goes,
  * decided once from the heights the host observed. input_json is a PlanInput (page body height,
  * table split preference, optional per-page footnote reservations, and one entry per flow block:
@@ -320,36 +304,6 @@ bool fastdoc_table_resize_cell_widths_batch(const FastdocTableResizeTableDesc *t
                                             size_t column_proportions_count,
                                             const FastdocTableResizeCell *cells, size_t cell_count,
                                             double *out_widths);
-
-/* One master-page TEMPLATE descriptor, (section, appliesTo) mirroring OfficeMasterPage's own two
- * selection fields. applies_to is HeaderFooterApplicability's wire tag: 0 = defaultPages,
- * 1 = firstPage, 2 = evenPages. */
-typedef struct {
-    long long section;
-    int applies_to;
-} FastdocMasterTemplateDesc;
-
-/* One VISIBLE page's selection query, (pageIndex, section?) mirroring
- * MasterPagePainter.applicablePage's own two arguments beyond the template list.
- * has_section == false matches applicablePage's own nil fallback: every template is a candidate,
- * not none. */
-typedef struct {
-    long long page_index;
-    bool has_section;
-    long long section;
-} FastdocMasterPageQuery;
-
-/* S5C3-01/03: MasterPagePainter.applicablePage plus the section veto (:73), ported as a pure
- * function and batched over every visible page in ONE call per draw pass. out_template_index[i]
- * is the applicable template's index into the caller's own templates array for pages[i], or -1
- * for "no template applies" (no candidates for the page's section, or the page's section is
- * vetoed). */
-bool fastdoc_office_master_selection(const FastdocMasterTemplateDesc *templates,
-                                     size_t template_count,
-                                     const long long *vetoed_sections,
-                                     size_t vetoed_section_count,
-                                     const FastdocMasterPageQuery *pages, size_t page_count,
-                                     long long *out_template_index, size_t out_capacity);
 
 /* One footnote's own answer: (number, height). An entry struct rather than parallel arrays so
  * the number and height can never come apart. */

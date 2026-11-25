@@ -2,129 +2,48 @@ import XCTest
 import AppKit
 @testable import FastDocReader
 
-/// S5C3-05 — checks the wiring `ReaderTextView.drawMasterPages`'s `masterTemplateSelectionClosure`
-/// now does, from `MasterPagePainter.draw`'s own side.
-///
-/// A value comparison alone cannot tell "the engine answered" from "the host's own `applicablePage`
-/// answered and the two happened to agree" — S5C1's own finding: replacing the live call with
-/// `nil` at the call site changed no number and passed the whole suite. So this file asserts BOTH
-/// halves `s5c3.md`'s S5C3-05 item names:
-///   1. the engine's answers equal the host's `applicablePage` answers for a real handle, across a
-///      battery of pages, sections, an unknown section and a vetoed section (`testEngineAndHost…`);
-///   2. the engine was actually the ONE asked — `RustOfficeDocumentHandle.answeredQueries`, the
-///      same observable S5C1 used, and exactly one crossing for a whole batch of visible pages, not
-///      one per page (`testTheDrawPassAsksTheEngineExactlyOnceForTheWholeVisibleBatch`).
-/// Plus the fallback S5C-1 established for every engine query before this one: when the engine
-/// cannot answer, the host answers instead and the furniture still draws
-/// (`testWhenTheEngineCannotAnswerTheHostAnswersAndFurnitureStillDraws`).
+/// The master page behind each sheet is the page plan's choice (`PlannedPage.master`, decided by
+/// the engine's `plan_furniture` with the section veto). These pin the wiring from the plan to
+/// `MasterPagePainter.draw`: the plan's answer is what is drawn, and a page outside the plan falls
+/// back to `applicablePage` so the furniture still paints.
 final class MasterPageEngineParityTests: XCTestCase {
 
-    // MARK: - A real handle, and the battery both answers are asked
+    // MARK: - 1. The plan's per-sheet answer is what the painter is handed
 
-    /// A real engine handle, opened on a small committed HWP fixture. Its OWN master pages are
-    /// irrelevant to every test below: `fastdoc_office_master_selection`'s templates, pages and
-    /// veto set are ALL caller-supplied (`s5c3.md`'s own API — "the engine never reads its own
-    /// parse"), so any successfully-opened handle answers this export for any synthetic battery.
-    private func openHandle() throws -> RustOfficeDocumentHandle {
-        // FONTS only — opening a document needs the font world, not the measurer (a font-less
-        // panic is `read_office`'s own precondition, per `RustEngineBridgeTests`' own comment).
-        // `fastdoc_office_master_selection` is pure integer arithmetic over caller-supplied
-        // buffers and touches neither global, so installing the measurer here would needlessly
-        // poison `RustEngineBridgeTests`' one-shot "measurer never installed" precondition, which
-        // can only be observed once per PROCESS and depends on running before ANY test installs it.
-        RustEngineFonts.install()
-        let url = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Vendor/rhwp-src/saved/blank2010.hwp")
-        let data = try Data(contentsOf: url)
-        return try XCTUnwrap(RustOfficeDocumentHandle(data: data, extension: "hwp"),
-                             "blank2010.hwp must open through the engine")
-    }
-
-    /// Three templates spanning two sections and every `HeaderFooterApplicability` case a master
-    /// page can carry, plus section 3 vetoed — the shape `applicablePage`'s own five branches need
-    /// (section filter, even/odd parity, `nil`-section fallback, empty-candidates, veto).
-    private func templates() -> [OfficeMasterPage] {
-        func page(_ section: Int, _ appliesTo: HeaderFooterApplicability) -> OfficeMasterPage {
-            OfficeMasterPage(section: section, appliesTo: appliesTo, objects: [])
-        }
-        return [
-            page(1, .defaultPages),
-            page(1, .evenPages),
-            page(2, .defaultPages),
+    func testPlannedSelectionReadsThePlansMasterAndRefusesAPageOutsideThePlan() {
+        let planned: [DocumentWindowController.PlannedPage] = [
+            .init(section: 0, number: 1, hidesNumber: false, master: 2),
+            .init(section: 0, number: 2, hidesNumber: false, master: nil),
+            .init(section: 1, number: 3, hidesNumber: false, master: 0),
         ]
-    }
-
-    /// A battery covering: section 1 odd (its default template), section 1 even (its even
-    /// template), section 2 (its only template, any parity), an unknown section on an even page
-    /// number (`nil` — falls back to every template, so parity still picks section 1's even
-    /// template out of the whole set), and section 3 (declared no template of its own AND vetoed —
-    /// `applicablePage`'s empty-candidates guard and the veto both answer "none" here).
-    private func battery() -> [MasterPageSelectionQuery] {
-        [
-            MasterPageSelectionQuery(pageIndex: 0, section: 1),   // odd page number, section 1
-            MasterPageSelectionQuery(pageIndex: 1, section: 1),   // even page number, section 1
-            MasterPageSelectionQuery(pageIndex: 2, section: 2),
-            MasterPageSelectionQuery(pageIndex: 3, section: nil),
-            MasterPageSelectionQuery(pageIndex: 4, section: 3),
-        ]
-    }
-
-    // MARK: - 1. Values agree
-
-    func testEngineAndHostAgreeAcrossSectionsParityAndAVetoedSection() throws {
-        let handle = try openHandle()
-        let templates = templates()
-        let vetoed: Set<Int> = [3]
-
-        let hostAnswers = battery().map { query in
-            MasterPagePainter.applicablePage(templates, pageIndex: query.pageIndex, section: query.section)
-                .flatMap { templates.firstIndex(of: $0) }
+        let lookup: (Int) -> DocumentWindowController.PlannedPage? = {
+            $0 >= 0 && $0 < planned.count ? planned[$0] : nil
         }
-        let engineAnswers = try XCTUnwrap(handle.masterTemplateSelection(
-            templates: templates, vetoedSections: vetoed,
-            pages: battery().map { ($0.pageIndex, $0.section) }),
-            "the engine must answer a well-formed batch")
-
-        XCTAssertEqual(engineAnswers, hostAnswers,
-                       "the engine's per-page template index must match applicablePage's own, "
-                       + "including the vetoed page (host applicablePage does not itself veto — "
-                       + "section 3 has no candidates of its own either way, so both read none)")
+        let inside = MasterPagePainter.plannedSelection(
+            [.init(pageIndex: 2, section: 1), .init(pageIndex: 0, section: 0), .init(pageIndex: 1, section: 0)],
+            plannedPage: lookup)
+        XCTAssertEqual(inside, [0, 2, nil], "each query gets its own page's planned master, nil kept as 'none'")
+        XCTAssertNil(MasterPagePainter.plannedSelection(
+            [.init(pageIndex: 0, section: 0), .init(pageIndex: 3, section: 1)], plannedPage: lookup),
+            "a page the plan does not cover must hand the whole batch back to applicablePage")
     }
 
-    // MARK: - 2. The engine was actually asked, and only once for the whole batch
-
-    func testTheDrawPassAsksTheEngineExactlyOnceForTheWholeVisibleBatch() throws {
-        let handle = try openHandle()
-        let content = MasterPageContent(pages: templates(), sectionsHidingMasterPage: [3],
-                                        theme: RenderTheme(baseFontSize: 13),
-                                        documentDefaultFontSize: 11, pageContentWidth: 80)
-        let sheets = (0..<5).map { CGRect(x: 0, y: CGFloat($0) * 120, width: 80, height: 100) }
-        let sections: [Int: Int] = [0: 1, 1: 1, 2: 2, 4: 3]   // page 3 left unknown, on purpose
-
-        // Captured BEFORE this test asks the handle anything itself — otherwise the count below
-        // includes this test's OWN setup rather than only what the draw pass asked.
-        let before = handle.answeredQueries
-
-        withOffscreenBitmap(width: 100, height: 700) {
-            MasterPagePainter.draw(content, sheets: sheets, totalPages: sheets.count,
-                                   visibleRect: NSRect(x: 0, y: 0, width: 100, height: 700),
-                                   sectionOfPage: { sections[$0] },
-                                   templateSelection: { queries in
-                                       handle.masterTemplateSelection(
-                                           templates: content.pages,
-                                           vetoedSections: content.sectionsHidingMasterPage,
-                                           pages: queries.map { ($0.pageIndex, $0.section) })
-                                   })
-        }
-
-        // ONE crossing for a whole draw pass over FIVE visible pages, not one per page — the shape
-        // `s5c3.md`'s API section requires ("one crossing per page at scroll frequency is the shape
-        // this plan rejected twice"). Page 4 (section 3) is vetoed before either answer is asked
-        // (`MasterPagePainter.draw`'s own gather pass), so the batch the engine actually sees is 4
-        // pages, still ONE call.
-        XCTAssertEqual(handle.answeredQueries, before + 1,
-                       "the draw pass must ask the engine exactly once, batching every visible page")
+    func testThePlanParsesEachSheetsHeadFootAndMaster() {
+        let plan: [String: Any] = ["pages": [
+            ["section": 0, "number": 1, "header": 1, "footer": 0, "master": 3],
+            ["section": 2, "number": 7, "numberHidden": true],
+        ]]
+        let pages = DocumentWindowController.PlannedPage.list(from: plan)
+        XCTAssertEqual(pages.count, 2)
+        XCTAssertEqual(pages[0].header, 1)
+        XCTAssertEqual(pages[0].footer, 0)
+        XCTAssertEqual(pages[0].master, 3)
+        XCTAssertNil(pages[1].header)
+        XCTAssertNil(pages[1].footer)
+        XCTAssertNil(pages[1].master)
+        XCTAssertEqual(pages[1].section, 2)
+        XCTAssertEqual(pages[1].number, 7)
+        XCTAssertTrue(pages[1].hidesNumber)
     }
 
     // MARK: - 3. Fallback: the engine cannot answer, the host answers, furniture still draws
@@ -138,10 +57,8 @@ final class MasterPageEngineParityTests: XCTestCase {
                                         documentDefaultFontSize: 11, pageContentWidth: 80)
         let sheet = CGRect(x: 10, y: 10, width: 80, height: 100)
 
-        // `templateSelection` returning `nil` is exactly what a failed engine call would hand
-        // `draw` (`RustOfficeDocumentHandle.masterTemplateSelection`'s own documented failure
-        // return) — this is `draw`'s fallback branch, exercised directly rather than through a
-        // manufactured FFI failure, matching S5C-1's own "the same failure direction" rule.
+        // `templateSelection` returning `nil` is what `plannedSelection` hands `draw` for a page
+        // outside the plan: the fallback branch.
         let drew = withOffscreenBitmap(width: 100, height: 120) {
             MasterPagePainter.draw(content, sheets: [sheet], totalPages: 1,
                                    visibleRect: NSRect(x: 0, y: 0, width: 100, height: 120),

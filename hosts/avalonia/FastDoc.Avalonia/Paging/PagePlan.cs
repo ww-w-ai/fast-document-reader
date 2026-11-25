@@ -15,7 +15,8 @@ internal sealed class PlanBlockInput
     public required long Key { get; init; }
     /// <summary>"text", "atomic" or "table" — the engine's `PlanKind`.</summary>
     public required string Kind { get; init; }
-    public bool SectionStart { get; init; }
+    /// <summary>The block opens a document section: a fact. Whether that opens a sheet is the engine's call.</summary>
+    public bool Section { get; init; }
     public bool PageBreakBefore { get; init; }
     public bool KeepWithNext { get; init; }
     public bool Skip { get; init; }
@@ -312,7 +313,7 @@ internal static class PagePlanClient
             }
             w.WriteEndArray();
         }
-        if (b.SectionStart) { w.WriteBoolean("sectionStart", true); }
+        if (b.Section) { w.WriteBoolean("section", true); }
         if (b.PageBreakBefore) { w.WriteBoolean("pageBreakBefore", true); }
         if (b.KeepWithNext) { w.WriteBoolean("keepWithNext", true); }
         if (b.Skip) { w.WriteBoolean("skip", true); }

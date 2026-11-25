@@ -248,7 +248,7 @@ pub struct PlanBlock {
     /// blocks naming the same one are laid out as one run.
     #[serde(default)]
     pub column_run: Option<u32>,
-    /// The block opens a document section, a FACT the host observed (natural observation only). The
+    /// The block opens a document section, a FACT the host observed. The
     /// engine decides whether it opens a sheet: with a hard break before it, it does; without, the
     /// section is named from the next sheet on (`section_start` / `section_marker`).
     #[serde(default)]
@@ -301,18 +301,6 @@ struct TailPlacement {
     column: Option<u32>,
 }
 
-/// What the host's observation was taken from.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub enum PlanObservation {
-    /// A layout nobody paginated: no field carries a decision of the host's own page rule, and
-    /// `PlanBlock::section` is decided here.
-    Natural,
-    /// A layout the host's page rule already placed (the shadow's first form).
-    #[default]
-    Paginated,
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanInput {
@@ -357,8 +345,6 @@ pub struct PlanInput {
     pub notes: Vec<PlanNote>,
     #[serde(default)]
     pub separators: Vec<PlanSeparator>,
-    #[serde(default)]
-    pub observation: PlanObservation,
     /// The blocks are a prefix of the document, observed for a first paint.
     #[serde(default)]
     pub truncated: bool,
@@ -532,9 +518,9 @@ pub fn plan_pages(input: &PlanInput) -> Result<PagePlan, PlanError> {
             return Err(PlanError(format!("block {index} carries a non-finite height")));
         }
     }
-    // A natural observation names a section as a fact; whether it opens a sheet is decided here.
+    // A host names a section as a fact; whether it opens a sheet is decided here.
     let named;
-    let input = if input.observation == PlanObservation::Natural && input.blocks.iter().any(|b| b.section) {
+    let input = if input.blocks.iter().any(|b| b.section) {
         let mut copy = input.clone();
         // TextKit's rule drops a hard break whatever the paragraph beside it is (invariant 147): a
         // section opens a sheet only when its own break survives that rule.
@@ -2237,7 +2223,7 @@ mod tests {
             b.page_break_before = hard_break;
             b
         };
-        let natural = |blocks| PlanInput { observation: PlanObservation::Natural, ..input(100.0, blocks) };
+        let natural = |blocks| input(100.0, blocks);
         // With a hard break before it the section opens its own sheet.
         let plan = plan_pages(&natural(vec![text(1, &[10.0]), named(2, true)])).unwrap();
         assert_eq!(plan.page_count, 2);
@@ -2255,20 +2241,15 @@ mod tests {
         blank_between.page_break_before = true;
         let plan = plan_pages(&natural(vec![text(1, &[10.0]), dropped, blank_between, text(4, &[10.0])])).unwrap();
         assert_eq!(plan.page_count, 2, "one sheet break stands of the two");
-        // The paginated form ignores the fact: the host named the start itself.
-        let plan = plan_pages(&input(100.0, vec![text(1, &[10.0]), named(2, true)])).unwrap();
-        assert_eq!(plan.page_count, 2);
-        assert_eq!(plan.pages.iter().map(|p| p.section).collect::<Vec<_>>(), vec![0, 0]);
     }
 
     #[test]
     fn the_locations_a_natural_observation_carries_are_accepted_and_change_nothing() {
-        let json = r#"{"planVersion":1,"contentHeight":100,"observation":"natural","truncated":false,
+        let json = r#"{"planVersion":1,"contentHeight":100,"truncated":false,
             "blocks":[{"key":1,"kind":"text","lines":[60,60],"lineLocs":[0,14],"section":true},
                       {"key":2,"kind":"table","firstLoc":30,"firstLineInset":2.5,
                        "rows":[{"height":20,"cells":[{"lines":[{"top":0,"height":10,"loc":31}]}]}],"rowsObserved":true}]}"#;
         let parsed: PlanInput = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.observation, PlanObservation::Natural);
         assert_eq!(parsed.blocks[0].line_locs, vec![0, 14]);
         assert_eq!(parsed.blocks[1].first_loc, Some(30));
         assert_eq!(parsed.blocks[1].rows[0].cells[0].lines[0].loc, Some(31));

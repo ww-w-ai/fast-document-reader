@@ -73,7 +73,7 @@ pub fn displayed_numbers(page_count: u32, restarts: &BTreeMap<u32, i64>) -> Vec<
 }
 
 /// The master page behind each page: `MasterPagePainter.applicablePage` plus the section veto,
-/// answered by the one function the engine already exports (`fastdoc_office_master_selection`).
+/// answered by `select_master_templates`.
 pub fn master_pages(
     masters: &[PlanEntry],
     hiding: &HashSet<i64>,

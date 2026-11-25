@@ -3178,7 +3178,11 @@ this file tells you why, and why the obvious alternative does not work.
     (`fastdoc_office_header_band_height`, `_table_placement`, `_footnote_band_settle`), the
     engine's dead settle arithmetic (`page_grid.rs`, `tables_to_push`, `oversized_pieces`), the
     host's paginated-observation path and Avalonia's host-side selection (`MasterPageSelector`,
-    `PageNumberFacts`, `HeaderFooterText.Resolve`, `BuildWithTableSettle`). Still exported because a
-    macOS painter calls them: `fastdoc_office_band_sides` (band input), `_sheets` (sheet rects) and
-    `_master_selection` (the 바탕쪽 painter), each answering a per-sheet question the plan's output
-    could answer instead.
+    `PageNumberFacts`, `HeaderFooterText.Resolve`, `BuildWithTableSettle`). Then the macOS
+    painters moved to the plan's per-sheet output — `PlannedPage.header`/`.footer`/`.master` feed
+    `PageBandPainter.entry` and `MasterPagePainter.plannedSelection`; `printSheets` lays the plan's
+    grid down with `PagePagination.sheets` — and `fastdoc_office_sheets` and
+    `fastdoc_office_master_selection` were deleted (page counts and first lines per page unchanged on
+    all 20 testdocs). `fastdoc_office_band_sides` stays: the band is a plan INPUT, not a per-sheet
+    answer, and both hosts ask it. Avalonia now sends sections as facts too, so the plan has one
+    observation contract and the old `observation` input field is gone.

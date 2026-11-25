@@ -141,77 +141,6 @@ final class RustOfficeDocumentHandle {
         return PageBandGeometry.Sides(header: CGFloat(out[0]), footer: CGFloat(out[1]), band: CGFloat(out[2]))
     }
 
-    /// S5C2-01: every SHEET a paged document prints as — `printSheets`'s own arithmetic, from the
-    /// scalars it already resolves (`pitch` and `topMargin` are scalar addition/`max` and stay
-    /// host-side; the plan states why). `nil` when the engine could not answer (a bad payload —
-    /// `RustEngineMeasure.lastErrorKind()` names which) or `count <= 0`, matching
-    /// `PagePagination.sheets`'s own empty-array answer for a non-positive count.
-    func sheets(
-        count: Int, width: CGFloat, textOriginY: CGFloat, leadingBand: CGFloat,
-        pitch: CGFloat, topMargin: CGFloat, deskGap: CGFloat
-    ) -> [CGRect]? {
-        guard count > 0 else { return [] }
-        var raw = [Double](repeating: 0, count: count * 4)
-        var outCount = 0
-        let answered = raw.withUnsafeMutableBufferPointer { buffer -> Bool in
-            withUnsafeMutablePointer(to: &outCount) { countPtr in
-                fastdoc_office_sheets(
-                    handle, Int64(count), Double(width), Double(textOriginY), Double(leadingBand),
-                    Double(pitch), Double(topMargin), Double(deskGap),
-                    buffer.baseAddress, buffer.count, countPtr)
-            }
-        }
-        guard answered else { return nil }
-        answeredQueries += 1
-        var out: [CGRect] = []
-        out.reserveCapacity(outCount)
-        for i in 0..<outCount {
-            out.append(CGRect(x: raw[i * 4], y: raw[i * 4 + 1], width: raw[i * 4 + 2], height: raw[i * 4 + 3]))
-        }
-        return out
-    }
-
-    /// S5C3-04: `MasterPagePainter.applicablePage` plus the section veto (`:73`), ported to Rust
-    /// (`master_page_selection`) and answered batched over every VISIBLE page `draw(_:sheets:…)`
-    /// assembles — one crossing per draw pass, matching every other query on this page. `nil` —
-    /// no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()` names which) — is
-    /// `MasterPagePainter.draw`'s own signal to fall back to `applicablePage` for the whole batch,
-    /// the same failure direction S5C-1 established for every query above.
-    ///
-    /// A `nil` ENTRY inside the returned array is a real answer, not a failure: it is the engine's
-    /// own "-1, no template applies" (no candidates for the page's section, or the section is
-    /// vetoed) — `applicablePage`'s own `nil` return, not a gap for the host to fill in.
-    func masterTemplateSelection(
-        templates: [OfficeMasterPage], vetoedSections: Set<Int>,
-        pages: [(pageIndex: Int, section: Int?)]
-    ) -> [Int?]? {
-        guard !pages.isEmpty else { return [] }
-        let ffiTemplates = templates.map {
-            FastdocMasterTemplateDesc(section: Int64($0.section), applies_to: $0.appliesTo.wireTag)
-        }
-        let ffiVetoed = vetoedSections.map(Int64.init)
-        let ffiPages = pages.map {
-            FastdocMasterPageQuery(page_index: Int64($0.pageIndex), has_section: $0.section != nil,
-                                   section: Int64($0.section ?? 0))
-        }
-        var out = [Int64](repeating: -1, count: pages.count)
-        let answered = ffiTemplates.withUnsafeBufferPointer { templatesBuf in
-            ffiVetoed.withUnsafeBufferPointer { vetoedBuf in
-                ffiPages.withUnsafeBufferPointer { pagesBuf in
-                    out.withUnsafeMutableBufferPointer { outBuf in
-                        fastdoc_office_master_selection(
-                            templatesBuf.baseAddress, templatesBuf.count,
-                            vetoedBuf.baseAddress, vetoedBuf.count,
-                            pagesBuf.baseAddress, pagesBuf.count,
-                            outBuf.baseAddress, outBuf.count)
-                    }
-                }
-            }
-        }
-        guard answered else { return nil }
-        answeredQueries += 1
-        return out.map { $0 >= 0 ? Int($0) : nil }
-    }
     /// S5D-2: every footnote's own height, `[number: height]`, from a document this handle already
     /// holds — `PageBandGeometry::built_height`, called once per note and batched into ONE
     /// crossing (never once per note, S5C-3's own batch discipline). `nil` — no handle, or a bad
@@ -244,23 +173,4 @@ final class RustOfficeDocumentHandle {
         return result
     }
 
-}
-
-extension HeaderFooterApplicability {
-    /// The wire tag `fastdoc_office_master_selection`'s own comment defines: `0` = `.defaultPages`,
-    /// `1` = `.firstPage`, `2` = `.evenPages`, `3` = `.oddPages` — the same vocabulary a master
-    /// page shares with a running header/footer.
-    ///
-    /// Internal rather than private so the probe that measures this call encodes its templates
-    /// through THIS switch instead of restating it. The restated copy went stale the moment
-    /// `oddPages` was added, and a second encoder is exactly the kind of drift the engine crossing
-    /// cannot detect: both sides compile, and the tag on the wire is simply wrong.
-    var wireTag: Int32 {
-        switch self {
-        case .defaultPages: return 0
-        case .firstPage: return 1
-        case .evenPages: return 2
-        case .oddPages: return 3
-        }
-    }
 }

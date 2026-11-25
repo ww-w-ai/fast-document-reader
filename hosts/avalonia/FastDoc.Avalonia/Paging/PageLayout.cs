@@ -313,7 +313,7 @@ public static class PageLayout
         {
             var block = blocks[i];
             var key = i < markers.NodeId.Length ? (long)markers.NodeId[i] : i;
-            var sectionStart = i < markers.SectionStart.Length && markers.SectionStart[i];
+            var section = i < markers.SectionStart.Length && markers.SectionStart[i];
             var pageBreakBefore = i < markers.PageBreakBefore.Length && markers.PageBreakBefore[i];
             // The footnote tail flow mode shows after the body is NOT part of a sheet's flow: each
             // note is drawn at the foot of the page that cites it (FootnoteLayout).
@@ -343,7 +343,7 @@ public static class PageLayout
                     slots.Add((inputs.Count, i, true));
                     inputs.Add(new PlanBlockInput
                     {
-                        Key = key, Kind = "text", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
+                        Key = key, Kind = "text", Section = section, PageBreakBefore = pageBreakBefore,
                         KeepWithNext = keepWithNext, Empty = true,
                         PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber, ColumnRun = blockRun[i],
                     });
@@ -366,7 +366,7 @@ public static class PageLayout
                 slots.Add((inputs.Count, i, false));
                 inputs.Add(new PlanBlockInput
                 {
-                    Key = key, Kind = "text", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
+                    Key = key, Kind = "text", Section = section, PageBreakBefore = pageBreakBefore,
                     KeepWithNext = keepWithNext, Empty = empty, SpacingBefore = block.SpacingBeforePoints,
                     SpacingAfter = block.SpacingAfterPoints,
                     PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
@@ -385,7 +385,7 @@ public static class PageLayout
                 var flowable = rowHeights.Sum() > contentHeight || blockRun[i] is not null;
                 inputs.Add(new PlanBlockInput
                 {
-                    Key = key, Kind = "table", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
+                    Key = key, Kind = "table", Section = section, PageBreakBefore = pageBreakBefore,
                     SpacingBefore = block.SpacingBeforePoints, SpacingAfter = block.SpacingAfterPoints,
                     RowHeights = rowHeights.Length == canBreak.Length ? rowHeights : PadRows(rowHeights, canBreak.Length),
                     RowCanBreakAbove = canBreak,
@@ -399,7 +399,7 @@ public static class PageLayout
 
             inputs.Add(new PlanBlockInput
             {
-                Key = key, Kind = "atomic", SectionStart = sectionStart, PageBreakBefore = pageBreakBefore,
+                Key = key, Kind = "atomic", Section = section, PageBreakBefore = pageBreakBefore,
                 Height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer, splitTables),
                 PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber, ColumnRun = blockRun[i],
             });

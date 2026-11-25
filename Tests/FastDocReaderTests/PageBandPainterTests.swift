@@ -64,6 +64,26 @@ final class PageBandPainterTests: XCTestCase {
         XCTAssertNil(PageBandPainter.applicableEntry([], pageIndex: 1), "no entries at all")
     }
 
+    // MARK: - entry(header:page:…) — the page plan's choice wins over the host rule
+
+    func testThePlansChoiceIsTheEntryPaintedAndAPageOutsideThePlanFallsBack() {
+        let first = OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "A")])])
+        let second = OfficeHeaderFooter(appliesTo: .defaultPages, blocks: [.paragraph(spans: [Span(text: "B")])])
+        let content = PageBandContent(headers: [first, second], footers: [second, first],
+                                      theme: RenderTheme(baseFontSize: 13), columnWidth: 400,
+                                      documentDefaultFontSize: 11, pageContentWidth: 400,
+                                      headerHeight: 20, footerHeight: 20, leadingBand: 0, trailingBand: 0)
+        // The host rule can only ever pick the first catch-all; index 1 can only come from the plan.
+        XCTAssertEqual(PageBandPainter.entry(header: true, page: 3, content: content, planned: .some(1),
+                                             sectionOfPage: { _ in nil }), second)
+        XCTAssertEqual(PageBandPainter.entry(header: false, page: 3, content: content, planned: .some(1),
+                                             sectionOfPage: { _ in nil }), first)
+        XCTAssertNil(PageBandPainter.entry(header: true, page: 3, content: content, planned: .some(nil),
+                                           sectionOfPage: { _ in nil }), "the plan's 'none' is trusted")
+        XCTAssertEqual(PageBandPainter.entry(header: true, page: 3, content: content, planned: nil,
+                                             sectionOfPage: { _ in nil }), first, "unplanned page: host rule")
+    }
+
     // MARK: - totalPages (ceil(documentHeight / pitch), header-footer-design.md §5)
 
     func testTotalPagesIsCeilingOfDocumentHeightOverPitch() {

@@ -171,6 +171,19 @@ enum PageBandPainter {
         return opened.contains(page)
     }
 
+    /// The running head (`header`) or foot page `page` shows: the page plan's choice
+    /// (`PlannedPage.header`/`.footer`, `.some(nil)` meaning none) when the plan covers the page
+    /// (`planned != nil`), otherwise `applicableEntry`.
+    static func entry(header: Bool, page: Int, content: PageBandContent, planned: Int??,
+                      sectionOfPage: (Int) -> Int?) -> OfficeHeaderFooter? {
+        let list = header ? content.headers : content.footers
+        if let planned {
+            return planned.flatMap { list.indices.contains($0) ? list[$0] : nil }
+        }
+        return applicableEntry(list, pageIndex: page, section: sectionOfPage(page),
+                               hiddenSections: header ? content.sectionsHidingHeader : content.sectionsHidingFooter)
+    }
+
     static func applicableEntry(_ entries: [OfficeHeaderFooter], pageIndex: Int,
                                 section: Int? = nil,
                                 hiddenSections: Set<Int> = []) -> OfficeHeaderFooter? {
@@ -256,8 +269,13 @@ enum PageBandPainter {
     /// document never said, and every entry then applies by parity alone, as it did before.
     static func draw(_ content: PageBandContent, pageContentHeight: CGFloat, band: CGFloat,
                      documentHeight: CGFloat, visibleRect: NSRect, origin: NSPoint,
-                     sectionOfPage: (Int) -> Int? = { _ in nil }) {
+                     sectionOfPage: (Int) -> Int? = { _ in nil },
+                     plannedEntry: (_ page: Int, _ header: Bool) -> Int?? = { _, _ in nil }) {
         guard pageContentHeight > 0, band > 0 else { return }
+        func chosen(header: Bool, page: Int) -> OfficeHeaderFooter? {
+            entry(header: header, page: page, content: content, planned: plannedEntry(page, header),
+                  sectionOfPage: sectionOfPage)
+        }
         let pitch = pageContentHeight + band
         // `Int(_: CGFloat)` traps on NaN/infinite — guard defensively the same way
         // `PageBandGeometry.measuredHeight` guards `columnWidth.isFinite` before using it in
@@ -316,8 +334,7 @@ enum PageBandPainter {
             // Footer of THIS page draws in the band that FOLLOWS it — never for the last page, which
             // has no following BETWEEN-PAGE band; its own trailing footer is the dedicated arm below.
             if boundaryIsOpen, page < total - 1, content.footerHeight > 0,
-               let entry = applicableEntry(content.footers, pageIndex: page, section: sectionOfPage(page),
-                                          hiddenSections: content.sectionsHidingFooter),
+               let entry = chosen(header: false, page: page),
                !entry.blocks.isEmpty {
                 // ITS OWN DISTANCE above the sheet's bottom edge (docx `w:pgMar/@w:footer`) — the
                 // same number Word measures it by, so the footer lands identically on every page.
@@ -340,8 +357,7 @@ enum PageBandPainter {
             // Gated on the boundary BEFORE this page — the one whose band this header sits in.
             if bandExists(after: page - 1, in: content),
                page > 0, content.headerHeight > 0,
-               let entry = applicableEntry(content.headers, pageIndex: page, section: sectionOfPage(page),
-                                          hiddenSections: content.sectionsHidingHeader),
+               let entry = chosen(header: true, page: page),
                !entry.blocks.isEmpty {
                 // At the BOTTOM of the gap that PRECEDES this page — directly above its first line.
                 // ITS OWN DISTANCE below the sheet's TOP edge, which is the boundary that precedes
@@ -366,8 +382,7 @@ enum PageBandPainter {
             // must keep producing nothing — `applicableEntry` already encodes that selection; this
             // arm only adds WHERE to paint once it says there is something to paint.
             if page == 0, leading > 0,
-               let entry = applicableEntry(content.headers, pageIndex: 0, section: sectionOfPage(0),
-                                          hiddenSections: content.sectionsHidingHeader),
+               let entry = chosen(header: true, page: 0),
                !entry.blocks.isEmpty {
                 // Its own declared distance below the sheet's top edge — which, for page 0, is where
                 // the leading reservation begins. Reduces to 0 (the original behaviour) whenever the
@@ -379,8 +394,7 @@ enum PageBandPainter {
                      origin: origin)
             }
             if page == total - 1, trailing > 0,
-               let entry = applicableEntry(content.footers, pageIndex: total - 1, section: sectionOfPage(total - 1),
-                                          hiddenSections: content.sectionsHidingFooter),
+               let entry = chosen(header: false, page: total - 1),
                !entry.blocks.isEmpty {
                 // The same, from the other end: its own distance ABOVE the last sheet's bottom edge,
                 // clamped so it never rides up over the document's own last line. Also reduces to 0

@@ -471,7 +471,6 @@ enum PlanInputBuilder {
             "columnRuns": columnRunsInput(columnRuns),
             "noteBands": [] as [Any],
             "blocks": blocks,
-            "observation": "natural",
         ]
         input.merge(furnitureInput(wc)) { a, _ in a }
         return input

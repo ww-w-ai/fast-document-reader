@@ -1,6 +1,6 @@
 //! swift: Render/Office/PagePagination.swift
 
-use swiftshim::{CGFloat, CGRect};
+use swiftshim::CGFloat;
 
 /// Where each SHEET of a paged document sits in the text view's own coordinates — the one piece of
 /// arithmetic printing needs that the reader did not already have, kept pure and view-free so it is
@@ -28,24 +28,6 @@ impl PagePagination {
     // swift: PagePagination.pitch
     pub fn pitch(page_content_height: CGFloat, band: CGFloat) -> CGFloat {
         page_content_height + band
-    }
-
-    /// The top edge of page `page`'s sheet (0-based), in the text view's flipped coordinates.
-    ///
-    /// `textOriginY` is `NSTextView.textContainerOrigin.y` — the app's own vertical inset, which is
-    /// NOT part of the document and is why this cannot be derived from the pitch alone. `leadingBand`
-    /// is the extra room reserved above the very first line for page 0's own header
-    /// (`PageBandLayoutDelegate.leadingBand`).
-    ///
-    /// Page 0's sheet top is routinely NEGATIVE, and that is correct rather than a clamp waiting to
-    /// happen: the reader shows only its own 28pt of padding above the first line, while the paper
-    /// wants a full top margin there (99.25pt on the reference document). The missing 71pt is blank
-    /// paper — there is nothing in the view to draw in it, and a print rect is allowed to reach past
-    /// the view's bounds. Clamping it to 0 instead would print page 1 with a 28pt top margin and every
-    /// other page with 99.25.
-    // swift: PagePagination.sheetTop
-    pub fn sheet_top(page: i64, text_origin_y: CGFloat, leading_band: CGFloat, pitch: CGFloat, top_margin: CGFloat) -> CGFloat {
-        text_origin_y + leading_band + (page as CGFloat) * pitch - top_margin
     }
 
     /// One ROW of a table, as a completed layout shows it — what a page BREAK inside a table is
@@ -133,37 +115,5 @@ impl PagePagination {
         }
         close(&mut out, &start, top, bottom, rows_in_group);
         out
-    }
-
-    /// Every sheet, in order — the arithmetic grid the plan places pages on. `width` is the document
-    /// view's full width, which for a paged document is already the paper's (left margin + body +
-    /// right margin), so the horizontal side needs no arithmetic at all.
-    ///
-    /// `deskGap` is the space the band reserved for the DESK between two drawn sheets
-    /// (`RenderTheme.pageDeskGap`, non-zero only while the page outline is on). A sheet is therefore
-    /// `pitch - deskGap` tall — the document's own paper — and the pages no longer TILE: the gap
-    /// between sheet `k`'s bottom and sheet `k+1`'s top is exactly `deskGap`, which is what makes
-    /// them read as separate pieces of paper rather than as one continuous roll.
-    ///
-    /// This mattered more than it looks: the first version had no desk at all, so the sheets tiled
-    /// edge to edge, the desk fill was completely covered by the very sheets it sat behind, and the
-    /// feature drew as a hairline — indistinguishable from the page-break rule it was supposed to
-    /// replace. It looked like nothing had happened.
-    // swift: PagePagination.sheets
-    pub fn sheets(count: i64, width: CGFloat, text_origin_y: CGFloat, leading_band: CGFloat, pitch: CGFloat, top_margin: CGFloat, desk_gap: CGFloat) -> Vec<CGRect> {
-        if !(count > 0) || !(pitch > 0.0) || !(width > 0.0) {
-            return Vec::new();
-        }
-        let paper_height = (pitch - desk_gap).max(1.0);
-        (0..count)
-            .map(|page| {
-                CGRect::new(
-                    0.0,
-                    Self::sheet_top(page, text_origin_y, leading_band, pitch, top_margin),
-                    width,
-                    paper_height,
-                )
-            })
-            .collect()
     }
 }

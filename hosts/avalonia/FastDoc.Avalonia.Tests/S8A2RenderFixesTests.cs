@@ -297,8 +297,8 @@ public class S8A2RenderFixesTests
     [Fact]
     public void PageLayout_assigns_the_correct_section_index_per_page()
     {
-        // Three sections, each one page (a section start forces a fresh page — PageLayout.Build's
-        // own rule): section 0 = page 0, section 1 = page 1, section 2 = pages 2-3 (its one
+        // Three sections, each one page (each later section declares a page break, so the plan opens a fresh
+        // page for it — a section is a fact, the sheet is the engine's call): section 0 = page 0, section 1 = page 1, section 2 = pages 2-3 (its one
         // paragraph is tall enough to spill onto a second page without a THIRD section starting).
         var tree = BuildThreeSectionTree();
         var geometry = PageGeometry.FromDocument(tree)!;
@@ -313,7 +313,20 @@ public class S8A2RenderFixesTests
         Assert.Equal(2, layout.PageSectionIndex[2]);
     }
 
-    private static RenderTree BuildThreeSectionTree()
+    [Fact]
+    public void PageLayout_leaves_a_section_without_a_page_break_on_the_page_it_began_on()
+    {
+        // The host sends a section as a fact; with no declared break the engine opens no sheet
+        // (macOS's contract), so three tiny sections share one page.
+        var tree = BuildThreeSectionTree(breaks: false);
+        var geometry = PageGeometry.FromDocument(tree)!;
+        var layout = PageLayout.Build(FlowDocumentBuilder.Build(tree), BlockPageMarkers.Compute(tree), geometry,
+            System.IntPtr.Zero, headersOn: false, footersOn: false);
+
+        Assert.Equal(1, layout.PageCount);
+    }
+
+    private static RenderTree BuildThreeSectionTree(bool breaks = true)
     {
         const string json = """
         {
@@ -328,14 +341,14 @@ public class S8A2RenderFixesTests
               { "id": 1, "parentId": 0, "children": [2], "type": "section", "data": { "paperIsDeclared": false, "lineGridIsDeclared": false, "hidesHeader": false, "hidesFooter": false } },
               { "id": 2, "parentId": 1, "children": [], "type": "paragraph", "data": { "text": "section one", "style": {}, "pagination": { "keepWithNext": false, "pageBreakBefore": false, "hidesPageNumber": false } } },
               { "id": 3, "parentId": 0, "children": [4], "type": "section", "data": { "paperIsDeclared": false, "lineGridIsDeclared": false, "hidesHeader": false, "hidesFooter": false } },
-              { "id": 4, "parentId": 3, "children": [], "type": "paragraph", "data": { "text": "section two", "style": {}, "pagination": { "keepWithNext": false, "pageBreakBefore": false, "hidesPageNumber": false } } },
+              { "id": 4, "parentId": 3, "children": [], "type": "paragraph", "data": { "text": "section two", "style": {}, "pagination": { "keepWithNext": false, "pageBreakBefore": BREAK, "hidesPageNumber": false } } },
               { "id": 5, "parentId": 0, "children": [6], "type": "section", "data": { "paperIsDeclared": false, "lineGridIsDeclared": false, "hidesHeader": false, "hidesFooter": false } },
-              { "id": 6, "parentId": 5, "children": [], "type": "paragraph", "data": { "text": "section three", "style": {}, "pagination": { "keepWithNext": false, "pageBreakBefore": false, "hidesPageNumber": false } } }
+              { "id": 6, "parentId": 5, "children": [], "type": "paragraph", "data": { "text": "section three", "style": {}, "pagination": { "keepWithNext": false, "pageBreakBefore": BREAK, "hidesPageNumber": false } } }
             ]
           }
         }
         """;
-        var envelope = JsonSerializer.Deserialize<RenderTreeEnvelope>(json)!;
+        var envelope = JsonSerializer.Deserialize<RenderTreeEnvelope>(json.Replace("BREAK", breaks ? "true" : "false"))!;
         return envelope.Ok!.Value.Deserialize<RenderTree>()!;
     }
 
