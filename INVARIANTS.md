@@ -3215,8 +3215,40 @@ this file tells you why, and why the obvious alternative does not work.
     the declared `맑은 고딕` is installed on neither machine and the fallbacks differ: the cell above
     measures `심의 및 결과 통보` at 70.8 pt in Noto Sans KR (Hangul ≈ 0.92 em) and so fits 73.9 pt,
     where Apple SD Gothic Neo (1 em) needs a fourth line — a font fact, not a layout one;
-    1790387 153 (139), 스케일업 32 (31), OpenAPI 20 (19), tago 9 (8) not re-diagnosed this round;
-    giant-table `--sheets` 0 (`--pdf` 41, macOS 84) is the headless sheets path, unchanged.
+    the rest are the next paragraph.
+
+    **Avalonia's page facts are positional, so a block the builder makes and the marker walk skips
+    moves every later break (2026-11-26).** `BlockPageMarkers` must emit one marker per
+    `FlowDocumentBuilder` block, in order. It skipped `formula` and `diagram`, which the builder
+    makes into a block each (their raw source): 1790387_prep_final_report.hwpx built 1,468 blocks
+    against 1,456 markers, so from its first equation on every `pageBreakBefore`/keep fact sat 1-12
+    blocks early (a break landed on the 8.4 pt object paragraph before a heading, or on a caption).
+    Avalonia 153 → 139 (macOS 139); every other testdoc unchanged (`--sheets`). Pinned by
+    `A_formula_or_diagram_block_keeps_the_page_break_on_the_paragraph_that_declares_it`. Remaining
+    gaps, measured by replaying one host's plan input with the other's blocks swapped in:
+    - **s9 28 (31)**: all macOS text blocks → 31; its empty paragraphs alone → 29, its non-empty
+      alone → 28, tables → 28. macOS stands every body empty line at 14 pt (Helvetica 12, the bare
+      terminator) where Avalonia uses the paragraph's declared size (4.8-18 pt, 152 lines, 828 pt),
+      and 7 paragraphs wrap one more line on macOS (165 pt, the face below).
+    - **Fallback face, tried and NOT kept.** Putting the platform's own Korean face ahead of the
+      bundled Noto Sans KR (Apple SD Gothic Neo on macOS, Malgun Gothic on Windows — what macOS's
+      `DeclaredFontKind` substitution picks for a sans face) moved 1790387 141 → 139 and tago 9 → 8
+      but the 편람 389 → 383 (390), s9 unchanged: a Hangul-only fallback is not macOS's rule, which
+      substitutes the WHOLE run by the declared face's kind (Latin included). Avalonia's font
+      provider (`TextMeasurerPort`) reports every face present and covering everything, so the
+      engine never substitutes for it; the general fix is the kind-based substitution on Avalonia's
+      side, not a fallback list.
+    - **OpenAPI 20 (19)**: tables. 740 cell lines stand 18 pt on Avalonia and 10 pt on macOS
+      (tables +1,086 pt; macOS tables → 18, all blocks → 19); the line model floors every cell line
+      at the document's 18 pt grid, macOS's cell lines are not floored — not yet traced to the rule.
+    - **tago 9 (8)**: the fallback-face trial above closes it (its text lines: Noto Sans KR's box
+      against Apple SD Gothic Neo's); not otherwise re-diagnosed.
+    - 스케일업 32 (31): not re-diagnosed.
+    - **giant-table `--sheets` 0 is correct**: the .odt declares no page layout (`styles.xml` has no
+      `style:page-layout`), so neither host builds a plan. `--sheets` counts planned sheets only;
+      both `--pdf`s flow-print onto A4 — Avalonia 41 (FlowDocumentView's 18 pt margins, one line per
+      cell, 24.4 rows a page), macOS 84 (72 pt print margins, 47 pt columns, every cell wraps to two
+      lines, 12 rows a page). No pagination decision is involved.
 
     **Two reader quirks the plan once reproduced are fixed in the engine (owner, 2026-11-25).**
     (1) The 1-3 line run rule (`orphan_runs`) counts a line on the page the plan placed it on. The

@@ -176,6 +176,44 @@ public class MarkdownInlineImageLossTests
         }
     }
 
+    // A formula and a diagram, each its own block, then a paragraph that starts a page — the shape
+    // of an HWP equation between paragraphs (1790387_prep_final_report.hwpx: 12 formulas shifted
+    // every later page break one block early and cost 14 pages).
+    private const string FormulaThenBreakDoc = """
+    {
+      "ok": {
+        "schemaVersion": 1,
+        "document": { "format": "hwpx", "rootNodeId": 0 },
+        "nodes": [
+          { "id": 0, "parentId": null, "children": [1], "type": "document", "data": {} },
+          { "id": 1, "parentId": 0, "children": [2, 3, 4, 5], "type": "flow", "data": {} },
+          { "id": 2, "parentId": 1, "children": [], "type": "formula", "data": { "block": false, "source": "N_{k}" } },
+          { "id": 3, "parentId": 1, "children": [], "type": "diagram", "data": { "language": "other", "source": "a" } },
+          { "id": 4, "parentId": 1, "children": [6], "type": "paragraph", "data": { "style": {}, "pagination": { "pageBreakBefore": true } } },
+          { "id": 6, "parentId": 4, "children": [], "type": "textRun", "data": { "text": "starts a page", "style": {} } },
+          { "id": 5, "parentId": 1, "children": [7], "type": "paragraph", "data": { "style": {} } },
+          { "id": 7, "parentId": 5, "children": [], "type": "textRun", "data": { "text": "after", "style": {} } }
+        ]
+      }
+    }
+    """;
+
+    [Fact]
+    public void A_formula_or_diagram_block_keeps_the_page_break_on_the_paragraph_that_declares_it()
+    {
+        var tree = Parse(FormulaThenBreakDoc);
+        var blocks = FlowDocumentBuilder.Build(tree);
+        var markers = BlockPageMarkers.Compute(tree);
+
+        Assert.Equal(blocks.Count, markers.NodeId.Length);
+        for (var i = 0; i < blocks.Count; i++)
+        {
+            Assert.Equal(blocks[i].NodeId, markers.NodeId[i]);
+        }
+        var broken = Enumerable.Range(0, blocks.Count).Where(i => markers.PageBreakBefore[i]).ToArray();
+        Assert.Equal(new ulong?[] { 4 }, broken.Select(i => blocks[i].NodeId).ToArray());
+    }
+
     [Fact]
     public void Page_mode_markers_stay_aligned_for_an_image_only_list_item_too()
     {

@@ -253,6 +253,10 @@ public static class BlockPageMarkers
                 return;
 
             case "codeBlock":
+            // FlowDocumentBuilder emits one block for a formula and for a diagram (their raw
+            // source); without a marker here every later block's page facts shifted one place.
+            case "formula":
+            case "diagram":
             case "image":
             case "vector":
             case "unsupported":
