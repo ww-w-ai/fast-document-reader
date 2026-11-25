@@ -56,6 +56,14 @@ public static class PageBandResolver
         var band = declared + (separatesPages ? (deskGapPoints ?? 12) : 0);
         return new PageBandSides(0, 0, band, FromEngine: false);
     }
+
+    /// <summary>The band the page plan reads: one body foot to the next body top on PAPER, with no
+    /// desk gap — the plan decides on the print grid and the host adds its gap per page
+    /// (PlanInputBuilder.swift sends `band - deskGap` for the same reason). The screen band put a
+    /// flowed table's later rows 12 pt per page lower and printed the 388-table manual 3 pages short.</summary>
+    public static double PaperBand(IntPtr handle, PageGeometry geometry, double columnWidthPoints,
+        bool headersOn, bool footersOn)
+        => Resolve(handle, geometry, columnWidthPoints, headersOn, footersOn, separatesPages: true, deskGapPoints: 0).BandPoints;
 }
 
 /// <summary>One NON-TEXT block's placement (Rule/Image/Table) — treated as a single atomic unit
@@ -266,6 +274,7 @@ public static class PageLayout
         var contentHeight = geometry.ContentHeightPoints;
         var band = PageBandResolver.Resolve(engineHandle, geometry, contentWidth, headersOn, footersOn,
             separatesPages: true, deskGapPoints: null);
+        var paperBand = PageBandResolver.PaperBand(engineHandle, geometry, contentWidth, headersOn, footersOn);
 
         // Multi-column runs: a run lasts from one declaration to the next. The engine says what columns
         // a declaration makes at this body width; a text or table block is then measured at the first
@@ -295,7 +304,7 @@ public static class PageLayout
         {
             columns = new PlanColumnsInput { BodyWidth = contentWidth, Runs = runInputs };
             runColumns = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, null, Array.Empty<PlanBlockInput>(),
-                band.BandPoints, null, columns).ColumnRuns;
+                paperBand, null, columns).ColumnRuns;
         }
         var blockRun = new int?[blocks.Count];
         for (var i = 0; i < blocks.Count; i++)
@@ -423,7 +432,7 @@ public static class PageLayout
             inputs[inputIndex].Trailing = answer.Trailing;
         }
 
-        var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs, band.BandPoints, furniture, columns);
+        var plan = PagePlanClient.Plan(engineHandle, contentHeight, splitTables, noteBands, inputs, paperBand, furniture, columns);
 
         var blockPlacements = new List<PagedBlock>(plan.Placements.Count);
         foreach (var placed in plan.Placements)

@@ -3149,6 +3149,13 @@ this file tells you why, and why the obvious alternative does not work.
     rounds: invariant 151's "settle before print" holds by construction. Avalonia's
     `PageLayout.Build` plans the same way, with no host settle (a columned document asks the plan for
     its column geometry first, so the columns are measured at their own width, invariant 144).
+    Both hosts send the plan the PAPER band (`band`, no desk gap: `PlanInputBuilder` subtracts it,
+    `PageBandResolver.PaperBand` asks for gap 0). Avalonia once sent its screen band (210.43 vs 198.43
+    on the 편람), which pushed every flowed table's later rows 12 pt per page lower: 387 pages
+    against macOS's 391, 390 once fixed. The last page of that gap is text measurement (replaying
+    macOS's input with Avalonia's line boxes: 389), not the declared face — Avalonia already resolves
+    `KoPub바탕체 Light` to the installed KoPub Batang by name; only the uninstalled `KoPub돋움체` falls
+    back (Helvetica + bundled Noto, where macOS picks Apple SD Gothic Neo).
 
     **Reader quirks the plan reproduces on purpose**, because the counts were judged against the
     reader that had them: the grid FILING FLOOR of the old `orphanRunStarts` (a line moved to the

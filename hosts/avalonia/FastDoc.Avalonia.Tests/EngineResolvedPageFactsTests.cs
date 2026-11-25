@@ -89,6 +89,19 @@ public class EngineResolvedPageFactsTests
     }
 
     [Fact]
+    public void The_plan_reads_the_paper_band_without_the_desk_gap()
+    {
+        var geometry = PageGeometry.FromDocument(TreeOf(ParagraphsTree(PagedSpacingField)))!;
+        var screen = PageBandResolver.Resolve(IntPtr.Zero, geometry, geometry.ContentWidthPoints,
+            headersOn: true, footersOn: true, separatesPages: true, deskGapPoints: null).BandPoints;
+        var paper = PageBandResolver.PaperBand(IntPtr.Zero, geometry, geometry.ContentWidthPoints,
+            headersOn: true, footersOn: true);
+
+        Assert.Equal(60, paper, precision: 6);
+        Assert.Equal(72, screen, precision: 6);
+    }
+
+    [Fact]
     public void The_documents_own_paper_wins_over_the_first_sections()
     {
         // Section 0 is a cover with its own margins; the document-level paper is the body section's
