@@ -393,7 +393,7 @@ public class S10APageCellsTests
     /// PageLayout.Build/NonTextBlockHeightPoints) would collapse BOTH numbers below to the "before"
     /// value, since "after" would then equal "before" byte-for-byte.</summary>
     [Theory]
-    [InlineData("everything/GnBS_IM_20260401.docx", 32, 33)]
+    [InlineData("everything/GnBS_IM_20260401.docx", 35, 36)]
     public void Build_page_count_matches_the_exact_before_and_after_pair(
         string relPath, int expectedBefore, int expectedAfter)
     {

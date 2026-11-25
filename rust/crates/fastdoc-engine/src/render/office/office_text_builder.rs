@@ -2338,9 +2338,15 @@ impl OfficeTextBuilder {
         true
     }
 
-    /// swift: `OfficeTextBuilder.declaredFaceLineHeightRatio` — the line height Word gives a face
-    /// this machine may not draw with that face's own metrics, per declared family (invariant 163).
-    fn declared_face_line_height_ratio(family: &str) -> Option<f64> {
+    /// The line height Word gives a face, per DECLARED family, as a multiple of the character size —
+    /// the ONE statement of it: the render tree carries it per run (`wire::CharacterStyle.
+    /// line_height_floor_ratio`) and every host reads it from there. Word lays an East Asian-capable
+    /// face at 1.3× its ascent+descent box — measured from Word's own PDFs on four documents:
+    /// 맑은 고딕 (box 1.33) sets 9pt at 15.6, 11pt at 19.0, 12pt at 20.8, 15pt at 25.9; Arial Unicode
+    /// MS (box 1.34) sets 12pt single at 20.9 (invariant 163). Carried by name because the face a
+    /// host draws with may be a substitute with a different box (Apple SD Gothic Neo is 1.2×, so
+    /// every 맑은 고딕 line came out 30% short and a 60-page report fit in 44).
+    pub(crate) fn declared_face_line_height_ratio(family: &str) -> Option<f64> {
         match family {
             "맑은 고딕" | "Malgun Gothic" | "맑은 고딕 Semilight" | "Malgun Gothic Semilight" => Some(1.733),
             "Arial Unicode MS" => Some(1.742),

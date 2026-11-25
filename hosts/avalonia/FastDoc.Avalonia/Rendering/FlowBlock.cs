@@ -81,7 +81,8 @@ public sealed record FlowRun(
     int PageField = 0,
     bool Tab = false,
     double LetterSpacingPercent = 0,
-    long FootnoteRef = 0)
+    long FootnoteRef = 0,
+    double LineFloorRatio = 0)
 {
     /// <summary>The ONE place a run becomes Avalonia text properties, for the flow view, pagination,
     /// and table cells alike. <paramref name="fontSizePx"/> is the run's size at the caller's scale.
@@ -103,6 +104,15 @@ public sealed record FlowRun(
             foregroundBrush: run.Italic ? SyntheticItalic.Mark(foreground) : foreground,
             backgroundBrush: background, baselineAlignment: baseline);
     }
+
+    /// <summary>The run properties a paragraph's TextLayout takes as its DEFAULT: the larger of
+    /// <paramref name="current"/> and <paramref name="candidate"/> (the earlier on a tie). Avalonia
+    /// stands every line at least as tall as the default face's box at the default size, even a line
+    /// no run of that face lands on, so a default the paragraph never uses — a fixed "Inter" at the
+    /// document's 10 or 12pt — floored 8pt lines at 10pt Inter (16.1px against 10.7px). AppKit, the
+    /// other host, measures a line from the fonts on it alone.</summary>
+    internal static TextRunProperties Larger(TextRunProperties? current, TextRunProperties candidate)
+        => current is null || candidate.FontRenderingEmSize > current.FontRenderingEmSize ? candidate : current;
 }
 
 /// <summary>A paragraph's border box: the rule colour and width (points) shared by every drawn
@@ -190,6 +200,29 @@ public sealed class FlowBlock
     /// <summary>The paragraph's character size: its largest run, else the size the reader vouched
     /// for an empty paragraph — what the line model measures a below-the-glyphs gap against.</summary>
     public double CharSizePoints => Runs.Count > 0 ? Runs.Max(r => r.FontSizePoints) : BlankLineSizePoints;
+    /// <summary>The declared faces' line floor in points (invariant 163), from each run's
+    /// engine-resolved <see cref="FlowRun.LineFloorRatio"/>: the largest `size × ratio` over the
+    /// runs with text, or — for a blank paragraph — of its largest run (the paragraph mark the reader
+    /// vouched for). 0 when no run declares one. The line model decides where it applies.</summary>
+    public double FaceFloorPoints
+    {
+        get
+        {
+            static double Floor(FlowRun r) => r.LineFloorRatio > 0 ? System.Math.Round(r.FontSizePoints * r.LineFloorRatio * 100) / 100 : 0;
+            double floor = 0;
+            var anyText = false;
+            foreach (var r in Runs)
+            {
+                if (r.Text.Length == 0) { continue; }
+                anyText = true;
+                floor = System.Math.Max(floor, Floor(r));
+            }
+            if (anyText || Runs.Count == 0) { return floor; }
+            FlowRun? largest = null;
+            foreach (var r in Runs) { if (largest is null || r.FontSizePoints > largest.FontSizePoints) { largest = r; } }
+            return Floor(largest!);
+        }
+    }
     /// <summary>The paragraph's background fill (office `w:shd`, HWP paragraph shading) — painted
     /// across the full column behind the block's lines, like macOS's `paraShading`.</summary>
     public Color? ShadingColor { get; init; }

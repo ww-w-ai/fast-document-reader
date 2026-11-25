@@ -395,6 +395,9 @@ public sealed class CharacterStyleWire
     [JsonPropertyName("inlineCode")] public bool InlineCode { get; set; }
     [JsonPropertyName("underline")] public string? Underline { get; set; }
     [JsonPropertyName("declaredFontName")] public string? DeclaredFontName { get; set; }
+    /// <summary>`wire::CharacterStyle.lineHeightFloorRatio` — the declared face's line height as a
+    /// multiple of the run's size, resolved by the engine (invariant 163). Absent = no floor.</summary>
+    [JsonPropertyName("lineHeightFloorRatio")] public double? LineHeightFloorRatio { get; set; }
     [JsonPropertyName("fontFamilies")] public List<string> FontFamilies { get; set; } = new();
     [JsonPropertyName("fontSizePoints")] public double? FontSizePoints { get; set; }
     [JsonPropertyName("foreground")] public ColorWire? Foreground { get; set; }

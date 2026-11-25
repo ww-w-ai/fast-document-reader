@@ -364,6 +364,8 @@ struct WireCharacterStyle: Decodable {
     let underlineColor: WireColor?
     let strikethroughColor: WireColor?
     let declaredFontName: String?
+    /// Optional and additive (schema_version stays 1): absent from an older engine's tree.
+    let lineHeightFloorRatio: Double?
     let fontSizePoints: Double?
     let foreground: WireColor?
     let background: WireColor?

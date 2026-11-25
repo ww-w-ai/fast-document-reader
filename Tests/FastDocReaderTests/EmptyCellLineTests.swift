@@ -63,7 +63,7 @@ final class EmptyCellLineTests: XCTestCase {
     /// A docx paragraph mark carries a face: the line is the face's own — the declared ratio when
     /// it has one (맑은 고딕 at 9pt is 15.6, invariant 163), never the bare size.
     func testAMarkWithADeclaredFaceTakesThatFacesLine() throws {
-        let empty = Cell(blocks: [.paragraph(spans: [Span(text: "", fontSize: 9, fontName: "맑은 고딕")])])
+        let empty = Cell(blocks: [.paragraph(spans: [Span(text: "", fontSize: 9, fontName: "맑은 고딕", lineHeightFloorRatio: 1.733)])])
         let out = build([[empty]])
         let ps = try XCTUnwrap(out.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle)
         XCTAssertEqual(ps.minimumLineHeight, 15.6, accuracy: 0.01)

@@ -1023,6 +1023,7 @@ pub(super) fn character_style_colors(
         underline_color,
         strikethrough_color,
         declared_font_name: _,
+        line_height_floor_ratio: _,
         font_families: _,
         font_size_points: _,
         foreground,

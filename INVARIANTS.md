@@ -1946,10 +1946,20 @@ this file tells you why, and why the obvious alternative does not work.
     (d1's verifier re-measured this). d4 proves it is the face class, not the missing file: it
     declares Arial Unicode MS, which IS installed and whose box is 1.340, and Word lays its 12pt
     single line at 20.9 = 1.340 × 1.30 × 12, on Hangul-free lines too; this reader had 16.08. The
-    fix is carried by the DECLARED name: `Span.fontName` in a small table
-    (`OfficeTextBuilder.declaredFaceLineHeightRatio` — 맑은 고딕 family 1.733, Arial Unicode MS
-    1.742) stamps `MDAttr.declaredFaceLineRatio` on the run, and `applyDeclaredFaceLineHeight`
-    floors each paragraph at size × ratio × its own `lineHeightMultiple` — a floor only ever
+    fix is carried by the DECLARED name, and the ENGINE resolves it: one table
+    (`office_text_builder.rs` `declared_face_line_height_ratio` — 맑은 고딕 family 1.733, Arial
+    Unicode MS 1.742) sets the optional, additive `wire::CharacterStyle.lineHeightFloorRatio` per
+    non-code run (schema_version stays 1); macOS reads it into `Span.lineHeightFloorRatio`, which
+    stamps `MDAttr.declaredFaceLineRatio`, and `applyDeclaredFaceLineHeight` floors each paragraph
+    at size × ratio × its own `lineHeightMultiple`; Avalonia sends the paragraph's
+    `FlowBlock.FaceFloorPoints` as `ParagraphFacts.faceFloor` and the engine's line model
+    (`line_model.rs` `face_floor`) applies the same floor where macOS does: a body paragraph with
+    text, and in a cell only a blank paragraph (`emptyCellLine`) — macOS's `cellContent` gives a
+    cell's text lines no face floor, so neither does the line model. The Swift oracle readers carry
+    no ratio, so `FMD_DIFF_CORPUS`'s ORACLE sheet column drops on every 맑은 고딕 document (Zero100
+    132 → 101, 덕소5B 49 → 46, GnBS 29 → 27, OpenAPI 17 → 16) while the engine column is unchanged —
+    the oracle is a structure oracle, not a typography one. There is no Swift copy of the table — a host that
+    wants the rule reads the tree. A floor only ever
     raised, never over an exact height, and never on a paragraph whose spacing sits below the
     glyphs (HWP's `lineSpacingBelow`, invariant 161, whose pitch is the document's own). The table
     is deliberately a table and not "any font that covers Hangul": Apple SD Gothic Neo covers Hangul
@@ -3166,13 +3176,20 @@ this file tells you why, and why the obvious alternative does not work.
     1.125 em there (TextKit's multiple drops the face's leading), and macOS's list items in cells
     lose their 1.15 multiple. A list marker is now measured at its item's size
     (`FlowDocumentBuilder.MarkerAtItemSize`; it was the document's 10 pt default, standing 8 pt items
-    at 10 pt). Both TextLayout builds also floor every line at a default face no run uses (Inter at
-    the document's default size, `PageLayout.BuildTextLayout` and `TableGridRenderer.BuildParagraph`);
-    measuring from the runs alone gives 덕소5B 59 but moves OpenAPI 17 → 16 and Zero100 103 → 100
-    (macOS 19 and 132), because that floor stands in for the declared-face line height macOS applies
-    (invariant 163, 1.733 em for `맑은 고딕`: body lines, and the OpenAPI guide's 10 pt cell lines at
-    18) and Avalonia does not. The RenderTree carries no such floor, so it stays until that
-    typography decision reaches Avalonia as an engine output.
+    at 10 pt). The declared-face line floor (invariant 163) now reaches Avalonia as an engine output
+    (`lineHeightFloorRatio` per run, applied by the line model), and a cell's lines take the
+    document's line grid as macOS's `cellContent` does (`TableGridModel.LineGridPitchPoints`; the
+    OpenAPI guide's 10 pt cell lines stand at its 18 pt grid on both hosts — it was the grid, not
+    the face). With both, `TableGridRenderer.BuildParagraph` measures from its runs alone (its
+    TextLayout default is the largest run, `FlowRun.Larger`; the old fixed Inter default at the
+    document's size floored 8 pt lines at 10 pt Inter). Avalonia → macOS after this change:
+    Zero100 103 → 132 (132), 덕소5B 60 → 59 (59), GnBS 31 → 32 (32), OpenAPI 17 → 20 (19). One
+    document moved away: `s9-picture-crop.hwp` 29 → 28 (macOS 31), caused by the runs-only cell
+    default alone (with the old default it stays 29; Inter at the largest run's size gives 28 too,
+    so it is the default SIZE, not the face) — an HWP cell line measured at its runs' size where
+    something on macOS still stands it taller; not yet charged to a field.
+    `PageLayout.BuildTextLayout` still uses the Inter/12 pt default for body text (runs-only there
+    moved Zero100 down before the face floor existed; not re-measured).
 
     **Reader quirks the plan reproduces on purpose**, because the counts were judged against the
     reader that had them: the grid FILING FLOOR of the old `orphanRunStarts` (a line moved to the

@@ -775,6 +775,7 @@ private final class Projector {
         span.strikethroughColor = run.style.strikethroughColor?.color
         span.fontSize = run.style.fontSizePoints.map { CGFloat($0) }
         span.fontName = run.style.declaredFontName
+        span.lineHeightFloorRatio = run.style.lineHeightFloorRatio.map { CGFloat($0) }
         span.pageNumberField = run.pageNumberField.map(RenderTreeOfficeAdapter.pageNumberFieldBack)
         return span
     }

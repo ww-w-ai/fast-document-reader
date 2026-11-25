@@ -19,6 +19,7 @@ use super::wire;
 use super::{DecodeError, DocumentFormat, RenderTreeBuilder, ValidatedRenderTree};
 use crate::render::office::column_geometry::OfficeColumnLayout;
 use crate::render::office::hwp_shape_path::{PathCommand as HwpPathCommand, PathSpec, VectorGraphic};
+use crate::render::office::office_text_builder::OfficeTextBuilder;
 use crate::render::office::office_block::{
     self, BorderDecl, BorderSide, Cell, CellVAlign, EdgeBorders, EdgePadding, OfficeBlock,
     OfficeComment, OfficeFootnote, OfficeFormControl, OfficeHeaderFooter, OfficeReadResult,
@@ -1587,6 +1588,14 @@ fn convert_text_run(span: &Span) -> wire::TextRun {
                 None
             },
             declared_font_name: span.font_name.as_ref().map(|s| s.to_string()),
+            // A code run never takes its family (`Span.fontName`'s doc), so never its floor.
+            line_height_floor_ratio: if span.code {
+                None
+            } else {
+                span.font_name
+                    .as_ref()
+                    .and_then(|name| OfficeTextBuilder::declared_face_line_height_ratio(&name.to_string()))
+            },
             font_families: vec![],
             // ONLY what this run declared. Stamping the document's default here made a run that
             // stated 11pt and a run that inherited 11pt the same bytes, and the reverse projection
@@ -2163,6 +2172,17 @@ mod tests {
             ),
             "a NaN paragraph metric must stop canonicalization, not become a number"
         );
+    }
+
+    /// Invariant 163: the declared face's line floor is the ENGINE's to resolve, per run, so every
+    /// host applies the same rule; a face with no rule and a code run carry none.
+    #[test]
+    fn a_run_carries_its_declared_faces_line_floor_ratio() {
+        let run = |name: &str, code: bool| Span { text: "x".into(), font_name: Some(name.into()), code, ..Span::default() };
+        assert_eq!(convert_text_run(&run("맑은 고딕", false)).style.line_height_floor_ratio, Some(1.733));
+        assert_eq!(convert_text_run(&run("Arial Unicode MS", false)).style.line_height_floor_ratio, Some(1.742));
+        assert_eq!(convert_text_run(&run("Times New Roman", false)).style.line_height_floor_ratio, None);
+        assert_eq!(convert_text_run(&run("맑은 고딕", true)).style.line_height_floor_ratio, None);
     }
 
     /// The tree must keep the two facts APART: what the document's default is, and what each run

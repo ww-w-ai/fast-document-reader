@@ -604,8 +604,8 @@ enum OfficeTextBuilder {
             } else if let name = span.fontName {
                 // Family override — never applied to a `code` span (see `Span.fontName`'s doc).
                 // The DECLARED face's line ratio travels with the run even when the face is
-                // absent and a substitute draws it (invariant 163).
-                if let ratio = declaredFaceLineHeightRatio[name] {
+                // absent and a substitute draws it (invariant 163); the engine resolved it.
+                if let ratio = span.lineHeightFloorRatio {
                     attrs[MDAttr.declaredFaceLineRatio] = ratio
                 }
                 if let named = NSFont(name: name, size: font.pointSize) { font = named }
@@ -1866,11 +1866,12 @@ enum OfficeTextBuilder {
         var font = baseFont
         if let declared = spans.compactMap(\.fontSize).max() {
             let size = max(1, declared * fontSizeScale)
-            let face = spans.first { $0.fontSize == declared }?.fontName
+            let vouched = spans.first { $0.fontSize == declared }
+            let face = vouched?.fontName
             font = face.flatMap { NSFont(name: $0, size: size) }
                 ?? NSFont(descriptor: baseFont.fontDescriptor, size: size) ?? baseFont
-            if let face {
-                if m.maximumLineHeight == 0, let ratio = declaredFaceLineHeightRatio[face] {
+            if face != nil {
+                if m.maximumLineHeight == 0, let ratio = vouched?.lineHeightFloorRatio {
                     let natural = ((size * ratio) * 100).rounded() / 100
                     m.minimumLineHeight = max(m.minimumLineHeight, natural * max(1, m.lineHeightMultiple))
                 }
@@ -1943,19 +1944,6 @@ enum OfficeTextBuilder {
         m.lineSpacing = gap
         if dropsTrailingGap { m.paragraphSpacing -= gap }
     }
-
-    /// The line height Word gives a face, per DECLARED family, as a multiple of the character
-    /// size. Word lays an East Asian-capable face at 1.3× its ascent+descent box — measured from
-    /// Word's own PDFs on four documents: 맑은 고딕 (box 1.33) sets 9pt at 15.6, 11pt at 19.0,
-    /// 12pt at 20.8, 15pt at 25.9; Arial Unicode MS (box 1.34) sets 12pt single at 20.9
-    /// (invariant 163). Carried by name because the face this machine draws with may be a
-    /// substitute with a different box (Apple SD Gothic Neo is 1.2×, so every 맑은 고딕 line came
-    /// out 30% short and a 60-page report fit in 44).
-    static let declaredFaceLineHeightRatio: [String: CGFloat] = [
-        "맑은 고딕": 1.733, "Malgun Gothic": 1.733,
-        "맑은 고딕 Semilight": 1.733, "Malgun Gothic Semilight": 1.733,
-        "Arial Unicode MS": 1.742,
-    ]
 
     /// Floors every paragraph from `start` at the declared face's line height (times the
     /// paragraph's own multiple), for paragraphs whose runs carry `MDAttr.declaredFaceLineRatio`.

@@ -21,6 +21,8 @@ internal sealed class ParagraphFactsIn
     public double SpacingBefore { get; init; }
     public double SpacingAfter { get; init; }
     public bool LineSpacingBelow { get; init; }
+    /// <summary>The declared faces' line floor (invariant 163), scaled like every other length.</summary>
+    public double FaceFloor { get; init; }
 
     /// <summary>The facts for a text block whose natural line boxes are <paramref name="lines"/>
     /// (one entry for a blank paragraph: the natural box of a line of its own size), in the unit
@@ -37,6 +39,7 @@ internal sealed class ParagraphFactsIn
         SpacingBefore = block.SpacingBeforePoints * scale,
         SpacingAfter = block.SpacingAfterPoints * scale,
         LineSpacingBelow = block.LineSpacingBelow,
+        FaceFloor = block.FaceFloorPoints * scale,
     };
 }
 
@@ -162,6 +165,7 @@ internal static class LineModelClient
         if (p.SpacingBefore != 0) { w.WriteNumber("spacingBefore", p.SpacingBefore); }
         if (p.SpacingAfter != 0) { w.WriteNumber("spacingAfter", p.SpacingAfter); }
         if (p.LineSpacingBelow) { w.WriteBoolean("lineSpacingBelow", true); }
+        if (p.FaceFloor > 0) { w.WriteNumber("faceFloor", p.FaceFloor); }
         w.WriteEndObject();
     }
 

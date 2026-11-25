@@ -136,6 +136,10 @@ struct Span: Equatable {
     /// color" reasoning) — letting an authored family override it would make some code spans
     /// inconsistent with others for no reason a reader would understand.
     var fontName: String? = nil
+    /// The line height Word gives the DECLARED face, as a multiple of this run's size — resolved by
+    /// the engine (`wire::CharacterStyle.lineHeightFloorRatio`, invariant 163). `nil` for a face with
+    /// no such rule, and for every span a Swift oracle reader produces.
+    var lineHeightFloorRatio: CGFloat? = nil
     /// The SUBSTITUTE font's `NSFontDescriptor`, resolved ONCE at read time by
     /// `FontSubstitutionResolver` and never touched again.
     ///

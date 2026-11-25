@@ -86,6 +86,9 @@ public sealed class TableGridModel
     /// `defaultFontSize`, threaded in by FlowDocumentBuilder.BuildTable) — an empty cell's line
     /// height is ONE LINE OF ITS OWN SIZE (INVARIANTS.md 169), never a hardcoded 12/14pt guess.</summary>
     public double DefaultBodyFontSizePoints { get; init; } = 12.0;
+    /// <summary>The document's line grid (`wire::Document.lineGridPoints`), a floor under every cell
+    /// line as under a body line. Set once the whole tree is known (`FlowDocumentBuilder.Build`).</summary>
+    public double? LineGridPitchPoints { get; set; }
 }
 
 /// <summary>Draws a <see cref="TableGridModel"/> as a real cell grid: column widths distributed by
@@ -121,7 +124,6 @@ public static class TableGridRenderer
     public const double DefaultCellPaddingPoints = 7.0;
     private const double DefaultBorderWidthPx = 0.75;
     private static readonly IBrush DefaultBorderBrush = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99));
-    private static readonly Typeface DefaultTypeface = new("Inter");
 
     /// <summary>One edge of a cell's padding cascade, in POINTS — mirrors `OfficeTextBuilder.
     /// swift`'s PAGED branch exactly (`TableBlockBuilder.resolvedPagedPadding`, verified 2026-09-05
@@ -658,7 +660,8 @@ public static class TableGridRenderer
                 order.Add(cell);
             }
         }
-        var (_, tables) = LineModelClient.Solve(null, Array.Empty<ParagraphFactsIn>(), new[] { facts });
+        var grid = model.LineGridPitchPoints is { } pitch and > 0 ? pitch * fontScale * PointsToPixels : (double?)null;
+        var (_, tables) = LineModelClient.Solve(grid, Array.Empty<ParagraphFactsIn>(), new[] { facts });
         var answer = tables[0];
         var cells = new Dictionary<TableGridCell, CellLayoutOut>(order.Count);
         for (var i = 0; i < order.Count; i++) { cells[order[i]] = answer.Cells[i]; }
@@ -759,24 +762,23 @@ public static class TableGridRenderer
         var text = new System.Text.StringBuilder();
         var overrides = new List<ValueSpan<TextRunProperties>>();
         var cursor = 0;
-        // Bootstrap only — every run below overwrites this with its OWN declared size the moment
-        // one exists. The document's own default body size, never a bare "12".
-        var maxFontSizePx = model.DefaultBodyFontSizePoints * scale;
+        // The paragraph's default properties are its LARGEST run's own face and size (see
+        // `FlowRun.Larger`) — a default no run uses would floor every line at its box.
+        TextRunProperties? largest = null;
         foreach (var run in block.Runs)
         {
             if (run.Text.Length == 0) { continue; }
             text.Append(run.Text);
-            var fontSizePx = run.FontSizePoints * scale;
-            if (fontSizePx > maxFontSizePx) { maxFontSizePx = fontSizePx; }
-            overrides.Add(new ValueSpan<TextRunProperties>(cursor, run.Text.Length,
-                FlowRun.PropertiesFor(run, fontSizePx, new SolidColorBrush(run.Foreground))));
+            var properties = FlowRun.PropertiesFor(run, run.FontSizePoints * scale, new SolidColorBrush(run.Foreground));
+            largest = FlowRun.Larger(largest, properties);
+            overrides.Add(new ValueSpan<TextRunProperties>(cursor, run.Text.Length, properties));
             cursor += run.Text.Length;
         }
-        if (text.Length == 0)
+        if (text.Length == 0 || largest is null)
         {
             return (null, new[] { Paging.PageLayout.NaturalLineHeight(Math.Max(1, block.BlankLineSizePoints * scale)) }, true);
         }
-        var layout = new TextLayout(text.ToString(), DefaultTypeface, maxFontSizePx, Brushes.Black, block.Alignment,
+        var layout = new TextLayout(text.ToString(), largest.Typeface, largest.FontRenderingEmSize, Brushes.Black, block.Alignment,
             TextWrapping.Wrap, maxWidth: Math.Max(10, width),
             letterSpacing: block.LetterSpacingPoints * scale, textStyleOverrides: overrides);
         var lines = new double[layout.TextLines.Count];

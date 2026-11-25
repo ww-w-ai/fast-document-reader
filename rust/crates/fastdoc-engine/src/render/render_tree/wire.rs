@@ -445,6 +445,12 @@ pub struct CharacterStyle {
     pub strikethrough_color: Option<Color>,
     #[serde(default)]
     pub declared_font_name: Option<String>,
+    /// The line height Word gives the DECLARED face, as a multiple of this run's size: a line
+    /// carrying this run stands at least `size × ratio` (× the paragraph's own multiple, when the
+    /// paragraph's rule is not exact). Resolved here by family name because the host may draw a
+    /// substitute with a different box (invariant 163). Absent for a face with no such rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_height_floor_ratio: Option<f64>,
     #[serde(default)]
     pub font_families: Vec<String>,
     #[serde(default)]

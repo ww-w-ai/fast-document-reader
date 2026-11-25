@@ -85,6 +85,11 @@ pub struct ParagraphFacts {
     /// HWP: the pitch is `size + spacing`, glyphs at the top of the box (161e).
     #[serde(default)]
     pub line_spacing_below: bool,
+    /// The declared faces' line floor (invariant 163): the largest `size × lineHeightFloorRatio`
+    /// over the paragraph's text runs, or — for a blank cell paragraph — of the run the reader
+    /// vouched for. `0` when no run declares one. See `face_floor` for when it applies.
+    #[serde(default)]
+    pub face_floor: f64,
 }
 
 /// A paragraph's lines after the document's own rules.
@@ -129,10 +134,27 @@ pub fn place_paragraph(p: &ParagraphFacts, grid: Option<f64>, in_cell: bool, dro
     }
     let rule = p.rule;
     let natural = |i: usize| p.lines.get(i).copied().unwrap_or(0.0);
+    let face = face_floor(p, in_cell);
     let heights = (0..count)
-        .map(|i| floor(match rule { Some(r) => r.apply(natural(i)), None => natural(i) }))
+        .map(|i| floor(match rule { Some(r) => r.apply(natural(i)), None => natural(i) }.max(face)))
         .collect();
     PlacedParagraph { heights, trailing: 0.0 }
+}
+
+/// The floor a declared face puts under every line of `p` (invariant 163), the way macOS's
+/// `OfficeTextBuilder` raises `minimumLineHeight`: `face_floor × max(1, multiple)`; nothing under an
+/// exact rule or HWP's below-the-glyphs pitch. In the body it floors a paragraph with text
+/// (`applyDeclaredFaceLineHeight`); in a cell only a blank paragraph, the empty line whose face the
+/// reader vouched for (`emptyCellLine`) — macOS's cell content takes no face floor on its text lines.
+fn face_floor(p: &ParagraphFacts, in_cell: bool) -> f64 {
+    if p.face_floor <= 0.0 || p.line_spacing_below || p.blank != in_cell {
+        return 0.0;
+    }
+    match p.rule {
+        Some(Rule { mode: RuleMode::Exact, .. }) => 0.0,
+        Some(Rule { mode: RuleMode::Multiple, value }) => p.face_floor * value.max(1.0),
+        _ => p.face_floor,
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -282,6 +304,7 @@ fn check_paragraph(p: &ParagraphFacts) -> Result<(), LineModelError> {
     finite(p.char_size, "a character size")?;
     finite(p.spacing_before, "a spacing")?;
     finite(p.spacing_after, "a spacing")?;
+    finite(p.face_floor, "a face floor")?;
     if let Some(rule) = p.rule {
         finite(rule.value, "a line-height rule")?;
     }
@@ -437,6 +460,7 @@ mod tests {
             spacing_before: 0.0,
             spacing_after: 0.0,
             line_spacing_below: below,
+            face_floor: 0.0,
         }
     }
     fn at_least(v: f64) -> Option<Rule> {
@@ -472,6 +496,34 @@ mod tests {
         assert_eq!(place_paragraph(&plain, None, false, false).heights, vec![16.0, 16.0, 16.0]);
         let tall = para(&[18.0], at_least(16.0), 10.0, false);
         assert_eq!(place_paragraph(&tall, None, false, false).heights, vec![18.0]);
+    }
+
+    #[test]
+    fn a_declared_face_floors_its_lines_by_the_paragraphs_multiple_but_not_an_exact_rule() {
+        // 맑은 고딕 at 9pt: 15.6 per line whatever the substitute's natural box (invariant 163).
+        let mut p = para(&[10.5, 10.5], None, 9.0, false);
+        p.face_floor = 15.6;
+        assert_eq!(place_paragraph(&p, None, false, false).heights, vec![15.6, 15.6]);
+        p.rule = Some(Rule { mode: RuleMode::Multiple, value: 1.5 });
+        let h = place_paragraph(&p, None, false, false).heights;
+        assert!((h[0] - 23.4).abs() < 1e-9, "{h:?}");
+        p.rule = at_least(20.0);
+        assert_eq!(place_paragraph(&p, None, false, false).heights, vec![20.0, 20.0]);
+        p.rule = Some(Rule { mode: RuleMode::Exact, value: 12.0 });
+        assert_eq!(place_paragraph(&p, None, false, false).heights, vec![12.0, 12.0]);
+        // HWP's below-the-glyphs pitch is the document's own, not a face's.
+        let mut hwp = para(&[10.5], at_least(14.0), 9.0, true);
+        hwp.face_floor = 15.6;
+        assert_eq!(place_paragraph(&hwp, None, false, true).heights, vec![9.0]);
+        // A cell's text lines take none (macOS's cell content has no face floor) ...
+        p.rule = None;
+        assert_eq!(place_paragraph(&p, None, true, false).heights, vec![10.5, 10.5]);
+        // ... and a blank paragraph takes it only in a cell.
+        let mut blank = para(&[10.5], None, 9.0, false);
+        blank.blank = true;
+        blank.face_floor = 15.6;
+        assert_eq!(place_paragraph(&blank, None, false, false).heights, vec![10.5]);
+        assert_eq!(place_paragraph(&blank, None, true, false).heights, vec![15.6]);
     }
 
     #[test]

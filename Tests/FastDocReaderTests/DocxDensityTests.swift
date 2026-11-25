@@ -152,6 +152,7 @@ final class DocxDensityTests: XCTestCase {
         XCTAssertEqual(spans.map(\.text), [""], "one text-less run")
         XCTAssertEqual(spans.first?.fontSize, 9)
         XCTAssertEqual(spans.first?.fontName, "맑은 고딕")
+        XCTAssertEqual(spans.first?.lineHeightFloorRatio, 1.733, "the engine resolves the face's floor (invariant 163)")
         XCTAssertEqual(t.rows[0][1].blocks.count, 0, "marks alone do not make a cell non-blank")
     }
 
@@ -245,9 +246,9 @@ final class DocxDensityTests: XCTestCase {
         var multiple = ParagraphFormat(); multiple.lineHeight = .multiple(1.15)
         var exact = ParagraphFormat(); exact.lineHeight = .exact(12)
         let blocks: [OfficeBlock] = [
-            .paragraph(spans: [Span(text: "맑은 고딕 9pt", fontSize: 9, fontName: "맑은 고딕")], format: single),
-            .paragraph(spans: [Span(text: "배수 1.15", fontSize: 9, fontName: "Malgun Gothic")], format: multiple),
-            .paragraph(spans: [Span(text: "고정 12", fontSize: 9, fontName: "맑은 고딕")], format: exact),
+            .paragraph(spans: [Span(text: "맑은 고딕 9pt", fontSize: 9, fontName: "맑은 고딕", lineHeightFloorRatio: 1.733)], format: single),
+            .paragraph(spans: [Span(text: "배수 1.15", fontSize: 9, fontName: "Malgun Gothic", lineHeightFloorRatio: 1.733)], format: multiple),
+            .paragraph(spans: [Span(text: "고정 12", fontSize: 9, fontName: "맑은 고딕", lineHeightFloorRatio: 1.733)], format: exact),
             .paragraph(spans: [Span(text: "다른 글꼴", fontSize: 9, fontName: "Helvetica")], format: single),
         ]
         // PAGED: on paper every line is the document's own size, not the theme's reading floor.

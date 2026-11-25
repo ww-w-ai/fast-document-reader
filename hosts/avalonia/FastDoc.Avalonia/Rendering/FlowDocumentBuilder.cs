@@ -76,7 +76,26 @@ public static class FlowDocumentBuilder
         {
             ApplyPagedSpacing(blocks, Math.Max(0, pagedGap));
         }
+        if (tree.Document.LineGridPoints is { } grid and > 0)
+        {
+            ApplyCellLineGrid(blocks, grid);
+        }
         return blocks;
+    }
+
+    /// <summary>The document's line grid floors a cell's lines too, as macOS's `cellContent` passes
+    /// `lineGridPitch` to every cell paragraph's style. Walks nested tables.</summary>
+    private static void ApplyCellLineGrid(IEnumerable<FlowBlock> blocks, double grid)
+    {
+        foreach (var block in blocks)
+        {
+            if (block.Table is null) { continue; }
+            block.Table.LineGridPitchPoints = grid;
+            foreach (var row in block.Table.Rows)
+            {
+                foreach (var cell in row.Cells) { ApplyCellLineGrid(cell.Content, grid); }
+            }
+        }
     }
 
     /// <summary>A paged document supplies no rhythm of its own (invariant 57): every block whose
@@ -808,6 +827,11 @@ public static class FlowDocumentBuilder
         var spacing = (style.LetterSpacingPercent ?? 0) + WidthScaleAsSpacingPercent(text, style.WidthScalePercent);
         var firstNew = runs.Count;
         AddTextRunCore(runs, tr, style, text, family, size, script, background, pageField, spacing, boldDefault);
+        // The declared face's line floor, as the engine resolved it (invariant 163).
+        if (!style.InlineCode && style.LineHeightFloorRatio is { } ratio and > 0)
+        {
+            for (var i = firstNew; i < runs.Count; i++) { runs[i] = runs[i] with { LineFloorRatio = ratio }; }
+        }
         // The run that IS a footnote's in-body marker: tagged so page mode can find the page it lands on.
         if (tr.FootnoteReferenceNumber is { } note)
         {
