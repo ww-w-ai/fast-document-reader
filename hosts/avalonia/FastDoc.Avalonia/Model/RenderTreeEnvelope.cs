@@ -714,6 +714,12 @@ public sealed class TableStyleWire
     /// own — `TableBlockBuilder.defaultCellPadding`'s cascade, one step up (7pt is the FLOOR
     /// past this, not carried on the wire itself — see <see cref="TableCellPayload"/>'s own doc).</summary>
     [JsonPropertyName("defaultPadding")] public OptionalInsetsWire? DefaultPadding { get; set; }
+    /// <summary>wire::TableStyle.sourceWidthPoints — the width the document authored the table at; a
+    /// paged table is laid out no wider (macOS `TableFormat.sourceWidth`).</summary>
+    [JsonPropertyName("sourceWidthPoints")] public double? SourceWidthPoints { get; set; }
+    /// <summary>wire::TableStyle.outerMargin — the table's own margin; its left and right narrow the
+    /// grid (macOS `GridTextTable.outerMarginLeft/Right`).</summary>
+    [JsonPropertyName("outerMargin")] public OptionalInsetsWire? OuterMargin { get; set; }
 }
 
 public sealed class TablePayload

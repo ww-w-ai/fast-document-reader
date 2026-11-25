@@ -89,6 +89,13 @@ public sealed class TableGridModel
     /// <summary>The document's line grid (`wire::Document.lineGridPoints`), a floor under every cell
     /// line as under a body line. Set once the whole tree is known (`FlowDocumentBuilder.Build`).</summary>
     public double? LineGridPitchPoints { get; set; }
+    /// <summary>The width the document authored the table at, in points: the grid is never laid out
+    /// wider (null = none declared, the column's width).</summary>
+    public double? SourceWidthPoints { get; init; }
+    /// <summary>The table's own left/right outer margin, in points: the grid starts the left one in
+    /// and is narrowed by both.</summary>
+    public double OuterMarginLeftPoints { get; init; }
+    public double OuterMarginRightPoints { get; init; }
 }
 
 /// <summary>Draws a <see cref="TableGridModel"/> as a real cell grid: column widths distributed by
@@ -146,12 +153,16 @@ public static class TableGridRenderer
 
     /// <summary>Top+bottom padding for one cell, in PIXELS (points * <see cref="PointsToPixels"/> —
     /// padding is NOT scaled by fontScale, matching the pre-E2c-2c fixed constant's behaviour, so
-    /// zoom multiplies text alone here).</summary>
+    /// zoom multiplies text alone here). This and the three insets below are padding PLUS the
+    /// border the cell owns (<see cref="BorderSpace"/>): macOS's `NSTextTableBlock` reserves a
+    /// border's width inside the cell, so a ruled row stands taller and its text column narrower by
+    /// the rules it draws (`PlanInputBuilder.inset`).</summary>
     private static double VerticalPaddingPx(TableGridCell cell, TableGridModel model)
     {
         var top = ResolvePaddingEdgePoints(cell.EdgePadding?.Top, model.DefaultPadding?.Top);
         var bottom = ResolvePaddingEdgePoints(cell.EdgePadding?.Bottom, model.DefaultPadding?.Bottom);
-        return (top + bottom) * PointsToPixels;
+        var border = BorderSpace(cell, model);
+        return (top + bottom + border.Top + border.Bottom) * PointsToPixels;
     }
 
     /// <summary>Left+right padding for one cell, in PIXELS — see <see cref="VerticalPaddingPx"/>.</summary>
@@ -159,19 +170,132 @@ public static class TableGridRenderer
     {
         var left = ResolvePaddingEdgePoints(cell.EdgePadding?.Left, model.DefaultPadding?.Left);
         var right = ResolvePaddingEdgePoints(cell.EdgePadding?.Right, model.DefaultPadding?.Right);
-        return (left + right) * PointsToPixels;
+        var border = BorderSpace(cell, model);
+        return (left + right + border.Left + border.Right) * PointsToPixels;
     }
 
     /// <summary>Top padding alone, in PIXELS — for the draw-time text origin (only the top edge
     /// offsets where the glyph run starts; the bottom edge only ever affects the row's total
     /// height, via <see cref="VerticalPaddingPx"/>).</summary>
     private static double TopPaddingPx(TableGridCell cell, TableGridModel model) =>
-        ResolvePaddingEdgePoints(cell.EdgePadding?.Top, model.DefaultPadding?.Top) * PointsToPixels;
+        (ResolvePaddingEdgePoints(cell.EdgePadding?.Top, model.DefaultPadding?.Top) + BorderSpace(cell, model).Top) * PointsToPixels;
 
     /// <summary>Left padding alone, in PIXELS — for the draw-time text origin's x offset (see
     /// <see cref="TopPaddingPx"/>).</summary>
     private static double LeftPaddingPx(TableGridCell cell, TableGridModel model) =>
-        ResolvePaddingEdgePoints(cell.EdgePadding?.Left, model.DefaultPadding?.Left) * PointsToPixels;
+        (ResolvePaddingEdgePoints(cell.EdgePadding?.Left, model.DefaultPadding?.Left) + BorderSpace(cell, model).Left) * PointsToPixels;
+
+    /// <summary>The longest cell text that may surrender right padding (`MAX_RELIEVED_TOKEN_LENGTH`).</summary>
+    private const int MaxRelievedTokenLength = 12;
+
+    /// <summary>The width a cell's content wraps at, in PIXELS: its span less padding and owned
+    /// borders, plus macOS's one-token relief (`TableBlockBuilder.oneTokenPaddingRelief`): a cell
+    /// holding ONE short unbreakable token (`44.`, `가.`) that does not fit gives back right padding by
+    /// exactly what the token misses, rather than break it. Measure, draw and plan all ask here.</summary>
+    private static double ContentWidthPx(TableGridCell cell, TableGridModel model, double spanWidthPx, double fontScale)
+    {
+        var width = spanWidthPx - HorizontalPaddingPx(cell, model);
+        var right = ResolvePaddingEdgePoints(cell.EdgePadding?.Right, model.DefaultPadding?.Right) * PointsToPixels;
+        if (right > 0 && width > 0 && cell.Content is [{ Kind: FlowBlockKind.Text } block])
+        {
+            var text = string.Concat(System.Linq.Enumerable.Select(block.Runs, r => r.Text));
+            var token = text.Trim();
+            if (text.Length <= MaxRelievedTokenLength && token.Length > 0 && !System.Linq.Enumerable.Any(token, char.IsWhiteSpace))
+            {
+                var scale = fontScale * PointsToPixels;
+                var indent = Math.Max(0, Math.Max(block.IndentPoints, block.IndentPoints + block.FirstLineOffsetPoints)) * scale;
+                var usable = width - indent;
+                var (layout, _, _) = BuildParagraph(block, 1e6, fontScale, model);
+                if (layout is not null && layout.TextLines.Count > 0)
+                {
+                    var needed = Math.Ceiling(layout.TextLines[0].Width / PointsToPixels) * PointsToPixels;
+                    if (needed > usable)
+                    {
+                        var kept = Math.Floor(Math.Max(0, right - (needed - usable)) / PointsToPixels) * PointsToPixels;
+                        width += right - kept;
+                    }
+                }
+            }
+        }
+        return Math.Max(10, width);
+    }
+
+    private readonly record struct Edges(double Top, double Right, double Bottom, double Left);
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<TableGridModel, Dictionary<TableGridCell, Edges>>
+        BorderSpaces = new();
+
+    /// <summary>The border width, in POINTS, each edge of <paramref name="cell"/> reserves inside it —
+    /// macOS's ownership (`TableBlockBuilder.build`, Step C): a cell owns its left edge only in the
+    /// first column and its top edge only in the first row; its right and bottom edges carry the
+    /// wider of its own declaration and every neighbour's across that boundary (the table's last
+    /// column and row, its own). Each owned width is rounded UP to a whole point, as AppKit lays a
+    /// rule out (`laidOutBorderWidth`). Where the borders are drawn is unchanged.</summary>
+    private static Edges BorderSpace(TableGridCell cell, TableGridModel model)
+    {
+        var map = BorderSpaces.GetValue(model, BuildBorderSpaces);
+        return map.TryGetValue(cell, out var edges) ? edges : default;
+    }
+
+    private static Dictionary<TableGridCell, Edges> BuildBorderSpaces(TableGridModel model)
+    {
+        var rows = model.Rows.Count;
+        var columns = Math.Max(1, model.ColumnCount);
+        var grid = new TableGridCell?[rows, columns];
+        var place = new Dictionary<TableGridCell, (int Row, int Column, int RowSpan, int ColumnSpan)>();
+        for (var r = 0; r < rows; r++)
+        {
+            foreach (var cell in model.Rows[r].Cells)
+            {
+                var c0 = (int)cell.Column;
+                if (c0 < 0 || c0 >= columns) { continue; }
+                var rs = (int)Math.Min(Math.Max(1, cell.RowSpan), rows - r);
+                var cs = (int)Math.Min(Math.Max(1, cell.ColumnSpan), columns - c0);
+                place[cell] = (r, c0, rs, cs);
+                for (var dr = 0; dr < rs; dr++)
+                {
+                    for (var dc = 0; dc < cs; dc++) { grid[r + dr, c0 + dc] ??= cell; }
+                }
+            }
+        }
+        // The declared width through ResolveEdge's cascade, without the 0.5 px hairline floor drawing
+        // applies: a rule declared 0 wide reserves nothing.
+        double Width(TableGridCell c, Func<BorderSetWire, BorderDeclarationWire?> pick)
+        {
+            var cellEdge = c.EdgeBorders is null ? null : pick(c.EdgeBorders);
+            if (cellEdge is not null) { return cellEdge.IsSuppressed ? 0 : cellEdge.Value?.WidthPoints ?? 0; }
+            if (c.UniformBorder is not null) { return c.UniformBorder.WidthPoints ?? 0.75; }
+            var tableEdge = model.TableEdgeBorders is null ? null : pick(model.TableEdgeBorders);
+            if (tableEdge is not null) { return tableEdge.IsSuppressed ? 0 : tableEdge.Value?.WidthPoints ?? 0; }
+            if (model.DefaultUniformBorder is not null) { return model.DefaultUniformBorder.WidthPoints ?? 0.75; }
+            return DefaultBorderWidthPx / PointsToPixels;
+        }
+        static double LaidOut(double width) => width > 0 ? Math.Ceiling(width - 1e-9) : 0;
+        var result = new Dictionary<TableGridCell, Edges>(place.Count);
+        foreach (var (cell, p) in place)
+        {
+            var left = p.Column == 0 ? Width(cell, e => e.Left) : 0;
+            var top = p.Row == 0 ? Width(cell, e => e.Top) : 0;
+            var right = Width(cell, e => e.Right);
+            if (p.Column + p.ColumnSpan < columns)
+            {
+                for (var r = p.Row; r < p.Row + p.RowSpan; r++)
+                {
+                    if (grid[r, p.Column + p.ColumnSpan] is { } n && n != cell) { right = Math.Max(right, Width(n, e => e.Left)); }
+                }
+            }
+            var bottom = Width(cell, e => e.Bottom);
+            if (p.Row + p.RowSpan < rows)
+            {
+                for (var c = p.Column; c < p.Column + p.ColumnSpan; c++)
+                {
+                    if (grid[p.Row + p.RowSpan, c] is { } n && n != cell) { bottom = Math.Max(bottom, Width(n, e => e.Top)); }
+                }
+            }
+            result[cell] = new Edges(LaidOut(top), LaidOut(right), LaidOut(bottom), LaidOut(left));
+        }
+        return result;
+    }
 
     /// <summary>The padding pair used where no real cell is available yet (an empty table's zero
     /// early-return) — the table's own default cascaded the same way as a real cell's edge.</summary>
@@ -260,9 +384,8 @@ public static class TableGridRenderer
             return TablePaddingPx(model);
         }
 
-        var widths = ResolveColumnWidths(model, columnWidth);
-        var columnX = new double[widths.Length + 1];
-        for (var i = 0; i < widths.Length; i++) { columnX[i + 1] = columnX[i] + widths[i]; }
+        var widths = ResolveColumnWidths(model, columnWidth, fontScale * PointsToPixels);
+        var columnX = ResolveColumnEdges(model, columnWidth, fontScale * PointsToPixels);
 
         var rowCount = model.Rows.Count;
         var solution = SolveTable(model, columnWidth, fontScale, imageRenderer, splitTables);
@@ -328,7 +451,7 @@ public static class TableGridRenderer
                     surface.DrawRect(rect, shading.Value, null, 0);
                 }
 
-                var cellWidth = Math.Max(10, SpanWidth(widths, colIndex, colSpan) - HorizontalPaddingPx(cell, model));
+                var cellWidth = ContentWidthPx(cell, model, SpanWidth(widths, colIndex, colSpan), fontScale);
                 if (solution.Cells.TryGetValue(cell, out var solved))
                 {
                     var build = BuildCellParts(cell, cellWidth, fontScale, model, imageRenderer);
@@ -360,7 +483,7 @@ public static class TableGridRenderer
                                 var tops = laid[part.Para].Tops;
                                 for (var l = 0; l < textLayout.TextLines.Count && l < tops.Length; l++)
                                 {
-                                    surface.DrawTextLine(textLayout.TextLines[l], new Point(segLeft, originY + tops[l]));
+                                    surface.DrawTextLine(textLayout.TextLines[l], new Point(segLeft + part.IndentPx + (l == 0 ? part.FirstLineOffsetPx : 0), originY + tops[l]));
                                 }
                             }
                             else if (part.Box is { } nonTextBlock && imageRenderer is not null)
@@ -467,9 +590,8 @@ public static class TableGridRenderer
     {
         if (model.Rows.Count == 0) { return; }
         var scale = PointsToPixels * zoom;
-        var widths = ResolveColumnWidths(model, columnWidth);
-        var columnX = new double[widths.Length + 1];
-        for (var i = 0; i < widths.Length; i++) { columnX[i + 1] = columnX[i] + widths[i]; }
+        var widths = ResolveColumnWidths(model, columnWidth, zoom * PointsToPixels);
+        var columnX = ResolveColumnEdges(model, columnWidth, zoom * PointsToPixels);
         var rowEnd = Math.Min(model.Rows.Count, rowStart + rowCount);
         var solved = SolveTable(model, columnWidth, zoom, imageRenderer, splitTables);
 
@@ -506,7 +628,7 @@ public static class TableGridRenderer
 
                 if (solved.Cells.TryGetValue(cell, out var layout))
                 {
-                    var cellWidth = Math.Max(10, w - HorizontalPaddingPx(cell, model));
+                    var cellWidth = ContentWidthPx(cell, model, w, zoom);
                     var build = BuildCellParts(cell, cellWidth, zoom, model, imageRenderer);
                     var segLeft = x + LeftPaddingPx(cell, model);
                     var lineNumber = 0;
@@ -521,7 +643,7 @@ public static class TableGridRenderer
                                 if (flowed.TryGetLine(blockIndex, r, c, lineNumber + l, pageIndex, out var lineTop))
                                 {
                                     surface.DrawTextLine(textLayout.TextLines[l],
-                                        new Point(segLeft, contentTopPx + lineTop * scale));
+                                        new Point(segLeft + part.IndentPx + (l == 0 ? part.FirstLineOffsetPx : 0), contentTopPx + lineTop * scale));
                                 }
                             }
                             lineNumber += count;
@@ -628,7 +750,7 @@ public static class TableGridRenderer
             }
         }
 
-        var widths = ResolveColumnWidths(model, columnWidth);
+        var widths = ResolveColumnWidths(model, columnWidth, fontScale * PointsToPixels);
         var rowCount = model.Rows.Count;
         var rowIndexByRowNumber = new Dictionary<uint, int>(rowCount);
         for (var i = 0; i < rowCount; i++) { rowIndexByRowNumber[model.Rows[i].Row] = i; }
@@ -646,13 +768,14 @@ public static class TableGridRenderer
             if (!rowIndexByRowNumber.TryGetValue(row.Row, out var rowIndex)) { continue; }
             foreach (var cell in row.Cells)
             {
-                var cellWidth = Math.Max(10, SpanWidth(widths, (int)cell.Column, (int)cell.ColumnSpan) - HorizontalPaddingPx(cell, model));
+                var cellWidth = ContentWidthPx(cell, model, SpanWidth(widths, (int)cell.Column, (int)cell.ColumnSpan), fontScale);
                 var build = BuildCellParts(cell, cellWidth, fontScale, model, imageRenderer);
                 facts.Cells.Add(new CellFactsIn
                 {
                     Row = rowIndex,
                     RowSpan = (int)Math.Max(1, cell.RowSpan),
                     VPadding = VerticalPaddingPx(cell, model),
+                    VBorder = (BorderSpace(cell, model).Top + BorderSpace(cell, model).Bottom) * PointsToPixels,
                     DeclaredHeight = cell.DeclaredHeight is { } declared ? declared * PointsToPixels : null,
                     MinRowHeight = cell.MinimumRowHeight is { } minimum ? minimum * PointsToPixels : null,
                     Items = build.Items,
@@ -684,6 +807,11 @@ public static class TableGridRenderer
         public int Para { get; init; }
         public TextLayout? Layout { get; init; }
         public FlowBlock? Box { get; init; }
+        /// <summary>The paragraph's head indent (every line starts this far in) and its first line's
+        /// offset from that, in pixels at the caller's scale — macOS's `headIndent` and
+        /// `firstLineHeadIndent − headIndent`.</summary>
+        public double IndentPx { get; init; }
+        public double FirstLineOffsetPx { get; init; }
     }
 
     private sealed class CellBuild
@@ -722,7 +850,11 @@ public static class TableGridRenderer
                 }
                 var (layout, lines, blank) = BuildParagraph(block, width, fontScale, model);
                 text.Add(ParagraphFactsIn.From(block, lines, blank, scale));
-                build.Parts.Add(new CellPart { Item = build.Items.Count - 1, Para = text.Count - 1, Layout = layout });
+                build.Parts.Add(new CellPart
+                {
+                    Item = build.Items.Count - 1, Para = text.Count - 1, Layout = layout,
+                    IndentPx = block.IndentPoints * scale, FirstLineOffsetPx = block.FirstLineOffsetPoints * scale,
+                });
                 continue;
             }
 
@@ -779,30 +911,49 @@ public static class TableGridRenderer
             return (null, new[] { Paging.PageLayout.NaturalLineHeight(Math.Max(1, block.BlankLineSizePoints * scale)) }, true);
         }
         var layout = HangulWordWrap.Create(text.ToString(), largest.Typeface, largest.FontRenderingEmSize, Brushes.Black, block.Alignment,
-            TextWrapping.Wrap, maxWidth: Math.Max(10, width),
-            letterSpacing: block.LetterSpacingPoints * scale, overrides: overrides, hangulWord: block.HangulWordBreak);
+            TextWrapping.Wrap, maxWidth: Math.Max(10, width - block.IndentPoints * scale),
+            letterSpacing: block.LetterSpacingPoints * scale, overrides: overrides, hangulWord: block.HangulWordBreak,
+            firstLineExtra: -block.FirstLineOffsetPoints * scale);
         var lines = new double[layout.TextLines.Count];
         for (var i = 0; i < lines.Length; i++) { lines[i] = layout.TextLines[i].Height; }
         return (layout, lines, false);
     }
 
-    private static double[] ResolveColumnWidths(TableGridModel model, double columnWidth)
+    /// <summary>The grid's column edges (count + 1, from the table's left), in PIXELS at
+    /// <paramref name="scale"/> (pixels per point) — macOS's `GridTextTable.edges(forWidth:)`: the
+    /// column's width clamped to the table's authored width, narrowed by its left and right outer
+    /// margin, starting the left margin (floored) in, each edge a whole point by the document's own
+    /// proportions (the last never past the usable width's floor).</summary>
+    private static double[] ResolveColumnEdges(TableGridModel model, double columnWidth, double scale)
     {
         var count = Math.Max(1, model.ColumnCount);
-        var widths = new double[count];
+        var column = columnWidth / scale;
+        var solved = model.SourceWidthPoints is { } source && source > 0 ? Math.Min(column, source) : column;
+        var usable = Math.Max(1, solved - model.OuterMarginLeftPoints - model.OuterMarginRightPoints);
+        var left = Math.Floor(Math.Max(0, model.OuterMarginLeftPoints));
+        var proportions = new double[count];
         var ratios = model.ColumnWidthRatios;
-        if (ratios.Count == count)
+        double sum = 0;
+        if (ratios.Count == count) { foreach (var r in ratios) { sum += Math.Max(0, r); } }
+        for (var i = 0; i < count; i++) { proportions[i] = sum > 0 ? Math.Max(0, ratios[i]) / sum : 1.0 / count; }
+        var edges = new double[count + 1];
+        edges[0] = left * scale;
+        double cum = 0;
+        for (var i = 0; i < count; i++)
         {
-            double sum = 0;
-            foreach (var r in ratios) { sum += Math.Max(0, r); }
-            if (sum > 0)
-            {
-                for (var i = 0; i < count; i++) { widths[i] = Math.Max(0, ratios[i]) / sum * columnWidth; }
-                return widths;
-            }
+            cum += proportions[i];
+            var edge = Math.Round(usable * cum, MidpointRounding.AwayFromZero);
+            if (i == count - 1) { edge = Math.Min(edge, Math.Floor(usable)); }
+            edges[i + 1] = (left + edge) * scale;
         }
-        var equal = columnWidth / count;
-        for (var i = 0; i < count; i++) { widths[i] = equal; }
+        return edges;
+    }
+
+    private static double[] ResolveColumnWidths(TableGridModel model, double columnWidth, double scale)
+    {
+        var edges = ResolveColumnEdges(model, columnWidth, scale);
+        var widths = new double[edges.Length - 1];
+        for (var i = 0; i < widths.Length; i++) { widths[i] = Math.Max(0, edges[i + 1] - edges[i]); }
         return widths;
     }
 

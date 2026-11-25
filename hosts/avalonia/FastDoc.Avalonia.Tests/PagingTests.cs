@@ -433,9 +433,10 @@ public class PagingTests
         Assert.True(pieces.Count > 1, "the one row must be cut across pages");
         Assert.All(pieces, p => Assert.True(p.Flowed));
         Assert.All(pieces, p => Assert.True(p.HeightPoints <= 100.001, "no piece exceeds the page body"));
-        // The first line of the cell is on the first page, under the cell's 7pt default padding.
+        // The first line of the cell is on the first page, under the cell's 7pt default padding and
+        // its 1pt top rule.
         Assert.True(layout.Flowed!.TryGetLine(0, 0, 0, 0, pieces[0].PageIndex, out var firstTop));
-        Assert.Equal(7, firstTop, precision: 3);
+        Assert.Equal(8, firstTop, precision: 3);
         Assert.True(layout.Flowed.TryGetSegment(0, 0, pieces[^1].PageIndex, out _));
     }
 
@@ -463,7 +464,7 @@ public class PagingTests
         var rendererTotalPoints = rendererTotalPx * 72.0 / 96.0;
 
         Assert.Single(settleHeights);
-        Assert.Equal(rendererTotalPoints, settleHeights[0], precision: 2);
+        Assert.Equal(rendererTotalPoints, settleHeights[0], 0.005);
         // A heuristic 0.55-Latin-width guess for 200 characters at this width would have landed
         // near 1-2 "lines" worth of height; real Hangul-width-aware wrapping of this much text at
         // an 80pt column needs noticeably more room — a floor that also rules out "it silently

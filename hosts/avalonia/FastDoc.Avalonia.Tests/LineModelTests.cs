@@ -84,7 +84,8 @@ public sealed class LineModelTests
     {
         // A one-line HWP cell at 200% of a 10pt run: the document asks for a 20pt line, the cell is
         // its only paragraph, so the line is 10pt — and the row is that plus the default 7pt padding
-        // on both edges. A natural-box measurement (Noto ~14.5pt) would not be 24pt.
+        // on both edges, plus the undeclared 0.75pt rule above and below (a whole point each, as
+        // AppKit lays it out). A natural-box measurement (Noto ~14.5pt) would not be 26pt.
         var run = new FlowRun("한글", null, 10, false, false, false, false, Colors.Black);
         var paragraph = new FlowBlock
         {
@@ -98,9 +99,9 @@ public sealed class LineModelTests
             Rows = new() { new TableGridRow { Row = 0, Cells = new() { cell } } },
         };
         var heights = TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: false);
-        Assert.Equal(24.0, heights[0], precision: 3);
+        Assert.Equal(26.0, heights[0], precision: 3);
         // The same table in a reader that lets tables break across pages: the same single-paragraph cell.
-        Assert.Equal(24.0, TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: true)[0], precision: 3);
+        Assert.Equal(26.0, TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: true)[0], precision: 3);
     }
 
     [Fact]
@@ -117,16 +118,16 @@ public sealed class LineModelTests
             ColumnCount = 1, ColumnWidthRatios = new() { 1.0 },
             Rows = new() { new TableGridRow { Row = 0, Cells = new() { cell } } },
         };
-        Assert.Equal(20 + 20 + 14, TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: false)[0], precision: 3);
-        Assert.Equal(20 + 10 + 14, TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: true)[0], precision: 3);
+        Assert.Equal(20 + 20 + 14 + 2, TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: false)[0], precision: 3);
+        Assert.Equal(20 + 10 + 14 + 2, TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: true)[0], precision: 3);
     }
 
     [Fact]
     public void A_cell_paragraphs_own_spacing_lies_inside_the_row_in_the_unit_the_cell_is_measured_in()
     {
         // 10pt HWP line, the cell's only paragraph (its gap is handed back): 10 + 5 before + 3 after
-        // + 7pt padding on both edges. A spacing left in points while the cell is measured in pixels
-        // would not add up to a whole 32pt.
+        // + 7pt padding and a 1pt rule on both edges. A spacing left in points while the cell is measured in pixels
+        // would not add up to a whole 34pt.
         var paragraph = new FlowBlock
         {
             Kind = FlowBlockKind.Text, Runs = new() { new FlowRun("한글", null, 10, false, false, false, false, Colors.Black) },
@@ -138,7 +139,7 @@ public sealed class LineModelTests
             ColumnCount = 1, ColumnWidthRatios = new() { 1.0 },
             Rows = new() { new TableGridRow { Row = 0, Cells = new() { new TableGridCell { Row = 0, Column = 0, Content = new() { paragraph } } } } },
         };
-        Assert.Equal(32.0, TableGridRenderer.MeasureRowHeightsPoints(model, 200)[0], precision: 3);
+        Assert.Equal(34.0, TableGridRenderer.MeasureRowHeightsPoints(model, 200)[0], precision: 3);
     }
 
     [Fact]

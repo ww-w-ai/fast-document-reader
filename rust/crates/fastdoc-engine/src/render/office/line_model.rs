@@ -179,9 +179,13 @@ pub struct CellFacts {
     pub row: usize,
     #[serde(default = "one")]
     pub row_span: usize,
-    /// Top plus bottom padding.
+    /// Top plus bottom padding, the borders the cell reserves inside it included.
     #[serde(default)]
     pub v_padding: f64,
+    /// The part of `v_padding` that is border: a decorative band's declared height covers its
+    /// paddings and line, never the rules drawn around it (TextKit reserves those on top).
+    #[serde(default)]
+    pub v_border: f64,
     /// An empty cell whose row declares a height stands at it outright (a decorative band).
     #[serde(default)]
     pub declared_height: Option<f64>,
@@ -365,6 +369,30 @@ fn has_content(cell: &CellFacts) -> bool {
     })
 }
 
+/// The smallest line a decorative band keeps (`TableBlockBuilder.bandMinimumLine`).
+const BAND_MINIMUM_LINE: f64 = 1.0;
+
+/// How tall a decorative band stands, as `TableBlockBuilder.decorativeBand` builds it on macOS: the
+/// paddings give way first (scaled down to leave the line its minimum), the line is the declared
+/// height minus what padding is left, and EVERY blank paragraph of the cell is held to that line —
+/// a band cell of two empty paragraphs stands two lines tall. The borders sit on top.
+fn band_height(cell: &CellFacts, declared: f64) -> f64 {
+    let asked = (cell.v_padding - cell.v_border).max(0.0);
+    let room = (declared - BAND_MINIMUM_LINE).max(0.0);
+    let padding = asked.min(room);
+    let line = (declared - padding).max(BAND_MINIMUM_LINE);
+    let paragraphs = cell
+        .items
+        .iter()
+        .map(|item| match item {
+            CellItem::Text { paragraphs } => paragraphs.len(),
+            CellItem::Fixed { .. } => 0,
+        })
+        .sum::<usize>()
+        .max(1);
+    padding + line * paragraphs as f64 + cell.v_border
+}
+
 /// One unwrapped line of text and nothing else (166's single-line cell).
 fn single_text_line(cell: &CellFacts) -> bool {
     match cell.items.as_slice() {
@@ -394,7 +422,16 @@ pub fn solve_table(table: &TableFacts, grid: Option<f64>) -> Result<TableLayout,
 
     // A cell asks for its content plus its padding (a decorative band for its declared height, a
     // single-line cell for at least its row's); `table_rows` says how TextKit turns those claims into
-    // row heights, merged cells included.
+    // row heights, merged cells included. A band is a row the document sized itself because nothing
+    // in it could: every cell that begins in the row is empty (macOS's `rowIsEmpty`). A blank cell
+    // beside a worded one measures as its own empty line, so it never stands the row at the blank
+    // cell's declared height (the reference manual: 55 such rows, +966 pt on Avalonia).
+    let mut row_has_content = vec![false; rows];
+    for cell in &table.cells {
+        if has_content(cell) {
+            row_has_content[cell.row] = true;
+        }
+    }
     let needs: Vec<RowNeed> = table
         .cells
         .iter()
@@ -404,7 +441,7 @@ pub fn solve_table(table: &TableFacts, grid: Option<f64>) -> Result<TableLayout,
             let need = match cell.declared_height {
                 // A band the document drew that tall: the declaration already counts both paddings and
                 // the line, so it replaces their sum.
-                Some(declared) if span == 1 && declared > 0.0 && !has_content(cell) => declared,
+                Some(declared) if span == 1 && declared > 0.0 && !row_has_content[cell.row] => band_height(cell, declared),
                 _ => {
                     let mut need = laid.height + cell.v_padding;
                     if span == 1 {
@@ -555,7 +592,7 @@ mod tests {
     }
 
     fn cell(row: usize, span: usize, items: Vec<CellItem>) -> CellFacts {
-        CellFacts { row, row_span: span, v_padding: 4.0, declared_height: None, min_row_height: None, items }
+        CellFacts { row, row_span: span, v_padding: 4.0, v_border: 0.0, declared_height: None, min_row_height: None, items }
     }
     fn text(paragraphs: Vec<ParagraphFacts>) -> CellItem {
         CellItem::Text { paragraphs }
@@ -626,6 +663,34 @@ mod tests {
         worded.declared_height = Some(3.0);
         let solved = solve_table(&table(3, false, vec![band, blank, worded]), None).unwrap();
         assert_eq!(solved.row_heights, vec![3.0, 3.0, 16.0]);
+    }
+
+    #[test]
+    fn a_decorative_band_keeps_its_rules_on_top_of_its_declared_height() {
+        let mut band = cell(0, 1, vec![]);
+        band.declared_height = Some(3.0);
+        band.v_border = 1.0;
+        band.v_padding = 5.0;
+        assert_eq!(solve_table(&table(1, false, vec![band]), None).unwrap().row_heights, vec![4.0]);
+    }
+
+    #[test]
+    fn every_blank_paragraph_of_a_band_cell_stands_at_the_band_line() {
+        let blank = || ParagraphFacts { blank: true, lines: vec![12.0], char_size: 10.0, ..Default::default() };
+        let mut band = cell(0, 1, vec![text(vec![blank(), blank()])]);
+        band.declared_height = Some(30.0);
+        // 4 of padding, so each paragraph's line is 26: 4 + 26 + 26.
+        assert_eq!(solve_table(&table(1, false, vec![band]), None).unwrap().row_heights, vec![56.0]);
+    }
+
+    #[test]
+    fn a_blank_cell_beside_a_worded_one_is_not_a_band() {
+        let mut blank = cell(0, 1, vec![text(vec![ParagraphFacts { blank: true, lines: vec![12.0], char_size: 10.0, ..Default::default() }])]);
+        blank.declared_height = Some(60.0);
+        let mut worded = cell(0, 1, vec![text(vec![para(&[12.0], None, 10.0, false)])]);
+        worded.declared_height = Some(60.0);
+        let solved = solve_table(&table(1, false, vec![worded, blank]), None).unwrap();
+        assert_eq!(solved.row_heights, vec![16.0]);
     }
 
     #[test]

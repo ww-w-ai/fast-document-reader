@@ -56,6 +56,9 @@ internal sealed class CellFactsIn
     public required int Row { get; init; }
     public int RowSpan { get; init; } = 1;
     public double VPadding { get; init; }
+    /// <summary>The border part of <see cref="VPadding"/> (the engine stands a decorative band at its
+    /// declared height plus these).</summary>
+    public double VBorder { get; init; }
     public double? DeclaredHeight { get; init; }
     public double? MinRowHeight { get; init; }
     public List<CellItemIn> Items { get; init; } = new();
@@ -183,6 +186,7 @@ internal static class LineModelClient
             w.WriteNumber("row", cell.Row);
             if (cell.RowSpan != 1) { w.WriteNumber("rowSpan", cell.RowSpan); }
             w.WriteNumber("vPadding", cell.VPadding);
+            if (cell.VBorder > 0) { w.WriteNumber("vBorder", cell.VBorder); }
             if (cell.DeclaredHeight is { } declared) { w.WriteNumber("declaredHeight", declared); }
             if (cell.MinRowHeight is { } minimum) { w.WriteNumber("minRowHeight", minimum); }
             w.WriteStartArray("items");

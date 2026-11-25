@@ -1056,6 +1056,9 @@ public static class FlowDocumentBuilder
             TableEdgeBorders = t.Style.EdgeBorders,
             DefaultPadding = t.Style.DefaultPadding,
             DefaultBodyFontSizePoints = defaultFontSize,
+            SourceWidthPoints = t.Style.SourceWidthPoints,
+            OuterMarginLeftPoints = t.Style.OuterMargin?.Left ?? 0,
+            OuterMarginRightPoints = t.Style.OuterMargin?.Right ?? 0,
         };
     }
 

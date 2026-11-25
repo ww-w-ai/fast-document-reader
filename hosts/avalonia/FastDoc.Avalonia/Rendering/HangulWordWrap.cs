@@ -34,9 +34,10 @@ internal static class HangulWordWrap
     /// word-level Hangul breaking when <paramref name="hangulWord"/>.</summary>
     public static TextLayout Create(string text, Typeface typeface, double fontSize, IBrush? foreground,
         TextAlignment alignment, TextWrapping wrapping, double maxWidth, double lineHeight = double.NaN,
-        double letterSpacing = 0, IReadOnlyList<ValueSpan<TextRunProperties>>? overrides = null, bool hangulWord = false)
+        double letterSpacing = 0, IReadOnlyList<ValueSpan<TextRunProperties>>? overrides = null, bool hangulWord = false,
+        double firstLineExtra = 0)
     {
-        if (!hangulWord || wrapping == TextWrapping.NoWrap)
+        if ((!hangulWord && firstLineExtra == 0) || wrapping == TextWrapping.NoWrap)
         {
             return new TextLayout(text, typeface, fontSize, foreground, alignment, wrapping,
                 maxWidth: maxWidth, lineHeight: lineHeight, letterSpacing: letterSpacing, textStyleOverrides: overrides);
@@ -44,7 +45,7 @@ internal static class HangulWordWrap
         EnsureInstalled();
         var defaults = new GenericTextRunProperties(typeface, fontSize, foregroundBrush: foreground);
         var paragraph = new WordParagraphProperties(text, new GenericTextParagraphProperties(FlowDirection.LeftToRight,
-            alignment, true, false, defaults, wrapping, lineHeight, 0, letterSpacing));
+            alignment, true, false, defaults, wrapping, lineHeight, 0, letterSpacing), hangulWord, firstLineExtra);
         return new TextLayout(new SpanTextSource(text, defaults, overrides), paragraph, maxWidth: maxWidth);
     }
 
@@ -96,8 +97,15 @@ internal static class HangulWordWrap
         public override TextLine? FormatLine(ITextSource textSource, int firstTextSourceIndex, double paragraphWidth,
             TextParagraphProperties paragraphProperties, TextLineBreak? previousLineBreak, TextRunCache? textRunCache)
         {
+            if (paragraphProperties is not WordParagraphProperties word)
+            {
+                return inner.FormatLine(textSource, firstTextSourceIndex, paragraphWidth, paragraphProperties, previousLineBreak, textRunCache);
+            }
+            // The first line of a hanging (or first-line-indented) paragraph wraps at its own width:
+            // macOS's `firstLineHeadIndent` against `headIndent`.
+            if (firstTextSourceIndex == 0) { paragraphWidth = Math.Max(1, paragraphWidth + word.FirstLineExtra); }
             var line = inner.FormatLine(textSource, firstTextSourceIndex, paragraphWidth, paragraphProperties, previousLineBreak, textRunCache);
-            if (line is null || paragraphProperties is not WordParagraphProperties word) { return line; }
+            if (line is null || !word.HangulWord) { return line; }
             var end = firstTextSourceIndex + line.Length;
             var chosen = WordBreak(word.Text, firstTextSourceIndex, end);
             if (chosen == end) { return line; }
@@ -160,9 +168,14 @@ internal static class HangulWordWrap
         }
     }
 
-    private sealed class WordParagraphProperties(string text, TextParagraphProperties inner) : TextParagraphProperties
+    private sealed class WordParagraphProperties(string text, TextParagraphProperties inner, bool hangulWord, double firstLineExtra)
+        : TextParagraphProperties
     {
         public string Text { get; } = text;
+        /// <summary>Word-level Hangul breaking applies (the paragraph says `eastAsianLineBreak = word`).</summary>
+        public bool HangulWord { get; } = hangulWord;
+        /// <summary>How much wider than the paragraph width the first line wraps (negative: narrower).</summary>
+        public double FirstLineExtra { get; } = firstLineExtra;
         public override FlowDirection FlowDirection => inner.FlowDirection;
         public override TextAlignment TextAlignment => inner.TextAlignment;
         public override double LineHeight => inner.LineHeight;

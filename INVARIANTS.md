@@ -3260,6 +3260,41 @@ this file tells you why, and why the obvious alternative does not work.
       pt 12; AppleMyungjo 9.5 pt 11; KoPubBatang-Light 9 pt 9), where Avalonia keeps 1.2 em
       unrounded; emulating it made every cell line equal and moved the 편람 not at all (383). Land
       the patch after the row-height gap above is closed.
+    - **(new) The row split, measured and fixed (2026-11-26).** Diffing both hosts' plan inputs row
+      by row and cell by cell (patch applied) put the equal-line rows' +966 pt on four
+      differences from `TableBlockBuilder`, all now matched on Avalonia, engine deciding:
+      (1) **band rule** — the engine stood a row at a blank cell's declared height when ANY cell
+      in it was blank; macOS bands a row only when every cell beginning in it is empty
+      (`rowIsEmpty`), and a blank cell beside a worded one is its own empty line (55 rows, the
+      25.54-vs-13 pt case; `line_model.rs`, `a_blank_cell_beside_a_worded_one_is_not_a_band`);
+      (2) **a band cell of n blank paragraphs** stands n band lines (TextKit holds every
+      paragraph to the band line: 2 × 199 pt in one 편람 row), its rules on top of the declared
+      height (`CellFacts.vBorder`); (3) **borders take space** — `NSTextTableBlock` reserves the
+      rules a cell owns inside it (left only in column 0, top only in row 0, right/bottom the wider
+      of the two sides, each rounded up to a whole point), so a ruled row is 1-2 pt taller and its
+      text column narrower; Avalonia's insets now include them (`TableGridRenderer.BorderSpace`),
+      in measure, draw and the plan's `padTop/padBottom`; (4) **the grid** — a table is laid out
+      no wider than its authored `sourceWidthPoints`, narrowed by its left/right `outerMargin`,
+      on whole-point column edges (`GridTextTable.edges(forWidth:)`, `ResolveColumnEdges`). The
+      line-count rows then came down to two clear rules, also matched: the one-token right-padding
+      relief (`oneTokenPaddingRelief`: `20.` in a 28.6 pt cell wrapped to a second 45 pt line on
+      Avalonia, 15 tables) and a hanging paragraph's first line wrapping at its own width
+      (`HangulWordWrap`'s `firstLineExtra`; cell paragraphs also honour their head indent).
+      Pinned by `TableCellGeometryTests` and three `line_model` tests, each mutation-checked.
+      A `tailIndent` inside a cell was tried and is NOT what TextKit does there: honoured, one 편람
+      flowchart table grew 346 → 889 pt (paragraphs placed by 70 pt head + tail indents), so cell
+      tail indents stay ignored.
+      Result without the patch (shipped): Avalonia 스케일업 32 → 31 (macOS 31), every other paged
+      testdoc unchanged (편람 389, 1790387 141, s9 28, tago 9, OpenAPI 20). With the patch on top:
+      1790387 139, 스케일업 31, 편람 385, tago 9 — still withheld. Remainder with the patch,
+      replaying plan inputs: macOS's input with Avalonia's tables gives 385, Avalonia's with
+      macOS's tables 389, so tables cost 5 pages and text 1. The table gap is now Avalonia rows
+      SHORTER (sum |Δ| 2,430 → 854 pt over 72 tables): nested tables measure 40-45 pt short
+      (tables 116, 117, 30), and cells still wrap fewer lines where macOS's line is a hair narrower
+      (`주고받음, 넘겨주고 넘겨받음` fits 106.8 of 107.3 pt on Avalonia, wraps on macOS). tago
+      returns to 9 with the patch because its undeclared runs are drawn in Inter + Noto Sans KR
+      (14.5 pt Hangul lines) where macOS uses the system font (12 pt): the border space adds the
+      rows' rules on top of that older line-box gap.
     - **OpenAPI 20 (19)**: tables. 740 cell lines stand 18 pt on Avalonia and 10 pt on macOS
       (tables +1,086 pt; macOS tables → 18, all blocks → 19); the line model floors every cell line
       at the document's 18 pt grid, macOS's cell lines are not floored — not yet traced to the rule.
