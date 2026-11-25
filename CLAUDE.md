@@ -105,7 +105,7 @@ Read the affected [INVARIANTS.md](INVARIANTS.md) entries below before making a c
 | memory, image caches, document lifetime, crashes | 63, 65 |
 | the Quick Look preview extension | 68 |
 | any Swift value carried as a text attribute | 67 |
-| the Avalonia host (Windows/Linux) — threads, PDF, publish, the win-arm64 cross-build | 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207 |
+| the Avalonia host (Windows/Linux) — threads, PDF, publish, the win-arm64 cross-build, Korean word breaking, 장평 | 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207 |
 
 ## Debugging discipline (this app specifically)
 

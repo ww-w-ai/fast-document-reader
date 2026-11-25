@@ -383,6 +383,9 @@ public sealed class ParagraphStyleWire
     /// <summary>`wire::ParagraphStyle.lineSpacingBelow` — the format puts its line spacing UNDER the
     /// glyphs (HWP: pitch = size + spacing, invariant 161e).</summary>
     [JsonPropertyName("lineSpacingBelow")] public bool? LineSpacingBelow { get; set; }
+    /// <summary>`wire::ParagraphStyle.eastAsianLineBreak` — "word" | "hyphen" | "character": where a
+    /// line of Hangul/Han may break. "word" keeps a Korean word whole (<c>HangulWordWrap</c>).</summary>
+    [JsonPropertyName("eastAsianLineBreak")] public string? EastAsianLineBreak { get; set; }
 }
 
 public sealed class CharacterStyleWire

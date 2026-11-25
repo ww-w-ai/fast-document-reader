@@ -160,17 +160,6 @@ public sealed class LineModelTests
     }
 
     [Fact]
-    public void Width_scale_is_taken_out_as_letter_spacing_in_proportion_to_each_glyphs_advance()
-    {
-        // 98% of a full-width glyph (about one em) is -2% of the size; a Latin glyph (about half an em), -1%.
-        Assert.Equal(-2.0, FlowDocumentBuilder.WidthScaleAsSpacingPercent("한글", 98), precision: 6);
-        Assert.Equal(-1.0, FlowDocumentBuilder.WidthScaleAsSpacingPercent("ab", 98), precision: 6);
-        Assert.Equal(0.0, FlowDocumentBuilder.WidthScaleAsSpacingPercent("한글", 100));
-        Assert.Equal(0.0, FlowDocumentBuilder.WidthScaleAsSpacingPercent("한글", null));
-        Assert.Equal(0.0, FlowDocumentBuilder.WidthScaleAsSpacingPercent("", 90));
-    }
-
-    [Fact]
     public void The_engine_refuses_input_it_cannot_answer_instead_of_guessing()
     {
         var bad = new TableFactsIn

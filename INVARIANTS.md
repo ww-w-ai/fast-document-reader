@@ -3169,8 +3169,8 @@ this file tells you why, and why the obvious alternative does not work.
     The measured remainder, by plan-input diff against macOS: on the 편람 (390 vs 391) 61 text blocks
     break into a different number of lines, and Avalonia breaks inside a Hangul word at 720 of its
     1,257 body line ends — the document declares `eastAsianLineBreak: word`, which macOS honours with
-    `.hangulWordPriority` (`OfficeTextBuilder.applyLineBreaking`) and Avalonia cannot yet (no wire
-    field read, and Avalonia's `TextLayout` has no word-priority mode). On 덕소5B (60 vs 59) table
+    `.hangulWordPriority` (`OfficeTextBuilder.applyLineBreaking`); Avalonia's `TextLayout` has no
+    such mode (now honoured by `HangulWordWrap`, below). On 덕소5B (60 vs 59) table
     #68 measures 2,481 pt against 1,955 with the same line counts: per line 13.3 pt against 10.35,
     because an 8 pt `맑은 고딕` cell line is Noto Sans KR's 1.448-em box here and Apple SD Gothic Neo's
     1.125 em there (TextKit's multiple drops the face's leading), and macOS's list items in cells
@@ -3192,9 +3192,31 @@ this file tells you why, and why the obvious alternative does not work.
     및 결과 통보` in 3 lines at 73.9 pt against 4, row 41.6 pt against 56.9). The old default only
     hid it by flooring every line taller. Joining Hangul syllables with U+2060 to keep words whole
     made it worse (Avalonia applies letter spacing per character, the joiner included), so it was
-    not kept. Not fixed: the width of a Hangul run at a 장평 below 100% is the next thing to measure.
+    not kept.
     `PageLayout.BuildTextLayout` still uses the Inter/12 pt default for body text (runs-only there
     moved Zero100 down before the face floor existed; not re-measured).
+
+    **Avalonia measures Korean words and 장평 as macOS does (2026-11-25).** (1) `eastAsianLineBreak:
+    word` (now read from the wire, `FlowBlock.HangulWordBreak`) keeps a Korean word whole:
+    `Rendering/HangulWordWrap` decorates `TextFormatter.Current`; a line Avalonia ends between two
+    Hangul characters is formatted again from a source that ends at the last earlier UAX #14
+    opportunity that is not Hangul–Hangul, at the same paragraph width (alignment and justification
+    unchanged), and only layouts built through `HangulWordWrap.Create` with the flag carry the marker
+    paragraph properties it acts on. The text is never rewritten, so character indices (selection,
+    hit-testing, footnotes, tabs) are the block's own; a word wider than the line keeps Avalonia's
+    break, as macOS falls inside a word when nothing else fits. (2) 장평 multiplies each glyph's OWN
+    advance (`Rendering/GlyphWidthScale`, a `DispatchProxy` over the platform shaper fed a private
+    `fdws` feature per run); the per-paragraph letter-spacing average it replaces took a syllable's
+    share from every character, spaces included. Glyphs are still drawn at normal width, and a scaled
+    run beside an unscaled run of the same face and size is shaped with its neighbour's options
+    (Avalonia shapes them together). (3) Every table sends its cells, and `rowsObserved` outside a
+    columned run, as macOS does. Avalonia → macOS: 편람 385 → 389 (390; (1) alone gives 386, (2)
+    the rest; (3) moved no count); every other testdoc unchanged. Remainders, by cause: s9 28 (31) —
+    the declared `맑은 고딕` is installed on neither machine and the fallbacks differ: the cell above
+    measures `심의 및 결과 통보` at 70.8 pt in Noto Sans KR (Hangul ≈ 0.92 em) and so fits 73.9 pt,
+    where Apple SD Gothic Neo (1 em) needs a fourth line — a font fact, not a layout one;
+    1790387 153 (139), 스케일업 32 (31), OpenAPI 20 (19), tago 9 (8) not re-diagnosed this round;
+    giant-table `--sheets` 0 (`--pdf` 41, macOS 84) is the headless sheets path, unchanged.
 
     **Two reader quirks the plan once reproduced are fixed in the engine (owner, 2026-11-25).**
     (1) The 1-3 line run rule (`orphan_runs`) counts a line on the page the plan placed it on. The

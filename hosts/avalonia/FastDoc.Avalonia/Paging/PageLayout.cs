@@ -388,17 +388,18 @@ public static class PageLayout
             {
                 var rowHeights = TableRowFacts.EstimateRowHeights(table, widthForBlock, imageRenderer, splitTables);
                 var canBreak = TableRowFacts.RowsThatCanBreakAbove(table);
-                // A table taller than the page body is flowed line by line by the plan, which needs each
-                // cell's lines; every other table is placed from its rows alone.
-                // (A table of a columned run is dealt cell line by cell line too.)
-                var flowable = rowHeights.Sum() > contentHeight || blockRun[i] is not null;
+                // Every table hands in its cells, as macOS does: whether one flows line by line, or has
+                // a row pulled, is the plan's call. Outside a columned run the rows are this grid's own
+                // (`RowsObserved`); inside one the engine sizes them from the cells.
+                var inColumnRun = blockRun[i] is not null;
                 inputs.Add(new PlanBlockInput
                 {
                     Key = key, Kind = "table", Section = section, PageBreakBefore = pageBreakBefore,
                     SpacingBefore = block.SpacingBeforePoints, SpacingAfter = block.SpacingAfterPoints,
                     RowHeights = rowHeights.Length == canBreak.Length ? rowHeights : PadRows(rowHeights, canBreak.Length),
                     RowCanBreakAbove = canBreak,
-                    RowCells = flowable ? TableGridRenderer.FlowFacts(table, widthForBlock, imageRenderer, splitTables) : null,
+                    RowCells = TableGridRenderer.FlowFacts(table, widthForBlock, imageRenderer, splitTables),
+                    RowsObserved = !inColumnRun,
                     KeepsWhole = i < markers.TableKeepsWhole.Length && markers.TableKeepsWhole[i],
                     PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
                     Cites = settlesNotes ? BlockCites(block) : null, ColumnRun = blockRun[i],
@@ -635,8 +636,8 @@ public static class PageLayout
         // PlaceTextLines/EffectiveLineHeight then scale by the document's own multiple and floor by
         // the line grid — the SAME two-step OfficeTextBuilder.bodyParagraphStyle performs
         // (`lineHeightMultiple` against the natural height; the grid only when no explicit rule).
-        return new TextLayout(text, DefaultTypeface, maxFontSize, Brushes.Black, block.Alignment,
+        return HangulWordWrap.Create(text, DefaultTypeface, maxFontSize, Brushes.Black, block.Alignment,
             TextWrapping.Wrap, maxWidth: Math.Max(1, widthAtScale),
-            letterSpacing: block.LetterSpacingPoints * fontScale, textStyleOverrides: overrides);
+            letterSpacing: block.LetterSpacingPoints * fontScale, overrides: overrides, hangulWord: block.HangulWordBreak);
     }
 }

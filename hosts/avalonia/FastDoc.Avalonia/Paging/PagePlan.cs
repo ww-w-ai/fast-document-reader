@@ -42,6 +42,10 @@ internal sealed class PlanBlockInput
     /// engine flow a table taller than a page line by line. Null when the host reports none.</summary>
     public PlanCellInput[][]? RowCells { get; init; }
     public bool KeepsWhole { get; init; }
+    /// <summary>Table: <see cref="RowHeights"/> are the rows this host's own grid draws, so the engine
+    /// keeps them rather than solving them again from the cells (macOS sends the same for every table
+    /// outside a columned run).</summary>
+    public bool RowsObserved { get; init; }
     /// <summary>The multi-column declaration (an index into <see cref="PlanColumnsInput.Runs"/>) this
     /// block sits under — from one declaration to the next. Null: not in a columned run.</summary>
     public int? ColumnRun { get; init; }
@@ -350,6 +354,7 @@ internal static class PagePlanClient
                 w.WriteEndArray();
             }
             if (b.KeepsWhole) { w.WriteBoolean("keepsWhole", true); }
+            if (b.RowsObserved) { w.WriteBoolean("rowsObserved", true); }
         }
         w.WriteEndObject();
     }

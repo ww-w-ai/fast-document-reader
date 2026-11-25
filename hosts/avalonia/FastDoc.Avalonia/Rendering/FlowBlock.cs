@@ -82,7 +82,8 @@ public sealed record FlowRun(
     bool Tab = false,
     double LetterSpacingPercent = 0,
     long FootnoteRef = 0,
-    double LineFloorRatio = 0)
+    double LineFloorRatio = 0,
+    double WidthScalePercent = 100)
 {
     /// <summary>The ONE place a run becomes Avalonia text properties, for the flow view, pagination,
     /// and table cells alike. <paramref name="fontSizePx"/> is the run's size at the caller's scale.
@@ -102,7 +103,8 @@ public sealed record FlowRun(
             : BaselineAlignment.Baseline;
         return new GenericTextRunProperties(typeface, fontSizePx, textDecorations: decorations,
             foregroundBrush: run.Italic ? SyntheticItalic.Mark(foreground) : foreground,
-            backgroundBrush: background, baselineAlignment: baseline);
+            backgroundBrush: background, baselineAlignment: baseline,
+            fontFeatures: GlyphWidthScale.FeaturesFor(run.WidthScalePercent));
     }
 
     /// <summary>The run properties a paragraph's TextLayout takes as its DEFAULT: the larger of
@@ -197,6 +199,9 @@ public sealed class FlowBlock
     /// <summary>The format puts its line spacing BELOW the glyphs (HWP, invariant 161e): the line
     /// model gives such a paragraph its rule's floor per line whatever the face's natural box.</summary>
     public bool LineSpacingBelow { get; init; }
+    /// <summary>The paragraph breaks Korean by word, never between two Hangul characters while an
+    /// earlier opportunity exists (`eastAsianLineBreak = word`; macOS `.hangulWordPriority`).</summary>
+    public bool HangulWordBreak { get; init; }
     /// <summary>The paragraph's character size: its largest run, else the size the reader vouched
     /// for an empty paragraph — what the line model measures a below-the-glyphs gap against.</summary>
     public double CharSizePoints => Runs.Count > 0 ? Runs.Max(r => r.FontSizePoints) : BlankLineSizePoints;

@@ -2726,7 +2726,7 @@ public sealed class FlowDocumentView : Control
         // this flag only controls whether an over-long SOURCE line gets an extra, document-uninvited
         // break inserted into it.
         var wrapping = block.IsCodeBlock && !block.WrapCode ? TextWrapping.NoWrap : TextWrapping.Wrap;
-        return new TextLayout(
+        return HangulWordWrap.Create(
             text,
             DefaultTypeface,
             maxFontSizePx,
@@ -2736,7 +2736,8 @@ public sealed class FlowDocumentView : Control
             maxWidth: maxWidth,
             lineHeight: lineHeightPx,
             letterSpacing: block.LetterSpacingPoints * zoomFactor * PointsToPixels,
-            textStyleOverrides: overrides);
+            overrides: overrides,
+            hangulWord: block.HangulWordBreak);
     }
 
     /// <summary>Draws a highlight rectangle behind every find-match that lands in this block, using

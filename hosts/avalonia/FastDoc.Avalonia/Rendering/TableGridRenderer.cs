@@ -778,9 +778,9 @@ public static class TableGridRenderer
         {
             return (null, new[] { Paging.PageLayout.NaturalLineHeight(Math.Max(1, block.BlankLineSizePoints * scale)) }, true);
         }
-        var layout = new TextLayout(text.ToString(), largest.Typeface, largest.FontRenderingEmSize, Brushes.Black, block.Alignment,
+        var layout = HangulWordWrap.Create(text.ToString(), largest.Typeface, largest.FontRenderingEmSize, Brushes.Black, block.Alignment,
             TextWrapping.Wrap, maxWidth: Math.Max(10, width),
-            letterSpacing: block.LetterSpacingPoints * scale, textStyleOverrides: overrides);
+            letterSpacing: block.LetterSpacingPoints * scale, overrides: overrides, hangulWord: block.HangulWordBreak);
         var lines = new double[layout.TextLines.Count];
         for (var i = 0; i < lines.Length; i++) { lines[i] = layout.TextLines[i].Height; }
         return (layout, lines, false);

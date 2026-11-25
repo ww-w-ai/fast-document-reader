@@ -665,6 +665,7 @@ public static class FlowDocumentBuilder
             // own doc) — `.exact`/`.atLeast` used to be silently dropped to 1.0 here.
             LineHeight = LineHeightRule.From(style.LineHeight),
             LineSpacingBelow = style.LineSpacingBelow == true,
+            HangulWordBreak = style.EastAsianLineBreak == "word",
             NodeId = nodeId,
         };
     }
@@ -824,9 +825,14 @@ public static class FlowDocumentBuilder
         var size = (style.FontSizePoints ?? defaultFontSize) * (script != 0 ? ScriptScale : 1.0);
         Color? background = style.Background is { } wash ? ColorFrom(wash) : null;
         var pageField = tr.PageNumberField switch { "page" => 1, "numPages" => 2, _ => 0 };
-        var spacing = (style.LetterSpacingPercent ?? 0) + WidthScaleAsSpacingPercent(text, style.WidthScalePercent);
+        var spacing = style.LetterSpacingPercent ?? 0;
         var firstNew = runs.Count;
         AddTextRunCore(runs, tr, style, text, family, size, script, background, pageField, spacing, boldDefault);
+        // 장평: each glyph's own advance times the scale, at shaping (GlyphWidthScale).
+        if (style.WidthScalePercent is { } widthScale and > 0 && Math.Abs(widthScale - 100) >= 0.001)
+        {
+            for (var i = firstNew; i < runs.Count; i++) { runs[i] = runs[i] with { WidthScalePercent = widthScale }; }
+        }
         // The declared face's line floor, as the engine resolved it (invariant 163).
         if (!style.InlineCode && style.LineHeightFloorRatio is { } ratio and > 0)
         {
@@ -838,23 +844,6 @@ public static class FlowDocumentBuilder
             for (var i = firstNew; i < runs.Count; i++) { runs[i] = runs[i] with { FootnoteRef = note }; }
         }
     }
-
-    /// <summary>장평 (a run's glyph advance as a percentage of normal) as the host can draw it: Avalonia
-    /// has no per-run horizontal glyph scale, so the advance it removes is taken out as letter spacing,
-    /// in percent of the font size. A full-width character (Hangul, CJK, full-width forms) advances
-    /// about one em and anything else about half of one — the host's glyph-effect mapping of a value the
-    /// engine already carries per span, never a layout decision. 100 or absent is no change.</summary>
-    internal static double WidthScaleAsSpacingPercent(string text, double? widthScalePercent)
-    {
-        if (widthScalePercent is not { } scale || scale <= 0 || Math.Abs(scale - 100) < 0.001 || text.Length == 0) { return 0; }
-        double advance = 0;
-        foreach (var c in text) { advance += IsFullWidth(c) ? 1.0 : 0.5; }
-        return (scale - 100) * advance / text.Length;
-    }
-
-    private static bool IsFullWidth(char c) =>
-        c is >= 'ᄀ' and <= 'ᇿ' or >= '⺀' and <= '鿿' or >= '가' and <= '힣'
-            or >= '豈' and <= '﫿' or >= '＀' and <= '｠';
 
     private static void AddTextRunCore(List<FlowRun> runs, TextRunPayload tr, CharacterStyleWire style, string text,
         string? family, double size, int script, Color? background, int pageField, double spacing, bool boldDefault)

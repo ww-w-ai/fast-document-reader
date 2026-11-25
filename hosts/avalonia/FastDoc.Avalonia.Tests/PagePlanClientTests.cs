@@ -19,7 +19,7 @@ public class PagePlanClientTests
         var blocks = new List<PlanBlockInput>
         {
             new() { Key = 77, Kind = "text", PageBreakBefore = true, KeepWithNext = true, SpacingBefore = 6, Lines = new[] { 14.5, 14.5 } },
-            new() { Key = 78, Kind = "table", RowHeights = new[] { 20.0, 30.0 }, RowCanBreakAbove = new[] { false, true }, KeepsWhole = true },
+            new() { Key = 78, Kind = "table", RowHeights = new[] { 20.0, 30.0 }, RowCanBreakAbove = new[] { false, true }, KeepsWhole = true, RowsObserved = true },
             new() { Key = 79, Kind = "atomic", Skip = true, Height = 99 },
         };
         var bytes = PagePlanClient.Encode(500, splitTables: true, new Dictionary<int, double> { [2] = 40 }, blocks);
@@ -39,6 +39,9 @@ public class PagePlanClientTests
 
         var table = root.GetProperty("blocks")[1];
         Assert.True(table.GetProperty("keepsWhole").GetBoolean());
+        // The rows are the host grid's own (macOS sends the same), so the engine keeps them.
+        Assert.True(table.GetProperty("rowsObserved").GetBoolean());
+        Assert.False(first.TryGetProperty("rowsObserved", out _));
         Assert.False(table.GetProperty("rows")[0].TryGetProperty("canBreakAbove", out _));
         Assert.True(table.GetProperty("rows")[1].GetProperty("canBreakAbove").GetBoolean());
 
