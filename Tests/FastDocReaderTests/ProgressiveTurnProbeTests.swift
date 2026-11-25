@@ -47,9 +47,16 @@ final class ProgressiveTurnProbeTests: XCTestCase {
         // — one shape pays it between the pieces and the other pays it afterwards, so comparing the
         // two on arrival alone credits the undivided one with work it has not done yet. Keep going
         // until the laid-out height stops moving.
+        // The turns of THIS loop count too: a document with no progressive tail (every office
+        // document) pays its whole post-window work here — the observation, the plan and the walk —
+        // and a probe that timed only the loop above reported `worstTurn=0` for all of them.
         var stableHeight = CGFloat(-1), stablePolls = 0
         while stablePolls < 20, Date().timeIntervalSince(started) < 180 {
+            let turnStart = Date()
             RunLoop.main.run(until: Date().addingTimeInterval(0.001))
+            let ms = Date().timeIntervalSince(turnStart) * 1000
+            worstMs = max(worstMs, ms)
+            if ms > 100 { longTurns += 1 }
             let h = wc.textView.frame.height
             stablePolls = (h == stableHeight) ? stablePolls + 1 : 0
             stableHeight = h

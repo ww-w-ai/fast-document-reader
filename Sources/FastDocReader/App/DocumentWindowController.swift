@@ -1812,26 +1812,33 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             }
             textView.needsDisplay = true
         }
-        guard delegate.paginates, delegate.band > 0 || !footnotes.isEmpty, storage.length > 0,
-              let built = PlanInputBuilder.naturalInput(controller: self) else { return false }
-        paginationCount += 1
-        guard let plan = PlanPagination.ask(built.input) else { return false }
-        planCallCount += 1
-        lastPlan = plan
-        let printPitch = delegate.pageContentHeight + delegate.band - delegate.deskGap
-        delegate.adopt(plan: plan)
-        delegate.targets = PageBandLayoutDelegate.targets(
-            plan: plan, leading: delegate.leadingBand, pitch: printPitch, deskGap: delegate.deskGap,
-            columnRuns: built.columnRuns, bodyWidth: delegate.columnBodyWidth, insetX: built.columnLineInset)
-        topAlign(flowed: PlanPagination.flowedRanges(plan: plan, observation: built.observation, storageLength: storage.length),
-                 in: storage)
-        plannedPages = PlannedPage.list(from: plan)
-        for pair in (plan["notesByPage"] as? [[Any]]) ?? [] where pair.count == 2 {
-            if let page = (pair[0] as? NSNumber)?.intValue, let numbers = pair[1] as? [NSNumber] {
-                plannedNotes[page] = numbers.map(\.intValue)
+        guard delegate.paginates, delegate.band > 0 || !footnotes.isEmpty, storage.length > 0 else { return false }
+        // The observation, the request, the reply and their bridged objects are dropped as soon as
+        // the targets are taken (invariant 65): only the delegate's targets and the plan's small
+        // sheet facts outlive this pool.
+        return autoreleasepool { () -> Bool in
+            guard let built = PlanInputBuilder.naturalInput(controller: self) else { return false }
+            paginationCount += 1
+            guard var plan = PlanPagination.ask(built.input) else { return false }
+            planCallCount += 1
+            let printPitch = delegate.pageContentHeight + delegate.band - delegate.deskGap
+            delegate.adopt(plan: plan)
+            delegate.targets = PageBandLayoutDelegate.targets(
+                plan: plan, leading: delegate.leadingBand, pitch: printPitch, deskGap: delegate.deskGap,
+                columnRuns: built.columnRuns, bodyWidth: delegate.columnBodyWidth, insetX: built.columnLineInset)
+            topAlign(flowed: PlanPagination.flowedRanges(plan: plan, observation: built.observation, storageLength: storage.length),
+                     in: storage)
+            plannedPages = PlannedPage.list(from: plan)
+            for pair in (plan["notesByPage"] as? [[Any]]) ?? [] where pair.count == 2 {
+                if let page = (pair[0] as? NSNumber)?.intValue, let numbers = pair[1] as? [NSNumber] {
+                    plannedNotes[page] = numbers.map(\.intValue)
+                }
             }
+            // One entry per line, already turned into `delegate.targets`: not kept twice.
+            plan["targets"] = nil
+            lastPlan = plan
+            return true
         }
-        return true
     }
 
     /// How many plans were taken from the head of the text alone (the first paint's, one per render).

@@ -3250,6 +3250,24 @@ this file tells you why, and why the obvious alternative does not work.
     every page count unchanged; the `FMD_DIFF_CORPUS` oracle sheet column moves with it (편람
     444 → 440, 스케일업 36 → 35), because the oracle shares the paginator.
 
+    **The wired app costs more than those bounds, and two cheap repairs were measured and rejected
+    (2026-11-25, debug, load < 6, medians of 3, base 1d8b70a).** Zero100 time to settled 207 → 340 ms
+    (+64%), MK_2 first paint 282 → 391 ms, 편람 memory peak (at first paint) 586 → 625 MB. The time
+    is the observer walk itself: a second full TextKit typesetting (Zero100 ~75 ms walk + 11 ms read +
+    7 ms plan) that the base never paid, plus the first draw's `printPageCount` laying the whole text
+    out with only the head plan applied, which `paginate` then throws away. (1) Observing the head on
+    the VISIBLE layout manager and re-laying only from the first moved line saved nothing on MK_2 (the
+    leading band moves every line from line 0) and made the 편람 settle in 9.0 s instead of 1.6 s with a
+    4.6 s turn. (2) Answering `printPageCount` from the plan and not forcing layout before it made the
+    apply walk run in 20,000-character turns, and Zero100 settled in 438 ms (each turn pays a draw).
+    Both reverted. What is kept: `paginate` drops its observation and reply in an autorelease pool and
+    keeps `lastPlan` without its per-line `targets` (the peak is at first paint, so it does not move).
+    Reaching the bounds needs the observation off the second typesetting pass (owner-rejected
+    background thread, or handing the observer's line fragments to the visible layout manager), an
+    owner decision. `ProgressiveTurnProbeTests` now times the settle loop too, so office documents
+    report a worst turn (it read 0 for all of them): Zero100 158 → 189 ms, MK_2 133 → 221 ms, 편람
+    543 → 1,087 ms.
+
     **Shadow evidence, each document run alone.** Natural-observation shadow 0 on every axis
     (blocks, lines, cell lines, sheets, furniture, footnote bands, columns) on 65 paged documents;
     apply probe 73,219 lines, 0 differing, plan targets vs the old reader 0, pages equal, a second
