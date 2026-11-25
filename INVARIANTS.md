@@ -3156,6 +3156,23 @@ this file tells you why, and why the obvious alternative does not work.
     macOS's input with Avalonia's line boxes: 389), not the declared face — Avalonia already resolves
     `KoPub바탕체 Light` to the installed KoPub Batang by name; only the uninstalled `KoPub돋움체` falls
     back (Helvetica + bundled Noto, where macOS picks Apple SD Gothic Neo).
+    The measured remainder, by plan-input diff against macOS: on the 편람 (390 vs 391) 61 text blocks
+    break into a different number of lines, and Avalonia breaks inside a Hangul word at 720 of its
+    1,257 body line ends — the document declares `eastAsianLineBreak: word`, which macOS honours with
+    `.hangulWordPriority` (`OfficeTextBuilder.applyLineBreaking`) and Avalonia cannot yet (no wire
+    field read, and Avalonia's `TextLayout` has no word-priority mode). On 덕소5B (60 vs 59) table
+    #68 measures 2,481 pt against 1,955 with the same line counts: per line 13.3 pt against 10.35,
+    because an 8 pt `맑은 고딕` cell line is Noto Sans KR's 1.448-em box here and Apple SD Gothic Neo's
+    1.125 em there (TextKit's multiple drops the face's leading), and macOS's list items in cells
+    lose their 1.15 multiple. A list marker is now measured at its item's size
+    (`FlowDocumentBuilder.MarkerAtItemSize`; it was the document's 10 pt default, standing 8 pt items
+    at 10 pt). Both TextLayout builds also floor every line at a default face no run uses (Inter at
+    the document's default size, `PageLayout.BuildTextLayout` and `TableGridRenderer.BuildParagraph`);
+    measuring from the runs alone gives 덕소5B 59 but moves OpenAPI 17 → 16 and Zero100 103 → 100
+    (macOS 19 and 132), because that floor stands in for the declared-face line height macOS applies
+    (invariant 163, 1.733 em for `맑은 고딕`: body lines, and the OpenAPI guide's 10 pt cell lines at
+    18) and Avalonia does not. The RenderTree carries no such floor, so it stays until that
+    typography decision reaches Avalonia as an engine output.
 
     **Reader quirks the plan reproduces on purpose**, because the counts were judged against the
     reader that had them: the grid FILING FLOOR of the old `orphanRunStarts` (a line moved to the

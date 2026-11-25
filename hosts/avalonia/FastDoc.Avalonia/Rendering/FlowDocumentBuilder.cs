@@ -521,7 +521,23 @@ public static class FlowDocumentBuilder
         var markerRuns = new List<FlowRun> { new FlowRun($"{marker} ", null, defaultFontSize, false, false, false, false, Colors.Black) };
         var itemIndent = indent + ListIndentPoints * Math.Max(1, li.Level + 1);
         AppendItemContent(node, byId, blocks, indent, itemIndent, defaultFontSize, tableDepth, wrapCodeBlocks,
-            runs => TextBlock(runs, li.Style, itemIndent, defaultFontSize, node.Id, li.TabStops), markerRuns);
+            runs => TextBlock(MarkerAtItemSize(runs, markerRuns[0]), li.Style, itemIndent, defaultFontSize, node.Id, li.TabStops), markerRuns);
+    }
+
+    /// <summary><paramref name="runs"/> with the item's <paramref name="marker"/> run set at the size of
+    /// the first text run after it — the marker is drawn at its item's size, as AppKit draws it, not at
+    /// the document's default (a 10pt "•" stood every line of an 8pt list item at 10pt).</summary>
+    internal static List<FlowRun> MarkerAtItemSize(List<FlowRun> runs, FlowRun marker)
+    {
+        var at = runs.IndexOf(marker);
+        if (at < 0) { return runs; }
+        for (var i = at + 1; i < runs.Count; i++)
+        {
+            if (runs[i].Text.Length == 0 || runs[i].Text == "\n") { continue; }
+            runs[at] = marker with { FontSizePoints = runs[i].FontSizePoints };
+            break;
+        }
+        return runs;
     }
 
     /// <summary>One list item's children. Inline children (and a leading paragraph's, in a loose

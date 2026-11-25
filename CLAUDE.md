@@ -92,7 +92,7 @@ Read the affected [INVARIANTS.md](INVARIANTS.md) entries below before making a c
 | tests, corpus probes, "is this check actually reached" | 5, 29, 30, 34, 35, 41, 103, 104, 106, 109, 110, 111, 112, 113, 114, 116, 119, 122, 124, 134, 135, 136, 157, 171, 172, 198, 199, 200, 201, 202, 207 |
 | `RenderTheme` tokens, `OfficeTextBuilder`, style resolution | 36, 37, 97, 107, 163, 165 |
 | tables — build, widths, borders, merges, attribute cost, nested grids, empty cells | 39, 42, 47, 50, 51, 72, 74, 76, 129, 144, 149, 152, 158, 161, 162, 163, 164, 166, 168, 169, 170, 195, 196, 197, 203 |
-| fonts, per-script slots, substitution | 52, 53, 93, 95, 146, 163 |
+| fonts, per-script slots, substitution, line boxes either host measures | 52, 53, 93, 95, 146, 163, 207 |
 | `swiftshim` strings, UTF-16 offsets, `SwiftString`, attributed-string length | 122, 123 |
 | the engine's measurement port (`RustEngineMeasure`), terminator attributes | 51, 105, 161 |
 | office pagination — the page plan, observation, apply, `PlanInputBuilder`, `PageBandLayoutDelegate`, Avalonia `PageLayout` | 207, 58, 61, 64, 98, 100, 147 |
