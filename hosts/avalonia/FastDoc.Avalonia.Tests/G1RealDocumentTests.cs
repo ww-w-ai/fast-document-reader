@@ -70,7 +70,7 @@ public class G1RealDocumentTests
         var markers = BlockPageMarkers.Compute(doc.Tree);
         var images = new ImageBlockRenderer();
         images.Reset(doc.Tree);
-        var (layout, _, _, _) = PageLayout.BuildWithTableSettle(doc.Blocks, markers, geometry, IntPtr.Zero, true, true, true, images);
+        var layout = PageLayout.Build(doc.Blocks, markers, geometry, IntPtr.Zero, true, true, true, images);
         var painter = new PageModePainter(images);
         var canvas = new OrderRecorder();
 

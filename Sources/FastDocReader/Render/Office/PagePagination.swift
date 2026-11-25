@@ -4,9 +4,8 @@ import CoreGraphics
 /// arithmetic printing needs that the reader did not already have, kept pure and view-free so it is
 /// judged by numbers rather than by looking at a printout.
 ///
-/// The reader already lays a paged document out as a stack of pages: `PageBandLayoutDelegate` pushes
-/// each page's first line down so that page `k`'s text begins exactly `pitch` below page `k-1`'s
-/// (`pitch = pageContentHeight + band`, invariant 58). Printing therefore does NOT need a second
+/// The page plan lays a paged document out as a stack of pages: page `k`'s text begins exactly
+/// `pitch` below page `k-1`'s (`pitch = pageContentHeight + band`, invariant 207). Printing therefore does NOT need a second
 /// pagination engine — it needs to say where the PAPER around each of those text regions is, which is
 /// one subtraction: the sheet starts one top margin above the text.
 ///

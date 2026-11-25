@@ -17,7 +17,7 @@ namespace FastDoc.Avalonia.Tests;
 /// E2c-1 (page mode: measurer, bands, sheets) — pure-managed unit coverage, no FASTDOC_ENGINE_LIB
 /// needed. Every test below either builds a RenderTree from a fixed JSON string (the same pattern
 /// RenderTreeEnvelopeTests.cs uses) or calls a FFI wrapper with a NULL native handle, which both
-/// PageBandResolver and PageSheetsResolver treat as "engine unavailable" and answer from their own
+/// PageBandResolver treats as "engine unavailable" and answer from their own
 /// host-fallback arithmetic instead — so nothing here touches the native dylib.
 ///
 /// TextLayout-backed assertions (TextMeasurerPort.MeasureManaged, PageLayout.Build) need Avalonia's
@@ -144,36 +144,6 @@ public class PagingTests
             Marshal.FreeHGlobal(fontNamePtr);
             Marshal.FreeHGlobal(textPtr);
         }
-    }
-
-    // ---- 2. sheets fallback arithmetic matches PagePagination.sheets/sheetTop's own formula ----
-
-    [Theory]
-    [InlineData(0, 0.0, 100.0, 700.0, 40.0, 0.0)]
-    [InlineData(1, 0.0, 100.0, 700.0, 40.0, 0.0)]
-    [InlineData(4, 12.0, 90.0, 650.0, 36.0, 24.0)]
-    public void Sheets_fallback_matches_sheetTop_formula_when_no_engine_handle(
-        int page, double textOriginY, double leadingBand, double pitch, double topMargin, double deskGap)
-    {
-        var count = page + 1;
-        var rects = PageSheetsResolver.Resolve(IntPtr.Zero, count, widthPoints: 500, textOriginY, leadingBand,
-            pitch, topMargin, deskGap);
-
-        Assert.Equal(count, rects.Length);
-        var expectedTop = textOriginY + leadingBand + page * pitch - topMargin;
-        var expectedHeight = Math.Max(1, pitch - deskGap);
-        var actual = rects[page];
-        Assert.Equal(0, actual.X);
-        Assert.Equal(expectedTop, actual.Y, precision: 6);
-        Assert.Equal(500, actual.Width);
-        Assert.Equal(expectedHeight, actual.Height, precision: 6);
-    }
-
-    [Fact]
-    public void Sheets_fallback_returns_empty_for_a_non_positive_pitch_or_count()
-    {
-        Assert.Empty(PageSheetsResolver.Resolve(IntPtr.Zero, count: 0, 100, 0, 0, 500, 0, 0));
-        Assert.Empty(PageSheetsResolver.Resolve(IntPtr.Zero, count: 3, 100, 0, 0, pitchPoints: 0, 0, 0));
     }
 
     // ---- 3. a page-break-before block forces a new page -----------------------------------------
@@ -334,7 +304,7 @@ public class PagingTests
 
     /// <summary>Builds a bare TableGridModel with <paramref name="rowCount"/> empty rows (no cells
     /// at all — a gap in the grid, not a document-declared empty CELL — so the REAL measurement
-    /// TableSettle.EstimateRowHeights now delegates to falls back to
+    /// TableRowFacts.EstimateRowHeights now delegates to falls back to
     /// TableGridRenderer.MeasureAllRows's own baseline for a row with no cells: one line at the
     /// model's own default body size (12pt, TableGridModel's own default when the model does not
     /// set one) plus the reader's 7pt-padding floor on both edges = 26pt per row — deterministic,
@@ -378,8 +348,9 @@ public class PagingTests
 
         // With table splitting OFF the engine's page plan carries the table whole: it lands flush at
         // a later page's top, never in pieces.
-        var (layout, _, pushed, _) = PageLayout.BuildWithTableSettle(
-            blocks, markers, geometry, IntPtr.Zero, headersOn: false, footersOn: false, splitTablesDefault: false);
+        var layout = PageLayout.Build(
+            blocks, markers, geometry, IntPtr.Zero, headersOn: false, footersOn: false, splitTables: false);
+        var pushed = layout.CarriedTableCount;
 
         var tablePlacements = layout.Placements.Where(p => p.BlockIndex == 1).ToList();
         Assert.Single(tablePlacements); // pushed WHOLE — never split into pieces
@@ -398,9 +369,10 @@ public class PagingTests
         var ruleBlock = new FlowBlock { Kind = FlowBlockKind.Rule, SpacingBeforePoints = 70 };
         var blocks = new System.Collections.Generic.List<FlowBlock> { ruleBlock, EmptyTableBlock(rowCount: 3) };
 
-        var (layout, _, pushed, split) = PageLayout.BuildWithTableSettle(
+        var layout = PageLayout.Build(
             blocks, FlatMarkers(2), SimpleGeometry(), IntPtr.Zero, headersOn: false, footersOn: false,
-            splitTablesDefault: true);
+            splitTables: true);
+        var (pushed, split) = (layout.CarriedTableCount, layout.SplitTableCount);
 
         var pieces = layout.Placements.Where(p => p.BlockIndex == 1).OrderBy(p => p.PageIndex).ThenBy(p => p.LocalTopPoints).ToList();
         Assert.Equal(1, split);
@@ -422,8 +394,9 @@ public class PagingTests
         var markers = FlatMarkers(1);
         var geometry = SimpleGeometry();
 
-        var (layout, _, _, oversized) = PageLayout.BuildWithTableSettle(
-            blocks, markers, geometry, IntPtr.Zero, headersOn: false, footersOn: false, splitTablesDefault: true);
+        var layout = PageLayout.Build(
+            blocks, markers, geometry, IntPtr.Zero, headersOn: false, footersOn: false, splitTables: true);
+        var oversized = layout.SplitTableCount;
 
         var tablePlacements = layout.Placements.Where(p => p.BlockIndex == 0).OrderBy(p => p.PageIndex).ToList();
         Assert.True(oversized > 0, "expected at least one row-boundary break to be registered");
@@ -452,8 +425,8 @@ public class PagingTests
         };
         var blocks = new System.Collections.Generic.List<FlowBlock> { new() { Kind = FlowBlockKind.Table, Table = model } };
 
-        var (layout, _, _, _) = PageLayout.BuildWithTableSettle(
-            blocks, FlatMarkers(1), SimpleGeometry(), IntPtr.Zero, headersOn: false, footersOn: false, splitTablesDefault: true);
+        var layout = PageLayout.Build(
+            blocks, FlatMarkers(1), SimpleGeometry(), IntPtr.Zero, headersOn: false, footersOn: false, splitTables: true);
 
         var pieces = layout.Placements.Where(p => p.BlockIndex == 0).OrderBy(p => p.PageIndex).ToList();
         Assert.NotNull(layout.Flowed);
@@ -467,7 +440,7 @@ public class PagingTests
     }
 
     [Fact]
-    public void Table_settle_row_heights_match_the_real_cell_TextLayout_measurement()
+    public void Table_row_facts_heights_match_the_real_cell_TextLayout_measurement()
     {
         // A cell with enough text to wrap across several lines at a NARROW column width — a
         // character-count heuristic (the one E2c-2b removed) and a real per-cell TextLayout
@@ -480,8 +453,8 @@ public class PagingTests
         var model = new TableGridModel { ColumnCount = 1, ColumnWidthRatios = new() { 1.0 }, Rows = new() { row } };
         const double columnWidthPoints = 80;
 
-        // TableSettle's own row-height entry point (what the settle loop and pagination now use)...
-        var settleHeights = TableSettle.EstimateRowHeights(model, columnWidthPoints);
+        // The row heights pagination hands the plan...
+        var settleHeights = TableRowFacts.EstimateRowHeights(model, columnWidthPoints);
 
         // ...must equal TableGridRenderer's OWN "no cache yet" total for a one-row table — both
         // now resolve to the SAME MeasureAllRows call, which is what "shares one cache/measurement

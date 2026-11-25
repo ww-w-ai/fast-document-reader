@@ -14,7 +14,7 @@ using FastDoc.Avalonia.Rendering;
 namespace FastDoc.Avalonia.Tests;
 
 /// <summary>Regression tests for S10-A: page mode (<see cref="PageModePainter"/>, via
-/// <see cref="TableSettle"/>/<see cref="PageLayout"/>) did not reserve height for, or draw, a
+/// <see cref="TableRowFacts"/>/<see cref="PageLayout"/>) did not reserve height for, or draw, a
 /// picture or a nested table living inside a table cell — S9-C had already fixed the identical gap
 /// for FLOW mode but deliberately left page mode on its pre-fix behaviour (see
 /// docs/studio/sprints/S9/s9c-flow-content.md's own "의도적으로 범위를 좁힌 부분"). Root cause was
@@ -308,7 +308,7 @@ public class S10APageCellsTests
     /// table, pinned as a test so the numbers stay honest if the corpus or the fix changes later.
     /// "Before" re-runs the SAME real document through the SAME paginator with <c>imageRenderer:
     /// null</c> — exactly what every page-mode caller passed before this sprint. A page count is
-    /// NOT guaranteed to only grow: <see cref="TableSettle"/>'s push/oversized-row-break loop
+    /// NOT guaranteed to only grow: the page plan's table carry/break rule
     /// re-solves against the new (larger) row heights, and a table that used to be pushed to a
     /// fresh page (or split at different rows) at the OLD heights can settle differently at the
     /// NEW ones — measured here on <c>1790387_prep_final_report.hwpx</c> (208 → 207). That is the
@@ -345,11 +345,11 @@ public class S10APageCellsTests
             var markers = BlockPageMarkers.Compute(result.Tree!);
             var handle = result.Handle?.RawHandle ?? IntPtr.Zero;
 
-            var (before, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry, handle,
-                headersOn: true, footersOn: true, splitTablesDefault: true, imageRenderer: null);
+            var before = PageLayout.Build(blocks, markers, geometry, handle,
+                headersOn: true, footersOn: true, splitTables: true, imageRenderer: null);
             var renderer = BoundRenderer(result, path);
-            var (after, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry, handle,
-                headersOn: true, footersOn: true, splitTablesDefault: true, imageRenderer: renderer);
+            var after = PageLayout.Build(blocks, markers, geometry, handle,
+                headersOn: true, footersOn: true, splitTables: true, imageRenderer: renderer);
 
             Console.WriteLine($"S10-A page-count {relPath}: before={before.PageCount} after={after.PageCount}");
             Assert.True(before.PageCount > 0 && after.PageCount > 0,
@@ -367,8 +367,8 @@ public class S10APageCellsTests
     }
 
     // ---- mutation-review follow-ups (lead, 2026-09-06): the two tests above never exercised -----
-    // ---- the WIRING that carries the fix into the real doors — PageLayout.BuildWithTableSettle --
-    // ---- (TableSettle.cs's own call into MeasureRowHeightsPoints) and FlowDocumentView's ----------
+    // ---- the WIRING that carries the fix into the real doors — PageLayout.Build --
+    // ---- (TableRowFacts.cs's own call into MeasureRowHeightsPoints) and FlowDocumentView's ----------
     // ---- EnsurePageLayout. Mutating either call site's `imageRenderer` argument to `null` left ---
     // ---- every existing test green because the page-count theory above only asserted ">= 1" and -
     // ---- no test drove FlowDocumentView.PageMode against a real document at all. -----------------
@@ -384,17 +384,17 @@ public class S10APageCellsTests
     }
 
     /// <summary>The exact pair of real-document page counts §페이지 수 전후 비교 in this sprint's
-    /// report measured through <see cref="PageLayout.BuildWithTableSettle"/> — the real pagination
+    /// report measured through <see cref="PageLayout.Build"/> — the real pagination
     /// door every page-mode caller (FlowDocumentView, the headless --sheets CLI, --pdf) goes
     /// through, NOT <see cref="TableGridRenderer.MeasureRowHeightsPoints"/> directly (that door is
     /// already covered by the two MeasureRowHeightsPoints facts above). A mutation that dropped
-    /// the <c>imageRenderer</c> argument anywhere between BuildWithTableSettle and
-    /// MeasureRowHeightsPoints (TableSettle.EstimateRowHeights, TableSettle.BuildLaidOutTables,
+    /// the <c>imageRenderer</c> argument anywhere between Build and
+    /// MeasureRowHeightsPoints (TableRowFacts.EstimateRowHeights,
     /// PageLayout.Build/NonTextBlockHeightPoints) would collapse BOTH numbers below to the "before"
     /// value, since "after" would then equal "before" byte-for-byte.</summary>
     [Theory]
     [InlineData("everything/GnBS_IM_20260401.docx", 32, 33)]
-    public void BuildWithTableSettle_page_count_matches_the_exact_before_and_after_pair(
+    public void Build_page_count_matches_the_exact_before_and_after_pair(
         string relPath, int expectedBefore, int expectedAfter)
     {
         var repoRoot = FindRepoRoot();
@@ -422,11 +422,11 @@ public class S10APageCellsTests
             var markers = BlockPageMarkers.Compute(result.Tree!);
             var handle = result.Handle?.RawHandle ?? IntPtr.Zero;
 
-            var (before, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry!, handle,
-                headersOn: true, footersOn: true, splitTablesDefault: true, imageRenderer: null);
+            var before = PageLayout.Build(blocks, markers, geometry!, handle,
+                headersOn: true, footersOn: true, splitTables: true, imageRenderer: null);
             var renderer = BoundRenderer(result, path);
-            var (after, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry!, handle,
-                headersOn: true, footersOn: true, splitTablesDefault: true, imageRenderer: renderer);
+            var after = PageLayout.Build(blocks, markers, geometry!, handle,
+                headersOn: true, footersOn: true, splitTables: true, imageRenderer: renderer);
 
             Assert.Equal(expectedBefore, before.PageCount);
             Assert.Equal(expectedAfter, after.PageCount);
@@ -441,7 +441,7 @@ public class S10APageCellsTests
     /// <summary>Drives the fix through the ACTUAL GUI/export door — <see
     /// cref="FlowDocumentView.PageMode"/> — rather than calling PageLayout directly, so a mutation
     /// that dropped <c>imageRenderer: _imageRenderer</c> from EnsurePageLayout's own
-    /// BuildWithTableSettle call (the exact line this sprint added it to) is caught here even if
+    /// Build call (the exact line this sprint added it to) is caught here even if
     /// every PageLayout-level test still passes. Binds the view's <see cref="ImageBlockRenderer"/>
     /// the same way <see cref="Printing.PdfExporter.ExportPdf"/> does (SetHandle + SetZipSource)
     /// before turning page mode on, so this is the SAME sequence a real GUI open or a --pdf export
@@ -467,12 +467,12 @@ public class S10APageCellsTests
             var blocks = FlowDocumentBuilder.Build(result.Tree!);
             var markers = BlockPageMarkers.Compute(result.Tree!);
             var handle = result.Handle?.RawHandle ?? IntPtr.Zero;
-            var (beforeLayout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry!, handle,
-                headersOn: true, footersOn: true, splitTablesDefault: true, imageRenderer: null);
+            var beforeLayout = PageLayout.Build(blocks, markers, geometry!, handle,
+                headersOn: true, footersOn: true, splitTables: true, imageRenderer: null);
             var expectedNullCount = beforeLayout.PageCount;
             var renderer = BoundRenderer(result, path);
-            var (afterLayout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry!, handle,
-                headersOn: true, footersOn: true, splitTablesDefault: true, imageRenderer: renderer);
+            var afterLayout = PageLayout.Build(blocks, markers, geometry!, handle,
+                headersOn: true, footersOn: true, splitTables: true, imageRenderer: renderer);
             var expectedRealCount = afterLayout.PageCount;
             Assert.NotEqual(expectedNullCount, expectedRealCount); // setup sanity: this fixture must actually distinguish the two paths
 
@@ -498,7 +498,7 @@ public class S10APageCellsTests
     // ---- 208->207 — NOT a harmless settle re-convergence. Root cause traced (macOS, headless ------
     // ---- PageLayout + a real --pdf export + pdftotext): the appendix's whole survey is ONE ---------
     // ---- table with a SINGLE row whose one cell holds 36 blocks (35 text + 1 nested 1x1 table). ---
-    // ---- A single-row table can never be split by TableSettle (CanBreakAbove(0) is always false, ---
+    // ---- A single-row table can never be split by the plan (CanBreakAbove(0) is always false, ---
     // ---- no boundary exists above the first row), so this cell is placed as ONE atomic block. -----
     // ---- S10-A's fix reserved real height for that nested table, growing the cell from 526pt to ---
     // ---- 683.9pt — just 1.4pt over one full page's content height (694.5pt on this geometry). -----
@@ -559,8 +559,7 @@ public class S10APageCellsTests
                     // A table PIECE (RowRangeCount smaller than the table's own row count) went
                     // through PlaceTableRows, not the Build() default branch this sprint's fix
                     // touches — that path's own convergence limits are a SEPARATE, already-documented
-                    // gap (TableSettle.cs's own class doc: "the host fallback's grouping is coarser
-                    // than Swift's own") and out of S10-A's scope. A WHOLE block (RowRangeCount is
+                    // gap (the host fallback's grouping is coarser than Swift's own) and out of S10-A's scope. A WHOLE block (RowRangeCount is
                     // null, or covers every row — the shape Build()'s default branch always
                     // produces) is exactly what this sprint's ShouldPushToFreshPage fix governs, so
                     // it is checked here.
@@ -588,13 +587,13 @@ public class S10APageCellsTests
                 }
             }
 
-            var (nullLayout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry, handle,
-                headersOn: true, footersOn: true, splitTablesDefault: true, imageRenderer: null);
+            var nullLayout = PageLayout.Build(blocks, markers, geometry, handle,
+                headersOn: true, footersOn: true, splitTables: true, imageRenderer: null);
             AssertNoMidPageOverflow(nullLayout, "imageRenderer: null");
 
             var renderer = BoundRenderer(result, path);
-            var (realLayout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry, handle,
-                headersOn: true, footersOn: true, splitTablesDefault: true, imageRenderer: renderer);
+            var realLayout = PageLayout.Build(blocks, markers, geometry, handle,
+                headersOn: true, footersOn: true, splitTables: true, imageRenderer: renderer);
             AssertNoMidPageOverflow(realLayout, "real ImageBlockRenderer");
 
             // The literal shape of the lead's ask: no text block that had at least one line placed

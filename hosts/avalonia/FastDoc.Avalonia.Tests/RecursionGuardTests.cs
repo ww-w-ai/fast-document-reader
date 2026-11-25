@@ -6,7 +6,7 @@ using FastDoc.Avalonia.Paging;
 namespace FastDoc.Avalonia.Tests;
 
 /// <summary>
-/// BlockPageMarkers.Walk (PageGeometry.cs) and HeaderFooterText.CollectText
+/// BlockPageMarkers.Walk (PageGeometry.cs) and HeaderFooterText.CollectStyledRuns
 /// (PageModePainter.cs) both walk a RenderTree by following child ids through a
 /// Dictionary&lt;ulong, RenderNode&gt;. A normally-parsed document cannot contain a cycle, but an
 /// engine parsing bug or a hand-crafted document that makes a node its own (or an ancestor's)
@@ -70,19 +70,17 @@ public class RecursionGuardTests
         Assert.True(envelope.IsOk);
         var tree = envelope.Ok!.Value.Deserialize<RenderTree>()!;
 
-        // S8-A2: HeaderFooterText is now public (Resolve/CollectCandidates are called directly
-        // from S8A2RenderFixesTests too), so this no longer needs reflection — the recursion guard
-        // it exercises (CollectText's HashSet<ulong> visited-set) is unchanged.
+        // The recursion guard exercised here is CollectStyledRuns' HashSet<ulong> visited-set.
         var byId = new Dictionary<ulong, RenderNode>();
         foreach (var node in tree.Nodes) { byId[node.Id] = node; }
         var candidates = HeaderFooterText.CollectCandidates(tree, "header");
 
         // Node 1 (a "header") lists ITSELF as its only child, so without the visited-set guard
-        // CollectText -> CollectText -> ... never terminates. Returning null (no text ever
+        // the walk never terminates. Returning null (no text ever
         // collected, since the self-referencing node has no textRun content) is what a
         // cut-on-first-repeat cycle produces; returning at all is the proof.
-        var result = HeaderFooterText.Resolve(candidates, byId, sectionIndex: 0, isFirstPageOfSection: true,
-            pageNumber: 1, totalPages: 1);
+        var result = HeaderFooterText.ResolveStyled(candidates[0], byId, pageNumber: 1, totalPages: 1,
+            defaultFontSize: 12);
 
         Assert.Null(result);
     }

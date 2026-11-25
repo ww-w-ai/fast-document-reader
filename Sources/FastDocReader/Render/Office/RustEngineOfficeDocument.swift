@@ -2,9 +2,8 @@ import CFastdocEngine
 import Foundation
 
 /// S5C1-01: a document the engine has already read, opened once through `fastdoc_office_open` and
-/// closed exactly once through `fastdoc_office_close` — the cost `fastdoc_office_header_band_height`
-/// pays on EVERY call (a re-read from bytes; 2.4s measured on a 10.2MB HWP in debug) is paid here
-/// only at `init`, so every later query on this instance borrows the document instead of re-reading
+/// closed exactly once through `fastdoc_office_close` — the cost of reading the bytes (2.4s measured
+/// on a 10.2MB HWP in debug) is paid only at `init`, so every later query on this instance borrows the document instead of re-reading
 /// it.
 ///
 /// One owner, one close: the object that owns a document's lifetime (`MarkdownDocument`) holds this
@@ -23,8 +22,7 @@ final class RustOfficeDocumentHandle {
     private(set) var answeredQueries = 0
 
     /// Opens `data` as `extension` through the engine. `nil` when the engine could not read this
-    /// document — the SAME `read_office` failure `fastdoc_office_header_band_height` already
-    /// reports, retrievable through `RustEngineMeasure.lastErrorKind()` immediately after this
+    /// document — the SAME `read_office` failure every engine read reports, retrievable through `RustEngineMeasure.lastErrorKind()` immediately after this
     /// initializer returns `nil`.
     init?(data: Data, extension ext: String) {
         // The two process-global ports every query through this handle depends on, installed by

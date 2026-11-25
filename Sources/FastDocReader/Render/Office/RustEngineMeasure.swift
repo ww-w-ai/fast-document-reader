@@ -288,8 +288,7 @@ enum RustEngineMeasure {
     /// exercised from Swift alone. What it proves is narrower than the cross-process check and
     /// still worth having: that this file's OWN mapping is lossless for content
     /// `OfficeTextBuilder` already built. The live comparison — Rust's decision against the host's,
-    /// across the FFI — is `headerBandHeight` below, and the two tests are named apart so neither
-    /// is mistaken for the other. Kept `internal`, not `private`, for that one caller.
+    /// across the FFI — goes through `RustOfficeDocumentHandle.bandSides`. Kept `internal`, not `private`, for that one caller.
     static func makePayload(from attr: NSAttributedString) -> (FastdocTextMeasurePayload, AnyObject) {
         let storage = PayloadStorage()
         let whole = NSRange(location: 0, length: attr.length)
@@ -381,29 +380,6 @@ enum RustEngineMeasure {
         var tabStopArrays: [[FastdocTextMeasureTabStop]] = []
         var paragraphs: [FastdocTextMeasureParagraph] = []
         var runs: [FastdocTextMeasureRun] = []
-    }
-
-    // MARK: - S5-05: the live cross-process call `RustEngineBridgeTests` needed and did not have.
-    //
-    // `fastdoc_office_header_band_height` crosses the C ABI TWICE for one answer: once for the
-    // document's bytes (Rust reads and normalizes them into headers/footers) and once back into
-    // this process for every paragraph's height (through the callback `install()` registers
-    // above). Nothing here decides anything about the document — it hands bytes and an extension
-    // string to the engine and reads back a number or a reason it could not be produced.
-
-    /// The engine's own decision for a document's running header (or footer) band height, in
-    /// points — or `nil` when the engine could not answer (see `lastErrorKind()` for why: no
-    /// measurer installed, an unreadable document, or a band the wire format cannot describe).
-    /// `fastdoc_office_header_band_height` returns a negative sentinel for every failure case, and
-    /// a real height is never negative, so the sentinel can never be mistaken for an answer.
-    static func headerBandHeight(_ data: Data, extension ext: String, columnWidth: CGFloat, footer: Bool) -> CGFloat? {
-        let raw: Double = data.withUnsafeBytes { buffer -> Double in
-            guard let base = buffer.bindMemory(to: UInt8.self).baseAddress else { return -1 }
-            return ext.withCString { extensionC in
-                fastdoc_office_header_band_height(base, buffer.count, extensionC, Double(columnWidth), footer)
-            }
-        }
-        return raw < 0 ? nil : CGFloat(raw)
     }
 
     /// The `"kind"` tag out of the engine's last recorded failure (`fastdoc_take_last_error`'s

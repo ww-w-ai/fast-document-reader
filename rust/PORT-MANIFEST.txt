@@ -9,7 +9,6 @@ Render/Office/OdfScriptType.swift
 
 Render/Office/ZipArchive.swift
 Render/Office/PagePagination.swift
-Render/Office/PageGrid.swift
 Render/Office/PageBandGeometry.swift
 Render/Office/ColumnGeometry.swift
 Render/Office/FootnoteBandSettle.swift

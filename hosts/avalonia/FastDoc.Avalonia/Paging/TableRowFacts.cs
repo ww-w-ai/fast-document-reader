@@ -7,10 +7,9 @@ namespace FastDoc.Avalonia.Paging;
 /// What this host contributes to the engine's page plan about a table: the height of each row, as
 /// <see cref="TableGridRenderer"/> would draw it, and which row boundaries a merged cell crosses.
 /// Where the table goes — carried whole, split at a boundary, or broken because it fits no page —
-/// is the plan's decision (`render/office/page_plan.rs`); the per-round settle loop that used to
-/// live here is gone.
+/// is the plan's decision (`render/office/page_plan.rs`).
 /// </summary>
-public static class TableSettle
+public static class TableRowFacts
 {
     /// <summary>Per-row height, in POINTS — a pass-through to <see cref="TableGridRenderer.
     /// MeasureRowHeightsPoints"/>, the SAME real per-cell TextLayout measurement

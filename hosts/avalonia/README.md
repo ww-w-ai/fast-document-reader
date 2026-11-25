@@ -158,9 +158,11 @@ checksum file extended by hand. Archive sizes: win-x64 89.7 MB, win-arm64 79.2 M
 - **Open**: file dialog (Ctrl/Cmd O), drag-and-drop onto the window, ten recent files.
 - **Reading position** restored per document (block index + fraction + zoom, keyed by
   path|size|mtime; 100 entries in `positions.json` beside the recent-files store).
-- **Page mode** (View ▸ Page Mode, Ctrl/Cmd+Shift+P; office documents only): the engine's band
-  sides, sheets and table placement, line-by-line placement that never splits a line, up to eight
-  table-settle rounds, multi-page tables with repeated header rows. Now measures and draws a
+- **Page mode** (View ▸ Page Mode, Ctrl/Cmd+Shift+P; office documents only): this host measures
+  line boxes, picture heights and table rows, and the engine's page plan decides every page — the
+  line and table-row breaks, the footnote bands, the columns, and which header, footer, master page
+  and page number each sheet carries — in one call, with no host settle (INVARIANTS.md 207);
+  multi-page tables with repeated header rows. Now measures and draws a
   table cell's own image and nested table too (S10-A, INVARIANTS.md 203), and pushes a block
   taller than one page's content height to a fresh page instead of clipping it mid-page (S10-A,
   INVARIANTS.md 204). Toggling into or out of page mode (Ctrl/Cmd+Shift+P) keeps the reading
@@ -238,7 +240,7 @@ checksum file extended by hand. Archive sizes: win-x64 89.7 MB, win-arm64 79.2 M
 - **Page furniture toggles** (S9-B3, View ▸ Master Page Furniture / Split Tables Across Pages,
   Ctrl+Shift+M / Ctrl+Shift+B, page mode only): turns the running header/footer band on and off,
   and chooses whether a table that would not finish on its page is broken at a row boundary or
-  carried whole to the next page — both already fed to `PageLayout.BuildWithTableSettle`, now from
+  carried whole to the next page — both fed to `PageLayout.Build`, now from
   live menu state instead of a hardcoded `true`.
 - **Line Numbers + Go to Line…** (S9-B3, View ▸ Line Numbers Ctrl+Shift+L, View ▸ Go to Line… Ctrl+L,
   flow mode only): numbers every top-level block (paragraph/table/image/rule) in the left margin —
@@ -336,7 +338,7 @@ macOS; the Linux pair has been run on Ubuntu 24.04 in a VM, the Windows pair has
 | `Native/` | `FastdocEngine.cs` — P/Invoke bindings, byte-matched structs, engine library lookup |
 | `Model/` | `RenderTreeEnvelope.cs` — the C# mirror of `EnvelopeV1` |
 | `Rendering/` | flow mode: `FlowDocumentBuilder` / `FlowBlock` / `FlowDocumentView` (virtualisation, zoom, find, scroll), `TableGridRenderer` (the one row measurement), `ImageBlockRenderer`, `RenderTreeLoader` (handle lifetime) |
-| `Paging/` | page mode: `TextMeasurerPort`, `PageGeometry`, `PageLayout`, `PagePlan` (the engine page plan client), `TableSettle` (row heights), `PageModePainter` |
+| `Paging/` | page mode: `TextMeasurerPort`, `PageGeometry`, `PageLayout`, `PagePlan` (the engine page plan client), `TableRowFacts` (row heights), `PageModePainter` |
 | `Printing/` | `PdfExporter` |
 | `Open/` | `OpenService`, `RecentFiles` |
 | `Reading/` | `ReadingPosition` |

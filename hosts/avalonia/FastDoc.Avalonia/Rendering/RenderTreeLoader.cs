@@ -51,12 +51,9 @@ public sealed class OfficeDocumentHandle : IDisposable
         _handle = handle;
     }
 
-    /// <summary>E2c-1: the raw native handle, for the S5C1-02/S5C2-01 page-geometry queries
-    /// (<see cref="Paging.PageBandResolver"/>/<see cref="Paging.PageSheetsResolver"/>) that need to
-    /// pass it straight to `fastdoc_office_band_sides`/`fastdoc_office_sheets` — those calls are
-    /// pure/NULL-checked on the native side (fastdoc_engine_ffi.h's own doc: "handle is unused
-    /// beyond the NULL check" for sheets), so exposing it read-only here adds no new ownership
-    /// rule beyond the one this class already states: never call after Dispose.</summary>
+    /// <summary>E2c-1: the raw native handle, for the queries that take the open document
+    /// (<see cref="Paging.PageBandResolver"/>, the page plan) — exposed read-only, so it adds no
+    /// ownership rule beyond the one this class already states: never call after Dispose.</summary>
     public IntPtr RawHandle => _handle;
 
     /// <summary>One embedded picture's bytes, decoded from the base64 the engine returns, fetched

@@ -15,8 +15,8 @@ namespace FastDoc.Avalonia.Paging;
 /// mirrors PageBandGeometry.Sides on macOS. All three fields are in POINTS.</summary>
 public readonly record struct PageBandSides(double HeaderPoints, double FooterPoints, double BandPoints, bool FromEngine);
 
-/// <summary>S5C1-02/S5C2-01 wrappers — one static call each, engine-first with a host fallback that
-/// mirrors the Swift formulas verbatim (PageBandGeometry.measure / PagePagination.sheets), so a
+/// <summary>S5C1-02: the band, engine-first with a host fallback that mirrors the Swift formula
+/// (PageBandGeometry.measure), so a
 /// document this engine build cannot answer for (no dylib, an office parse this host has not
 /// opened a handle for) still shows SOMETHING rather than refusing page mode outright.</summary>
 public static class PageBandResolver
@@ -58,48 +58,12 @@ public static class PageBandResolver
     }
 }
 
-public static class PageSheetsResolver
-{
-    public static Rect[] Resolve(IntPtr handle, int count, double widthPoints, double textOriginYPoints,
-        double leadingBandPoints, double pitchPoints, double topMarginPoints, double deskGapPoints)
-    {
-        if (count <= 0 || pitchPoints <= 0 || widthPoints <= 0) { return Array.Empty<Rect>(); }
-
-        if (handle != IntPtr.Zero)
-        {
-            var outCapacity = (nuint)(count * 4);
-            var out4 = new double[count * 4];
-            var ok = FastdocEngine.fastdoc_office_sheets(handle, count, widthPoints, textOriginYPoints,
-                leadingBandPoints, pitchPoints, topMarginPoints, deskGapPoints, out4, outCapacity, out _);
-            if (ok)
-            {
-                var fromEngine = new Rect[count];
-                for (var i = 0; i < count; i++)
-                {
-                    fromEngine[i] = new Rect(out4[i * 4], out4[i * 4 + 1], out4[i * 4 + 2], out4[i * 4 + 3]);
-                }
-                return fromEngine;
-            }
-        }
-
-        // Host fallback — PagePagination.sheets/sheetTop, verbatim.
-        var paperHeight = Math.Max(1, pitchPoints - deskGapPoints);
-        var rects = new Rect[count];
-        for (var page = 0; page < count; page++)
-        {
-            var top = textOriginYPoints + leadingBandPoints + page * pitchPoints - topMarginPoints;
-            rects[page] = new Rect(0, top, widthPoints, paperHeight);
-        }
-        return rects;
-    }
-}
-
 /// <summary>One NON-TEXT block's placement (Rule/Image/Table) — treated as a single atomic unit
-/// per E2c-2's own scope (a table's row-level settle is that unit's job, not this one's).
+/// per E2c-2's own scope (a table's rows are the plan's to break).
 /// <see cref="BlockIndex"/> indexes the SAME FlowBlock list FlowDocumentBuilder.Build(tree)
 /// returned. All measurements are in POINTS — PageModePainter converts to pixels at draw time.</summary>
 /// <summary><paramref name="RowRangeStart"/>/<paramref name="RowRangeCount"/> are non-null ONLY for
-/// a table piece the settle loop broke off a bigger table (E2c-2b) — the real row indices (into
+/// a table piece the plan broke off a bigger table (E2c-2b) — the real row indices (into
 /// the SAME <see cref="Rendering.TableGridModel.Rows"/> the whole table uses) this specific piece
 /// covers, so <see cref="PageModePainter"/> can ask <see cref="Rendering.TableGridRenderer.Draw"/>
 /// to paint exactly this piece's rows (plus a repeated header, if the document asks for one)
@@ -413,8 +377,8 @@ public static class PageLayout
 
             if (block.Kind == FlowBlockKind.Table && block.Table is { } table)
             {
-                var rowHeights = TableSettle.EstimateRowHeights(table, widthForBlock, imageRenderer, splitTables);
-                var canBreak = TableSettle.RowsThatCanBreakAbove(table);
+                var rowHeights = TableRowFacts.EstimateRowHeights(table, widthForBlock, imageRenderer, splitTables);
+                var canBreak = TableRowFacts.RowsThatCanBreakAbove(table);
                 // A table taller than the page body is flowed line by line by the plan, which needs each
                 // cell's lines; every other table is placed from its rows alone.
                 // (A table of a columned run is dealt cell line by cell line too.)
@@ -573,21 +537,6 @@ public static class PageLayout
         return padded;
     }
 
-    /// <summary>The paged layout with the reader's table split preference applied — what every
-    /// caller that draws or counts sheets goes through. The engine's plan settles tables itself, so
-    /// there is one round; the counts are what the plan reported (`Pushed` = tables carried whole to
-    /// the next page, `Oversized` = tables placed as row-bounded pieces).</summary>
-    public static (PageLayoutResult Layout, int Rounds, int Pushed, int Oversized) BuildWithTableSettle(
-        IReadOnlyList<FlowBlock> blocks, BlockPageMarkers.Markers markers, PageGeometry geometry,
-        IntPtr engineHandle, bool headersOn, bool footersOn, bool splitTablesDefault,
-        ImageBlockRenderer? imageRenderer = null, IReadOnlyDictionary<int, double>? noteBands = null,
-        PlanFurnitureInput? furniture = null)
-    {
-        var layout = Build(blocks, markers, geometry, engineHandle, headersOn, footersOn, splitTablesDefault,
-            imageRenderer, noteBands, furniture);
-        return (layout, 1, layout.CarriedTableCount, layout.SplitTableCount);
-    }
-
     /// <summary>E2c-2b: a line's PLACED height — the document's own <see cref="LineHeightRule"/>
     /// applied to Avalonia's measured <paramref name="naturalHeight"/> (`TextLine.Height`, real
     /// font metrics), THEN floored by the line-grid pitch when one is declared
@@ -622,14 +571,11 @@ public static class PageLayout
                 return block.SpacingBeforePoints + imageHeight + block.SpacingAfterPoints;
 
             case FlowBlockKind.Table:
-                // E2c-2 Part B: replaced the crude rows*20 placeholder with the SAME per-row
-                // estimate TableSettle.BuildLaidOutTables uses for its row geometry — the whole-
-                // table height and the settle loop's row-by-row heights must agree, or a table
-                // that "fits" here could still be judged as overrunning by the settle loop against
-                // a different number, and the two would never converge.
+                // The SAME per-row measurement the plan is handed for this table's rows, so the
+                // whole-table height and the row-by-row heights can never disagree.
                 var heights = block.Table is null
                     ? Array.Empty<double>()
-                    : TableSettle.EstimateRowHeights(block.Table, widthPoints, imageRenderer, splitTables);
+                    : TableRowFacts.EstimateRowHeights(block.Table, widthPoints, imageRenderer, splitTables);
                 var estimate = heights.Sum();
                 return block.SpacingBeforePoints + estimate + block.SpacingAfterPoints;
 

@@ -339,7 +339,7 @@ final class RustEngineBridgeTests: XCTestCase {
         XCTAssertEqual(tall.swift, tall.rust, accuracy: 0.5, "agreement must hold at the taller size too, not just the short one")
     }
 
-    // MARK: - The live cross-process call: `fastdoc_office_header_band_height`, actually invoked
+    // MARK: - Real-document fixtures
 
     /// `docs/fixtures/office` and `testdocs/` are both gitignored (repo convention — see
     /// `.gitignore`'s own comments on those two lines, which name a SYMLINK as how a worktree
@@ -361,88 +361,10 @@ final class RustEngineBridgeTests: XCTestCase {
         return data
     }
 
-    /// The host's own band height for a real document — `PageBandGeometry.bandHeight` run over the
-    /// SAME `OfficeReadResult` the Swift reader produces for the SAME bytes, with the SAME theme the
-    /// engine builds for itself (`RenderTheme::current(result.default_body_font_size)`,
-    /// `fastdoc-ffi/src/lib.rs`'s `fastdoc_office_header_band_height`) — so the two calls are asked
-    /// the identical question about the identical document.
-    private func hostBandHeight(for reference: OfficeReadResult, columnWidth: CGFloat, footer: Bool) -> CGFloat {
-        let theme = RenderTheme.current(size: reference.defaultBodyFontSize)
-        return PageBandGeometry.bandHeight(
-            headers: footer ? [] : reference.headers, footers: footer ? reference.footers : [],
-            theme: theme, columnWidth: columnWidth,
-            documentDefaultFontSize: reference.defaultBodyFontSize, pageContentWidth: nil)
-    }
-
-    /// The gap the intent audit named directly: no test in this file called into Rust across the C
-    /// ABI for the band-height decision. This one does — twice over, in fact, since
-    /// `fastdoc_office_header_band_height` crosses the boundary once for the document bytes (Rust
-    /// reads and normalizes them) and once back into THIS process per paragraph (through
-    /// `RustEngineMeasure`'s installed callback).
-    ///
-    /// One test, not two, and the order inside it matters: `RustEngineMeasure.install()` and the
-    /// engine's font provider are both process-global one-shots (`fastdoc-ffi/src/lib.rs`'s own
-    /// `text_measurer_missing_then_a_reentrant_callback_keeps_the_outer_panic_location` test states
-    /// the same constraint for exactly this reason — "the measurer is a process-global `OnceLock`
-    /// shared by every test in this binary, so the absence check has to run before the install
-    /// below, in the same test"). Splitting the "not installed yet" assertion into its own test
-    /// method was tried first and is WRONG here: XCTest does not run this file's methods in
-    /// declaration order (observed empirically — alphabetical), so a second method that calls
-    /// `install()` can run first and the "not installed" method then observes an already-installed
-    /// process and fails for the wrong reason. Sequence, in order: (1) call the export with NO
-    /// measurer installed — refused; (2) install fonts (`RustEngineFonts`, needed by the docx
-    /// reader's own layout decisions) and the measurer (`RustEngineMeasure`); (3) call the SAME
-    /// export again for a short real header and compare against the host's own
-    /// `PageBandGeometry.bandHeight` for the SAME bytes; (4) repeat for a taller real header and
-    /// check both sides moved the same direction — the live-call counterpart of
-    /// `testATallerHeaderMovesBothTheHostsAnswerAndTheAdapterMappingsAnswerTheSameDirection` above,
-    /// with two real documents standing in for "short"/"tall" instead of hand-built blocks.
-    /// `prosepages.docx`'s header is one short line; `GnBS_IM_20260401.docx`'s (from `testdocs/`,
-    /// `docx-test-corpus.md`'s standing real-document collection) is a single long line
-    /// ("INVESTMENT MEMORANDUM | 주식회사 지앤바이오솔루션 … STRICTLY CONFIDENTIAL") that WRAPS at
-    /// this test's 400pt column — genuinely taller, not merely longer, which is what "taller"
-    /// has to mean for this check (only layout can tell a wrap from a single line, the same
-    /// reasoning `built_height`'s own comment gives for measuring rather than estimating). Every
-    /// other real header on this machine with `docs/fixtures/office`'s corpus checked first was
-    /// either the SAME height as `prosepages.docx`'s (`bus-headings.docx`, `tablepage.docx`) or
-    /// empty (덕소 5B구역's three blank header paragraphs) — confirmed by direct measurement
-    /// before this pair was chosen, not assumed.
-    func testTheCrossProcessCallAgreesWithTheHostsOwnBandHeightAndMovesTallerWithATallerRealHeader() throws {
-        let columnWidth: CGFloat = 400
-        let shortData = try Self.fixture("docs/fixtures/office/paged-visual/prosepages.docx")
-        let tallData = try Self.fixture("testdocs/everything/GnBS_IM_20260401.docx")
-
-        // The "no measurer yet" half of this test moved to `EngineInstallPreconditionProbeTests`
-        // (class doc comment above) — installing here is what the rest of this test needs.
-        RustEngineFonts.install()
-        RustEngineMeasure.install()
-
-        let shortReference = try swiftReference(shortData, extension: "docx")
-        let tallReference = try swiftReference(tallData, extension: "docx")
-        XCTAssertFalse(shortReference.headers.isEmpty, "prosepages.docx must declare a running header for this test to mean anything")
-        XCTAssertFalse(tallReference.headers.isEmpty, "GnBS_IM_20260401.docx must declare a running header for this test to mean anything")
-
-        let shortHost = hostBandHeight(for: shortReference, columnWidth: columnWidth, footer: false)
-        let tallHost = hostBandHeight(for: tallReference, columnWidth: columnWidth, footer: false)
-        XCTAssertGreaterThan(shortHost, 0, "a real header must not measure zero")
-
-        let shortEngine = try XCTUnwrap(
-            RustEngineMeasure.headerBandHeight(shortData, extension: "docx", columnWidth: columnWidth, footer: false),
-            "the engine must answer once a measurer is installed")
-        let tallEngine = try XCTUnwrap(
-            RustEngineMeasure.headerBandHeight(tallData, extension: "docx", columnWidth: columnWidth, footer: false))
-
-        XCTAssertEqual(shortHost, shortEngine, accuracy: 0.5,
-                        "the engine's own decision must agree with this reader's own band height, across the FFI, for a real document")
-        XCTAssertGreaterThan(tallHost, shortHost, "the host's own answer must grow for the taller real header")
-        XCTAssertGreaterThan(tallEngine, shortEngine, "the engine's cross-process answer must grow in the SAME direction")
-        XCTAssertEqual(tallHost, tallEngine, accuracy: 0.5, "agreement must hold at the taller real document too")
-    }
-
     // MARK: - S5C1: the band query re-expressed over an opaque document handle
 
     /// S5C1-05: parity on a document whose band is NOT zero, proven through the handle rather than
-    /// the per-call re-read `RustEngineMeasure.headerBandHeight` uses — the header, the footer AND
+    /// a per-call re-read of the bytes — the header, the footer AND
     /// the combined band must all agree with the host's own `PageBandGeometry.measure`, at more
     /// than one column width, and the header must be asserted non-zero FIRST so this cannot pass by
     /// comparing two zeros (invariant 62: 28% of real Korean documents declare an entry that draws

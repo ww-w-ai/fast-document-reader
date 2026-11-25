@@ -80,8 +80,8 @@ public class S9B3Batch2Tests
         // the entries the document holds to choose among.
         var entries = PageFurniture.Read(tree, new System.Collections.Generic.Dictionary<long, double>(),
             Array.Empty<FootnoteSeparatorSpec?>());
-        var (layout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry,
-            IntPtr.Zero, headersOn: furniture, footersOn: furniture, splitTablesDefault: true, furniture: entries);
+        var layout = PageLayout.Build(blocks, markers, geometry,
+            IntPtr.Zero, headersOn: furniture, footersOn: furniture, splitTables: true, furniture: entries);
         return (blocks, geometry, markers, layout);
     }
 
@@ -128,7 +128,7 @@ public class S9B3Batch2Tests
     }
 
     // ---- 2. FlowDocumentView's public surface: defaults, setters, and the source-level wiring
-    // that actually reaches PageLayout.BuildWithTableSettle / PageModePainter.Draw (RenderCore/
+    // that actually reaches PageLayout.Build / PageModePainter.Draw (RenderCore/
     // EnsurePageLayout are internal/private with no InternalsVisibleTo grant to this project, so
     // the source-contract check below is this project's only way to pin that the LIVE field —
     // not a hardcoded constant — reaches those calls; #1 above proves the painter honours the
@@ -171,7 +171,7 @@ public class S9B3Batch2Tests
             "Rendering", "FlowDocumentView.cs"));
         Assert.Contains("splitTablesDefault: _splitTablesAcrossPages", source);
         Assert.Contains("headersOn: _masterPageFurniture, footersOn: _masterPageFurniture", source);
-        Assert.DoesNotContain("splitTablesDefault: true);", source);
+        Assert.DoesNotContain("splitTables: true);", source);
         Assert.Contains("_pageModePainter.Draw(surface, _blocks, _tree!, _pageLayout!, _pageGeometry!, _zoomFactor,\n                    width, Math.Max(0, Bounds.Height), _scrollOffset, _pageMarkers, _masterPageFurniture, _footnotePlan);",
             source);
     }

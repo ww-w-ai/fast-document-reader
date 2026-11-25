@@ -79,8 +79,8 @@ public class S10BTogglePositionTests
         var blocks = FlowDocumentBuilder.Build(tree);
         var geometry = PageGeometry.FromDocument(tree)!;
         var markers = BlockPageMarkers.Compute(tree);
-        var (layout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry,
-            System.IntPtr.Zero, headersOn: true, footersOn: true, splitTablesDefault: true);
+        var layout = PageLayout.Build(blocks, markers, geometry,
+            System.IntPtr.Zero, headersOn: true, footersOn: true, splitTables: true);
         return (blocks, geometry, layout);
     }
 

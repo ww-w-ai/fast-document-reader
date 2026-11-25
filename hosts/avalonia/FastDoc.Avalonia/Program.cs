@@ -439,7 +439,7 @@ class Program
             var markers = FastDoc.Avalonia.Paging.BlockPageMarkers.Compute(result.Tree!);
             // A cell's own pictures/nested tables must reserve real height here too, or this CLI's
             // sheet count disagrees with the GUI/--pdf page count for the exact same document (both
-            // go through PageLayout.BuildWithTableSettle) — bound the same way FlowDocumentView
+            // go through PageLayout.Build) — bound the same way FlowDocumentView
             // binds its own instance (SetHandle for hwp/hwpx's live-parse fetch, SetZipSource for
             // docx/odt's zip-archive fetch), so a cell picture with no eagerly-inlined bytes still
             // resolves here exactly as it would on screen.

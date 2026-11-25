@@ -222,11 +222,8 @@ public sealed class PageModePainter
             list.Add(line);
         }
 
-        // S8-A2 (C3/C5): candidates are collected ONCE (a handful of nodes at most) and RESOLVED
-        // per page below — see HeaderFooterText.Resolve's own doc for why extracting one
-        // concatenated string for the whole document (the previous shape) drew a first-page
-        // header on the cover, a stale page number everywhere, and two different footers stacked
-        // on one page (catalog findings F5/F6/F8-F10).
+        // Candidates are collected ONCE (a handful of nodes at most); the plan names the one each
+        // page shows (PageSheet.Header/Footer).
         var headerCandidates = HeaderFooterText.CollectCandidates(tree, "header");
         var footerCandidates = HeaderFooterText.CollectCandidates(tree, "footer");
         var byId = new Dictionary<ulong, RenderNode>(tree.Nodes.Count);
@@ -284,12 +281,9 @@ public sealed class PageModePainter
             // the margin it would otherwise have reserved). ResolveStyled() is skipped outright
             // rather than resolved-then-hidden, since it walks the tree per page.
             //
-            // S12-J: ResolveStyled replaces the plain-string Resolve() on this draw path — it
-            // carries the header/footer paragraph's own declared alignment and each run's own
-            // font/size/bold/italic, so DrawBandText paints the document's actual typography
-            // instead of a fixed 9pt Inter, always centered (gap.md row "헤더/푸터(러닝 헤더)").
-            // Resolve() itself is untouched (S8A2RenderFixesTests/RecursionGuardTests pin its
-            // plain-string contract).
+            // S12-J: ResolveStyled carries the header/footer paragraph's own declared alignment and
+            // each run's own font/size/bold/italic, so DrawBandText paints the document's actual
+            // typography.
             var headerBand = masterPageFurniture && sheet.Header is { } headerAt && headerAt < headerCandidates.Count
                 ? HeaderFooterText.ResolveStyled(headerCandidates[headerAt], byId, pageNumber, layout.PageCount, defaultFontSize)
                 : null;
@@ -612,27 +606,13 @@ public sealed class PageModePainter
     }
 }
 
-/// <summary>E2c-1: a rough text preview for a document's running header/footer — concatenates every
-/// textRun descendant of the ONE header/footer node <see cref="Resolve"/> selects for a given page,
-/// with no per-run styling. This is deliberately NOT the styled build OfficeTextBuilder performs on
-/// macOS (that build feeds the engine's band-height query THROUGH the measurer port, never through
-/// C# text extraction) — it exists only so the band this painter reserves is not left visually
-/// empty when the document declared real header/footer content. Full per-run styling of
-/// header/footer text is left to a later unit, same as the table/line-splitting scope lines
-/// PageLayout's own doc states.
-///
-/// S8-A2 (C3/C5): a document can declare SEVERAL header (or footer) nodes — one per
-/// <c>HeaderFooterApplicability</c> ("defaultPages"/"firstPage"/"evenPages"/"oddPages", wire.rs) and
-/// optionally scoped to one <c>section</c> (an HWP document can give exactly one of many sections
-/// its own running head, `section: Option&lt;i64&gt;` — `None` means every page). The PREVIOUS shape
-/// here concatenated every one of them into a single string and drew that same string on every
-/// page: a docx cover's blank "firstPage" header was overridden by the "defaultPages" header instead
-/// of suppressing it (F5), a page number field's literal parsed-at-load text never changed page to
-/// page (F6), and an HWP section-scoped footer text got joined onto the SAME footer as the whole
-/// document's own page-number footer, so two different numbers appeared stacked on one page
-/// (F8-F10). <see cref="Resolve"/> instead picks the ONE node that applies to THIS page's section
-/// and position (first page of that section, or not) before collecting any text — the exact
-/// selection rule `HeaderFooter.applies_to`/`section` was authored to answer.</summary>
+/// <summary>A document's running header/footer text, styled. A document can declare SEVERAL header
+/// (or footer) nodes — one per <c>HeaderFooterApplicability</c> ("defaultPages"/"firstPage"/
+/// "evenPages"/"oddPages", wire.rs), optionally scoped to one <c>section</c>. Which node applies to
+/// which page is the page plan's decision (<see cref="PageSheet.Header"/>/<see cref="PageSheet.Footer"/>
+/// name a position in <see cref="CollectCandidates"/>'s list); this class only collects the
+/// candidates and reads the chosen one's text and typography, substituting live page-number fields
+/// with the page's own number.</summary>
 public static class HeaderFooterText
 {
     /// <summary>One header/footer node's selector facts, decoded straight off its raw wire
@@ -660,92 +640,6 @@ public static class HeaderFooterText
         return candidates;
     }
 
-    /// <summary>Picks the header/footer text for ONE page: candidates scoped to a DIFFERENT section
-    /// are dropped first (an HWP section's own running head never leaks onto another section's
-    /// pages — the exact defect measured in invariant 176's own doc for a different field). Among
-    /// what is left, the section's OPENING page prefers an explicit "firstPage" declaration — even
-    /// an EMPTY one, which is how docx represents "no header on the title page" (`w:titlePg`) — and
-    /// only falls back to "defaultPages" when the document declared no first-page variant at all.
-    /// Every other page uses "defaultPages" (or, failing that, whatever is left that is not itself
-    /// scoped to the first page). A "page"/"numPages" field inside a selected node's text is
-    /// substituted with THIS page's own 1-based number/total — see <see cref="CollectText"/>.</summary>
-    public static string? Resolve(List<Candidate> candidates, Dictionary<ulong, RenderNode> byId,
-        int sectionIndex, bool isFirstPageOfSection, int pageNumber, int totalPages)
-    {
-        var chosen = SelectChosen(candidates, sectionIndex, isFirstPageOfSection);
-        if (chosen is null) { return null; }
-
-        var texts = new List<string>();
-        foreach (var candidate in chosen)
-        {
-            CollectText(candidate.Node, byId, texts, new HashSet<ulong>(), pageNumber, totalPages);
-        }
-        var joined = string.Join(" ", texts.Where(t => !string.IsNullOrWhiteSpace(t)));
-        return string.IsNullOrWhiteSpace(joined) ? null : joined;
-    }
-
-    /// <summary>The section/first-page selection rule <see cref="Resolve"/>'s own doc describes,
-    /// factored out so <see cref="ResolveStyled"/> (S12-J) picks the identical node(s) rather than
-    /// a second copy of the rule drifting from this one. Returns null for "draw nothing on this
-    /// page" (no candidate in this section, or an explicit empty first-page declaration) — the
-    /// same case both callers already treat as null.</summary>
-    private static List<Candidate>? SelectChosen(List<Candidate> candidates, int sectionIndex, bool isFirstPageOfSection)
-    {
-        var inSection = candidates.Where(c => c.Section is null || c.Section == sectionIndex).ToList();
-        if (inSection.Count == 0) { return null; }
-
-        List<Candidate> chosen;
-        if (isFirstPageOfSection)
-        {
-            var firstPage = inSection.Where(c => c.AppliesTo == "firstPage").ToList();
-            chosen = firstPage.Count > 0 ? firstPage : inSection.Where(c => c.AppliesTo == "defaultPages").ToList();
-        }
-        else
-        {
-            chosen = inSection.Where(c => c.AppliesTo == "defaultPages").ToList();
-            if (chosen.Count == 0) { chosen = inSection.Where(c => c.AppliesTo != "firstPage").ToList(); }
-        }
-        // An explicit first-page match with no visible text (docx's blank w:titlePg header) is a
-        // deliberate "draw nothing on this page" — not a signal to fall back to the default band.
-        return chosen.Count == 0 ? null : chosen;
-    }
-
-    private static void CollectText(RenderNode node, Dictionary<ulong, RenderNode> byId, List<string> texts,
-        HashSet<ulong> visiting, int pageNumber, int totalPages)
-    {
-        if (!visiting.Add(node.Id)) { return; } // cycle: node.Id is already an ancestor on this path
-        if (node.Type == "textRun")
-        {
-            // S8-A2 (C3): `wire::TextRun.page_number_field` ("page"/"numPages") names a run that
-            // stands in for a LIVE page-number field rather than literal text — substituted with
-            // THIS page's own number so it actually changes page to page (catalog finding F6),
-            // instead of the field's value at whatever page the document happened to declare it on.
-            if (node.Data.ValueKind == JsonValueKind.Object
-                && node.Data.TryGetProperty("pageNumberField", out var field) && field.ValueKind == JsonValueKind.String)
-            {
-                texts.Add(field.GetString() == "numPages" ? totalPages.ToString() : pageNumber.ToString());
-            }
-            else
-            {
-                var tr = node.AsTextRun;
-                if (tr is not null && tr.Text.Length > 0) { texts.Add(tr.Text); }
-            }
-        }
-        foreach (var childId in node.Children)
-        {
-            if (byId.TryGetValue(childId, out var child)) { CollectText(child, byId, texts, visiting, pageNumber, totalPages); }
-        }
-        visiting.Remove(node.Id);
-    }
-
-    // -----------------------------------------------------------------------------------------
-    // S12-J: styled resolution — the SAME node selection as Resolve()/CollectText above, but
-    // carrying each run's own font/size/bold/italic/underline/strike and the header/footer
-    // paragraph's own declared alignment, instead of collapsing everything to a bare string.
-    // Kept as a SEPARATE path (not a Resolve() overload) so the plain-string contract
-    // S8A2RenderFixesTests/RecursionGuardTests already pin stays untouched.
-    // -----------------------------------------------------------------------------------------
-
     /// <summary>One styled run inside a resolved header/footer band — the wire style fields
     /// <see cref="Model.CharacterStyleWire"/> carries, already resolved to a font family and a
     /// points-valued size (never null; falls back to the document's own default body size the same
@@ -758,15 +652,6 @@ public static class HeaderFooterText
     /// Center — the band's prior fixed default — only when the document declared none) plus every
     /// styled run in citation order.</summary>
     public readonly record struct StyledBand(TextAlignment Alignment, List<BandRun> Runs);
-
-    /// <summary>The styled counterpart of <see cref="Resolve"/> — same page/section selection
-    /// (<see cref="SelectChosen"/>), but returns typography instead of a bare string. Null under
-    /// the identical conditions <see cref="Resolve"/> returns null for (nothing selected for this
-    /// page, or every selected run's text is empty/whitespace).</summary>
-    public static StyledBand? ResolveStyled(List<Candidate> candidates, Dictionary<ulong, RenderNode> byId,
-        int sectionIndex, bool isFirstPageOfSection, int pageNumber, int totalPages, double defaultFontSize)
-        => StyleChosen(SelectChosen(candidates, sectionIndex, isFirstPageOfSection), byId, pageNumber, totalPages,
-            defaultFontSize);
 
     /// <summary>The styled band of the ONE entry the page plan chose for a page (S5 of
     /// docs/plans/pagination-to-engine.md): which entry applies is the engine's decision, this only
@@ -798,7 +683,7 @@ public static class HeaderFooterText
         if (!visiting.Add(node.Id)) { return; } // cycle: node.Id is already an ancestor on this path
 
         // The FIRST paragraph/heading's own alignment wins — a header/footer is overwhelmingly one
-        // paragraph, and this mirrors CollectText's own "first thing found governs" shape.
+        // paragraph (the first thing found governs).
         if (!alignmentSet)
         {
             var style = node.Type switch
@@ -821,7 +706,7 @@ public static class HeaderFooterText
             if (node.Data.ValueKind == JsonValueKind.Object
                 && node.Data.TryGetProperty("pageNumberField", out var field) && field.ValueKind == JsonValueKind.String)
             {
-                // Same live-field substitution as CollectText — a page-number run keeps ITS OWN
+                // Live-field substitution — a page-number run keeps ITS OWN
                 // declared style (a bold page number stays bold), only the text is substituted.
                 text = field.GetString() == "numPages" ? totalPages.ToString() : pageNumber.ToString();
                 charStyle = node.AsTextRun?.Style;

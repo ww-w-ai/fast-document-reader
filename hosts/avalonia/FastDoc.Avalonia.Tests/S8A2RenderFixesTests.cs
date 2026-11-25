@@ -200,103 +200,10 @@ public class S8A2RenderFixesTests
         Assert.Contains("2", joined);
     }
 
-    // ---- C3/C5: header/footer selection is per-page, per-section, with live page numbers ----
-
-    [Fact]
-    public void First_page_header_overrides_default_and_an_empty_one_suppresses_the_band()
-    {
-        var byId = new Dictionary<ulong, RenderNode>
-        {
-            [10] = NodeWithRawData(10, "header", new ulong[] { 11 }, """{"appliesTo":"defaultPages"}"""),
-            [11] = NodeWithRawData(11, "textRun", System.Array.Empty<ulong>(), """{"text":"Default Header","style":{}}"""),
-            [20] = NodeWithRawData(20, "header", System.Array.Empty<ulong>(), """{"appliesTo":"firstPage"}"""), // blank titlePg header
-        };
-        var candidates = new List<HeaderFooterText.Candidate>
-        {
-            new(byId[10], "defaultPages", null),
-            new(byId[20], "firstPage", null),
-        };
-
-        var coverText = HeaderFooterText.Resolve(candidates, byId, sectionIndex: 0, isFirstPageOfSection: true, pageNumber: 1, totalPages: 5);
-        var laterText = HeaderFooterText.Resolve(candidates, byId, sectionIndex: 0, isFirstPageOfSection: false, pageNumber: 2, totalPages: 5);
-
-        Assert.Null(coverText); // F5: blank first-page header suppresses the band on the cover
-        Assert.Equal("Default Header", laterText);
-    }
-
-    [Fact]
-    public void A_section_scoped_footer_never_leaks_onto_a_DIFFERENT_sections_pages()
-    {
-        // Mirrors the real HWP manual's shape (wire::HeaderFooter's own doc): the document declares
-        // ONE footer, scoped to exactly one section (`section: Some(n)`) — no document-wide
-        // ("section": null, "applies to every page") footer node exists alongside it. Before this
-        // fix, HeaderFooterText concatenated EVERY footer node in the WHOLE tree onto every page
-        // regardless of section, so this section-11-only text would have shown on section 0's
-        // pages too — the wrong-section leak `HeaderFooter.section`'s own doc warns against.
-        var byId = new Dictionary<ulong, RenderNode>
-        {
-            [40] = NodeWithRawData(40, "footer", new ulong[] { 41 }, """{"appliesTo":"defaultPages","section":3}"""),
-            [41] = NodeWithRawData(41, "textRun", System.Array.Empty<ulong>(), """{"text":"Appendix Footer","style":{}}"""),
-        };
-        var candidates = new List<HeaderFooterText.Candidate> { new(byId[40], "defaultPages", 3) };
-
-        var section0Text = HeaderFooterText.Resolve(candidates, byId, sectionIndex: 0, isFirstPageOfSection: false, pageNumber: 5, totalPages: 500);
-        var section3Text = HeaderFooterText.Resolve(candidates, byId, sectionIndex: 3, isFirstPageOfSection: false, pageNumber: 5, totalPages: 500);
-
-        Assert.Null(section0Text); // no footer at all on a section this footer was never scoped to
-        Assert.Equal("Appendix Footer", section3Text);
-    }
-
-    [Fact]
-    public void A_document_wide_footer_still_combines_with_one_sections_own_extra_footer()
-    {
-        // `section: None` is documented as "applies to EVERY page" (wire.rs's own words) — a
-        // document-wide footer legitimately combines with a MORE SPECIFIC section-scoped one on
-        // that section's own pages, rather than the specific one replacing it.
-        var byId = new Dictionary<ulong, RenderNode>
-        {
-            [30] = NodeWithRawData(30, "footer", new ulong[] { 31 }, """{"appliesTo":"defaultPages"}"""),
-            [31] = NodeWithRawData(31, "textRun", System.Array.Empty<ulong>(), """{"text":"Doc Footer","style":{}}"""),
-            [40] = NodeWithRawData(40, "footer", new ulong[] { 41 }, """{"appliesTo":"defaultPages","section":3}"""),
-            [41] = NodeWithRawData(41, "textRun", System.Array.Empty<ulong>(), """{"text":"Appendix Footer","style":{}}"""),
-        };
-        var candidates = new List<HeaderFooterText.Candidate>
-        {
-            new(byId[30], "defaultPages", null),
-            new(byId[40], "defaultPages", 3),
-        };
-
-        var section0Text = HeaderFooterText.Resolve(candidates, byId, sectionIndex: 0, isFirstPageOfSection: false, pageNumber: 5, totalPages: 500);
-        var section3Text = HeaderFooterText.Resolve(candidates, byId, sectionIndex: 3, isFirstPageOfSection: false, pageNumber: 5, totalPages: 500);
-
-        Assert.Equal("Doc Footer", section0Text);
-        Assert.Contains("Doc Footer", section3Text);
-        Assert.Contains("Appendix Footer", section3Text);
-    }
-
-    [Fact]
-    public void A_page_number_field_renders_the_current_page_not_a_frozen_value()
-    {
-        var byId = new Dictionary<ulong, RenderNode>
-        {
-            [50] = NodeWithRawData(50, "footer", new ulong[] { 51, 52 }, """{"appliesTo":"defaultPages"}"""),
-            [51] = NodeWithRawData(51, "textRun", System.Array.Empty<ulong>(), """{"text":"- ","style":{}}"""),
-            [52] = NodeWithRawData(52, "textRun", System.Array.Empty<ulong>(), """{"text":"","style":{},"pageNumberField":"page"}"""),
-        };
-        var candidates = new List<HeaderFooterText.Candidate> { new(byId[50], "defaultPages", null) };
-
-        var page1 = HeaderFooterText.Resolve(candidates, byId, sectionIndex: 0, isFirstPageOfSection: true, pageNumber: 1, totalPages: 10);
-        var page10 = HeaderFooterText.Resolve(candidates, byId, sectionIndex: 0, isFirstPageOfSection: false, pageNumber: 10, totalPages: 10);
-
-        Assert.Contains("1", page1);
-        Assert.Contains("10", page10);
-        Assert.NotEqual(page1, page10); // catalog F6: this used to be the SAME literal text on every page
-    }
-
     // ---- S12-J: HeaderFooterText.ResolveStyled carries the document's own font/size/alignment ----
     // (gap.md "헤더/푸터(러닝 헤더)": "텍스트는 나오되 스타일 없음" — PageModePainter.DrawBandText
     // used to paint every header/footer at a fixed 9pt Inter, always centered, regardless of what
-    // the document declared. Resolve() itself is untouched — these tests are additive.)
+    // the document declared.)
 
     [Fact]
     public void ResolveStyled_carries_the_paragraphs_own_alignment_and_the_runs_own_font_and_size()
@@ -310,7 +217,7 @@ public class S8A2RenderFixesTests
         };
         var candidates = new List<HeaderFooterText.Candidate> { new(byId[60], "defaultPages", null) };
 
-        var band = HeaderFooterText.ResolveStyled(candidates, byId, sectionIndex: 0, isFirstPageOfSection: true,
+        var band = HeaderFooterText.ResolveStyled(candidates[0], byId,
             pageNumber: 1, totalPages: 5, defaultFontSize: 12.0);
 
         Assert.NotNull(band);
@@ -336,7 +243,7 @@ public class S8A2RenderFixesTests
         };
         var candidates = new List<HeaderFooterText.Candidate> { new(byId[70], "defaultPages", null) };
 
-        var band = HeaderFooterText.ResolveStyled(candidates, byId, sectionIndex: 0, isFirstPageOfSection: true,
+        var band = HeaderFooterText.ResolveStyled(candidates[0], byId,
             pageNumber: 1, totalPages: 5, defaultFontSize: 11.5);
 
         Assert.NotNull(band);
@@ -360,7 +267,7 @@ public class S8A2RenderFixesTests
         };
         var candidates = new List<HeaderFooterText.Candidate> { new(byId[80], "defaultPages", null) };
 
-        var band = HeaderFooterText.ResolveStyled(candidates, byId, sectionIndex: 0, isFirstPageOfSection: false,
+        var band = HeaderFooterText.ResolveStyled(candidates[0], byId,
             pageNumber: 7, totalPages: 42, defaultFontSize: 12.0);
 
         Assert.NotNull(band);
@@ -372,17 +279,16 @@ public class S8A2RenderFixesTests
     }
 
     [Fact]
-    public void ResolveStyled_returns_null_under_the_same_conditions_Resolve_does()
+    public void ResolveStyled_returns_null_for_an_entry_with_no_visible_text()
     {
-        // Mirrors First_page_header_overrides_default_and_an_empty_one_suppresses_the_band's cover
-        // case, through the styled path instead of the plain-string one.
+        // A blank first-page header (docx w:titlePg): the plan chose it, and it draws nothing.
         var byId = new Dictionary<ulong, RenderNode>
         {
             [90] = NodeWithRawData(90, "header", System.Array.Empty<ulong>(), """{"appliesTo":"firstPage"}"""),
         };
         var candidates = new List<HeaderFooterText.Candidate> { new(byId[90], "firstPage", null) };
 
-        var band = HeaderFooterText.ResolveStyled(candidates, byId, sectionIndex: 0, isFirstPageOfSection: true,
+        var band = HeaderFooterText.ResolveStyled(candidates[0], byId,
             pageNumber: 1, totalPages: 5, defaultFontSize: 12.0);
 
         Assert.Null(band);

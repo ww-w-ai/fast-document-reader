@@ -224,7 +224,7 @@ public sealed class FlowDocumentView : Control
     /// <summary>S9-B3 batch 2: mirrors macOS's <c>PageViewOptions.splitTables</c> — whether a table
     /// that will not finish on the page it starts on is broken at a row boundary (true, the
     /// document's own behaviour) or carried whole to the next page (false). Fed straight to
-    /// <see cref="PageLayout.BuildWithTableSettle"/>'s <c>splitTablesDefault</c> parameter, which
+    /// <see cref="FootnoteLayout.Build"/>'s <c>splitTablesDefault</c> parameter, which
     /// already existed but was hardcoded to <c>true</c> before this batch.</summary>
     private bool _splitTablesAcrossPages = true;
 
@@ -801,7 +801,7 @@ public sealed class FlowDocumentView : Control
         if (!_pageLayoutDirty && _pageLayout is not null) { return; }
         var handle = _officeHandle?.RawHandle ?? IntPtr.Zero;
         // The interactive view settles tables the same way the headless `--sheets` CLI does
-        // (PageLayout.BuildWithTableSettle) — headersOn/footersOn/splitTablesDefault come from the
+        // (PageLayout.Build) — headersOn/footersOn/splitTablesDefault come from the
         // View menu's Master Page Furniture / Split Tables Across Pages toggles (S9-B3 batch 2),
         // both true by default, mirroring PageViewOptions.default (Swift).
         // Footnote bands ride the same layout: a page that cites notes reserves room at its foot.

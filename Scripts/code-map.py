@@ -114,9 +114,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--stdout", action="store_true")
     ap.add_argument("--symbols", default="PagePagination.pitch,PagePagination.sheets,"
-                    "PagePagination.tablesToPush,PagePagination.oversizedPieces,"
                     "PageBandGeometry.measure,PageBandGeometry.bandHeight,"
-                    "TableBlockBuilder.resizeTables,PageGrid.build",
+                    "TableBlockBuilder.resizeTables",
                     help="comma-separated Swift symbols to census")
     args = ap.parse_args()
 

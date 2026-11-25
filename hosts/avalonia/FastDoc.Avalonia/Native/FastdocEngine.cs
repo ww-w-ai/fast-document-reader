@@ -286,26 +286,6 @@ public static class FastdocEngine
         double deskGap, [MarshalAs(UnmanagedType.I1)] bool hasDeskGap,
         [In, Out] double[] out_);
 
-    // bool fastdoc_office_sheets(const FastdocOfficeDocument *handle, long long count, double width,
-    //     double text_origin_y, double leading_band, double pitch, double top_margin,
-    //     double desk_gap, double *out, size_t out_capacity, size_t *out_count);
-    // Fills out[0..count*4] as [x, y, width, height] per sheet.
-    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static extern bool fastdoc_office_sheets(
-        IntPtr handle, long count, double width, double textOriginY, double leadingBand,
-        double pitch, double topMargin, double deskGap,
-        [In, Out] double[] out_, nuint outCapacity, out nuint outCount);
-
-    // ---- footnote bands (fastdoc_office_footnote_band_settle) ----
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct FastdocNoteBandEntry
-    {
-        public long Page;
-        public double Value;
-    }
-
     // char *fastdoc_office_page_plan_json(const FastdocOfficeDocument *handle, const char *input_json);
     // The page plan (S2): where every whole block goes, from the heights the host observed. Returns
     // An ok envelope carrying the PagePlanV1, or an error envelope; free with TakeOwnedString.
@@ -318,70 +298,6 @@ public static class FastdocEngine
     // TakeOwnedString.
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr fastdoc_office_line_model_json(byte[] inputJson);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct FastdocMasterTemplateDesc
-    {
-        public long Section;
-        /// <summary>0 default, 1 first page, 2 even pages, 3 odd pages.</summary>
-        public int AppliesTo;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct FastdocMasterPageQuery
-    {
-        public long PageIndex;
-        [MarshalAs(UnmanagedType.I1)] public bool HasSection;
-        public long Section;
-    }
-
-    // bool fastdoc_office_master_selection(templates, template_count, vetoed_sections,
-    //     vetoed_section_count, pages, page_count, out_template_index, out_capacity);
-    // Static (no document handle): which master-page template covers each page, -1 for none.
-    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static extern bool fastdoc_office_master_selection(
-        [In] FastdocMasterTemplateDesc[] templates, nuint templateCount,
-        [In] long[] vetoedSections, nuint vetoedSectionCount,
-        [In] FastdocMasterPageQuery[] pages, nuint pageCount,
-        [Out] long[] outTemplateIndex, nuint outCapacity);
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct FastdocFootnotePageDesc
-    {
-        public long PageIndex;
-        public nuint NoteOffset;
-        public nuint NoteCount;
-        [MarshalAs(UnmanagedType.I1)] public bool HasSeparator;
-        [MarshalAs(UnmanagedType.I1)] public bool SeparatorIsDeclared;
-        public long SeparatorLineType;
-        public double SeparatorLineWidthPt;
-        public double SeparatorMarginTopPt;
-        public double SeparatorMarginBottomPt;
-        public double SeparatorNoteSpacingPt;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct FastdocFootnoteHistoryRoundDesc
-    {
-        public nuint EntryOffset;
-        public nuint EntryCount;
-    }
-
-    // bool fastdoc_office_footnote_band_settle(pages, page_count, note_heights, note_heights_count,
-    //     history_rounds, history_round_count, history_entries, history_entry_count,
-    //     page_content_height, cap, out_bands, out_capacity, out_count, out_outcome, out_stop_reason);
-    // Static: this round's bands per page and whether to retry (0) or stop (1) on them.
-    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public static extern bool fastdoc_office_footnote_band_settle(
-        [In] FastdocFootnotePageDesc[] pages, nuint pageCount,
-        [In] double[] noteHeights, nuint noteHeightsCount,
-        [In] FastdocFootnoteHistoryRoundDesc[] historyRounds, nuint historyRoundCount,
-        [In] FastdocNoteBandEntry[] historyEntries, nuint historyEntryCount,
-        double pageContentHeight, long cap,
-        [Out] FastdocNoteBandEntry[] outBands, nuint outCapacity, out nuint outCount,
-        out int outOutcome, out int outStopReason);
 
     /// <summary>Marshals a UTF-8 NUL-terminated byte array for a `const char *extension` argument.</summary>
     public static byte[] Utf8NulTerminated(string s)

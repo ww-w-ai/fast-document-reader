@@ -9,20 +9,6 @@ import AppKit
 /// asked with (`naturalInput`). `PlanAppliedParity` checks the applied layout against the plan.
 enum PlanInputBuilder {
 
-    /// One block as the observed layout shows it.
-    struct ObservedBlock {
-        var blockId: Int
-        var isTable: Bool
-        var firstLine: Int       // index into `lines`
-        var lineCount: Int
-        var macPage: Int         // the page of its first line (a table: of its top edge)
-        var preview: String
-        var detail: String       // TextKit local top, the block's height and the gap before it
-        var macLocalTop: CGFloat
-        var heightMac: CGFloat = 0   // the block's height in TextKit
-    }
-
-
     struct Fragment {
         var location: Int
         var rect: NSRect
@@ -53,13 +39,13 @@ enum PlanInputBuilder {
         block.width(for: .padding, edge: edge) + block.width(for: .border, edge: edge)
     }
 
+    /// Where one depth-0 cell line sits in the rows `flowRows` reports, by its text location.
+    typealias CellRef = (row: Int, cell: Int, line: Int, loc: Int)
+
     /// The rows of the table at nesting `depth`, as the plan's flow wants them: every cell's items at
-    /// their NATURAL offsets (a gap a page break opened between two of them is taken back out),
-    /// nested tables as items of their own, and a row's height from its cells whenever a page
-    /// boundary fell in or beside it (the observed distance to the next row then carries the gap).
-    static func flowRows(_ frags: [Fragment], depth: Int, blockIndex: Int, page: (CGFloat) -> Int,
-                                 leading: CGFloat, pitch: CGFloat, authored: Bool = false,
-                                 refs: inout [(block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)])
+    /// their natural offsets, nested tables as items of their own, and a row's height the larger of
+    /// its cells' extent and the observed distance to the next row.
+    static func flowRows(_ frags: [Fragment], depth: Int, refs: inout [CellRef])
         -> (rows: [[String: Any]], height: CGFloat) {
         var order: [ObjectIdentifier] = []
         var byCell: [ObjectIdentifier: [Fragment]] = [:]
@@ -72,39 +58,34 @@ enum PlanInputBuilder {
         let position = Dictionary(uniqueKeysWithValues: rowKeys.enumerated().map { ($1, $0) })
         var cellsOfRow: [Int: [[String: Any]]] = [:]
         var extentOfRow: [Int: CGFloat] = [:]
-        var shiftedRows: Set<Int> = []
         var observedTop: [Int: CGFloat] = [:]
-        var observedPage: [Int: Int] = [:]
         for id in order {
             let fs = byCell[id]!
             let block = fs[0].chain[depth]
             guard let at = position[block.startingRow] else { continue }
             let padTop = inset(block, .minY), padBottom = inset(block, .maxY)
             let top = fs[0].rect.minY - padTop
-            if observedTop[at] == nil || top < observedTop[at]! { observedTop[at] = top; observedPage[at] = page(fs[0].rect.minY) }
+            if observedTop[at] == nil || top < observedTop[at]! { observedTop[at] = top }
             var items: [[String: Any]] = []
             var natural: CGFloat = 0
-            var previous: (bottom: CGFloat, page: Int, spaceAfter: CGFloat, paragraph: Int)?
+            var previousBottom: CGFloat?
             let cellIndex = cellsOfRow[at, default: []].count
             var i = 0
             while i < fs.count {
                 let f = fs[i]
                 var item: [String: Any]
                 var itemTop: CGFloat, itemBottom: CGFloat, itemHeight: CGFloat
-                var last = f
                 if f.chain.count > depth + 1 {
                     let nestedTable = ObjectIdentifier(f.chain[depth + 1].table)
                     var j = i
                     while j < fs.count, fs[j].chain.count > depth + 1,
                           ObjectIdentifier(fs[j].chain[depth + 1].table) == nestedTable { j += 1 }
                     let run = Array(fs[i..<j])
-                    let sub = flowRows(run, depth: depth + 1, blockIndex: blockIndex, page: page, leading: leading,
-                                       pitch: pitch, authored: authored, refs: &refs)
+                    let sub = flowRows(run, depth: depth + 1, refs: &refs)
                     itemTop = run.map { $0.rect.minY - inset($0.chain[depth + 1], .minY) }.min()!
                     itemBottom = run.map { $0.rect.maxY + inset($0.chain[depth + 1], .maxY) }.max()!
                     itemHeight = sub.height
                     item = ["height": Double(itemHeight), "rows": sub.rows]
-                    last = run.last!
                     i = j
                 } else {
                     itemTop = f.rect.minY
@@ -112,23 +93,15 @@ enum PlanInputBuilder {
                     itemHeight = f.rect.height
                     item = ["height": Double(itemHeight), "trailing": Double(f.lineSpacing), "loc": f.location]
                     if depth == 0 {
-                        refs.append((block: blockIndex, row: at, cell: cellIndex, line: items.count,
-                                     page: page(f.rect.minY), top: f.rect.minY - leading - CGFloat(page(f.rect.minY)) * pitch, loc: f.location))
+                        refs.append((row: at, cell: cellIndex, line: items.count, loc: f.location))
                     }
                     i += 1
                 }
-                if let p = previous {
-                    if p.page == page(f.rect.minY) {
-                        natural += max(0, itemTop - p.bottom)
-                    } else {
-                        shiftedRows.insert(at)
-                        natural += p.paragraph == f.paragraphStart ? 0 : p.spaceAfter + f.spaceBefore
-                    }
-                }
+                if let previousBottom { natural += max(0, itemTop - previousBottom) }
                 item["top"] = Double(natural)
                 items.append(item)
                 natural += itemHeight
-                previous = (itemBottom, page(last.rect.minY), last.spaceAfter, last.paragraphStart)
+                previousBottom = itemBottom
             }
             var cell: [String: Any] = ["padTop": Double(padTop), "padBottom": Double(padBottom),
                                        "contentHeight": Double(natural), "lines": items]
@@ -139,9 +112,7 @@ enum PlanInputBuilder {
                 cell["boxContent"] = Double(natural - (tail.rect.height - tail.usedHeight))
             }
             // Where the document puts the content in the cell's box is the plan's to apply.
-            // A natural observation reads the alignment the document asked for: the reader top-aligns
-            // the cells of a table it breaks (`topAlignCellsOf`) and leaves the block changed.
-            switch authored ? block.authoredVerticalAlignment : block.verticalAlignment {
+            switch block.verticalAlignment {
             case .middleAlignment: cell["verticalAlign"] = "middle"
             case .bottomAlignment: cell["verticalAlign"] = "bottom"
             default: break
@@ -152,11 +123,8 @@ enum PlanInputBuilder {
         var rows: [[String: Any]] = []
         var total: CGFloat = 0
         for r in rowKeys.indices {
-            // The observed distance to the next row is the natural height only when nothing moved in
-            // this row and the next row begins on the page this one did.
             var height = extentOfRow[r] ?? 0
-            if !shiftedRows.contains(r), r + 1 < rowKeys.count, let a = observedTop[r], let b = observedTop[r + 1],
-               observedPage[r] == observedPage[r + 1] {
+            if r + 1 < rowKeys.count, let a = observedTop[r], let b = observedTop[r + 1] {
                 height = max(height, b - a)
             }
             total += height
@@ -169,46 +137,10 @@ enum PlanInputBuilder {
 
     struct Group { var id: Int; var range: Range<Int> }
 
-        typealias CellRef = (block: Int, row: Int, cell: Int, line: Int, page: Int, top: CGFloat, loc: Int)
-        struct Built {
-            var planBlocks: [[String: Any]] = []
-            var cellLineRefs: [CellRef] = []
-            var columnCellRefs: [CellRef] = []
-            var observed: [ObservedBlock] = []
-            var lineMacPages: [[Int]] = []      // per block, the page TextKit put each line on
-            /// The keys of the tables the reader's record calls "broken where they stand".
-            var oversizedKeys: Set<Int> = []
-            var tableHeightTotal: CGFloat = 0
-            var tableHeights: [(height: CGFloat, crossed: Bool)] = []
-        }
-
-    /// What the reader's own pagination decided, for a layout it paginated; a natural observation has none.
-    struct ReaderRecord {
-        var page: (CGFloat) -> Int
-        var openedBands: [(top: CGFloat, height: CGFloat)]
-        var oversizedPieces: [Int: Int]
-    }
-
-    /// The text, the geometry and (for the reader's layout) the reader's record that a build reads.
+    /// The text and the column runs a build reads.
     struct Source {
         var storage: NSTextStorage
         var columnRuns: [(range: NSRange, layout: OfficeColumnLayout)]
-        var leading: CGFloat
-        var pitch: CGFloat
-        /// `nil`: a natural observation, in which no page-dependent read happens.
-        var reader: ReaderRecord?
-        /// A probe's view of each table as it is read.
-        var inspectTable: ((TableSnapshot) -> Void)?
-    }
-
-    struct TableSnapshot {
-        var frags: [Fragment]
-        var first: Fragment
-        var blockIndex: Int
-        var ordered: [Int]
-        var rows: [Int: (top: CGFloat, bottom: CGFloat)]
-        var spans: [(start: Int, end: Int)]
-        var natural: Bool
     }
 
     /// Every line fragment of a layout, in order, as the plan's host reads it. The visible layout
@@ -267,25 +199,15 @@ enum PlanInputBuilder {
         return groups
     }
 
-    /// Turns one layout's fragments into the plan's blocks. `natural` is a layout nobody
-    /// paginated (`PlanObservation`): every page-dependent read is gone — no band to take back
-    /// out of a row, no reader record deciding which table flows, a section named as a fact —
-    /// and the page function answers 0 for everything, so nothing is judged "moved".
-    static func build(_ fragments: [Fragment], _ groups: [Group], source: Source, proposedTops: [Int: CGFloat] = [:]) -> Built {
-        let natural = source.reader == nil
-        let storage = source.storage, columnRuns = source.columnRuns, leading = source.leading, pitch = source.pitch
+    /// Turns a natural observation's fragments (`PlanObservation`, a layout nobody paginated) into the
+    /// plan's blocks: every line's box, every table's rows and cells, the page-bearing marks as facts.
+    /// Nothing here reads a page: whether a section opens a sheet, which table flows and where
+    /// anything lands are the plan's to decide.
+    static func build(_ fragments: [Fragment], _ groups: [Group], source: Source, proposedTops: [Int: CGFloat] = [:]) -> [[String: Any]] {
+        let storage = source.storage, columnRuns = source.columnRuns
         let text = storage.string as NSString
-        func pageOf(_ y: CGFloat) -> Int { source.reader?.page(y) ?? 0 }
-        var tableHeightTotal: CGFloat = 0
-        var tableHeights: [(height: CGFloat, crossed: Bool)] = []
         var planBlocks: [[String: Any]] = []
-        var cellLineRefs: [CellRef] = []
-        var columnCellRefs: [CellRef] = []
-        var observed: [ObservedBlock] = []
-        var lineMacPages: [[Int]] = []
-        var oversizedKeys: Set<Int> = []
         var previousBottom: CGFloat?
-        var previousPage = -1
         for (groupIndex, group) in groups.enumerated() {
             let frags = Array(fragments[group.range])
             let first = frags[0]
@@ -328,33 +250,15 @@ enum PlanInputBuilder {
             }
             if blank { block["empty"] = true }
 
-            // The gap TextKit left between this block and the one before it, when neither was moved
-            // across a page boundary: that is the paragraph spacing the plan adds itself.
+            // The gap TextKit left between this block and the one before it: the paragraph spacing
+            // the plan adds itself.
             let top = isTable ? frags.map(\.top).min()! : first.rect.minY
-            let topPage = pageOf( top)
-            var gap: CGFloat = 0
-            // A table's own top can sit in the band below a page's foot while its first line, which
-            // the page rule carried over, stands on the next page: that distance is the band, not
-            // spacing, so it is the first line's page that must agree.
-            if let previousBottom, previousPage == topPage, pageOf( first.rect.minY) == topPage {
-                gap = max(0, top - previousBottom)
-            }
+            let gap = previousBottom.map { max(0, top - $0) } ?? 0
             if gap > 0.001 { block["spacingBefore"] = gap }
-            // A section that really opened its own sheet in the reader's layout names its section to
-            // the plan. One whose break the reader dropped (invariant 147) or that continued on the
-            // page it began on opened nothing, and the plan is not told it did.
-            if storage.attribute(MDAttr.sectionIndex, at: location, effectiveRange: nil) != nil {
-                if natural {
-                    // A fact only: whether the section opens a sheet is the plan's to say.
-                    block["section"] = true
-                } else {
-                    block[block["pageBreakBefore"] != nil && topPage > previousPage ? "sectionStart" : "sectionMarker"] = true
-                }
-            }
+            // A fact only: whether the section opens a sheet is the plan's to say (invariant 147).
+            if storage.attribute(MDAttr.sectionIndex, at: location, effectiveRange: nil) != nil { block["section"] = true }
 
-            var macPages: [Int] = []
             if isTable {
-                // Per row, as `DocumentWindowController.laidOutTables` reads it.
                 var rows: [Int: (top: CGFloat, bottom: CGFloat)] = [:]
                 var spans: [(start: Int, end: Int)] = []
                 for f in frags {
@@ -364,23 +268,8 @@ enum PlanInputBuilder {
                     } else { rows[f.startingRow] = (f.top, f.bottom) }
                 }
                 let ordered = rows.keys.sorted()
-                source.inspectTable?(TableSnapshot(frags: frags, first: first, blockIndex: planBlocks.count, ordered: ordered, rows: rows, spans: spans, natural: natural))
-                // The row heights the host reports are the layout's own BEFORE the page rule moved
-                // anything: every band the rule opened inside this table is empty space the rows did
-                // not have, so it is taken back out (the `proposedTableLineTops` idea of invariant 72,
-                // applied to heights).
-                let tableFirstTop = frags.map(\.top).min() ?? 0
-                // A natural layout opened no band: there is nothing to take back.
-                let bandsInside = natural ? [] : (source.reader?.openedBands ?? []).filter { $0.top > tableFirstTop + 0.5 }
-                func unbanded(_ y: CGFloat) -> CGFloat {
-                    y - bandsInside.filter { $0.top < y - 0.01 }.reduce(0) { $0 + $1.height }
-                }
                 let tableBottom = frags.map(\.bottom).max()!
                 let tableTop = frags.map(\.top).min() ?? tableBottom
-                if !natural {
-                    tableHeightTotal += tableBottom - tableTop
-                    tableHeights.append((tableBottom - tableTop, pageOf(tableTop) != pageOf(frags.last!.rect.minY)))
-                }
                 block["kind"] = "table"
                 // A row's top is the least of its own cells' tops and every later row's: rows never run
                 // upward, and a cell that is vertically centred (or sits in a merge) has its lines — and
@@ -392,9 +281,6 @@ enum PlanInputBuilder {
                     let crossed = spans.contains { $0.start < r && $0.end > r }
                     // A row runs from its own top to the next row's top. Its cells' bottoms cannot say:
                     // a cell merged down several rows ends far below the row it starts in.
-                    // The last row ends where the cells' boxes do: the next block starts there, and the
-                    // spacing after a last line hangs below it. (A table the reader breaks line by line
-                    // takes its rows from its cells, which carry that hang themselves.)
                     // The block after a table starts at the lower of two things: the cells' boxes, and the
                     // last line the typesetter placed (the last cell's, spacing after included).
                     let lastRow = ordered.last ?? 0
@@ -405,64 +291,40 @@ enum PlanInputBuilder {
                     // Only a hang is taken back: a hair of border width between the two measures is not one.
                     let lastEnd = cellsEnd.map { tableBottom - $0 > 0.5 ? $0 : tableBottom } ?? tableBottom
                     let end = position + 1 < ordered.count ? rowTop[ordered[position + 1]]! : lastEnd
-                    var entry: [String: Any] = ["height": max(0, unbanded(end) - unbanded(rowTop[r]!))]
+                    var entry: [String: Any] = ["height": max(0, end - rowTop[r]!)]
                     if r != ordered.first && !crossed { entry["canBreakAbove"] = true }
                     return entry
                 }
-                // A table the reader breaks where it stands (invariant 64's over-tall pieces) flows line
-                // by line, so the host reports what the flow needs: each cell's lines at their NATURAL
-                // offsets (the gap a page break opened between two of them is taken back out) and the
-                // cell's padding.
                 let boxHeights = rowEntries.map { ($0["height"] as? Double) ?? 0 }
-                let firstLocation = first.location, lastLocation = frags.last!.location
-                // A natural observation names no table as "broken where it stands": that is the plan's
-                // to decide from the rows, so every table hands in its cells.
-                let readerBreaks = source.reader?.oversizedPieces.keys.contains { $0 >= firstLocation && $0 <= lastLocation } ?? false
-                if readerBreaks { oversizedKeys.insert(group.id) }
-                let breaksWhereItStands = natural || readerBreaks
-                // A table in a columned run is dealt line by line too, from where its lines fall.
+                // A table in a columned run is sized by the engine from its cells (the rule of
+                // `table_rows.rs`); every other table keeps the layout's own rows.
                 let inColumnRun = block["columnRun"] != nil
-                if natural {
-                    // A table in a columned run is sized by the engine from its cells (the rule of
-                    // `table_rows.rs`); every other table keeps the layout's own rows.
-                    if !inColumnRun { block["rowsObserved"] = true }
-                    block["firstLoc"] = first.location
-                    // What the group holds outside its cells (the separators a table ends in): lines of
-                    // their own that the plan places, so the apply pass never has to guess where they go.
-                    let tail = frags.filter { $0.chain.isEmpty }
-                    if !tail.isEmpty { block["tail"] = tail.map { ["loc": $0.location, "height": Double($0.rect.height)] as [String: Any] } }
-                    if let proposed = proposedTops[first.location] { block["firstLineInset"] = Double(proposed - tableTop) }
-                }
-                if breaksWhereItStands || inColumnRun {
-                    var measured: [CellRef] = []
-                    let flowed = flowRows(frags.filter { $0.table == first.table }, depth: 0, blockIndex: planBlocks.count,
-                                         page: pageOf, leading: leading, pitch: pitch, authored: natural && ProcessInfo.processInfo.environment["FMD_PLAN_SHADOW_AUTHORED"] == "1", refs: &measured)
-                    // Positions in the stack of a columned run are not the plan's final ones.
-                    if natural {
-                        // Where the REPORTER put each line is the other layout's business.
-                    } else if inColumnRun { columnCellRefs.append(contentsOf: measured) } else { cellLineRefs.append(contentsOf: measured) }
-                    // A marker in a table the reader flows stands on the page of ITS line, not of the
-                    // table's start: name the cell line that holds it (a marker in a nested table
-                    // names none, and is cited from where the table starts).
-                    if !inColumnRun, !cites.isEmpty, cites.count == citeLocations.count {
-                        for (n, marker) in citeLocations.enumerated() {
-                            guard let holder = frags.last(where: { $0.location <= marker }),
-                                  holder.chain.count == 1,
-                                  let ref = measured.first(where: { $0.loc == holder.location }) else { continue }
-                            cites[n]["cell"] = [ref.row, ref.cell, ref.line]
-                        }
-                        block["cites"] = cites
+                if !inColumnRun { block["rowsObserved"] = true }
+                block["firstLoc"] = first.location
+                // What the group holds outside its cells (the separators a table ends in): lines of
+                // their own that the plan places, so the apply pass never has to guess where they go.
+                let tail = frags.filter { $0.chain.isEmpty }
+                if !tail.isEmpty { block["tail"] = tail.map { ["loc": $0.location, "height": Double($0.rect.height)] as [String: Any] } }
+                if let proposed = proposedTops[first.location] { block["firstLineInset"] = Double(proposed - tableTop) }
+                // Every table hands in its cells: which one flows line by line is the plan's call.
+                var measured: [CellRef] = []
+                let flowed = flowRows(frags.filter { $0.table == first.table }, depth: 0, refs: &measured)
+                // A marker in a table the plan flows stands on the page of ITS line, not of the
+                // table's start: name the cell line that holds it (a marker in a nested table
+                // names none, and is cited from where the table starts).
+                if !inColumnRun, !cites.isEmpty, cites.count == citeLocations.count {
+                    for (n, marker) in citeLocations.enumerated() {
+                        guard let holder = frags.last(where: { $0.location <= marker }),
+                              holder.chain.count == 1,
+                              let ref = measured.first(where: { $0.loc == holder.location }) else { continue }
+                        cites[n]["cell"] = [ref.row, ref.cell, ref.line]
                     }
-                    if flowed.rows.count == rowEntries.count {
-                        for position in rowEntries.indices {
-                            rowEntries[position]["observedHeight"] = rowEntries[position]["height"]
-                            rowEntries[position]["cells"] = flowed.rows[position]["cells"]
-                            // A table in a columned run is sized by the engine from its cells (the rule
-                            // of `table_rows.rs`); the other tables the flow breaks take the heights the
-                            // cells add up to.
-                            // A natural observation's rows are the layout's own, nothing was shifted in them.
-                            if !inColumnRun && !natural { rowEntries[position]["height"] = flowed.rows[position]["height"] }
-                        }
+                    block["cites"] = cites
+                }
+                if flowed.rows.count == rowEntries.count {
+                    for position in rowEntries.indices {
+                        rowEntries[position]["observedHeight"] = rowEntries[position]["height"]
+                        rowEntries[position]["cells"] = flowed.rows[position]["cells"]
                     }
                 }
                 block["rows"] = rowEntries
@@ -474,42 +336,24 @@ enum PlanInputBuilder {
                     let bottom = f.rect.maxY + cell.width(for: .padding, edge: .maxY) + cell.width(for: .border, edge: .maxY)
                     lineBottom[f.startingRow] = max(lineBottom[f.startingRow] ?? bottom, bottom)
                 }
-                let reach = ordered.map { r in max(0, unbanded(lineBottom[r] ?? rows[r]!.bottom) - unbanded(rowTop[r]!)) }
+                let reach = ordered.map { r in max(0, (lineBottom[r] ?? rows[r]!.bottom) - rowTop[r]!) }
                 if zip(reach, boxHeights).contains(where: { Double($0) > $1 + 0.01 }) {
                     block["rowReach"] = reach.map { Double($0) }
                 }
                 if (storage.attribute(MDAttr.tableKeepsWhole, at: location, effectiveRange: nil) as? Bool) == true {
                     block["keepsWhole"] = true
                 }
-                macPages = [pageOf( top)]
-                previousBottom = frags.map(\.bottom).max()
-                previousPage = pageOf( frags.last!.rect.minY)
+                previousBottom = tableBottom
             } else {
                 block["kind"] = "text"
                 block["lines"] = frags.map { Double($0.box.height) }
-                if natural { block["lineLocs"] = frags.map { $0.location } }
+                block["lineLocs"] = frags.map { $0.location }
                 if first.lineSpacing > 0 { block["trailing"] = Double(first.lineSpacing) }
-                macPages = frags.map { pageOf( $0.rect.minY) }
                 previousBottom = frags.last!.rect.maxY
-                previousPage = pageOf( frags.last!.rect.minY)
             }
-            // A section start is deliberately NOT passed as one: TextKit opens a page only for
-            // `startsPage`, so the per-page section answer is compared in S5, not here.
             planBlocks.append(block)
-            lineMacPages.append(macPages)
-            observed.append(ObservedBlock(
-                blockId: group.id, isTable: isTable, firstLine: group.range.lowerBound,
-                lineCount: frags.count, macPage: macPages[0],
-                preview: String(blockText.prefix(24)).replacingOccurrences(of: "\n", with: " "),
-                detail: String(format: "TextKit top %.1f, height %.1f, gap %.1f",
-                               top - leading - CGFloat(macPages[0]) * pitch,
-                               (isTable ? frags.map(\.bottom).max()! : frags.last!.rect.maxY) - top, gap),
-                macLocalTop: top - leading - CGFloat(macPages[0]) * pitch,
-                heightMac: (isTable ? frags.map(\.bottom).max()! : frags.last!.rect.maxY) - top))
         }
-        return Built(planBlocks: planBlocks, cellLineRefs: cellLineRefs, columnCellRefs: columnCellRefs,
-                     observed: observed, lineMacPages: lineMacPages, oversizedKeys: oversizedKeys,
-                     tableHeightTotal: tableHeightTotal, tableHeights: tableHeights)
+        return planBlocks
     }
 
     // MARK: - The natural observation
@@ -560,8 +404,8 @@ enum PlanInputBuilder {
         let columnRuns = wc.columnRunRanges()
         let (observation, complete) = observePrefix(storage: storage, like: tc, reach: reach)
         guard !observation.fragments.isEmpty else { return nil }
-        let source = Source(storage: storage, columnRuns: columnRuns, leading: delegate.leadingBand, pitch: pitch, reader: nil, inspectTable: nil)
-        var blocks = build(observation.fragments, observation.groups, source: source, proposedTops: observation.proposedTableLineTops).planBlocks
+        let source = Source(storage: storage, columnRuns: columnRuns)
+        var blocks = build(observation.fragments, observation.groups, source: source, proposedTops: observation.proposedTableLineTops)
         if !complete { blocks.removeLast() }
         guard !blocks.isEmpty else { return nil }
         var input = planInput(controller: wc, blocks: blocks, columnRuns: columnRuns)
@@ -603,8 +447,8 @@ enum PlanInputBuilder {
         let columnRuns = wc.columnRunRanges()
         let observation = observeNaturally(storage: storage, like: tc)
         guard !observation.fragments.isEmpty else { return nil }
-        let source = Source(storage: storage, columnRuns: columnRuns, leading: delegate.leadingBand, pitch: pitch, reader: nil, inspectTable: nil)
-        let blocks = build(observation.fragments, observation.groups, source: source, proposedTops: observation.proposedTableLineTops).planBlocks
+        let source = Source(storage: storage, columnRuns: columnRuns)
+        let blocks = build(observation.fragments, observation.groups, source: source, proposedTops: observation.proposedTableLineTops)
         let input = planInput(controller: wc, blocks: blocks, columnRuns: columnRuns)
         // A table cell keeps its distance from its columned run's left edge: the proposed rect cannot
         // say where a cell's line ends up, so the host reads it where the layout has it.

@@ -151,15 +151,6 @@ typedef struct {
  * either world. */
 bool fastdoc_install_text_measurer(FastdocTextMeasureCallbacks callbacks);
 
-/* The running header (or footer) band height for a document, decided in the engine and measured
- * through the port above. Returns a negative value when it cannot answer — no measurer installed,
- * the document unreadable, or the band carrying something whose size the engine does not know —
- * and `fastdoc_take_last_error` names which. A height is never negative, so the sentinel cannot
- * collide with an answer. */
-double fastdoc_office_header_band_height(const unsigned char *bytes, size_t len,
-                                         const char *extension, double column_width,
-                                         bool footer);
-
 /* S5C1-01: an opaque handle to a document the engine has already read, so the three sprints after
  * this one (sheet placement, the 바탕쪽, the footnote band) can ask it more than one question
  * without paying the read cost again. Opaque — the host holds only the pointer. */
@@ -239,80 +230,6 @@ bool fastdoc_office_sheets(const FastdocOfficeDocument *handle, long long count,
                            double text_origin_y, double leading_band, double pitch,
                            double top_margin, double desk_gap, double *out, size_t out_capacity,
                            size_t *out_count);
-
-/* One laid-out ROW, mirroring page_pagination::LaidOutRow field for field —
- * fastdoc_office_table_placement's flat rows array, sliced per table by row_offset/row_count. */
-typedef struct {
-    long long first_char;
-    double top;
-    double bottom;
-    double first_line_top;
-    bool can_break_above;
-} FastdocLaidOutRow;
-
-/* One laid-out TABLE, mirroring page_pagination::LaidOutTable except that rows is replaced by an
- * offset/count into fastdoc_office_table_placement's flat rows array — the same shape
- * FastdocTableResizeTableDesc already uses for tables-then-cells. */
-typedef struct {
-    long long first_char;
-    double visual_top;
-    double bottom;
-    double first_line_top;
-    long long last_char;
-    size_t row_offset;
-    size_t row_count;
-    bool keeps_whole;
-} FastdocLaidOutTable;
-
-/* One first_char -> (height, top_inset) entry — the wire shape both already_pushed's input and
- * tables_to_push's output use. */
-typedef struct {
-    long long key;
-    double height;
-    double top_inset;
-} FastdocTableMetricsEntry;
-
-/* One page -> height entry — note_bands's wire shape. The host may pass these in any order: the
- * engine builds a HashMap from them and neither tables_to_push nor oversized_pieces reads that
- * map in iteration order, only by key lookup. */
-typedef struct {
-    long long page;
-    double value;
-} FastdocNoteBandEntry;
-
-/* One first_char -> last_char entry — already_oversized's wire shape (input) and
- * oversized_pieces's wire shape (output). */
-typedef struct {
-    long long key;
-    long long value;
-} FastdocI64Entry;
-
-/* S5C2-01: which tables must move whole to the next page (tables_to_push) and which pieces fit on
- * no page at all (oversized_pieces), from a completed layout — settlePagedTables's arithmetic
- * half, over the S5C-1 handle for consistency (unused beyond the NULL check; both Rust functions
- * are pure).
- *
- * joining_unopened_boundaries is NOT answered here — it has exactly one caller, pageSheets, which
- * S5C-2's own contract leaves deriving from printSheets untouched.
- *
- * tables/rows are the host's laidOutTables() walk, flattened: each table names its own slice of
- * rows by row_offset/row_count. already_pushed/note_bands/already_oversized are the settle loop's
- * carried state, each a flat array of entries in any order.
- *
- * Fills out_push/out_oversized — each SORTED BY KEY, so two runs over the same document answer
- * identically regardless of Rust's own randomized HashMap iteration order — and sets
- * *out_push_count/*out_oversized_count to the number of entries written. Returns false
- * (fastdoc_take_last_error names it) when either output buffer is too small, when a table
- * descriptor's row_offset/row_count runs past the flat rows buffer, or on a NULL handle/required
- * pointer. A safe upper bound for both output capacities is table_count + row_count. */
-bool fastdoc_office_table_placement(
-    const FastdocOfficeDocument *handle, const FastdocLaidOutTable *tables, size_t table_count,
-    const FastdocLaidOutRow *rows, size_t row_count, double page_content_height, double band,
-    double leading_band, bool split_tables, const FastdocTableMetricsEntry *already_pushed,
-    size_t already_pushed_count, const FastdocNoteBandEntry *note_bands, size_t note_bands_count,
-    const FastdocI64Entry *already_oversized, size_t already_oversized_count,
-    FastdocTableMetricsEntry *out_push, size_t out_push_capacity, size_t *out_push_count,
-    FastdocI64Entry *out_oversized, size_t out_oversized_capacity, size_t *out_oversized_count);
 
 /* S2 of the pagination plan: the PAGE PLAN — where every whole block of a paged document goes,
  * decided once from the heights the host observed. input_json is a PlanInput (page body height,
@@ -433,53 +350,6 @@ bool fastdoc_office_master_selection(const FastdocMasterTemplateDesc *templates,
                                      size_t vetoed_section_count,
                                      const FastdocMasterPageQuery *pages, size_t page_count,
                                      long long *out_template_index, size_t out_capacity);
-
-/* One page's footnote inputs to the settle round: its own cited notes' heights (a slice into
- * the shared note_heights buffer via note_offset/note_count) and its own section's resolved
- * separator. has_separator == false is footnoteSeparator(forPage:)'s own nil — no separator for
- * this page's section at all, distinct from separator_is_declared == false (a separator struct
- * the document never populated). */
-typedef struct {
-    long long page_index;
-    size_t note_offset;
-    size_t note_count;
-    bool has_separator;
-    bool separator_is_declared;
-    long long separator_line_type;
-    double separator_line_width_pt;
-    double separator_margin_top_pt;
-    double separator_margin_bottom_pt;
-    double separator_note_spacing_pt;
-} FastdocFootnotePageDesc;
-
-/* One earlier round's proposal, its own slice into the flat history_entries buffer (the settle's
- * own carried history, oldest round first). */
-typedef struct {
-    size_t entry_offset;
-    size_t entry_count;
-} FastdocFootnoteHistoryRoundDesc;
-
-/* S5D1-02: FootnoteBandSettle.step (invariant 98) plus the proposal arithmetic that feeds it
- * (footnote_band_height/separator_allowance), batched into one round-trip per settle round. The
- * host still supplies the note heights and resolves page-to-section/the separator for each page;
- * the engine answers only what to do with the round that just finished.
- *
- * out_bands[0..*out_count], sorted by page, is the settle's bands for this round. *out_outcome
- * names which kind of answer it is (0 = retry, run again with these bands; 1 = stop, these bands
- * are final) and *out_stop_reason names why a stop happened (0 = still, 1 = cycle, 2 = cap;
- * meaningless, left at -1, when *out_outcome is retry). Returns false
- * (fastdoc_take_last_error names it) on a NULL required argument, an offset/count that runs past
- * its flat buffer, or an output buffer smaller than the answer needs. A safe upper bound for
- * out_capacity is page_count. */
-bool fastdoc_office_footnote_band_settle(const FastdocFootnotePageDesc *pages, size_t page_count,
-                                         const double *note_heights, size_t note_heights_count,
-                                         const FastdocFootnoteHistoryRoundDesc *history_rounds,
-                                         size_t history_round_count,
-                                         const FastdocNoteBandEntry *history_entries,
-                                         size_t history_entry_count,
-                                         double page_content_height, long long cap,
-                                         FastdocNoteBandEntry *out_bands, size_t out_capacity,
-                                         size_t *out_count, int *out_outcome, int *out_stop_reason);
 
 /* One footnote's own answer: (number, height). An entry struct rather than parallel arrays so
  * the number and height can never come apart. */

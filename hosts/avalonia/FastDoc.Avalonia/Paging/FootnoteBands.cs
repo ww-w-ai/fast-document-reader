@@ -65,7 +65,7 @@ public static class FootnoteLayout
     public const double DefaultSeparatorAllowance = 8;
 
     /// <summary>The page layout WITH footnote bands, and the plan that draws them. A document with no
-    /// footnotes returns the plain table-settled layout and <see cref="FootnotePlan.Empty"/>.</summary>
+    /// footnotes returns the plain layout and <see cref="FootnotePlan.Empty"/>.</summary>
     public static (PageLayoutResult Layout, FootnotePlan Plan) Build(RenderTree tree, IReadOnlyList<FlowBlock> blocks,
         BlockPageMarkers.Markers markers, PageGeometry geometry, IntPtr engineHandle, bool headersOn, bool footersOn,
         bool splitTablesDefault, ImageBlockRenderer? imageRenderer = null)
@@ -75,7 +75,7 @@ public static class FootnoteLayout
         var heights = notes.ToDictionary(n => n.Key,
             n => MeasureNote(n.Value, geometry.ContentWidthPoints, geometry.LineGridPitchPoints, imageRenderer));
         var furniture = PageFurniture.Read(tree, heights, separators);
-        var (layout, _, _, _) = PageLayout.BuildWithTableSettle(blocks, markers, geometry, engineHandle, headersOn,
+        var layout = PageLayout.Build(blocks, markers, geometry, engineHandle, headersOn,
             footersOn, splitTablesDefault, imageRenderer, noteBands: null, furniture: furniture);
         if (notes.Count == 0) { return (layout, FootnotePlan.Empty); }
         return (layout, new FootnotePlan

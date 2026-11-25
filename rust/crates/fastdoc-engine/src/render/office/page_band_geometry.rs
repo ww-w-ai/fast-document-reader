@@ -128,33 +128,7 @@ impl PageBandGeometry {
     /// divergent rendering path (invariant 29's discipline) — laid out once in an ISOLATED stack
     /// (its own storage/layout manager/container), so measuring never touches or invalidates the
     /// real text view.
-    // swift: PageBandGeometry.bandHeight
-    #[allow(clippy::too_many_arguments)]
-    pub fn band_height(
-        headers: &[OfficeHeaderFooter],
-        footers: &[OfficeHeaderFooter],
-        theme: &RenderTheme,
-        column_width: CGFloat,
-        document_default_font_size: CGFloat,
-        page_content_width: Option<CGFloat>,
-        page_margin_top: Option<CGFloat>,
-        page_margin_bottom: Option<CGFloat>,
-    ) -> Result<CGFloat, MeasureError> {
-        Ok(Self::measure(
-            headers,
-            footers,
-            theme,
-            column_width,
-            document_default_font_size,
-            page_content_width,
-            page_margin_top,
-            page_margin_bottom,
-            false,
-            None,
-        )?
-        .band)
-    }
-
+    ///
     /// `separatesPages` — the reader is drawing each sheet as its own page
     /// (`PageViewOptions.outline`), so the space BETWEEN two sheets has to exist even when there is
     /// no header or footer to put in it. Without this a document with page furniture switched off but
