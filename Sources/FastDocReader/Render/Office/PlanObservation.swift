@@ -7,8 +7,7 @@ import AppKit
 /// breaks (a column's width is fixed when the text is built), so one such layout serves every plan
 /// call whatever the page-view toggles say. The visible layout manager is never touched.
 ///
-/// This type only owns the layout manager and its walk; `PagePlanShadow` reads line fragments off it
-/// exactly as it reads them off the visible one, so both observations take the same measurements.
+/// This type only owns the layout manager and its walk; `PlanInputBuilder` reads its line fragments.
 final class PlanObservation {
     let layout = NSLayoutManager()
     let container: NSTextContainer
@@ -21,9 +20,9 @@ final class PlanObservation {
     /// Configured from the visible container, so a line breaks where it does there: the same width,
     /// the same fragment padding.
     ///
-    /// `applying` swaps the recording delegate for the apply pass of S6b2-0c (`PlanApplyDelegate`):
-    /// the same layout manager configuration, with lines put at the plan's targets.
-    init(storage: NSTextStorage, like visible: NSTextContainer, applying: PlanApplyDelegate? = nil) {
+    /// `applying` swaps the recording delegate for an apply delegate (the parity probe): the same
+    /// layout manager configuration, with lines put at the plan's targets.
+    init(storage: NSTextStorage, like visible: NSTextContainer, applying: NSLayoutManagerDelegate? = nil) {
         self.storage = storage
         recorder = PlanObservationDelegate(storage: storage)
         layout.allowsNonContiguousLayout = false
@@ -65,6 +64,13 @@ extension NSTextTableBlock {
     func rememberAuthoredAlignment() {
         guard objc_getAssociatedObject(self, &authoredAlignmentKey) == nil else { return }
         objc_setAssociatedObject(self, &authoredAlignmentKey, NSNumber(value: verticalAlignment.rawValue), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    /// Puts back the alignment the document asked for, when `rememberAuthoredAlignment` saw one.
+    func restoreAuthoredAlignment() {
+        guard let saved = objc_getAssociatedObject(self, &authoredAlignmentKey) as? NSNumber,
+              let value = NSTextBlock.VerticalAlignment(rawValue: saved.intValue) else { return }
+        if verticalAlignment != value { verticalAlignment = value }
     }
 
     /// The alignment the document asked for: what `rememberAuthoredAlignment` saw, else the current one.

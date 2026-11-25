@@ -6,8 +6,7 @@ import AppKit
 /// paginated (`PlanObservation`), and hands the engine what it measured: every line's box, every
 /// table's rows and cells, the document's page-bearing marks. This is that observation as a unit: the
 /// observer walk, the fragments it yields, the blocks they group into, and the input the engine is
-/// asked with (`naturalInput`). `PagePlanShadow` is a parity probe that calls it, and reads the
-/// reader's own layout through the same `build` to compare.
+/// asked with (`naturalInput`). `PlanAppliedParity` checks the applied layout against the plan.
 enum PlanInputBuilder {
 
     /// One block as the observed layout shows it.
@@ -214,10 +213,11 @@ enum PlanInputBuilder {
 
     /// Every line fragment of a layout, in order, as the plan's host reads it. The visible layout
     /// and the natural observer are read by this same function.
-    static func collect(_ lm: NSLayoutManager, _ tc: NSTextContainer, storage: NSTextStorage) -> [Fragment] {
+    static func collect(_ lm: NSLayoutManager, _ tc: NSTextContainer, storage: NSTextStorage,
+                        glyphs: NSRange? = nil) -> [Fragment] {
         let storageText = storage.string as NSString
         var fragments: [Fragment] = []
-        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, usedRect, _, glyphRange, _ in
+        lm.enumerateLineFragments(forGlyphRange: glyphs ?? lm.glyphRange(for: tc)) { rect, usedRect, _, glyphRange, _ in
             let chars = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
             guard chars.location >= 0, chars.location < storage.length,
                   let id = storage.attribute(MDAttr.blockId, at: chars.location, effectiveRange: nil) as? Int else { return }
@@ -533,49 +533,102 @@ enum PlanInputBuilder {
         return Observation(fragments: fragments, groups: group(fragments), proposedTableLineTops: proposed)
     }
 
+    /// A natural observation of only the HEAD of the text: the lines whose natural top lies above
+    /// `reach`. `complete` says the head was the whole document.
+    static func observePrefix(storage: NSTextStorage, like container: NSTextContainer,
+                              reach: CGFloat) -> (observation: Observation, complete: Bool) {
+        let observer = PlanObservation(storage: storage, like: container)
+        defer { observer.remove() }
+        let area = NSRect(x: 0, y: 0, width: container.size.width, height: reach)
+        observer.layout.ensureLayout(forBoundingRect: area, in: observer.container)
+        let glyphs = observer.layout.glyphRange(forBoundingRect: area, in: observer.container)
+        let fragments = collect(observer.layout, observer.container, storage: storage, glyphs: glyphs)
+        let complete = observer.layout.firstUnlaidCharacterIndex() >= storage.length
+        return (Observation(fragments: fragments, groups: group(fragments),
+                            proposedTableLineTops: observer.recorder.proposedTableLineTops), complete)
+    }
+
+    /// The plan input for the first screen only (`truncated: true` unless the head is the whole
+    /// document): the blocks the observation holds, less the last, which the walk may have cut in
+    /// the middle. `nil` when the document is not paged or the head holds no complete block.
+    static func naturalPrefixInput(controller wc: DocumentWindowController, reach: CGFloat) -> NaturalInput? {
+        let delegate = wc.pageBandDelegate
+        guard delegate.pageContentHeight > 0, let tc = wc.textView.textContainer,
+              let storage = wc.textView.textStorage, storage.length > 0 else { return nil }
+        let pitch = delegate.pageContentHeight + delegate.band - delegate.deskGap
+        guard pitch > 0 else { return nil }
+        let columnRuns = wc.columnRunRanges()
+        let (observation, complete) = observePrefix(storage: storage, like: tc, reach: reach)
+        guard !observation.fragments.isEmpty else { return nil }
+        let source = Source(storage: storage, columnRuns: columnRuns, leading: delegate.leadingBand, pitch: pitch, reader: nil, inspectTable: nil)
+        var blocks = build(observation.fragments, observation.groups, source: source, proposedTops: observation.proposedTableLineTops).planBlocks
+        if !complete { blocks.removeLast() }
+        guard !blocks.isEmpty else { return nil }
+        var input = planInput(controller: wc, blocks: blocks, columnRuns: columnRuns)
+        if !complete { input["truncated"] = true }
+        return NaturalInput(observation: observation, blocks: blocks, input: input,
+                            columnLineInset: columnLineInset(observation.fragments, columnRuns: columnRuns), columnRuns: columnRuns)
+    }
+
+    /// Where a table cell in a columned run stood from the run's own left edge, by line location.
+    static func columnLineInset(_ fragments: [Fragment], columnRuns: [(range: NSRange, layout: OfficeColumnLayout)]) -> [Int: CGFloat] {
+        var inset: [Int: CGFloat] = [:]
+        for declared in columnRuns {
+            let inRun = fragments.filter { NSLocationInRange($0.location, declared.range) }
+            guard let left = inRun.map({ $0.rect.minX }).min() else { continue }
+            for f in inRun where !f.chain.isEmpty { inset[f.location] = max(0, f.rect.minX - left) }
+        }
+        return inset
+    }
+
     /// The plan input of a natural observation of `controller`'s document, with the observation it
     /// came from. `nil` when the document is not paged or holds nothing to observe.
     struct NaturalInput {
         var observation: Observation
         var blocks: [[String: Any]]
         var input: [String: Any]
+        /// Where a table cell in a columned run stood from the run's own left edge, by line location.
+        var columnLineInset: [Int: CGFloat]
+        var columnRuns: [(range: NSRange, layout: OfficeColumnLayout)]
     }
 
     static func naturalInput(controller wc: DocumentWindowController) -> NaturalInput? {
         let delegate = wc.pageBandDelegate
         guard delegate.pageContentHeight > 0, let tc = wc.textView.textContainer,
               let storage = wc.textView.textStorage, storage.length > 0 else { return nil }
-        let pitch = delegate.pageContentHeight + delegate.band
+        // The plan is on the PRINT grid: the desk between two drawn sheets is added back per page
+        // when the targets are turned into container coordinates.
+        let pitch = delegate.pageContentHeight + delegate.band - delegate.deskGap
         guard pitch > 0 else { return nil }
         let columnRuns = wc.columnRunRanges()
         let observation = observeNaturally(storage: storage, like: tc)
         guard !observation.fragments.isEmpty else { return nil }
         let source = Source(storage: storage, columnRuns: columnRuns, leading: delegate.leadingBand, pitch: pitch, reader: nil, inspectTable: nil)
         let blocks = build(observation.fragments, observation.groups, source: source, proposedTops: observation.proposedTableLineTops).planBlocks
-        let input = planInput(controller: wc, blocks: blocks, columnRuns: columnRuns, natural: true, readerNoteBands: [:])
-        return NaturalInput(observation: observation, blocks: blocks, input: input)
+        let input = planInput(controller: wc, blocks: blocks, columnRuns: columnRuns)
+        // A table cell keeps its distance from its columned run's left edge: the proposed rect cannot
+        // say where a cell's line ends up, so the host reads it where the layout has it.
+        return NaturalInput(observation: observation, blocks: blocks, input: input,
+                            columnLineInset: columnLineInset(observation.fragments, columnRuns: columnRuns), columnRuns: columnRuns)
     }
 
-    /// The input the engine is asked with. With notes the plan runs the band fixpoint itself, so a
-    /// natural observation hands no bands in; a reader's observation hands the bands its settle chose.
+    /// The input the engine is asked with. With notes the plan runs the band fixpoint itself, so no
+    /// band is handed in.
     static func planInput(controller wc: DocumentWindowController, blocks: [[String: Any]],
-                          columnRuns: [(range: NSRange, layout: OfficeColumnLayout)], natural: Bool,
-                          readerNoteBands: [Int: CGFloat]) -> [String: Any] {
+                          columnRuns: [(range: NSRange, layout: OfficeColumnLayout)]) -> [String: Any] {
         let delegate = wc.pageBandDelegate
         var input: [String: Any] = [
             "planVersion": 1,
             "contentHeight": Double(delegate.pageContentHeight),
             "splitTables": wc.mdDocument?.pageOptions.splitTables ?? false,
-            "band": Double(delegate.band),
+            "band": Double(max(0, delegate.band - delegate.deskGap)),
             "leadingBand": Double(delegate.leadingBand),
             "bodyWidth": Double(delegate.columnBodyWidth),
             "columnRuns": columnRunsInput(columnRuns),
-            "noteBands": wc.footnotes.isEmpty && !natural
-                ? readerNoteBands.sorted { $0.key < $1.key }.map { ["page": $0.key, "height": Double($0.value)] }
-                : [],
+            "noteBands": [] as [Any],
             "blocks": blocks,
+            "observation": "natural",
         ]
-        if natural { input["observation"] = "natural" }
         input.merge(furnitureInput(wc)) { a, _ in a }
         return input
     }

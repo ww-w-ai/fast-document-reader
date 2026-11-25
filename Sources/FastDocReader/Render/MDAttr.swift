@@ -139,7 +139,7 @@ enum MDAttr {
     /// ones — so the reader's own policy (invariant 92: break by default) still governs them.
     ///
     /// It has to be an ATTRIBUTE rather than a lookup back into the block model, because the
-    /// decision is taken from a COMPLETED layout (`settlePagedTables`), where the only handle on a
+    /// decision is taken from a laid-out observation (`PlanInputBuilder`), where the only handle on a
     /// table is where its characters are.
     static let tableKeepsWhole = NSAttributedString.Key("mdTableKeepsWhole")
 

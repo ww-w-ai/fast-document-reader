@@ -374,40 +374,19 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // The width the columns are measured across — the page BODY, which for a columned document
         // is wider than the `columnWidth` the text was built at (that one is already one column's).
         pageBandDelegate.columnBodyWidth = pageContentWidth ?? columnWidth
-        // A fresh render starts the fixpoint over: the notes, their heights and the reservation the
-        // last render settled on are all about to be re-decided, and carrying any of them across
-        // would reserve room on a page of a layout that no longer exists.
+        // A fresh render starts the plan over: the notes, their heights and everything the last plan
+        // said are about to be re-decided against a different band (or text), and carrying any of it
+        // across would put lines where a layout that no longer exists wanted them. The plan is on
+        // the print grid and the targets are ABSOLUTE positions on the grid this call is replacing
+        // (the appendix of the reference manual, placed for a 766pt screen pitch, printed on a 754pt
+        // pitch 7,646pt below the text before it: invariant 161).
         self.footnotes = footnotes
         self.footnoteHeights = footnoteHeights
         self.footnoteSeparators = footnoteSeparators
-        footnoteBandHistory = []
-        footnoteBandsSettled = false
-        settledFootnotePages = nil
-        pageBandDelegate.noteBands = [:]
-        // This render replaces the storage, so where the section markers sit is about to change.
-        // The column placements are ABSOLUTE positions on the grid this call is replacing, so they go
-        // with it and are settled again against the new one. Kept across the switch to the print
-        // grid, the appendix of the reference manual — placed for a 766pt screen pitch — printed on a
-        // 754pt pitch 7,646pt below the text before it: nine blank sheets that the screen never
-        // showed (invariant 161).
-        columnRunsSettled = false
-        pageBandDelegate.columnPlacements = [:]
-        pageBandDelegate.columnOpenedBoundaries = []
+        pageBandDelegate.resetPlan()
+        plannedPages = []
+        plannedNotes = [:]
         cachedSectionStarts = nil
-        cachedHiddenPageNumberPages = nil
-        cachedPageNumberRestarts = nil
-        cachedFootnotePages = nil
-        // Read from whatever text is installed RIGHT NOW, which is the right answer for the two
-        // callers that reach here with the document already on screen — printing (which re-applies
-        // the band and never calls `display(_:)` again) and a View-menu toggle.
-        //
-        // During a RENDER this is the OUTGOING document, because the render deliberately configures
-        // the band before installing the new text. That is harmless only because `display(_:)` sets
-        // both again the instant the new storage is in — and it must, or the window silently ignores
-        // every break while printing honours them. Clearing here instead was tried and broke the
-        // mirror image: printing then ignored them (the manual went 520 pages to 436).
-        pageBandDelegate.documentPageBreaks = documentPageBreakLocations()
-        pageBandDelegate.keepWithNextRanges = keepWithNextRanges()
         // LEADING (page 0's own header) and TRAILING (the last page's own footer) — the two OUTER
         // edges the between-page reservation cannot reach on its own (header-footer-design.md's own
         // recorded gap). LEADING is gated on page 0's OWN applicable header actually carrying
@@ -451,15 +430,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         pageBandDelegate.trailingBand = trailing
         pageBandDelegate.deskGap = deskGap ?? (separatesPages ? RenderTheme.pageDeskGap : 0)
         applyVerticalInset()   // the leading band only becomes ROOM through the inset — see that function
-        // A new render re-decides every boundary, so the previous pass's answers must not survive
-        // into it — a stale entry would paint into a band this layout never made.
-        pageBandDelegate.resetOpenedBoundaries()
-        // The moved-table record goes with them, and for a stronger reason: it is keyed by CHARACTER
-        // LOCATION, so carrying it into a different string would move whatever happens to start at
-        // that offset. It is also band-dependent — the page outline changes the pitch, so which tables
-        // overrun changes with it. `settlePagedTables` rebuilds it from the new layout.
-        pageBandDelegate.resetMeasuredPieces()
-        pagedTableSettles = 0
         footnotePaintContext = pageBandDelegate.paginates
             ? FootnotePaintContext(theme: theme, columnWidth: columnWidth,
                                    documentDefaultFontSize: documentDefaultFontSize,
@@ -525,183 +495,39 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         return out
     }
 
-    /// Which PAGES (0-based) the document vetoes a page number on — read from `MDAttr.
-    /// hidesPageNumber`'s marked characters, resolved to a page index by the SAME arithmetic
-    /// `sectionOfPage` uses (`pageBandDelegate.leadingBand + page * pitch`,
-    /// `PageBandLayoutDelegate.page(of:leadingBand:pitch:)`), so the two never disagree about which
-    /// page a marked character lands on. Cached and cleared the same way `cachedSectionStarts` is —
-    /// one walk over attribute runs per render, not per page queried.
-    private var cachedHiddenPageNumberPages: Set<Int>?
-
+    /// Which PAGES (0-based) the plan vetoes a page number on. The plan reads the document's own
+    /// `hidesPageNumber` marks per paragraph and names each page it lands on, so a veto and a
+    /// restart can never disagree about which page a marked paragraph is on.
     var hiddenPageNumberPages: Set<Int> {
-        if let cached = cachedHiddenPageNumberPages { return cached }
-        var out: Set<Int> = []
-        if let storage = textView.textStorage, storage.length > 0,
-           let lm = textView.layoutManager, pageBandDelegate.isActive {
-            let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
-                                             band: pageBandDelegate.band)
-            if pitch > 0 {
-                storage.enumerateAttribute(MDAttr.hidesPageNumber,
-                                           in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-                    guard value as? Bool == true else { return }
-                    let glyph = lm.glyphIndexForCharacter(at: range.location)
-                    let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-                    let page = PageBandLayoutDelegate.page(of: frag.minY,
-                                                           leadingBand: pageBandDelegate.leadingBand,
-                                                           pitch: pitch)
-                    if page >= 0 { out.insert(Int(page)) }
-                }
-            }
-        }
-        cachedHiddenPageNumberPages = out
-        return out
+        Set(plannedPages.enumerated().filter { $0.element.hidesNumber }.map(\.offset))
     }
 
-    /// WHICH FOOTNOTES ARE CITED ON EACH PAGE, as page index → the note numbers whose markers
-    /// landed there, in the order the text cites them.
-    ///
-    /// The same arithmetic `hiddenPageNumberPages` and `pageNumberRestarts` use, deliberately — all
-    /// three ask "which page did this marked character land on", and three different answers to
-    /// that would put a note on a page whose number is drawn by another rule.
-    ///
-    /// This is one HALF of the fixpoint invariant 98 describes: the answer here decides how tall
-    /// each page's band is, and the band decides where the markers land. Nothing may cache the
-    /// result across a re-layout, which is why it is cleared beside the other two.
-    private var cachedFootnotePages: [Int: [Int]]?
+    /// WHICH FOOTNOTES ARE CITED ON EACH PAGE, as page index → the note numbers whose markers the
+    /// plan put there, in the order the text cites them. The band a page reserves for them and the
+    /// notes that fill it are one answer: both come out of the plan's own fixpoint (invariant 98).
+    var footnotePages: [Int: [Int]] { plannedNotes }
 
-    var footnotePages: [Int: [Int]] {
-        // ONCE THE BAND HAS RULED, THE ASSIGNMENT IS PART OF THE RULING. A band's height is a
-        // function of which notes a page cites, so the two are one answer, not two — and re-deriving
-        // the assignment against a layout the band has since changed lets them disagree. Measured on
-        // a 30-note document: three successive rounds assigned notes to pages {0,1,3,5,6,7,8},
-        // {0,1,2,4,5,6,7} and {0,1,3,4,5,6,7,8}, so pages with a reserved band cited nothing and
-        // pages citing notes had no band — half the notes were drawn nowhere.
-        if let settled = settledFootnotePages { return settled }
-        if let cached = cachedFootnotePages { return cached }
-        var out: [Int: [Int]] = [:]
-        var placed = Set<Int>()
-        if let storage = textView.textStorage, storage.length > 0,
-           let lm = textView.layoutManager, pageBandDelegate.paginates {
-            let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
-                                             band: pageBandDelegate.band)
-            if pitch > 0 {
-                storage.enumerateAttribute(MDAttr.footnoteRef,
-                                           in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-                    guard let number = (value as? NSNumber)?.intValue else { return }
-                    let glyph = lm.glyphIndexForCharacter(at: range.location)
-                    let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-                    let page = PageBandLayoutDelegate.page(of: frag.minY,
-                                                           leadingBand: pageBandDelegate.leadingBand,
-                                                           pitch: pitch)
-                    guard page >= 0 else { return }
-                    // A document may cite the same note twice; it is drawn once, on the first page
-                    // that cites it, because two copies of one note is worse than a distant one.
-                    // Kept in a set rather than searched for across the pages assigned so far: this
-                    // runs once per marker, and scanning every page's array each time is quadratic
-                    // in the note count on exactly the documents that have many.
-                    if placed.insert(number).inserted {
-                        out[Int(page), default: []].append(number)
-                    }
-                }
-            }
-        }
-        cachedFootnotePages = out
-        return out
-    }
-
-    /// Where the document restarts its page counter, as PAGE index → the number that page shows.
-    /// Read from `MDAttr.pageNumberRestart` by the SAME arithmetic `hiddenPageNumberPages` uses, so
-    /// a restart and a veto can never disagree about which page a marker landed on.
-    private var cachedPageNumberRestarts: [Int: Int]?
-
-    var pageNumberRestarts: [Int: Int] {
-        if let cached = cachedPageNumberRestarts { return cached }
-        var out: [Int: Int] = [:]
-        if let storage = textView.textStorage, storage.length > 0,
-           let lm = textView.layoutManager, pageBandDelegate.isActive {
-            let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
-                                             band: pageBandDelegate.band)
-            if pitch > 0 {
-                storage.enumerateAttribute(MDAttr.pageNumberRestart,
-                                           in: NSRange(location: 0, length: storage.length)) { value, range, _ in
-                    guard let first = (value as? NSNumber)?.intValue else { return }
-                    let glyph = lm.glyphIndexForCharacter(at: range.location)
-                    let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-                    let page = PageBandLayoutDelegate.page(of: frag.minY,
-                                                           leadingBand: pageBandDelegate.leadingBand,
-                                                           pitch: pitch)
-                    // The FIRST restart on a page wins: two markers on one sheet would otherwise
-                    // depend on attribute-run order, which is not a document fact.
-                    if page >= 0, out[Int(page)] == nil { out[Int(page)] = first }
-                }
-            }
-        }
-        cachedPageNumberRestarts = out
-        return out
-    }
-
-    /// The number page `page` (0-based) actually SHOWS. Without a restart this is `page + 1`, which
-    /// is what every page showed before this existed. With one, it is that page's distance from the
-    /// most recent restart at or before it — so a 편람 whose body restarts at 1 numbers its front
-    /// matter separately instead of counting the cover as page 1.
+    /// The number page `page` (0-based) actually SHOWS. Without a restart this is `page + 1`. With
+    /// one, it is that page's distance from the most recent restart at or before it — so a 편람
+    /// whose body restarts at 1 numbers its front matter separately instead of counting the cover as
+    /// page 1. The plan counts; a page outside it keeps the ordinary number.
     func displayedPageNumber(_ page: Int) -> Int {
-        Self.displayedPageNumber(page, restarts: pageNumberRestarts)
+        page >= 0 && page < plannedPages.count ? plannedPages[page].number : page + 1
     }
 
-    /// The arithmetic alone, so it can be checked without a laid-out document. Pure by design: the
-    /// only hard part of a page-number restart is this sum, and it is the part a layout test cannot
-    /// see. A page BEFORE the first restart keeps its ordinary number — a document that renumbers
-    /// its body does not thereby renumber its front matter backwards.
+    /// The arithmetic alone, so it can be checked without a laid-out document. A page BEFORE the
+    /// first restart keeps its ordinary number — a document that renumbers its body does not thereby
+    /// renumber its front matter backwards.
     static func displayedPageNumber(_ page: Int, restarts: [Int: Int]) -> Int {
         guard let anchor = restarts.keys.filter({ $0 <= page }).max() else { return page + 1 }
         return (restarts[anchor] ?? 1) + (page - anchor)
     }
 
-    /// Every block the document keeps with what follows it, as character ranges — one per PARAGRAPH,
-    /// which `PageBandLayoutDelegate.markedParagraphs` is what makes true. Reading the attribute's
-    /// own runs instead welds two adjacent kept paragraphs into one block, and the rule moves a
-    /// block by its FIRST line, so the welded pair moves as one and the second heading's own
-    /// decision is never made.
-    private func keepWithNextRanges() -> [(start: Int, end: Int)] {
-        guard let storage = textView.textStorage, storage.length > 0 else { return [] }
-        return PageBandLayoutDelegate.markedParagraphs(MDAttr.keepWithNext, in: storage)
-    }
-
-    /// Every character location the document breaks a page at — the first character of each block
-    /// carrying `MDAttr.startsPage`, less the ones that would open a page holding nothing (see
-    /// `PageBandLayoutDelegate.honouredPageBreaks`, which owns that rule and the measurements for it).
-    ///
-    /// Recomputed per render rather than cached: it is one walk over ATTRIBUTE RUNS (a couple of
-    /// hundred on a 400-page manual, not one per character), and a stale copy would break pages at
-    /// locations that belong to text that is no longer there.
-    private func documentPageBreakLocations() -> Set<Int> {
-        guard let storage = textView.textStorage, storage.length > 0 else { return [] }
-        return PageBandLayoutDelegate.honouredPageBreaks(in: storage)
-    }
-
     /// Which section page `page` (0-based) is typeset on, or `nil` when the document never said.
-    ///
-    /// Answered from the page's FIRST CHARACTER — the glyph the typesetter put at the top of that
-    /// page's text — and then the last section that starts at or before it. A page that begins
-    /// mid-section carries no marker of its own, which is exactly why the answer is the last one
-    /// before it rather than one found on the page.
+    /// The plan names it per sheet, from the sheet's first line.
     func sectionOfPage(_ page: Int) -> Int? {
-        let starts = sectionStarts
-        guard !starts.isEmpty, let lm = textView.layoutManager, let tc = textView.textContainer,
-              pageBandDelegate.isActive else { return nil }
-        let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
-                                         band: pageBandDelegate.band)
-        guard pitch > 0 else { return nil }
-        // One point INTO the page's text area, in container coordinates — the same arithmetic the
-        // band and the sheets use, so all three agree about where a page's text begins.
-        let y = pageBandDelegate.leadingBand + CGFloat(page) * pitch + 0.5
-        let glyph = lm.glyphIndex(for: NSPoint(x: 1, y: y), in: tc)
-        let character = lm.characterIndexForGlyph(at: glyph)
-        var answer: Int?
-        for start in starts {
-            if start.character <= character { answer = start.section } else { break }
-        }
-        return answer
+        guard !sectionStarts.isEmpty, page >= 0, page < plannedPages.count else { return nil }
+        return plannedPages[page].section
     }
 
     /// Reserves the TRAILING footer band — the space below the very LAST line of a paged document,
@@ -1777,22 +1603,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             lm.setExtraLineFragmentRect(.zero, usedRect: .zero, textContainer: tc)
         }
         textView.textStorage?.setAttributedString(attributed)
-        // THE DOCUMENT'S OWN PAGE BREAKS, read from the text that was just installed — the earliest
-        // point at which the markers exist. `configurePageBand` runs before this and so can only see
-        // the OUTGOING document; setting them there left the app ignoring every break while `--pdf`,
-        // which re-applies the band against text already in place, honoured them. Set before any
-        // layout is asked for below, so the first pass already breaks where the author did.
-        pageBandDelegate.documentPageBreaks = documentPageBreakLocations()
-        pageBandDelegate.keepWithNextRanges = keepWithNextRanges()
-        // WHICH TEXT IS IN COLUMNS, read the same way and at the same moment. Character ranges, not
-        // positions in the laid-out page: the column rule rewrites the very `y` a position-keyed
-        // lookup would use, so what a line belongs to has to be something the rule cannot move.
-        columnRunsSettled = false
-        pageBandDelegate.columnPlacements = [:]
-        // Cleared WITH the map it was derived from: the boundaries are page indices into a grid this
-        // render is about to replace, and keeping them would open boundaries in a document that has
-        // none there.
-        pageBandDelegate.columnOpenedBoundaries = []
+        // The plan's targets are keyed by character location in the text that was just replaced, and
+        // the previous document's tables carried their top-aligned cells with them: a stale target
+        // would move whatever starts at that offset in this one.
+        pageBandDelegate.resetPlan()
+        plannedPages = []
+        plannedNotes = [:]
+        topAlignedRanges = []
+        paginateForFirstPaint()
         textView.recomputeHeadingOffsets()
         reloadOutline()
         reloadCommentPanel()
@@ -1865,24 +1683,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard let lm = textView.layoutManager, let storage = textView.textStorage else { return }
         let total = storage.length
         func finishWalk() {
-            // The document is now fully laid out, which is the ONLY moment its tables can be measured
-            // — so this is where "no table may print in the margin" is decided. If one has to move,
-            // the whole walk runs again with that recorded; `settlePagedTables`' own doc explains why
-            // it cannot be decided while the first pass is still typesetting.
-            // Two settles share one budget, and the note band is checked SECOND: a table that has
-            // to move changes which page a marker sits on, so asking the notes first would measure
-            // a layout that is about to move anyway. `||` short-circuits deliberately — when a
-            // table moved, the notes are re-asked on the next round rather than against a layout
-            // that is already stale.
-            if pagedTableSettles < maxPagedTableSettles, settlePagedTables() || settleFootnoteBands() || settleColumnPlacements() {
-                pagedTableSettles += 1
-                precomputeLayout(then: then)
-                return
-            }
-            pagedTableSettles = 0
-            // Same step as the synchronous twin, at the same point: the settle chain is done, so the
-            // layout has caught up to the bands it ended on and the assignment can be taken from it.
-            refreshFootnoteAssignment()
+            // The plan was applied before this walk began, so the layout that was just laid out is
+            // already the paginated one: there is nothing to measure and re-solve here.
             applyTrailingFooterBand()
             // Whichever walk gets to the end applies a pending anchor — see `pendingAnchor`.
             if let anchor = pendingAnchor {
@@ -1894,6 +1696,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             then?()
         }
         if total == 0 { finishWalk(); return }
+        // A paged document is paginated by the engine before its visible layout is walked: one
+        // observer walk, one plan call, then this walk applies the answer line by line. Not
+        // paginating (`paginate` returns false) leaves the typesetter's own layout, as for any
+        // unpaged document.
+        let plansPages = pageBandDelegate.paginates
         // MEASURED TWICE, don't re-derive. A flat CHARACTER count looks like the wrong bound here:
         // characters are a cost proxy that misreads office documents (the same proxy failure
         // `runBusy` documents at the top of this file), so a 38-table report of 20k characters is
@@ -1929,118 +1736,149 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
             lm.ensureLayout(forCharacterRange: NSRange(location: loc, length: end - loc))
             if end < total { DispatchQueue.main.async { step(end) } } else { finishWalk() }
         }
-        DispatchQueue.main.async { step(0) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, token == self.layoutToken, self.textView.textStorage?.length == total else { return }
+            if plansPages { self.paginate() }
+            step(0)
+        }
     }
 
-    /// Every table in the CURRENT layout, as `PagePagination.tablesToPush` needs to see it.
+    // MARK: - Pagination: observe, plan, apply
+
+    /// What the plan said about one sheet — the facts the painters read instead of measuring a layout.
+    struct PlannedPage {
+        var section: Int
+        var number: Int
+        var hidesNumber: Bool
+    }
+
+    /// The sheets of the last plan, in order. Empty until a plan has been applied, and for every
+    /// document that is not paged.
+    private(set) var plannedPages: [PlannedPage] = []
+    /// The engine's last answer as it came back, for the parity probe and for tests.
+    private(set) var lastPlan: [String: Any]?
+    /// Which notes the plan cites on each page (invariant 98's fixpoint ran inside the engine).
+    private var plannedNotes: [Int: [Int]] = [:]
+    /// The tables whose cells the last plan top-aligned, so the next observation can see them as the
+    /// document authored them.
+    private var topAlignedRanges: [NSRange] = []
+    /// How many times the engine was asked for a plan — the count gate of invariant 113: one per
+    /// pagination generation, never one per settle round, because there are no rounds.
+    private(set) var planCallCount = 0
+    /// How many pagination generations ran (an observer walk, a plan call and an apply walk each).
+    private(set) var paginationCount = 0
+
+    /// ONE pagination generation: lay the text out on an observer layout nobody paginated, ask the
+    /// engine where every line goes, and hand the answer to the layout delegate and the painters.
     ///
-    /// Walked from the line fragments rather than from the text blocks, because what decides this is
-    /// where the rows actually LANDED. Contiguous lines sharing one `NSTextTable` are one table: the
-    /// cells of a table are contiguous in text order (`TableBlockBuilder` writes them that way), so a
-    /// change of table identity is a change of table. `visualTop` is the smallest line top in the run
-    /// and NOT the first line's, which a vertically merged cell can push down (see `LaidOutTable`).
-    private func laidOutTables() -> [PagePagination.LaidOutTable] {
-        guard let lm = textView.layoutManager, let tc = textView.textContainer,
-              let storage = textView.textStorage, storage.length > 0 else { return [] }
-        // Per table, per ROW: where its lines landed, and which rows a page may start on. Kept as
-        // running state while the one line-fragment walk goes past, because the walk is the only place
-        // where "where did this land" and "which cell is it" are both cheap to know.
-        struct Row { var firstChar: Int; var top: CGFloat; var bottom: CGFloat; var firstLineTop: CGFloat }
-        var rows: [Int: Row] = [:]              // startingRow → geometry
-        var spans: [(start: Int, end: Int)] = []  // every merged cell's row range, half-open
-        var out: [PagePagination.LaidOutTable] = []
-        var current: ObjectIdentifier?
-
-        func flushRows() {
-            guard !out.isEmpty, !rows.isEmpty else { rows = [:]; spans = []; return }
-            out[out.count - 1].rows = rows.keys.sorted().map { r in
-                let row = rows[r]!
-                // Safe unless some cell that STARTED above this row is still open across it.
-                let crossed = spans.contains { $0.start < r && $0.end > r }
-                // The inset must be measured where it will be USED — against the position the
-                // typesetter PROPOSES for that line, not the one a vertically aligned cell ends up
-                // drawn at. See `PageBandLayoutDelegate.proposedTableLineTops`.
-                let firstLineTop = pageBandDelegate.proposedTableLineTops[row.firstChar] ?? row.firstLineTop
-                return PagePagination.LaidOutRow(firstChar: row.firstChar, top: row.top,
-                                                 bottom: row.bottom, firstLineTop: firstLineTop,
-                                                 canBreakAbove: !crossed)
+    /// The engine decides; this only observes and applies. A document that is not paged (or has no
+    /// band to reserve and no notes to cite) is left to the typesetter. Returns whether a plan was
+    /// applied. The caller lays the visible layout out again afterwards (`precomputeLayout`'s walk, or
+    /// `paginateNow`).
+    @discardableResult
+    func paginate() -> Bool {
+        let delegate = pageBandDelegate
+        delegate.resetPlan()
+        plannedPages = []
+        plannedNotes = [:]
+        lastPlan = nil
+        restoreAuthoredAlignment()
+        guard let lm = textView.layoutManager, let storage = textView.textStorage else { return false }
+        defer {
+            if storage.length > 0 {
+                lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
             }
-            rows = [:]; spans = []
+            textView.needsDisplay = true
         }
-
-        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, glyphRange, _ in
-            let cr = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-            var block: NSTextTableBlock?
-            if cr.location >= 0, cr.location < storage.length,
-               let style = storage.attribute(.paragraphStyle, at: cr.location,
-                                             effectiveRange: nil) as? NSParagraphStyle {
-                block = style.textBlocks.first as? NSTextTableBlock
-            }
-            guard let block else { flushRows(); current = nil; return }
-            // A LINE FRAGMENT IS NOT THE CELL. Its own padding and border are drawn OUTSIDE the
-            // glyphs, so measuring a row by its lines alone under-reports every row by the amount the
-            // cell adds around them — measured on a real report at 3.48pt per cell, which is ~70pt
-            // across a twenty-row group and is exactly why a piece the arithmetic said would fit
-            // still ended in a margin. Applied to every line rather than only the first and last:
-            // an interior line's inset value loses to the `min`/`max` anyway, so this needs no
-            // separate "is this the block's first line" bookkeeping to be right.
-            let top = rect.minY - block.width(for: .padding, edge: .minY)
-                - block.width(for: .border, edge: .minY)
-            let bottom = rect.maxY + block.width(for: .padding, edge: .maxY)
-                + block.width(for: .border, edge: .maxY)
-            let table = ObjectIdentifier(block.table)
-            if current != table {
-                flushRows()
-                current = table
-                // Read where the table BEGINS: the attribute is stamped over the whole table, and
-                // this is the one character every piece of it can be traced back to.
-                let keepsWhole = (storage.attribute(MDAttr.tableKeepsWhole, at: cr.location,
-                                                    effectiveRange: nil) as? Bool) == true
-                out.append(PagePagination.LaidOutTable(
-                    firstChar: cr.location, visualTop: top, bottom: bottom,
-                    firstLineTop: self.pageBandDelegate.proposedTableLineTops[cr.location] ?? rect.minY,
-                    lastChar: cr.location + cr.length, keepsWhole: keepsWhole))
-            } else {
-                out[out.count - 1].visualTop = min(out[out.count - 1].visualTop, top)
-                out[out.count - 1].bottom = max(out[out.count - 1].bottom, bottom)
-                out[out.count - 1].lastChar = max(out[out.count - 1].lastChar, cr.location + cr.length)
-            }
-            if block.rowSpan > 1 {
-                spans.append((block.startingRow, block.startingRow + block.rowSpan))
-            }
-            let r = block.startingRow
-            if var existing = rows[r] {
-                existing.top = min(existing.top, top)
-                existing.bottom = max(existing.bottom, bottom)
-                existing.firstChar = min(existing.firstChar, cr.location)
-                if cr.location <= existing.firstChar { existing.firstLineTop = rect.minY }
-                rows[r] = existing
-            } else {
-                rows[r] = Row(firstChar: cr.location, top: top, bottom: bottom,
-                              firstLineTop: rect.minY)
+        guard delegate.paginates, delegate.band > 0 || !footnotes.isEmpty, storage.length > 0,
+              let built = PlanInputBuilder.naturalInput(controller: self) else { return false }
+        paginationCount += 1
+        guard let plan = PlanPagination.ask(built.input) else { return false }
+        planCallCount += 1
+        lastPlan = plan
+        let printPitch = delegate.pageContentHeight + delegate.band - delegate.deskGap
+        delegate.adopt(plan: plan)
+        delegate.targets = PageBandLayoutDelegate.targets(
+            plan: plan, leading: delegate.leadingBand, pitch: printPitch, deskGap: delegate.deskGap,
+            columnRuns: built.columnRuns, bodyWidth: delegate.columnBodyWidth, insetX: built.columnLineInset)
+        topAlign(flowed: PlanPagination.flowedRanges(plan: plan, observation: built.observation, storageLength: storage.length),
+                 in: storage)
+        plannedPages = ((plan["pages"] as? [[String: Any]]) ?? []).map {
+            PlannedPage(section: ($0["section"] as? NSNumber)?.intValue ?? 0,
+                        number: ($0["number"] as? NSNumber)?.intValue ?? 0,
+                        hidesNumber: ($0["numberHidden"] as? NSNumber)?.boolValue ?? false)
+        }
+        for pair in (plan["notesByPage"] as? [[Any]]) ?? [] where pair.count == 2 {
+            if let page = (pair[0] as? NSNumber)?.intValue, let numbers = pair[1] as? [NSNumber] {
+                plannedNotes[page] = numbers.map(\.intValue)
             }
         }
-        flushRows()
-        return out
+        return true
+    }
+
+    /// How many plans were taken from the head of the text alone (the first paint's, one per render).
+    private(set) var prefixPlanCount = 0
+
+    /// FIRST PAINT: plan only what the first screen shows, so the window never appears with the
+    /// typesetter's own continuous layout and then jumps. The observer lays out the head of the text
+    /// (one viewport and two pages of natural layout), the engine plans it as `truncated`, and the
+    /// layout delegate gets the targets of pages the engine says no later block can change
+    /// (`finalPages`). The full plan, taken by `precomputeLayout` once the window is up, agrees with
+    /// it on those pages — the prefix probe (`PlanParityProbeTests`) is what holds that.
+    func paginateForFirstPaint() {
+        let delegate = pageBandDelegate
+        guard delegate.paginates, delegate.band > 0 || !footnotes.isEmpty, let storage = textView.textStorage,
+              storage.length > 0, let lm = textView.layoutManager else { return }
+        let printPitch = delegate.pageContentHeight + delegate.band - delegate.deskGap
+        let viewport = max(textView.visibleRect.height, 900)
+        guard printPitch > 0, let built = PlanInputBuilder.naturalPrefixInput(controller: self, reach: viewport + 2 * printPitch),
+              let plan = PlanPagination.ask(built.input) else { return }
+        prefixPlanCount += 1
+        let truncated = (built.input["truncated"] as? Bool) ?? false
+        let final = truncated ? max(0, (plan["finalPages"] as? NSNumber)?.intValue ?? 0) : Int.max
+        guard final > 0 else { return }
+        delegate.adopt(plan: plan, below: final)
+        delegate.targets = PageBandLayoutDelegate.targets(
+            plan: plan, leading: delegate.leadingBand, pitch: printPitch, deskGap: delegate.deskGap,
+            columnRuns: built.columnRuns, bodyWidth: delegate.columnBodyWidth, insetX: built.columnLineInset,
+            belowPage: final)
+        topAlign(flowed: PlanPagination.flowedRanges(plan: plan, observation: built.observation, storageLength: storage.length),
+                 in: storage)
+        plannedPages = ((plan["pages"] as? [[String: Any]]) ?? []).prefix(final).map {
+            PlannedPage(section: ($0["section"] as? NSNumber)?.intValue ?? 0,
+                        number: ($0["number"] as? NSNumber)?.intValue ?? 0,
+                        hidesNumber: ($0["numberHidden"] as? NSNumber)?.boolValue ?? false)
+        }
+        for pair in (plan["notesByPage"] as? [[Any]]) ?? [] where pair.count == 2 {
+            if let page = (pair[0] as? NSNumber)?.intValue, page < final, let numbers = pair[1] as? [NSNumber] {
+                plannedNotes[page] = numbers.map(\.intValue)
+            }
+        }
+        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
+    }
+
+    /// The synchronous twin, for a caller that cannot wait for `precomputeLayout`'s chunked walk —
+    /// printing, which must not put a line in a margin just because the asynchronous generation had
+    /// not run yet. The paper is a function of the document, never of timing (invariant 151).
+    func paginateNow() {
+        paginate()
+        if let lm = textView.layoutManager, let tc = textView.textContainer { lm.ensureLayout(for: tc) }
     }
 
     /// A cell inside a piece that gets BROKEN across pages must sit at the top of its row, whatever
     /// vertical alignment the document asked for.
     ///
-    /// Measured on `사업계획서_13-15p_수정안.docx`: the left-hand label `유사 특허 / 분석 정확도` is centred
-    /// in its row, and once that row is broken the row spans the page gap — so its middle IS the gap,
-    /// and the two label lines were drawn at 786.1…804.7 inside an empty band running 784.5…910.6,
-    /// i.e. floating on the desk between two sheets. Word centres such a label within the part of the
-    /// row that is on each page; this reader cannot ask AppKit for that, and the top of the row is
-    /// the honest approximation — it is where the label's own row begins.
+    /// Measured on `사업계획서_13-15p_수정안.docx`: the left-hand label is centred in its row, and once
+    /// that row is broken the row spans the page gap — so its middle IS the gap, and the two label
+    /// lines were drawn inside an empty band, floating on the desk between two sheets. Word centres
+    /// such a label within the part of the row that is on each page; this reader cannot ask AppKit
+    /// for that, and the top of the row is the honest approximation.
     ///
-    /// Applied to the BLOCKS, once the settle knows which pieces will be broken, which is the only
-    /// moment that is knowable. Setting it again on a later round costs nothing and changes nothing.
-    private func topAlignCellsOf(_ pieces: [Int: Int], in storage: NSTextStorage) {
-        guard !pieces.isEmpty else { return }
-        for (start, end) in pieces {
-            let range = NSRange(location: start, length: max(0, min(end, storage.length) - start))
-            guard range.length > 0 else { continue }
+    /// The plan names the tables it flows line by line (`flowedTables`); alignment never changes
+    /// where a line breaks, so this is mechanism, applied after the plan and given back before the
+    /// next observation (`restoreAuthoredAlignment`).
+    private func topAlign(flowed ranges: [NSRange], in storage: NSTextStorage) {
+        for range in ranges where range.length > 0 {
             storage.enumerateAttribute(.paragraphStyle, in: range) { value, _, _ in
                 guard let style = value as? NSParagraphStyle else { return }
                 for block in style.textBlocks where block.verticalAlignment != .topAlignment {
@@ -2049,213 +1887,23 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
                 }
             }
         }
+        topAlignedRanges = ranges
     }
 
-    /// The first line of every run of THREE OR FEWER lines that a break would strand at the bottom of
-    /// a page — the owner's *"1~3줄 애매할 땐 다음 페이지로, 4줄 이상이면 그 자리에서"*. Measured from the
-    /// completed layout, because "how many of this piece's lines are on this page" is not a question
-    /// the typesetter can be asked while it is placing them.
-    ///
-    /// Only pieces that are broken WHERE THEY STAND can have such a run: everything else is carried
-    /// whole and never crosses a boundary at all. A run that already starts a page is skipped — it is
-    /// not stranded, it is the continuation, and marking it would ask for a shift the rule has
-    /// already made (the settle would never converge).
-    private func orphanRunStarts(in pieces: [Int: Int]) -> Set<Int> {
-        guard !pieces.isEmpty, let lm = textView.layoutManager, let tc = textView.textContainer,
-              let storage = textView.textStorage else { return [] }
-        let d = pageBandDelegate
-        let pitch = d.pageContentHeight + d.band
-        guard pitch > 0 else { return [] }
-        // Per piece, per page: the lines of that piece which landed on it, in order.
-        var runs: [String: [(location: Int, top: CGFloat)]] = [:]
-        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, glyphRange, _ in
-            let cr = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-            guard cr.location < storage.length,
-                  let piece = pieces.first(where: { cr.location >= $0.key && cr.location < $0.value })
-            else { return }
-            let page = Int(((rect.minY - d.leadingBand) / pitch).rounded(.down))
-            runs["\(piece.key):\(page)", default: []].append((cr.location, rect.minY))
-        }
-        var out: Set<Int> = []
-        for (key, lines) in runs where lines.count <= 3 {
-            guard let page = Int(key.split(separator: ":").last ?? ""), page >= 0,
-                  let first = lines.min(by: { $0.location < $1.location }) else { continue }
-            // Already at this page's own top: it is the continuation, not a stranded run.
-            let pageTop = CGFloat(page) * pitch + d.leadingBand
-            guard first.top - pageTop > 0.5 else { continue }
-            // And the piece must actually continue past this page, or there is nothing to join it to.
-            guard runs["\(key.split(separator: ":").first ?? ""):\(page + 1)"] != nil else { continue }
-            out.insert(first.location)
-        }
-        return out
-    }
-
-    /// ONE round of "no table may print in the margin": measure the tables this layout produced, and
-    /// if any of them has to move, record it and invalidate so the next layout puts it on the next
-    /// page. Returns whether anything changed — i.e. whether the document must be laid out again.
-    ///
-    /// **Why this needs a completed layout at all.** The rule that moves a table needs the table's
-    /// HEIGHT, and at the moment the typesetter asks about its first line nothing has measured it yet.
-    /// So the reader lays out, looks at what it got, and re-solves — measure, then place. The cost is
-    /// one extra pass through `precomputeLayout`'s own chunked walk, paid only by a document that
-    /// actually has a table to move (the reference report: 4 of 16 tables; a full re-layout of it
-    /// measured 38ms, and it is chunked, so no single turn grows).
-    ///
-    /// **Why the whole document is invalidated rather than the tail from the moved table.** Moving a
-    /// table changes which page boundaries LAYOUT opened, and `openedBoundaries` is what the painter
-    /// and the page outline read. Keeping the earlier half of that record while re-deriving the rest
-    /// would leave the two halves describing different layouts; re-deriving all of it is one honest
-    /// pass, and the measurement above says it is affordable.
-    @discardableResult
-    /// Which page boundaries a table is drawn ACROSS — read from the same completed layout the
-    /// settle already measured, so it costs nothing beyond the arithmetic.
-    ///
-    /// A table spans boundary `b` when its own top is above that boundary and its bottom below it.
-    /// That is deliberately the whole test: whether the break inside it lands on a cell edge or in
-    /// a cell's middle changes what is DRAWN there (invariant 61's policy — a cut cell shows no
-    /// rule, a cell-boundary split does), not whether the two sheets are one sheet.
-    /// What `settlePagedTables` would record from the layout as it stands now — the probe's read of
-    /// the boundaries the tables straddle, without waiting for a settle round to take it.
-    func currentTableStraddles() -> Set<Int> {
-        straddledBoundaries(of: laidOutTables())
-    }
-
-    /// Each table's first character and its vertical extent in the layout as it stands (probe).
-    func currentTableExtents() -> [(firstChar: Int, top: CGFloat, bottom: CGFloat)] {
-        laidOutTables().map { ($0.firstChar, $0.visualTop, $0.bottom) }
-    }
-
-    private func straddledBoundaries(of tables: [PagePagination.LaidOutTable]) -> Set<Int> {
-        let d = pageBandDelegate
-        let pitch = d.pageContentHeight + d.band
-        guard pitch > 0 else { return [] }
-        var out: Set<Int> = []
-        for t in tables where t.bottom > t.visualTop {
-            let first = Int(((t.visualTop - d.leadingBand) / pitch).rounded(.down))
-            let last = Int(((t.bottom - d.leadingBand) / pitch).rounded(.down))
-            guard last > first else { continue }
-            for b in max(0, first)..<last { out.insert(b) }
-        }
-        return out
-    }
-
-    func settlePagedTables() -> Bool {
-        guard pageBandDelegate.isActive, let lm = textView.layoutManager,
-              let storage = textView.textStorage, storage.length > 0 else { return false }
-        let tables = laidOutTables()
-        pageBandDelegate.tableStraddledBoundaries = straddledBoundaries(of: tables)
-        guard !tables.isEmpty else { return false }
-        let next: [Int: PagePagination.TableMetrics]
-        let oversized: [Int: Int]
-        // S5C2-02: the engine's own decision for the SAME inputs the host would otherwise compute
-        // this from. `nil` — no handle, or a bad payload (`RustEngineMeasure.lastErrorKind()`
-        // names which) — falls back to the host's own arithmetic below, the same failure
-        // direction S5C-1 established for the band query. `splitTables` comes from the DOCUMENT's
-        // own options, not the shared store: the toggle is per-document (`064b447`, the same repair
-        // `FontSizeStore` records), so reading the store here would let a choice made about one
-        // window decide another window's table splitting.
-        if let placement = mdDocument?.officeEngineHandle?.tablePlacement(
-            tables: tables, pageContentHeight: pageBandDelegate.pageContentHeight,
-            band: pageBandDelegate.band, leadingBand: pageBandDelegate.leadingBand,
-            splitTables: mdDocument?.pageOptions.splitTables ?? false,
-            alreadyPushed: pageBandDelegate.pushedTables, noteBands: pageBandDelegate.noteBands,
-            alreadyOversized: pageBandDelegate.oversizedPieces) {
-            next = placement.pushed
-            oversized = placement.oversized
-        } else {
-            next = PagePagination.tablesToPush(tables,
-                                               pageContentHeight: pageBandDelegate.pageContentHeight,
-                                               band: pageBandDelegate.band,
-                                               leadingBand: pageBandDelegate.leadingBand,
-                                               splitTables: (mdDocument?.pageOptions.splitTables ?? false),
-                                               alreadyPushed: pageBandDelegate.pushedTables,
-                                               noteBands: pageBandDelegate.noteBands)
-            oversized = PagePagination.oversizedPieces(tables,
-                                                       pageContentHeight: pageBandDelegate.pageContentHeight,
-                                                       band: pageBandDelegate.band,
-                                                       leadingBand: pageBandDelegate.leadingBand,
-                                                       noteBands: pageBandDelegate.noteBands,
-                                                       alreadyOversized: pageBandDelegate.oversizedPieces)
-        }
-        let orphans = pageBandDelegate.pullToNextPage
-            .union(orphanRunStarts(in: oversized))
-        guard next != pageBandDelegate.pushedTables
-                || oversized != pageBandDelegate.oversizedPieces
-                || orphans != pageBandDelegate.pullToNextPage else { return false }
-        pageBandDelegate.pushedTables = next
-        pageBandDelegate.oversizedPieces = oversized
-        pageBandDelegate.pullToNextPage = orphans
-        topAlignCellsOf(oversized, in: storage)
-        pageBandDelegate.resetOpenedBoundaries()
-        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
-                            actualCharacterRange: nil)
-        return true
-    }
-
-    /// The SYNCHRONOUS twin, for a caller that cannot wait for `precomputeLayout`'s chunked walk —
-    /// printing, which must not put a table row in a margin just because the asynchronous settle had
-    /// not finished yet. Bounded for the same reason the asynchronous one is (see `pagedTableSettles`).
-    func settlePagedTablesFully() {
-        // `paginates`, not `isActive`: a footnote's own reservation is what turns `isActive` on, so
-        // asking for it here settles on "no work to do" for exactly the documents that need this
-        // most — every footnote-citing document with no running head. Same reason `footnotePages`
-        // and `settleFootnoteBands` ask the weaker question.
-        guard pageBandDelegate.paginates, let lm = textView.layoutManager,
-              let tc = textView.textContainer else { return }
-        // ONE BUDGET EACH, not one budget between them. Sharing it was measured and is wrong: the
-        // tables spend the rounds, the note band's own rule never reaches a STOP, and because the
-        // band is only frozen at that stop the assignment keeps being re-derived — pages that
-        // reserved a band cited nothing and pages citing notes had none. On a 30-note document that
-        // drew half the notes nowhere.
-        //
-        // ALTERNATING, not two passes in a row. Running the tables once and then the notes reads as
-        // an ordering ("a table that moves changes which page cites a note") and it settles the
-        // tables against a page that is about to shrink: at the moment the table pass runs, nothing
-        // has reserved a band yet, so every table is judged against the WHOLE sheet, and a table
-        // that fits 700pt but not the 414pt a five-note band leaves is declared to fit and left
-        // where it stands — drawn straight over its own footnotes. MEASURED on a 30-note fiscal
-        // report: sheet 3's table ran to y=802 of an 841.9pt sheet, line for line through the note
-        // band beneath it, while the asynchronous settle (whose `||` chain re-asks the tables every
-        // round) got the same document right. So the two are re-asked until neither moves.
-        //
-        // This terminates on its own: the note rule latches at its own STOP and answers `false`
-        // ever after (invariant 98), so at most one outer round can be spent on it, and a table is
-        // only ever moved once. The outer cap is the same backstop the inner ones are.
-        for _ in 0..<maxPagedTableSettles {
-            var tablesMoved = false
-            for _ in 0..<maxPagedTableSettles {
-                lm.ensureLayout(for: tc)
-                if !settlePagedTables() { break }
-                tablesMoved = true
+    /// Gives every cell the last plan top-aligned its authored alignment back, so each observation
+    /// sees the document, not what a previous plan did to it.
+    private func restoreAuthoredAlignment() {
+        guard !topAlignedRanges.isEmpty, let storage = textView.textStorage else { topAlignedRanges = []; return }
+        for range in topAlignedRanges {
+            let clipped = NSIntersectionRange(range, NSRange(location: 0, length: storage.length))
+            guard clipped.length > 0 else { continue }
+            storage.enumerateAttribute(.paragraphStyle, in: clipped) { value, _, _ in
+                guard let style = value as? NSParagraphStyle else { return }
+                for block in style.textBlocks { (block as? NSTextTableBlock)?.restoreAuthoredAlignment() }
             }
-            var notesMoved = false
-            for _ in 0..<maxPagedTableSettles {
-                lm.ensureLayout(for: tc)
-                if !settleFootnoteBands() { break }
-                notesMoved = true
-            }
-            if !tablesMoved && !notesMoved { break }
         }
-        // The bands are final; let the layout catch up to them and take the assignment from THAT.
-        lm.ensureLayout(for: tc)
-        refreshFootnoteAssignment()
-        // Columns last because they are placed from a flow neither of the others changes.
-        lm.ensureLayout(for: tc)
-        if settleColumnPlacements() { lm.ensureLayout(for: tc) }
+        topAlignedRanges = []
     }
-
-    /// How many times ONE render may re-solve its tables. Each round moves at least one table and a
-    /// table is only ever moved once (the rule that moves it declines to move it again once it sits at
-    /// a page top), so this terminates on its own — the cap is a backstop against a future change
-    /// breaking that, not the mechanism.
-    ///
-    /// Taken from `FootnoteBandSettle.maxRounds` rather than written here, because the round budget
-    /// stops being a backstop the moment a SECOND varying quantity shares the loop: a note band can
-    /// genuinely oscillate (see that type), so for it the cap is load-bearing. Two numbers that must
-    /// agree and are written in two places eventually disagree, and this one would disagree silently
-    /// — the loop would still finish, just on a state one half of the settle never saw.
-    var maxPagedTableSettles: Int { FootnoteBandSettle.maxRounds }
-    private var pagedTableSettles = 0
 
     /// The notes this render is drawing and how tall each one is, measured once by
     /// `MarkdownDocument` at the column they will be drawn at (`configurePageBand`).
@@ -2274,270 +1922,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         if let section = sectionOfPage(page), let sep = footnoteSeparators[section] { return sep }
         return footnoteSeparators.count == 1 ? footnoteSeparators.first?.value : nil
     }
-    /// Every reservation this render has proposed so far, oldest first — what `FootnoteBandSettle`
-    /// needs to tell a settling document from an oscillating one (invariant 98).
-    private var footnoteBandHistory: [[Int: CGFloat]] = []
-    /// Set once the rule has RULED. A settled render may still need one more walk to lay out
-    /// against the reservation it just fixed, and that walk must not start the argument again.
-    private var footnoteBandsSettled = false
-
-    /// The ruling's BANDS are final and its ASSIGNMENT is not yet — see `refreshFootnoteAssignment`.
-    private var footnoteAssignmentNeedsRefresh = false
-
-    /// RE-TAKE WHICH PAGE CITES WHICH NOTE, from the layout the settled bands actually produced.
-    ///
-    /// Freezing the assignment with the bands is what stops the two drifting while the fixpoint is
-    /// still running, and the measurement behind that is real (invariant 98: re-deriving it every
-    /// round drew half a document's notes nowhere). But a stop on a CYCLE ends on the pointwise
-    /// maximum over the states visited — a vector no round proposed, so no layout was ever built
-    /// against it. Applying it as the ruling's last act moves the markers the assignment was taken
-    /// from, and the two end a group apart.
-    ///
-    /// So: bands final, assignment taken once more from the caught-up layout, and adopted ONLY if
-    /// every page it names already reserves enough for what it names. That guard is what keeps this
-    /// from being the re-derivation invariant 98 rejected — it can move a note ONTO the page that
-    /// cites it and can never move one onto a page with no room, because the bands do not move with
-    /// it. It changes no layout, only what the painter draws, so it costs no further round.
-    ///
-    /// MEASURED over the 31-document footnote corpus, notes drawn on the page that cites them:
-    /// **242 of 420 without this, 259 of 420 with it**. It is not the whole answer — a document
-    /// whose tables move after the notes have latched still ends up with its own assignment out of
-    /// reach of the frozen bands, and the guard correctly declines those.
-    @discardableResult
-    func refreshFootnoteAssignment() -> Bool {
-        guard footnoteAssignmentNeedsRefresh else { return false }
-        footnoteAssignmentNeedsRefresh = false
-        let frozen = settledFootnotePages
-        settledFootnotePages = nil
-        cachedFootnotePages = nil
-        let fresh = footnotePages
-        let bands = pageBandDelegate.noteBands
-        let covered = fresh.allSatisfy { page, numbers in
-            let sep = footnoteSeparator(forPage: page)
-            let need = PageBandGeometry.footnoteBandHeight(
-                noteHeights: numbers.compactMap { footnoteHeights[$0] },
-                separatorAllowance: FootnotePainter.separatorAllowance(sep),
-                noteSpacing: sep?.noteSpacingPt ?? 0)
-            return need <= (bands[page] ?? 0) + 0.5
-        }
-        settledFootnotePages = covered ? fresh : frozen
-        cachedFootnotePages = nil
-        let changed = covered && fresh != frozen
-        if changed { textView.needsDisplay = true }
-        return changed
-    }
-
-
-    /// The page-to-notes assignment the settled bands were measured from, held so the two cannot
-    /// drift apart. Cleared with every other per-render footnote state.
-    private var settledFootnotePages: [Int: [Int]]?
-
-    /// What this layout says each page should reserve for the notes cited on it — the proposal half
-    /// of the fixpoint. Clamped per page, so a note taller than its own sheet cannot reserve the
-    /// page out of existence (`FootnoteBandSettle.clamped`).
-    /// Internal, not private, for one caller outside this file: the test that checks it against the
-    /// payload the ENGINE is handed for the same round. The two are separate computations of the
-    /// same question — which notes a page cites and how tall that makes its band — and only the
-    /// engine's was ever checked, because `resolve`'s `host:` is an autoclosure that never runs
-    /// while a handle answers. So on every real document this arithmetic is dead at runtime and
-    /// alive only for a document whose handle failed to open, which is the one case nothing was
-    /// looking at.
-    func proposedNoteBands() -> [Int: CGFloat] {
-        guard !footnotes.isEmpty else { return [:] }
-        let content = pageBandDelegate.pageContentHeight
-        var out: [Int: CGFloat] = [:]
-        for (page, numbers) in footnotePages {
-            let heights = numbers.compactMap { footnoteHeights[$0] }
-            // Separator allowance and the gap between notes are the document's own declarations
-            // (`FootnoteShape`) and are not decoded yet — S14's remaining rows. Zero here means the
-            // band is exactly the notes, which is the honest under-estimate: it reserves what is
-            // certainly needed and nothing invented.
-            let sep = footnoteSeparator(forPage: page)
-            let raw = PageBandGeometry.footnoteBandHeight(
-                noteHeights: heights,
-                separatorAllowance: FootnotePainter.separatorAllowance(sep),
-                noteSpacing: sep?.noteSpacingPt ?? 0)
-            let band = FootnoteBandSettle.clamped(raw, pageContentHeight: content)
-            if band > 0 { out[page] = band }
-        }
-        return out
-    }
-
-    /// Run one round of the note-band fixpoint. Returns `true` when the caller must lay the document
-    /// out again — either because the rule asked for another round, or because it has just fixed a
-    /// reservation the current layout was not built against.
-    func settleFootnoteBands() -> Bool {
-        guard !footnotes.isEmpty, pageBandDelegate.paginates, !footnoteBandsSettled else { return false }
-        let outcome: FootnoteBandSettle.Outcome
-        // S5D1-03: the engine's own answer for the SAME round the host would otherwise compute —
-        // `FootnoteBandSettle.step` plus the proposal arithmetic that feeds it
-        // (`proposedNoteBands`), in one call. `nil` — no handle, or a bad payload
-        // (`RustEngineMeasure.lastErrorKind()` names which) — falls back to the host's own
-        // arithmetic, the same failure direction S5C-1 established for every query on this page.
-        // `resolve` is where that choice is made, and it is a named function so a test can watch
-        // it: nothing here constructs a window controller. The bridge answers a COMPLETE outcome or `nil`; a partial reply is refused whole,
-        // never trusted half-way.
-        outcome = FootnoteBandSettle.resolve(
-            engine: mdDocument?.officeEngineHandle?.footnoteBandSettle(
-                pages: footnotePages.map { page, numbers in
-                    (pageIndex: page, noteHeights: numbers.compactMap { footnoteHeights[$0] },
-                     separator: footnoteSeparator(forPage: page))
-                },
-                history: footnoteBandHistory, pageContentHeight: pageBandDelegate.pageContentHeight,
-                cap: maxPagedTableSettles),
-            host: FootnoteBandSettle.step(proposed: proposedNoteBands(), history: footnoteBandHistory,
-                                          cap: maxPagedTableSettles))
-        switch outcome {
-        case let .retry(bands):
-            footnoteBandHistory.append(bands)
-            pageBandDelegate.noteBands = bands
-            cachedFootnotePages = nil
-            invalidateForNoteBands()
-            return true
-        case let .stop(bands, _):
-            footnoteBandsSettled = true
-            // The assignment these bands were computed from is frozen WITH them — see `footnotePages`.
-            settledFootnotePages = footnotePages
-            guard pageBandDelegate.noteBands != bands else { return false }
-            // THE BANDS ARE FINAL AND THIS LAYOUT HAS NEVER SEEN THEM. A stop on a CYCLE resolves to
-            // the pointwise MAXIMUM over the states visited, which is a vector no round proposed and
-            // therefore no layout was ever built against — applying it moves the very markers the
-            // assignment on the line above was just taken from. The assignment is re-taken once the
-            // layout has caught up; `refreshFootnoteAssignment` is that step.
-            footnoteAssignmentNeedsRefresh = true
-            pageBandDelegate.noteBands = bands
-            cachedFootnotePages = nil
-            invalidateForNoteBands()
-            return true
-        }
-    }
-
-    /// Throw away the layout the new reservation invalidates — the same thing `settlePagedTables`
-    /// does for the same reason, and for a stronger one here.
-    ///
-    /// A note band is the ONLY reservation that does not exist when the first layout runs: it is
-    /// derived FROM that layout. `PageBandLayoutDelegate.isActive` is therefore false while the
-    /// first pass typesets a document whose only band is its notes, so not one line was shifted —
-    /// and `ensureLayout` will not redo work it considers valid. Without this the reservation is
-    /// perfectly correct, the painter draws into it, and the body is still sitting on top of the
-    /// notes: measured on a real 5-note document, whose PDF interleaved note text with body text
-    /// line by line.
-    private func invalidateForNoteBands() {
-        guard let lm = textView.layoutManager, let storage = textView.textStorage else { return }
-        pageBandDelegate.resetOpenedBoundaries()
-        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
-                            actualCharacterRange: nil)
-    }
-
-    /// Measure the columned runs from a layout that has not been columned yet, and fix where every
-    /// one of their lines goes. Returns `true` when the caller must lay the document out again.
-    ///
-    /// One pass, not a fixpoint: the line BREAKS were already decided at the column's width when the
-    /// text was built (`OfficeTextBuilder.columnWidthPerBlock`), so moving a line into its column
-    /// changes where it is drawn and never how it wraps. That is the whole reason this can be
-    /// measured once — unlike a note band, whose reservation changes the very layout it is measured
-    /// from (invariant 98).
-    func settleColumnPlacements() -> Bool {
-        guard !columnRunsSettled else { return false }
-        let runs = columnRunRanges()
-        guard !runs.isEmpty, let lm = textView.layoutManager, let tc = textView.textContainer,
-              let storage = textView.textStorage, storage.length > 0 else {
-            columnRunsSettled = true
-            return false
-        }
-        let pitch = PagePagination.pitch(pageContentHeight: pageBandDelegate.pageContentHeight,
-                                         band: pageBandDelegate.band)
-        guard pitch > 0, pageBandDelegate.pageContentHeight > 0 else {
-            columnRunsSettled = true
-            return false
-        }
-        lm.ensureLayout(for: tc)
-
-        var placements: [Int: (x: CGFloat, y: CGFloat)] = [:]
-        // IN DOCUMENT ORDER, each run against the layout that already holds the placements of every
-        // run before it. A run's origin is its first line's top, and that top is only right once the
-        // runs above it have been flowed: measured from one single-column layout for all runs, the
-        // origin carried the full unflowed height of every earlier run, and the space those runs gave
-        // back by flowing into their columns was left blank. On the reference manual the appendix
-        // began 7,646pt below the end of the two-column regulation before it — nine blank printed
-        // sheets (invariant 161). So after a run's placements are made they are handed to the
-        // delegate and the text from that run on is laid out again before the next run is measured.
-        for run in runs {
-            let columns = ColumnGeometry.columns(inWidth: pageBandDelegate.columnBodyWidth,
-                                                 layout: run.layout)
-            guard columns.count > 1 else { continue }
-            lm.ensureLayout(forCharacterRange: run.range)
-            var lines: [(location: Int, top: CGFloat, height: CGFloat, insetX: CGFloat)] = []
-            let glyphs = lm.glyphRange(forCharacterRange: run.range, actualCharacterRange: nil)
-            // A TABLE cell's own place across the column is carried; everything else is zero, so a
-            // run with no table in it produces exactly the map it produced before (invariant 37).
-            // Read from the SAME uncolumned layout the rest of this measurement is taken from,
-            // which is the only frame where a cell's `x` still means what the table decided.
-            var runLeft = CGFloat.greatestFiniteMagnitude
-            lm.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, _, _ in
-                runLeft = min(runLeft, rect.minX)
-            }
-            lm.enumerateLineFragments(forGlyphRange: glyphs) { rect, _, _, glyphRange, _ in
-                let chars = lm.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
-                let ps = storage.length > chars.location
-                    ? storage.attribute(.paragraphStyle, at: chars.location,
-                                        effectiveRange: nil) as? NSParagraphStyle
-                    : nil
-                let inset = ps?.textBlocks.first is NSTextTableBlock && runLeft.isFinite
-                    ? max(0, rect.minX - runLeft) : 0
-                lines.append((chars.location, rect.minY, rect.height, inset))
-            }
-            guard let first = lines.first else { continue }
-            // A run does NOT have to begin at a page top — HWP puts the declaration in the text, so
-            // a document can go to two columns halfway down a sheet (invariant 100). Such a run has
-            // TWO column heights: what is left of the sheet it starts on, and the whole body of
-            // every sheet after. Handing the leftover down as the only height made every later sheet
-            // as short as the first, so the columns stopped partway down the page and the run spilled
-            // onto sheets it did not need.
-            let startPage = PageBandLayoutDelegate.page(of: first.top,
-                                                        leadingBand: pageBandDelegate.leadingBand,
-                                                        pitch: pitch)
-            let pageTop = startPage * pitch + pageBandDelegate.leadingBand
-            let origin = max(first.top, pageTop)
-            let firstHeight = pageBandDelegate.textBottom(ofPage: startPage)
-                - (origin - pageBandDelegate.leadingBand)
-            // Every LATER sheet's own body. Taken from the sheet after the start rather than from
-            // `pageContentHeight` flat, so a note band on it is honoured by the same one definition
-            // every other rule now asks (`PagePagination.textBottom`).
-            let laterHeight = PagePagination.bodyHeight(ofPage: startPage + 1,
-                                                        pageContentHeight: pageBandDelegate.pageContentHeight,
-                                                        noteBands: pageBandDelegate.noteBands)
-            guard firstHeight > 0, laterHeight > 0 else { continue }
-            let runPlacements = ColumnGeometry.placements(lines: lines, runOrigin: origin,
-                                                          firstPage: startPage, columns: columns,
-                                                          columnHeight: laterHeight, pitch: pitch,
-                                                          leadingBand: pageBandDelegate.leadingBand,
-                                                          firstColumnHeight: firstHeight)
-            guard !runPlacements.isEmpty else { continue }
-            placements.merge(runPlacements) { a, _ in a }
-            pageBandDelegate.columnPlacements = placements
-            lm.invalidateLayout(forCharacterRange: NSRange(location: run.range.location,
-                                                            length: storage.length - run.range.location),
-                                actualCharacterRange: nil)
-        }
-        columnRunsSettled = true
-        guard !placements.isEmpty else { return false }
-        pageBandDelegate.columnPlacements = placements
-        // Which page boundaries this run actually crosses. The map is the only authority on that —
-        // a columned line never reaches the between-page rule that fills `openedBoundaries` — and
-        // without it the weld reads the whole run as one unbroken sheet (see
-        // `PageBandLayoutDelegate.columnOpenedBoundaries`). Every boundary BETWEEN two pages the run
-        // occupies is real, including one whose own page holds only the second column's lines.
-        pageBandDelegate.columnOpenedBoundaries = ColumnGeometry.crossedBoundaries(
-            placements: placements, leadingBand: pageBandDelegate.leadingBand, pitch: pitch)
-        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
-                            actualCharacterRange: nil)
-        return true
-    }
-
-    /// Set once the column map has been measured for this render — it is measured from a layout
-    /// that has NOT been columned, so it must never be measured again from one that has.
-    private var columnRunsSettled = false
 
     /// The character ranges this document typesets in columns.
     ///
@@ -4022,7 +3406,6 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         doc.applyPageBand(to: self, forPrinting: true)
         lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
                             actualCharacterRange: nil)
-        if let tc = textView.textContainer { lm.ensureLayout(for: tc) }
     }
 
     /// Put the window's own layout back after a print job — the reader must not be left holding the
@@ -4034,32 +3417,21 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let anchor = readingAnchor()
         doc.applyPageBand(to: self)
         applyPagedViewState()
-        lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length),
-                            actualCharacterRange: nil)
-        if let tc = textView.textContainer { lm.ensureLayout(for: tc) }
+        paginateNow()
         applyTrailingFooterBand()
-        settlePagedTablesFully()
         restore(anchor)
         textView.needsDisplay = true
     }
 
     func makePrintOperation() -> NSPrintOperation {
-        // The screen's own settle runs first, however far the asynchronous one has got. Settling
-        // breaks a table that fits no page where it stands and top-aligns the cells of that piece IN
-        // THE STORAGE (`topAlignCellsOf`), and the storage keeps it: the paper layout below starts
-        // from whatever the screen settle left. Measured on the 편람: laid out for paper straight
-        // after its render (the async settle had not begun) it came to 395 sheets; once the async
-        // settle had run, to 391 — and `--pdf` after a document that kept the main queue busy gave
-        // the first answer. Finishing the screen settle here makes the paper a function of the
-        // document, not of the timing (invariant 151).
-        if !printLayoutApplied { settlePagedTablesFully() }
         // Paper has pages whether or not the reader is drawing them, so the paged shape goes on
-        // FIRST — before the settle, which depends on the band it produces.
+        // FIRST — the plan is asked for the band it produces.
         beginPrintLayout()
-        // ⌘P can arrive before the asynchronous settle has finished — on a document just opened, or
-        // straight after a re-render. Paper cannot show an overrun honestly the way the screen can
-        // (`PagePagination.joiningUnopenedBoundaries`), so the tables are settled here first.
-        settlePagedTablesFully()
+        // ⌘P can arrive before the window's own generation has run — on a document just opened, or
+        // straight after a re-render — so the plan is taken here, from the same observation the
+        // screen takes it from. The paper is a function of the document, not of the timing (invariant
+        // 151): there is no screen settle whose progress the paper could depend on.
+        paginateNow()
         applyTrailingFooterBand()
         // Paper has no viewport. Pixels are held only for what is near the reader (invariant 1's lazy
         // scheme), so a document printed without ever having been scrolled through prints blank space

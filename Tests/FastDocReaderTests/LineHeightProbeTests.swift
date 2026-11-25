@@ -55,7 +55,7 @@ final class LineHeightProbeTests: XCTestCase {
         HeadlessPDF.waitForRenderToSettle(doc: doc, wc: wc)
         if let tc = wc.textView.textContainer { wc.textView.layoutManager?.ensureLayout(for: tc) }
         wc.applyTrailingFooterBand()
-        print("[print] 인쇄 전 : bandActive=\(wc.pageBandDelegate.isActive) printPageCount=\(wc.printPageCount) printSheets=\(wc.printSheets.count) pageSheets=\(wc.pageSheets.count) opts=outline:\(PageViewOptionsStore.startingOptions.outline),split:\(PageViewOptionsStore.startingOptions.splitTables) pushed=\(wc.pageBandDelegate.pushedTables.count) opened=\(wc.pageBandDelegate.openedBoundaries.count)")
+        print("[print] 인쇄 전 : bandActive=\(wc.pageBandDelegate.isActive) printPageCount=\(wc.printPageCount) printSheets=\(wc.printSheets.count) pageSheets=\(wc.pageSheets.count) opts=outline:\(PageViewOptionsStore.startingOptions.outline),split:\(PageViewOptionsStore.startingOptions.splitTables) opened=\(wc.pageBandDelegate.openedBoundaries.count)")
 
         print("[margin] \(marginReport(wc))")
         do {   // 종이가 빈틈없이 이어지는가 — 사이에 빈 띠가 있으면 그 안의 글자는 어느 장에도 안 실린다
@@ -67,20 +67,6 @@ final class LineHeightProbeTests: XCTestCase {
             print("[tile] \(marginReport(wc))")
         }
 
-        // (b): does settling FROM SCRATCH reach a canonical answer, or a third one?
-        if let lm = wc.textView.layoutManager, let tc = wc.textView.textContainer,
-           let st = wc.textView.textStorage {
-            print("[scratch] 리셋 전: pushed=\(wc.pageBandDelegate.pushedTables.count) pages=\(wc.printPageCount)")
-            for round in 1...3 {
-                wc.pageBandDelegate.pushedTables = [:]
-                wc.pageBandDelegate.resetOpenedBoundaries()
-                lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: st.length),
-                                    actualCharacterRange: nil)
-                lm.ensureLayout(for: tc)
-                wc.settlePagedTablesFully()
-                print("[scratch] 라운드\(round): pushed=\(wc.pageBandDelegate.pushedTables.count) pages=\(wc.printPageCount) used=\(lm.usedRect(for: tc).height)")
-            }
-        }
 
         let op = wc.makePrintOperation()   // settles paged tables synchronously, like ⌘P and --pdf
         var range = NSRange(location: 0, length: 0)

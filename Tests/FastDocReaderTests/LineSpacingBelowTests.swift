@@ -37,45 +37,31 @@ final class LineSpacingBelowTests: XCTestCase {
         XCTAssertEqual(above.lineSpacing, 0, accuracy: 0.01)
     }
 
-    /// Seven 15pt lines on a 100pt page: the seventh's glyphs end at 100 and its spacing at 105.
-    private func lineRects(spacingBelow: Bool) -> [NSRect] {
-        let delegate = PageBandLayoutDelegate(pageContentHeight: 100, band: 20)
-        let storage = NSTextStorage()
-        let lm = NSLayoutManager()
-        lm.allowsNonContiguousLayout = false
-        lm.delegate = delegate
-        storage.addLayoutManager(lm)
-        let tc = NSTextContainer(size: NSSize(width: 300, height: CGFloat.greatestFiniteMagnitude))
-        tc.lineFragmentPadding = 0
-        lm.addTextContainer(tc)
-        let ps = NSMutableParagraphStyle()
-        if spacingBelow {
-            ps.minimumLineHeight = 10; ps.maximumLineHeight = 10; ps.lineSpacing = 5
-        } else {
-            ps.minimumLineHeight = 15; ps.maximumLineHeight = 15
+    /// Nine 15pt line boxes on a 100pt page with a 20pt band, as the plan places them. `trailing` is
+    /// the spacing under the glyphs of each line: the seventh line's glyphs end at 100 and its spacing
+    /// at 105.
+    private func targets(trailing: Double) throws -> [Int: (page: Int, top: Double)] {
+        let block: [String: Any] = ["key": 1, "kind": "text", "lines": [Double](repeating: 15, count: 9),
+                                    "lineLocs": Array(0..<9), "trailing": trailing]
+        let plan = try XCTUnwrap(PlanPagination.ask(["planVersion": 1, "contentHeight": 100, "band": 20, "blocks": [block]]))
+        var out: [Int: (page: Int, top: Double)] = [:]
+        for t in (plan["targets"] as? [[String: Any]]) ?? [] {
+            out[(t["loc"] as? Int) ?? -1] = ((t["page"] as? Int) ?? -1, (t["top"] as? Double) ?? -1)
         }
-        let text = NSMutableAttributedString()
-        for i in 0..<9 {
-            text.append(NSAttributedString(string: "line \(i)\n",
-                                           attributes: [.font: NSFont.systemFont(ofSize: 8), .paragraphStyle: ps]))
-        }
-        storage.setAttributedString(text)
-        lm.ensureLayout(for: tc)
-        var rects: [NSRect] = []
-        lm.enumerateLineFragments(forGlyphRange: lm.glyphRange(for: tc)) { rect, _, _, _, _ in rects.append(rect) }
-        return rects
+        return out
     }
 
-    func testTheLastLineStaysWhenOnlyItsSpacingUnderTheGlyphsOverflows() {
-        let rects = lineRects(spacingBelow: true)
-        XCTAssertGreaterThanOrEqual(rects.count, 9)
-        XCTAssertEqual(rects[6].minY, 90, accuracy: 0.5, "glyphs 90–100 fit the 100pt body; the spacing to 105 hangs")
-        XCTAssertEqual(rects[7].minY, 120, accuracy: 0.5, "the next line begins the next page (pitch 120)")
+    func testTheLastLineStaysWhenOnlyItsSpacingUnderTheGlyphsOverflows() throws {
+        let placed = try targets(trailing: 5)
+        XCTAssertEqual(placed[6]?.page, 0)
+        XCTAssertEqual(try XCTUnwrap(placed[6]).top, 90, accuracy: 0.5, "glyphs 90–100 fit the 100pt body; the spacing to 105 hangs")
+        XCTAssertEqual(placed[7]?.page, 1, "the next line begins the next page")
+        XCTAssertEqual(try XCTUnwrap(placed[7]).top, 0, accuracy: 0.5)
     }
 
-    func testAFloorThatOverflowsIsStillPushedWhole() {
-        let rects = lineRects(spacingBelow: false)
-        XCTAssertGreaterThanOrEqual(rects.count, 9)
-        XCTAssertEqual(rects[6].minY, 120, accuracy: 0.5, "a 15pt floor at 90 does not fit 100 and moves whole")
+    func testAFloorThatOverflowsIsStillPushedWhole() throws {
+        let placed = try targets(trailing: 0)
+        XCTAssertEqual(placed[6]?.page, 1, "a 15pt floor at 90 does not fit 100 and moves whole")
+        XCTAssertEqual(try XCTUnwrap(placed[6]).top, 0, accuracy: 0.5)
     }
 }

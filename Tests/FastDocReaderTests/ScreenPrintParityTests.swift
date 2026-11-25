@@ -44,23 +44,26 @@ final class ScreenPrintParityTests: XCTestCase {
         doc.makeWindowControllers()
         let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
         wc.window?.setFrame(NSRect(x: 0, y: 0, width: 900, height: 700), display: false)
+        wc.paginateNow()
         return (doc, wc)
     }
 
     /// The instruction itself must survive BOTH paths. This is the exact pair of defects, caught
-    /// from either side: whichever path is re-applied last, the breaks are still there.
+    /// from either side: whichever path is planned last, the breaks are still there.
     func testTheDocumentsBreaksSurviveTheScreenPathAndThePrintPath() throws {
         let (doc, wc) = try openPagedDocument()
-        let onScreen = wc.pageBandDelegate.documentPageBreaks
-        XCTAssertFalse(onScreen.isEmpty, "the screen path must honour the document's own breaks")
+        let onScreen = wc.printPageCount
+        XCTAssertGreaterThan(onScreen, 1, "the screen path must honour the document's own break")
 
         doc.applyPageBand(to: wc, forPrinting: true)
-        XCTAssertEqual(wc.pageBandDelegate.documentPageBreaks, onScreen,
+        wc.paginateNow()
+        XCTAssertEqual(wc.printPageCount, onScreen,
                        "the print path must honour exactly the same breaks — a page count that " +
                        "differs between the window and the PDF is the defect this file exists for")
 
         doc.applyPageBand(to: wc)
-        XCTAssertEqual(wc.pageBandDelegate.documentPageBreaks, onScreen,
+        wc.paginateNow()
+        XCTAssertEqual(wc.printPageCount, onScreen,
                        "and going back to the screen path must not change them either")
     }
 
@@ -123,6 +126,7 @@ final class ScreenPrintParityTests: XCTestCase {
         XCTAssertEqual(screenCount, screenSheets, "the sheets ARE the pages")
 
         doc.applyPageBand(to: wc, forPrinting: true)
+        wc.paginateNow()
         XCTAssertEqual(wc.printPageCount, screenCount,
                        "re-applying the band for printing must not change how many pages there are")
     }
@@ -131,12 +135,10 @@ final class ScreenPrintParityTests: XCTestCase {
     /// above could be satisfied by both paths being equally wrong.
     func testAnUnbrokenDocumentPaginatesIdenticallyThroughBothPaths() throws {
         let (doc, wc) = try openPagedDocument(breakAt: [])
-        XCTAssertTrue(wc.pageBandDelegate.documentPageBreaks.isEmpty)
         let before = wc.printPageCount
         doc.applyPageBand(to: wc, forPrinting: true)
-        XCTAssertEqual(wc.printPageCount, before)
-        XCTAssertTrue(wc.pageBandDelegate.documentPageBreaks.isEmpty,
-                      "no breaks in, none invented on either path")
+        wc.paginateNow()
+        XCTAssertEqual(wc.printPageCount, before, "no breaks in, none invented on either path")
     }
 
     // MARK: - S5C2-03/05: the engine's own sheets are the SAME sheets the screen draws
@@ -145,7 +147,7 @@ final class ScreenPrintParityTests: XCTestCase {
     /// carry no `documentData`, so `officeEngineHandle` stays `nil` under EITHER build and the
     /// tests above never actually reach the engine even when this file is compiled with the flag
     /// — this helper is what makes a flagged run of THIS file mean something for `printSheets`/
-    /// `settlePagedTables`, the same real-fixture shape `RustEngineBridgeTests` uses.
+    /// the page plan, the same real-fixture shape `RustEngineBridgeTests` uses.
     private func openRealPagedFixture(_ relativePath: String) throws -> DocumentWindowController {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -160,6 +162,7 @@ final class ScreenPrintParityTests: XCTestCase {
         doc.makeWindowControllers()
         let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
         wc.window?.setFrame(NSRect(x: 0, y: 0, width: 900, height: 700), display: false)
+        wc.paginateNow()
         return wc
     }
 
@@ -203,7 +206,7 @@ final class ScreenPrintParityTests: XCTestCase {
     func testEnginesSheetsAgreeWithTheHostsOwnArithmeticOnARealMultiPageDocument() throws {
         let wc = try openRealPagedFixture("docs/fixtures/office/bus-headings.docx")
         XCTAssertTrue(wc.pageBandDelegate.isActive)
-        wc.settlePagedTablesFully()
+        wc.paginateNow()
         let engineSheets = wc.printSheets
         XCTAssertGreaterThan(engineSheets.count, 1,
                              "docs/fixtures/office/bus-headings.docx must produce more than one page")
@@ -234,16 +237,15 @@ final class ScreenPrintParityTests: XCTestCase {
     /// decision. Judged the same way `testTheSettingDecidesBetweenBreakingATableAndCarryingItDown`
     /// judges the host's arithmetic — the reference report's first overrunning table lands a page
     /// earlier when breaking is allowed — but on a document proven to have reached the engine
-    /// (`answeredQueries` grew), so a build that hardcoded one behaviour Rust-side and dropped the
+    /// (the plan was asked), so a build that hardcoded one behaviour Rust-side and dropped the
     /// live toggle would fail THIS assertion even though the host-only test above could not see it.
     func testTheEnginesTablePlacementStillObeysTheSplitTablesToggle() throws {
         func tableTops(_ split: Bool) throws -> (tops: [CGFloat], answered: Int) {
             PageViewOptionsStore.startingOptions = PageViewOptions(outline: true, splitTables: split)
             let wc = try openRealPagedFixture("docs/fixtures/office/bus-headings.docx")
-            let handle = try XCTUnwrap(wc.mdDocument?.officeEngineHandle)
-            let before = handle.answeredQueries
-            wc.settlePagedTablesFully()
-            return (try PagedTableOverrunTests.tableTops(in: wc), handle.answeredQueries - before)
+            let before = wc.planCallCount
+            wc.paginateNow()
+            return (try PagedTableRealStackTests.tableTops(in: wc), wc.planCallCount - before)
         }
         let whole = try tableTops(false)
         let split = try tableTops(true)

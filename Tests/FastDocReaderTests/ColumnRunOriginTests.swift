@@ -76,14 +76,14 @@ final class ColumnRunOriginTests: XCTestCase {
                           "its origin was taken from a layout in which the first run had not been flowed yet")
         // And every line of the second run is in a column: the run's own placements were made.
         let placed = (runs[1].range.location..<NSMaxRange(runs[1].range))
-            .filter { wc.pageBandDelegate.columnPlacements[$0] != nil }.count
+            .filter { wc.pageBandDelegate.targets[$0]?.columnX != nil }.count
         XCTAssertGreaterThan(placed, 100, "the second run's lines must be placed in its columns")
     }
 
     /// The print grid is not the screen grid — the desk gap between sheets goes, so every sheet
     /// after the first begins at a different `y` — and placements are absolute positions on a grid.
-    /// Entering print layout must settle them again, or the run lands where the SCREEN grid put it.
-    func testEnteringPrintLayoutSettlesTheRunsAgainstThePrintGrid() throws {
+    /// Entering print layout must plan them again, or the run lands where the SCREEN grid put it.
+    func testEnteringPrintLayoutPlansTheRunsAgainstThePrintGrid() throws {
         let (_, wc) = try twoColumnDocument(linesPerRun: 60, preamble: 120)
         let runs = wc.columnRunRanges()
         XCTAssertEqual(runs.count, 2)
@@ -91,13 +91,13 @@ final class ColumnRunOriginTests: XCTestCase {
         let screenPitch = PagePagination.pitch(pageContentHeight: wc.pageBandDelegate.pageContentHeight,
                                                band: wc.pageBandDelegate.band)
         wc.beginPrintLayout()
-        wc.settlePagedTablesFully()
+        wc.paginateNow()
         wc.applyTrailingFooterBand()
         let printPitch = PagePagination.pitch(pageContentHeight: wc.pageBandDelegate.pageContentHeight,
                                               band: wc.pageBandDelegate.band)
         XCTAssertNotEqual(screenPitch, printPitch, accuracy: 0.5,
                           "the two grids must differ for this test to see anything")
-        XCTAssertFalse(wc.pageBandDelegate.columnPlacements.isEmpty, "the runs are settled again on paper")
+        XCTAssertFalse(wc.pageBandDelegate.targets.isEmpty, "the plan is taken again for paper")
         let top = try XCTUnwrap(fragments(wc, in: firstRun.range).map(\.minY).min())
         // The run starts a page, so its first line sits at a page top OF THE PRINT GRID. On stale
         // screen placements it sits at a screen page top instead — off by the desk gap per sheet.

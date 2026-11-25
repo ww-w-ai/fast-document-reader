@@ -50,6 +50,15 @@ final class PlanObservationTests: XCTestCase {
         let plain = lineRects(plainLayout, plainContainer)
         let lineHeight = plain[1].minY - plain[0].minY
         let band = PageBandLayoutDelegate(pageContentHeight: (lineHeight * 12).rounded(), band: 40)
+        // A plan that opens a 40pt gap after every twelfth line: what the engine's targets would say.
+        var lineStarts: [(location: Int, top: CGFloat)] = []
+        plainLayout.enumerateLineFragments(forGlyphRange: plainLayout.glyphRange(for: plainContainer)) { rect, _, _, glyphs, _ in
+            lineStarts.append((plainLayout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil).location, rect.minY))
+        }
+        for (index, line) in lineStarts.enumerated() where index >= 12 {
+            band.targets[line.location] = PageBandLayoutDelegate.Target(
+                y: line.top + 40 * CGFloat(index / 12), columnX: nil, insetX: 0)
+        }
         let (storage, visibleLayout, visibleContainer) = stack(text, delegate: band)
         let paged = lineRects(visibleLayout, visibleContainer)
         XCTAssertGreaterThan(band.shiftCount, 2, "precondition: the visible layout is paginated")

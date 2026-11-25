@@ -12,7 +12,7 @@ import AppKit
 /// in a 31-document footnote corpus: nine sheets, each carrying a ~686pt table and a five-note band
 /// of 286pt on a 700pt body.
 ///
-/// **Why a probe and not a unit test.** The defect was an ORDERING one — `settlePagedTablesFully`
+/// **Why a probe and not a unit test.** The defect was an ORDERING one — the host's former settle loop
 /// settled the tables, then the notes, and never re-asked the tables. At the moment the table pass
 /// ran nothing had reserved a band, so every table was judged against the whole sheet, declared to
 /// fit, and left where it stood. Nothing about that is visible in either rule on its own: both were
@@ -60,7 +60,7 @@ final class FootnoteBandRealFileProbeTests: XCTestCase {
         // The SAME settle printing uses, which is where the ordering defect lived. Driving the
         // asynchronous walk instead would test the other path, whose `||` chain re-asks the tables
         // every round and never had this defect.
-        wc.settlePagedTablesFully()
+        wc.paginateNow()
 
         let delegate = wc.pageBandDelegate
         print("PROBE bands=\(delegate.noteBands.sorted { $0.key < $1.key })")
@@ -121,7 +121,7 @@ final class FootnoteBandRealFileProbeTests: XCTestCase {
         // words. Those lines are counted and reported rather than asserted on; every OTHER line is
         // the contract.
         func insideOversized(_ location: Int) -> Bool {
-            delegate.oversizedPieces.contains { location >= $0.key && location < $0.value }
+            false
         }
 
         var checked = 0

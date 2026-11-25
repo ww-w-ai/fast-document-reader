@@ -67,8 +67,8 @@ final class LineAttributeProbeTests: XCTestCase {
                                          $0.startingRow, $0.startingColumn, $0.columnSpan,
                                          $0.contentWidth) } ?? "-",
                        String(text.prefix(30)), cr.location)
-                + (wc.pageBandDelegate.columnPlacements[cr.location].map {
-                       String(format: "  COLPLACED x%.1f y%.1f", $0.x, $0.y) } ?? "  -"))
+                + (wc.pageBandDelegate.targets[cr.location].flatMap { t in t.columnX.map {
+                       String(format: "  COLPLACED x%.1f y%.1f", $0, t.y) } } ?? "  -"))
             if let f = font {
                 let m = f.matrix   // six CGFloats: a b c d tx ty
                 say(String(format: "PROBE      face %@  matrix a%.3f d%.3f  kern %@",

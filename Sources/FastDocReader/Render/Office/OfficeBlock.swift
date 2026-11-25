@@ -1020,7 +1020,7 @@ struct OfficeHeaderFooter: Equatable {
 /// the reader reserved. The one thing that differs is HOW its page is chosen. A running head is
 /// picked by the page's parity; a footnote is picked by where its own reference marker landed,
 /// which is not known until the document has been laid out, and which the reservation then changes.
-/// That circularity is why `FootnoteBandSettle` exists (invariant 98) and why this type carries no
+/// That circularity is why the engine's page plan runs a footnote fixpoint (invariant 98) and why this type carries no
 /// page of its own — nothing may cache one.
 struct OfficeFootnote: Equatable {
     /// The number the document gave it, and the SAME number its reference marker carries

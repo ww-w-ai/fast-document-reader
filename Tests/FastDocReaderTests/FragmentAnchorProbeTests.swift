@@ -40,7 +40,7 @@ final class FragmentAnchorProbeTests: XCTestCase {
             // The PRINT arm: the same three steps `makePrintOperation` takes before handing the view
             // to AppKit, so a gap that exists only on paper can be seen in its fragments.
             wc.beginPrintLayout()
-            wc.settlePagedTablesFully()
+            wc.paginateNow()
             wc.applyTrailingFooterBand()
             say("PROBE print arm: sheets \(wc.printSheets.count)")
         }
@@ -70,7 +70,7 @@ final class FragmentAnchorProbeTests: XCTestCase {
             say("PROBE column run chars \(run.range.location)+\(run.range.length) count \(run.layout.count) spacing \(run.layout.spacing) widths \(run.layout.widths)")
         }
         say("PROBE sheets screen \(wc.pageBandDelegate.pageContentHeight) band \(wc.pageBandDelegate.band) leading \(wc.pageBandDelegate.leadingBand)")
-        say("PROBE column placements \(wc.pageBandDelegate.columnPlacements.count)")
+        say("PROBE column placements \(wc.pageBandDelegate.targets.filter { $0.value.columnX != nil }.count)")
 
         func describe(_ ps: NSParagraphStyle?) -> String {
             guard let ps else { return "no-style" }
@@ -139,8 +139,8 @@ final class FragmentAnchorProbeTests: XCTestCase {
             if attrs[MDAttr.anchoredObjects] != nil { marks.append("anchored") }
             if attrs[MDAttr.sectionIndex] != nil { marks.append("section") }
             if attrs[MDAttr.tableKeepsWhole] != nil { marks.append("keepsWhole") }
-            if let p = wc.pageBandDelegate.columnPlacements[cr.location] {
-                marks.append(String(format: "col->(%.0f,%.0f)", p.x, p.y))
+            if let t = wc.pageBandDelegate.targets[cr.location], let px = t.columnX {
+                marks.append(String(format: "col->(%.0f,%.0f)", px, t.y))
             }
             say(String(format: "PROBE y %8.2f h %6.2f used %6.2f  chars %6d+%-4d  %@ %.1f  %@ %@ |%@|",
                        rect.minY, rect.height, used.height, cr.location, cr.length,

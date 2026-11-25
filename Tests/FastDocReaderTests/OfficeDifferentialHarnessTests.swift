@@ -357,11 +357,11 @@ final class OfficeDifferentialHarnessTests: XCTestCase {
     /// The count `makePrintOperation` prints, taken the way it takes it: the print layout is begun,
     /// the paged tables are settled fully, the trailing band is reserved, and THEN the sheets are
     /// read. `printPageCount` before those two calls is the SCREEN's count — on the reference manual
-    /// it reads 403 where `--pdf` writes 391, because a table crossing a page boundary is only
-    /// resolved by `settlePagedTablesFully` (invariants 61/64/72). Same for both sides.
+    /// it differs from what `--pdf` writes, because the print layout takes its own plan generation
+    /// (`paginateNow`). Same for both sides.
     private static func printedSheetCount(_ wc: DocumentWindowController) -> Int {
         wc.beginPrintLayout()
-        wc.settlePagedTablesFully()
+        wc.paginateNow()
         wc.applyTrailingFooterBand()
         return wc.printSheets.count
     }

@@ -163,7 +163,7 @@ final class MarginNumberTests: XCTestCase {
         // The sheet grid exists only once the document is laid out — and a page can still MOVE while
         // the tables settle (invariant 61), so a jump measured before that would be measured against
         // a grid the reader never sees.
-        wc.settlePagedTablesFully()
+        wc.paginateNow()
         defer { doc.close() }
 
         XCTAssertEqual(wc.jumpUnit, .pages, "a paged document drawing its pages is asked in pages")
@@ -248,7 +248,7 @@ final class MarginNumberTests: XCTestCase {
         wc.window?.setFrame(NSRect(x: 0, y: 0, width: 900, height: 700), display: false)
         wc.window?.contentView?.layoutSubtreeIfNeeded()
         wc.updateTextInset()
-        wc.settlePagedTablesFully()
+        wc.paginateNow()
         return wc
     }
 
