@@ -277,19 +277,21 @@ enum PlanInputBuilder {
                 var rowTop: [Int: CGFloat] = [:]
                 var lowest = CGFloat.greatestFiniteMagnitude
                 for r in ordered.reversed() { lowest = min(lowest, rows[r]!.top); rowTop[r] = lowest }
+                // The block after a table starts at the lower of two things: the cells' boxes, and the
+                // last line the typesetter placed (the last cell's, spacing after included). One answer
+                // per table, not per row (it read every fragment once per row).
+                let lastRow = ordered.last ?? 0
+                let boxesEnd = frags.lazy
+                    .filter { f in f.chain.first.map { $0.startingRow + $0.rowSpan > lastRow } ?? false }
+                    .map(\.boxBottom).max()
+                let lastLineEnd = frags.last { !$0.chain.isEmpty }?.rect.maxY
+                let cellsEnd = boxesEnd.map { max($0, lastLineEnd ?? $0) }
+                // Only a hang is taken back: a hair of border width between the two measures is not one.
+                let lastEnd = cellsEnd.map { tableBottom - $0 > 0.5 ? $0 : tableBottom } ?? tableBottom
                 var rowEntries = ordered.enumerated().map { position, r -> [String: Any] in
                     let crossed = spans.contains { $0.start < r && $0.end > r }
                     // A row runs from its own top to the next row's top. Its cells' bottoms cannot say:
                     // a cell merged down several rows ends far below the row it starts in.
-                    // The block after a table starts at the lower of two things: the cells' boxes, and the
-                    // last line the typesetter placed (the last cell's, spacing after included).
-                    let lastRow = ordered.last ?? 0
-                    let reachesLast = frags.filter { f in f.chain.first.map { $0.startingRow + $0.rowSpan > lastRow } ?? false }
-                    let boxesEnd = reachesLast.map(\.boxBottom).max()
-                    let lastLineEnd = frags.last { !$0.chain.isEmpty }?.rect.maxY
-                    let cellsEnd = boxesEnd.map { max($0, lastLineEnd ?? $0) }
-                    // Only a hang is taken back: a hair of border width between the two measures is not one.
-                    let lastEnd = cellsEnd.map { tableBottom - $0 > 0.5 ? $0 : tableBottom } ?? tableBottom
                     let end = position + 1 < ordered.count ? rowTop[ordered[position + 1]]! : lastEnd
                     var entry: [String: Any] = ["height": max(0, end - rowTop[r]!)]
                     if r != ordered.first && !crossed { entry["canBreakAbove"] = true }

@@ -3278,6 +3278,24 @@ this file tells you why, and why the obvious alternative does not work.
     forces glyph generation and layout of the whole remainder in one turn; bounding `printPageCount`
     to the laid glyphs during the walk did not remove it. Reverted; the cause of that turn is not
     yet isolated. The bounds (Zero100 +16%, MK_2 first paint +8%, 편람 memory +5%) remain open.
+    **Four profiled repairs, kept (2026-11-25; output unchanged: `FMD_PLAN_PARITY` 0/0 on 20 testdocs,
+    `page-parity.sh` macOS column and first lines identical).** (1) `printPageCount` counts only laid
+    text while `pageCountFollowsLaidText` (first paint until the apply walk starts): the first draw no
+    longer lays the whole text against the head plan for `paginate` to discard; the apply walk's draw
+    still forces the full layout (not attempt 2). Pinned by
+    `testCountingPagesBeforeTheFullPlanLaysNoMoreText`. (2) The apply walk's `step(0)` runs one turn
+    after `paginate`. (3) `PlanInputBuilder.build` computes a table's end once, not once per row, and
+    `PlanJSON` writes the plan input instead of `JSONSerialization`; the engine reads equal input
+    (the parity probe compares both encodings as parsed numbers, booleans and strings). (4)
+    `malloc_zone_pressure_relief` after `paginate`'s pool. Measured (debug, medians of 3; the machine
+    was at load 7-15 from other work, so these are not at the < 6 the bounds were set at): Zero100
+    settled 340 → 315 ms after (1) (base 223, still +41%), worst turn 189 → 112 ms after (2); MK_2 worst
+    turn 221 → 137 ms, first paint 400 → 413 ms (base 333, +24%: the head observation on a fresh
+    layout manager, ~65 ms of typesetting and glyph generation, plus pre-existing tree decode and
+    build); 편람 memory at first paint 625 → 595 MB (base 588, +1.1%; (4) alone ~-5 MB, not the
+    -25 MB estimated), 편람 worst turn not reduced measurably (1,087 → 1,204 ms at load 9 against 5):
+    the turn is `paginate` itself, the observer walk (owner-kept on the main thread). Remaining
+    misses: Zero100 settled and MK_2 first paint, both the second typesetting pass.
 
     **Shadow evidence, each document run alone.** Natural-observation shadow 0 on every axis
     (blocks, lines, cell lines, sheets, furniture, footnote bands, columns) on 65 paged documents;

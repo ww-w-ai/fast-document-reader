@@ -10,7 +10,7 @@ enum PlanPagination {
     /// The engine's answer for `input`, or `nil` when it answered no plan (an unsupported plan
     /// version or a payload it refused).
     static func ask(_ input: [String: Any]) -> [String: Any]? {
-        guard let json = try? JSONSerialization.data(withJSONObject: input), let reply = envelope(json: json),
+        guard let json = PlanJSON.data(input), let reply = envelope(json: json),
               let object = (try? JSONSerialization.jsonObject(with: reply)) as? [String: Any] else { return nil }
         return object["ok"] as? [String: Any]
     }

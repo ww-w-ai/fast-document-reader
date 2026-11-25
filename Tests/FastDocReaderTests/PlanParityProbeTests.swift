@@ -108,6 +108,50 @@ final class PlanParityProbeTests: XCTestCase {
         }
     }
 
+    /// Two parsed JSON values as the engine reads them: numbers by the `Double` their digits round to
+    /// (Foundation parses a long decimal as an `NSDecimalNumber`, which compares by digits), booleans apart
+    /// from numbers.
+    static func sameAsTheEngineReadsIt(_ a: Any, _ b: Any) -> Bool {
+        switch (a, b) {
+        case let (x as [String: Any], y as [String: Any]):
+            return x.count == y.count && x.allSatisfy { key, value in y[key].map { sameAsTheEngineReadsIt(value, $0) } ?? false }
+        case let (x as [Any], y as [Any]):
+            return x.count == y.count && zip(x, y).allSatisfy { sameAsTheEngineReadsIt($0, $1) }
+        case let (x as NSNumber, y as NSNumber):
+            let boolean = CFBooleanGetTypeID()
+            // From the digits: `NSDecimalNumber.doubleValue` does not round correctly, the engine does.
+            return (CFGetTypeID(x) == boolean) == (CFGetTypeID(y) == boolean) && Double(x.stringValue) == Double(y.stringValue)
+        case let (x as String, y as String): return x == y
+        default: return a is NSNull && b is NSNull
+        }
+    }
+
+    /// Between first paint and the full plan, counting pages lays out nothing more: that layout would
+    /// be laid against the head plan and thrown away (invariant 207). After `paginateNow` it counts all.
+    func testCountingPagesBeforeTheFullPlanLaysNoMoreText() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("docs/fixtures/office/bus-headings.docx")
+        guard FileManager.default.fileExists(atPath: url.path) else { throw XCTSkip("docs/ is local-only") }
+        PageViewOptionsStore.startingOptions = PageViewOptions(outline: true)
+        defer { PageViewOptionsStore.reset() }
+        let doc = MarkdownDocument()
+        doc.fileURL = url
+        try doc.read(from: try Data(contentsOf: url), ofType: "public.data")
+        NSWindow.removeFrame(usingName: "FastMDReaderDoc")
+        doc.makeWindowControllers()
+        let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
+        let lm = try XCTUnwrap(wc.textView.layoutManager)
+        let length = try XCTUnwrap(wc.textView.textStorage?.length)
+        XCTAssertTrue(wc.pageCountFollowsLaidText)
+        let early = wc.printPageCount
+        XCTAssertLessThan(lm.firstUnlaidCharacterIndex(), length, "counting pages laid the whole text out")
+        wc.paginateNow()
+        XCTAssertFalse(wc.pageCountFollowsLaidText)
+        XCTAssertGreaterThan(wc.printPageCount, early)
+        doc.close()
+    }
+
     func testAppliedLayoutAgainstThePlanOnRealDocuments() throws {
         let env = ProcessInfo.processInfo.environment
         guard let list = env["FMD_PLAN_PARITY"] else { throw XCTSkip("set FMD_PLAN_PARITY=<document>[:<document>...]") }
@@ -123,6 +167,12 @@ final class PlanParityProbeTests: XCTestCase {
             let wc = try XCTUnwrap(doc.windowControllers.first as? DocumentWindowController)
             wc.window?.setFrame(NSRect(x: 0, y: 0, width: 820, height: 640), display: false)
             _ = HeadlessPDF.waitForRenderToSettle(doc: doc, wc: wc)
+            // The engine reads the same input from `PlanJSON` as it would from `JSONSerialization`.
+            if let built = PlanInputBuilder.naturalInput(controller: wc) {
+                let ours = try JSONSerialization.jsonObject(with: try XCTUnwrap(PlanJSON.data(built.input)))
+                let foundation = try JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: built.input))
+                if !Self.sameAsTheEngineReadsIt(ours, foundation) { failures += 1; report.append("PARITY input encoding differs: \(url.lastPathComponent)") }
+            }
             let result = PlanAppliedParity.run(controller: wc)
             report.append("PARITY \(url.lastPathComponent)")
             report.append(result.text)

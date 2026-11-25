@@ -1730,6 +1730,8 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let chunk = 20_000
         func step(_ loc: Int) {
             guard token == self.layoutToken, self.textView.textStorage?.length == total else { return }
+            // The walk that lays out the applied plan: from here a draw may lay the rest out.
+            if loc == 0 { self.pageCountFollowsLaidText = false }
             guard loc < total else { finishWalk(); return }
             self.layoutStepCount += 1
             let end = min(loc + chunk, total)
@@ -1738,8 +1740,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         DispatchQueue.main.async { [weak self] in
             guard let self, token == self.layoutToken, self.textView.textStorage?.length == total else { return }
-            if plansPages { self.paginate() }
-            step(0)
+            guard plansPages else { step(0); return }
+            self.paginate()
+            // The apply walk starts on the NEXT turn, so the observation and the apply never share
+            // one main-thread turn (편람: 1,124 → ~770 ms worst turn). Until it starts, a draw counts
+            // only laid text: the plan is adopted but not yet laid out (`pageCountFollowsLaidText`).
+            self.pageCountFollowsLaidText = true
+            DispatchQueue.main.async { step(0) }
         }
     }
 
@@ -1800,6 +1807,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     @discardableResult
     func paginate() -> Bool {
         let delegate = pageBandDelegate
+        pageCountFollowsLaidText = false
         delegate.resetPlan()
         plannedPages = []
         plannedNotes = [:]
@@ -1816,6 +1824,9 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // The observation, the request, the reply and their bridged objects are dropped as soon as
         // the targets are taken (invariant 65): only the delegate's targets and the plan's small
         // sheet facts outlive this pool.
+        // Once the pool has drained, hand the observer's freed pages back: malloc otherwise keeps them
+        // dirty and the footprint rises after the observer is gone (편람 581 → 612 MB, invariant 207).
+        defer { malloc_zone_pressure_relief(nil, 0) }
         return autoreleasepool { () -> Bool in
             guard let built = PlanInputBuilder.naturalInput(controller: self) else { return false }
             paginationCount += 1
@@ -1854,6 +1865,7 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let delegate = pageBandDelegate
         guard delegate.paginates, delegate.band > 0 || !footnotes.isEmpty, let storage = textView.textStorage,
               storage.length > 0, let lm = textView.layoutManager else { return }
+        pageCountFollowsLaidText = true
         let printPitch = delegate.pageContentHeight + delegate.band - delegate.deskGap
         let viewport = max(textView.visibleRect.height, 900)
         guard printPitch > 0, let built = PlanInputBuilder.naturalPrefixInput(controller: self, reach: viewport + 2 * printPitch),
@@ -1877,6 +1889,14 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
     }
+
+    /// True while the full plan has not been applied yet: from a render's first paint until the
+    /// walk that applies `paginate()`'s answer begins. `printPageCount` then counts only the text
+    /// already laid out, because any layout past it is laid against the head plan and thrown away by
+    /// `paginate()` (measured: 430 ms on the 편람, 62 ms on Zero100, invariant 207). Set by
+    /// `paginateForFirstPaint`, cleared by `paginate()` and, when `precomputeLayout` defers its walk
+    /// by one turn, again when that walk starts.
+    private(set) var pageCountFollowsLaidText = false
 
     /// The synchronous twin, for a caller that cannot wait for `precomputeLayout`'s chunked walk —
     /// printing, which must not put a line in a margin just because the asynchronous generation had
@@ -3365,6 +3385,15 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // text stayed on the desk. The last line's own rect is the same number
         // `applyTrailingFooterBand` derives its reservation from, and nothing outside layout can
         // move it.
+        if pageCountFollowsLaidText {
+            // Before the full plan is applied: count the laid text only, never lay more of it.
+            let laid = lm.firstUnlaidGlyphIndex()
+            let bottom = laid > 0
+                ? lm.lineFragmentRect(forGlyphAt: laid - 1, effectiveRange: nil, withoutAdditionalLayout: true).maxY
+                : 0
+            let pages = PageBandPainter.totalPages(documentHeight: max(0, bottom - pageBandDelegate.leadingBand), pitch: pitch)
+            return max(pages, plannedPages.count)
+        }
         let lastGlyph = lm.numberOfGlyphs - 1
         let contentBottom = lastGlyph >= 0
             ? lm.lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil).maxY
