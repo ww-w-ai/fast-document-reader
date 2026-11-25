@@ -3238,6 +3238,28 @@ this file tells you why, and why the obvious alternative does not work.
       provider (`TextMeasurerPort`) reports every face present and covering everything, so the
       engine never substitutes for it; the general fix is the kind-based substitution on Avalonia's
       side, not a fallback list.
+    - **Kind-based substitution on Avalonia, built and NOT kept (2026-11-26).** The rule macOS runs,
+      shared through the engine: `DeclaredFontKind::system_families` (macOS's family first, then
+      Batang / Malgun Gothic / Noto CJK / Nanum), `FontSubstitutionPlan::family_entries` and an
+      export `fastdoc_office_font_substitutions_json(handle)`; Avalonia's provider reported real
+      availability (localized full names such as `KoPub바탕체 Light` resolved to `KoPub Batang`, as
+      `NSFont(name:)` does), coverage by cmap, and the platform cascade through
+      `SKFontManager.MatchCharacter` (Avalonia's `TryMatchCharacter` answers the bundled Noto first
+      wherever its fallback range applies). Avalonia → macOS: 1790387 141 → 139 (139), tago 9 → 8
+      (8), every other testdoc unchanged except the 편람 389 → 383 (390), so it was withheld; the
+      patch is `docs/patches/font-kind-substitution.patch` (local). The faces match macOS (13
+      declared fonts, e.g. KoPub돋움체 → Apple SD Gothic Neo, KoPub바탕체 Medium → AppleMyungjo);
+      the 편람 moves because Noto Sans KR's 1.448 em box had been hiding two older gaps. Plan
+      inputs dumped from both hosts: total measured height Avalonia 191,792 vs macOS 191,881 pt
+      (was 192,960), table rows −73 pt (was +961); replaying macOS's input with Avalonia's text and
+      tables gives 387 (was 390): text lines −1 page in both states, tables +1 → −1. What remains is
+      distribution, not faces: rows whose cell lines are equal stand 966 pt TALLER on Avalonia (a
+      row of 10/13 pt lines stands 25.54 pt against macOS's 13, 55 such rows), rows whose lines
+      differ 891 pt shorter. TextKit's line box was also measured: `defaultLineHeight` =
+      round(ascender) + round(descender) + round(leading) in points (Apple SD Gothic Neo 9 pt 11, 9.5
+      pt 12; AppleMyungjo 9.5 pt 11; KoPubBatang-Light 9 pt 9), where Avalonia keeps 1.2 em
+      unrounded; emulating it made every cell line equal and moved the 편람 not at all (383). Land
+      the patch after the row-height gap above is closed.
     - **OpenAPI 20 (19)**: tables. 740 cell lines stand 18 pt on Avalonia and 10 pt on macOS
       (tables +1,086 pt; macOS tables → 18, all blocks → 19); the line model floors every cell line
       at the document's 18 pt grid, macOS's cell lines are not floored — not yet traced to the rule.
