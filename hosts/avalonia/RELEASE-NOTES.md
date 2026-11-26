@@ -1,4 +1,18 @@
-# FastDoc for Windows and Linux 1.4.3
+# FastDoc for Windows and Linux 1.4.5
+
+## What's new in 1.4.5
+
+- Word, OpenDocument and Hangul documents are laid out into pages by the same engine as the macOS
+  app, and most documents now have the same page count as on macOS.
+- Korean text wraps at word boundaries, Hangul character width (장평) is applied per glyph, and
+  table rows, cells, nested tables and list markers are measured the way macOS measures them.
+
+## What's new in 1.4.4
+
+- Markdown renders strikethrough, tables and code inside list items, Korean italics, footnotes,
+  alert boxes, highlights, superscript, definition lists and inline HTML formatting.
+- Office documents draw anchored objects, master pages, tab leaders, paragraph borders and shading,
+  and footnotes at the foot of the page.
 
 ## What's new in 1.4.3
 
