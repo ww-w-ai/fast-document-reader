@@ -8,6 +8,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using FastDoc.Avalonia.Model;
 using FastDoc.Avalonia.Native;
 using FastDoc.Avalonia.Open;
@@ -53,6 +54,7 @@ public partial class MainWindow : Window
         AddHandler(DragDrop.DropEvent, OnDrop);
         AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel);
         Canvas.ScrollOffsetChanged += OnCanvasScrollOffsetChanged;
+        WireScrollBar();
         Closed += (_, _) =>
         {
             SaveCurrentPosition();
@@ -752,6 +754,87 @@ public partial class MainWindow : Window
             Text = entry.Text,
             NodeId = entry.NodeId,
         };
+    }
+
+    // ---- vertical scroll bar ---------------------------------------------------------------------
+
+    private readonly ScrollBarModel _scrollBarModel = new();
+    private bool _scrollBarSyncing;
+    private bool _scrollBarSyncQueued;
+
+    private void WireScrollBar()
+    {
+        // The view reports from inside its render pass, so the bar is updated one dispatcher turn
+        // later (never changing layout while painting). Wheel/keys also hit ScrollOffsetChanged.
+        Canvas.ScrollMetricsChanged += QueueScrollBarSync;
+        Canvas.ScrollOffsetChanged += SyncScrollBarNow;
+        VerticalScrollBar.ValueChanged += (_, e) => OnScrollBarValueChanged(e.NewValue);
+        // A thumb drag keeps the metrics it started with (the extent is an estimate that moves
+        // while blocks get measured); the track and arrows are not drags and follow live values.
+        VerticalScrollBar.AddHandler(PointerPressedEvent, OnScrollBarPointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
+        VerticalScrollBar.AddHandler(PointerReleasedEvent, (_, _) => EndScrollBarDrag(), RoutingStrategies.Bubble, handledEventsToo: true);
+        VerticalScrollBar.PointerCaptureLost += (_, _) => EndScrollBarDrag();
+        VerticalScrollBar.Scroll += (_, e) =>
+        {
+            if (e.ScrollEventType == global::Avalonia.Controls.Primitives.ScrollEventType.EndScroll) { EndScrollBarDrag(); }
+        };
+    }
+
+    private void QueueScrollBarSync()
+    {
+        if (_scrollBarSyncQueued) { return; }
+        _scrollBarSyncQueued = true;
+        Dispatcher.UIThread.Post(() =>
+        {
+            _scrollBarSyncQueued = false;
+            SyncScrollBarNow();
+        }, DispatcherPriority.Background);
+    }
+
+    private void SyncScrollBarNow()
+    {
+        if (_scrollBarModel.Sync(Canvas.ContentHeight, Canvas.Bounds.Height, Canvas.ScrollOffset, Canvas.ZoomFactor) is { } m)
+        {
+            ApplyScrollBarMetrics(m);
+        }
+    }
+
+    private void ApplyScrollBarMetrics(ScrollBarMetrics m)
+    {
+        _scrollBarSyncing = true;
+        try
+        {
+            // Maximum and viewport first: Value is coerced into [Minimum, Maximum].
+            VerticalScrollBar.Maximum = m.Maximum;
+            VerticalScrollBar.ViewportSize = m.ViewportSize;
+            VerticalScrollBar.SmallChange = m.SmallChange;
+            VerticalScrollBar.LargeChange = m.LargeChange;
+            VerticalScrollBar.Value = m.Value;
+        }
+        finally { _scrollBarSyncing = false; }
+    }
+
+    private void OnScrollBarValueChanged(double value)
+    {
+        if (_scrollBarSyncing) { return; }
+        Canvas.ScrollOffset = _scrollBarModel.OffsetForUserValue(value);
+    }
+
+    private void OnScrollBarPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        for (var v = e.Source as global::Avalonia.Visual; v is not null && v != VerticalScrollBar; v = v.GetVisualParent())
+        {
+            if (v is global::Avalonia.Controls.Primitives.Thumb) { _scrollBarModel.BeginDrag(); return; }
+        }
+    }
+
+    private void EndScrollBarDrag()
+    {
+        if (_scrollBarModel.IsDragging)
+        {
+            ApplyScrollBarMetrics(_scrollBarModel.EndDrag(Canvas.ContentHeight, Canvas.Bounds.Height, Canvas.ScrollOffset, Canvas.ZoomFactor));
+        }
+        Canvas.Focus(); // clicking the bar must not leave the keyboard without a target
     }
 
     // ---- reading position (E3) --------------------------------------------------------------------

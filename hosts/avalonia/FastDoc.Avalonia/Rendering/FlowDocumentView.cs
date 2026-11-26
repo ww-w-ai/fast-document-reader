@@ -2084,6 +2084,27 @@ public sealed class FlowDocumentView : Control
     {
         base.Render(context);
         RenderCore(new AvaloniaPageCanvas(context));
+        ReportScrollMetricsIfChanged();
+    }
+
+    /// <summary>Raised after a paint when the extent (<see cref="ContentHeight"/>), the viewport
+    /// height or <see cref="ScrollOffset"/> differs from the last report. Covers every path that
+    /// moves them — lazy block measurement, zoom, width change, page mode toggle, jump/find — so the
+    /// window's scroll bar needs no per-path hook. Raised from the render pass: handlers must not
+    /// change layout synchronously.</summary>
+    public event Action? ScrollMetricsChanged;
+
+    private double _reportedExtent = double.NaN, _reportedViewport = double.NaN, _reportedOffset = double.NaN;
+
+    private void ReportScrollMetricsIfChanged()
+    {
+        var extent = ContentHeight;
+        var viewport = Bounds.Height;
+        if (extent == _reportedExtent && viewport == _reportedViewport && _scrollOffset == _reportedOffset) { return; }
+        _reportedExtent = extent;
+        _reportedViewport = viewport;
+        _reportedOffset = _scrollOffset;
+        ScrollMetricsChanged?.Invoke();
     }
 
     /// <summary>The actual paint traversal, extracted from <see cref="Render"/> so

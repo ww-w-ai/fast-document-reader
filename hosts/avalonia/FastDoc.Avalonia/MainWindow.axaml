@@ -99,10 +99,19 @@
             </Border>
 
             <Grid Grid.Column="1">
-                <local:FlowDocumentView x:Name="Canvas" />
-                <TextBlock x:Name="EmptyStateText" Text="파일을 드롭하거나 Ctrl+O"
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <local:FlowDocumentView x:Name="Canvas" Grid.Column="0" />
+                <TextBlock x:Name="EmptyStateText" Grid.Column="0" Text="파일을 드롭하거나 Ctrl+O"
                            HorizontalAlignment="Center" VerticalAlignment="Center"
                            Foreground="{DynamicResource EmptyStateForegroundColor}" FontSize="16" IsVisible="False" IsHitTestVisible="False" />
+                <!-- The view owns its scrolling (no ScrollViewer), so this bar is driven by
+                     MainWindow from FlowDocumentView's metrics. Always visible (a long-document
+                     reader), not the auto-hiding overlay; Focusable=False keeps keys on the view. -->
+                <ScrollBar x:Name="VerticalScrollBar" Grid.Column="1" Orientation="Vertical"
+                           AllowAutoHide="False" Focusable="False" Minimum="0" Maximum="0" />
             </Grid>
 
             <Border x:Name="CommentsPanel" Grid.Column="2" IsVisible="False" ClipToBounds="True"
