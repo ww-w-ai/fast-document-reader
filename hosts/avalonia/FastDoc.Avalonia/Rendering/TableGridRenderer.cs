@@ -96,6 +96,11 @@ public sealed class TableGridModel
     /// and is narrowed by both.</summary>
     public double OuterMarginLeftPoints { get; init; }
     public double OuterMarginRightPoints { get; init; }
+    /// <summary>The table declares it breaks between rows (`wire::TableStyle.pageBreakPolicy ==
+    /// "atRowBoundary"`): every cell's last line carries no spacing under it (161b), as macOS's
+    /// `cellContent(lastLineKeepsNoGap:)` and the engine's `last_line_keeps_no_gap` decide it — a
+    /// fact of the TABLE (a nested one has its own), never of the reader's page-split preference.</summary>
+    public bool LastLineKeepsNoGap { get; init; }
 }
 
 /// <summary>Draws a <see cref="TableGridModel"/> as a real cell grid: column widths distributed by
@@ -203,7 +208,8 @@ public static class TableGridRenderer
             if (text.Length <= MaxRelievedTokenLength && token.Length > 0 && !System.Linq.Enumerable.Any(token, char.IsWhiteSpace))
             {
                 var scale = fontScale * PointsToPixels;
-                var indent = Math.Max(0, Math.Max(block.IndentPoints, block.IndentPoints + block.FirstLineOffsetPoints)) * scale;
+                var (head, firstOffset, tail) = CellIndentsPoints(block, width, scale);
+                var indent = (Math.Max(0, Math.Max(head, head + firstOffset)) + tail) * scale;
                 var usable = width - indent;
                 var (layout, _, _) = BuildParagraph(block, 1e6, fontScale, model);
                 if (layout is not null && layout.TextLines.Count > 0)
@@ -318,13 +324,13 @@ public static class TableGridRenderer
     /// name="fontScale"/> — used by the flow-mode virtualization pre-pass (FlowDocumentView's own
     /// offset table) BEFORE any table is actually drawn. Calls the SAME <see cref="SolveTable"/> pass
     /// <see cref="Draw"/> uses, so the height reserved here and the height drawn can never disagree.
-    /// <paramref name="splitTables"/> is the reader's "tables break across pages" preference: it makes
-    /// every cell's last line a line and not a line plus its spacing (invariant 161b).</summary>
+    /// Whether a cell's last line hands its spacing back (161b) is the table's own declaration
+    /// (<see cref="TableGridModel.LastLineKeepsNoGap"/>), not the reader's page-split preference.</summary>
     public static double EstimateHeight(TableGridModel model, double columnWidth, double fontScale = 1.0,
-        ImageBlockRenderer? imageRenderer = null, bool splitTables = true)
+        ImageBlockRenderer? imageRenderer = null)
     {
         if (model.Rows.Count == 0) { return TablePaddingPx(model); }
-        var solution = SolveTable(model, columnWidth, fontScale, imageRenderer, splitTables);
+        var solution = SolveTable(model, columnWidth, fontScale, imageRenderer);
         double total = 0;
         foreach (var h in solution.RowHeights) { total += h; }
         return total;
@@ -354,7 +360,7 @@ public static class TableGridRenderer
     /// docs/studio/sprints/S9/s9c-flow-content.md for the VM evidence
     /// (<c>FASTDOC_DRAW_LOG</c>) that caught it. <paramref name="cachedRowHeights"/> is the row
     /// -height array THIS SAME TABLE returned last draw, or null for a first draw: the solved rows are
-    /// cached per table, width, zoom and split preference (<see cref="SolveTable"/>), so a valid cache
+    /// cached per table, width and zoom (<see cref="SolveTable"/>), so a valid cache
     /// here changes nothing — the parameter stays for the callers that hand it back.</summary>
     public static double Draw(
         IPageCanvas surface,
@@ -374,8 +380,7 @@ public static class TableGridRenderer
         // content for ("cell row=.. col=.. textLayoutNull=.. height=.."). No-op (never even
         // allocates the strings) when null — the caller (FlowDocumentView.RenderCore) only passes
         // a real delegate when the env var is set.
-        Action<string>? diagLog = null,
-        bool splitTables = true)
+        Action<string>? diagLog = null)
     {
         _ = cachedRowHeights;
         if (model.Rows.Count == 0)
@@ -388,7 +393,7 @@ public static class TableGridRenderer
         var columnX = ResolveColumnEdges(model, columnWidth, fontScale * PointsToPixels);
 
         var rowCount = model.Rows.Count;
-        var solution = SolveTable(model, columnWidth, fontScale, imageRenderer, splitTables);
+        var solution = SolveTable(model, columnWidth, fontScale, imageRenderer);
         var rowHeights = (double[])solution.RowHeights.Clone();
 
         // E2c-2b: which REAL row indices to draw, and in what ORDER — defaults to every row, once,
@@ -509,7 +514,7 @@ public static class TableGridRenderer
                                 {
                                     Draw(surface, nonTextBlock.Table, segLeft, boxTop, cellWidth, fontScale,
                                         double.NegativeInfinity, double.PositiveInfinity, cachedRowHeights: null,
-                                        out _, rowIndicesToDraw: null, imageRenderer: imageRenderer, splitTables: splitTables);
+                                        out _, rowIndicesToDraw: null, imageRenderer: imageRenderer);
                                 }
                             }
                         }
@@ -530,11 +535,11 @@ public static class TableGridRenderer
     /// the order <see cref="DrawFlowed"/> counts them: a paragraph's lines in turn (a blank
     /// paragraph's one empty line included), a picture or nested table as one box.</summary>
     internal static PlanCellInput[][] FlowFacts(TableGridModel model, double columnWidthPoints,
-        ImageBlockRenderer? imageRenderer, bool splitTables)
+        ImageBlockRenderer? imageRenderer)
     {
         var result = new PlanCellInput[model.Rows.Count][];
         if (model.Rows.Count == 0) { return result; }
-        var solution = SolveTable(model, columnWidthPoints * PointsToPixels, 1.0, imageRenderer, splitTables);
+        var solution = SolveTable(model, columnWidthPoints * PointsToPixels, 1.0, imageRenderer);
         for (var r = 0; r < model.Rows.Count; r++)
         {
             var cells = new List<PlanCellInput>(model.Rows[r].Cells.Count);
@@ -586,14 +591,14 @@ public static class TableGridRenderer
     /// Cells are top-aligned, as the reader forces for a table it breaks where it stands.</summary>
     internal static void DrawFlowed(IPageCanvas surface, TableGridModel model, int blockIndex, FlowedTables flowed,
         int pageIndex, int rowStart, int rowCount, double left, double contentTopPx, double columnWidth,
-        double zoom, ImageBlockRenderer? imageRenderer, bool splitTables)
+        double zoom, ImageBlockRenderer? imageRenderer)
     {
         if (model.Rows.Count == 0) { return; }
         var scale = PointsToPixels * zoom;
         var widths = ResolveColumnWidths(model, columnWidth, zoom * PointsToPixels);
         var columnX = ResolveColumnEdges(model, columnWidth, zoom * PointsToPixels);
         var rowEnd = Math.Min(model.Rows.Count, rowStart + rowCount);
-        var solved = SolveTable(model, columnWidth, zoom, imageRenderer, splitTables);
+        var solved = SolveTable(model, columnWidth, zoom, imageRenderer);
 
         for (var r = 0; r < rowEnd; r++)
         {
@@ -665,7 +670,7 @@ public static class TableGridRenderer
                                 {
                                     Draw(surface, box.Table, segLeft, y, cellWidth, zoom, double.NegativeInfinity,
                                         double.PositiveInfinity, cachedRowHeights: null, out _, rowIndicesToDraw: null,
-                                        imageRenderer: imageRenderer, splitTables: splitTables);
+                                        imageRenderer: imageRenderer);
                                 }
                             }
                             lineNumber++;
@@ -702,10 +707,10 @@ public static class TableGridRenderer
     /// cref="VerticalPaddingPx"/>/<see cref="HorizontalPaddingPx"/>, neither of which is itself scaled
     /// by fontScale) and converts back.</summary>
     public static double[] MeasureRowHeightsPoints(TableGridModel model, double columnWidthPoints,
-        ImageBlockRenderer? imageRenderer = null, bool splitTables = true)
+        ImageBlockRenderer? imageRenderer = null)
     {
         if (model.Rows.Count == 0) { return Array.Empty<double>(); }
-        var solution = SolveTable(model, columnWidthPoints * PointsToPixels, 1.0, imageRenderer, splitTables);
+        var solution = SolveTable(model, columnWidthPoints * PointsToPixels, 1.0, imageRenderer);
         var heightsPt = new double[solution.RowHeights.Length];
         for (var i = 0; i < heightsPt.Length; i++) { heightsPt[i] = solution.RowHeights[i] / PointsToPixels; }
         return heightsPt;
@@ -718,7 +723,7 @@ public static class TableGridRenderer
         public required Dictionary<TableGridCell, CellLayoutOut> Cells { get; init; }
     }
 
-    private readonly record struct SolutionKey(double ColumnWidth, double FontScale, bool SplitTables, bool WithBoxes);
+    private readonly record struct SolutionKey(double ColumnWidth, double FontScale, bool WithBoxes);
 
     /// <summary>The solved tables, per model: a draw at the same width, zoom and split preference as a
     /// measure finds the answer already there, so a scroll never re-asks the engine. Two entries are
@@ -738,9 +743,9 @@ public static class TableGridRenderer
     /// height, a single-line cell floored at its row's (166), a merged cell's excess shared across the
     /// rows it covers. This host measures; it decides none of that.</summary>
     private static TableSolution SolveTable(TableGridModel model, double columnWidth, double fontScale,
-        ImageBlockRenderer? imageRenderer, bool splitTables)
+        ImageBlockRenderer? imageRenderer)
     {
-        var key = new SolutionKey(columnWidth, fontScale, splitTables, imageRenderer is not null);
+        var key = new SolutionKey(columnWidth, fontScale, imageRenderer is not null);
         var cache = Solutions.GetOrCreateValue(model);
         lock (cache)
         {
@@ -760,7 +765,7 @@ public static class TableGridRenderer
             RowCount = rowCount,
             EmptyLine = EmptyCellLineHeightPx(model, fontScale),
             RowPadding = TablePaddingPx(model),
-            DropsTrailingGap = splitTables,
+            DropsTrailingGap = model.LastLineKeepsNoGap,
         };
         var order = new List<TableGridCell>();
         foreach (var row in model.Rows)
@@ -850,10 +855,11 @@ public static class TableGridRenderer
                 }
                 var (layout, lines, blank) = BuildParagraph(block, width, fontScale, model);
                 text.Add(ParagraphFactsIn.From(block, lines, blank, scale));
+                var (head, firstOffset, _) = CellIndentsPoints(block, width, scale);
                 build.Parts.Add(new CellPart
                 {
                     Item = build.Items.Count - 1, Para = text.Count - 1, Layout = layout,
-                    IndentPx = block.IndentPoints * scale, FirstLineOffsetPx = block.FirstLineOffsetPoints * scale,
+                    IndentPx = head * scale, FirstLineOffsetPx = firstOffset * scale,
                 });
                 continue;
             }
@@ -910,13 +916,25 @@ public static class TableGridRenderer
         {
             return (null, new[] { Paging.PageLayout.NaturalLineHeight(Math.Max(1, block.BlankLineSizePoints * scale)) }, true);
         }
+        var (head, firstOffset, tail) = CellIndentsPoints(block, width, scale);
         var layout = HangulWordWrap.Create(text.ToString(), largest.Typeface, largest.FontRenderingEmSize, Brushes.Black, block.Alignment,
-            TextWrapping.Wrap, maxWidth: Math.Max(10, width - block.IndentPoints * scale),
+            TextWrapping.Wrap, maxWidth: Math.Max(10, width - (head + tail) * scale),
             letterSpacing: block.LetterSpacingPoints * scale, overrides: overrides, hangulWord: block.HangulWordBreak,
-            firstLineExtra: -block.FirstLineOffsetPoints * scale);
+            firstLineExtra: -firstOffset * scale);
         var lines = new double[layout.TextLines.Count];
         for (var i = 0; i < lines.Length; i++) { lines[i] = layout.TextLines[i].Height; }
         return (layout, lines, false);
+    }
+
+    /// <summary>The head indent, first-line offset and tail indent (points) a cell paragraph wraps
+    /// at in a cell <paramref name="widthPx"/> wide — the paragraph's own, unless the head and tail
+    /// indents leave no width at all, when none of them (macOS's `TableBlockBuilder.build`: a text
+    /// box's indents measured against another frame, e.g. 78.7 + 267.4 pt in a 181 pt cell, are not
+    /// the cell's).</summary>
+    private static (double Head, double FirstOffset, double Tail) CellIndentsPoints(FlowBlock block, double widthPx, double scale)
+    {
+        var usable = widthPx / scale - Math.Max(0, block.IndentPoints) - block.TailIndentPoints;
+        return usable <= 0 ? (0, 0, 0) : (block.IndentPoints, block.FirstLineOffsetPoints, block.TailIndentPoints);
     }
 
     /// <summary>The grid's column edges (count + 1, from the table's left), in PIXELS at

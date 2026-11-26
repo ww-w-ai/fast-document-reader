@@ -329,12 +329,12 @@ public sealed class PageModePainter
                         var indent = block.IndentPoints * PointsToPixels * zoomFactor;
                         TableGridRenderer.DrawFlowed(surface, flowedModel, placement.BlockIndex, flowedTables, pageIndex,
                             flowStart, flowCount, left + indent, contentTop, Math.Max(40, contentWidthPx - indent),
-                            zoomFactor, _imageRenderer, layout.SplitTables);
+                            zoomFactor, _imageRenderer);
                         continue;
                     }
                     // A block of a columned run stands in the column the plan dealt it to.
                     var (blockLeft, blockWidth) = ColumnBox(layout, placement.BlockIndex, placement.Column, left, contentWidthPx, zoomFactor);
-                    DrawNonTextBlock(surface, block, placement, blockLeft, top, blockWidth, zoomFactor, repeatsHeader, layout.SplitTables);
+                    DrawNonTextBlock(surface, block, placement, blockLeft, top, blockWidth, zoomFactor, repeatsHeader);
                 }
             }
 
@@ -348,7 +348,7 @@ public sealed class PageModePainter
                     var columnIndent = columnBlock.IndentPoints * PointsToPixels * zoomFactor;
                     TableGridRenderer.DrawFlowed(surface, columnModel, region.BlockIndex, columnFlowed,
                         FlowedTables.RegionKey(pageIndex, region.Column), 0, columnModel.Rows.Count, columnLeft + columnIndent,
-                        contentTop, Math.Max(40, columnWidth - columnIndent), zoomFactor, _imageRenderer, layout.SplitTables);
+                        contentTop, Math.Max(40, columnWidth - columnIndent), zoomFactor, _imageRenderer);
                 }
             }
 
@@ -417,7 +417,7 @@ public sealed class PageModePainter
     }
 
     private void DrawNonTextBlock(IPageCanvas surface, FlowBlock block, PagedBlock placement, double left, double top,
-        double columnWidthPx, double zoomFactor, bool repeatsHeader, bool splitTables)
+        double columnWidthPx, double zoomFactor, bool repeatsHeader)
     {
         var blockIndex = placement.BlockIndex;
         var indentPx = block.IndentPoints * PointsToPixels * zoomFactor;
@@ -442,7 +442,7 @@ public sealed class PageModePainter
                 var rowsToDraw = BuildRowDrawOrder(block.Table, placement, repeatsHeader);
                 var tableHeight = TableGridRenderer.Draw(surface, block.Table, left + indentPx, top,
                     Math.Max(40, columnWidthPx - indentPx), zoomFactor, -1e9, 1e9, cachedRows, out var rowHeights,
-                    rowsToDraw, imageRenderer: _imageRenderer, splitTables: splitTables);
+                    rowsToDraw, imageRenderer: _imageRenderer);
                 _tableRowHeightCache[blockIndex] = rowHeights;
                 _ = tableHeight;
                 return;

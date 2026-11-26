@@ -3292,9 +3292,9 @@ this file tells you why, and why the obvious alternative does not work.
       Avalonia, 15 tables) and a hanging paragraph's first line wrapping at its own width
       (`HangulWordWrap`'s `firstLineExtra`; cell paragraphs also honour their head indent).
       Pinned by `TableCellGeometryTests` and three `line_model` tests, each mutation-checked.
-      A `tailIndent` inside a cell was tried and is NOT what TextKit does there: honoured, one 편람
-      flowchart table grew 346 → 889 pt (paragraphs placed by 70 pt head + tail indents), so cell
-      tail indents stay ignored.
+      A cell's `tailIndent` IS honoured by TextKit (see the nested-table entry below); the 346 → 889
+      pt flowchart table that once looked like evidence against it is the impossible-indent-pair
+      rule, not a tail-indent one.
       Result without the patch (shipped): Avalonia 스케일업 32 → 31 (macOS 31), every other paged
       testdoc unchanged (편람 389, 1790387 141, s9 28, tago 9, OpenAPI 20). With the patch on top:
       1790387 139, 스케일업 31, 편람 385, tago 9 — still withheld. Remainder with the patch,
@@ -3306,6 +3306,54 @@ this file tells you why, and why the obvious alternative does not work.
       returns to 9 with the patch because its undeclared runs are drawn in Inter + Noto Sans KR
       (14.5 pt Hangul lines) where macOS uses the system font (12 pt): the border space adds the
       rows' rules on top of that older line-box gap.
+    - **(new) The nested-table gap was four cell rules, all now macOS's on Avalonia (2026-11-26).**
+      Found by diffing both hosts' plan inputs row by row, the patch applied. (1) **A cell's
+      last-line rule (161b) is the TABLE's declaration.** macOS hands a cell's last line its spacing
+      back when the table says it breaks between rows (`cellContent(lastLineKeepsNoGap:)` =
+      `pageBreakPolicy == .atRowBoundary`; the engine's `last_line_keeps_no_gap`), or when the cell
+      holds one paragraph. Avalonia used the reader's split-tables preference instead, so every
+      nested table (and every top-level one that does not declare `atRowBoundary`) dropped the gap
+      on every multi-paragraph cell: the 편람's tables 116/117 lost 5.4 pt on each of 8 rows, 43 pt.
+      Now `TableGridModel.LastLineKeepsNoGap`, and `splitTables` no longer reaches table
+      measurement at all (it still reaches the plan). (2) **A paragraph's character size is its runs
+      WITH TEXT** (`FlowBlock.CharSizePoints`; macOS `applyLineModel` reads the characters' fonts):
+      an empty 24 pt run before 12 pt `ㅇ` kept the 15.6 pt HWP pitch from applying (s9 table, +3.6
+      pt a row). (3) **A list item in a cell takes none of its paragraph format** (macOS
+      `cellContent` appends it with no format, so no declared line height, spacing, indents,
+      alignment or tab stops, and no cell line model; `FlowDocumentBuilder.CellListItemStyle`): an
+      s9 cell of 13 pt items stood 20.8 pt lines on Avalonia against 16-17 pt natural lines on
+      macOS, +51.6 pt. (4) **A cell paragraph wraps short of its `tailIndent`** (TextKit's negative
+      `tailIndent`; `FlowBlock.TailIndentPoints`; the 편람's 「국세청」 seal wraps 「국세/청」 in a 58 pt
+      cell with 5 + 5 pt indents, rows +43 pt), **unless head plus tail leave no width, when the
+      cell drops all three indents** (macOS `TableBlockBuilder.build`; a text box's 78.7 + 267.4 pt
+      indents in a 181 pt cell — the flowchart table above). Body paragraphs still do not read
+      `tailIndent` on Avalonia (not measured). Pinned by five `LineModelTests`, each
+      mutation-checked (6 mutations, all killed). Table plan inputs with the patch: sum |Δ| 972 →
+      434 pt over 53 tables.
+      **Result: the patch is still withheld; the four rules ship without it.** Avalonia → macOS
+      without the patch: 편람 389 → 390 (390), every other paged testdoc unchanged (1790387 141
+      (139), tago 9 (8), s9 28, OpenAPI 20, 스케일업 31). With the patch on top: 편람 387, 1790387
+      139, tago 9, the rest unchanged. Replaying plan inputs with the patch: macOS's input with
+      Avalonia's tables 388, Avalonia's with macOS's tables 389, Avalonia's with macOS's text 388,
+      both swapped 390 — the measured heights now nearly agree (tables +80 pt, text +13 pt over
+      the whole manual), so what remains is WHERE rows and lines break: 99 text blocks break into
+      a different number of lines (±1 each, balanced), and the line geometry INSIDE rows of equal
+      height. Replaying Avalonia's input (patch applied) with macOS's cell lines copied into every
+      cell whose row height and line count already agree gives 390; each of three groups alone gives
+      388: (a) decorative bands (rows under 5 pt, 531 cells: macOS reports each blank paragraph at
+      the band's line, `declared − padding`, Avalonia at 1 pt or the paragraph's size), (b) one-line
+      cells (934: e.g. block 1060 row 10, a 52.1 pt line on macOS against a 12 pt line in the same
+      76.07 pt row), (c) multi-line cells (35, lines 22.5 against 15.5). Those are line-model
+      outputs (`solve_table`'s cell layout), Avalonia-only, and the next step to landing the patch;
+      (b) and (c) need TextKit's rule for them measured first. (a) alone was tried in the engine
+      (every blank paragraph of a band cell reported at `declared − padding`) and moved the 편람
+      the wrong way without the patch, 390 → 393, so it was reverted: macOS's band lines are not
+      simply that value (one 2.8 pt band row reports 1.4 pt lines). tago's undeclared runs (Inter + bundled Noto against macOS's system
+      font + AppKit's per-character cascade) were not changed: the engine resolver substitutes an
+      undeclared run only when its sample character is not drawn (bold and heading runs here), so
+      the regular runs get per-character fallback on both hosts and differ only in the fallback
+      face — the global bundled-Noto fallback, whose replacement was measured above (편람 389 →
+      383) and not kept.
     - **OpenAPI 20 (19) — macOS was wrong, now 20 (2026-11-26).** 740 cell lines stood 10 pt on
       macOS: `cellContent` ran 한글's last-line rule (161b) on EVERY cell paragraph whose floor
       exceeds its size, so a docx line-grid floor became `10 + 8 spacing` and a one-paragraph

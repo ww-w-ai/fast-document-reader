@@ -386,7 +386,7 @@ public static class PageLayout
 
             if (block.Kind == FlowBlockKind.Table && block.Table is { } table)
             {
-                var rowHeights = TableRowFacts.EstimateRowHeights(table, widthForBlock, imageRenderer, splitTables);
+                var rowHeights = TableRowFacts.EstimateRowHeights(table, widthForBlock, imageRenderer);
                 var canBreak = TableRowFacts.RowsThatCanBreakAbove(table);
                 // Every table hands in its cells, as macOS does: whether one flows line by line, or has
                 // a row pulled, is the plan's call. Outside a columned run the rows are this grid's own
@@ -398,7 +398,7 @@ public static class PageLayout
                     SpacingBefore = block.SpacingBeforePoints, SpacingAfter = block.SpacingAfterPoints,
                     RowHeights = rowHeights.Length == canBreak.Length ? rowHeights : PadRows(rowHeights, canBreak.Length),
                     RowCanBreakAbove = canBreak,
-                    RowCells = TableGridRenderer.FlowFacts(table, widthForBlock, imageRenderer, splitTables),
+                    RowCells = TableGridRenderer.FlowFacts(table, widthForBlock, imageRenderer),
                     RowsObserved = !inColumnRun,
                     KeepsWhole = i < markers.TableKeepsWhole.Length && markers.TableKeepsWhole[i],
                     PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber,
@@ -410,7 +410,7 @@ public static class PageLayout
             inputs.Add(new PlanBlockInput
             {
                 Key = key, Kind = "atomic", Section = section, PageBreakBefore = pageBreakBefore,
-                Height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer, splitTables),
+                Height = NonTextBlockHeightPoints(block, widthForBlock, imageRenderer),
                 PageNumberRestart = numberRestart, HidesPageNumber = hidesNumber, ColumnRun = blockRun[i],
             });
         }
@@ -564,8 +564,7 @@ public static class PageLayout
     /// <summary>A non-text block's own height in points, at <paramref name="widthPoints"/> — a
     /// simple declared/estimated height (E2c-2's own scope line: exact table-row and picture-wrap
     /// geometry inside a page is that unit's job).</summary>
-    public static double NonTextBlockHeightPoints(FlowBlock block, double widthPoints, ImageBlockRenderer? imageRenderer = null,
-        bool splitTables = true)
+    public static double NonTextBlockHeightPoints(FlowBlock block, double widthPoints, ImageBlockRenderer? imageRenderer = null)
     {
         switch (block.Kind)
         {
@@ -585,7 +584,7 @@ public static class PageLayout
                 // whole-table height and the row-by-row heights can never disagree.
                 var heights = block.Table is null
                     ? Array.Empty<double>()
-                    : TableRowFacts.EstimateRowHeights(block.Table, widthPoints, imageRenderer, splitTables);
+                    : TableRowFacts.EstimateRowHeights(block.Table, widthPoints, imageRenderer);
                 var estimate = heights.Sum();
                 return block.SpacingBeforePoints + estimate + block.SpacingAfterPoints;
 

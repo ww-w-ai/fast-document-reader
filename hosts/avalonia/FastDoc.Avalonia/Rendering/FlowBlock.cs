@@ -175,6 +175,10 @@ public sealed class FlowBlock
     /// sits in the column", never two spellings of one concept.</summary>
     public TextAlignment Alignment { get; init; } = TextAlignment.Left;
     public double IndentPoints { get; init; }
+    /// <summary>The paragraph's declared distance from the column's right edge (`tailIndent`, the
+    /// document's indent-end), in points. A table cell's lines wrap short of it, as TextKit's negative
+    /// `tailIndent` makes them on macOS; body text does not read it yet.</summary>
+    public double TailIndentPoints { get; init; }
     /// <summary>The bar drawn down this block's left edge when it sits inside a quote or alert (null
     /// outside one); <see cref="QuoteBarXPoints"/> is its x offset from the column's left edge.
     /// An alert's bar carries the alert kind's colour.</summary>
@@ -202,9 +206,13 @@ public sealed class FlowBlock
     /// <summary>The paragraph breaks Korean by word, never between two Hangul characters while an
     /// earlier opportunity exists (`eastAsianLineBreak = word`; macOS `.hangulWordPriority`).</summary>
     public bool HangulWordBreak { get; init; }
-    /// <summary>The paragraph's character size: its largest run, else the size the reader vouched
-    /// for an empty paragraph — what the line model measures a below-the-glyphs gap against.</summary>
-    public double CharSizePoints => Runs.Count > 0 ? Runs.Max(r => r.FontSizePoints) : BlankLineSizePoints;
+    /// <summary>The paragraph's character size: its largest run WITH TEXT (macOS's `applyLineModel`
+    /// reads the fonts of the paragraph's characters, so a text-less 24 pt run beside 12 pt text
+    /// sizes nothing), else — a blank paragraph — its largest run, else the size the reader vouched
+    /// for an empty paragraph: what the line model measures a below-the-glyphs gap against.</summary>
+    public double CharSizePoints => Runs.Any(r => r.Text.Length > 0)
+        ? Runs.Where(r => r.Text.Length > 0).Max(r => r.FontSizePoints)
+        : Runs.Count > 0 ? Runs.Max(r => r.FontSizePoints) : BlankLineSizePoints;
     /// <summary>The declared faces' line floor in points (invariant 163), from each run's
     /// engine-resolved <see cref="FlowRun.LineFloorRatio"/>: the largest `size × ratio` over the
     /// runs with text, or — for a blank paragraph — of its largest run (the paragraph mark the reader

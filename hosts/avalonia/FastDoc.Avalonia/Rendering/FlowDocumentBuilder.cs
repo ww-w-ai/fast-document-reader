@@ -539,9 +539,22 @@ public static class FlowDocumentBuilder
         var marker = li.Marker ?? (li.Ordered ? orderedMarker ?? "-" : "•");
         var markerRuns = new List<FlowRun> { new FlowRun($"{marker} ", null, defaultFontSize, false, false, false, false, Colors.Black) };
         var itemIndent = indent + ListIndentPoints * Math.Max(1, li.Level + 1);
+        var style = tableDepth > 0 ? CellListItemStyle(li.Style) : li.Style;
+        var tabStops = tableDepth > 0 ? null : li.TabStops;
         AppendItemContent(node, byId, blocks, indent, itemIndent, defaultFontSize, tableDepth, wrapCodeBlocks,
-            runs => TextBlock(MarkerAtItemSize(runs, markerRuns[0]), li.Style, itemIndent, defaultFontSize, node.Id, li.TabStops), markerRuns);
+            runs => TextBlock(MarkerAtItemSize(runs, markerRuns[0]), style, itemIndent, defaultFontSize, node.Id, tabStops), markerRuns);
     }
+
+    /// <summary>A list item inside a table cell takes none of its paragraph format, as macOS builds it
+    /// (`cellContent` appends the item with no format: the list style's own geometry, no declared
+    /// line height, spacing, indents, alignment or tab stops, and so no cell line model) — only where
+    /// it may break a Korean line.</summary>
+    private static ParagraphStyleWire CellListItemStyle(ParagraphStyleWire declared) => new()
+    {
+        SpacingBefore = 0,
+        SpacingAfter = 0,
+        EastAsianLineBreak = declared.EastAsianLineBreak,
+    };
 
     /// <summary><paramref name="runs"/> with the item's <paramref name="marker"/> run set at the size of
     /// the first text run after it — the marker is drawn at its item's size, as AppKit draws it, not at
@@ -650,6 +663,7 @@ public static class FlowDocumentBuilder
             Runs = resolved,
             Alignment = AlignmentFrom(style.Alignment),
             IndentPoints = indentPoints,
+            TailIndentPoints = Math.Max(0, style.TailIndent ?? 0),
             ShadingColor = style.Shading is { } shading ? ColorFrom(shading) : null,
             Border = BorderFrom(style.Borders),
             // macOS: firstLineHeadIndent = start + firstLine - hanging. An outdent never passes the
@@ -1059,6 +1073,7 @@ public static class FlowDocumentBuilder
             SourceWidthPoints = t.Style.SourceWidthPoints,
             OuterMarginLeftPoints = t.Style.OuterMargin?.Left ?? 0,
             OuterMarginRightPoints = t.Style.OuterMargin?.Right ?? 0,
+            LastLineKeepsNoGap = t.Style.PageBreakPolicy == "atRowBoundary",
         };
     }
 

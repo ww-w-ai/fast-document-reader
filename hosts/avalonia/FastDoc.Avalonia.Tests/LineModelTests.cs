@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using Avalonia.Media;
 using FastDoc.Avalonia.Native;
 using FastDoc.Avalonia.Paging;
@@ -98,28 +99,143 @@ public sealed class LineModelTests
             ColumnCount = 1, ColumnWidthRatios = new() { 1.0 },
             Rows = new() { new TableGridRow { Row = 0, Cells = new() { cell } } },
         };
-        var heights = TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: false);
+        var heights = TableGridRenderer.MeasureRowHeightsPoints(model, 200);
         Assert.Equal(26.0, heights[0], precision: 3);
-        // The same table in a reader that lets tables break across pages: the same single-paragraph cell.
-        Assert.Equal(26.0, TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: true)[0], precision: 3);
+    }
+
+    private static TableGridModel OneCell(TableGridCell cell, bool breaksBetweenRows = false) => new()
+    {
+        ColumnCount = 1, ColumnWidthRatios = new() { 1.0 }, LastLineKeepsNoGap = breaksBetweenRows,
+        Rows = new() { new TableGridRow { Row = 0, Cells = new() { cell } } },
+    };
+
+    private static FlowBlock HwpCellParagraph(string text, double size = 10) => new()
+    {
+        Kind = FlowBlockKind.Text, Runs = new() { new FlowRun(text, null, size, false, false, false, false, Colors.Black) },
+        LineHeight = new LineHeightRule(LineHeightMode.AtLeast, 2 * size), LineSpacingBelow = true,
+    };
+
+    [Fact]
+    public void A_second_paragraph_in_the_cell_keeps_its_gap_unless_the_table_declares_it_breaks_between_rows()
+    {
+        // macOS `cellContent(lastLineKeepsNoGap:)`: the TABLE's `pageBreakPolicy == atRowBoundary`
+        // decides it — a nested table has its own — never the reader's page-split preference.
+        var cell = new TableGridCell { Row = 0, Column = 0, Content = new() { HwpCellParagraph("한"), HwpCellParagraph("글") } };
+        Assert.Equal(20 + 20 + 14 + 2, TableGridRenderer.MeasureRowHeightsPoints(OneCell(cell), 200)[0], precision: 3);
+        var breaking = new TableGridCell { Row = 0, Column = 0, Content = new() { HwpCellParagraph("한"), HwpCellParagraph("글") } };
+        Assert.Equal(20 + 10 + 14 + 2, TableGridRenderer.MeasureRowHeightsPoints(OneCell(breaking, breaksBetweenRows: true), 200)[0], precision: 3);
     }
 
     [Fact]
-    public void A_second_paragraph_in_the_cell_keeps_its_gap_unless_the_table_breaks_across_pages()
+    public void A_table_takes_its_last_line_rule_from_its_own_page_break_policy()
     {
-        FlowBlock P(string text) => new()
+        Assert.True(FlowDocumentBuilder.Build(OneTableTree("atRowBoundary"))[0].Table!.LastLineKeepsNoGap);
+        Assert.False(FlowDocumentBuilder.Build(OneTableTree("anywhere"))[0].Table!.LastLineKeepsNoGap);
+        Assert.False(FlowDocumentBuilder.Build(OneTableTree(null))[0].Table!.LastLineKeepsNoGap);
+    }
+
+    private static Model.RenderTree OneTableTree(string? policy)
+    {
+        var style = policy is null ? "{}" : $"{{ \"pageBreakPolicy\": \"{policy}\" }}";
+        var json = $$"""
         {
-            Kind = FlowBlockKind.Text, Runs = new() { new FlowRun(text, null, 10, false, false, false, false, Colors.Black) },
+          "ok": {
+            "schemaVersion": 1,
+            "document": { "format": "hwp", "rootNodeId": 0 },
+            "nodes": [
+              { "id": 0, "parentId": null, "children": [1], "type": "document", "data": {} },
+              { "id": 1, "parentId": 0, "children": [2], "type": "table", "data": { "gridWidths": [1], "style": {{style}} } },
+              { "id": 2, "parentId": 1, "children": [3], "type": "tableRow", "data": { "row": 0 } },
+              { "id": 3, "parentId": 2, "children": [4], "type": "tableCell", "data": { "row": 0, "column": 0, "rowSpan": 1, "columnSpan": 1 } },
+              { "id": 4, "parentId": 3, "children": [5], "type": "paragraph", "data": { "style": {} } },
+              { "id": 5, "parentId": 4, "children": [], "type": "textRun", "data": { "text": "셀", "style": {} } }
+            ]
+          }
+        }
+        """;
+        return Parse(json);
+    }
+
+    private static Model.RenderTree Parse(string json) =>
+        JsonSerializer.Deserialize<Model.RenderTreeEnvelope>(json)!.Ok!.Value.Deserialize<Model.RenderTree>()!;
+
+    [Fact]
+    public void A_list_item_in_a_cell_takes_none_of_its_paragraph_format()
+    {
+        // macOS `cellContent` appends a cell's list item with no format: no declared line height,
+        // spacing or indents, so no cell line model — only where it may break a Korean line. The same
+        // item at the top of the document keeps its format.
+        const string item = """{ "level": 0, "ordered": false, "marker": "-", "style": { "lineHeight": { "mode": "atLeast", "value": 20.8 }, "lineSpacingBelow": true, "spacingBefore": 4, "spacingAfter": 6, "headIndent": 12, "tailIndent": 9, "eastAsianLineBreak": "word" } }""";
+        var tree = Parse($$"""
+        {
+          "ok": {
+            "schemaVersion": 1,
+            "document": { "format": "hwp", "rootNodeId": 0 },
+            "nodes": [
+              { "id": 0, "parentId": null, "children": [1, 7], "type": "document", "data": {} },
+              { "id": 1, "parentId": 0, "children": [2], "type": "table", "data": { "gridWidths": [1], "style": {} } },
+              { "id": 2, "parentId": 1, "children": [3], "type": "tableRow", "data": { "row": 0 } },
+              { "id": 3, "parentId": 2, "children": [4], "type": "tableCell", "data": { "row": 0, "column": 0, "rowSpan": 1, "columnSpan": 1 } },
+              { "id": 4, "parentId": 3, "children": [5], "type": "listItem", "data": {{item}} },
+              { "id": 5, "parentId": 4, "children": [], "type": "textRun", "data": { "text": "셀 항목", "style": {} } },
+              { "id": 7, "parentId": 0, "children": [8], "type": "listItem", "data": {{item}} },
+              { "id": 8, "parentId": 7, "children": [], "type": "textRun", "data": { "text": "본문 항목", "style": {} } }
+            ]
+          }
+        }
+        """);
+        var blocks = FlowDocumentBuilder.Build(tree);
+        var inCell = blocks[0].Table!.Rows[0].Cells[0].Content.Single(b => b.Kind == FlowBlockKind.Text);
+        Assert.Equal(LineHeightRule.Default, inCell.LineHeight);
+        Assert.False(inCell.LineSpacingBelow);
+        Assert.Equal(0, inCell.SpacingBeforePoints);
+        Assert.Equal(0, inCell.SpacingAfterPoints);
+        Assert.Equal(0, inCell.TailIndentPoints);
+        Assert.True(inCell.HangulWordBreak);
+        var body = blocks.Last(b => b.Kind == FlowBlockKind.Text);
+        Assert.True(body.LineSpacingBelow);
+        Assert.Equal(9, body.TailIndentPoints);
+        Assert.Equal(6, body.SpacingAfterPoints);
+    }
+
+    [Fact]
+    public void A_text_less_run_does_not_size_the_paragraph_it_sits_in()
+    {
+        // macOS `applyLineModel` reads the fonts of the paragraph's CHARACTERS: an empty 24pt run in
+        // front of 12pt text leaves the paragraph a 12pt one, so its 15.6pt floor is HWP's pitch
+        // (a one-line cell hands the gap back: a 12pt line), not a floor under a 24pt line.
+        var mixed = new FlowBlock
+        {
+            Kind = FlowBlockKind.Text,
+            Runs = new() { new FlowRun("", null, 24, false, false, false, false, Colors.Black), new FlowRun("ㅇ", null, 12, false, false, false, false, Colors.Black) },
+            LineHeight = new LineHeightRule(LineHeightMode.AtLeast, 15.6), LineSpacingBelow = true,
+        };
+        Assert.Equal(12.0, mixed.CharSizePoints);
+        var cell = new TableGridCell { Row = 0, Column = 0, Content = new() { mixed } };
+        Assert.Equal(12 + 14 + 2, TableGridRenderer.MeasureRowHeightsPoints(OneCell(cell), 200)[0], precision: 3);
+        // A blank paragraph still takes its largest run's size.
+        var blank = new FlowBlock { Kind = FlowBlockKind.Text, Runs = new() { new FlowRun("", null, 24, false, false, false, false, Colors.Black) } };
+        Assert.Equal(24.0, blank.CharSizePoints);
+    }
+
+    [Fact]
+    public void A_cell_paragraph_wraps_short_of_its_tail_indent_unless_head_and_tail_leave_no_width()
+    {
+        // TextKit's negative `tailIndent` narrows a cell line (the 편람's 「국세청」 seal: 58pt cell,
+        // 5 + 5pt indents, three 16.3pt syllables wrap). An indent pair wider than the cell is not the
+        // cell's (macOS `TableBlockBuilder.build` drops it): the text lays out at the full width.
+        FlowBlock Indented(double head, double tail) => new()
+        {
+            Kind = FlowBlockKind.Text, Runs = new() { new FlowRun("한글한글한글한글", null, 10, false, false, false, false, Colors.Black) },
             LineHeight = new LineHeightRule(LineHeightMode.AtLeast, 20), LineSpacingBelow = true,
+            IndentPoints = head, TailIndentPoints = tail,
         };
-        var cell = new TableGridCell { Row = 0, Column = 0, Content = new() { P("한"), P("글") } };
-        var model = new TableGridModel
-        {
-            ColumnCount = 1, ColumnWidthRatios = new() { 1.0 },
-            Rows = new() { new TableGridRow { Row = 0, Cells = new() { cell } } },
-        };
-        Assert.Equal(20 + 20 + 14 + 2, TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: false)[0], precision: 3);
-        Assert.Equal(20 + 10 + 14 + 2, TableGridRenderer.MeasureRowHeightsPoints(model, 200, splitTables: true)[0], precision: 3);
+        double Lines(FlowBlock block) =>
+            TableGridRenderer.FlowFacts(OneCell(new TableGridCell { Row = 0, Column = 0, Content = new() { block } }), 200, null)[0][0].Lines.Length;
+        var natural = Lines(Indented(0, 0));
+        var tailed = Lines(Indented(0, 150));
+        Assert.True(tailed > natural, $"a 150pt tail indent wraps more ({tailed} vs {natural})");
+        Assert.Equal(natural, Lines(Indented(100, 150)));
     }
 
     [Fact]
