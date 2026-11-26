@@ -1,4 +1,4 @@
-# FastDoc for Windows and Linux 1.4.5
+# FastDoc for Windows and Linux 1.4.6
 
 ## What's new in 1.4.6
 
