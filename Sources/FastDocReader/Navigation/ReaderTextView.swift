@@ -212,6 +212,25 @@ final class ReaderTextView: NSTextView {
     /// block is marked (`MDAttr.anchoredObjects`) and its own line rect answers which page that is,
     /// so this asks layout rather than keeping a second record that a reflow could invalidate. Only
     /// the visible range is scanned, which is a handful of characters' worth of attribute runs.
+    ///
+    /// A draw never lays text out to find an anchor: asking an unlaid anchor's line laid the 편람 out
+    /// to character 187,670 in the first turn after the window appeared (1.0 s at load 25), and again
+    /// after the plan landed, against a layout about to be replaced (invariant 207). Such an object
+    /// waits for the walk that lays the document out, which redraws (`anchoredObjectsAwaitLayout`).
+    /// A draw skipped an anchored object whose anchoring line was not laid out yet; the walk that
+    /// finishes the layout redraws and clears it.
+    var anchoredObjectsAwaitLayout = false
+
+    /// While a paged document's plan is not wholly laid out (the controller's
+    /// `pageCountFollowsLaidText`), marking a rect for redisplay never lays text out. AppKit's own
+    /// resize of the growing view marks the area below the laid text and, asked to find its glyphs,
+    /// laid the whole 편람 out in one turn (invariant 207); the walk under way lays that text anyway.
+    var displayAvoidsLayout = false
+
+    override func setNeedsDisplay(_ rect: NSRect, avoidAdditionalLayout flag: Bool) {
+        super.setNeedsDisplay(rect, avoidAdditionalLayout: flag || displayAvoidsLayout)
+    }
+
     private func drawAnchoredObjects(_ wc: DocumentWindowController,
                                      content: MasterPageContent, sheets: [CGRect]) {
         let objects = wc.mdDocument?.officeAnchoredObjects ?? []
@@ -234,10 +253,12 @@ final class ReaderTextView: NSTextView {
         // top of a page whose marker sits above the visible rect). The attribute is set on a handful
         // of blocks, so this is a short walk over attribute RUNS rather than characters.
         let whole = NSRange(location: 0, length: storage.length)
+        let laid = lm.firstUnlaidCharacterIndex()
         storage.enumerateAttribute(MDAttr.anchoredObjects, in: whole) { value, range, _ in
             guard let ids = value as? [Int] else { return }
+            guard range.location < laid else { anchoredObjectsAwaitLayout = true; return }
             let glyph = lm.glyphIndexForCharacter(at: range.location)
-            let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil, withoutAdditionalLayout: true)
             let page = Int(((frag.minY - wc.pageBandDelegate.leadingBand) / pitch).rounded(.down))
             guard page >= 0, page < sheets.count else { return }
             for id in ids where id >= 0 && id < objects.count {
@@ -267,10 +288,12 @@ final class ReaderTextView: NSTextView {
               storage.length > 0 else { return }
         let origin = textContainerOrigin
         let whole = NSRange(location: 0, length: storage.length)
+        let laid = lm.firstUnlaidCharacterIndex()
         storage.enumerateAttribute(MDAttr.anchoredObjects, in: whole) { value, range, _ in
             guard let ids = value as? [Int] else { return }
+            guard range.location < laid else { anchoredObjectsAwaitLayout = true; return }
             let glyph = lm.glyphIndexForCharacter(at: range.location)
-            let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            let frag = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil, withoutAdditionalLayout: true)
             for id in ids where id >= 0 && id < objects.count {
                 var object = objects[id].object
                 if let anchor = objects[id].paragraphAnchor {

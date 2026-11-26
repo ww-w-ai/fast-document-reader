@@ -3210,7 +3210,9 @@ this file tells you why, and why the obvious alternative does not work.
     share from every character, spaces included. Glyphs are still drawn at normal width, and a scaled
     run beside an unscaled run of the same face and size is shaped with its neighbour's options
     (Avalonia shapes them together). (3) Every table sends its cells, and `rowsObserved` outside a
-    columned run, as macOS does. Avalonia → macOS: 편람 385 → 389 (390; (1) alone gives 386, (2)
+    columned run, as macOS does (pinned through the real `PageLayout.Build` request,
+    `PagePlanClient.RequestSent`, by `A_table_hands_the_plan_its_cells_and_observed_rows_except_inside_a_columned_run`;
+    mutation-checked both ways and with no cells). Avalonia → macOS: 편람 385 → 389 (390; (1) alone gives 386, (2)
     the rest; (3) moved no count); every other testdoc unchanged. Remainders, by cause: s9 28 (31) —
     the declared `맑은 고딕` is installed on neither machine and the fallbacks differ: the cell above
     measures `심의 및 결과 통보` at 70.8 pt in Noto Sans KR (Hangul ≈ 0.92 em) and so fits 73.9 pt,
@@ -3388,6 +3390,46 @@ this file tells you why, and why the obvious alternative does not work.
     pass; the owner ACCEPTED them on 2026-11-26 (about 0.1 s each, while the manual and MK_2 finish
     their full layout 2.6-3.8x sooner). Do not reopen them without a new measurement that changes
     that trade.
+    **(new) The generation spread over turns, main thread only (2026-11-26).** The 편람's worst turn
+    was not only `paginate`: three of its turns laid the VISIBLE layout manager out whole, against a
+    plan about to be replaced, through AppKit paths nobody called on purpose. Found by a stack at the
+    first line fragment past character 120,000: (a) `ReaderTextView.drawAnchoredObjects` asked every
+    anchored object's line with `lineFragmentRect(forGlyphAt:)`, laying the text out to the 편람's
+    anchor at character 187,670 on the first draw and again after the plan landed (1.0 s and 0.8 s
+    at load 25); (b) AppKit's idle background layout and (c) `visibleCharRange` (media reconcile)
+    grew the view, and `_resizeTextViewForTextContainer` → `setNeedsDisplayInRect:` → glyph range for
+    the uncovered rect filled every hole to the end (5.5 s and 7.2 s at load 50-60); (d) the apply
+    walk's first `ensureLayout` hit the same resize cascade (11 s at load 200), which is what "the
+    apply walk's draw still forces the full layout" above was. Kept: a draw skips an anchor whose
+    line is not laid yet (`anchoredObjectsAwaitLayout`, redrawn when the walk finishes); while
+    `pageCountFollowsLaidText` — now from first paint until the apply walk FINISHES — background
+    layout is off, `visibleCharRange` reads laid text only, and `ReaderTextView.displayAvoidsLayout`
+    makes every display mark `avoidAdditionalLayout`. The generation itself (`StagedPagination` in
+    `DocumentWindowController`) observes with `PlanObservation.Walk` in the one-call walk's own
+    20,000-character steps (2,000-character steps doubled the observation: tables cut at more
+    places), as many as fit 150 ms, then reads the fragments the same way, then builds the input,
+    encodes it, asks the engine and adopts the answer in a turn each; the view keeps the first
+    paint's plan until then. A paged document's apply walk lays as many 20,000-character chunks as fit
+    150 ms per turn (markdown keeps one chunk per turn, invariant 49). A text change
+    (`didProcessEditing`) or a width change under the generation observes again (after 2 restarts it
+    answers synchronously); a newer `precomputeLayout`, a synchronous `paginate()` (⌘P, `--pdf`) or
+    closing the window cancels it and adopts nothing, a synchronous one still lets the apply walk
+    run. Pinned by `StagedPaginationTests` (stepped observation = one-call input; restart with no
+    stale target; close; print mid-walk; the display/background flags), each mutation-checked; the
+    resize cascade itself only shows on a document as long as the 편람, so its gate is
+    `ProgressiveTurnProbeTests`, which now also waits for a pending generation and a wholly laid
+    text before calling a document settled (it stopped at a steady height, before the apply walk).
+    Measured against 1379a44 beside it (debug, native, dead_strip, load 3.6-5.4, medians of 3,
+    `ProgressiveTurnProbeTests` / `ReaderPerfProbeTests`): 편람 worst turn 1,196 → 195 ms (7
+    generation turns), settled 1,926 → 1,406 ms, first paint 836 → 831 ms, memory at first paint
+    621 → 588 MB; Zero100 worst 113 → 92 ms, settled 306 → 326 ms (+6.5%), first paint 209 → 210
+    ms (all samples pooled), memory at first paint 105 → 105 MB; MK_2 worst 135 → 88 ms, settled
+    352 → 344 ms, first paint 369 → 367 ms (pooled), memory 119 → 119 MB. Memory sampled just after
+    full layout: 편람 and MK_2 equal, Zero100 137 → 148 MB (+8%, six samples), back to equal after
+    the read-through (130 → 129 MB); per-chunk autorelease pools, one chunk per apply turn and a
+    pressure relief at the walk's end each moved it by nothing, so it was not chased further.
+    Output unchanged: `page-parity.sh` (both columns) identical, `FMD_PLAN_PARITY` 0 differing / 0
+    unstable on the 19 paged testdocs, with and without `FMD_PLAN_PARITY_MIDWALK=1`.
 
     **Shadow evidence, each document run alone.** Natural-observation shadow 0 on every axis
     (blocks, lines, cell lines, sheets, furniture, footnote bands, columns) on 65 paged documents;

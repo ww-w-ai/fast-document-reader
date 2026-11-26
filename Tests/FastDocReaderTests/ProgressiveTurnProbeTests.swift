@@ -51,7 +51,14 @@ final class ProgressiveTurnProbeTests: XCTestCase {
         // document) pays its whole post-window work here — the observation, the plan and the walk —
         // and a probe that timed only the loop above reported `worstTurn=0` for all of them.
         var stableHeight = CGFloat(-1), stablePolls = 0
-        while stablePolls < 20, Date().timeIntervalSince(started) < 180 {
+        // A pagination generation spread over turns (invariant 207) leaves the height alone until its
+        // answer is adopted, and the walk that applies it may not have started yet: a steady height
+        // alone does not mean the document is done, only one that is also wholly laid out.
+        func wholeTextLaidOut() -> Bool {
+            guard let lm = wc.textView.layoutManager, let length = wc.textView.textStorage?.length else { return true }
+            return lm.firstUnlaidCharacterIndex() >= length
+        }
+        while stablePolls < 20 || wc.isPaginationPending || !wholeTextLaidOut(), Date().timeIntervalSince(started) < 180 {
             let turnStart = Date()
             RunLoop.main.run(until: Date().addingTimeInterval(0.001))
             let ms = Date().timeIntervalSince(turnStart) * 1000
@@ -65,9 +72,9 @@ final class ProgressiveTurnProbeTests: XCTestCase {
         // `polls` is how often the loop looked, NOT how many pieces the document arrived in — the
         // render itself is the only thing that knows that, and reporting the poll count as "turns"
         // once made a 20-piece tail read as 650.
-        print(String(format: "TURNS firstPaint=%.0fms worstTurn=%.0fms turnsOver100ms=%d chunks=%d polls=%d untilWhole=%.0fms untilSettled=%.0fms chars=%d",
+        print(String(format: "TURNS firstPaint=%.0fms worstTurn=%.0fms turnsOver100ms=%d chunks=%d polls=%d untilWhole=%.0fms untilSettled=%.0fms chars=%d paginationTurns=%d paginationRestarts=%d",
                      firstPaintMs, worstMs, longTurns, chunks, turns, wholeMs, settledMs,
-                     wc.textView.textStorage?.length ?? 0))
+                     wc.textView.textStorage?.length ?? 0, wc.lastStagedPaginationTurns, wc.lastStagedPaginationRestarts))
         doc.windowControllers.forEach { doc.removeWindowController($0) }
     }
 }

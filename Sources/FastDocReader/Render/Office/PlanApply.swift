@@ -49,14 +49,16 @@ enum PlanAppliedParity {
 
     /// Lays `wc` out for paper exactly as `--pdf` does (`makePrintOperation`: print layout, one plan
     /// generation, trailing band), then reads the layout back against the plan it applied.
-    static func run(controller wc: DocumentWindowController) -> Report {
+    /// `printing: false` reads the window's own layout as its last generation left it instead (the
+    /// probe's mid-walk arm, after a generation spread over turns).
+    static func run(controller wc: DocumentWindowController, printing: Bool = true) -> Report {
         var report = Report()
         guard wc.pageBandDelegate.paginates, let lm = wc.textView.layoutManager, let tc = wc.textView.textContainer,
               let storage = wc.textView.textStorage, storage.length > 0 else {
             report.skipped = "not paged"
             return report
         }
-        _ = wc.makePrintOperation()
+        if printing { _ = wc.makePrintOperation() }
         lm.ensureLayout(for: tc)
         guard let plan = wc.lastPlan else {
             report.skipped = "no plan was applied"

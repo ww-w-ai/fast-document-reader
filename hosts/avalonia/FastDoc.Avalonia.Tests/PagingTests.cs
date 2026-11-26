@@ -441,6 +441,81 @@ public class PagingTests
     }
 
     [Fact]
+    public void A_table_hands_the_plan_its_cells_and_observed_rows_except_inside_a_columned_run()
+    {
+        // Through the real Build path: a table before any column declaration sends its rows as this
+        // grid measured them (`rowsObserved`) and its cells; a table inside a 2-column run sends its
+        // cells only, so the engine sizes its rows at the column's width (invariant 207).
+        static FlowBlock OneCellTable() => new()
+        {
+            Kind = FlowBlockKind.Table,
+            Table = new TableGridModel
+            {
+                ColumnCount = 1, ColumnWidthRatios = new() { 1.0 },
+                Rows = new()
+                {
+                    new TableGridRow
+                    {
+                        Row = 0,
+                        Cells = new()
+                        {
+                            new TableGridCell
+                            {
+                                Row = 0, Column = 0,
+                                Content = new()
+                                {
+                                    new FlowBlock
+                                    {
+                                        Kind = FlowBlockKind.Text,
+                                        Runs = new() { new FlowRun("cell text", null, 12, false, false, false, false, Colors.Black) },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        };
+        var blocks = new System.Collections.Generic.List<FlowBlock> { OneCellTable(), OneCellTable() };
+        var flat = FlatMarkers(2);
+        var markers = flat with
+        {
+            ColumnFlow = new ColumnFlowWire?[] { null, new ColumnFlowWire { Count = 2, SpacingPoints = 20 } },
+        };
+        var requests = new System.Collections.Generic.List<JsonDocument>();
+        // The request is the FFI's NUL-terminated C string.
+        PagePlanClient.RequestSent = bytes => requests.Add(JsonDocument.Parse(bytes.AsMemory(0, Array.IndexOf(bytes, (byte)0) is var end and >= 0 ? end : bytes.Length)));
+        try
+        {
+            PageLayout.Build(blocks, markers, SimpleGeometry(contentWidth: 400, contentHeight: 400), IntPtr.Zero,
+                headersOn: false, footersOn: false);
+        }
+        finally { PagePlanClient.RequestSent = null; }
+
+        // The column-geometry request carries no blocks; the plan request carries both tables.
+        var plan = requests.Single(r => r.RootElement.GetProperty("blocks").GetArrayLength() == 2).RootElement;
+        Assert.True(plan.TryGetProperty("columnRuns", out var runs) && runs.GetArrayLength() == 1,
+            "the second table must be in a declared column run");
+        var tables = plan.GetProperty("blocks").EnumerateArray().ToArray();
+        Assert.All(tables, t => Assert.Equal("table", t.GetProperty("kind").GetString()));
+        Assert.False(tables[0].TryGetProperty("columnRun", out _));
+        Assert.Equal(0, tables[1].GetProperty("columnRun").GetInt32());
+
+        Assert.True(tables[0].TryGetProperty("rowsObserved", out var observed) && observed.GetBoolean(),
+            "a table outside a columned run sends the rows it measured");
+        Assert.False(tables[1].TryGetProperty("rowsObserved", out _),
+            "a table inside a columned run leaves its rows to the engine");
+        foreach (var table in tables)
+        {
+            var cells = table.GetProperty("rows")[0].GetProperty("cells");
+            Assert.Equal(1, cells.GetArrayLength());
+            Assert.True(cells[0].GetProperty("lines").GetArrayLength() > 0, "a worded cell sends its lines");
+            Assert.True(cells[0].GetProperty("contentHeight").GetDouble() > 0);
+        }
+        foreach (var r in requests) { r.Dispose(); }
+    }
+
+    [Fact]
     public void Table_row_facts_heights_match_the_real_cell_TextLayout_measurement()
     {
         // A cell with enough text to wrap across several lines at a NARROW column width — a

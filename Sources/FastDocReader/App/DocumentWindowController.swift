@@ -202,6 +202,11 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
+    /// A closed window plans nothing more: a generation still observing gives its observer back.
+    func windowWillClose(_ notification: Notification) {
+        cancelStagedPagination()
+    }
+
     // The text column is recomputed when a resize ENDS, not on every frame of one. Re-wrapping a
     // long document is a full relayout; doing it per frame is what makes a drag feel like it is
     // fighting you. During the drag the column simply keeps its old width and the window moves
@@ -1685,7 +1690,18 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         func finishWalk() {
             // The plan was applied before this walk began, so the layout that was just laid out is
             // already the paginated one: there is nothing to measure and re-solve here.
+            if pageCountFollowsLaidText {
+                // The whole text is laid out now: pages are counted from all of it again.
+                pageCountFollowsLaidText = false
+                sizeTextViewToFit()
+                textView.needsDisplay = true
+            }
             applyTrailingFooterBand()
+            // An anchored object a draw skipped because its line was not laid yet can be drawn now.
+            if textView.anchoredObjectsAwaitLayout {
+                textView.anchoredObjectsAwaitLayout = false
+                textView.needsDisplay = true
+            }
             // Whichever walk gets to the end applies a pending anchor — see `pendingAnchor`.
             if let anchor = pendingAnchor {
                 pendingAnchor = nil
@@ -1730,23 +1746,201 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         let chunk = 20_000
         func step(_ loc: Int) {
             guard token == self.layoutToken, self.textView.textStorage?.length == total else { return }
-            // The walk that lays out the applied plan: from here a draw may lay the rest out.
-            if loc == 0 { self.pageCountFollowsLaidText = false }
             guard loc < total else { finishWalk(); return }
-            self.layoutStepCount += 1
-            let end = min(loc + chunk, total)
-            lm.ensureLayout(forCharacterRange: NSRange(location: loc, length: end - loc))
-            if end < total { DispatchQueue.main.async { step(end) } } else { finishWalk() }
+            // The walk that lays out an applied plan runs as many chunks as fit a turn's budget, and
+            // a draw meanwhile counts only laid text (`pageCountFollowsLaidText`, cleared when the
+            // walk finishes): a draw that laid the rest out did it in one turn, through AppKit's
+            // resize of the growing view (편람: 11 s at load 200, invariant 207).
+            let started = CACurrentMediaTime()
+            var at = loc
+            repeat {
+                self.layoutStepCount += 1
+                let end = min(at + chunk, total)
+                lm.ensureLayout(forCharacterRange: NSRange(location: at, length: end - at))
+                at = end
+            } while plansPages && at < total && CACurrentMediaTime() - started < StagedPagination.turnBudget
+            if at < total { DispatchQueue.main.async { step(at) } } else { finishWalk() }
         }
+        // A generation still being observed belongs to the text this walk replaces.
+        cancelStagedPagination()
         DispatchQueue.main.async { [weak self] in
             guard let self, token == self.layoutToken, self.textView.textStorage?.length == total else { return }
             guard plansPages else { step(0); return }
-            self.paginate()
-            // The apply walk starts on the NEXT turn, so the observation and the apply never share
-            // one main-thread turn (편람: 1,124 → ~770 ms worst turn). Until it starts, a draw counts
-            // only laid text: the plan is adopted but not yet laid out (`pageCountFollowsLaidText`).
-            self.pageCountFollowsLaidText = true
-            DispatchQueue.main.async { step(0) }
+            // The generation runs over several turns (`StagedPagination`); the apply walk starts on
+            // the turn after its answer is adopted, so the observation and the apply never share one
+            // main-thread turn. Until it starts, a draw counts only laid text
+            // (`pageCountFollowsLaidText`): the view keeps the first paint's plan meanwhile.
+            self.paginateInTurns(token: token) { DispatchQueue.main.async { step(0) } }
+        }
+    }
+
+    // MARK: - Pagination across turns
+
+    /// One pagination generation spread over main-thread turns (invariant 207): the observer walk
+    /// and the reading of its fragments in steps of about `turnBudget` each, then the input, the
+    /// encoding, the engine's answer and its adoption in a turn each. Main thread only (the owner
+    /// rejected observing on a background thread). The view keeps the first paint's plan until the
+    /// answer is adopted.
+    ///
+    /// A change to the text or the column width while it runs starts the observation again; a newer
+    /// generation (`precomputeLayout`, a synchronous `paginate`) or closing the window cancels it, and
+    /// a cancelled generation adopts nothing.
+    final class StagedPagination {
+        enum Stage { case observing, building, encoding, asking, adopting }
+        /// How long one turn of observing may run before it yields. Tests shorten it.
+        static var turnBudget: TimeInterval = 0.15
+        /// Restarts after the text changed under the walk; past this the generation finishes in one turn.
+        static let restartLimit = 2
+        /// The one-call walk's own chunk (`PlanObservation.walkChunk`): the same `ensureLayout` calls
+        /// at the same boundaries, only some of them on later turns. Finer steps cut tables at more
+        /// places and cost more in total (measured: 2,000 characters doubled the 편람's observation).
+        static let layStep = PlanObservation.walkChunk
+        static let collectStep = 20_000
+
+        let token: Int
+        let resume: () -> Void
+        var stage = Stage.observing
+        var walk: PlanObservation.Walk
+        var width: CGFloat
+        var restarts = 0
+        var textChanged = false
+        var built: PlanInputBuilder.NaturalInput?
+        var json: Data?
+        var plan: [String: Any]?
+        /// Turns this generation took, for the probes and tests.
+        var turns = 0
+        private var editObserver: NSObjectProtocol?
+
+        init(token: Int, storage: NSTextStorage, container: NSTextContainer, resume: @escaping () -> Void) {
+            self.token = token
+            self.resume = resume
+            walk = PlanObservation.Walk(storage: storage, like: container)
+            width = container.size.width
+            editObserver = NotificationCenter.default.addObserver(
+                forName: NSTextStorage.didProcessEditingNotification, object: storage, queue: nil) { [weak self] _ in
+                self?.textChanged = true
+            }
+        }
+
+        /// Throws the observation and anything built from it away and starts a new walk.
+        func restart(storage: NSTextStorage, container: NSTextContainer) {
+            walk.discard()
+            textChanged = false
+            restarts += 1
+            built = nil; json = nil; plan = nil
+            walk = PlanObservation.Walk(storage: storage, like: container)
+            width = container.size.width
+            stage = .observing
+        }
+
+        /// Drops the observer layout manager and stops watching the text.
+        func end() {
+            if let editObserver { NotificationCenter.default.removeObserver(editObserver) }
+            editObserver = nil
+            walk.discard()
+            built = nil; json = nil; plan = nil
+        }
+
+        deinit { end() }
+    }
+
+    /// The generation running over turns, if any.
+    private(set) var stagedPagination: StagedPagination?
+    /// True while a pagination generation is spread over turns and its answer is not adopted yet.
+    var isPaginationPending: Bool { stagedPagination != nil }
+    /// Turns the last completed staged generation took (0: none ran, or it ran in one call).
+    private(set) var lastStagedPaginationTurns = 0
+    /// Restarts the last staged generation made because the text changed under it.
+    private(set) var lastStagedPaginationRestarts = 0
+
+    /// Cancels the generation running over turns; returns what was waiting for its answer, so a
+    /// caller that answers synchronously can still let it run.
+    @discardableResult
+    private func cancelStagedPagination() -> (() -> Void)? {
+        guard let staged = stagedPagination else { return nil }
+        stagedPagination = nil
+        staged.end()
+        return staged.resume
+    }
+
+    /// Starts `paginate()`'s work as a generation over turns; `resume` runs once its answer is adopted.
+    private func paginateInTurns(token: Int, resume: @escaping () -> Void) {
+        cancelStagedPagination()
+        restoreAuthoredAlignment()
+        guard pageBandDelegate.paginates, pageBandDelegate.band > 0 || !footnotes.isEmpty,
+              PlanInputBuilder.canObserve(self), let storage = textView.textStorage,
+              let container = textView.textContainer else {
+            adopt(nil)
+            pageCountFollowsLaidText = true
+            resume()
+            return
+        }
+        let staged = StagedPagination(token: token, storage: storage, container: container, resume: resume)
+        stagedPagination = staged
+        stagedPaginationTurn(staged)
+    }
+
+    /// One turn of a staged generation.
+    private func stagedPaginationTurn(_ staged: StagedPagination) {
+        guard stagedPagination === staged else { return }
+        guard staged.token == layoutToken, let storage = textView.textStorage,
+              let container = textView.textContainer, storage.length > 0 else {
+            cancelStagedPagination()
+            return
+        }
+        staged.turns += 1
+        if staged.textChanged || staged.width != container.size.width {
+            // The text or its width changed under the generation: what it observed no longer
+            // describes the document, and an answer built from it would be stale. Observe again.
+            staged.restart(storage: storage, container: container)
+            restoreAuthoredAlignment()
+            if staged.restarts > StagedPagination.restartLimit {
+                // The text keeps changing: answer now rather than chase it.
+                paginate()
+                return
+            }
+        }
+        let start = CACurrentMediaTime()
+        func spent() -> Bool { CACurrentMediaTime() - start >= StagedPagination.turnBudget }
+        switch staged.stage {
+        case .observing:
+            // Every turn takes at least one step, so the walk always advances.
+            repeat {
+                if !staged.walk.isLaidOut { staged.walk.lay(characters: StagedPagination.layStep) }
+                else { staged.walk.collect(glyphs: StagedPagination.collectStep) }
+            } while !staged.walk.isCollected && !spent()
+            if staged.walk.isCollected { staged.stage = .building }
+        case .building:
+            staged.built = autoreleasepool {
+                PlanInputBuilder.naturalInput(controller: self, observation: staged.walk.finish())
+            }
+            if staged.built != nil { paginationCount += 1 }
+            staged.stage = .encoding
+        case .encoding:
+            staged.json = staged.built.flatMap { built in autoreleasepool { PlanJSON.data(built.input) } }
+            staged.stage = .asking
+        case .asking:
+            staged.plan = staged.json.flatMap { json in autoreleasepool { PlanPagination.ask(json: json) } }
+            staged.json = nil
+            staged.stage = .adopting
+        case .adopting:
+            stagedPagination = nil
+            // The observation and the reply are gone before malloc is asked to hand pages back.
+            autoreleasepool {
+                let answer = staged.built.flatMap { built in staged.plan.map { (built, $0) } }
+                staged.end()
+                adopt(answer)
+            }
+            malloc_zone_pressure_relief(nil, 0)
+            lastStagedPaginationTurns = staged.turns
+            lastStagedPaginationRestarts = staged.restarts
+            pageCountFollowsLaidText = true
+            staged.resume()
+            return
+        }
+        DispatchQueue.main.async { [weak self, weak staged] in
+            guard let self, let staged else { return }
+            self.stagedPaginationTurn(staged)
         }
     }
 
@@ -1806,21 +2000,13 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// `paginateNow`).
     @discardableResult
     func paginate() -> Bool {
-        let delegate = pageBandDelegate
-        pageCountFollowsLaidText = false
-        delegate.resetPlan()
-        plannedPages = []
-        plannedNotes = [:]
-        lastPlan = nil
+        // A generation spread over turns is superseded by this one; whatever was waiting for it
+        // (the apply walk) still runs, now over this answer.
+        let resume = cancelStagedPagination()
+        defer { resume?() }
         restoreAuthoredAlignment()
-        guard let lm = textView.layoutManager, let storage = textView.textStorage else { return false }
-        defer {
-            if storage.length > 0 {
-                lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
-            }
-            textView.needsDisplay = true
-        }
-        guard delegate.paginates, delegate.band > 0 || !footnotes.isEmpty, storage.length > 0 else { return false }
+        guard pageBandDelegate.paginates, pageBandDelegate.band > 0 || !footnotes.isEmpty,
+              let storage = textView.textStorage, storage.length > 0 else { return adopt(nil) }
         // The observation, the request, the reply and their bridged objects are dropped as soon as
         // the targets are taken (invariant 65): only the delegate's targets and the plan's small
         // sheet facts outlive this pool.
@@ -1828,9 +2014,33 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         // dirty and the footprint rises after the observer is gone (편람 581 → 612 MB, invariant 207).
         defer { malloc_zone_pressure_relief(nil, 0) }
         return autoreleasepool { () -> Bool in
-            guard let built = PlanInputBuilder.naturalInput(controller: self) else { return false }
-            paginationCount += 1
-            guard var plan = PlanPagination.ask(built.input) else { return false }
+            let built = PlanInputBuilder.naturalInput(controller: self)
+            if built != nil { paginationCount += 1 }
+            return adopt(built.flatMap { built in PlanPagination.ask(built.input).map { (built, $0) } })
+        }
+    }
+
+    /// Hands one generation's answer to the layout delegate and the painters, dropping the previous
+    /// one first; `nil` (no input, or no plan) leaves the typesetter's own layout. Either way the
+    /// visible layout is invalidated, for the apply walk to lay out again.
+    @discardableResult
+    private func adopt(_ answer: (built: PlanInputBuilder.NaturalInput, plan: [String: Any])?) -> Bool {
+        let delegate = pageBandDelegate
+        pageCountFollowsLaidText = false
+        delegate.resetPlan()
+        plannedPages = []
+        plannedNotes = [:]
+        lastPlan = nil
+        guard let lm = textView.layoutManager, let storage = textView.textStorage else { return false }
+        defer {
+            if storage.length > 0 {
+                lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
+            }
+            textView.needsDisplay = true
+        }
+        guard let (built, answered) = answer else { return false }
+        return autoreleasepool { () -> Bool in
+            var plan = answered
             planCallCount += 1
             let printPitch = delegate.pageContentHeight + delegate.band - delegate.deskGap
             delegate.adopt(plan: plan)
@@ -1890,13 +2100,22 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         lm.invalidateLayout(forCharacterRange: NSRange(location: 0, length: storage.length), actualCharacterRange: nil)
     }
 
-    /// True while the full plan has not been applied yet: from a render's first paint until the
-    /// walk that applies `paginate()`'s answer begins. `printPageCount` then counts only the text
-    /// already laid out, because any layout past it is laid against the head plan and thrown away by
-    /// `paginate()` (measured: 430 ms on the 편람, 62 ms on Zero100, invariant 207). Set by
-    /// `paginateForFirstPaint`, cleared by `paginate()` and, when `precomputeLayout` defers its walk
-    /// by one turn, again when that walk starts.
-    private(set) var pageCountFollowsLaidText = false
+    /// True while the full plan is not wholly laid out: from a render's first paint, through the
+    /// generation observed over turns (`StagedPagination`), until `precomputeLayout`'s apply walk
+    /// reaches the end. `printPageCount` then counts only the text already laid out, because any
+    /// layout past it would be laid against the head plan and thrown away, or laid in one turn that
+    /// the walk spreads over several (invariant 207). Set by `paginateForFirstPaint` and a staged
+    /// adoption, cleared by a synchronous `paginate()` and when the apply walk finishes.
+    ///
+    /// AppKit's idle background layout is off meanwhile, and marking the view for display lays
+    /// nothing out (`ReaderTextView.displayAvoidsLayout`): either once laid the whole 편람 out in one
+    /// callback against a plan about to be replaced (5.5 s at load 60, invariant 207).
+    private(set) var pageCountFollowsLaidText = false {
+        didSet {
+            textView.layoutManager?.backgroundLayoutEnabled = !pageCountFollowsLaidText
+            textView.displayAvoidsLayout = pageCountFollowsLaidText
+        }
+    }
 
     /// The synchronous twin, for a caller that cannot wait for `precomputeLayout`'s chunked walk —
     /// printing, which must not put a line in a margin just because the asynchronous generation had
@@ -1994,7 +2213,12 @@ final class DocumentWindowController: NSWindowController, NSWindowDelegate, NSTe
         guard let lm = textView.layoutManager, let tc = textView.textContainer,
               let storage = textView.textStorage, storage.length > 0 else { return NSRange(location: 0, length: 0) }
         let rect = textView.visibleRect.insetBy(dx: 0, dy: -textView.visibleRect.height * margin)
-        let gr = lm.glyphRange(forBoundingRect: rect, in: tc)
+        // Before the full plan is applied, asking lays the text out against the first paint's plan,
+        // and AppKit's resize of the growing view carried that through the whole 편람 in one turn
+        // (7.2 s at load 50, invariant 207): answer from what is laid out.
+        let gr = pageCountFollowsLaidText
+            ? lm.glyphRange(forBoundingRectWithoutAdditionalLayout: rect, in: tc)
+            : lm.glyphRange(forBoundingRect: rect, in: tc)
         return lm.characterRange(forGlyphRange: gr, actualGlyphRange: nil)
     }
 

@@ -167,11 +167,16 @@ internal static class PagePlanClient
 {
     private const int PlanVersion = 1;
 
+    /// <summary>Sees every plan request exactly as it is sent, so a test can read what a real
+    /// <see cref="PageLayout.Build"/> hands the engine. Null outside tests.</summary>
+    [ThreadStatic] internal static Action<byte[]>? RequestSent;
+
     public static PagePlanResult Plan(IntPtr handle, double contentHeightPoints, bool splitTables,
         IReadOnlyDictionary<int, double>? noteBands, IReadOnlyList<PlanBlockInput> blocks, double bandPoints = 0,
         PlanFurnitureInput? furniture = null, PlanColumnsInput? columns = null)
     {
         var input = Encode(contentHeightPoints, splitTables, noteBands, blocks, bandPoints, furniture, columns);
+        RequestSent?.Invoke(input);
         var reply = FastdocEngine.TakeOwnedString(FastdocEngine.fastdoc_office_page_plan_json(handle, input));
         if (reply is null)
         {

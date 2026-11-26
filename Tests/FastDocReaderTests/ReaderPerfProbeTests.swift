@@ -163,7 +163,7 @@ final class ReaderPerfProbeTests: XCTestCase {
         // matrix into failures that say nothing except that the budget was too small.
         for _ in 0..<24000 where !laidOut {
             spin(0.005)
-            if lm.firstUnlaidCharacterIndex() >= total { layoutMs = ms(t3); laidOut = true }
+            if !wc.isPaginationPending, lm.firstUnlaidCharacterIndex() >= total { layoutMs = ms(t3); laidOut = true }
         }
         guard laidOut else {
             return XCTFail("full layout never completed within budget — \(lm.firstUnlaidCharacterIndex()) of "
@@ -178,7 +178,8 @@ final class ReaderPerfProbeTests: XCTestCase {
         /// instantly and leaves the reader looking at unlaid text has not actually finished.
         func fullyLaidOut() -> Bool {
             let len = wc.textView.textStorage?.length ?? 0
-            return len == 0 || lm.firstUnlaidCharacterIndex() >= len
+            // A generation still being planned over turns (invariant 207) is not laid out yet.
+            return len == 0 || (!wc.isPaginationPending && lm.firstUnlaidCharacterIndex() >= len)
         }
 
         // Stage 4 — zoom. One warm press, then a 3-press burst, exactly as

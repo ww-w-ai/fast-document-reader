@@ -261,7 +261,9 @@ enum HeadlessPDF {
     static func waitForRenderToSettle(doc: MarkdownDocument, wc: DocumentWindowController,
                                       timeout: TimeInterval = HeadlessPDF.settleTimeout) -> Bool {
         func layoutFully() {
-            guard let tc = wc.textView.textContainer else { return }
+            // While a generation is planned over turns this layout would be laid against the first
+            // paint's plan and thrown away when the answer lands (invariant 207).
+            guard !wc.isPaginationPending, let tc = wc.textView.textContainer else { return }
             wc.textView.layoutManager?.ensureLayout(for: tc)
         }
         layoutFully()
@@ -274,7 +276,7 @@ enum HeadlessPDF {
             layoutFully()
             let height = wc.textView.frame.height
             let generation = doc.renderGeneration
-            let quiet = doc.deferredTables.isEmpty && !doc.isProgressiveRenderPending
+            let quiet = doc.deferredTables.isEmpty && !doc.isProgressiveRenderPending && !wc.isPaginationPending
                 && height == lastHeight && generation == lastGeneration
             lastHeight = height
             lastGeneration = generation

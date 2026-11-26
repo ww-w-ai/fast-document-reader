@@ -439,15 +439,25 @@ enum PlanInputBuilder {
     }
 
     static func naturalInput(controller wc: DocumentWindowController) -> NaturalInput? {
+        guard canObserve(wc), let tc = wc.textView.textContainer, let storage = wc.textView.textStorage else { return nil }
+        return naturalInput(controller: wc, observation: observeNaturally(storage: storage, like: tc))
+    }
+
+    /// Whether `controller`'s document has a page grid to plan on and text to observe.
+    static func canObserve(_ wc: DocumentWindowController) -> Bool {
         let delegate = wc.pageBandDelegate
-        guard delegate.pageContentHeight > 0, let tc = wc.textView.textContainer,
-              let storage = wc.textView.textStorage, storage.length > 0 else { return nil }
+        guard delegate.pageContentHeight > 0, wc.textView.textContainer != nil,
+              let storage = wc.textView.textStorage, storage.length > 0 else { return false }
         // The plan is on the PRINT grid: the desk between two drawn sheets is added back per page
         // when the targets are turned into container coordinates.
-        let pitch = delegate.pageContentHeight + delegate.band - delegate.deskGap
-        guard pitch > 0 else { return nil }
+        return delegate.pageContentHeight + delegate.band - delegate.deskGap > 0
+    }
+
+    /// The plan input of an observation already taken of `controller`'s text (`observeNaturally`, or
+    /// `PlanObservation.Walk` across turns).
+    static func naturalInput(controller wc: DocumentWindowController, observation: Observation) -> NaturalInput? {
+        guard canObserve(wc), let storage = wc.textView.textStorage else { return nil }
         let columnRuns = wc.columnRunRanges()
-        let observation = observeNaturally(storage: storage, like: tc)
         guard !observation.fragments.isEmpty else { return nil }
         let source = Source(storage: storage, columnRuns: columnRuns)
         let blocks = build(observation.fragments, observation.groups, source: source, proposedTops: observation.proposedTableLineTops)

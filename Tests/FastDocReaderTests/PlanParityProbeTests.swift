@@ -173,7 +173,35 @@ final class PlanParityProbeTests: XCTestCase {
                 let foundation = try JSONSerialization.jsonObject(with: JSONSerialization.data(withJSONObject: built.input))
                 if !Self.sameAsTheEngineReadsIt(ours, foundation) { failures += 1; report.append("PARITY input encoding differs: \(url.lastPathComponent)") }
             }
-            let result = PlanAppliedParity.run(controller: wc)
+            if env["FMD_PLAN_PARITY_MIDWALK"] == "1" {
+                // A zoom and a width change land while the window's generation is still observing
+                // over turns (invariant 207); the layout it ends with is read against its own plan.
+                // One step per turn, so even a short document is still observing when the change lands.
+                let budget = DocumentWindowController.StagedPagination.turnBudget
+                DocumentWindowController.StagedPagination.turnBudget = 0
+                defer { DocumentWindowController.StagedPagination.turnBudget = budget }
+                wc.precomputeLayout()
+                let deadline = Date().addingTimeInterval(60)
+                // One source per pass, so a short document's generation cannot finish unseen.
+                while !(wc.isPaginationPending && (wc.stagedPagination?.turns ?? 0) >= 1), Date() < deadline {
+                    _ = CFRunLoopRunInMode(.defaultMode, 0.001, true)
+                }
+                let midWalk = wc.isPaginationPending
+                doc.increaseReaderFontSize(nil)
+                if let window = wc.window {
+                    var frame = window.frame
+                    frame.size.width -= 160
+                    window.setFrame(frame, display: true)
+                    wc.windowDidResize(Notification(name: NSWindow.didResizeNotification, object: window))
+                }
+                while wc.isPaginationPending || wc.pageCountFollowsLaidText, Date() < deadline {
+                    RunLoop.main.run(until: Date().addingTimeInterval(0.005))
+                }
+                report.append("PARITY midwalk \(url.lastPathComponent): changed while observing \(midWalk), observers left \((wc.textView.textStorage?.layoutManagers.count ?? 1) - 1)")
+                if (wc.textView.textStorage?.layoutManagers.count ?? 1) != 1 { failures += 1 }
+                if !midWalk, wc.pageBandDelegate.paginates { failures += 1; report.append("PARITY midwalk: the change did not land mid-walk") }
+            }
+            let result = PlanAppliedParity.run(controller: wc, printing: env["FMD_PLAN_PARITY_MIDWALK"] != "1")
             report.append("PARITY \(url.lastPathComponent)")
             report.append(result.text)
             if result.skipped == nil, result.differing > 0 || result.unstable > 0 || result.pagesPlan != result.pagesApplied { failures += 1 }

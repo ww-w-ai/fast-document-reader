@@ -53,6 +53,77 @@ final class PlanObservation {
     func remove() {
         storage?.removeLayoutManager(layout)
     }
+
+    /// The same observation taken in steps, so a caller can spread it over main-thread turns
+    /// (invariant 207): lay the text out from the start, then read its line fragments from the start.
+    /// Each step is bounded by a character or glyph count; the caller decides how many fit a turn.
+    final class Walk {
+        /// The observer while the walk holds it; `discard` drops it with its glyph and fragment store.
+        private var held: PlanObservation?
+        private var observer: PlanObservation { held! }
+        /// Characters laid out so far, and glyphs whose line fragments have been read.
+        private(set) var laidTo = 0
+        private(set) var collectedTo = 0
+        private(set) var fragments: [PlanInputBuilder.Fragment] = []
+        private(set) var isLaidOut = false
+        private(set) var isCollected = false
+
+        init(storage: NSTextStorage, like visible: NSTextContainer) {
+            held = PlanObservation(storage: storage, like: visible)
+        }
+
+        /// Lays out up to `characters` more characters; the last step lays the container's end too,
+        /// as `walk()` does.
+        func lay(characters: Int) {
+            guard !isLaidOut, held != nil, let storage = observer.storage else { return }
+            let end = min(storage.length, laidTo + max(1, characters))
+            if end > laidTo {
+                observer.layout.ensureLayout(forCharacterRange: NSRange(location: laidTo, length: end - laidTo))
+            }
+            laidTo = end
+            if end >= storage.length {
+                observer.layout.ensureLayout(for: observer.container)
+                isLaidOut = true
+            }
+        }
+
+        /// Reads the line fragments of about `glyphs` more glyphs, ending at a fragment boundary so
+        /// no fragment is read twice. Only after the text is laid out.
+        func collect(glyphs: Int) {
+            guard isLaidOut, !isCollected, held != nil, let storage = observer.storage else { return }
+            let layout = observer.layout
+            let total = layout.numberOfGlyphs
+            var end = min(total, collectedTo + max(1, glyphs))
+            if end < total {
+                var fragment = NSRange()
+                _ = layout.lineFragmentRect(forGlyphAt: end, effectiveRange: &fragment, withoutAdditionalLayout: true)
+                end = fragment.location > collectedTo ? fragment.location : max(end, NSMaxRange(fragment))
+            }
+            if end > collectedTo {
+                fragments += PlanInputBuilder.collect(layout, observer.container, storage: storage,
+                                                      glyphs: NSRange(location: collectedTo, length: end - collectedTo))
+            }
+            collectedTo = end
+            if end >= total { isCollected = true }
+        }
+
+        /// The finished observation; the observer is removed from the text.
+        func finish() -> PlanInputBuilder.Observation {
+            let proposed = held?.recorder.proposedTableLineTops ?? [:]
+            discard()
+            let taken = fragments
+            fragments = []
+            return PlanInputBuilder.Observation(fragments: taken, groups: PlanInputBuilder.group(taken),
+                                                proposedTableLineTops: proposed)
+        }
+
+        /// Removes the observer from the text and lets it go, once: a walk that is finished or given
+        /// up holds nothing laid out (invariant 65).
+        func discard() {
+            held?.remove()
+            held = nil
+        }
+    }
 }
 
 private var authoredAlignmentKey: UInt8 = 0
