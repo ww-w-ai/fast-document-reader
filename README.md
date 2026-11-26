@@ -263,17 +263,23 @@ a Developer ID and stapled, and it is **not** sandboxed, so sibling images just 
 
 ### Download
 
-Every build of release `v1.4.3` is on the [Releases
+Every build of release `v1.4.6` is on the [Releases
 page](https://github.com/ww-w-ai/fast-document-reader/releases), with a `SHA256SUMS` file covering
-all five archives:
+every file:
 
-| Platform | File |
-|---|---|
-| macOS (Apple Silicon) | `FastDoc-1.4.3-macos-arm64.zip` — notarized Developer ID build, not sandboxed — or the [Mac App Store](https://apps.apple.com/app/id6791603562) build, sandboxed |
-| Windows x64 | `FastDoc-1.4.3-win-x64.zip` |
-| Windows ARM64 | `FastDoc-1.4.3-win-arm64.zip` |
-| Linux x64 | `FastDoc-1.4.3-linux-x64.tar.gz` |
-| Linux ARM64 | `FastDoc-1.4.3-linux-arm64.tar.gz` |
+| Platform | Download | Then |
+|---|---|---|
+| macOS (Apple Silicon) | `FastDoc-1.4.6-macos-arm64.zip` — notarized Developer ID build, not sandboxed — or the [Mac App Store](https://apps.apple.com/app/id6791603562) build, sandboxed | Drag `FastDocReader.app` to `/Applications` |
+| Windows, Intel or AMD | `FastDoc-1.4.6-win-x64-setup.exe` | Run the setup |
+| Windows on ARM (Snapdragon) | `FastDoc-1.4.6-win-arm64-setup.exe` | Run the setup |
+| Ubuntu, Debian (Intel or AMD) | `fastdoc_1.4.6_amd64.deb` | `sudo apt install ./fastdoc_1.4.6_amd64.deb` |
+| Ubuntu, Debian (ARM) | `fastdoc_1.4.6_arm64.deb` | `sudo apt install ./fastdoc_1.4.6_arm64.deb` |
+| Other Linux | `FastDoc-1.4.6-linux-x64.tar.gz` or `-linux-arm64.tar.gz` | Unpack, run `installers/linux/install.sh` |
+
+The Windows setup needs no administrator rights: it installs for the current user, adds FastDoc to
+the Start menu and to **Open with** for every file type it reads, and is removed from **Settings →
+Apps → Installed apps**. Portable zips (`FastDoc-1.4.6-win-x64.zip`, `-win-arm64.zip`) are there
+too for running without installing.
 
 To open files here by default: **FastDoc → Set as Default App…**, which lists the kinds it
 can claim with a checkbox each — Markdown ticked, text formats yours to choose. Per file, the Finder
@@ -282,12 +288,14 @@ route still works: right-click → **Get Info** → **Open with** → **Change A
 ## Windows and Linux
 
 The macOS app is native AppKit. Windows and Linux get the same Rust engine through a .NET 9 +
-Avalonia host, version **1.4.3** (one version number with the Mac app), read-only, in
+Avalonia host, version **1.4.6** (one version number with the Mac app), read-only, in
 `hosts/avalonia/`. It opens the same 9 file families (`.md`, `.txt`, `.docx`, `.docm`, `.dotx`,
 `.dotm`, `.odt`, `.hwp`, `.hwpx`), bundles a Noto Sans KR subset (11,172 Hangul + 8,138 Hanja
 glyphs) so Korean text renders with no system font, exports vector-text PDF, and scrolls from the
-keyboard. Self-contained builds for four targets: win-x64 239 MB, win-arm64 228 MB, linux-x64
-119 MB, linux-arm64 122 MB. The Windows ARM64 build is native; Windows on ARM can also run the x64
+keyboard. It installs with a Windows setup or a Debian/Ubuntu package (see
+[Download](#download)); the program is `FastDoc.exe` on Windows and `fastdoc` on Linux. Each build is
+self-contained, .NET runtime included: installed size win-x64 254 MB, win-arm64 242 MB, linux-x64
+133 MB, linux-arm64 137 MB. The Windows ARM64 build is native; Windows on ARM can also run the x64
 build through emulation, 4–6× slower on the same documents.
 
 Two things to know before relying on it. Both Windows builds were run on Windows 11 ARM64 in a

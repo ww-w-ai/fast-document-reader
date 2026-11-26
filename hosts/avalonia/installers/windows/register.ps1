@@ -12,11 +12,11 @@
   "기본 앱은 프로그램이 못 정한다"). This script only makes FastDoc show up as a candidate.
 
 .PARAMETER InstallDir
-  Directory holding FastDoc.Avalonia.exe (a published win-x64 self-contained output).
+  Directory holding FastDoc.exe (an unpacked portable zip or a published self-contained output). The setup .exe does this registration itself; this script is for the portable zip.
 
 .NOTES
-  NOT EXECUTED by the packaging gate — per dispatch instructions, this only writes the script.
-  A real Windows machine must run it to verify.
+  Keep its keys identical to installers/windows/fastdoc.nsi (the setup) and
+  WindowsDefaultAppRegistrar (File > Set as Default App); package-host.sh checks the extension lists.
 #>
 param(
   [Parameter(Mandatory = $true)]
@@ -25,9 +25,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$ExePath = Join-Path $InstallDir "FastDoc.Avalonia.exe"
+$ExePath = Join-Path $InstallDir "FastDoc.exe"
 if (-not (Test-Path $ExePath)) {
-  Write-Error "FastDoc.Avalonia.exe not found at $ExePath — is this a published win-x64 self-contained output?"
+  Write-Error "FastDoc.exe not found at $ExePath — is this an unpacked FastDoc zip?"
   exit 1
 }
 

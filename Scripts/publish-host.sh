@@ -11,8 +11,16 @@
 #   ./Scripts/publish-host.sh
 #
 # Output layout (per RID):
-#   hosts/avalonia/publish/<rid>/FastDoc.Avalonia(.exe)
+#   hosts/avalonia/publish/<rid>/FastDoc.exe (Windows) or fastdoc (Linux) — the apphost
+#   hosts/avalonia/publish/<rid>/FastDoc.Avalonia.dll — the app assembly the apphost runs
 #   hosts/avalonia/publish/<rid>/runtimes/<rid>/native/<engine lib>
+#
+# The apphost is renamed after publish rather than changing <AssemblyName>: the apphost carries
+# the app assembly's file name embedded at build time, so a renamed apphost still runs
+# FastDoc.Avalonia.dll, and the assembly name — which every avares://FastDoc.Avalonia/ resource
+# URI and the test project's InternalsVisibleTo depend on — stays put.
+#
+# Scripts/package-host.sh turns this output into the installers and archives.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,6 +53,21 @@ engine_filename_for() {
   esac
 }
 
+# The apphost `dotnet publish` writes, and the name it ships under.
+published_apphost_for() {
+  case "$1" in
+    win-*) echo "FastDoc.Avalonia.exe" ;;
+    *)     echo "FastDoc.Avalonia" ;;
+  esac
+}
+
+shipped_apphost_for() {
+  case "$1" in
+    win-*) echo "FastDoc.exe" ;;
+    *)     echo "fastdoc" ;;
+  esac
+}
+
 # Minimum plausible size for the engine cdylib/dll — a stub or truncated copy is far smaller than
 # any real build (measured builds run 12-32 MB). Below this, treat it as missing.
 MIN_ENGINE_BYTES=$((1 * 1024 * 1024))
@@ -68,7 +91,18 @@ verify_rid() {
   filename="$(engine_filename_for "$rid")"
   local engine_path="$native_dir/$filename"
   local main_dll="$out_dir/FastDoc.Avalonia.dll"
+  local apphost
+  apphost="$(shipped_apphost_for "$rid")"
   local ok=1
+
+  if [ ! -f "$out_dir/$apphost" ]; then
+    echo "FAIL: executable $out_dir/$apphost missing" >&2
+    ok=0
+  fi
+  if [ -e "$out_dir/$(published_apphost_for "$rid")" ]; then
+    echo "FAIL: un-renamed executable $out_dir/$(published_apphost_for "$rid") still present" >&2
+    ok=0
+  fi
 
   if [ ! -f "$engine_path" ]; then
     echo "FAIL: engine library missing in $engine_path" >&2
@@ -100,7 +134,7 @@ verify_rid() {
   if [ "$ok" -ne 1 ]; then
     return 1
   fi
-  echo "==> [$rid] verify OK: engine lib $engine_path ($(stat -f%z "$engine_path") bytes), font resource embedded in $main_dll"
+  echo "==> [$rid] verify OK: executable $apphost, engine lib $engine_path ($(stat -f%z "$engine_path") bytes), font resource embedded in $main_dll"
   return 0
 }
 
@@ -136,6 +170,8 @@ for rid in "${RIDS[@]}"; do
   src="$(engine_source_for "$rid")"
   filename="$(engine_filename_for "$rid")"
   cp "$src" "$native_dir/$filename"
+
+  mv "$out_dir/$(published_apphost_for "$rid")" "$out_dir/$(shipped_apphost_for "$rid")"
 
   if ! verify_rid "$rid"; then
     echo "FAIL: [$rid] publish verification gate failed — see errors above" >&2

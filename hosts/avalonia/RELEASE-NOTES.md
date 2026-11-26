@@ -1,5 +1,15 @@
 # FastDoc for Windows and Linux 1.4.5
 
+## What's new in 1.4.6
+
+- Real installers. On Windows, run `FastDoc-1.4.6-win-x64-setup.exe` (or `-win-arm64-setup.exe`):
+  it installs for the current user without administrator rights, adds FastDoc to the Start menu
+  and to **Open with** for every file type it reads, and removes itself cleanly from **Settings →
+  Apps → Installed apps**. On Debian and Ubuntu, install `fastdoc_1.4.6_amd64.deb` (or `_arm64.deb`)
+  with `apt`; it adds a `fastdoc` command, a launcher entry, the HWP and HWPX file types and an icon.
+- The program is now called `FastDoc.exe` on Windows and `fastdoc` on Linux.
+- A vertical scrollbar now sits beside the document and stays visible; drag it, click the track or use the arrows, and it follows wheel, keyboard, find, zoom and page-view changes. Earlier builds scrolled by wheel and keys only, with no scrollbar shown.
+
 ## What's new in 1.4.5
 
 - Word, OpenDocument and Hangul documents are laid out into pages by the same engine as the macOS
@@ -136,8 +146,12 @@ The reading surface follows the OS light/dark theme.
   the DOCX and a 160 KB HWP: 197 s / 24 s / 12 s under emulation, 31.2 s / 6.1 s / 3.0 s native,
   with the same page counts (195 / 35 / 45) from both. The Linux build reports 196 / 35 / 46 for the
   same three files with the same bundled font; word counts show no content loss, and the one-page
-  difference is unexplained. `register.ps1` and `unregister.ps1` were reviewed by reading them,
-  not by executing them.
+  difference is unexplained. Both setups were installed, launched from the Start menu, used through
+  **Open with**, upgraded in place and uninstalled on that virtual machine (the x64 setup under
+  emulation). `register.ps1` and `unregister.ps1` for the portable zip were reviewed by reading
+  them, not by executing them.
+- The `.deb` packages were installed, run and removed on Ubuntu 24.04: `arm64` in a virtual
+  machine with a desktop session, `amd64` in a container without one.
 - The Linux GUI was run on Ubuntu 24.04 (GNOME on Xorg) inside a UTM virtual machine on Apple
   Silicon, not on bare-metal Linux hardware: opening Markdown, DOCX and HWPX by double-click, zoom,
   wheel scrolling, the Export PDF menu item, single instance, and the install/uninstall scripts were
@@ -164,45 +178,58 @@ Linux (Debian/Ubuntu package names; use your distribution's equivalents):
 | `libicu72` (or the distribution's ICU) | Startup. Without it .NET aborts with "Couldn't find a valid ICU package" |
 | `libfontconfig1` and its chain (`libfreetype6`, `libexpat1`, `libpng16-16`, `libbrotli1`) | Loading `libSkiaSharp.so`; apt installs the chain automatically |
 | `libx11-6`, `libx11-xcb1` | The GUI. The headless flags do not need them |
-| `desktop-file-utils`, `shared-mime-info` | The install script's cache refresh. Without them it prints a warning and continues |
+| `desktop-file-utils`, `shared-mime-info` | Refreshing the launcher and file-type caches. Without them FastDoc still runs |
 
-Windows: none. The build is self-contained and includes its own .NET runtime.
+The `.deb` package declares these, so `apt` installs them. Windows: none. Each build is
+self-contained and includes its own .NET runtime.
 
-Published sizes, engine library included:
+Installed sizes, engine library included:
 
 | Target | Size |
 |---|---|
-| win-x64 | 239.4 MB |
-| win-arm64 | 228.0 MB |
-| linux-x64 | 118.9 MB |
-| linux-arm64 | 122.4 MB |
+| win-x64 | 253.9 MB |
+| win-arm64 | 242.4 MB |
+| linux-x64 | 133.4 MB |
+| linux-arm64 | 136.7 MB |
 
 ## Install and uninstall
 
 Downloads are on the GitHub Releases page (https://github.com/ww-w-ai/fast-document-reader/releases),
-one archive per target plus a `SHA256SUMS` file. On a Windows ARM laptop (Snapdragon and similar)
-pick `FastDoc-1.4.2-win-arm64.zip`; the `win-x64` zip also runs there through Windows' x64 emulation,
-4–6× slower. On Linux, `linux-x64` for Intel/AMD and `linux-arm64` for ARM (Raspberry Pi, Apple
-Silicon VMs). Unzip or untar anywhere; nothing else needs installing on Windows.
+with a `SHA256SUMS` file covering every file.
 
-Both installers work on a published output directory (`hosts/avalonia/publish/<rid>/`, produced by
-`Scripts/publish-host.sh`, or the unpacked archive). Neither makes FastDoc the default application: on Windows the
-`UserChoice` key is hash-protected and cannot be set by an application; on Linux the install script
-prints the `xdg-mime default` line for you to run.
+| Your computer | Download | Install | Uninstall |
+|---|---|---|---|
+| Windows, Intel or AMD | `FastDoc-1.4.6-win-x64-setup.exe` | Run it | Settings → Apps → Installed apps → FastDoc → Uninstall |
+| Windows on ARM (Snapdragon and similar) | `FastDoc-1.4.6-win-arm64-setup.exe` | Run it | Same |
+| Ubuntu or Debian, Intel or AMD | `fastdoc_1.4.6_amd64.deb` | `sudo apt install ./fastdoc_1.4.6_amd64.deb` | `sudo apt remove fastdoc` |
+| Ubuntu or Debian, ARM (Raspberry Pi, Apple Silicon VMs) | `fastdoc_1.4.6_arm64.deb` | `sudo apt install ./fastdoc_1.4.6_arm64.deb` | `sudo apt remove fastdoc` |
+| Other Linux | `FastDoc-1.4.6-linux-x64.tar.gz` or `-linux-arm64.tar.gz` | Unpack, run `installers/linux/install.sh` | `installers/linux/uninstall.sh` |
 
-Linux:
+The Windows x64 setup also runs on Windows on ARM through Windows' x64 emulation, 4–6× slower; the
+ARM64 setup refuses to run on an Intel or AMD PC.
 
-```sh
-installers/linux/install.sh <published-dir>    # user-local, no sudo; .desktop entry + MIME types for hwp/hwpx
-installers/linux/uninstall.sh                  # removes exactly what install.sh added, refreshes both caches
-```
+**Windows setup.** No administrator rights: it installs to `%LOCALAPPDATA%\Programs\FastDoc` for the
+current user, adds a Start-menu shortcut (a desktop shortcut is optional), and registers FastDoc as an
+**Open with** choice for all 70 file extensions it reads. Running a newer setup upgrades in place;
+close FastDoc first. Uninstalling removes the program, the shortcuts and every registry entry the
+setup added; your recent files and settings stay.
 
-Windows (PowerShell, current user only, writes `HKCU\Software\Classes`; no administrator rights):
+**Debian/Ubuntu package.** Installs the program to `/opt/fastdoc`, the `fastdoc` command to
+`/usr/bin`, a launcher entry, the MIME types for `.hwp` and `.hwpx`, and the icon, then refreshes the
+desktop caches. `apt remove` takes all of it away again.
 
-```powershell
-installers\windows\register.ps1 -InstallDir <published-dir>
-installers\windows\unregister.ps1
-```
+**Other Linux.** `installers/linux/install.sh` inside the unpacked archive installs for the current
+user only (no `sudo`): it copies the program to `~/.local/share/fastdoc` and adds the launcher entry,
+MIME types and icon. `installers/linux/uninstall.sh` removes exactly that.
+
+**Portable Windows zip.** `FastDoc-1.4.6-win-x64.zip` and `-win-arm64.zip` run without installing:
+unzip anywhere and start `FastDoc.exe`. `installers\windows\register.ps1 -InstallDir <folder>` adds the
+same **Open with** entries the setup adds, and `unregister.ps1` removes them.
+
+None of these makes FastDoc your default app. Windows does not let a program set its own defaults:
+choose FastDoc in **Settings → Apps → Default apps** (the setup's last page has a button for it), or
+use **File → Set as Default App…** in FastDoc. On Linux, that menu item runs `xdg-mime default` for
+Markdown, Word/OpenDocument, HWP and plain text.
 
 ## Command line
 
@@ -211,10 +238,10 @@ Every entry prints one `mode:` line to stderr first.
 
 | Invocation | stdout |
 |---|---|
-| `FastDoc.Avalonia --extract <doc>` | the document as Markdown (an office document goes through the host's own `MarkdownSerializer`, ported from the macOS app's; markdown/plain text is printed verbatim) |
-| `FastDoc.Avalonia --pdf <in> <out.pdf>` | `pages: N`; the PDF is written to `<out.pdf>` |
-| `FastDoc.Avalonia --sheets <doc>` | `sheets: N` plus one line of page geometry |
-| `FastDoc.Avalonia --noop` | `noop`; boots the runtime and exits, the timing baseline |
+| `fastdoc --extract <doc>` | the document as Markdown (an office document goes through the host's own `MarkdownSerializer`, ported from the macOS app's; markdown/plain text is printed verbatim) |
+| `fastdoc --pdf <in> <out.pdf>` | `pages: N`; the PDF is written to `<out.pdf>` |
+| `fastdoc --sheets <doc>` | `sheets: N` plus one line of page geometry |
+| `fastdoc --noop` | `noop`; boots the runtime and exits, the timing baseline |
 
 Exit codes:
 

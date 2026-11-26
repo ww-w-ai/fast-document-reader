@@ -152,6 +152,29 @@ public class DefaultAppRegistrationTests
         Assert.Equal(DefaultAppOutcome.Failed, result.Outcome);
     }
 
+    private sealed class SetFileProbe : IFileProbe
+    {
+        public readonly HashSet<string> Present = new();
+        public bool Exists(string path) => Present.Contains(path);
+    }
+
+    [Fact]
+    public void Linux_desktop_file_prefers_user_local_then_system_wide_then_user_local_path()
+    {
+        const string home = "/home/user";
+        const string userLocal = "/home/user/.local/share/applications/ai.ww-w.fastdoc.desktop";
+        const string systemWide = "/usr/share/applications/ai.ww-w.fastdoc.desktop";
+        var probe = new SetFileProbe();
+
+        Assert.Equal(userLocal, LinuxDefaultAppRegistrar.ResolveDesktopFilePath(probe, home));
+
+        probe.Present.Add(systemWide);
+        Assert.Equal(systemWide, LinuxDefaultAppRegistrar.ResolveDesktopFilePath(probe, home));
+
+        probe.Present.Add(userLocal);
+        Assert.Equal(userLocal, LinuxDefaultAppRegistrar.ResolveDesktopFilePath(probe, home));
+    }
+
     [Fact]
     public void Unsupported_registrar_reports_unsupported()
     {

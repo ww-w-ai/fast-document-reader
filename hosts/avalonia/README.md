@@ -129,15 +129,32 @@ linux-arm64 into `hosts/avalonia/publish/<rid>/`, copying the matching engine li
 `runtimes/<rid>/native/`. After each RID it runs a verification gate — engine library present and
 >= 1 MB, bundled font resource embedded in the main assembly — and exits 1 loudly (never a silent
 pass) if either check fails; `--verify-only <rid>` re-runs just that gate against an existing
-publish output. Sizes: win-x64 239.4 MB (engine 30.4 MB), win-arm64 228.0 MB (engine 10.1 MB),
-linux-x64 118.9 MB (engine 13.2 MB), linux-arm64 122.4 MB (engine 11.3 MB).
+publish output. Sizes: win-x64 253.9 MB (engine 31.0 MB), win-arm64 242.4 MB (engine 10.6 MB),
+linux-x64 133.4 MB (engine 13.9 MB), linux-arm64 136.7 MB (engine 11.9 MB).
 
-`Scripts/package-host.sh` — packages each `publish-host.sh` output plus its installer scripts,
-`THIRD-PARTY-NOTICES.md` and `RELEASE-NOTES.md` into a distributable archive (`.zip` for the two
-Windows RIDs, `.tar.gz` for the two Linux RIDs) under `hosts/avalonia/dist/`, with a `SHA256SUMS`
-file covering all four; the macOS zip from `Scripts/notarize.sh` is dropped in afterwards and the
-checksum file extended by hand. Archive sizes: win-x64 89.7 MB, win-arm64 79.2 MB, linux-x64
-53.1 MB, linux-arm64 50.6 MB.
+The shipped executable is `FastDoc.exe` (Windows) / `fastdoc` (Linux): `publish-host.sh` renames
+the apphost after `dotnet publish`. The assembly stays `FastDoc.Avalonia.dll`, because the apphost
+embeds that file name at build time and every `avares://FastDoc.Avalonia/` resource URI depends on
+it. A plain `dotnet build` or `dotnet publish` still produces `FastDoc.Avalonia(.exe)`.
+
+`Scripts/package-host.sh` — turns the four `publish-host.sh` outputs into everything users
+download, in `hosts/avalonia/dist/`, with one `SHA256SUMS` over all of it. Needs `makensis`
+(`brew install makensis`) and a running Docker daemon; a missing tool fails the run.
+
+| File | Built by | Size |
+|---|---|---|
+| `FastDoc-<ver>-win-x64-setup.exe`, `-win-arm64-setup.exe` | `makensis` from `installers/windows/fastdoc.nsi` | 61.8 / 52.9 MB |
+| `FastDoc-<ver>-win-x64.zip`, `-win-arm64.zip` | `zip` (portable, with `register.ps1`) | 90.3 / 80.2 MB |
+| `fastdoc_<ver>_amd64.deb`, `_arm64.deb` | `dpkg-deb` in a `debian:bookworm-slim` container, from `installers/linux/deb/` | 40.3 / 36.8 MB |
+| `FastDoc-<ver>-linux-x64.tar.gz`, `-linux-arm64.tar.gz` | `tar` (with `install.sh`) | 55.4 / 52.9 MB |
+
+The extension list the setup registers is generated from
+`DefaultAppFamilies.WindowsOpenWithExtensions`; the script fails if `register.ps1` or
+`unregister.ps1` carries a different list. The macOS zip from `Scripts/notarize.sh` is copied into
+`dist/` afterwards and `SHA256SUMS` regenerated (the command is in the script's header).
+
+Release order: `Scripts/build-engine-xplat.sh` → `Scripts/publish-host.sh` →
+`Scripts/package-host.sh` → upload `dist/*` to the GitHub release.
 
 ## What works
 
@@ -302,8 +319,10 @@ checksum file extended by hand. Archive sizes: win-x64 89.7 MB, win-arm64 79.2 M
   as the x64 build, 4–6× faster — and the GUI opened the HWPX report in 884 ms (12,820 nodes).
   Those counts are one page off the Linux build's on two of the three (196/35/46, same bundled
   font); word counts show no content loss and the difference is unexplained. Linux: Ubuntu 24.04
-  (GNOME on Xorg and XWayland) in a VM on Apple Silicon. `installers\windows\register.ps1` has
-  still not been executed on Windows. Android has not been started.
+  (GNOME on Xorg and XWayland) in a VM on Apple Silicon. Both Windows setups were installed, launched,
+  upgraded and uninstalled on that Windows VM; the arm64 `.deb` on that Ubuntu VM and the amd64
+  `.deb` in an `ubuntu:24.04` container. `installers\windows\register.ps1` has still not been
+  executed on Windows. Android has not been started.
 - **Header/footer text is drawn unstyled**; per-section and first-page scoping is now honored
   (INVARIANTS.md 189) but there is still no footnote band, no master page (바탕쪽) or pinned page
   number.
@@ -317,19 +336,28 @@ checksum file extended by hand. Archive sizes: win-x64 89.7 MB, win-arm64 79.2 M
 
 ## Install
 
-`hosts/avalonia/installers/`, applied to a published output:
+`hosts/avalonia/installers/`; `Scripts/package-host.sh` builds the first two.
 
-- Linux — `linux/install.sh <published-dir>` / `linux/uninstall.sh`: user-local (no sudo) `.desktop`
-  entry plus `ai.ww-w.fastdoc.xml` MIME types for hwp/hwpx. Install prints the `xdg-mime default`
-  line; does not run it. Uninstall removes exactly what install added (app copy, `.desktop` entry,
-  MIME definition) and refreshes both caches; it never touches an `xdg-mime default` a user set.
-  Fresh-machine round-trip verified in a `debian:bookworm-slim` container (no desktop session).
-- Windows — `windows/register.ps1 -InstallDir <published-dir>` / `unregister.ps1`: writes
-  `HKCU\Software\Classes` only. Not yet executed on Windows — reviewed statically only.
+- Windows setup — `windows/fastdoc.nsi` (NSIS, per user, no admin): installs to
+  `%LOCALAPPDATA%\Programs\FastDoc`, a Start-menu shortcut (desktop optional), the same `HKCU` keys
+  `register.ps1` writes (ProgId `FastDoc.Document`, `OpenWithProgids` for all 70 extensions,
+  `Software\FastDoc\Capabilities`, `RegisteredApplications`) and an `HKCU` Uninstall entry. The
+  uninstaller deletes the installed files one by one, the shortcuts and those keys, nothing else. A
+  newer setup runs the old uninstaller silently first (upgrade in place). It waits while FastDoc is
+  running (the app's single-instance mutex), and the ARM64 setup refuses a non-ARM PC. The finish
+  page says the default app cannot be set by an installer and offers to open Default apps.
+- Debian package — `linux/deb/` (`control.in`, `postinst`, `postrm`): `/opt/fastdoc`, the
+  `/usr/bin/fastdoc` symlink, `/usr/share/applications/ai.ww-w.fastdoc.desktop`, the MIME XML and the
+  hicolor icon; postinst/postrm refresh the MIME, desktop and icon caches. File ▸ Set as Default App
+  finds the system-wide launcher when no user-local one exists.
+- Linux script — `linux/install.sh [<published-dir>]` / `linux/uninstall.sh`: user-local (no sudo)
+  copy to `~/.local/share/fastdoc` plus `.desktop` entry and MIME types; without an argument it
+  installs the archive it is unpacked in. Install prints the `xdg-mime default` line; does not run it.
+- Windows scripts — `windows/register.ps1 -InstallDir <dir>` / `unregister.ps1`, for the portable
+  zip; same keys as the setup.
 
-Neither script makes FastDoc the default application. On Windows `UserChoice` is hash-protected
-and cannot be set by an application; on Linux it is left to the user. Both scripts were written on
-macOS; the Linux pair has been run on Ubuntu 24.04 in a VM, the Windows pair has not been run.
+None of them makes FastDoc the default application: on Windows `UserChoice` is hash-protected and
+cannot be set by an application; on Linux it is left to the user.
 
 ## Layout
 

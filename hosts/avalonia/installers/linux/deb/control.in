@@ -1,0 +1,15 @@
+Package: fastdoc
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: @MAINTAINER@
+Installed-Size: @INSTALLED_SIZE@
+Depends: libc6, libgcc-s1, libstdc++6, zlib1g, libfontconfig1, libx11-6, libx11-xcb1, libicu78 | libicu77 | libicu76 | libicu75 | libicu74 | libicu73 | libicu72 | libicu71 | libicu70 | libicu67 | libicu66 | libicu63
+Recommends: xdg-utils, shared-mime-info, desktop-file-utils, libssl3 | libssl3t64 | libssl1.1
+Section: text
+Priority: optional
+Homepage: https://github.com/ww-w-ai/fast-document-reader
+Description: Fast, read-only document reader
+ FastDoc opens Markdown, plain text, Word (.docx, .docm, .dotx, .dotm),
+ OpenDocument (.odt) and Hangul (.hwp, .hwpx) documents, and exports them to
+ PDF. Korean text renders without any system font: a Noto Sans KR subset is
+ bundled. The build is self-contained and carries its own .NET runtime.

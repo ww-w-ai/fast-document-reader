@@ -6,7 +6,10 @@
 # doc's own warning).
 #
 # Usage:
-#   ./install.sh <published-app-dir>
+#   ./install.sh [<published-app-dir>]
+#
+# Without an argument, from inside an unpacked FastDoc-<ver>-linux-<arch>.tar.gz, it installs
+# that archive's app. Debian and Ubuntu users install the .deb instead (system-wide, /opt/fastdoc).
 #
 # <published-app-dir> is a self-contained publish output, e.g. hosts/avalonia/publish/linux-x64
 # (built by Scripts/publish-host.sh). The binary and its runtimes/ are copied to
@@ -15,6 +18,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_SRC_DIR="${1:-}"
+# Run from an unpacked FastDoc-<ver>-linux-<arch>.tar.gz, the app is two folders up.
+if [ -z "$APP_SRC_DIR" ] && [ -f "$SCRIPT_DIR/../../fastdoc" ]; then
+  APP_SRC_DIR="$SCRIPT_DIR/../.."
+fi
 
 if [ -z "$APP_SRC_DIR" ] || [ ! -d "$APP_SRC_DIR" ]; then
   echo "Usage: $0 <published-app-dir>" >&2
@@ -22,8 +29,8 @@ if [ -z "$APP_SRC_DIR" ] || [ ! -d "$APP_SRC_DIR" ]; then
   exit 1
 fi
 APP_SRC_DIR="$(cd "$APP_SRC_DIR" && pwd)"
-if [ ! -f "$APP_SRC_DIR/FastDoc.Avalonia" ]; then
-  echo "FAIL: $APP_SRC_DIR/FastDoc.Avalonia not found — is this a published self-contained output?" >&2
+if [ ! -f "$APP_SRC_DIR/fastdoc" ]; then
+  echo "FAIL: $APP_SRC_DIR/fastdoc not found — is this a published self-contained output?" >&2
   exit 1
 fi
 
@@ -36,11 +43,11 @@ DESKTOP_FILE="ai.ww-w.fastdoc.desktop"
 echo "==> 1/5: copying app to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
 cp -r "$APP_SRC_DIR"/. "$INSTALL_DIR/"
-chmod +x "$INSTALL_DIR/FastDoc.Avalonia"
+chmod +x "$INSTALL_DIR/fastdoc"
 
 echo "==> 2/5: installing .desktop entry (all 70 extensions this app opens become 'open with' candidates)"
 mkdir -p "$APPS_DIR"
-sed "s|^Exec=.*|Exec=$INSTALL_DIR/FastDoc.Avalonia %f|" \
+sed -e "s|^Exec=.*|Exec=$INSTALL_DIR/fastdoc %f|" -e "s|^TryExec=.*|TryExec=$INSTALL_DIR/fastdoc|" \
   "$SCRIPT_DIR/fastdoc.desktop" > "$APPS_DIR/$DESKTOP_FILE"
 # The .desktop names its icon by theme id (Icon=ai.ww-w.fastdoc); the launcher shows a generic
 # icon unless a file by that name exists in the hicolor theme.

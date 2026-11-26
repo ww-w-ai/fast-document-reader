@@ -5,7 +5,7 @@
   (Default) key, because register.ps1 never wrote one either.
 
 .NOTES
-  NOT EXECUTED by the packaging gate — writes the script only. Run on a real Windows machine.
+  For the portable zip. The setup .exe has its own uninstaller (Settings > Apps > Installed apps).
 #>
 
 $ErrorActionPreference = "Stop"

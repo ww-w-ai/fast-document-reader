@@ -124,6 +124,9 @@ if [ -z "$linux_smoke_skip_reason" ]; then
   rm -rf "$PUBLISH_DIR"
   if ! "$DOTNET" publish "$HOST_CSPROJ" -c Release -r linux-x64 --self-contained -o "$PUBLISH_DIR"; then
     linux_smoke_skip_reason="dotnet publish -r linux-x64 --self-contained failed"
+  else
+    # The shipped name (Scripts/publish-host.sh renames the apphost the same way).
+    mv "$PUBLISH_DIR/FastDoc.Avalonia" "$PUBLISH_DIR/fastdoc"
   fi
 fi
 
@@ -135,7 +138,7 @@ if [ -z "$linux_smoke_skip_reason" ]; then
     -e FASTDOC_ENGINE_LIB=/lib/libfastdoc_engine_ffi.so \
     -w /app \
     mcr.microsoft.com/dotnet/runtime-deps:9.0 \
-    ./FastDoc.Avalonia --extract /testdocs/bulk/moby-dick.md 2>&1)" || {
+    ./fastdoc --extract /testdocs/bulk/moby-dick.md 2>&1)" || {
     linux_smoke_skip_reason="container run failed — output:"$'\n'"$container_output"
   }
 fi

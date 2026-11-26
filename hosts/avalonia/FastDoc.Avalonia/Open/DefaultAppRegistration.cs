@@ -204,9 +204,10 @@ public sealed class WindowsDefaultAppRegistrar : IDefaultAppRegistrar
 /// <summary>Linux: points an ALREADY-INSTALLED launcher's default at itself via <c>xdg-mime
 /// default</c> for the candidate MIME types <see cref="DefaultAppFamilies.LinuxCandidateMimeTypes"/>
 /// names (the same four bundles installers/linux/install.sh's own printed instructions name).
-/// This class never writes the <c>.desktop</c> file itself — installers/linux/install.sh owns
-/// that — it only checks the file exists and, if so, runs the one command install.sh's final step
-/// prints as a suggestion instead of running.</summary>
+/// This class never writes the <c>.desktop</c> file itself — the .deb package (system-wide, under
+/// <c>/usr/share/applications</c>) or installers/linux/install.sh (user-local) owns that — it only
+/// checks the file exists and, if so, runs the one command install.sh's final step prints as a
+/// suggestion instead of running.</summary>
 public sealed class LinuxDefaultAppRegistrar : IDefaultAppRegistrar
 {
     public const string DesktopFileName = "ai.ww-w.fastdoc.desktop";
@@ -222,12 +223,26 @@ public sealed class LinuxDefaultAppRegistrar : IDefaultAppRegistrar
         _desktopFilePath = desktopFilePath;
     }
 
+    /// <summary>The installed launcher to point the default at: install.sh's user-local copy when
+    /// present (XDG lookup prefers it too), otherwise the .deb package's system-wide copy, otherwise
+    /// the user-local path, so the failure message names where install.sh would put it.</summary>
+    public static string ResolveDesktopFilePath(IFileProbe fileProbe, string homeDirectory)
+    {
+        var userLocal = Path.Combine(homeDirectory, ".local", "share", "applications", DesktopFileName);
+        if (fileProbe.Exists(userLocal))
+        {
+            return userLocal;
+        }
+        var systemWide = Path.Combine("/usr/share/applications", DesktopFileName);
+        return fileProbe.Exists(systemWide) ? systemWide : userLocal;
+    }
+
     public DefaultAppResult Register()
     {
         if (!_fileProbe.Exists(_desktopFilePath))
         {
             return new DefaultAppResult(DefaultAppOutcome.Failed,
-                $"No installed launcher found at {_desktopFilePath} — run installers/linux/install.sh first.");
+                $"No installed launcher found at {_desktopFilePath} — install the FastDoc .deb package, or run installers/linux/install.sh first.");
         }
 
         var args = new List<string> { "default", DesktopFileName };
@@ -264,15 +279,15 @@ public static class DefaultAppRegistrarFactory
         {
             var exePath = Environment.ProcessPath
                 ?? Process.GetCurrentProcess().MainModule?.FileName
-                ?? "FastDoc.Avalonia.exe";
+                ?? "FastDoc.exe";
             return new WindowsDefaultAppRegistrar(new Win32RegistryWriter(), new SystemProcessRunner(), exePath);
         }
         if (OperatingSystem.IsLinux())
         {
-            var desktopPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".local", "share", "applications", LinuxDefaultAppRegistrar.DesktopFileName);
-            return new LinuxDefaultAppRegistrar(new SystemProcessRunner(), new SystemFileProbe(), desktopPath);
+            var fileProbe = new SystemFileProbe();
+            var desktopPath = LinuxDefaultAppRegistrar.ResolveDesktopFilePath(
+                fileProbe, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+            return new LinuxDefaultAppRegistrar(new SystemProcessRunner(), fileProbe, desktopPath);
         }
         return new UnsupportedDefaultAppRegistrar();
     }
