@@ -3228,10 +3228,19 @@ this file tells you why, and why the obvious alternative does not work.
     Avalonia 153 → 139 (macOS 139); every other testdoc unchanged (`--sheets`). Pinned by
     `A_formula_or_diagram_block_keeps_the_page_break_on_the_paragraph_that_declares_it`. Remaining
     gaps, measured by replaying one host's plan input with the other's blocks swapped in:
-    - **s9 28 (31)**: all macOS text blocks → 31; its empty paragraphs alone → 29, its non-empty
-      alone → 28, tables → 28. macOS stands every body empty line at 14 pt (Helvetica 12, the bare
-      terminator) where Avalonia uses the paragraph's declared size (4.8-18 pt, 152 lines, 828 pt),
-      and 7 paragraphs wrap one more line on macOS (165 pt, the face below).
+    - **s9 28 (31) — closed on macOS, 31 → 28 (2026-11-26).** macOS stood every blank body line
+      at AppKit's bare-terminator 14 pt (Helvetica 12) where Avalonia used the paragraph's declared
+      size. 한글 decides it: `rhwp dump` of s9-picture-crop.hwp shows all 228 blank body paragraphs
+      with `LineSeg.line_height` = their own char shape's size (3-28 pt; pitch `lh + ls`, e.g.
+      24 pt at 160% = 24 + 14.4), so the blank line is the declared size. A blank paged body
+      paragraph whose format puts its spacing below the glyphs (HWP) now ends in a terminator
+      carrying that size (`OfficeTextBuilder.blankParagraphTerminator`, its Rust mirror
+      `blank_paragraph_terminator`); its line is the floor or that size's natural box, whichever is
+      taller, as the engine's `line_model` stands it for Avalonia. A docx/odt blank is unchanged.
+      Reference counts: 한글's own `vpos` resets place 25 pages, rhwp's renderer 27, both hosts now
+      28 — the rest is the wrapping/face gap above. Pinned by
+      `testABlankHwpBodyParagraphCarriesItsDeclaredSize` and
+      `a_blank_hwp_body_paragraph_carries_its_declared_size`, each mutation-checked.
     - **Fallback face, tried and NOT kept.** Putting the platform's own Korean face ahead of the
       bundled Noto Sans KR (Apple SD Gothic Neo on macOS, Malgun Gothic on Windows — what macOS's
       `DeclaredFontKind` substitution picks for a sans face) moved 1790387 141 → 139 and tago 9 → 8
@@ -3297,9 +3306,28 @@ this file tells you why, and why the obvious alternative does not work.
       returns to 9 with the patch because its undeclared runs are drawn in Inter + Noto Sans KR
       (14.5 pt Hangul lines) where macOS uses the system font (12 pt): the border space adds the
       rows' rules on top of that older line-box gap.
-    - **OpenAPI 20 (19)**: tables. 740 cell lines stand 18 pt on Avalonia and 10 pt on macOS
-      (tables +1,086 pt; macOS tables → 18, all blocks → 19); the line model floors every cell line
-      at the document's 18 pt grid, macOS's cell lines are not floored — not yet traced to the rule.
+    - **OpenAPI 20 (19) — macOS was wrong, now 20 (2026-11-26).** 740 cell lines stood 10 pt on
+      macOS: `cellContent` ran 한글's last-line rule (161b) on EVERY cell paragraph whose floor
+      exceeds its size, so a docx line-grid floor became `10 + 8 spacing` and a one-paragraph
+      cell's only line handed the 8 back. The rule is HWP's (rhwp `include_trailing_ls`); the
+      engine's `line_model` already limits it to `line_spacing_below`. OOXML settles the docx
+      side: the document's `settings.xml` carries `w:adjustLineHeightInTable` ("additional line
+      pitch shall be added to lines in table cells", ECMA-376 Part 1 `adjustLineHeightInTable`; absent, Word leaves cell
+      lines off the grid), its `w:docGrid w:type="lines" w:linePitch="360"`, and no cell paragraph
+      or style turns `w:snapToGrid` off (only header/footer/footnote styles do) — so a 10 pt
+      맑은 고딕 cell line stands one 18 pt grid line in Word. Paged cells now take the line model
+      only for paragraphs whose format has `lineSpacingBelow` (Swift `cellContent`, Rust
+      `cell_content`); unpaged cells keep it (there the floor is the reader's own rhythm —
+      dropping it took the flow-printed giant-table.odt 84 → 101). Word's own count does not
+      settle the remainder: `docProps/app.xml` says 19 pages, both hosts now 20, and the file's 18
+      `w:lastRenderedPageBreak` marks are not a usable page map (several sit in two cells of one
+      split row; Word's page 7 would hold ~830 pt of rows at any cell-line rule in a 671.75 pt
+      body). Pinned by `testAOneLineCellOnALineGridKeepsTheWholePitch`,
+      `testAOneLineHwpCellStillHandsItsSpacingBack`, `testAnUnpagedCellKeepsTheReadersOwnLastLineRule`
+      and their Rust mirrors in `tests/cell_and_blank_line_model.rs`, each mutation-checked. Not
+      done: neither host reads `w:adjustLineHeightInTable`, so a docx WITHOUT it still floors cell
+      lines at its grid on both hosts — no testdoc exercises that (the only line-grid docx carries
+      it; so do the 14 line-grid docx in the private corpus).
     - **tago 9 (8)**: the fallback-face trial above closes it (its text lines: Noto Sans KR's box
       against Apple SD Gothic Neo's); not otherwise re-diagnosed.
     - 스케일업 32 (31): not re-diagnosed.

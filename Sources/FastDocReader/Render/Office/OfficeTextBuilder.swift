@@ -310,7 +310,9 @@ enum OfficeTextBuilder {
                                                      baseColor: theme.textColor, theme: theme,
                                                      fontSizeScale: fontSizeScale, paged: paged,
                                                      commentNumbers: commentNumbers))
-                result.append(NSAttributedString(string: "\n"))
+                result.append(blankParagraphTerminator(spans: spans, format: format, isBlank: result.length == start,
+                                                       baseFont: theme.bodyFont, fontSizeScale: fontSizeScale,
+                                                       paged: paged))
                 let paragraphRange = NSRange(location: start, length: result.length - start)
                 result.addAttribute(.paragraphStyle,
                                     value: bodyParagraphStyle(theme: theme, rtl: rtl, alignment: alignment,
@@ -1717,8 +1719,17 @@ enum OfficeTextBuilder {
             return tableWidth / graphicBasis
         }()
         let result = NSMutableAttributedString()
+        // The characters of the blocks whose format puts a line's spacing BELOW its glyphs (HWP,
+        // invariant 161e) — the only paragraphs the cell line model below applies to (207).
+        var spacingBelowRanges: [NSRange] = []
         for (index, block) in blocks.enumerated() {
             var joinedByOwnSeparator = false
+            let blockStart = result.length
+            defer {
+                if paragraphFormat(of: block)?.lineSpacingBelow == true, result.length > blockStart {
+                    spacingBelowRanges.append(NSRange(location: blockStart, length: result.length - blockStart))
+                }
+            }
             switch block {
             // `rtl`/`alignment`/`tabStops` are dropped here (`_`), not lost: a cell's own paragraph
             // style comes from `TableBlockBuilder`'s shared `cellLH` treatment, not from
@@ -1825,8 +1836,16 @@ enum OfficeTextBuilder {
             // sums `spacing_before + lines + spacing_after` per cell paragraph) — invariant 163.
             if i == 0, !paged { m.paragraphSpacingBefore = 0 }
             if i == paragraphs.count - 1, !paged { m.paragraphSpacing = 0 }
-            applyLineModel(to: m, paragraph: range, in: result,
+            // 한글's cell line model (161b): only a paragraph that puts its spacing below the
+            // glyphs. A docx/odt floor — a line grid, an `atLeast` rule — is the whole line, the
+            // last one included: Word adds the grid pitch to every line of a cell when the document
+            // asks it to (`w:adjustLineHeightInTable`), and the engine's `line_model` already limits
+            // the rule to `line_spacing_below` (invariant 207). The unpaged reader keeps it for every
+            // cell: there the floor is this reader's own rhythm, not a document's line.
+            if !paged || spacingBelowRanges.contains(where: { NSLocationInRange(range.location, $0) }) {
+                applyLineModel(to: m, paragraph: range, in: result,
                                dropsTrailingGap: i == paragraphs.count - 1 && (lastLineKeepsNoGap || paragraphs.count == 1))
+            }
             result.addAttribute(.paragraphStyle, value: m.copy() as! NSParagraphStyle, range: range)
             unifyTerminator(of: range, in: result, string: ns)
         }
@@ -1860,6 +1879,22 @@ enum OfficeTextBuilder {
     /// - nothing: the cell's base font and the paragraph's own style, the natural line.
     ///
     /// The non-paged model is byte-identical to before this existed.
+    /// The terminator of a BODY paragraph. A blank HWP body paragraph (paged, a format that puts its
+    /// spacing below the glyphs) stands a line of the size its own char shape declares — 한글
+    /// composes it with `LineSeg.line_height` = that size (invariant 207) — so its terminator
+    /// carries that size. Anything else gets the bare terminator it always had.
+    private static func blankParagraphTerminator(spans: [Span], format: ParagraphFormat?, isBlank: Bool,
+                                                 baseFont: NSFont, fontSizeScale: CGFloat,
+                                                 paged: Bool) -> NSAttributedString {
+        guard paged, isBlank, format?.lineSpacingBelow == true,
+              let declared = spans.compactMap(\.fontSize).max() else {
+            return NSAttributedString(string: "\n")
+        }
+        let size = max(1, declared * fontSizeScale)
+        let font = NSFont(descriptor: baseFont.fontDescriptor, size: size) ?? baseFont
+        return NSAttributedString(string: "\n", attributes: [.font: font])
+    }
+
     private static func emptyCellLine(spans: [Span], style: NSParagraphStyle, baseFont: NSFont,
                                       fontSizeScale: CGFloat) -> NSMutableAttributedString {
         let m = style.mutableCopy() as! NSMutableParagraphStyle
